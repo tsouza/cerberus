@@ -303,7 +303,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 // The shape is DERIVED from the inner node rather than read off its kind.
 // A `*chplan.RangeWindow` type assertion answers "is this one node kind",
 // not "what does my input expose", and the two came apart the moment
-// `*chplan.RangeWindowNative` grew the identical row shape:
+// `*chplan.RangeWindowGridNative` grew the identical row shape:
 // `abs(rate(m[5m]))` on the ts_grid_range path took the canonical branch
 // and published `(” AS MetricName, Attributes, TimeUnix, Value)` where
 // the fan-out publishes `(Attributes, anchor_ts, TimeUnix, Value)`.
@@ -312,7 +312,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 // SYNTHESISES the name rather than referencing it, and the TimeUnix it
 // forwards IS the grid anchor under its other name — but it makes the
 // two strategies publish different columns for one row shape, which is
-// exactly the substitutability [chplan.RangeWindowNative] documents. The
+// exactly the substitutability [chplan.RangeWindowGridNative] documents. The
 // same spelling in [projectAttributesOverInner] REFERENCES MetricName
 // and is a live ClickHouse code 47. Routing both halves through one
 // classifier is what stops them answering differently.

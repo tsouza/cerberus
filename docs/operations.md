@@ -290,7 +290,7 @@ the SQL array machinery leaves at high cardinality. See
   The experimental ClickHouse setting
   `allow_experimental_time_series_aggregate_functions=1` is sent **only on the
   queries that actually use the native node** (cerberus detects a
-  `RangeWindowNative` in the emitted plan and stamps the setting per-query), so
+  `RangeWindowGridNative` in the emitted plan and stamps the setting per-query), so
   enabling the flag never adds an unknown setting to unrelated queries.
 - **The server must permit that experimental setting.** Meeting the 25.9 floor
   is necessary but not sufficient: a hardened ClickHouse profile that
@@ -315,7 +315,7 @@ the SQL array machinery leaves at high cardinality. See
   structurally the fan-out shape.
 
 **Parity.** Validated on the chDB substrate (26.5) by a dual-emit test
-(`internal/chsql/range_window_native_chdb_test.go`) that runs the fan-out and
+(`internal/chsql/range_window_grid_native_chdb_test.go`) that runs the fan-out and
 the native path on the same seed and compares decoded float64 grids. The 26.5
 substrate is above the 25.9 auto floor, so it already carries the left-open
 window fix and the native path exercised here uses the same half-open membership

@@ -30,8 +30,8 @@ func TestCanonicalAttributesExpr_WrapsInMapSort(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T, want *chplan.FuncCall", canonicalAttributesExpr(inner))
 	}
-	if got.Name != "mapSort" {
-		t.Fatalf("func name: got %q, want %q", got.Name, "mapSort")
+	if got.Fn != chplan.FnMapSort {
+		t.Fatalf("func symbol: got %q, want %q", got.Fn, chplan.FnMapSort)
 	}
 	if len(got.Args) != 1 || got.Args[0] != chplan.Expr(inner) {
 		t.Fatalf("args: got %#v, want exactly the input expr", got.Args)
@@ -84,7 +84,7 @@ func TestSelectorAttributesExpr_AlwaysCanonicalOrBare(t *testing.T) {
 				return
 			}
 			call, ok := got.(*chplan.FuncCall)
-			if !ok || call.Name != "mapSort" {
+			if !ok || call.Fn != chplan.FnMapSort {
 				t.Fatalf("got %#v, want a mapSort(...) wrap", got)
 			}
 		})
@@ -324,7 +324,7 @@ func readsAttributesUnderMapSort(expr chplan.Expr, column string, sorted bool) b
 		// canonical only if what it reads already was.
 		return readsAttributesUnderMapSort(v.Map, column, sorted)
 	case *chplan.FuncCall:
-		if v.Name == "mapSort" {
+		if v.Fn == chplan.FnMapSort {
 			sorted = true
 		}
 		for _, a := range v.Args {

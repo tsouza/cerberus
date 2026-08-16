@@ -205,7 +205,7 @@ func TestFilterRangeWindowTranspose_BlockedByComputedGroupKey(t *testing.T) {
 			ValueColumn:     "Value",
 			GroupBy: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "substr",
+					Fn:   chplan.FnSubstring,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}, &chplan.LitInt{V: 1}},
 				},
 			},

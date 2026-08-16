@@ -12,7 +12,7 @@ import (
 // inner-subquery columns the native timeSeriesRateToGrid emit threads
 // through the ARRAY JOIN explosion; nativeGridStateAlias and
 // nativeShapedKeyAliasPrefix name the two extra columns the deferred
-// label-shaping (chplan.RangeWindowNative.Recollapse) shape adds beneath
+// label-shaping (chplan.RangeWindowGridNative.Recollapse) shape adds beneath
 // them. Lifting them to named constants keeps the producer (inner SELECT)
 // and consumer (ARRAY JOIN + outer SELECT) referring to the exact same
 // identifier — a typo in one would otherwise surface only as a CH
@@ -67,7 +67,7 @@ type nativeTSGridAgg struct {
 // rest of the family (timeSeriesDeltaToGrid, …) once each is differentially
 // proven equivalent to its PromQL counterpart.
 //
-// Every entry renders through the IDENTICAL emitRangeWindowNative shape — the
+// Every entry renders through the IDENTICAL emitRangeWindowGridNative shape — the
 // `(start, end, step_s, Range_s[, predict_offset_s])(ts, value)` parametric
 // aggregate paired with a lockstep timeSeriesRange axis — because the whole
 // family shares one paren/arg signature. The per-func difference is the
@@ -94,7 +94,7 @@ type nativeTSGridAgg struct {
 // needs the name (plus predict_linear's offset scalar).
 //
 // StateFn / MergeFn name the aggregate's partial-state combinator pair, which
-// the deferred label-shaping shape (chplan.RangeWindowNative.Recollapse)
+// the deferred label-shaping shape (chplan.RangeWindowGridNative.Recollapse)
 // needs: the inner level emits <fn>ToGridState per RAW series and the middle
 // level <fn>ToGridMerge's the states of every raw series that shapes onto the
 // same output series. An EMPTY MergeFn declares the function NOT
@@ -190,7 +190,7 @@ func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 	return Col(tsColumn)
 }
 
-// emitRangeWindowNative renders a chplan.RangeWindowNative — the
+// emitRangeWindowGridNative renders a chplan.RangeWindowGridNative — the
 // experimental ClickHouse-native lowering of an eligible matrix range
 // function (`rate` / `changes` / `resets`) over a query_range expression.
 // The aggregate NAME is selected per r.Func via nativeTSGridFn; the SQL
@@ -285,22 +285,22 @@ func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 //
 // The experimental setting `allow_experimental_time_series_aggregate_functions=1`
 // is NOT emitted here (it is not SQL the plan carries) — the engine
-// detects the RangeWindowNative node in the plan and stamps the setting
+// detects the RangeWindowGridNative node in the plan and stamps the setting
 // onto the per-query ClickHouse context (see internal/engine +
 // internal/chclient).
-func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
+func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) error {
 	if r.TimestampColumn == "" {
-		return fmt.Errorf("%w: RangeWindowNative.TimestampColumn unset", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowGridNative.TimestampColumn unset", ErrUnsupported)
 	}
 	if r.ValueColumn == "" {
-		return fmt.Errorf("%w: RangeWindowNative.ValueColumn unset", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowGridNative.ValueColumn unset", ErrUnsupported)
 	}
 	if r.Step <= 0 {
-		return fmt.Errorf("%w: RangeWindowNative requires Step > 0 (range mode)", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowGridNative requires Step > 0 (range mode)", ErrUnsupported)
 	}
 	agg, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowNative func %q (supported: rate, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
 	}
 	// predict_linear threads its future-offset horizon t (whole seconds) as the
 	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering
@@ -309,10 +309,10 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 	// carry exactly one Scalar; any other func must carry none.
 	if r.Func == "predict_linear" {
 		if len(r.Scalars) != 1 {
-			return fmt.Errorf("%w: RangeWindowNative predict_linear requires exactly 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+			return fmt.Errorf("%w: RangeWindowGridNative predict_linear requires exactly 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
 		}
 	} else if len(r.Scalars) != 0 {
-		return fmt.Errorf("%w: RangeWindowNative func %q takes no scalar, got %d", ErrUnsupported, r.Func, len(r.Scalars))
+		return fmt.Errorf("%w: RangeWindowGridNative func %q takes no scalar, got %d", ErrUnsupported, r.Func, len(r.Scalars))
 	}
 
 	// Every deferred-shaping guard runs BEFORE anything is rendered: a node
@@ -487,24 +487,24 @@ func (e *emitter) emitRangeWindowNative(r *chplan.RangeWindowNative) error {
 //     column, silently discarding one of them;
 //   - a computed GroupBy key: the levels above the state one reference every
 //     key BY NAME, and a computed key has no name to reference.
-func requireRecollapseEmittable(r *chplan.RangeWindowNative, agg nativeTSGridAgg) ([]string, error) {
+func requireRecollapseEmittable(r *chplan.RangeWindowGridNative, agg nativeTSGridAgg) ([]string, error) {
 	if agg.StateFn == "" || agg.MergeFn == "" {
-		return nil, fmt.Errorf("%w: RangeWindowNative func %q has no -State/-Merge pair, so Recollapse cannot be deferred past the aggregate",
+		return nil, fmt.Errorf("%w: RangeWindowGridNative func %q has no -State/-Merge pair, so Recollapse cannot be deferred past the aggregate",
 			ErrUnsupported, r.Func)
 	}
 	seen := make(map[string]struct{}, len(r.Recollapse))
 	for i, p := range r.Recollapse {
 		if p.Alias == "" {
-			return nil, fmt.Errorf("%w: RangeWindowNative.Recollapse[%d] has an empty Alias", ErrUnsupported, i)
+			return nil, fmt.Errorf("%w: RangeWindowGridNative.Recollapse[%d] has an empty Alias", ErrUnsupported, i)
 		}
 		if _, dup := seen[p.Alias]; dup {
-			return nil, fmt.Errorf("%w: RangeWindowNative.Recollapse alias %q is not unique", ErrUnsupported, p.Alias)
+			return nil, fmt.Errorf("%w: RangeWindowGridNative.Recollapse alias %q is not unique", ErrUnsupported, p.Alias)
 		}
 		seen[p.Alias] = struct{}{}
 	}
 	groupCols, computed := r.GroupByColumns()
 	if computed != nil {
-		return nil, fmt.Errorf("%w: RangeWindowNative.Recollapse requires plain column GroupBy keys, got %T", ErrUnsupported, computed)
+		return nil, fmt.Errorf("%w: RangeWindowGridNative.Recollapse requires plain column GroupBy keys, got %T", ErrUnsupported, computed)
 	}
 	if err := requireRecollapseColumnsGrouped(r, groupCols); err != nil {
 		return nil, err
@@ -521,15 +521,15 @@ func requireRecollapseEmittable(r *chplan.RangeWindowNative, agg nativeTSGridAgg
 // sufficient — nativeRangeWindowColumns can reach every read through GroupBy
 // alone.
 //
-// The read set comes from chplan.RangeWindowNative.RecollapseReadColumns, the
-// same walk chplan.RangeWindowNative.PartitionRecollapseGroupBy answers from, so
+// The read set comes from chplan.RangeWindowGridNative.RecollapseReadColumns, the
+// same walk chplan.RangeWindowGridNative.PartitionRecollapseGroupBy answers from, so
 // this guard and the partition cannot disagree about which GroupBy key is a
 // shaping input. Its first-read ordering is what keeps the message deterministic
 // when several reads are ungrouped.
-func requireRecollapseColumnsGrouped(r *chplan.RangeWindowNative, groupCols []string) error {
+func requireRecollapseColumnsGrouped(r *chplan.RangeWindowGridNative, groupCols []string) error {
 	for _, name := range r.RecollapseReadColumns() {
 		if !slices.Contains(groupCols, name) {
-			return fmt.Errorf("%w: RangeWindowNative.Recollapse reads column %q which is not a GroupBy key", ErrUnsupported, name)
+			return fmt.Errorf("%w: RangeWindowGridNative.Recollapse reads column %q which is not a GroupBy key", ErrUnsupported, name)
 		}
 	}
 	return nil
@@ -552,7 +552,7 @@ func requireRecollapseColumnsGrouped(r *chplan.RangeWindowNative, groupCols []st
 // The returned groupFrags stay positionally aligned with r.GroupBy (the merge
 // and outer levels index it by GroupBy position); only the order in which they
 // were rendered differs.
-func (e *emitter) collectRecollapseFrags(r *chplan.RangeWindowNative, passIdx, shapingInputIdx []int) (groupFrags, recollapseFrags []Frag, err error) {
+func (e *emitter) collectRecollapseFrags(r *chplan.RangeWindowGridNative, passIdx, shapingInputIdx []int) (groupFrags, recollapseFrags []Frag, err error) {
 	groupFrags = make([]Frag, len(r.GroupBy))
 	collectInto := func(idx []int) error {
 		exprs := make([]chplan.Expr, 0, len(idx))

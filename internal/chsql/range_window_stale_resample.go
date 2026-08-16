@@ -13,7 +13,7 @@ import (
 // functions gate as timeSeriesRateToGrid).
 const nativeResampleFn = "timeSeriesResampleToGridWithStaleness"
 
-// emitRangeWindowResample renders a chplan.RangeWindowResample — the
+// emitRangeWindowStaleResample renders a chplan.RangeWindowStaleResample — the
 // experimental ClickHouse-native lowering of a range-mode bare instant-vector
 // selector (the staleness / instant-vector-selection shape). It produces
 // EXACTLY the canonical 4-column Sample row shape RangeLWR emits, so any
@@ -56,21 +56,21 @@ const nativeResampleFn = "timeSeriesResampleToGridWithStaleness"
 // base does: both Start and End shift left by Offset so the window slides back
 // to `[End - Offset - Lookback, End - Offset]` per anchor, WITHOUT moving the
 // emitted anchor timestamp (the timeSeriesRange axis stays on the unshifted
-// grid). See the RangeWindowResample doc for the closed-vs-half-open left-edge
+// grid). See the RangeWindowStaleResample doc for the closed-vs-half-open left-edge
 // note (the one documented, fixture-invisible divergence from RangeLWR).
 //
 // The experimental setting is NOT emitted here — the engine detects the node in
 // the plan (shared planHasTSGridNative path) and stamps
 // allow_experimental_time_series_aggregate_functions=1 onto the per-query ctx.
-func (e *emitter) emitRangeWindowResample(r *chplan.RangeWindowResample) error {
+func (e *emitter) emitRangeWindowStaleResample(r *chplan.RangeWindowStaleResample) error {
 	if r.TimestampCol == "" || r.ValueCol == "" || r.MetricNameCol == "" || r.AttributesCol == "" {
-		return fmt.Errorf("%w: RangeWindowResample requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowStaleResample requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
 	}
 	if r.Step <= 0 {
-		return fmt.Errorf("%w: RangeWindowResample requires Step > 0 (range mode)", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowStaleResample requires Step > 0 (range mode)", ErrUnsupported)
 	}
 	if r.Start.IsZero() || r.End.IsZero() {
-		return fmt.Errorf("%w: RangeWindowResample requires pinned Start/End (range mode)", ErrUnsupported)
+		return fmt.Errorf("%w: RangeWindowStaleResample requires pinned Start/End (range mode)", ErrUnsupported)
 	}
 
 	// Offset folds onto both grid bounds (window slides back), mirroring the

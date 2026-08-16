@@ -8,11 +8,11 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// nativeNode builds a RangeWindowNative over a leaf scan for the given grid +
+// nativeNode builds a RangeWindowGridNative over a leaf scan for the given grid +
 // offset — the ClickHouse-native timeSeries<fn>ToGrid shape ReanchorRange
 // re-grids (issue #2117).
-func nativeNode(start, end time.Time, step, rang, offset time.Duration) *chplan.RangeWindowNative {
-	return &chplan.RangeWindowNative{
+func nativeNode(start, end time.Time, step, rang, offset time.Duration) *chplan.RangeWindowGridNative {
+	return &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
 		Func:            "rate",
 		Range:           rang,
@@ -26,17 +26,17 @@ func nativeNode(start, end time.Time, step, rang, offset time.Duration) *chplan.
 	}
 }
 
-// nativeOverWindow builds a RangeWindowNative whose Input is a matrix
+// nativeOverWindow builds a RangeWindowGridNative whose Input is a matrix
 // RangeWindow, so the widening the native arm applies to its inner spine is
 // OBSERVABLE: the inner window's re-anchored Start is the only place
 // Offset+Range shows up.
-func nativeOverWindow(step, rang, offset time.Duration) *chplan.RangeWindowNative {
+func nativeOverWindow(step, rang, offset time.Duration) *chplan.RangeWindowGridNative {
 	n := nativeNode(time.Time{}, time.Time{}, step, rang, offset)
 	n.Input = matrixWindow(time.Minute, step, 0)
 	return n
 }
 
-// TestReanchorRange_NativeReGrids asserts an unpinned RangeWindowNative is
+// TestReanchorRange_NativeReGrids asserts an unpinned RangeWindowGridNative is
 // re-anchored onto the requested sub-grid, that its non-grid fields survive,
 // and that the input tree is left byte-identical (copy-not-mutate).
 func TestReanchorRange_NativeReGrids(t *testing.T) {
@@ -64,7 +64,7 @@ func TestReanchorRange_NativeReGrids(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReanchorRange: %v", err)
 			}
-			r := out.(*chplan.RangeWindowNative)
+			r := out.(*chplan.RangeWindowGridNative)
 			if !r.Start.Equal(subStart) || !r.End.Equal(subEnd) {
 				t.Fatalf("re-anchored bounds wrong: Start=%v End=%v", r.Start, r.End)
 			}
@@ -72,14 +72,14 @@ func TestReanchorRange_NativeReGrids(t *testing.T) {
 				t.Fatalf("re-anchor lost a non-grid field: %+v", r)
 			}
 			if !in.Equal(snapshot) {
-				t.Fatal("ReanchorRange mutated its RangeWindowNative input")
+				t.Fatal("ReanchorRange mutated its RangeWindowGridNative input")
 			}
 		})
 	}
 }
 
 // TestReanchorRange_NativeWidensInputSpine asserts the native arm widens its
-// INPUT by Offset+Range — the arithmetic RangeWindowNative.InputWindow owns and
+// INPUT by Offset+Range — the arithmetic RangeWindowGridNative.InputWindow owns and
 // the solver's signal walk predicts. A shard whose inner spine is not widened
 // starts its scan at the shard's own oldest anchor, so that anchor's window is
 // missing every sample older than it and the shard's first grid points are
@@ -107,7 +107,7 @@ func TestReanchorRange_NativeWidensInputSpine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReanchorRange: %v", err)
 			}
-			inner := out.(*chplan.RangeWindowNative).Input.(*chplan.RangeWindow)
+			inner := out.(*chplan.RangeWindowGridNative).Input.(*chplan.RangeWindow)
 
 			wantStart, wantEnd := in.InputWindow(start, end)
 			if !inner.Start.Equal(wantStart) || !inner.End.Equal(wantEnd) {
@@ -124,7 +124,7 @@ func TestReanchorRange_NativeWidensInputSpine(t *testing.T) {
 	}
 }
 
-// TestReanchorRange_NativeAcceptsAlreadyGridded: a RangeWindowNative already
+// TestReanchorRange_NativeAcceptsAlreadyGridded: a RangeWindowGridNative already
 // sitting exactly on the predicted grid re-anchors without error — the shape a
 // top-level range-mode rate() carries before UnpinSpine touches it.
 func TestReanchorRange_NativeAcceptsAlreadyGridded(t *testing.T) {
@@ -134,15 +134,15 @@ func TestReanchorRange_NativeAcceptsAlreadyGridded(t *testing.T) {
 	in := nativeNode(start, end, time.Minute, 5*time.Minute, 0)
 	out, err := chplan.ReanchorRange(in, start, end)
 	if err != nil {
-		t.Fatalf("already-gridded RangeWindowNative should re-anchor cleanly, got %v", err)
+		t.Fatalf("already-gridded RangeWindowGridNative should re-anchor cleanly, got %v", err)
 	}
-	r := out.(*chplan.RangeWindowNative)
+	r := out.(*chplan.RangeWindowGridNative)
 	if !r.Start.Equal(start) || !r.End.Equal(end) {
 		t.Fatalf("bounds drifted: %v %v", r.Start, r.End)
 	}
 }
 
-// TestReanchorRange_NativeRejectsAtPin: a RangeWindowNative whose bounds
+// TestReanchorRange_NativeRejectsAtPin: a RangeWindowGridNative whose bounds
 // diverge from the predicted grid (an @-pinned anchor) is rejected, so the
 // solver aborts the Decision to route A rather than emit shards that silently
 // disagree with @ semantics.
@@ -151,7 +151,7 @@ func TestReanchorRange_NativeRejectsAtPin(t *testing.T) {
 	in := nativeNode(time.Unix(9999-3600, 0).UTC(), time.Unix(9999, 0).UTC(), time.Minute, 5*time.Minute, 0)
 	_, err := chplan.ReanchorRange(in, time.Unix(1000, 0).UTC(), time.Unix(4600, 0).UTC())
 	if !errors.Is(err, chplan.ErrReanchorGridMismatch) {
-		t.Fatalf("expected ErrReanchorGridMismatch for an @-pinned RangeWindowNative, got %v", err)
+		t.Fatalf("expected ErrReanchorGridMismatch for an @-pinned RangeWindowGridNative, got %v", err)
 	}
 }
 
@@ -167,9 +167,9 @@ func TestReanchorRange_NativeSpineNodeIsCloned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReanchorRange: %v", err)
 	}
-	r := out.(*chplan.RangeWindowNative)
+	r := out.(*chplan.RangeWindowGridNative)
 	if r == in {
-		t.Fatal("ReanchorRange returned the same RangeWindowNative pointer (spine must be cloned)")
+		t.Fatal("ReanchorRange returned the same RangeWindowGridNative pointer (spine must be cloned)")
 	}
 	r.Start = time.Unix(0, 0).UTC()
 	r.End = time.Unix(1, 0).UTC()
@@ -184,7 +184,7 @@ func TestReanchorRange_NativeSpineNodeIsCloned(t *testing.T) {
 }
 
 // TestReanchorRange_UnionAllReAnchorsEveryArm is the pin for the mixed spine
-// issue #2117 exists to unblock: `UnionAll{RangeWindowNative, RangeWindow}`.
+// issue #2117 exists to unblock: `UnionAll{RangeWindowGridNative, RangeWindow}`.
 //
 // Both arms must land on the SAME re-anchored grid. The arms are concatenated
 // positionally, so a shard that re-gridded one and shared the other verbatim
@@ -214,7 +214,7 @@ func TestReanchorRange_UnionAllReAnchorsEveryArm(t *testing.T) {
 		t.Fatalf("arm count changed: %d -> %d", len(in.Inputs), len(u.Inputs))
 	}
 
-	gotNative := u.Inputs[0].(*chplan.RangeWindowNative)
+	gotNative := u.Inputs[0].(*chplan.RangeWindowGridNative)
 	if !gotNative.Start.Equal(start) || !gotNative.End.Equal(end) {
 		t.Errorf("native arm at [%v,%v], want [%v,%v]", gotNative.Start, gotNative.End, start, end)
 	}

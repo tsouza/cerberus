@@ -105,7 +105,7 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	case gridSingleAnchor:
 	}
 	// Route through the boot-wired PredictLinear strategy: the native impl
-	// emits a RangeWindowNative (timeSeriesPredictLinearToGrid) for an eligible
+	// emits a RangeWindowGridNative (timeSeriesPredictLinearToGrid) for an eligible
 	// range-mode window with a whole-second literal horizon, the fan-out impl
 	// returns rw unchanged. The feature/version decision lives in WHICH strategy
 	// cmd/cerberus wired — there is NO feature-flag / version read here, and the

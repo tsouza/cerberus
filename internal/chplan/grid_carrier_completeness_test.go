@@ -24,8 +24,8 @@ import (
 var gridCarrierRegistry = []GridCarrier{
 	&StepGrid{},
 	&RangeWindow{},
-	&RangeWindowNative{},
-	&RangeWindowResample{},
+	&RangeWindowGridNative{},
+	&RangeWindowStaleResample{},
 	&RangeLWR{},
 	&RangeBucketFanout{},
 	&AbsentOverTime{},
@@ -49,11 +49,11 @@ func (n *RangeWindow) setEvalGrid(start, end time.Time, step time.Duration) {
 	n.Start, n.End, n.Step = start, end, step
 }
 
-func (n *RangeWindowNative) setEvalGrid(start, end time.Time, step time.Duration) {
+func (n *RangeWindowGridNative) setEvalGrid(start, end time.Time, step time.Duration) {
 	n.Start, n.End, n.Step = start, end, step
 }
 
-func (n *RangeWindowResample) setEvalGrid(start, end time.Time, step time.Duration) {
+func (n *RangeWindowStaleResample) setEvalGrid(start, end time.Time, step time.Duration) {
 	n.Start, n.End, n.Step = start, end, step
 }
 
@@ -78,8 +78,8 @@ func (n *AbsentOverTime) setEvalGrid(start, end time.Time, step time.Duration) {
 var gridCarrierSetterFactories = []func() gridCarrierSetter{
 	func() gridCarrierSetter { return &StepGrid{} },
 	func() gridCarrierSetter { return &RangeWindow{} },
-	func() gridCarrierSetter { return &RangeWindowNative{} },
-	func() gridCarrierSetter { return &RangeWindowResample{} },
+	func() gridCarrierSetter { return &RangeWindowGridNative{} },
+	func() gridCarrierSetter { return &RangeWindowStaleResample{} },
 	func() gridCarrierSetter { return &RangeLWR{} },
 	func() gridCarrierSetter { return &RangeBucketFanout{} },
 	func() gridCarrierSetter { return &AbsentOverTime{} },

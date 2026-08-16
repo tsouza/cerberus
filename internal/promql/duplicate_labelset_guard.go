@@ -104,7 +104,7 @@ func guardedValueProjection(
 // Everything else holds many rows per series at distinct timestamps, so the
 // timestamp must be in the key:
 //
-//   - [chplan.RangeLWR] and [chplan.RangeWindowResample] — the two
+//   - [chplan.RangeLWR] and [chplan.RangeWindowStaleResample] — the two
 //     range-mode grid seams. They emit one row per (series, ANCHOR), and
 //     every series shares the same anchors, so the timestamp IS the step
 //     identity. Keying on it is what makes this a per-step check rather

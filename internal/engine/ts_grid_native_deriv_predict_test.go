@@ -10,12 +10,12 @@ import (
 )
 
 // TestPlanHasTSGridNativeDerivPredictLinear pins that a plan carrying a native
-// deriv / predict_linear RangeWindowNative trips the experimental-setting gate,
+// deriv / predict_linear RangeWindowGridNative trips the experimental-setting gate,
 // so the engine stamps allow_experimental_time_series_aggregate_functions=1 on
 // exactly those queries — the same gate the rate / changes / resets members
 // ride. The detector is generic over the node TYPE (not the Func), so this is
 // the companion to the promql/chsql hollow-green guard
-// (internal/chsql/range_window_native_deriv_predict_test.go): together they
+// (internal/chsql/range_window_grid_native_deriv_predict_test.go): together they
 // prove the feature ACTIVATES end-to-end (native node emitted AND the setting
 // stamped), which the < 25.9 chDB substrate cannot show.
 func TestPlanHasTSGridNativeDerivPredictLinear(t *testing.T) {
@@ -28,7 +28,7 @@ func TestPlanHasTSGridNativeDerivPredictLinear(t *testing.T) {
 		fn := fn
 		t.Run(fn, func(t *testing.T) {
 			t.Parallel()
-			node := &chplan.RangeWindowNative{
+			node := &chplan.RangeWindowGridNative{
 				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
 				Func:            fn,
 				Range:           5 * time.Minute,

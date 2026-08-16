@@ -460,7 +460,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_BothSet(t *testing.T) {
 		TimestampCol: "TimeUnix",
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},
@@ -694,7 +694,7 @@ func TestRangeBucketFanoutRejectsBadAggExpr(t *testing.T) {
 		{
 			name: "bad_param",
 			agg: chplan.AggFunc{
-				Name:   "quantilesTDigest",
+				Fn:     chplan.FnQuantiles,
 				Alias:  "BucketCounts",
 				Params: []chplan.Expr{nil},
 				Args:   []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
@@ -703,7 +703,7 @@ func TestRangeBucketFanoutRejectsBadAggExpr(t *testing.T) {
 		{
 			name: "bad_arg",
 			agg: chplan.AggFunc{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args:  []chplan.Expr{nil},
 			},
@@ -754,7 +754,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_OnlyOneSet(t *testing.T) {
 				TimestampCol: "TimeUnix",
 				AggFuncs: []chplan.AggFunc{
 					{
-						Name:  "argMax",
+						Fn:    chplan.FnArgMax,
 						Alias: "BucketCounts",
 						Args: []chplan.Expr{
 							&chplan.ColumnRef{Name: "BucketCounts"},
@@ -798,7 +798,7 @@ func TestRangeBucketFanoutInnerScanTimeBound_OffsetAndSpanEdges(t *testing.T) {
 		TimestampCol: "TimeUnix",
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},
@@ -855,7 +855,7 @@ func TestRangeBucketFanoutZeroSpanGridAccepted(t *testing.T) {
 		TimestampCol: "TimeUnix",
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},
@@ -873,8 +873,8 @@ func TestRangeBucketFanoutZeroSpanGridAccepted(t *testing.T) {
 	}
 }
 
-// TestRangeWindowNativeInnerScanTimeBound pins the inner-scan prune the
-// ClickHouse-native rate lowering (RangeWindowNative, the
+// TestRangeWindowGridNativeInnerScanTimeBound pins the inner-scan prune the
+// ClickHouse-native rate lowering (RangeWindowGridNative, the
 // timeSeriesRateToGrid path) pushes onto the per-series SELECT BEFORE the
 // GROUP BY. This shape was previously only exercised through the
 // test/spec TXTAR goldens, which the package-scoped mutation lane does
@@ -882,13 +882,13 @@ func TestRangeBucketFanoutZeroSpanGridAccepted(t *testing.T) {
 // was an uncovered mutation surface. The exact-bound assertions cover and
 // kill the CONDITIONALS_NEGATION / CONDITIONALS_BOUNDARY mutants on the
 // emitter's guards and the inner-scan bound math.
-func TestRangeWindowNativeInnerScanTimeBound(t *testing.T) {
+func TestRangeWindowGridNativeInnerScanTimeBound(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
-	plan := &chplan.RangeWindowNative{
+	plan := &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 		Func:            "rate",
 		Start:           start,
@@ -909,12 +909,12 @@ func TestRangeWindowNativeInnerScanTimeBound(t *testing.T) {
 	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
-		t.Errorf("expected RangeWindowNative offset+Range lower bound %q in SQL=%s", wantLower, sql)
+		t.Errorf("expected RangeWindowGridNative offset+Range lower bound %q in SQL=%s", wantLower, sql)
 	}
 	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
-		t.Errorf("expected RangeWindowNative offset-only upper bound %q in SQL=%s", wantUpper, sql)
+		t.Errorf("expected RangeWindowGridNative offset-only upper bound %q in SQL=%s", wantUpper, sql)
 	}
 	// When the schema TimestampColumn differs from the bare anchor alias
 	// (the common case — here "TimeUnix" != "anchor_ts"), the outer SELECT
@@ -929,21 +929,21 @@ func TestRangeWindowNativeInnerScanTimeBound(t *testing.T) {
 	// (nativeGridTimeBoundFrag), so this restores the DateTime64(9) every
 	// other anchor_ts producer/consumer in the codebase expects, losslessly.
 	if !strings.Contains(sql, "toDateTime64(`anchor_ts`, 9) AS `TimeUnix`") {
-		t.Errorf("expected RangeWindowNative anchor re-alias toDateTime64(`anchor_ts`, 9) AS `TimeUnix` in SQL=%s", sql)
+		t.Errorf("expected RangeWindowGridNative anchor re-alias toDateTime64(`anchor_ts`, 9) AS `TimeUnix` in SQL=%s", sql)
 	}
 }
 
-// TestRangeWindowNativeRejectsBadInput pins the emitter's pre-flight
+// TestRangeWindowGridNativeRejectsBadInput pins the emitter's pre-flight
 // guards (TimestampColumn / ValueColumn unset, Step <= 0, unknown Func)
 // so the CONDITIONALS_NEGATION / CONDITIONALS_BOUNDARY mutants on each
 // guard are killed: under a mutated guard the bad-input plan would emit
 // SQL instead of erroring.
-func TestRangeWindowNativeRejectsBadInput(t *testing.T) {
+func TestRangeWindowGridNativeRejectsBadInput(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
-	base := chplan.RangeWindowNative{
+	base := chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 		Func:            "rate",
 		Start:           start,
@@ -956,13 +956,13 @@ func TestRangeWindowNativeRejectsBadInput(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		mutfn func(p *chplan.RangeWindowNative)
+		mutfn func(p *chplan.RangeWindowGridNative)
 	}{
-		{name: "no_timestamp_col", mutfn: func(p *chplan.RangeWindowNative) { p.TimestampColumn = "" }},
-		{name: "no_value_col", mutfn: func(p *chplan.RangeWindowNative) { p.ValueColumn = "" }},
-		{name: "zero_step", mutfn: func(p *chplan.RangeWindowNative) { p.Step = 0 }},
-		{name: "neg_step", mutfn: func(p *chplan.RangeWindowNative) { p.Step = -time.Second }},
-		{name: "unknown_func", mutfn: func(p *chplan.RangeWindowNative) { p.Func = "nope" }},
+		{name: "no_timestamp_col", mutfn: func(p *chplan.RangeWindowGridNative) { p.TimestampColumn = "" }},
+		{name: "no_value_col", mutfn: func(p *chplan.RangeWindowGridNative) { p.ValueColumn = "" }},
+		{name: "zero_step", mutfn: func(p *chplan.RangeWindowGridNative) { p.Step = 0 }},
+		{name: "neg_step", mutfn: func(p *chplan.RangeWindowGridNative) { p.Step = -time.Second }},
+		{name: "unknown_func", mutfn: func(p *chplan.RangeWindowGridNative) { p.Func = "nope" }},
 	}
 	for _, c := range cases {
 		c := c
@@ -971,25 +971,25 @@ func TestRangeWindowNativeRejectsBadInput(t *testing.T) {
 			p := base
 			c.mutfn(&p)
 			if _, _, err := chsql.Emit(context.Background(), &p); err == nil {
-				t.Errorf("expected RangeWindowNative to reject %s, got nil error", c.name)
+				t.Errorf("expected RangeWindowGridNative to reject %s, got nil error", c.name)
 			}
 		})
 	}
 }
 
-// TestRangeWindowResampleInnerScanTimeBound pins the inner-scan prune the
-// native-staleness resample lowering (RangeWindowResample,
+// TestRangeWindowStaleResampleInnerScanTimeBound pins the inner-scan prune the
+// native-staleness resample lowering (RangeWindowStaleResample,
 // timeSeriesResampleToGridWithStaleness) pushes onto the per-series
 // SELECT. Same coverage rationale as the native-rate test above — this
 // shape only reached the spec goldens before, so its guards + bound were
 // an uncovered mutation surface.
-func TestRangeWindowResampleInnerScanTimeBound(t *testing.T) {
+func TestRangeWindowStaleResampleInnerScanTimeBound(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
 
-	plan := &chplan.RangeWindowResample{
+	plan := &chplan.RangeWindowStaleResample{
 		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
 		Start:         start,
 		End:           end,
@@ -1008,19 +1008,19 @@ func TestRangeWindowResampleInnerScanTimeBound(t *testing.T) {
 	wantLower := "`TimeUnix` > (toDateTime64('2026-05-13 12:00:00.000000000', 9) - " +
 		rangeScanOffsetShift + ") - " + rangeScanSpanShift
 	if !strings.Contains(sql, wantLower) {
-		t.Errorf("expected RangeWindowResample offset+Lookback lower bound %q in SQL=%s", wantLower, sql)
+		t.Errorf("expected RangeWindowStaleResample offset+Lookback lower bound %q in SQL=%s", wantLower, sql)
 	}
 	wantUpper := "`TimeUnix` <= (toDateTime64('2026-05-13 12:05:00.000000000', 9) - " +
 		rangeScanOffsetShift + ")"
 	if !strings.Contains(sql, wantUpper) {
-		t.Errorf("expected RangeWindowResample offset-only upper bound %q in SQL=%s", wantUpper, sql)
+		t.Errorf("expected RangeWindowStaleResample offset-only upper bound %q in SQL=%s", wantUpper, sql)
 	}
 }
 
 // TestNativeTSGridFamilyBoundsAreWholeSecondDateTime pins the
 // start_timestamp/end_timestamp argument TYPE the timeSeries*ToGrid native
-// aggregate family (RangeWindowNative's timeSeriesRateToGrid /
-// timeSeriesChangesToGrid / timeSeriesResetsToGrid, and RangeWindowResample's
+// aggregate family (RangeWindowGridNative's timeSeriesRateToGrid /
+// timeSeriesChangesToGrid / timeSeriesResetsToGrid, and RangeWindowStaleResample's
 // timeSeriesResampleToGridWithStaleness) and their companion timeSeriesRange
 // receive: a whole-second `toDateTime(<unix seconds>, 'UTC')`, never a
 // nanosecond-precision `toDateTime64(..., 9)`.
@@ -1062,9 +1062,9 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	wantEndUnshifted := fmt.Sprintf("toDateTime(%d, 'UTC')", end.Unix())
 	wantGridTS := "timeSeriesRange(" + wantStartUnshifted + ", " + wantEndUnshifted + ", 120)"
 
-	t.Run("RangeWindowNative_rate", func(t *testing.T) {
+	t.Run("RangeWindowGridNative_rate", func(t *testing.T) {
 		t.Parallel()
-		plan := &chplan.RangeWindowNative{
+		plan := &chplan.RangeWindowGridNative{
 			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 			Func:            "rate",
 			Start:           start,
@@ -1088,9 +1088,9 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 		}
 	})
 
-	t.Run("RangeWindowResample", func(t *testing.T) {
+	t.Run("RangeWindowStaleResample", func(t *testing.T) {
 		t.Parallel()
-		plan := &chplan.RangeWindowResample{
+		plan := &chplan.RangeWindowStaleResample{
 			Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
 			Start:         start,
 			End:           end,
@@ -1116,18 +1116,18 @@ func TestNativeTSGridFamilyBoundsAreWholeSecondDateTime(t *testing.T) {
 	})
 }
 
-// TestRangeWindowResampleRejectsBadInput pins the resample emitter's
+// TestRangeWindowStaleResampleRejectsBadInput pins the resample emitter's
 // pre-flight guards: the 4-way column-name OR, Step <= 0, and the
 // pinned-Start/End requirement. Under a mutated guard the bad-input plan
 // would emit SQL instead of erroring, so each case kills the
 // CONDITIONALS_NEGATION / INVERT_LOGICAL / CONDITIONALS_BOUNDARY mutants
 // on those guards.
-func TestRangeWindowResampleRejectsBadInput(t *testing.T) {
+func TestRangeWindowStaleResampleRejectsBadInput(t *testing.T) {
 	t.Parallel()
 
 	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
-	base := chplan.RangeWindowResample{
+	base := chplan.RangeWindowStaleResample{
 		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
 		Start:         start,
 		End:           end,
@@ -1141,16 +1141,16 @@ func TestRangeWindowResampleRejectsBadInput(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		mutfn func(p *chplan.RangeWindowResample)
+		mutfn func(p *chplan.RangeWindowStaleResample)
 	}{
-		{name: "no_timestamp_col", mutfn: func(p *chplan.RangeWindowResample) { p.TimestampCol = "" }},
-		{name: "no_value_col", mutfn: func(p *chplan.RangeWindowResample) { p.ValueCol = "" }},
-		{name: "no_metric_name_col", mutfn: func(p *chplan.RangeWindowResample) { p.MetricNameCol = "" }},
-		{name: "no_attributes_col", mutfn: func(p *chplan.RangeWindowResample) { p.AttributesCol = "" }},
-		{name: "zero_step", mutfn: func(p *chplan.RangeWindowResample) { p.Step = 0 }},
-		{name: "neg_step", mutfn: func(p *chplan.RangeWindowResample) { p.Step = -time.Second }},
-		{name: "zero_start", mutfn: func(p *chplan.RangeWindowResample) { p.Start = time.Time{} }},
-		{name: "zero_end", mutfn: func(p *chplan.RangeWindowResample) { p.End = time.Time{} }},
+		{name: "no_timestamp_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.TimestampCol = "" }},
+		{name: "no_value_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.ValueCol = "" }},
+		{name: "no_metric_name_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.MetricNameCol = "" }},
+		{name: "no_attributes_col", mutfn: func(p *chplan.RangeWindowStaleResample) { p.AttributesCol = "" }},
+		{name: "zero_step", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Step = 0 }},
+		{name: "neg_step", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Step = -time.Second }},
+		{name: "zero_start", mutfn: func(p *chplan.RangeWindowStaleResample) { p.Start = time.Time{} }},
+		{name: "zero_end", mutfn: func(p *chplan.RangeWindowStaleResample) { p.End = time.Time{} }},
 	}
 	for _, c := range cases {
 		c := c
@@ -1159,7 +1159,7 @@ func TestRangeWindowResampleRejectsBadInput(t *testing.T) {
 			p := base
 			c.mutfn(&p)
 			if _, _, err := chsql.Emit(context.Background(), &p); err == nil {
-				t.Errorf("expected RangeWindowResample to reject %s, got nil error", c.name)
+				t.Errorf("expected RangeWindowStaleResample to reject %s, got nil error", c.name)
 			}
 		})
 	}
@@ -1178,7 +1178,7 @@ func TestRangeBucketFanoutRejectsBadInput(t *testing.T) {
 	mkAgg := func() []chplan.AggFunc {
 		return []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},

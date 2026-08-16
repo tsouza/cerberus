@@ -135,7 +135,7 @@ func TestDecision_AggregateTranspose_NotPushed_EmptyGroupBy(t *testing.T) {
 		Input: &chplan.Aggregate{
 			Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "count", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
+				{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
 			},
 		},
 		Predicate: labelFilter("Value", "1"),

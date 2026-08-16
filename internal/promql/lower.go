@@ -2441,7 +2441,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	return node, nil
 }
 
-// nativeTSGridRateNode returns a chplan.RangeWindowNative when rw is a
+// nativeTSGridRateNode returns a chplan.RangeWindowGridNative when rw is a
 // SHAPE-eligible `rate(<counter>[<range>])` query_range RangeWindow; otherwise
 // nil (the NativeRateLowerer then delegates to its embedded fan-out fallback).
 // This is the intrinsic query-shape eligibility predicate ONLY — it reads NO
@@ -2480,18 +2480,18 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // its label-shaping Project deferred past the aggregate. It is threaded rather
 // than read here for the same reason the native/fan-out choice is — the
 // per-query path reads no feature flag.
-func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics, recollapse bool) *chplan.RangeWindowNative {
+func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics, recollapse bool) *chplan.RangeWindowGridNative {
 	return nativeTSGridMatrixNode(rw, "rate", s, recollapse)
 }
 
-// nativeTSGridMatrixNode returns a chplan.RangeWindowNative when rw is a
+// nativeTSGridMatrixNode returns a chplan.RangeWindowGridNative when rw is a
 // SHAPE-eligible query_range matrix-function RangeWindow whose Func matches
 // wantFunc; otherwise nil (the calling Native*Lowerer then delegates to its
 // embedded fan-out fallback). It is the generalisation of the rate-only
 // predicate to the whole timeSeries*ToGrid matrix family — rate, changes,
-// resets — which share ONE node shape (RangeWindowNative) and ONE eligibility
+// resets — which share ONE node shape (RangeWindowGridNative) and ONE eligibility
 // contract: the only per-func difference is the aggregate-name triple the
-// emitter selects from chsql.nativeTSGridFn off RangeWindowNative.Func (the
+// emitter selects from chsql.nativeTSGridFn off RangeWindowGridNative.Func (the
 // plain ToGrid name plus the -State/-Merge pair the deferred-shaping shape
 // needs).
 //
@@ -2518,13 +2518,13 @@ func nativeTSGridRateNode(rw *chplan.RangeWindow, s schema.Metrics, recollapse b
 // Start/End/Step.
 //
 // recollapse is the boot-resolved ts_grid_recollapse decision. This function is
-// the ONLY construction site for RangeWindowNative, which makes it the single
+// the ONLY construction site for RangeWindowGridNative, which makes it the single
 // eligibility funnel for the deferred label-shaping shape: with recollapse set
 // AND the input carrying a hoistable shaping Project, the node additionally
 // gets Recollapse + a widened raw GroupBy (see [hoistShaping]). Every miss
 // keeps the unchanged two-level node — the hoist is purely additive, and never
 // falls back to "no native node at all".
-func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics, recollapse bool) *chplan.RangeWindowNative {
+func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics, recollapse bool) *chplan.RangeWindowGridNative {
 	if rw.Func != wantFunc {
 		return nil
 	}
@@ -2553,7 +2553,7 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 			input, recollapseProjections, groupBy = hoisted, projections, rawGroupBy
 		}
 	}
-	return &chplan.RangeWindowNative{
+	return &chplan.RangeWindowGridNative{
 		Input:           input,
 		Func:            rw.Func,
 		Range:           rw.Range,
@@ -2791,7 +2791,7 @@ func hoistShaping(rw *chplan.RangeWindow, s schema.Metrics) (input chplan.Node, 
 //     re-collapse every series onto a single key.
 //   - No pass-through key is read by the shaping. A group key is classified as
 //     a shaping INPUT the moment some deferred expression reads it
-//     (chplan.RangeWindowNative.PartitionRecollapseGroupBy), and shaping inputs
+//     (chplan.RangeWindowGridNative.PartitionRecollapseGroupBy), and shaping inputs
 //     never surface above the merge level, so such a key would silently drop out
 //     of the output series identity.
 //
@@ -3145,7 +3145,7 @@ func dropNameGuardAnchor(node chplan.Node, rw *chplan.RangeWindow) chplan.Expr {
 		return nil
 	}
 	anchor := chplan.Expr(&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
-	if _, native := node.(*chplan.RangeWindowNative); native {
+	if _, native := node.(*chplan.RangeWindowGridNative); native {
 		return anchor
 	}
 	if rw.Offset != 0 && !rw.Identity {

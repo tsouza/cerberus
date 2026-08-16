@@ -55,7 +55,7 @@ type SampleColumns struct {
 func IsDerivedShape(n Node, cols SampleColumns) bool {
 	switch v := n.(type) {
 	case *RangeWindow,
-		*RangeWindowNative,
+		*RangeWindowGridNative,
 		*Aggregate,
 		*MetricsAggregate,
 		*MetricsHistogramOverTime:

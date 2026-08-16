@@ -23,7 +23,7 @@ func tsWindowPred() chplan.Expr {
 		Op:   chplan.OpGe,
 		Left: &chplan.ColumnRef{Name: "Timestamp"},
 		Right: &chplan.FuncCall{
-			Name: "fromUnixTimestamp64Nano",
+			Fn:   chplan.FnFromUnixNanos,
 			Args: []chplan.Expr{&chplan.LitInt{V: t.UnixNano()}},
 		},
 	}

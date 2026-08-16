@@ -61,15 +61,13 @@ func (c AttributeMapColumns) Has(name string) bool {
 // rooted at one is known to be a whole-Map key. The set is used only to decide
 // whether an unwrapped key is provably a Map; being incomplete therefore costs
 // a missed detection, never a false rejection.
-var mapValuedFuncs = map[string]struct{}{
-	"map":           {},
-	"mapAdd":        {},
-	"mapApply":      {},
-	"mapConcat":     {},
-	"mapFilter":     {},
-	"mapFromArrays": {},
-	"mapSubtract":   {},
-	"mapUpdate":     {},
+var mapValuedFuncs = map[Fn]struct{}{
+	FnMap:           {},
+	FnMapApply:      {},
+	FnMapMerge:      {},
+	FnMapFilter:     {},
+	FnMapFromArrays: {},
+	FnMapUpdate:     {},
 }
 
 // CanonicalizeSeriesIdentityKeys returns root with every series-identity key
@@ -201,7 +199,7 @@ func seriesIdentityKeys(n Node) []Expr {
 		return v.GroupBy
 	case *RangeWindow:
 		return v.GroupBy
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		// With the label shaping deferred, the node's OUTPUT series identity
 		// is the PASS-THROUGH GroupBy keys plus the Recollapse expressions.
 		// The shaping INPUTS are excluded because they are consumed entirely
@@ -236,10 +234,10 @@ func seriesIdentityKeys(n Node) []Expr {
 func rawAttributeMapKey(key Expr, inputs []Node, mapCols AttributeMapColumns) (string, bool) {
 	switch v := key.(type) {
 	case *FuncCall:
-		if v.Name == CanonicalMapFunc {
+		if v.Fn == FnMapSort {
 			return "", false
 		}
-		if _, isMap := mapValuedFuncs[v.Name]; isMap {
+		if _, isMap := mapValuedFuncs[v.Fn]; isMap {
 			// A Map-returning call sitting bare in a key list is the binding
 			// site — there is no projection above it to carry the wrap. Which
 			// of its Map arguments is raw is what makes the whole key raw, so
@@ -370,7 +368,7 @@ func seriesIdentityKeyAliases(n Node) []string {
 		return v.GroupByAliases
 	case *RangeBucketFanout:
 		return v.GroupByAliases
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		// Only the deferred-shaping shape aliases its keys; the two-level one
 		// projects GroupBy unaliased, so it keeps the nil fall-through.
 		if len(v.Recollapse) > 0 {
@@ -381,12 +379,12 @@ func seriesIdentityKeyAliases(n Node) []string {
 }
 
 // recollapseIdentityKeys / recollapseIdentityKeyAliases answer a deferred-shaping
-// [RangeWindowNative]'s output series identity: its PASS-THROUGH GroupBy keys in
+// [RangeWindowGridNative]'s output series identity: its PASS-THROUGH GroupBy keys in
 // GroupBy order, followed by its Recollapse expressions. The two lists are read
 // POSITIONALLY against each other by [columnBindingIsRaw], so they must be built
 // from the same partition — a pass-through key's alias is its own column name,
 // which is what the merge and outer levels emit it under.
-func recollapseIdentityKeys(r *RangeWindowNative) []Expr {
+func recollapseIdentityKeys(r *RangeWindowGridNative) []Expr {
 	pass, _ := recollapsePassThroughGroupBy(r)
 	keys := make([]Expr, 0, len(pass)+len(r.Recollapse))
 	for _, i := range pass {
@@ -395,7 +393,7 @@ func recollapseIdentityKeys(r *RangeWindowNative) []Expr {
 	return append(keys, projectionExprs(r.Recollapse)...)
 }
 
-func recollapseIdentityKeyAliases(r *RangeWindowNative) []string {
+func recollapseIdentityKeyAliases(r *RangeWindowGridNative) []string {
 	pass, cols := recollapsePassThroughGroupBy(r)
 	aliases := make([]string, 0, len(pass)+len(r.Recollapse))
 	for _, i := range pass {
@@ -409,7 +407,7 @@ func recollapseIdentityKeyAliases(r *RangeWindowNative) []string {
 // shape the deferred-shaping emitter requires has no pass-through set at all:
 // such a node is rejected before it renders, so the identity is reported as the
 // shaped keys alone rather than guessed at.
-func recollapsePassThroughGroupBy(r *RangeWindowNative) (pass []int, cols []string) {
+func recollapsePassThroughGroupBy(r *RangeWindowGridNative) (pass []int, cols []string) {
 	cols, computed := r.GroupByColumns()
 	if computed != nil {
 		return nil, nil

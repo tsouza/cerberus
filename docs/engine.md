@@ -338,6 +338,14 @@ all three heads. The optimiser, the SQL emitter, and the engine work
 over this IR; they don't know which head produced the plan. **New
 optimisations cost one implementation, not three.**
 
+“Shared” means head-agnostic, not backend-neutral. The algebra also carries
+physical ClickHouse capability nodes such as `RangeWindowGridNative` and
+`RangeWindowStaleResample`, plus a sealed function vocabulary whose symbols
+resolve at the `chsql` boundary. Those nodes let lowering and optimization
+select a concrete execution capability without leaking raw SQL spellings into
+the plan. A different storage backend would need its own emitter and would
+either implement or reject those physical capabilities explicitly.
+
 ### A real rule-based optimiser — `internal/optimizer`
 
 Catalyst- and DataFusion-style: rules are grouped into batches with
@@ -418,13 +426,13 @@ flagged in the IR — by design, not by default):
   node types with their own `maybePushRangeScanTimeBound` / inner-scan
   bounds.
 - The ClickHouse-native `timeSeries*ToGrid` family
-  (`RangeWindowNative`, `RangeWindowResample`) bounds its innermost read
+  (`RangeWindowGridNative`, `RangeWindowStaleResample`) bounds its innermost read
   through the same `maybePushRangeScanTimeBound` helper. Because that
   bound changes only the rows *read* — the aggregate's own
   `(start, end, step, window)` parameters already discard out-of-window
   samples — dropping it produces no wrong answer and no failing golden.
   The family is therefore pinned as a class by
-  `internal/chsql/range_window_native_scan_bound_test.go`, whose case
+  `internal/chsql/range_window_grid_native_scan_bound_test.go`, whose case
   list is driven by the emitter's own `nativeTSGridFn` registry: a
   native aggregate registered without a scan-bound case fails, as does
   one whose emitter drops the predicate. The join case additionally
@@ -433,7 +441,7 @@ flagged in the IR — by design, not by default):
 
 #### Deferred label shaping on the native grid
 
-`RangeWindowNative` renders in two levels by default: an aggregate level
+`RangeWindowGridNative` renders in two levels by default: an aggregate level
 that groups per series and computes `timeSeries<Fn>ToGrid`, and an outer
 level that ARRAY JOINs the grid against its parallel timestamp axis. The
 series key it groups on is the shaped Attributes map — on an OTel schema

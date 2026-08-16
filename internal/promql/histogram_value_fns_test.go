@@ -255,7 +255,7 @@ func selectorIdentityExpr(t *testing.T, s schema.Metrics) chplan.Expr {
 	if identity == nil {
 		t.Fatalf("no Project binds %q to a built label map in the bare-selector plan", s.AttributesColumn)
 	}
-	if fc, ok := identity.(*chplan.FuncCall); !ok || fc.Name != "mapSort" {
+	if fc, ok := identity.(*chplan.FuncCall); !ok || fc.Fn != chplan.FnMapSort {
 		t.Fatalf("selector identity = %s, want a mapSort(...) wrap", exprShape(identity))
 	}
 	for _, col := range []string{s.AttributesColumn, s.ResourceAttributesColumn, s.ServiceNameColumn} {
@@ -291,7 +291,7 @@ func exprShape(e chplan.Expr) string {
 		for _, a := range v.Args {
 			args = append(args, exprShape(a))
 		}
-		return v.Name + "(" + strings.Join(args, ", ") + ")"
+		return string(v.Fn) + "(" + strings.Join(args, ", ") + ")"
 	default:
 		return fmt.Sprintf("%T", e)
 	}

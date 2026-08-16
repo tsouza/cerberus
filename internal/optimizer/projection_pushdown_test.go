@@ -19,30 +19,30 @@ import (
 // ColumnRef and therefore must NOT land in the narrowed Scan column set.
 func recollapseTower() chplan.Expr {
 	sanitize := func(src chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "mapFromArrays", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnMapFromArrays, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 				&chplan.Lambda{Params: []string{"k"}, Body: &chplan.FuncCall{
-					Name: "replaceRegexpAll",
+					Fn: chplan.FnRegexReplaceAll,
 					Args: []chplan.Expr{
 						&chplan.BareIdent{Name: "k"},
 						&chplan.InlineString{V: `[^a-zA-Z0-9_]`},
 						&chplan.InlineString{V: "_"},
 					},
 				}},
-				&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+				&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{src}},
 			}},
-			&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+			&chplan.FuncCall{Fn: chplan.FnMapValues, Args: []chplan.Expr{src}},
 		}}
 	}
-	return &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "mapUpdate", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMapUpdate, Args: []chplan.Expr{
 				sanitize(&chplan.ColumnRef{Name: "ResourceAttributes"}),
 				&chplan.ColumnRef{Name: "Attributes"},
 			}},
-			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 				&chplan.InlineString{V: "service_name"},
-				&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "ServiceName"},
 				}},
 			}},
@@ -64,12 +64,12 @@ func TestNativeRangeWindowColumns_Recollapse(t *testing.T) {
 	// deliberately absent.
 	want := []string{"Attributes", "MetricName", "ResourceAttributes", "ServiceName", "TimeUnix", "Value"}
 
-	node := func(groupBy ...string) *chplan.RangeWindowNative {
+	node := func(groupBy ...string) *chplan.RangeWindowGridNative {
 		keys := make([]chplan.Expr, 0, len(groupBy))
 		for _, name := range groupBy {
 			keys = append(keys, &chplan.ColumnRef{Name: name})
 		}
-		return &chplan.RangeWindowNative{
+		return &chplan.RangeWindowGridNative{
 			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 			Func:            "rate",
 			Range:           5 * time.Minute,
@@ -225,16 +225,16 @@ func TestAggregateColumns_Having(t *testing.T) {
 		Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"},
 		},
 		Having: &chplan.Binary{
 			Op: chplan.OpEq,
 			Left: &chplan.FuncCall{
-				Name: "throwIf",
+				Fn: chplan.FnThrowIf,
 				Args: []chplan.Expr{
 					&chplan.Binary{
 						Op:    chplan.OpGt,
-						Left:  &chplan.FuncCall{Name: "uniqExact", Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}}},
+						Left:  &chplan.FuncCall{Fn: chplan.FnUniqExact, Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}}},
 						Right: &chplan.LitInt{V: 1},
 					},
 					&chplan.InlineString{V: "duplicate labelset"},

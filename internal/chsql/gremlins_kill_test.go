@@ -89,7 +89,7 @@ func TestIsCheapPredicate_AsymmetricBinary(t *testing.T) {
 	expr := &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.ColumnRef{Name: "A"},
-		Right: &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		Right: &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 	}
 	if got := isCheapPredicate(expr); got != false {
 		t.Errorf("isCheapPredicate(cheap && !cheap) = %v, want false", got)
@@ -97,7 +97,7 @@ func TestIsCheapPredicate_AsymmetricBinary(t *testing.T) {
 	// Mirror: non-cheap left, cheap right.
 	expr = &chplan.Binary{
 		Op:    chplan.OpAnd,
-		Left:  &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		Left:  &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 		Right: &chplan.ColumnRef{Name: "A"},
 	}
 	if got := isCheapPredicate(expr); got != false {
@@ -113,7 +113,7 @@ func TestIsCheapPredicate_AsymmetricMapAccess(t *testing.T) {
 	t.Parallel()
 	// Map = FuncCall (not cheap), Key = literal (cheap).
 	expr := &chplan.MapAccess{
-		Map: &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		Map: &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 		Key: &chplan.LitString{V: "k"},
 	}
 	if got := isCheapPredicate(expr); got != false {
@@ -122,7 +122,7 @@ func TestIsCheapPredicate_AsymmetricMapAccess(t *testing.T) {
 	// Map = cheap, Key = FuncCall (not cheap).
 	expr = &chplan.MapAccess{
 		Map: &chplan.ColumnRef{Name: "Attributes"},
-		Key: &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		Key: &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 	}
 	if got := isCheapPredicate(expr); got != false {
 		t.Errorf("isCheapPredicate(MapAccess{cheap, !cheap}) = %v, want false", got)
@@ -187,7 +187,7 @@ func TestClassifyPredicate_CheapAndWide(t *testing.T) {
 		},
 		{
 			name:  "non-cheap wide-referencing (FuncCall over Body)",
-			expr:  &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+			expr:  &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 			cheap: false,
 			wide:  true,
 		},
@@ -1804,7 +1804,7 @@ func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
 	t.Run("agg func present, no group keys", func(t *testing.T) {
 		t.Parallel()
 		plan := &chplan.Aggregate{
-			AggFuncs: []chplan.AggFunc{{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
+			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
 			Input:    &chplan.Scan{Table: "otel_traces"},
 		}
 		_, _, err := Emit(context.Background(), plan)
@@ -1846,7 +1846,7 @@ func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
 			t.Parallel()
 			plan := &chplan.Aggregate{
 				GroupBy:            c.groupBy,
-				AggFuncs:           []chplan.AggFunc{{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
+				AggFuncs:           []chplan.AggFunc{{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"}},
 				DropEmptyOnNoGroup: c.drop,
 				Input:              &chplan.Scan{Table: "otel_traces"},
 			}
@@ -2105,7 +2105,7 @@ func TestEmitAggregateNoGroup_AliasPreservation(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.Aggregate{
 		AggFuncs: []chplan.AggFunc{
-			{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "user_value"},
+			{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "user_value"},
 		},
 		DropEmptyOnNoGroup: true,
 		Input:              &chplan.Scan{Table: "otel_traces"},
@@ -2856,8 +2856,8 @@ func compareNodeInternal() *chplan.MetricsCompare {
 			Right: &chplan.LitString{V: "Error"},
 		},
 		TopN: 10,
-		Pairs: &chplan.FuncCall{Name: "array", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{
+		Pairs: &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
 				&chplan.LitString{V: "name"},
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
@@ -3303,7 +3303,7 @@ func TestProjectsBareColumn_ContinueScansAllProjections(t *testing.T) {
 			// the loop must `continue` past it.
 			{Expr: &chplan.ColumnRef{Name: "SpanId"}, Alias: "sid"},
 			// A non-ColumnRef expr — also passed over.
-			{Expr: &chplan.FuncCall{Name: "toString", Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}},
 			// The bare TraceId we want to find sits LAST.
 			{Expr: &chplan.ColumnRef{Name: "TraceId"}},
 		},
@@ -3942,7 +3942,7 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 		}
 		return sql
 	}
-	computed := build(&chplan.FuncCall{Name: "scalar"})
+	computed := build(&chplan.FuncCall{Fn: chplan.FnToFloat64})
 	if !strings.Contains(computed, "isNaN(scalar())") {
 		t.Errorf("computed-phi native quantile must carry the isNaN(phi) NaN-guard; got:\n%s", computed)
 	}

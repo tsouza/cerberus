@@ -2,7 +2,7 @@ package chplan
 
 import "time"
 
-// RangeWindowResample is the experimental, ClickHouse-native lowering of a
+// RangeWindowStaleResample is the experimental, ClickHouse-native lowering of a
 // range-mode (query_range, Step > 0) BARE instant-vector selector — the
 // staleness / instant-vector-selection shape. It is the opt-in counterpart
 // to RangeLWR's bounded argMax sample-fan-out: instead of fanning every
@@ -27,7 +27,7 @@ import "time"
 // Every other shape lowers to RangeLWR, so the default fan-out is
 // structurally untouched when the feature is off.
 //
-// Row-shape contract. The emitter (internal/chsql/range_window_resample.go)
+// Row-shape contract. The emitter (internal/chsql/range_window_stale_resample.go)
 // produces EXACTLY the row shape RangeLWR's emitter produces: one row per
 // (series, anchor_ts) that had an in-window sample, with columns
 // [MetricNameCol, AttributesCol, TimeUnix = anchor_ts, ValueCol]. Grid cells
@@ -52,9 +52,9 @@ import "time"
 // member of the experimental timeSeries*ToGrid family: a query carrying this
 // node must run with `allow_experimental_time_series_aggregate_functions=1`.
 // The engine detects the node in the emitted plan and stamps that setting onto
-// the per-query ClickHouse context (shared with RangeWindowNative via
+// the per-query ClickHouse context (shared with RangeWindowGridNative via
 // planHasTSGridNative), so unrelated queries never carry the experimental knob.
-type RangeWindowResample struct {
+type RangeWindowStaleResample struct {
 	Input Node
 
 	// Start / End define the query_range eval grid: params 1 and 2 of
@@ -91,18 +91,18 @@ type RangeWindowResample struct {
 	ValueCol      string
 }
 
-func (*RangeWindowResample) planNode() {}
+func (*RangeWindowStaleResample) planNode() {}
 
-func (r *RangeWindowResample) Children() []Node { return []Node{r.Input} }
+func (r *RangeWindowStaleResample) Children() []Node { return []Node{r.Input} }
 
-// Equal compares two RangeWindowResample nodes field-by-field. It is written as
+// Equal compares two RangeWindowStaleResample nodes field-by-field. It is written as
 // a single scalar-fields conjunction plus a recursive Input compare (rather than
 // RangeLWR's early-return ladder) — the two nodes carry the identical data shape
 // (Start/End/Step/Lookback/Offset + the canonical column names), so the compact
 // form keeps the comparison total without the boilerplate parallel that couples
 // the native and fan-out leaves.
-func (r *RangeWindowResample) Equal(other Node) bool {
-	o, ok := other.(*RangeWindowResample)
+func (r *RangeWindowStaleResample) Equal(other Node) bool {
+	o, ok := other.(*RangeWindowStaleResample)
 	if !ok {
 		return false
 	}

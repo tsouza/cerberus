@@ -75,7 +75,7 @@ var plans = map[string]chplan.Node{
 			&chplan.ColumnRef{Name: "job"},
 		},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
 		},
 	},
 
@@ -248,7 +248,7 @@ var plans = map[string]chplan.Node{
 			},
 		},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
 		},
 	},
 
@@ -268,7 +268,7 @@ var plans = map[string]chplan.Node{
 			},
 		},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
 		},
 	},
 
@@ -280,7 +280,7 @@ var plans = map[string]chplan.Node{
 		},
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:   "quantile",
+				Fn:     chplan.FnQuantile,
 				Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
 				Args:   []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 				Alias:  "p95",
@@ -403,7 +403,7 @@ var plans = map[string]chplan.Node{
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "t"},
 			{
 				Expr: &chplan.FuncCall{
-					Name: "length",
+					Fn:   chplan.FnLength,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
 				},
 				Alias: "body_bytes",
@@ -435,7 +435,7 @@ var plans = map[string]chplan.Node{
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
 			},
 		},
 		Projections: []chplan.Projection{
@@ -452,7 +452,7 @@ var plans = map[string]chplan.Node{
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"},
+				{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}, Alias: "Value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -717,7 +717,7 @@ var plans = map[string]chplan.Node{
 	"project_func_call_zero_args": &chplan.Project{
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 		Projections: []chplan.Projection{
-			{Expr: &chplan.FuncCall{Name: "now"}, Alias: "current_time"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnNow}, Alias: "current_time"},
 		},
 	},
 

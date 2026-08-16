@@ -1,12 +1,12 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental
-// timeSeriesRateToGrid lowering (chplan.RangeWindowNative).
+// timeSeriesRateToGrid lowering (chplan.RangeWindowGridNative).
 //
 // The test lowers the SAME `sum by (cerberus_ql) (rate(...[5m]))`
 // query_range expression TWICE against the SAME seed — once with the
 // experimental flag OFF (the arrayJoin fan-out, RangeWindow) and once
-// with it ON (the native timeSeriesRateToGrid, RangeWindowNative) — runs
+// with it ON (the native timeSeriesRateToGrid, RangeWindowGridNative) — runs
 // BOTH on the same ephemeral chDB session, and compares the per-(series,
 // anchor) rate values.
 //
@@ -125,7 +125,7 @@ func TestNativeTSGridRate_DualEmitParity(t *testing.T) {
 	native := runDualEmit(t, db, true, false)
 
 	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide
-	// native scan. ProjectionPushdown narrows the RangeWindowNative inner
+	// native scan. ProjectionPushdown narrows the RangeWindowGridNative inner
 	// Scan from `SELECT *` to the exact {GroupBy ∪ TimestampColumn ∪
 	// ValueColumn} the timeSeriesRateToGrid emit reads. Dropping any of
 	// those identity/grid-input columns would 502 (the #860/#861 class) or
@@ -147,7 +147,7 @@ func TestNativeTSGridRate_DualEmitParity(t *testing.T) {
 		}
 	}
 	t.Logf("scan-narrowing parity: %d/%d optimized-native cells bit-identical to wide native — "+
-		"ProjectionPushdown narrowed the RangeWindowNative inner scan with zero result drift.", len(native), len(native))
+		"ProjectionPushdown narrowed the RangeWindowGridNative inner scan with zero result drift.", len(native), len(native))
 
 	if len(native) != len(fanout) {
 		t.Fatalf("row-count divergence: native=%d fanout=%d cells", len(native), len(fanout))

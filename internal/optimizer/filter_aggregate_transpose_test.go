@@ -25,7 +25,7 @@ func TestFilterAggregateTranspose_GroupKey(t *testing.T) {
 			Input:   scan,
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: pred,
@@ -38,7 +38,7 @@ func TestFilterAggregateTranspose_GroupKey(t *testing.T) {
 		},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 		},
 	}
 
@@ -60,7 +60,7 @@ func TestFilterAggregateTranspose_BlockedByAggOutput(t *testing.T) {
 			Input:   scan,
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -89,7 +89,7 @@ func TestFilterAggregateTranspose_BlockedByRenamedKey(t *testing.T) {
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			GroupByAliases: []string{"renamed_job"},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "count", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
+				{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -116,12 +116,12 @@ func TestFilterAggregateTranspose_BlockedByComputedGroupKey(t *testing.T) {
 			Input: scan,
 			GroupBy: []chplan.Expr{
 				&chplan.FuncCall{
-					Name: "substr",
+					Fn:   chplan.FnSubstring,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}, &chplan.LitInt{V: 1}},
 				},
 			},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "count", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
+				{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -149,7 +149,7 @@ func TestFilterAggregateTranspose_AliasMatchesName(t *testing.T) {
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			GroupByAliases: []string{"job"},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "count", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
+				{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
 			},
 		},
 		Predicate: &chplan.Binary{

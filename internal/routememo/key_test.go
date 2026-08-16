@@ -34,26 +34,26 @@ func rangeWindowFixture(fn string, rng, step time.Duration, input chplan.Node) *
 	}
 }
 
-func aggregateFixture(aggName string, input chplan.Node) *chplan.Aggregate {
+func aggregateFixture(fn chplan.Fn, input chplan.Node) *chplan.Aggregate {
 	return &chplan.Aggregate{
 		Input:    input,
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "pod"}},
-		AggFuncs: []chplan.AggFunc{{Name: aggName, Args: []chplan.Expr{&chplan.ColumnRef{Name: "value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: fn, Args: []chplan.Expr{&chplan.ColumnRef{Name: "value"}}}},
 	}
 }
 
 // The three example shapes from the design doc — planShapeID (the coarser,
 // non-routing key) collapses these onto one id; KeyFor must not.
 func sumRateFixture() chplan.Node {
-	return aggregateFixture("sum", rangeWindowFixture("rate", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
+	return aggregateFixture(chplan.FnSum, rangeWindowFixture("rate", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
 }
 
 func quantileMaxOverTimeFixture() chplan.Node {
-	return aggregateFixture("quantile", rangeWindowFixture("max_over_time", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
+	return aggregateFixture(chplan.FnQuantile, rangeWindowFixture("max_over_time", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
 }
 
 func countRateFixture() chplan.Node {
-	return aggregateFixture("count", rangeWindowFixture("rate", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
+	return aggregateFixture(chplan.FnCount, rangeWindowFixture("rate", 5*time.Minute, 15*time.Second, filterFixture(scanFixture(), 1, 1)))
 }
 
 func TestKeyForSeparatesDifferentFunctionShapes(t *testing.T) {

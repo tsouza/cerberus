@@ -49,7 +49,7 @@ func guardOverMatrixWindow(s schema.Metrics, offset time.Duration) *chplan.Aggre
 			s.TimestampColumn,
 		},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "any",
+			Fn:    chplan.FnAny,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			Alias: s.ValueColumn,
 		}},
@@ -71,7 +71,7 @@ func foldingAggregateOverMatrixWindow(s schema.Metrics) *chplan.Aggregate {
 		},
 		GroupByAliases: []string{"gkey_0", "bucket_ts"},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "sum",
+			Fn:    chplan.FnSum,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
 			Alias: s.ValueColumn,
 		}},

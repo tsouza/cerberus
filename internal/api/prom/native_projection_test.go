@@ -9,7 +9,7 @@ import (
 )
 
 // TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix pins the
-// classification of chplan.RangeWindowNative inside the HTTP-layer sample
+// classification of chplan.RangeWindowGridNative inside the HTTP-layer sample
 // projection wrapper.
 //
 // Regression for the compose-smoke 502 surfaced by enabling the
@@ -18,7 +18,7 @@ import (
 // value) shape the fan-out matrix RangeWindow produces — MetricName never
 // exists in that scope. Before the fix, the derived-shape classifier and
 // isMatrixRangeWindow
-// lacked a *chplan.RangeWindowNative case, so wrapWithSampleProjection took
+// lacked a *chplan.RangeWindowGridNative case, so wrapWithSampleProjection took
 // the canonical branch and emitted a bare `MetricName` column reference
 // against the native subquery, which ClickHouse rejects with
 // `code 47, Unknown expression identifier 'MetricName'`.
@@ -29,7 +29,7 @@ import (
 func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
-	native := &chplan.RangeWindowNative{
+	native := &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -42,10 +42,10 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 	}
 
 	if !chplan.IsDerivedShape(native, sampleColumns(s)) {
-		t.Fatal("RangeWindowNative must be a derived shape (MetricName absent from its scope)")
+		t.Fatal("RangeWindowGridNative must be a derived shape (MetricName absent from its scope)")
 	}
 	if !isMatrixRangeWindow(native, sampleColumns(s)) {
-		t.Fatal("RangeWindowNative must be matrix-shape (exposes per-row anchor_ts)")
+		t.Fatal("RangeWindowGridNative must be matrix-shape (exposes per-row anchor_ts)")
 	}
 
 	wrapped, ok := wrapWithSampleProjection(native, s).(*chplan.Project)
@@ -95,7 +95,7 @@ func TestWrapSampleProjection_NativeRangeWindowIsDerivedMatrix(t *testing.T) {
 func TestWrapSampleProjection_NativeRangeWindowOffsetNotReshifted(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 
-	native := &chplan.RangeWindowNative{
+	native := &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
 		Func:            "rate",
 		Range:           5 * time.Minute,

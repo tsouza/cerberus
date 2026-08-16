@@ -31,7 +31,7 @@ package chplan
 func nodeExprs(n Node, visit func(Expr)) {
 	switch v := n.(type) {
 	case *Scan, *OneRow, *StepGrid, *NestedSetAnnotate, *SearchTraceLimit,
-		*Limit, *AbsentOverTime, *RangeLWR, *RangeWindowResample,
+		*Limit, *AbsentOverTime, *RangeLWR, *RangeWindowStaleResample,
 		*MetricsSecondStage, *InfoJoin, *UnionAll, *NaryVectorSetOp,
 		*CrossJoin, *StructuralJoin, *VectorJoin, *VectorSetOp, *SetOperation:
 		// Nodes with no Expr-typed field. Their plan subtrees are entirely
@@ -48,7 +48,7 @@ func nodeExprs(n Node, visit func(Expr)) {
 	case *RangeWindow:
 		visitExprs(v.GroupBy, visit)
 		visitExprs(v.ScalarExprs, visit)
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		visitExprs(v.GroupBy, visit)
 		visitProjections(v.Recollapse, visit)
 	case *OrderBy:

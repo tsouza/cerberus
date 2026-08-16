@@ -26,14 +26,14 @@ func allNodeKinds() []chplan.Node {
 			Input:          leaf,
 			GroupBy:        []chplan.Expr{expr},
 			GroupByAliases: []string{"g0"},
-			AggFuncs:       []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
+			AggFuncs:       []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
 			// Having carries the duplicate-labelset / conflicting-label aborts,
 			// and a zero-valued fixture field is equal on both sides of a
 			// dropped copy — so leaving it nil made the Equal assertion below
 			// blind to exactly the bug that shipped.
 			Having: &chplan.Binary{
 				Op:    chplan.OpEq,
-				Left:  &chplan.FuncCall{Name: "throwIf", Args: []chplan.Expr{&chplan.LitBool{V: false}, &chplan.LitString{V: "boom"}}},
+				Left:  &chplan.FuncCall{Fn: chplan.FnThrowIf, Args: []chplan.Expr{&chplan.LitBool{V: false}, &chplan.LitString{V: "boom"}}},
 				Right: &chplan.LitInt{V: 0},
 			},
 		},
@@ -42,7 +42,7 @@ func allNodeKinds() []chplan.Node {
 			OuterRange: time.Hour, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			GroupBy: []chplan.Expr{expr}, Scalars: []float64{1}, ScalarExprs: []chplan.Expr{&chplan.LitFloat{V: 2}},
 		},
-		&chplan.RangeWindowNative{
+		&chplan.RangeWindowGridNative{
 			Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,
 			Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			TimestampColumn: "TimeUnix", ValueColumn: "Value", GroupBy: []chplan.Expr{expr},
@@ -50,14 +50,14 @@ func allNodeKinds() []chplan.Node {
 			// deferred-shaping shape too — a nil slice clones correctly by
 			// accident, so a two-level fixture asserts nothing about it.
 			Recollapse: []chplan.Projection{{
-				Expr:  &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{expr}},
+				Expr:  &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{expr}},
 				Alias: "Attributes",
 			}},
 		},
 		&chplan.RangeLWR{Input: leaf, Lookback: 5 * time.Minute, ValueCol: "Value"},
 		&chplan.RangeBucketFanout{
 			Input: leaf, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},
-			AggFuncs:    []chplan.AggFunc{{Name: "sumForEach", Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "BucketCounts"}},
+			AggFuncs:    []chplan.AggFunc{{Fn: chplan.FnSumForEach, Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "BucketCounts"}},
 			AnchorAlias: "anchor_ts", TimestampCol: "TimeUnix",
 		},
 		&chplan.StepGrid{Start: time.Unix(1, 0).UTC(), End: time.Unix(2, 0).UTC(), Step: time.Second},
@@ -100,7 +100,7 @@ func allNodeKinds() []chplan.Node {
 			MetricNameColumn: "MetricName", AttributesColumn: "Attributes",
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
-		&chplan.RangeWindowResample{
+		&chplan.RangeWindowStaleResample{
 			Input: leaf, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			Step: time.Minute, Lookback: 5 * time.Minute, Offset: time.Minute,
 			MetricNameCol: "MetricName", AttributesCol: "Attributes",
@@ -261,7 +261,7 @@ func TestCloneNodeDeepCopyIsolation(t *testing.T) {
 }
 
 // TestCloneNodeRecollapseIsolation pins the deep copy of
-// RangeWindowNative.Recollapse. A `c := *v` shallow copy hands the clone the
+// RangeWindowGridNative.Recollapse. A `c := *v` shallow copy hands the clone the
 // SAME backing array, so an optimizer rule that retargets a deferred shaping
 // expression on its clone silently rewrites the plan it was cloned from — the
 // shaping tower is the node's output series identity, so the corruption
@@ -269,7 +269,7 @@ func TestCloneNodeDeepCopyIsolation(t *testing.T) {
 func TestCloneNodeRecollapseIsolation(t *testing.T) {
 	t.Parallel()
 
-	orig := &chplan.RangeWindowNative{
+	orig := &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}},
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -280,7 +280,7 @@ func TestCloneNodeRecollapseIsolation(t *testing.T) {
 		ValueColumn:     "Value",
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		Recollapse: []chplan.Projection{{
-			Expr:  &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
+			Expr:  &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
 			Alias: "Attributes",
 		}},
 	}
@@ -290,9 +290,9 @@ func TestCloneNodeRecollapseIsolation(t *testing.T) {
 	// never witness the leak.
 	wantAlias, wantExpr := orig.Recollapse[0].Alias, orig.Recollapse[0].Expr
 
-	clone, ok := chplan.CloneNode(orig).(*chplan.RangeWindowNative)
+	clone, ok := chplan.CloneNode(orig).(*chplan.RangeWindowGridNative)
 	if !ok {
-		t.Fatal("clone is not *RangeWindowNative")
+		t.Fatal("clone is not *RangeWindowGridNative")
 	}
 	if &clone.Recollapse[0] == &orig.Recollapse[0] {
 		t.Fatal("Recollapse backing array aliased between clone and original")

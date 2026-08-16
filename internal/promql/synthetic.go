@@ -241,22 +241,14 @@ func rewriteAnchorRefs(expr chplan.Expr) chplan.Expr {
 	}
 	switch v := expr.(type) {
 	case *chplan.FuncCall:
-		// now64(9) is minted by chplan's own Now() helper (still on the
-		// legacy Name path — chplan itself is out of scope for #2060 PR
-		// 2), while now() is built directly in this package's date_fns.go
-		// (Fn: chplan.FnNow since this PR). Both forms have to match
-		// until chplan's own construction sites migrate too.
-		if v.Name == "now64" || v.Fn == chplan.FnNow || v.Name == "now" {
+		if v.Fn == chplan.FnNow64 || v.Fn == chplan.FnNow {
 			return &chplan.ColumnRef{Name: "anchor_ts"}
 		}
 		newArgs := make([]chplan.Expr, len(v.Args))
 		for i, a := range v.Args {
 			newArgs[i] = rewriteAnchorRefs(a)
 		}
-		// v's identity may be carried by either Fn or Name (dual-mode,
-		// see FuncCall's doc comment) — copy both through unconditionally
-		// rather than guessing which one is live.
-		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: newArgs}
+		return &chplan.FuncCall{Fn: v.Fn, Args: newArgs}
 	case *chplan.Binary:
 		return &chplan.Binary{Op: v.Op, Left: rewriteAnchorRefs(v.Left), Right: rewriteAnchorRefs(v.Right)}
 	}

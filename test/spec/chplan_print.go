@@ -224,8 +224,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
-	case *chplan.RangeWindowNative:
-		fmt.Fprintf(b, "%sRangeWindowNative func=%s range=%s step=%s",
+	case *chplan.RangeWindowGridNative:
+		fmt.Fprintf(b, "%sRangeWindowGridNative func=%s range=%s step=%s",
 			indent, v.Func, v.Range, v.Step)
 		if v.Offset != 0 {
 			fmt.Fprintf(b, " offset=%s", v.Offset)
@@ -274,8 +274,8 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
-	case *chplan.RangeWindowResample:
-		fmt.Fprintf(b, "%sRangeWindowResample step=%s lookback=%s", indent, v.Step, v.Lookback)
+	case *chplan.RangeWindowStaleResample:
+		fmt.Fprintf(b, "%sRangeWindowStaleResample step=%s lookback=%s", indent, v.Step, v.Lookback)
 		if v.Offset != 0 {
 			fmt.Fprintf(b, " offset=%s", v.Offset)
 		}
@@ -630,7 +630,7 @@ func printExpr(e chplan.Expr) string {
 		for i, a := range v.Args {
 			args[i] = printExpr(a)
 		}
-		return fmt.Sprintf("%s(%s)", fnDisplayName(v.Fn, v.Name), strings.Join(args, ", "))
+		return fmt.Sprintf("%s(%s)", fnDisplayName(v.Fn), strings.Join(args, ", "))
 	case *chplan.MapAccess:
 		return fmt.Sprintf("%s[%s]", printExpr(v.Map), printExpr(v.Key))
 	case *chplan.FieldAccess:
@@ -728,7 +728,7 @@ func printAggFunc(a chplan.AggFunc) string {
 	for i, x := range a.Args {
 		args[i] = printExpr(x)
 	}
-	name := fnDisplayName(a.Fn, a.Name)
+	name := fnDisplayName(a.Fn)
 	var head string
 	if len(a.Params) > 0 {
 		ps := make([]string, len(a.Params))
@@ -745,18 +745,9 @@ func printAggFunc(a chplan.AggFunc) string {
 	return head
 }
 
-// fnDisplayName renders a FuncCall/AggFunc's identity for the IR snapshot.
-// Exactly one of fn/name is set on any real node (chplan's Fn/Name
-// dual-mode — see FuncCall's doc comment): fn prints as its Go symbol
-// (e.g. "FnToFloat64"), so a golden visibly pins WHICH construction sites
-// have migrated off the legacy Name string, rather than reprinting a
-// spelling ("toFloat64") that would look identical before and after.
-// name passes through verbatim for every site #2060's PR series has not
-// reached yet, in this package or another query-language head's.
-func fnDisplayName(fn chplan.Fn, name string) string {
-	if fn == "" {
-		return name
-	}
+// fnDisplayName renders a sealed FuncCall/AggFunc identity as its Go symbol
+// for readable IR snapshots.
+func fnDisplayName(fn chplan.Fn) string {
 	if goName, ok := fnGoNames[fn]; ok {
 		return goName
 	}
@@ -770,10 +761,10 @@ func fnDisplayName(fn chplan.Fn, name string) string {
 // fnGoNames maps every chplan.Fn constant (internal/chplan/fn.go) to its
 // Go identifier, purely for IR-snapshot readability — the printer's own
 // choice about how to label a symbol, not a resolution table like
-// chsql's fnSpellings. TestFnGoNames_CoversEveryDeclaredFn (in
+// chsql's fnResolutions. TestFnGoNames_CoversEveryDeclaredFn (in
 // chplan_print_fn_names_test.go) ratchets it against fn.go's const block
-// the same way chsql's fnspelling_completeness_test.go ratchets
-// fnSpellings, so a new Fn constant with no entry here fails loudly
+// the same way chsql's fnresolution_completeness_test.go ratchets
+// fnResolutions, so a new Fn constant with no entry here fails loudly
 // instead of silently printing its raw CH spelling.
 var fnGoNames = map[chplan.Fn]string{
 	chplan.FnArray:                           "FnArray",
@@ -827,6 +818,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnExtractKeyValuePairs:            "FnExtractKeyValuePairs",
 	chplan.FnIsValidJSON:                     "FnIsValidJSON",
 	chplan.FnJSONExtractKeysAndValuesRaw:     "FnJSONExtractKeysAndValuesRaw",
+	chplan.FnJSONExtract:                     "FnJSONExtract",
 	chplan.FnJSONExtractString:               "FnJSONExtractString",
 	chplan.FnLeftPad:                         "FnLeftPad",
 	chplan.FnLength:                          "FnLength",
@@ -874,6 +866,9 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnAddSeconds:                      "FnAddSeconds",
 	chplan.FnDateDiff:                        "FnDateDiff",
 	chplan.FnFromUnixNanos:                   "FnFromUnixNanos",
+	chplan.FnFromUnixMicros:                  "FnFromUnixMicros",
+	chplan.FnFromUnixMillis:                  "FnFromUnixMillis",
+	chplan.FnFromUnixSeconds:                 "FnFromUnixSeconds",
 	chplan.FnNow:                             "FnNow",
 	chplan.FnNow64:                           "FnNow64",
 	chplan.FnToDayOfMonth:                    "FnToDayOfMonth",
@@ -925,6 +920,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnQuantiles:                       "FnQuantiles",
 	chplan.FnStddevPop:                       "FnStddevPop",
 	chplan.FnSum:                             "FnSum",
+	chplan.FnSumForEach:                      "FnSumForEach",
 	chplan.FnUniqExact:                       "FnUniqExact",
 	chplan.FnVarPop:                          "FnVarPop",
 }

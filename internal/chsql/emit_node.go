@@ -603,8 +603,8 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 	return e.emitSelect(outer)
 }
 
-// intReturningAggregates names the CH aggregates whose natural return
-// type is integer (UInt64 for `count`/`countIf`). The plain Aggregate
+// intReturningAggregates names the plan aggregates whose natural CH return
+// type is integer. The plain Aggregate
 // path projects these into the `Value` column, which the prom/loki
 // cursor scans as `*float64`; clickhouse-go/v2 refuses to coerce
 // UInt64 → *float64 at Scan time and the call surfaces as a 502
@@ -618,16 +618,15 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 // projects `sum(Duration)` (an Int64 column) we'd need to expand this
 // set — for the metric tables in use today only the count() family
 // breaks the scan.
-var intReturningAggregates = map[string]bool{
-	"count":   true,
-	"countIf": true,
+var intReturningAggregates = map[chplan.Fn]bool{
+	chplan.FnCount: true,
 }
 
 // aggFuncFrag returns a Frag rendering `<name>[(<params>)](<args>) [AS <alias>]`
 // via Builder.ParamAgg + As. The expression-render errors surface from
 // the pre-flight loop in emitAggregate before the Frag ever runs; the
-// Fn/Name dual-mode resolution (resolveAggFuncName) cannot be checked
-// that early because aggFuncFrag is called from several sites beyond
+// sealed-Fn resolution cannot be checked that early because aggFuncFrag is
+// called from several sites beyond
 // emitAggregate's own loop (range_lwr.go, range_window.go, ...), so it
 // surfaces a resolution error the same way Builder.Expr does for a
 // closure with no error return of its own — first-error-wins on
@@ -657,7 +656,7 @@ func aggFuncFrag(af chplan.AggFunc) Frag {
 			args = append(args, mkExpr(a))
 		}
 		var body Frag = func(b *Builder) { b.ParamAgg(name, params, args) }
-		if intReturningAggregates[name] {
+		if intReturningAggregates[af.Fn] {
 			body = Call("toFloat64", body)
 		}
 		As(body, af.Alias)(b)

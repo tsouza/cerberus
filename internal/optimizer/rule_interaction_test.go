@@ -125,7 +125,7 @@ func TestRuleInteraction_ConstantFoldSemantic_x_FilterAggregateTranspose(t *test
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -210,7 +210,7 @@ func TestRuleInteraction_ConstantFoldHeuristic_x_FilterAggregateTranspose(t *tes
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -267,7 +267,7 @@ func TestRuleInteraction_FilterFusion_x_FilterAggregateTranspose(t *testing.T) {
 				Input:   scan,
 				GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 				AggFuncs: []chplan.AggFunc{
-					{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+					{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 				},
 			},
 			Predicate: labelFilter("job", "api"),
@@ -327,7 +327,7 @@ func TestRuleInteraction_FilterAggregateTranspose_x_FilterRangeWindowTranspose(t
 			Input:   &chplan.Scan{Table: "otel_metrics_sum"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Func:            "rate",
@@ -358,7 +358,7 @@ func TestRuleInteraction_FilterAggregateTranspose_x_ProjectionPushdown(t *testin
 			},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: labelFilter("job", "api"),

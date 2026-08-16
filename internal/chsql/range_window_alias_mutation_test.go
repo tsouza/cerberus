@@ -118,13 +118,13 @@ func TestMutation_GroupKeyFrags_UnaliasedKeyFallsBackToExpr(t *testing.T) {
 // be folded back by its matching -Merge, so a func carrying one without the
 // other must be rejected up front rather than emitting SQL that cannot resolve.
 //
-// Kills range_window_native.go's `StateFn == "" || MergeFn == ""`
+// Kills range_window_grid_native.go's `StateFn == "" || MergeFn == ""`
 // INVERT_LOGICAL (`&&`), which only rejects a func missing BOTH halves and
 // waves through either half-pair.
 func TestMutation_RequireRecollapseEmittable_NeedsBothStateAndMerge(t *testing.T) {
 	t.Parallel()
 
-	r := &chplan.RangeWindowNative{
+	r := &chplan.RangeWindowGridNative{
 		Func:       "rate",
 		GroupBy:    []chplan.Expr{&chplan.ColumnRef{Name: "a"}},
 		Recollapse: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "a"}, Alias: "ka"}},
@@ -147,7 +147,7 @@ func TestMutation_RequireRecollapseEmittable_AcceptsCompletePair(t *testing.T) {
 	t.Parallel()
 
 	keys, err := requireRecollapseEmittable(
-		&chplan.RangeWindowNative{
+		&chplan.RangeWindowGridNative{
 			Func:       "rate",
 			GroupBy:    []chplan.Expr{&chplan.ColumnRef{Name: "a"}},
 			Recollapse: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "a"}, Alias: "ka"}},

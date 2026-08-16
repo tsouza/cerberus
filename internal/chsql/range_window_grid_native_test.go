@@ -22,19 +22,19 @@ func deferredShapingGrid() (start, end time.Time, step, window time.Duration) {
 // sanitisation of one attribute Map: every key run through replaceRegexpAll,
 // the values carried across unchanged.
 func sanitizedAttributeMap(src chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Name: "mapFromArrays", Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnMapFromArrays, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 			&chplan.Lambda{Params: []string{"k"}, Body: &chplan.FuncCall{
-				Name: "replaceRegexpAll",
+				Fn: chplan.FnRegexReplaceAll,
 				Args: []chplan.Expr{
 					&chplan.BareIdent{Name: "k"},
 					&chplan.InlineString{V: `[^a-zA-Z0-9_]`},
 					&chplan.InlineString{V: "_"},
 				},
 			}},
-			&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+			&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{src}},
 		}},
-		&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+		&chplan.FuncCall{Fn: chplan.FnMapValues, Args: []chplan.Expr{src}},
 	}}
 }
 
@@ -48,15 +48,15 @@ func sanitizedAttributeMap(src chplan.Expr) chplan.Expr {
 // is non-injective, which is the whole reason the re-collapse has to go through
 // the -State / -Merge pair rather than through arithmetic on finished grids.
 func deferredShapingTower() chplan.Expr {
-	return &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "mapUpdate", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMapUpdate, Args: []chplan.Expr{
 				sanitizedAttributeMap(&chplan.ColumnRef{Name: "ResourceAttributes"}),
 				&chplan.ColumnRef{Name: "Attributes"},
 			}},
-			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 				&chplan.InlineString{V: "service_name"},
-				&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "ServiceName"},
 				}},
 			}},
@@ -69,9 +69,9 @@ func deferredShapingTower() chplan.Expr {
 // under the output name `Attributes`. MetricName is the pass-through identity
 // key — no shaping expression reads it, so all three levels must carry it
 // verbatim or two metrics pool into one series.
-func deferredShapingNode() *chplan.RangeWindowNative {
+func deferredShapingNode() *chplan.RangeWindowGridNative {
 	start, end, step, window := deferredShapingGrid()
-	return &chplan.RangeWindowNative{
+	return &chplan.RangeWindowGridNative{
 		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 		Func:            "rate",
 		Range:           window,
@@ -118,13 +118,13 @@ const deferredShapingSQL = "SELECT `MetricName`, `shaped_key_0` AS `Attributes`,
 	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`) " +
 	"GROUP BY `MetricName`, `shaped_key_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL"
 
-// TestEmitRangeWindowNative_DeferredShaping pins the whole three-level shape,
+// TestEmitRangeWindowGridNative_DeferredShaping pins the whole three-level shape,
 // SQL and args both. The args assertion is not incidental: collectGroupByFrags
 // appends a captured expression's args to the emitter's slice at COLLECT time
 // while returning SQL-only frags, so a shaping expression collected in the
 // wrong order relative to the rendered SQL would bind its parameters to the
 // wrong placeholders.
-func TestEmitRangeWindowNative_DeferredShaping(t *testing.T) {
+func TestEmitRangeWindowGridNative_DeferredShaping(t *testing.T) {
 	t.Parallel()
 
 	sql, args, err := Emit(context.Background(), deferredShapingNode())
@@ -145,11 +145,11 @@ func TestEmitRangeWindowNative_DeferredShaping(t *testing.T) {
 // project every column the shaping reads; MetricName stays the pass-through key,
 // so the emitted key order is the pass-through key followed by the two shaped
 // ones at both the merge and the outer level.
-func deferredShapingTwoKeyNode() *chplan.RangeWindowNative {
+func deferredShapingTwoKeyNode() *chplan.RangeWindowGridNative {
 	r := deferredShapingNode()
 	r.GroupBy = append(r.GroupBy, &chplan.ColumnRef{Name: "ScopeAttributes"})
 	r.Recollapse = append(r.Recollapse, chplan.Projection{
-		Expr: &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
+		Expr: &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
 			sanitizedAttributeMap(&chplan.ColumnRef{Name: "ScopeAttributes"}),
 		}},
 		Alias: "ScopeAttributes",
@@ -170,9 +170,9 @@ const deferredShapingTwoKeySQL = "SELECT `MetricName`, `shaped_key_0` AS `Attrib
 	"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM `otel_metrics_sum`) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `ScopeAttributes`) " +
 	"GROUP BY `MetricName`, `shaped_key_0`, `shaped_key_1`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL"
 
-// TestEmitRangeWindowNative_DeferredShapingTwoShapedKeys pins the multi-key
+// TestEmitRangeWindowGridNative_DeferredShapingTwoShapedKeys pins the multi-key
 // arm of the same emitter, whole SQL string and args both.
-func TestEmitRangeWindowNative_DeferredShapingTwoShapedKeys(t *testing.T) {
+func TestEmitRangeWindowGridNative_DeferredShapingTwoShapedKeys(t *testing.T) {
 	t.Parallel()
 
 	sql, args, err := Emit(context.Background(), deferredShapingTwoKeyNode())
@@ -187,18 +187,18 @@ func TestEmitRangeWindowNative_DeferredShapingTwoShapedKeys(t *testing.T) {
 	}
 }
 
-// TestEmitRangeWindowNative_DeferredShapingRejections covers every guard the
+// TestEmitRangeWindowGridNative_DeferredShapingRejections covers every guard the
 // three-level emitter runs BEFORE it renders anything. Each case asserts both
 // ErrUnsupported (so the HTTP layer reports it as an unsupported query rather
 // than a 500) and a substring unique to that guard's message, so one guard
 // cannot masquerade as another — a node rejected for the wrong reason would
 // otherwise look like passing coverage for a guard that no longer fires.
-func TestEmitRangeWindowNative_DeferredShapingRejections(t *testing.T) {
+func TestEmitRangeWindowGridNative_DeferredShapingRejections(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name    string
-		mutate  func(*chplan.RangeWindowNative)
+		mutate  func(*chplan.RangeWindowGridNative)
 		wantMsg string
 	}{
 		{
@@ -206,17 +206,17 @@ func TestEmitRangeWindowNative_DeferredShapingRejections(t *testing.T) {
 			// registered, so the re-collapse cannot be deferred; emitting the
 			// two-level shape instead would answer with split raw series.
 			name:    "func without state/merge pair",
-			mutate:  func(r *chplan.RangeWindowNative) { r.Func = "changes" },
+			mutate:  func(r *chplan.RangeWindowGridNative) { r.Func = "changes" },
 			wantMsg: "has no -State/-Merge pair",
 		},
 		{
 			name:    "empty alias",
-			mutate:  func(r *chplan.RangeWindowNative) { r.Recollapse[0].Alias = "" },
+			mutate:  func(r *chplan.RangeWindowGridNative) { r.Recollapse[0].Alias = "" },
 			wantMsg: "has an empty Alias",
 		},
 		{
 			name: "duplicate alias",
-			mutate: func(r *chplan.RangeWindowNative) {
+			mutate: func(r *chplan.RangeWindowGridNative) {
 				r.Recollapse = append(r.Recollapse, chplan.Projection{
 					Expr:  deferredShapingTower(),
 					Alias: r.Recollapse[0].Alias,
@@ -226,8 +226,8 @@ func TestEmitRangeWindowNative_DeferredShapingRejections(t *testing.T) {
 		},
 		{
 			name: "computed GroupBy key",
-			mutate: func(r *chplan.RangeWindowNative) {
-				r.GroupBy[1] = &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
+			mutate: func(r *chplan.RangeWindowGridNative) {
+				r.GroupBy[1] = &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "Attributes"},
 				}}
 			},
@@ -238,7 +238,7 @@ func TestEmitRangeWindowNative_DeferredShapingRejections(t *testing.T) {
 			// inner level not projecting it, so the middle level's shaping
 			// expression would reference an unknown identifier.
 			name: "shaping reads an ungrouped column",
-			mutate: func(r *chplan.RangeWindowNative) {
+			mutate: func(r *chplan.RangeWindowGridNative) {
 				r.GroupBy = r.GroupBy[:len(r.GroupBy)-1]
 			},
 			wantMsg: `reads column "ServiceName" which is not a GroupBy key`,

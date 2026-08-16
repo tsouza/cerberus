@@ -58,8 +58,8 @@ func compareNode() *chplan.MetricsCompare {
 			Right: &chplan.LitString{V: "Error"},
 		},
 		TopN: 10,
-		Pairs: &chplan.FuncCall{Name: "array", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{
+		Pairs: &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
 				&chplan.LitString{V: "name"},
 				&chplan.ColumnRef{Name: "SpanName"},
 			}},
@@ -94,7 +94,7 @@ func compareNodeWithRoot() *chplan.MetricsCompare {
 		},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
 		},
 	}
 	return m
@@ -605,7 +605,7 @@ func TestEmitRangeWindowCompare_TraceIDTsEnvelopeUnreferenced(t *testing.T) {
 		Input:   &chplan.Scan{Table: "otel_traces"},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
+			{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"},
 		},
 	}
 	rw := &chplan.RangeWindow{

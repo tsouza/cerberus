@@ -4,7 +4,7 @@
 # This is the twin of setop_or_subquery_name.txtar. Same query, same seed,
 # same names on the wire — but the `experimental_ts_grid_resample:` section
 # swaps the staleness lowering from the fan-out `chplan.RangeLWR` to the
-# native `chplan.RangeWindowResample`
+# native `chplan.RangeWindowStaleResample`
 # (timeSeriesResampleToGridWithStaleness), which is what a ClickHouse new
 # enough to have ts_grid actually runs.
 #
@@ -77,12 +77,12 @@ Project [MetricName AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUn
   RangeWindow func=last_over_time range=10m0s step=1m0s outerRange=5m0s ts=anchor_ts value=Value groupBy=[Attributes, MetricName] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
     Project [MetricName AS MetricName, Attributes AS Attributes, TimeUnix AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
       VectorSetOp op=or match=default stepAligned
-        RangeWindowResample step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:05:00Z
-          Project [MetricName AS MetricName, mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        RangeWindowStaleResample step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:05:00Z
+          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
             Filter predicate=(MetricName IN ("cpu_temp", "cpu.temp", "cpu/temp"))
               Scan(merge(otel_metrics_gauge|otel_metrics_sum))
-        RangeWindowResample step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:05:00Z
-          Project [MetricName AS MetricName, mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        RangeWindowStaleResample step=1m0s lookback=5m0s ts=TimeUnix value=Value start=2025-12-31T23:51:00Z end=2026-01-01T00:05:00Z
+          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
             Filter predicate=(MetricName IN ("gpu_temp", "gpu.temp", "gpu/temp"))
               Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --

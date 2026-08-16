@@ -361,12 +361,12 @@ func (e *emitter) emitMetricNode(n chplan.Node) (bool, error) {
 		return true, e.emitMetricsCompare(v)
 	case *chplan.RangeWindow:
 		return true, e.emitRangeWindow(v)
-	case *chplan.RangeWindowNative:
-		return true, e.emitRangeWindowNative(v)
+	case *chplan.RangeWindowGridNative:
+		return true, e.emitRangeWindowGridNative(v)
 	case *chplan.RangeLWR:
 		return true, e.emitRangeLWR(v)
-	case *chplan.RangeWindowResample:
-		return true, e.emitRangeWindowResample(v)
+	case *chplan.RangeWindowStaleResample:
+		return true, e.emitRangeWindowStaleResample(v)
 	case *chplan.RangeBucketFanout:
 		return true, e.emitRangeBucketFanout(v)
 	case *chplan.AbsentOverTime:

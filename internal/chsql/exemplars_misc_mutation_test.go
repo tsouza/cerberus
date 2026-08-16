@@ -87,7 +87,7 @@ func TestRangeBucketFanoutEmptyGroupBy(t *testing.T) {
 		TimestampCol: "TimeUnix",
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},

@@ -110,7 +110,7 @@ type Key struct {
 	RangeFuncs string
 
 	// AggFuncs is the per-level aggregate-function identity (Aggregate /
-	// RangeBucketFanout AggFunc.Name), comma-joined in tree pre-order.
+	// RangeBucketFanout AggFunc.Fn), comma-joined in tree pre-order.
 	// Closed ClickHouse aggregate vocabulary (sum / count / avg / quantile
 	// / ...).
 	AggFuncs string
@@ -196,16 +196,16 @@ func (w *keyWalker) walk(n chplan.Node) {
 		case *chplan.RangeBucketFanout:
 			w.rangeFuncs = append(w.rangeFuncs, "bucketfanout@"+strconv.Itoa(bucketLg(int64(v.Lookback))))
 			for _, fn := range v.AggFuncs {
-				w.aggFuncs = append(w.aggFuncs, fn.Name)
+				w.aggFuncs = append(w.aggFuncs, string(fn.Fn))
 			}
-		case *chplan.RangeWindowNative:
+		case *chplan.RangeWindowGridNative:
 			w.rangeFuncs = append(w.rangeFuncs, "native@"+strconv.Itoa(bucketLg(int64(v.Range))))
 			w.hasNative = true
-		case *chplan.RangeWindowResample:
+		case *chplan.RangeWindowStaleResample:
 			w.hasResample = true
 		case *chplan.Aggregate:
 			for _, fn := range v.AggFuncs {
-				w.aggFuncs = append(w.aggFuncs, fn.Name)
+				w.aggFuncs = append(w.aggFuncs, string(fn.Fn))
 			}
 		case *chplan.VectorJoin:
 			w.hasJoin = true

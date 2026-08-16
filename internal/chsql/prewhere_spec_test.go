@@ -72,7 +72,7 @@ var prewherePlans = map[string]chplan.Node{
 				},
 			},
 			Right: &chplan.FuncCall{
-				Name: "match",
+				Fn: chplan.FnRegexMatch,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "Body"},
 					&chplan.LitString{V: "regex"},

@@ -27,7 +27,7 @@ func windowPred() Expr {
 	return &Binary{
 		Op:    OpGe,
 		Left:  &ColumnRef{Name: timestampCol},
-		Right: &FuncCall{Name: "fromUnixTimestamp64Nano", Args: []Expr{&LitInt{V: 1}}},
+		Right: &FuncCall{Fn: FnFromUnixNanos, Args: []Expr{&LitInt{V: 1}}},
 	}
 }
 
@@ -160,7 +160,7 @@ func TestSpansScanResourceBound_Classification(t *testing.T) {
 			&Binary{
 				Op:    OpEq,
 				Left:  &ColumnRef{Name: timestampCol},
-				Right: &FuncCall{Name: "fromUnixTimestamp64Nano", Args: []Expr{&LitInt{V: 1}}},
+				Right: &FuncCall{Fn: FnFromUnixNanos, Args: []Expr{&LitInt{V: 1}}},
 			},
 			ScanBoundCols{Timestamp: timestampCol},
 			boundNone,
@@ -169,7 +169,7 @@ func TestSpansScanResourceBound_Classification(t *testing.T) {
 			"window with the time literal on the left is still a window",
 			&Binary{
 				Op:    OpLt,
-				Left:  &FuncCall{Name: "fromUnixTimestamp", Args: []Expr{&LitInt{V: 1}}},
+				Left:  &FuncCall{Fn: FnFromUnixSeconds, Args: []Expr{&LitInt{V: 1}}},
 				Right: &ColumnRef{Name: timestampCol},
 			},
 			ScanBoundCols{Timestamp: timestampCol},
@@ -180,7 +180,7 @@ func TestSpansScanResourceBound_Classification(t *testing.T) {
 			&Binary{
 				Op:    OpGe,
 				Left:  &ColumnRef{Name: timestampCol},
-				Right: &FuncCall{Name: "now64", Args: []Expr{&LitInt{V: 9}}},
+				Right: &FuncCall{Fn: FnNow64, Args: []Expr{&LitInt{V: 9}}},
 			},
 			ScanBoundCols{Timestamp: timestampCol},
 			boundNone,
@@ -190,7 +190,7 @@ func TestSpansScanResourceBound_Classification(t *testing.T) {
 			&Binary{
 				Op:    OpGe,
 				Left:  &ColumnRef{Name: "Duration"},
-				Right: &FuncCall{Name: "fromUnixTimestamp64Nano", Args: []Expr{&LitInt{V: 1}}},
+				Right: &FuncCall{Fn: FnFromUnixNanos, Args: []Expr{&LitInt{V: 1}}},
 			},
 			ScanBoundCols{Timestamp: timestampCol},
 			boundNone,

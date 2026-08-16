@@ -62,7 +62,7 @@ func TestDecision_CostGrid_PopulatedOnNotRouted(t *testing.T) {
 	}
 	plan := &chplan.Aggregate{
 		Input:    rw,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 
 	p := &Planner{Cfg: autoCfg()}
@@ -113,7 +113,7 @@ func TestDecision_CostGrid_HighDNotFoldedIntoReason(t *testing.T) {
 	}
 	plan := &chplan.Aggregate{
 		Input:    rw,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 
 	p := &Planner{Cfg: autoCfg()}
@@ -201,7 +201,7 @@ func buildReplayPlan(rng time.Duration) chplan.Node {
 	}
 	return &chplan.Aggregate{
 		Input:    rw,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
@@ -226,6 +226,6 @@ func replayPlanFromFeatures(_ int, fanout int64, outerRange, step time.Duration)
 	}
 	return &chplan.Aggregate{
 		Input:    rw,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }

@@ -375,8 +375,8 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 	}
 	m := &chplan.MetricsCompare{
 		Selection: matchingChild,
-		Pairs: &chplan.FuncCall{Name: "array", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "tuple", Args: []chplan.Expr{
+		Pairs: &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnTuple, Args: []chplan.Expr{
 				&chplan.LitString{V: "name"}, &chplan.ColumnRef{Name: "ServiceName"},
 			}},
 		}},
@@ -394,8 +394,8 @@ func compareNonRootRootLookupSQL(t *testing.T, spansTable, lookupTable string, w
 			},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "root_name"},
-				{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}, Alias: "root_service"},
+				{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "root_name"},
+				{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}, Alias: "root_service"},
 			},
 		},
 	}

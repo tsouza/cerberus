@@ -48,13 +48,13 @@ var resourceBoundClassification = map[string]struct {
 	"OrderBy":          {boundRuntimeNet, "axis 4: sort buffer; spill + max_memory_usage"},
 
 	// Subquery / windowed grids — axis 5, the anchor budget.
-	"RangeWindow":         {boundGated, "axis 5: subquery anchor grid (incl. nested product) gated by requireSubquerySampleBudget; axis 1 instant leaf by requireInstantScanBound"},
-	"RangeWindowNative":   {boundGated, "axis 5: native timeSeries*ToGrid variant of RangeWindow; same anchor-grid bound"},
-	"RangeWindowResample": {boundGated, "axis 5: native-staleness resample variant; same anchor-grid bound"},
-	"StepGrid":            {boundStructural, "axis 5: query_range step grid capped at format.MaxResolutionPoints in the head handler"},
-	"RangeBucketFanout":   {boundRuntimeNet, "axis 4/7: histogram bucket fan-out over the scan-bounded window; spill + max_memory_usage"},
-	"RangeLWR":            {boundRuntimeNet, "axis 7: linear-regression-window compute over the scan-bounded window"},
-	"AbsentOverTime":      {boundStructural, "one synthesized row per absent series over the bounded window"},
+	"RangeWindow":              {boundGated, "axis 5: subquery anchor grid (incl. nested product) gated by requireSubquerySampleBudget; axis 1 instant leaf by requireInstantScanBound"},
+	"RangeWindowGridNative":    {boundGated, "axis 5: native timeSeries*ToGrid variant of RangeWindow; same anchor-grid bound"},
+	"RangeWindowStaleResample": {boundGated, "axis 5: native-staleness resample variant; same anchor-grid bound"},
+	"StepGrid":                 {boundStructural, "axis 5: query_range step grid capped at format.MaxResolutionPoints in the head handler"},
+	"RangeBucketFanout":        {boundRuntimeNet, "axis 4/7: histogram bucket fan-out over the scan-bounded window; spill + max_memory_usage"},
+	"RangeLWR":                 {boundRuntimeNet, "axis 7: linear-regression-window compute over the scan-bounded window"},
+	"AbsentOverTime":           {boundStructural, "one synthesized row per absent series over the bounded window"},
 
 	// Recursive / structural-join walks — axis 3, depth caps.
 	"StructuralJoin":    {boundGated, "axis 3: recursive CTE depth-capped at defaultStructuralRecursionDepth"},

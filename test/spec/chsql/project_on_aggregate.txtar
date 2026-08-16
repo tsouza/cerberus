@@ -4,5 +4,5 @@ SELECT `Attributes` AS `attrs`, `total` AS `v` FROM (SELECT `Attributes`, sum(`V
 (none)
 -- chplan --
 Project [Attributes AS attrs, total AS v]
-  Aggregate groupBy=[Attributes] funcs=[sum(Value) AS total]
+  Aggregate groupBy=[Attributes] funcs=[FnSum(Value) AS total]
     Scan(otel_metrics_gauge)

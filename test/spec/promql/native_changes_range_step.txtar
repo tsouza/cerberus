@@ -3,7 +3,7 @@
 # always-on SQL-shape coverage floor for the `ts_grid_changes` feature: the
 # `experimental_ts_grid_changes` section opts the fixture into a
 # RangeLowerers.Changes = NativeChangesLowerer, so the lowering emits a
-# chplan.RangeWindowNative (Func=changes -> the timeSeriesChangesToGrid
+# chplan.RangeWindowGridNative (Func=changes -> the timeSeriesChangesToGrid
 # parametric aggregate + parallel timeSeriesRange axis + ARRAY JOIN +
 # IS NOT NULL filter) instead of the arrayPopBack/arrayPopFront `c != p`
 # fan-out. The wrapping outer-sum Aggregate is byte-identical to the fan-out;
@@ -69,8 +69,8 @@ INSERT INTO otel_metrics_gauge VALUES
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(FnMap("host", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
   Aggregate groupBy=[Attributes["host"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
-    RangeWindowNative func=changes range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
-      Project [MetricName AS MetricName, mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    RangeWindowGridNative func=changes range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
         Filter predicate=(MetricName IN ("load_state", "load.state", "load/state"))
           Scan(merge(otel_metrics_gauge|otel_metrics_sum))
 -- sql --

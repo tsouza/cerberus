@@ -365,7 +365,7 @@ func aggAnyAs(col, alias string) Frag {
 // vectorJoinOperandCarriesTimestamp reports whether the join operand n
 // projects a real per-row timestamp column named tsCol. It is the
 // timestamp-axis counterpart to chplan.IsDerivedShape: RangeWindow /
-// RangeWindowNative / Aggregate roots emit a [group-keys..., Value]
+// RangeWindowGridNative / Aggregate roots emit a [group-keys..., Value]
 // derived shape that carries no TimeUnix, while an LWR-style Project
 // that names the canonical timestamp output (or any other node) does.
 // A Project is canonical-carrying only when one of its projections
@@ -378,7 +378,7 @@ func vectorJoinOperandCarriesTimestamp(n chplan.Node, tsCol string) bool {
 		// Matrix-shape (OuterRange > 0) surfaces anchor_ts AS TimeUnix;
 		// instant-shape carries only [group-keys..., Value].
 		return v.OuterRange > 0
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// Always matrix-shape: explodes the grid and surfaces a per-row
 		// anchor_ts under the timestamp column.
 		return true

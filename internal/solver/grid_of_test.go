@@ -31,12 +31,12 @@ func gridOfCarriers() []chplan.GridCarrier {
 			Start: gridStart, End: gridEnd, Step: gridStep,
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
-		&chplan.RangeWindowNative{
+		&chplan.RangeWindowGridNative{
 			Input: leafScan(), Func: "rate", Range: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: gridStep,
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
-		&chplan.RangeWindowResample{
+		&chplan.RangeWindowStaleResample{
 			Input: leafScan(), Lookback: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: gridStep,
 			TimestampCol: "TimeUnix", ValueCol: "Value",
@@ -101,12 +101,12 @@ func gridOfInstantCarriers() []chplan.GridCarrier {
 			Start: gridStart, End: gridEnd, Step: 0,
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
-		&chplan.RangeWindowNative{
+		&chplan.RangeWindowGridNative{
 			Input: leafScan(), Func: "rate", Range: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: 0,
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 		},
-		&chplan.RangeWindowResample{
+		&chplan.RangeWindowStaleResample{
 			Input: leafScan(), Lookback: 5 * time.Minute,
 			Start: gridStart, End: gridEnd, Step: 0,
 			TimestampCol: "TimeUnix", ValueCol: "Value",
@@ -154,7 +154,7 @@ func TestGridOf_PrefersOutermostCarrier(t *testing.T) {
 	t.Parallel()
 
 	const innerStep = 5 * time.Second
-	inner := &chplan.RangeWindowNative{
+	inner := &chplan.RangeWindowGridNative{
 		Input: leafScan(), Func: "rate", Range: time.Minute,
 		Start: gridStart, End: gridEnd, Step: innerStep,
 		TimestampColumn: "TimeUnix", ValueColumn: "Value",

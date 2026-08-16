@@ -24,7 +24,7 @@ func OffsetReanchoredAnchorExpr(offset time.Duration) Expr {
 		Op:   OpAdd,
 		Left: &ColumnRef{Name: RangeWindowAnchorColumn},
 		Right: &FuncCall{
-			Name: "toIntervalNanosecond",
+			Fn:   FnToIntervalNanosecond,
 			Args: []Expr{&LitInt{V: offset.Nanoseconds()}},
 		},
 	}

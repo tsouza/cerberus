@@ -38,14 +38,14 @@ const TraceIDTsEndPadSeconds = 1
 // bearing pad constant had drifted into two places that had to be kept
 // in lock-step by hand.
 func TraceIDTsBounds(table, startColumn, endColumn, timestampColumn string, cohortPred func() Expr) (lo, hi Expr) {
-	scalar := func(agg, column string) Expr {
+	scalar := func(fn Fn, column string) Expr {
 		return &ScalarSubquery{Input: &Aggregate{
 			Input: &Filter{
 				Input:     &Scan{Table: table},
 				Predicate: cohortPred(),
 			},
 			AggFuncs: []AggFunc{{
-				Name:  agg,
+				Fn:    fn,
 				Args:  []Expr{&ColumnRef{Name: column}},
 				Alias: column,
 			}},
@@ -54,13 +54,13 @@ func TraceIDTsBounds(table, startColumn, endColumn, timestampColumn string, coho
 	lo = &Binary{
 		Op:    OpGe,
 		Left:  &ColumnRef{Name: timestampColumn},
-		Right: scalar("min", startColumn),
+		Right: scalar(FnMin, startColumn),
 	}
 	hi = &Binary{
 		Op:   OpLe,
 		Left: &ColumnRef{Name: timestampColumn},
-		Right: &FuncCall{Name: "addSeconds", Args: []Expr{
-			scalar("max", endColumn),
+		Right: &FuncCall{Fn: FnAddSeconds, Args: []Expr{
+			scalar(FnMax, endColumn),
 			&LitInt{V: TraceIDTsEndPadSeconds},
 		}},
 	}
@@ -106,7 +106,7 @@ const (
 // scan equals the two single-aggregate scans it replaces.
 func TraceIDTsEnvelopeBounds(alias, timestampColumn string) (lo, hi Expr) {
 	element := func(idx int64) Expr {
-		return &FuncCall{Name: "tupleElement", Args: []Expr{
+		return &FuncCall{Fn: FnTupleElement, Args: []Expr{
 			&BareIdent{Name: alias},
 			&LitInt{V: idx},
 		}}
@@ -119,7 +119,7 @@ func TraceIDTsEnvelopeBounds(alias, timestampColumn string) (lo, hi Expr) {
 	hi = &Binary{
 		Op:   OpLe,
 		Left: &ColumnRef{Name: timestampColumn},
-		Right: &FuncCall{Name: "addSeconds", Args: []Expr{
+		Right: &FuncCall{Fn: FnAddSeconds, Args: []Expr{
 			element(TraceIDTsEnvelopeEndElement),
 			&LitInt{V: TraceIDTsEndPadSeconds},
 		}},

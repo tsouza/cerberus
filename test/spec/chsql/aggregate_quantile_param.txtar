@@ -3,5 +3,5 @@ SELECT `Attributes`, quantile(toFloat64(?))(`Value`) AS `p95` FROM (SELECT * REP
 -- args --
 [0] float64 = 0.95
 -- chplan --
-Aggregate groupBy=[Attributes] funcs=[quantile(0.95)(Value) AS p95]
+Aggregate groupBy=[Attributes] funcs=[FnQuantile(0.95)(Value) AS p95]
   Scan(otel_metrics_gauge)

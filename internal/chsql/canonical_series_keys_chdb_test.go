@@ -38,7 +38,7 @@ func TestEmitAggregate_RawMapKeyDoesNotSplitSeries(t *testing.T) {
 		Input:   &chplan.Scan{Table: "kv", Columns: []string{"Attributes", "Value"}},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "sum",
+			Fn:    chplan.FnSum,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 			Alias: "total",
 		}},

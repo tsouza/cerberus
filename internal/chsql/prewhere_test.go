@@ -76,7 +76,7 @@ func TestCollectColumnRefs(t *testing.T) {
 		},
 		{
 			name: "FuncCall walks args",
-			expr: &chplan.FuncCall{Name: "lower", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+			expr: &chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 			want: []string{"Body"},
 		},
 		{
@@ -133,7 +133,7 @@ func TestIsCheapPredicate(t *testing.T) {
 		},
 		{
 			name: "FuncCall not cheap (conservative)",
-			expr: &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+			expr: &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 			want: false,
 		},
 		{
@@ -183,7 +183,7 @@ func TestClassifyPredicate(t *testing.T) {
 	}
 	// FuncCall: not cheap.
 	_, cheap, _ = classifyPredicate(
-		&chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
+		&chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}}},
 		shape,
 	)
 	if cheap {
@@ -246,7 +246,7 @@ func TestPartitionPrewhere(t *testing.T) {
 	}
 	cheapNoWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
 	cheapWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "Body"}, Right: &chplan.LitString{V: "x"}}
-	notCheap := &chplan.FuncCall{Name: "JSONExtract", Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}}
+	notCheap := &chplan.FuncCall{Fn: chplan.FnJSONExtract, Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}}}
 
 	// Mixed: cheap-no-wide → PREWHERE; rest → WHERE.
 	pre, where := partitionPrewhere([]chplan.Expr{cheapNoWide, cheapWide, notCheap}, shape)

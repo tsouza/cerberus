@@ -26,7 +26,7 @@ func TestTSGridNativeRecollapse_StaysNativeToTheEngine(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(5 * time.Minute)
 	native := func(recollapse []chplan.Projection) chplan.Node {
-		return &chplan.Project{Input: &chplan.RangeWindowNative{
+		return &chplan.Project{Input: &chplan.RangeWindowGridNative{
 			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 			Func:            "rate",
 			Range:           5 * time.Minute,
@@ -40,7 +40,7 @@ func TestTSGridNativeRecollapse_StaysNativeToTheEngine(t *testing.T) {
 		}}
 	}
 	hoisted := native([]chplan.Projection{{
-		Expr:  &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
+		Expr:  &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}}},
 		Alias: "Attributes",
 	}})
 

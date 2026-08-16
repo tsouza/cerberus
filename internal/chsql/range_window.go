@@ -2874,7 +2874,7 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 // bucket into its own independent float series, so condition 1 alone
 // answers correctly. Every RangeWindow{Func: "resets"} this emitter (and
 // its native-grid counterpart, timeSeriesResetsToGrid in
-// range_window_native.go — itself a ClickHouse builtin with no
+// range_window_grid_native.go — itself a ClickHouse builtin with no
 // histogram-valued signature) ever receives is therefore float-only by
 // construction. See #1493 (closed) for the exact 3-condition kernel spec
 // above, and #1772 (closed by the native lowering) for the shape that

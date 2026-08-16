@@ -285,7 +285,7 @@ func TestEmitNode_Aggregate_PropagatesChildError(t *testing.T) {
 			Keys:  nil,
 		},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"},
 		},
 	}
 	_, _, err := chsql.Emit(context.Background(), plan)

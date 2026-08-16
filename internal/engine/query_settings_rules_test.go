@@ -33,7 +33,7 @@ func aggOverScan(table string, cols ...string) *chplan.Aggregate {
 	return &chplan.Aggregate{
 		Input:    &chplan.Scan{Table: table},
 		GroupBy:  groupBy,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "v"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "v"}},
 	}
 }
 
@@ -92,7 +92,7 @@ func TestEligibleForAggregationInOrder_Negative(t *testing.T) {
 			"non-column group key",
 			&chplan.Aggregate{
 				Input:   &chplan.Scan{Table: "otel_metrics_sum"},
-				GroupBy: []chplan.Expr{&chplan.FuncCall{Name: "lower", Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}}}},
+				GroupBy: []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnLower, Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}}}},
 			},
 		},
 	}

@@ -39,9 +39,9 @@ INSERT INTO otel_metrics_histogram VALUES
 [14] int64 = 9
 [15] int64 = 300000000000
 -- chplan --
-Project ["" AS MetricName, Attributes AS Attributes, now64(9) AS TimeUnix, Value AS Value]
+Project ["" AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
   HistogramQuantile phi=0.9 groupBy=[Attributes AS Attributes]
-    Aggregate groupBy=[mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(BucketCounts, TimeUnix) AS BucketCounts, FnArgMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
+    Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(BucketCounts, TimeUnix) AS BucketCounts, FnArgMax(ExplicitBounds, TimeUnix) AS ExplicitBounds]
       Filter predicate=(((MetricName IN ("mko_hist", "mko.hist", "mko/hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
         Scan(otel_metrics_histogram)
 -- sql --

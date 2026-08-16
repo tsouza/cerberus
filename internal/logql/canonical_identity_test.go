@@ -30,7 +30,7 @@ import (
 func requireCanonicalIdentity(t *testing.T, identity chplan.Expr) chplan.Expr {
 	t.Helper()
 	fc, ok := identity.(*chplan.FuncCall)
-	if !ok || fc.Name != chplan.CanonicalMapFunc {
+	if !ok || fc.Fn != chplan.FnMapSort {
 		t.Fatalf("stream identity = %T (%q), want *chplan.FuncCall(%q): an un-canonicalised "+
 			"identity Map splits one logical stream across two physical key orders",
 			identity, funcName(identity), chplan.CanonicalMapFunc)
@@ -51,8 +51,8 @@ func TestCanonicalIdentityExpr_WrapsInMapSort(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T, want *chplan.FuncCall", canonicalIdentityExpr(inner))
 	}
-	if got.Name != "mapSort" {
-		t.Fatalf("func name: got %q, want %q", got.Name, "mapSort")
+	if got.Fn != chplan.FnMapSort {
+		t.Fatalf("func symbol: got %q, want %q", got.Fn, chplan.FnMapSort)
 	}
 	if len(got.Args) != 1 || got.Args[0] != chplan.Expr(inner) {
 		t.Fatalf("args: got %#v, want exactly the input expr", got.Args)

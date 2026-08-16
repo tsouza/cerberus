@@ -3,5 +3,5 @@ SELECT `Attributes`, sum(`Value`) AS `total` FROM (SELECT * REPLACE (mapSort(`At
 -- args --
 (none)
 -- chplan --
-Aggregate groupBy=[mapWithout(Attributes, [])] funcs=[sum(Value) AS total]
+Aggregate groupBy=[mapWithout(Attributes, [])] funcs=[FnSum(Value) AS total]
   Scan(otel_metrics_gauge)

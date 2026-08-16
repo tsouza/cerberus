@@ -218,10 +218,10 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
-	// RangeWindow matrix family, the RangeWindowNative timeSeries*ToGrid family
+	// RangeWindow matrix family, the RangeWindowGridNative timeSeries*ToGrid family
 	// and the RangeLWR bare-selector last-with-respect-to family — ReanchorRange
 	// re-grids all three. Every other [chplan.GridCarrier] kind
-	// (RangeWindowResample, RangeBucketFanout, StepGrid, AbsentOverTime) has its
+	// (RangeWindowStaleResample, RangeBucketFanout, StepGrid, AbsentOverTime) has its
 	// grid CloneNode'd verbatim, so each shard would emit the original full-grid
 	// bounds; they fail closed to route A. Note the asymmetry this gate exists
 	// to preserve: the extractor MEASURES all seven kinds so the corpus can see
@@ -361,10 +361,10 @@ type signals struct {
 	// ReanchorRange does NOT re-anchor — every [chplan.GridCarrier] kind
 	// outside the routable set, which ReanchorRange CloneNode's verbatim (so
 	// every shard would emit stale bounds). The routable set is the
-	// RangeWindow matrix family, the RangeWindowNative timeSeries*ToGrid family
+	// RangeWindow matrix family, the RangeWindowGridNative timeSeries*ToGrid family
 	// and the RangeLWR bare-selector family: all three are re-gridded by
 	// ReanchorRange and zeroed/re-filled by UnpinSpine, so none of them sets
-	// this flag. RangeWindowResample / RangeBucketFanout / StepGrid /
+	// this flag. RangeWindowStaleResample / RangeBucketFanout / StepGrid /
 	// AbsentOverTime fail closed to route A until ReanchorRange learns their
 	// grids — see carrierGeometry.reanchorable, which is the single place that
 	// decision is recorded.
@@ -460,13 +460,13 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		p.walkNode(v.Input, predStart, predEnd, v.Step, depth+1, sig)
 		return
 
-	case *chplan.RangeWindowNative:
-		p.walkRangeWindowNative(v, predStart, predEnd, depth, sig)
+	case *chplan.RangeWindowGridNative:
+		p.walkRangeWindowGridNative(v, predStart, predEnd, depth, sig)
 		return
 
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		// The native staleness-resample lowering of a bare selector at each
-		// anchor. Same story as RangeWindowNative, with Lookback (the staleness
+		// anchor. Same story as RangeWindowGridNative, with Lookback (the staleness
 		// horizon) as the per-anchor window depth. Its inner spine is walked at
 		// the unwidened bounds, mirroring the RangeLWR arm it is the native
 		// sibling of.
@@ -594,7 +594,7 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 	}
 }
 
-// walkRangeWindowNative sweeps the ClickHouse-native `timeSeries<fn>ToGrid`
+// walkRangeWindowGridNative sweeps the ClickHouse-native `timeSeries<fn>ToGrid`
 // lowering of rate(m[Range]) and its siblings. The node owns a full eval grid,
 // so on a purely natively-lowered plan it is the ONLY carrier and the sole
 // source of that plan's n_anchors / outer_range / cumulative_d.
@@ -604,9 +604,9 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 // (predStart, predEnd, v.Step) rather than against the widened inner-spine
 // bounds the recursion below descends into — the same rule the fan-out
 // RangeWindow arm applies to its own exprs.
-func (p *Planner) walkRangeWindowNative(v *chplan.RangeWindowNative, predStart, predEnd time.Time, depth int, sig *signals) {
+func (p *Planner) walkRangeWindowGridNative(v *chplan.RangeWindowGridNative, predStart, predEnd time.Time, depth int, sig *signals) {
 	p.recordGridCarrier(v, depth, sig)
-	p.checkRangeWindowNativeGrid(v, predStart, predEnd, depth, sig)
+	p.checkRangeWindowGridNativeGrid(v, predStart, predEnd, depth, sig)
 	for _, e := range v.GroupBy {
 		p.walkExpr(e, predStart, predEnd, v.Step, sig)
 	}
@@ -681,7 +681,7 @@ type carrierGeometry struct {
 	//   - D (Σ lookback) is per-slice SCAN redundancy: adjacent slices' input
 	//     windows overlap by exactly the window span, whichever emitter reads
 	//     them. A native carrier's shard widens its scan by Offset+Range
-	//     exactly as the fan-out arm's does (chplan.RangeWindowNative.
+	//     exactly as the fan-out arm's does (chplan.RangeWindowGridNative.
 	//     InputWindow), so its D is its Range and this field does NOT touch it.
 	//   - F is the MEMORY proxy the ModeAuto gate reads: peak intermediate rows
 	//     per raw row, which is what slicing the anchor grid K ways divides by
@@ -708,7 +708,7 @@ type carrierGeometry struct {
 	// This is a CORRECTNESS bit, not a measurement one: a carrier
 	// ReanchorRange clones verbatim hands every shard the original full-grid
 	// bounds, so a live grid on such a kind must fail the plan closed to
-	// route A. Exactly the RangeWindow, RangeWindowNative and RangeLWR
+	// route A. Exactly the RangeWindow, RangeWindowGridNative and RangeLWR
 	// families are re-gridded.
 	reanchorable bool
 }
@@ -748,7 +748,7 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// that lower to a bare RangeLWR spine are routable.
 		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
 
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// timeSeries<fn>ToGrid: the whole rate(m[Range]) collapses into one
 		// ClickHouse aggregate, so this node ALONE carries the grid of a
 		// natively-lowered plan — it is the sole source of that plan's
@@ -763,10 +763,10 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 			reanchorable: true,
 		}, true
 
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		// timeSeriesResampleToGridWithStaleness: the native sibling of
 		// RangeLWR, with the staleness horizon as its per-anchor depth. Same
-		// single-pass grid aggregate as RangeWindowNative, so the same fan-out
+		// single-pass grid aggregate as RangeWindowGridNative, so the same fan-out
 		// answer; it is NOT re-anchored, so the flag is telemetry-only here
 		// until ReanchorRange grows an arm for it.
 		return carrierGeometry{
@@ -944,7 +944,7 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 	}
 }
 
-// checkRangeWindowNativeGrid runs the bound-pinning and grid-prediction gates
+// checkRangeWindowGridNativeGrid runs the bound-pinning and grid-prediction gates
 // for the native timeSeries*ToGrid family. It mirrors checkRangeWindowGrid with
 // the one structural difference the node imposes: no separate OuterRange field,
 // so the predicted span is End-Start directly (the RangeLWR form of the same
@@ -956,7 +956,7 @@ func (p *Planner) checkRangeLWRGrid(v *chplan.RangeLWR, predStart, predEnd time.
 // set that silently disagrees with @ semantics: before this node was routable
 // the check was unnecessary, and "the lowering cannot produce that shape today"
 // is not a property the slicer may rest correctness on.
-func (p *Planner) checkRangeWindowNativeGrid(v *chplan.RangeWindowNative, predStart, predEnd time.Time, depth int, sig *signals) {
+func (p *Planner) checkRangeWindowGridNativeGrid(v *chplan.RangeWindowGridNative, predStart, predEnd time.Time, depth int, sig *signals) {
 	startZero := v.Start.IsZero()
 	endZero := v.End.IsZero()
 	switch {
@@ -969,7 +969,7 @@ func (p *Planner) checkRangeWindowNativeGrid(v *chplan.RangeWindowNative, predSt
 		// Half-pinned: malformed.
 		sig.sawUnpinnedBound = true
 	default:
-		if !rangeWindowNativeGridMatches(v, predStart, predEnd) {
+		if !rangeWindowGridNativeGridMatches(v, predStart, predEnd) {
 			sig.sawGridMismatch = true
 		}
 	}
@@ -984,10 +984,10 @@ func (p *Planner) checkRangeWindowNativeGrid(v *chplan.RangeWindowNative, predSt
 	}
 }
 
-// rangeWindowNativeGridMatches is rangeWindowGridMatches for a
-// RangeWindowNative: it carries no separate OuterRange field, so the predicted
+// rangeWindowGridNativeGridMatches is rangeWindowGridMatches for a
+// RangeWindowGridNative: it carries no separate OuterRange field, so the predicted
 // span is End-Start directly.
-func rangeWindowNativeGridMatches(v *chplan.RangeWindowNative, predStart, predEnd time.Time) bool {
+func rangeWindowGridNativeGridMatches(v *chplan.RangeWindowGridNative, predStart, predEnd time.Time) bool {
 	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
 }
 
@@ -1051,7 +1051,7 @@ func sliceQuantumCommensurate(sig signals, outerStep time.Duration, k int) bool 
 // judged against the SUBQUERY's own inner grid and resolution).
 func (p *Planner) walkExpr(e chplan.Expr, predStart, predEnd time.Time, predStep time.Duration, sig *signals) {
 	chplan.InspectExprNodes(e, func(x chplan.Expr) bool {
-		if fc, ok := x.(*chplan.FuncCall); ok && fc.Name == "now64" {
+		if fc, ok := x.(*chplan.FuncCall); ok && fc.Fn == chplan.FnNow64 {
 			sig.sawNow64 = true
 		}
 		return true
@@ -1096,7 +1096,7 @@ func (p *Planner) walkScalarInterior(n chplan.Node, sig *signals) {
 		}
 		chplan.InspectNodeExprs(node, func(e chplan.Expr) {
 			chplan.InspectExpr(e, func(x chplan.Expr) bool {
-				if fc, ok := x.(*chplan.FuncCall); ok && fc.Name == "now64" {
+				if fc, ok := x.(*chplan.FuncCall); ok && fc.Fn == chplan.FnNow64 {
 					sig.sawNow64 = true
 				}
 				return true
@@ -1182,10 +1182,10 @@ func (p *Planner) checkScalarHeavy(inner chplan.Node, predStart, predEnd time.Ti
 // of its bounds: it is excluded from the routable spine family on the MAIN
 // spine too (signal 1b, carrierGeometry.reanchorable), and this package has
 // no argument that makes it safe here that it does not already have there.
-// RangeWindowResample and AbsentOverTime are absent from
+// RangeWindowStaleResample and AbsentOverTime are absent from
 // chplan.IsSliceInvariant's registry, so one appearing inside an interior
 // already fails the whole plan via walkScalarInterior's slice-invariance
-// sweep before this function's answer can matter. RangeWindowNative IS
+// sweep before this function's answer can matter. RangeWindowGridNative IS
 // registered (issue #2117), so that sweep no longer covers it and this function
 // answers for it directly — under the same equality the fan-out RangeWindow
 // gets, since a full-span native grid replicated K× is exactly as wide a scan
@@ -1214,7 +1214,7 @@ func scalarInteriorAnchorCompatible(n chplan.Node, predStart, predEnd time.Time,
 			return false
 		}
 		return scalarInteriorAnchorCompatible(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, predStep)
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// The native timeSeries*ToGrid family, held to the SAME equality as the
 		// fan-out RangeWindow above — in its two-bound form, since the node has
 		// no OuterRange field. This arm became load-bearing the moment the node
@@ -1225,7 +1225,7 @@ func scalarInteriorAnchorCompatible(n chplan.Node, predStart, predEnd time.Time,
 		// admit a native interior as CHEAP whatever its bounds — replicating a
 		// full-span single-pass grid aggregate K times, which is exactly the
 		// unboundedly-wide interior the gate exists to keep on route A.
-		if v.Step <= 0 || v.Step != predStep || !rangeWindowNativeGridMatches(v, predStart, predEnd) {
+		if v.Step <= 0 || v.Step != predStep || !rangeWindowGridNativeGridMatches(v, predStart, predEnd) {
 			return false
 		}
 		inStart, inEnd := v.InputWindow(predStart, predEnd)

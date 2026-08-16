@@ -38,7 +38,7 @@ func instantRangeWindow(lookback time.Duration) *chplan.RangeWindow {
 func instantAggregate(lookback time.Duration) chplan.Node {
 	return &chplan.Aggregate{
 		Input:    instantRangeWindow(lookback),
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 

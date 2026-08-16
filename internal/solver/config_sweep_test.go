@@ -291,7 +291,7 @@ func now64Window(start, end time.Time, step time.Duration) chplan.Node {
 	return &chplan.Project{
 		Input: rw,
 		Projections: []chplan.Projection{
-			{Alias: "v", Expr: &chplan.FuncCall{Name: "now64", Args: nil}},
+			{Alias: "v", Expr: &chplan.FuncCall{Fn: chplan.FnNow64, Args: nil}},
 		},
 	}
 }

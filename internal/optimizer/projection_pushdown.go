@@ -41,9 +41,9 @@ import (
 //     the windowed-array idiom reads), TemporalityColumn when set, each
 //     fused Variants arm's ValueColumn, the GroupBy + ScalarExprs column
 //     refs, plus the Filter predicate's columns when present.
-//  5. `RangeWindowNative(Scan)` / `RangeWindowNative(Filter(Scan))` — the
+//  5. `RangeWindowGridNative(Scan)` / `RangeWindowGridNative(Filter(Scan))` — the
 //     experimental ClickHouse-native `timeSeriesRateToGrid` lowering.
-//     emitRangeWindowNative reads EXACTLY three things off the inner Scan:
+//     emitRangeWindowGridNative reads EXACTLY three things off the inner Scan:
 //     the per-series GroupBy identity refs (the `GROUP BY` of the inner
 //     SELECT), and the (TimestampColumn, ValueColumn) pair fed positionally
 //     into the timeSeriesRateToGrid aggregate. Every other identifier the
@@ -124,9 +124,9 @@ func (ProjectionPushdown) Apply(n chplan.Node) (chplan.Node, bool) {
 			return applyRangeWindowOverMetricsAggregate(node, ma)
 		}
 		return applyStageScan(node, node.Input, rangeWindowColumns(node))
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		return applyStageScan(node, node.Input, nativeRangeWindowColumns(node))
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		return applyStageScan(node, node.Input, resampleRangeWindowColumns(node))
 	case *chplan.RangeBucketFanout:
 		return applyStageScan(node, node.Input, rangeBucketFanoutColumns(node))
@@ -202,11 +202,11 @@ func cloneStageOverInput(stage, newInput chplan.Node) chplan.Node {
 		clone := *s
 		clone.Input = newInput
 		return &clone
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		clone := *s
 		clone.Input = newInput
 		return &clone
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		clone := *s
 		clone.Input = newInput
 		return &clone
@@ -391,8 +391,8 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 }
 
 // nativeRangeWindowColumns returns the sorted, deduped set of base columns
-// a RangeWindowNative's emit reads off the inner Scan. emitRangeWindowNative
-// (chsql/range_window_native.go) reads EXACTLY three things off the Scan:
+// a RangeWindowGridNative's emit reads off the inner Scan. emitRangeWindowGridNative
+// (chsql/range_window_grid_native.go) reads EXACTLY three things off the Scan:
 //
 //   - TimestampColumn and ValueColumn — fed positionally into the
 //     timeSeriesRateToGrid aggregate's second paren group (`Col(...)` each).
@@ -421,7 +421,7 @@ func widenScanColumns(scan *chplan.Scan, extraCol string) (*chplan.Scan, bool) {
 // ungrouped column, while containment alone would leave this pushdown one
 // invariant-relaxation away from re-opening the #860/#861 dropped-column
 // class. Both ship.
-func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
+func nativeRangeWindowColumns(r *chplan.RangeWindowGridNative) []string {
 	bare := []string{r.TimestampColumn, r.ValueColumn}
 	var roots []chplan.Expr
 	roots = append(roots, r.GroupBy...)
@@ -430,8 +430,8 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 }
 
 // resampleRangeWindowColumns returns the sorted, deduped set of base columns a
-// RangeWindowResample's emit reads off the inner Scan. emitRangeWindowResample
-// (chsql/range_window_resample.go) reads EXACTLY four named columns:
+// RangeWindowStaleResample's emit reads off the inner Scan. emitRangeWindowStaleResample
+// (chsql/range_window_stale_resample.go) reads EXACTLY four named columns:
 //
 //   - TimestampCol and ValueCol — fed positionally into the
 //     timeSeriesResampleToGridWithStaleness aggregate's second paren group.
@@ -444,7 +444,7 @@ func nativeRangeWindowColumns(r *chplan.RangeWindowNative) []string {
 // set is strictly those four. Dropping any of them — in particular the identity
 // columns — 502s the query at runtime, so the enumeration must match the emit's
 // reads exactly (the same #860/#861 failure class the native-rate path guards).
-func resampleRangeWindowColumns(r *chplan.RangeWindowResample) []string {
+func resampleRangeWindowColumns(r *chplan.RangeWindowStaleResample) []string {
 	return stageColumns([]string{r.MetricNameCol, r.AttributesCol, r.TimestampCol, r.ValueCol})
 }
 

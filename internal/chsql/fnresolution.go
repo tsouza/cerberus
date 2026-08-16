@@ -17,26 +17,24 @@ import (
 // resolution-table redesign.
 type fnRender func(b *Builder, args []chplan.Expr) error
 
-// fnSpelling is one chplan.Fn's ClickHouse rendering. Exactly one of Name
+// fnResolution is one chplan.Fn's ClickHouse rendering. Exactly one of Name
 // (the common case) or Render (see fnRender) is set; nothing in this file
-// sets both, and resolveDualMode never reads Render when Name is what a
-// caller asked to render (AggFunc has no Render path — see
-// resolveAggFuncName).
-type fnSpelling struct {
+// sets both. AggFunc has no Render path — see resolveAggFuncName.
+type fnResolution struct {
 	Name   string
 	Render fnRender
 }
 
-// fnSpellings is chsql's ClickHouse resolution table for chplan.Fn — the
+// fnResolutions is chsql's ClickHouse resolution table for chplan.Fn — the
 // dialect-specific half of the vocabulary chplan/fn.go declares
 // engine-agnostically. A future second dialect (ducksql, say) owns its
 // own table of the same shape against the same chplan.Fn keys.
 //
 // Completeness in both directions — every declared Fn has an entry here,
 // every entry here names a declared Fn — is enforced by
-// fnspelling_completeness_test.go via a go/parser scan of fn.go's const
+// fnresolution_completeness_test.go via a go/parser scan of fn.go's const
 // block, not by hand-matching this table against that one.
-var fnSpellings = map[chplan.Fn]fnSpelling{
+var fnResolutions = map[chplan.Fn]fnResolution{
 	// Array functions.
 	chplan.FnArray:             {Name: "array"},
 	chplan.FnArrayAvg:          {Name: "arrayAvg"},
@@ -92,6 +90,7 @@ var fnSpellings = map[chplan.Fn]fnSpelling{
 	chplan.FnRegexExtractAllGroupsHorizontal: {Name: "extractAllGroupsHorizontal"},
 	chplan.FnExtractKeyValuePairs:            {Name: "extractKeyValuePairs"},
 	chplan.FnIsValidJSON:                     {Name: "isValidJSON"},
+	chplan.FnJSONExtract:                     {Name: "JSONExtract"},
 	chplan.FnJSONExtractKeysAndValuesRaw:     {Name: "JSONExtractKeysAndValuesRaw"},
 	chplan.FnJSONExtractString:               {Name: "JSONExtractString"},
 	chplan.FnLeftPad:                         {Name: "leftPad"},
@@ -146,6 +145,9 @@ var fnSpellings = map[chplan.Fn]fnSpelling{
 	chplan.FnAddSeconds:       {Name: "addSeconds"},
 	chplan.FnDateDiff:         {Name: "dateDiff"},
 	chplan.FnFromUnixNanos:    {Name: "fromUnixTimestamp64Nano"},
+	chplan.FnFromUnixMicros:   {Name: "fromUnixTimestamp64Micro"},
+	chplan.FnFromUnixMillis:   {Name: "fromUnixTimestamp64Milli"},
+	chplan.FnFromUnixSeconds:  {Name: "fromUnixTimestamp"},
 	chplan.FnNow:              {Name: "now"},
 	chplan.FnNow64:            {Name: "now64"},
 	chplan.FnToDayOfMonth:     {Name: "toDayOfMonth"},
@@ -201,42 +203,31 @@ var fnSpellings = map[chplan.Fn]fnSpelling{
 	chplan.FnQuantiles:  {Name: "quantiles"},
 	chplan.FnStddevPop:  {Name: "stddevPop"},
 	chplan.FnSum:        {Name: "sum"},
+	chplan.FnSumForEach: {Name: "sumForEach"},
 	chplan.FnUniqExact:  {Name: "uniqExact"},
 	chplan.FnVarPop:     {Name: "varPop"},
 }
 
-// resolveDualMode resolves a FuncCall/AggFunc's Fn/Name pair to a
-// rendering. Exactly one of fn/name may be set — kind names the struct
-// ("FuncCall" or "AggFunc") in the error when a caller violates that.
-//
-//   - fn == "": the legacy path every current construction site still
-//     takes — name passes through verbatim, render is nil.
-//   - fn != "" and name == "": fn resolves through fnSpellings.
-//   - fn != "" and name != "": rejected — a FuncCall/AggFunc identifies
-//     its function exactly one way, never both.
-func resolveDualMode(fn chplan.Fn, name, kind string) (resolvedName string, render fnRender, err error) {
-	if fn == "" {
-		return name, nil, nil
-	}
-	if name != "" {
-		return "", nil, fmt.Errorf("chsql: %s has both Fn=%q and Name=%q set; pick one", kind, fn, name)
-	}
-	sp, ok := fnSpellings[fn]
+// resolveFn resolves a sealed plan symbol to this emitter's ClickHouse
+// rendering. An empty or undeclared Fn fails closed rather than emitting a raw
+// or empty function identifier.
+func resolveFn(fn chplan.Fn) (resolvedName string, render fnRender, err error) {
+	resolution, ok := fnResolutions[fn]
 	if !ok {
 		return "", nil, fmt.Errorf("%w: chplan.Fn %q has no chsql resolution — "+
-			"fnspelling_completeness_test.go should have caught this before it ever reached "+
+			"fnresolution_completeness_test.go should have caught this before it ever reached "+
 			"the emitter", ErrUnsupported, fn)
 	}
-	return sp.Name, sp.Render, nil
+	return resolution.Name, resolution.Render, nil
 }
 
 // resolveAggFuncName resolves af's rendered ClickHouse aggregate-function
-// name via resolveDualMode. AggFunc rendering (aggFuncFrag) has no
+// name via resolveFn. AggFunc rendering (aggFuncFrag) has no
 // fnRender path — every aggregate shape today is the plain
 // `<name>[(<params>)](<args>)` ParamAgg produces — so a Fn resolving to a
 // Render hook is itself an error here, not a silently-ignored hook.
 func resolveAggFuncName(af chplan.AggFunc) (string, error) {
-	name, render, err := resolveDualMode(af.Fn, af.Name, "AggFunc")
+	name, render, err := resolveFn(af.Fn)
 	if err != nil {
 		return "", err
 	}

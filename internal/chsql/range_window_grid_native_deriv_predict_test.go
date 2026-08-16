@@ -21,13 +21,13 @@ import (
 // fan-out — a broken native path would therefore stay invisible on chDB. These
 // tests force the feature ENABLED via the chopt EnabledSet's boot-wired
 // strategy (NOT a live server) and assert the feature ACTIVATES: the plan
-// carries a chplan.RangeWindowNative node and chsql.Emit renders the exact
+// carries a chplan.RangeWindowGridNative node and chsql.Emit renders the exact
 // native aggregate call with the correct parametric args. The native==fan-out
 // numeric differential is a prod/e2e concern above the chDB floor (documented
 // in docs/native-clickhouse.md), so it is deliberately NOT asserted here.
 //
 // The engine stamps allow_experimental_time_series_aggregate_functions=1 on any
-// plan carrying a RangeWindowNative node (internal/engine.planHasTSGridNative,
+// plan carrying a RangeWindowGridNative node (internal/engine.planHasTSGridNative,
 // which is generic over the node TYPE, not the Func) — the companion assertion
 // that deriv / predict_linear ride that gate lives in
 // internal/engine/ts_grid_native_deriv_predict_test.go.
@@ -54,14 +54,14 @@ func lowerRangeNative(t *testing.T, q string, lowerers promql.RangeLowerers) chp
 	return plan
 }
 
-// findNativeNode returns the first chplan.RangeWindowNative in plan, or nil.
-func findNativeNode(plan chplan.Node) *chplan.RangeWindowNative {
-	var found *chplan.RangeWindowNative
+// findNativeNode returns the first chplan.RangeWindowGridNative in plan, or nil.
+func findNativeNode(plan chplan.Node) *chplan.RangeWindowGridNative {
+	var found *chplan.RangeWindowGridNative
 	chplan.Walk(plan, func(n chplan.Node) bool {
 		if found != nil {
 			return false
 		}
-		if rw, ok := n.(*chplan.RangeWindowNative); ok {
+		if rw, ok := n.(*chplan.RangeWindowGridNative); ok {
 			found = rw
 			return false
 		}
@@ -80,14 +80,14 @@ func TestNativeDerivActivatesAndEmits(t *testing.T) {
 
 	native := findNativeNode(plan)
 	if native == nil {
-		t.Fatalf("native deriv feature ENABLED but plan carries no RangeWindowNative — the feature is inert (hollow green): %s",
+		t.Fatalf("native deriv feature ENABLED but plan carries no RangeWindowGridNative — the feature is inert (hollow green): %s",
 			spineOfTypes(plan))
 	}
 	if native.Func != "deriv" {
-		t.Errorf("RangeWindowNative.Func = %q, want %q", native.Func, "deriv")
+		t.Errorf("RangeWindowGridNative.Func = %q, want %q", native.Func, "deriv")
 	}
 	if len(native.Scalars) != 0 {
-		t.Errorf("deriv RangeWindowNative.Scalars = %v, want empty (deriv takes no scalar)", native.Scalars)
+		t.Errorf("deriv RangeWindowGridNative.Scalars = %v, want empty (deriv takes no scalar)", native.Scalars)
 	}
 
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
@@ -117,14 +117,14 @@ func TestNativePredictLinearActivatesAndEmits(t *testing.T) {
 
 	native := findNativeNode(plan)
 	if native == nil {
-		t.Fatalf("native predict_linear feature ENABLED but plan carries no RangeWindowNative — the feature is inert (hollow green): %s",
+		t.Fatalf("native predict_linear feature ENABLED but plan carries no RangeWindowGridNative — the feature is inert (hollow green): %s",
 			spineOfTypes(plan))
 	}
 	if native.Func != "predict_linear" {
-		t.Errorf("RangeWindowNative.Func = %q, want %q", native.Func, "predict_linear")
+		t.Errorf("RangeWindowGridNative.Func = %q, want %q", native.Func, "predict_linear")
 	}
 	if len(native.Scalars) != 1 || native.Scalars[0] != 3600 {
-		t.Errorf("predict_linear RangeWindowNative.Scalars = %v, want [3600] (the whole-second horizon t)", native.Scalars)
+		t.Errorf("predict_linear RangeWindowGridNative.Scalars = %v, want [3600] (the whole-second horizon t)", native.Scalars)
 	}
 
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
@@ -154,7 +154,7 @@ func TestNativePredictLinearFractionalFallsBack(t *testing.T) {
 	plan := lowerRangeNative(t, "sum by(host) (predict_linear(disk_used_bytes[10m], 1.5))", lowerers)
 
 	if native := findNativeNode(plan); native != nil {
-		t.Fatalf("fractional-horizon predict_linear MUST stay on the fan-out, but got a RangeWindowNative (Func=%q, Scalars=%v)",
+		t.Fatalf("fractional-horizon predict_linear MUST stay on the fan-out, but got a RangeWindowGridNative (Func=%q, Scalars=%v)",
 			native.Func, native.Scalars)
 	}
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
@@ -186,7 +186,7 @@ func TestNativePredictLinearNegativeHorizonFallsBack(t *testing.T) {
 	plan := lowerRangeNative(t, "sum by(host) (predict_linear(disk_used_bytes[10m], -3600))", lowerers)
 
 	if native := findNativeNode(plan); native != nil {
-		t.Fatalf("negative-horizon predict_linear MUST stay on the fan-out, but got a RangeWindowNative (Func=%q, Scalars=%v)",
+		t.Fatalf("negative-horizon predict_linear MUST stay on the fan-out, but got a RangeWindowGridNative (Func=%q, Scalars=%v)",
 			native.Func, native.Scalars)
 	}
 	sqlStr, _, err := chsql.Emit(context.Background(), plan)
@@ -203,7 +203,7 @@ func TestNativePredictLinearNegativeHorizonFallsBack(t *testing.T) {
 
 // TestNativeDerivPredictFeatureDisabledStaysFanout pins the default (feature
 // OFF) path: with the all-fan-out table, neither deriv nor predict_linear
-// produces a RangeWindowNative — the byte-identical fallback the < 25.9
+// produces a RangeWindowGridNative — the byte-identical fallback the < 25.9
 // substrate runs.
 func TestNativeDerivPredictFeatureDisabledStaysFanout(t *testing.T) {
 	t.Parallel()
@@ -218,7 +218,7 @@ func TestNativeDerivPredictFeatureDisabledStaysFanout(t *testing.T) {
 			// Zero-value RangeLowerers => withDefaults => all fan-out.
 			plan := lowerRangeNative(t, q, promql.RangeLowerers{})
 			if native := findNativeNode(plan); native != nil {
-				t.Fatalf("feature OFF but %q produced a RangeWindowNative (Func=%q) — the default path must stay fan-out",
+				t.Fatalf("feature OFF but %q produced a RangeWindowGridNative (Func=%q) — the default path must stay fan-out",
 					q, native.Func)
 			}
 			sqlStr, _, err := chsql.Emit(context.Background(), plan)

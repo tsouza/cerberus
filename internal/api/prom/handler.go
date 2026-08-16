@@ -79,8 +79,8 @@ type Handler struct {
 	// Lowerers is the WIRED polymorphic dispatch table for the
 	// ClickHouse-native timeSeries*ToGrid family (native rate +
 	// native staleness). It is threaded into the query_range lowering so
-	// eligible shapes lower to the native nodes (chplan.RangeWindowNative /
-	// chplan.RangeWindowResample) instead of the generic SQL fan-out. Built
+	// eligible shapes lower to the native nodes (chplan.RangeWindowGridNative /
+	// chplan.RangeWindowStaleResample) instead of the generic SQL fan-out. Built
 	// at boot in cmd/cerberus from the resolved chopt.EnabledSet
 	// (per-function; native rate and native staleness are independent). The
 	// zero value (nil strategy fields) is the all-fan-out default. Only the
@@ -1337,7 +1337,7 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 // `wrapWithSampleProjection` matrix branch can keep doing the same.
 // matrixWindowOffset walks to the matrix window at plan's root and reports its
 // PromQL offset and whether that offset shifts the REPORTED timestamp. Only a
-// reducing (non-identity) RangeWindow / RangeWindowNative reports on the
+// reducing (non-identity) RangeWindow / RangeWindowGridNative reports on the
 // unshifted request grid, so its shifted anchor_ts must be un-shifted by adding
 // Offset back. A raw range vector / subquery (RangeWindow.Identity) reports each
 // sample at its actual, offset-shifted time and is left alone; a zero offset
@@ -1347,11 +1347,11 @@ func matrixWindowOffset(plan chplan.Node, cols chplan.SampleColumns) (offset tim
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.Offset, v.Offset != 0 && !v.Identity
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// Native (timeSeriesRateToGrid) already reports on the UNSHIFTED request
 		// grid: its anchor axis is built with nativeGridTimeBoundFrag(_, 0) and
 		// Offset is folded ONLY into the aggregate's membership window
-		// (range_window_native.go — "Offset must NOT move the reported
+		// (range_window_grid_native.go — "Offset must NOT move the reported
 		// timestamps"). So its bare anchor_ts is the grid value already, unlike
 		// the fan-out RangeWindow whose bare anchor_ts is offset-SHIFTED.
 		// Re-shifting it here would double-shift a native `rate(m[r] offset o)`
@@ -1378,7 +1378,7 @@ func isMatrixRangeWindow(plan chplan.Node, cols chplan.SampleColumns) bool {
 	switch v := plan.(type) {
 	case *chplan.RangeWindow:
 		return v.OuterRange > 0
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// The native timeSeriesRateToGrid path is always matrix-shape: it
 		// explodes the grid into one row per anchor and surfaces the
 		// per-row `anchor_ts` column, exactly like the fan-out matrix

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// RangeWindowNative is the experimental, ClickHouse-native lowering of a
+// RangeWindowGridNative is the experimental, ClickHouse-native lowering of a
 // `rate(<counter>[<Range>])` range query (query_range, Step > 0). It is
 // the opt-in counterpart to RangeWindow's arrayJoin fan-out: instead of
 // fanning every sample across its covered anchors and re-grouping into
@@ -33,7 +33,7 @@ import (
 // Every other shape lowers to RangeWindow, so the default fan-out is
 // structurally untouched when the flag is off.
 //
-// Row-shape contract. The emitter (internal/chsql/range_window_native.go)
+// Row-shape contract. The emitter (internal/chsql/range_window_grid_native.go)
 // produces EXACTLY the row shape RangeWindow's matrix path
 // (emitWindowedArrayExtrapolatedMatrix) produces: one row per
 // (series, anchor_ts) with columns [GroupBy..., anchor_ts (under both the
@@ -57,7 +57,7 @@ import (
 // detects the node in the emitted plan and stamps that setting onto the
 // per-query ClickHouse context (see internal/engine + internal/chclient),
 // so unrelated queries never carry the experimental knob.
-type RangeWindowNative struct {
+type RangeWindowGridNative struct {
 	Input Node
 
 	// Func is the PromQL range function. The first cut supports "rate"
@@ -144,9 +144,9 @@ type RangeWindowNative struct {
 	Scalars []float64
 }
 
-func (*RangeWindowNative) planNode() {}
+func (*RangeWindowGridNative) planNode() {}
 
-func (r *RangeWindowNative) Children() []Node { return []Node{r.Input} }
+func (r *RangeWindowGridNative) Children() []Node { return []Node{r.Input} }
 
 // InputWindow returns the bounds the INPUT relation must cover for this node
 // to answer every anchor in [start, end]. Each anchor reduces the samples in
@@ -162,15 +162,15 @@ func (r *RangeWindowNative) Children() []Node { return []Node{r.Input} }
 // reintroduced: the two then disagree about the inner grid, the grid-prediction
 // guard reads a divergence that is not there, and a routable plan silently
 // falls back to route A.
-func (r *RangeWindowNative) InputWindow(start, end time.Time) (time.Time, time.Time) {
+func (r *RangeWindowGridNative) InputWindow(start, end time.Time) (time.Time, time.Time) {
 	if r.Step <= 0 {
 		return start, end
 	}
 	return start.Add(-r.Offset - r.Range), end
 }
 
-func (r *RangeWindowNative) Equal(other Node) bool {
-	o, ok := other.(*RangeWindowNative)
+func (r *RangeWindowGridNative) Equal(other Node) bool {
+	o, ok := other.(*RangeWindowGridNative)
 	if !ok {
 		return false
 	}
@@ -220,7 +220,7 @@ func (r *RangeWindowNative) Equal(other Node) bool {
 // The deferred-shaping shape needs those names: the inner (state) level projects
 // GroupBy verbatim and every level above it references the keys BY NAME, so a
 // computed key has no name to reference.
-func (r *RangeWindowNative) GroupByColumns() ([]string, Expr) {
+func (r *RangeWindowGridNative) GroupByColumns() ([]string, Expr) {
 	cols := make([]string, len(r.GroupBy))
 	for i, g := range r.GroupBy {
 		ref, ok := g.(*ColumnRef)
@@ -234,7 +234,7 @@ func (r *RangeWindowNative) GroupByColumns() ([]string, Expr) {
 
 // RecollapseReadColumns names, in first-read order, every column some
 // Recollapse expression reads. It is the ONE walk both the emitter's
-// containment guard and [RangeWindowNative.PartitionRecollapseGroupBy] answer
+// containment guard and [RangeWindowGridNative.PartitionRecollapseGroupBy] answer
 // from: two separate walks could be relaxed apart, and a node that cleared the
 // containment guard while being partitioned as if a shaping input were
 // pass-through would drop that input out of the merge identity and pool
@@ -243,7 +243,7 @@ func (r *RangeWindowNative) GroupByColumns() ([]string, Expr) {
 // Lambda parameters inside the shaping tower are [BareIdent], never
 // [ColumnRef], so the `k` in `k -> replaceRegexpAll(k, …)` is correctly not
 // counted as a column read.
-func (r *RangeWindowNative) RecollapseReadColumns() []string {
+func (r *RangeWindowGridNative) RecollapseReadColumns() []string {
 	var (
 		read []string
 		seen map[string]struct{}
@@ -269,14 +269,14 @@ func (r *RangeWindowNative) RecollapseReadColumns() []string {
 }
 
 // PartitionRecollapseGroupBy splits groupCols — the GroupBy key names as
-// [RangeWindowNative.GroupByColumns] returns them — into the PASS-THROUGH keys
+// [RangeWindowGridNative.GroupByColumns] returns them — into the PASS-THROUGH keys
 // (the ones no shaping expression reads) and the shaping INPUTS. The
 // pass-through keys stay part of the node's OUTPUT series identity (MetricName
 // is the canonical one) and are projected verbatim at all three levels; the
 // shaping inputs are raw keys the middle level's tower consumes and never
 // surface above it. Both slices hold indexes into GroupBy in ascending order,
 // so the emitted key order is the plan's own.
-func (r *RangeWindowNative) PartitionRecollapseGroupBy(groupCols []string) (pass, shapingInputs []int) {
+func (r *RangeWindowGridNative) PartitionRecollapseGroupBy(groupCols []string) (pass, shapingInputs []int) {
 	read := r.RecollapseReadColumns()
 	for i, name := range groupCols {
 		if slices.Contains(read, name) {

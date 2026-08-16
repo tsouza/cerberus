@@ -94,7 +94,7 @@ func TestInspectExprReachesScalarSubquery(t *testing.T) {
 		Op:   OpGt,
 		Left: &ColumnRef{Name: "Value"},
 		Right: &FuncCall{
-			Name: "abs",
+			Fn:   FnAbs,
 			Args: []Expr{sub},
 		},
 	}

@@ -57,8 +57,8 @@ type GridCarrier interface {
 var _ = []GridCarrier{
 	(*StepGrid)(nil),
 	(*RangeWindow)(nil),
-	(*RangeWindowNative)(nil),
-	(*RangeWindowResample)(nil),
+	(*RangeWindowGridNative)(nil),
+	(*RangeWindowStaleResample)(nil),
 	(*RangeLWR)(nil),
 	(*RangeBucketFanout)(nil),
 	(*AbsentOverTime)(nil),
@@ -72,11 +72,11 @@ func (r *RangeWindow) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 
-func (r *RangeWindowNative) EvalGrid() (time.Time, time.Time, time.Duration) {
+func (r *RangeWindowGridNative) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 
-func (r *RangeWindowResample) EvalGrid() (time.Time, time.Time, time.Duration) {
+func (r *RangeWindowStaleResample) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 

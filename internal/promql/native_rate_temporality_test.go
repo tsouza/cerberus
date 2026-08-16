@@ -28,9 +28,9 @@ func TestNativeRateLowererSplitsTemporality(t *testing.T) {
 	if !ok {
 		t.Fatalf("cumulative union arm = %T, want *chplan.Project", union.Inputs[0])
 	}
-	native, ok := nativeArm.Input.(*chplan.RangeWindowNative)
+	native, ok := nativeArm.Input.(*chplan.RangeWindowGridNative)
 	if !ok {
-		t.Fatalf("cumulative arm input = %T, want *chplan.RangeWindowNative", nativeArm.Input)
+		t.Fatalf("cumulative arm input = %T, want *chplan.RangeWindowGridNative", nativeArm.Input)
 	}
 	fanoutArm, ok := union.Inputs[1].(*chplan.Project)
 	if !ok {
@@ -70,7 +70,7 @@ func TestNativeRateLowererTemporalitySplitPreservesOffsetGrid(t *testing.T) {
 	}
 	nativeArm := union.Inputs[0].(*chplan.Project)
 	fanoutArm := union.Inputs[1].(*chplan.Project)
-	native := nativeArm.Input.(*chplan.RangeWindowNative)
+	native := nativeArm.Input.(*chplan.RangeWindowGridNative)
 	fanout := fanoutArm.Input.(*chplan.RangeWindow)
 
 	if native.Offset != queryOffset || fanout.Offset != queryOffset {
