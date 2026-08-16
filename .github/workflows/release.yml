@@ -256,16 +256,18 @@ jobs:
           # block a release. `mutation` is a test-QUALITY ratchet rather than a
           # correctness gate on the artifact being shipped; requiring it here
           # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes. `CodeQL` is required on `main` but
-          # cannot be required here: code-scanning DEFAULT SETUP is configured
-          # by the repository, not by a workflow file in the tree, and it
-          # dispatches on the default branch and its pull requests only — a
-          # maintenance-line push produces no CodeQL run at all, so requiring it
-          # would stall every hotfix on a check that is never coming. The scan
-          # still gates the code on the way in: nothing reaches a release branch
-          # except through a `main` PR that CodeQL blocked on. A prefix here
-          # that swallows a RELEASE_REQUIRED_CHECKS name fails the preflight as
-          # a wiring error rather than quietly de-gating it.
+          # including maintenance hotfixes. `CodeQL` is required on `main`.
+          # Advanced setup's own `codeql.yml` (added in #1558 for merge-queue
+          # support) also triggers on `release/*.x` pushes, so a
+          # maintenance-line push now DOES produce a CodeQL run — unlike
+          # under GitHub's server-side default setup this replaced, which
+          # dispatched on the default branch and its pull requests only. It
+          # stays informational here pending a policy re-check on whether to
+          # require it given that run now exists (#2249). Either way the scan
+          # still gates the code on the way in: nothing reaches a release
+          # branch except through a `main` PR that CodeQL blocked on. A
+          # prefix here that swallows a RELEASE_REQUIRED_CHECKS name fails
+          # the preflight as a wiring error rather than quietly de-gating it.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation

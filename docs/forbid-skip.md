@@ -34,7 +34,7 @@ The gate **runs** in two places:
 The regex **text** lives in three files, which MUST stay in lock-step:
 
 1. `.github/scripts/forbid-skip.mjs` — the CI source of truth, one
-   `case '<name>':` arm of the `CHECK` switch per scan.
+   `CHECKS` registry entry per scan.
 2. `lefthook.yml` — inline mirror, one command per scan.
 3. `scripts/test-forbid-skip.sh` — its own literal copies, asserted
    against the match / counter-example pairs documented below.
@@ -47,7 +47,7 @@ lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
 Rows 1–5 of the summary table below are carried by all three copies.
-Rows 6–9 are carried by CI **and** lefthook; only the self-test's
+Rows 6–8 are carried by CI **and** lefthook; only the self-test's
 coverage differs:
 
 | Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command   | `scripts/test-forbid-skip.sh` |
@@ -72,7 +72,7 @@ The summary table below is organised by **regex pattern** — one row per
 distinct regex shape, so that each shape has its own match-example and
 counter-example. The CI gate, however, dispatches by **CHECK category**:
 `.github/scripts/doc-counts.mjs` derives the canonical scan count LIVE
-from the `case '<name>':` arms of the `CHECK` switch in
+from the keys of the `CHECKS` registry in
 `.github/scripts/forbid-skip.mjs`, and that count is **5**:
 
 | CHECK category       | Covers regex pattern row(s) |
@@ -88,16 +88,16 @@ forms plus the silent-recover slurp) inside one CHECK, and
 `feature-discipline` runs two (the `.feature` tag scan plus the
 harness-Go skip scan), which is why the **8** pattern rows collapse to
 **5** dispatched scans. The `doc-counts.mjs` gate asserts every "N
-patterns/checks/scans" claim in this document equals the live CHECK-arm
-count (6), so the number can never drift from the source switch.
+patterns/checks/scans" claim in this document equals the live `CHECKS`
+registry size (5), so the number can never drift from the source registry.
 
 ## Adding a new pattern
 
 When a new offender shape is discovered:
 
 1. Add the new regex to **all three** copies in the same PR:
-   `.github/scripts/forbid-skip.mjs` (widen an existing `case '<name>':`
-   arm of the `CHECK` switch, or add a new arm plus a matching
+   `.github/scripts/forbid-skip.mjs` (widen an existing `CHECKS` registry
+   entry, or add a new entry plus a matching
    `run: node .github/scripts/forbid-skip.mjs` step with `CHECK: <name>`
    in the `forbid-skip` job of `.github/workflows/ci.yml`),
    `lefthook.yml`, and `scripts/test-forbid-skip.sh`.
@@ -174,7 +174,7 @@ single regex catches BOTH the 2-arg gocheck-style call
 - Does NOT match: `assert.Contains(body, "error: foo")`
 - Does NOT match: `assert.Contains(t, body, "error: foo")`
 
-## Pattern 2 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587, widened #277)
+## Pattern 3 — `assert.ElementsMatch(x, []T{})` soft assertion (PR #587, widened #277)
 
 Regex: `assert\.ElementsMatch\(([^,]+,\s*){0,1}[^,]+,\s*\[\][^)]*\{\s*\}\s*\)`
 
@@ -189,7 +189,7 @@ optional `([^,]+,\s*){0,1}` prefix matches the testify-style
 - Does NOT match: `assert.ElementsMatch(got, []string{"a", "b"})`
 - Does NOT match: `assert.ElementsMatch(t, got, []string{"a", "b"})`
 
-## Pattern 2 — silent panic recovery (PR #587 / #648)
+## Pattern 4 — silent panic recovery (PR #587 / #648)
 
 Regex (perl-slurp form):
 `defer\s+recover\s*\(\s*\)` \| `defer\s+func\s*\(\s*\)\s*\{[^{}]*_\s*=\s*recover\s*\(\s*\)`
@@ -224,7 +224,7 @@ used in real tests.
   }()
   ```
 
-## Pattern 2 — `should_skip:` compatibility overlay
+## Pattern 5 — `should_skip:` compatibility overlay
 
 The `forbid-skip` CI job step "Reject should_skip overlay entries"
 rejects ANY non-empty `should_skip:` block in
@@ -233,7 +233,7 @@ is either scored against the reference or it is not in the corpus —
 there is no per-case skip overlay, so the gate forbids the construct
 itself rather than auditing each entry's tracking ref.
 
-## Pattern 2 — test escape-hatch primitives (PR #712)
+## Pattern 6 — test escape-hatch primitives (PR #712)
 
 Regex (ERE alternation over `*.ts` / `*.tsx` / `*.go`, excluding
 `compatibility/*/upstream/**`, `**/node_modules/**`, `vendor/**`,
@@ -271,7 +271,7 @@ Each token names a removed anti-pattern:
   `expect.soft(locator).toBeVisible();`
 - Does NOT match: `expect(locator).toBeVisible();` (the loud form)
 
-## Pattern 2 — scenario-suppressing Gherkin tags (PR #1268)
+## Pattern 7 — scenario-suppressing Gherkin tags (PR #1268)
 
 Regex (ERE, case-insensitive, over `*.feature`, excluding
 `**/node_modules/**`):
@@ -308,7 +308,7 @@ suppression tag fails there even before this scan names it.
 - Does NOT match: an `@archetype:` value that merely contains one of the
   words, e.g. `@archetype:manual-scrape`
 
-## Pattern 2 — godog skip / pending routes (PR #1268)
+## Pattern 8 — godog skip / pending routes (PR #1268)
 
 Regex (ERE over `test/e2e/migration/**/*.go`):
 
@@ -340,15 +340,15 @@ reason to call a method named `Skip`.
 A read-through of the remaining patterns shows no strict
 redundancies — each catches a shape the others would miss:
 
-- Patterns 3 and 4 both target soft-assertion shapes, but they match
+- Patterns 2 and 3 both target soft-assertion shapes, but they match
   different `assert.*` calls (`Contains` vs `ElementsMatch`). A single
   combined alternation would work but the two-regex shape keeps the
   error message specific.
-- Pattern 5 has two alternatives in a single regex (bare `defer
+- Pattern 4 has two alternatives in a single regex (bare `defer
   recover()` vs the multi-line block). They cannot be merged with
-  patterns 3 / 4 because pattern 5 needs the `perl -0777` slurp to
+  patterns 2 / 3 because pattern 4 needs the `perl -0777` slurp to
   span lines.
-- Patterns 1 and 9 both reject a skip call, but neither scope reaches
+- Patterns 1 and 8 both reject a skip call, but neither scope reaches
   the other's files: pattern 1's scope is `*_test.go` across the tree, while
   godog step definitions are non-test `.go` files under the migration
   harness.
@@ -364,4 +364,4 @@ compatibility YAML; pattern 6 is the escape-hatch scan over the TS / Go
 suites; patterns 7 and 8 are the Gherkin-scenario discipline over the
 migration harness. The canonical scan count is derived live from
 `.github/scripts/forbid-skip.mjs` by `.github/scripts/doc-counts.mjs`,
-so this **5** can never drift from the source switch.
+so this **5** can never drift from the source registry.

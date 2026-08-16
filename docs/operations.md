@@ -281,8 +281,9 @@ the SQL array machinery leaves at high cardinality. See
   sample sitting exactly on `anchor-window`, so 25.6–25.8 emit a rate at grid
   points where reference Prometheus emits nothing — a systematic divergence, not
   a measure-zero edge. So the auto floor for the whole family is **25.9**. The
-  compose / e2e / compatibility deployment and the chDB test substrate now run
-  **26.5**, ABOVE that floor, so the native path is genuinely exercised there.
+  compose / e2e deployment runs **26.6** and the compatibility deployment and the
+  chDB test substrate run **26.5**, both ABOVE that floor, so the native path is
+  genuinely exercised on every substrate.
   The auto-picker gates on this floor automatically — it enables
   `ts_grid_range` only when the probed server is ≥ 25.9, so a connected older
   server keeps the fan-out and never diverges. (Force-enabling via the legacy
@@ -425,8 +426,8 @@ matrix is released once the response is written). Size cerberus's memory limit
 (and `GOMEMLIMIT`, which Go's GC needs since it does not read cgroup limits)
 for the heavier per-query footprint, **or** trim the promoted set with
 `CERBERUS_PROM_RESOURCE_LABELS` so only the keys you query on carry the cost.
-The e2e manifest (`test/e2e/k3s/cerberus-values.yaml`) sizes the pod at 1536Mi /
-`GOMEMLIMIT=1228MiB` for the promote-all default under the full dashboard
+The e2e manifest (`test/e2e/k3s/cerberus-values.yaml`) sizes the pod at 2560Mi /
+`GOMEMLIMIT=2048MiB` for the promote-all default under the full dashboard
 sweep; a tighter allowlist lets you run leaner.
 
 ## Backing services
@@ -764,14 +765,14 @@ byte-for-byte as if the block did not exist.
 exercised. Treat anything below "runtime-proven" as needing a real-cloud
 validation pass against your own bucket/credentials before production use:
 
-| Configuration                                | Status                         | How it is validated                                                         |
-| -------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
-| S3 / MinIO, single-node                      | **Runtime-proven**             | k3d e2e (`bwc-minio` lane): live MinIO, real read/write, placement asserted |
-| S3 on real AWS (virtual-hosted + IRSA)       | Render / kubeconform-validated | `ci/bwc-aws-values.yaml` renders; no live-AWS run                           |
-| GCS (S3-compat HMAC endpoint)                | Render / kubeconform-validated | `ci/bwc-gcs-values.yaml` renders; no live-GCS run                           |
-| Azure Blob (account key or managed identity) | Render / kubeconform-validated | `ci/bwc-azure-values.yaml` renders; no live-Azure run                       |
-| IRSA / GKE / AKS workload identity           | Render / kubeconform-validated | env / SA annotations render; no live cloud-identity run                     |
-| Multi-replica + Keeper (ReplicatedMergeTree) | Render / kubeconform-validated | `ci/bwc-replicated-values.yaml` renders; no live multi-node run             |
+| Configuration                                | Status                         | How it is validated                                                                  |
+| -------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
+| S3 / MinIO, single-node                      | **Runtime-proven**             | k3d e2e (`bwc-minio` lane): live MinIO, real read/write, placement asserted          |
+| S3 on real AWS (virtual-hosted + IRSA)       | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-aws-values.yaml` renders; no live-AWS run               |
+| GCS (S3-compat HMAC endpoint)                | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-gcs-values.yaml` renders; no live-GCS run               |
+| Azure Blob (account key or managed identity) | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-azure-values.yaml` renders; no live-Azure run           |
+| IRSA / GKE / AKS workload identity           | Render / kubeconform-validated | env / SA annotations render; no live cloud-identity run                              |
+| Multi-replica + Keeper (ReplicatedMergeTree) | Render / kubeconform-validated | `deploy/helm/cerberus/ci/bwc-replicated-values.yaml` renders; no live multi-node run |
 
 Only **S3/MinIO single-node** is proven end to end on the CI substrate (the k3d
 e2e brings up real MinIO and writes/reads through the object disk). Every other
@@ -1852,5 +1853,5 @@ for its config and row shape.
 Cerberus has no embedded admin REPL. Schema operations are owned by
 ClickHouse directly (run `clickhouse-client` against the cluster);
 config changes happen by env-var update + process restart. The `gh pr
-merge --auto --squash --delete-branch` flow is the source of truth
+merge --squash --delete-branch` flow is the source of truth
 for operator-driven changes to the binary.

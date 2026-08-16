@@ -62,7 +62,7 @@ expect_no_match() {
 }
 
 # expect_match_ci <label> <regex> <fixture-file> — same as expect_match, but
-# with grep's -i, for the one pattern (8) whose forbid-skip.mjs invocation
+# with grep's -i, for the one pattern (7) whose forbid-skip.mjs invocation
 # scans case-insensitively.
 expect_match_ci() {
   local label="$1" regex="$2" file="$3"
@@ -214,7 +214,7 @@ expect_match    "case3 bare @skip tag"         "$RE3" "$tmpdir/case3_match_bare.
 expect_no_match "case3 real tag line"          "$RE3" "$tmpdir/case3_nomatch.txt"
 expect_no_match "case3 archetype containing a banned word" "$RE3" "$tmpdir/case3_nomatch_embedded.txt"
 
-# The forbid-skip.mjs invocation of RE8 runs `grep -i`: the tag vocabulary is
+# The forbid-skip.mjs invocation of RE3 runs `grep -i`: the tag vocabulary is
 # closed and fixed-case, so a wrongly-cased suppression tag — including one
 # placed on a Scenario Outline's Examples block, which is legal Gherkin — must
 # not merge clean just because nobody typed it in lowercase.

@@ -1394,8 +1394,11 @@ func metadataBoundExpr(t time.Time) chplan.Expr {
 }
 
 // wrapRangeLatestPerSeries builds the per-step LWR for a vector
-// selector evaluated over a query_range window. It emits a single
-// chplan.RangeLWR node:
+// selector evaluated over a query_range window. It delegates to the
+// boot-wired ctx.lowerers.Staleness strategy, which emits either the
+// native chplan.RangeWindowStaleResample or, for the shape it cannot
+// express (in.sampleTimestamp) and on a fan-out-only deployment, the
+// generic chplan.RangeLWR:
 //
 //	RangeLWR step=<step> lookback=5m [offset=<o>] ts=TimeUnix value=Value start=<s> end=<e>
 //	  Scan + matchers_filter
@@ -1406,12 +1409,12 @@ func metadataBoundExpr(t time.Time) chplan.Expr {
 // `(anchor - offset - 5m, anchor - offset]` contains it, then a
 // `GROUP BY (MetricName, Attributes, anchor_ts)` with
 // `argMax(Value, TimeUnix)` collapses each (series, anchor) bucket to its
-// newest in-window sample. The output is the canonical 4-column Sample
-// contract `(MetricName, Attributes, TimeUnix = anchor_ts, Value)`, one
-// row per (series, anchor) that had data — identical to the shape the
-// prior StepGrid CROSS JOIN + per-anchor argMax produced, but at
-// O(rows × lookback/step) intermediate cardinality (constant in the grid
-// width N) instead of O(rows × N).
+// newest in-window sample. Both the native and fan-out shapes produce the
+// canonical 4-column Sample contract `(MetricName, Attributes,
+// TimeUnix = anchor_ts, Value)`, one row per (series, anchor) that had
+// data, at O(rows × lookback/step) intermediate cardinality (constant in
+// the grid width N) instead of the O(rows × N) a StepGrid CROSS JOIN +
+// per-anchor argMax would cost.
 //
 // The half-open window edges, the offset-shifts-the-window-not-the-anchor
 // semantics, and the staleness-gap "no sample → no row" rule are all
