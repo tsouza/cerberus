@@ -509,6 +509,29 @@ test("job rosters are canonical and durations come from API timestamps", async (
   );
 });
 
+test("synthetic reversed timestamps on skipped jobs normalize to zero", async () => {
+  const run = workflowRun({ id: 650 });
+  const completedAt = "2026-08-16T11:01:00Z";
+  const { document } = await collect({
+    runs: [run],
+    jobsByRun: {
+      "650:1": [
+        workflowJob({
+          id: 6501,
+          conclusion: "skipped",
+          startedAt: "2026-08-16T11:02:00Z",
+          completedAt,
+        }),
+      ],
+    },
+  });
+  const job = document.workflow_runs[0].jobs[0];
+  assert.equal(job.started_at, completedAt);
+  assert.equal(job.completed_at, completedAt);
+  assert.equal(job.duration_ms, 0);
+  assert.equal(job.conclusion, "skipped");
+});
+
 test("malformed or reversed job timestamps are rejected", async (t) => {
   const run = workflowRun({ id: 700 });
   for (const [name, timestamps] of [

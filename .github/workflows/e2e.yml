@@ -147,6 +147,13 @@ on:
           - k3d
           - compose
           - both
+  workflow_call:
+    inputs:
+      release_qualification:
+        description: 'run the exact-SHA, non-cancellable full pre-publication E2E roster'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -256,7 +263,7 @@ jobs:
         run: node .github/scripts/compose-smoke-matrix.mjs
         env:
           MODE: emit
-          IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
+          IS_SCHEDULE: ${{ github.event_name == 'schedule' || inputs.release_qualification }}
           # Forwarded RAW: the emitter decides what it means for depth. A
           # dispatch that regenerates the compose inventory has to sweep the
           # crawl shard full, and the shard's timeout has to follow it — see
@@ -917,7 +924,7 @@ jobs:
           SETUP_RESULT: ${{ needs.compose-smoke-setup.result }}
           HAS_INFORMATIONAL: ${{ needs.compose-smoke-setup.outputs.has_informational }}
           CRAWL_SHARD_RESULT: ${{ needs.compose-smoke-shard-info.result }}
-          SWEEP_DEPTH: ${{ github.event_name == 'schedule' && 'full' || 'lean' }}
+          SWEEP_DEPTH: ${{ (github.event_name == 'schedule' || inputs.release_qualification) && 'full' || 'lean' }}
 
   # ---------------------------------------------------------------------------
   # dashboard (k3d) lane — SHARDED across a modest matrix of isolated k3d
@@ -1011,7 +1018,7 @@ jobs:
           # validated by the FULL matrix — a release must never ship a mode
           # the gate didn't exercise. Regular pull_request + push get the
           # fast smoke-only matrix.
-          INCLUDE_CRAWL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+          INCLUDE_CRAWL: ${{ inputs.release_qualification || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
           # Split mode doubles the k3d boot count (the setup-bound long pole),
           # so regular PR/push exercise monolith only. It runs on schedule +
           # dispatch AND — critically — on release PRs (head branch release/*),
@@ -1019,7 +1026,7 @@ jobs:
           # split before the release PR can merge + publish. (A broken split
           # shipped in v1.4.0 precisely because the release commit's checks
           # never ran split; this closes that hole.)
-          INCLUDE_SPLIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+          INCLUDE_SPLIT: ${{ inputs.release_qualification || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
           UPDATE_CRAWL_INVENTORY: ${{ inputs.update_crawl_inventory }}
 
   dashboard-shard:
@@ -1056,7 +1063,7 @@ jobs:
       # dispatch. On push-to-main the crawl shard is a near-instant green no-op: every
       # expensive step below is gated on RUN_SHARD, which is false for the crawl
       # shard on a push event. The smoke shards always run.
-      RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+      RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || inputs.release_qualification || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
     steps: &dashboard_shard_steps
       - uses: actions/checkout@v7
 
@@ -1459,7 +1466,7 @@ jobs:
           SCOPE_RESULT: success
           SETUP_RESULT: ${{ needs.dashboard-setup.result }}
           HAS_INFORMATIONAL: ${{ needs.dashboard-setup.outputs.has_informational }}
-          CRAWL_EXPECTED: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
+          CRAWL_EXPECTED: ${{ inputs.release_qualification || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
           CRAWL_SHARD_RESULT: ${{ needs.dashboard-shard-info.result }}
           SWEEP_DEPTH: full
 
@@ -1473,7 +1480,7 @@ jobs:
     needs: [dashboard-setup, dashboard-shard-info]
     if: >-
       always() && needs.dashboard-shard-info.result == 'success' &&
-      (github.event_name == 'schedule' || startsWith(github.head_ref, 'release/') ||
+      (inputs.release_qualification || github.event_name == 'schedule' || startsWith(github.head_ref, 'release/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.update_crawl_inventory != 'k3d' && inputs.update_crawl_inventory != 'both'))
     runs-on: ubuntu-latest
@@ -1574,7 +1581,7 @@ jobs:
     # stays on `check` + `lint` + `compose-smoke`. Runs on push-to-main +
     # nightly + manual dispatch alongside the dashboard job.
     name: startup-bench
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.release_qualification || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -1707,7 +1714,7 @@ jobs:
     # nightly + manual dispatch ONLY, never on pull_request, and is NOT a
     # branch-protection required check. A regression is caught at
     # merge-to-main time and reverted from main, not blocked pre-merge.
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.release_qualification || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # 40 to match the dashboard budget. Shared bring-up (e2e-up +
     # seed-rolling + wait-otel) is ~10-15 min; the phase-1 fault scenarios
@@ -1924,7 +1931,7 @@ jobs:
           seed: ci-${{ github.run_id }}-${{ github.run_attempt }}
   bwc-minio:
     name: bwc-minio
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.release_qualification || github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     concurrency:

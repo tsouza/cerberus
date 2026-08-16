@@ -1713,7 +1713,7 @@ const (
 
 // The build-once seam (Layer 14, D2): the migration lane runs the SAME three
 // tier jobs twice against a release commit — once proving the source tree, once
-// proving the image goreleaser built — and the only thing that differs is which
+// proving the sealed unpublished candidate — and the only thing that differs is which
 // cerberus the stack runs and which binary the scenarios exec. Every constant
 // below exists in more than one file by necessity (a compose interpolation
 // default, a Justfile variable, a Node const, a Go const, an ldflag), so the
@@ -1722,21 +1722,24 @@ const (
 const (
 	// migrationArtifactScript resolves which cerberus the lane drives.
 	migrationArtifactScript = "../../.github/scripts/migration-artifact.mjs"
+	// migrationArtifactAction downloads the sealed candidate when present and
+	// maps the closed five-field identity into the resolver.
+	migrationArtifactAction = "../../.github/actions/resolve-migration-artifact/action.yml"
 	// migrationLocalImageVar is the Justfile variable naming the locally built
 	// image tag.
 	migrationLocalImageVar = "MIGRATION_LOCAL_IMAGE"
 	// migrationImageRecipe is the SINGLE point at which the image enters the
 	// Docker daemon.
 	migrationImageRecipe = "migration-cerberus-image"
-	// dockerfileLocalPath builds the image the stacks run when no released
+	// dockerfileLocalPath builds the image the stacks run when no candidate
 	// artifact is supplied; cerberusMainPath declares the source-build stamp.
 	dockerfileLocalPath = "../../Dockerfile.local"
 	cerberusMainPath    = "../../cmd/cerberus/main.go"
 	// buildFlag forces `docker compose up` to compile the build context even
-	// when the image is already present, which is exactly how a released
+	// when the image is already present, which is exactly how a candidate
 	// artifact gets replaced by a recompile of whatever tree the runner holds.
 	buildFlag = "--build"
-	// pullRetryRecipe is how a released image is fetched. A bare `docker pull`
+	// pullRetryRecipe is how an image is fetched. A bare `docker pull`
 	// is single-attempt, and one Docker Hub timeout on it failed the v1.13.0
 	// release's Tier-1 leg; see TestJustfileNoUnretriedDockerPull.
 	pullRetryRecipe = "_pull-retry"
@@ -1746,10 +1749,10 @@ const (
 var composeImageDefaultRe = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*):-(.+)\}$`)
 
 // TestMigrationImageIsAcquiredOnceNeverRebuilt pins the seam that lets the
-// release lane test the artifact it just built.
+// release lane test the sealed candidate it just built.
 //
 // `pull_policy: build` plus `up --build` — the shape this replaced — means
-// pointing `image:` at a released tag does NOT stop compose recompiling the
+// pointing `image:` at the candidate digest does NOT stop compose recompiling the
 // source tree over it. The lane would report "tested the release artifact"
 // having tested source, and every gate in the pipeline would stay green.
 func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
@@ -1764,8 +1767,8 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	m := composeImageDefaultRe.FindStringSubmatch(cerb.Image)
 	if m == nil {
 		t.Fatalf("%s's %s service declares image %q, want a `${VAR:-default}` interpolation. A literal "+
-			"tag gives release.yml's artifact lane no way to point the stack at the image goreleaser "+
-			"built, so it would prove the source tree under an artifact-shaped job name.",
+			"tag gives release qualification no way to point the stack at the sealed candidate "+
+			"digest, so it would prove the source tree under an artifact-shaped job name.",
 			tier1ComposePath, tier1CerberusService, cerb.Image)
 	}
 	imageEnvVar, localTag := m[1], m[2]
@@ -1775,7 +1778,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	}
 	if cerb.PullPolicy != composePullPolicyNever {
 		t.Fatalf("%s's %s service declares pull_policy %q, want %q. Anything else lets the up path "+
-			"acquire the image itself, which is how a source rebuild silently replaces a released "+
+			"acquire the image itself, which is how a source rebuild silently replaces a candidate "+
 			"artifact. The image is put in the daemon by `just %s` BEFORE up runs.",
 			tier1ComposePath, tier1CerberusService, cerb.PullPolicy, composePullPolicyNever, migrationImageRecipe)
 	}
@@ -1815,7 +1818,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 		if strings.Contains(recipeBody, buildFlag) {
 			t.Fatalf("Justfile recipe %s passes %s to `docker compose up`. That forces a source build "+
 				"regardless of pull_policy, so a release run would recompile this tree over the "+
-				"released image and still report green. Body:\n%s", recipe, buildFlag, recipeBody)
+				"candidate image and still report green. Body:\n%s", recipe, buildFlag, recipeBody)
 		}
 	}
 
@@ -1826,7 +1829,7 @@ func TestMigrationImageIsAcquiredOnceNeverRebuilt(t *testing.T) {
 	for _, want := range []string{"docker build", "Dockerfile.local", pullRetryRecipe, lib.ImageEnv} {
 		if !strings.Contains(acquire, want) {
 			t.Fatalf("Justfile recipe %s does not reference %q; it must build the local tag from "+
-				"Dockerfile.local and pull a released one (with retry), decided by %s alone. Body:\n%s",
+				"Dockerfile.local and pull a candidate one (with retry), decided by %s alone. Body:\n%s",
 				migrationImageRecipe, want, lib.ImageEnv, acquire)
 		}
 	}
@@ -1945,7 +1948,7 @@ var migrationTierJobs = []string{"migration-tier0", tier1JobName, "migration-tie
 // TestMigrationTierJobsResolveTheArtifact pins the resolver into every tier
 // job. A tier that skips it either compiles no CLI at all (release path: no
 // binary to hand the scenarios) or, worse, builds one from source while the job
-// claims to be driving a released image.
+// claims to be driving a sealed candidate.
 func TestMigrationTierJobsResolveTheArtifact(t *testing.T) {
 	t.Parallel()
 
@@ -1954,16 +1957,33 @@ func TestMigrationTierJobsResolveTheArtifact(t *testing.T) {
 		t.Fatalf("read %s: %v", tier1WorkflowPath, err)
 	}
 	body := string(workflow)
+	action := readFileString(t, migrationArtifactAction)
+	for _, want := range []string{
+		"node .github/scripts/migration-artifact.mjs",
+		"CERBERUS_CANDIDATE_DIR_INPUT:",
+		"CERBERUS_CANDIDATE_DIGEST_INPUT:",
+		"CERBERUS_EXPECT_VERSION_INPUT:",
+		"CERBERUS_SOURCE_SHA_INPUT:",
+		"CERBERUS_SOURCE_TREE_INPUT:",
+	} {
+		if !strings.Contains(action, want) {
+			t.Fatalf("%s does not carry %q; the reusable action must hand the complete candidate identity "+
+				"to the single resolver. Body:\n%s", migrationArtifactAction, want, action)
+		}
+	}
 
 	for _, job := range migrationTierJobs {
 		jobBody := workflowJobBody(t, body, job)
 		for _, want := range []string{
-			"node .github/scripts/migration-artifact.mjs",
-			"CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}",
-			"CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}",
+			"uses: ./.github/actions/resolve-migration-artifact",
+			"candidate-artifact: ${{ inputs.candidate_artifact }}",
+			"candidate-digest: ${{ inputs.candidate_digest }}",
+			"expect-version: ${{ inputs.expect_version }}",
+			"source-sha: ${{ inputs.source_sha }}",
+			"source-tree: ${{ inputs.source_tree }}",
 		} {
 			if !strings.Contains(jobBody, want) {
-				t.Fatalf("%s job %q does not carry %q, so the release lane's `cerberus_image` input "+
+				t.Fatalf("%s job %q does not carry %q, so the release lane's candidate identity "+
 					"would not reach it and the tier would silently test this tree instead. Body:\n%s",
 					tier1WorkflowPath, job, want, jobBody)
 			}
@@ -1973,7 +1993,47 @@ func TestMigrationTierJobsResolveTheArtifact(t *testing.T) {
 		if strings.Contains(jobBody, "go build -o build/cerberus") {
 			t.Fatalf("%s job %q still compiles the CLI directly. That binary bypasses the resolver's "+
 				"version probe, so a release run would exec a source build while claiming to test the "+
-				"released artifact. Body:\n%s", tier1WorkflowPath, job, jobBody)
+				"sealed candidate. Body:\n%s", tier1WorkflowPath, job, jobBody)
+		}
+	}
+}
+
+// TestMigrationCandidateRegistryLivesThroughEachTier prevents the artifact
+// resolver from exporting a digest whose only registry has already been torn
+// down. Tier-1 and Tier-2 acquire CERBERUS_IMAGE after the resolver returns, so
+// cleanup belongs after the stack teardown, not in the resolver's success path.
+func TestMigrationCandidateRegistryLivesThroughEachTier(t *testing.T) {
+	t.Parallel()
+
+	script := readFileString(t, migrationArtifactScript)
+	load := strings.Index(script, "loaded = loadCandidate(plan)")
+	export := strings.Index(script, "[CANDIDATE_REGISTRY_ENV, loaded?.container ?? '']")
+	stop := strings.Index(script, "stopLoopbackRegistry(loaded.container)")
+	if load < 0 || export < 0 || stop < 0 || !(load < export && export < stop) {
+		t.Fatalf("%s must export the live candidate registry before its failure-only cleanup; "+
+			"otherwise the later image pull targets a stopped endpoint (load=%d export=%d stop=%d)",
+			migrationArtifactScript, load, export, stop)
+	}
+	if !strings.Contains(script, "process.argv[2] || 'resolve'") ||
+		!strings.Contains(script, "mode === 'cleanup'") {
+		t.Fatalf("%s has no explicit idempotent cleanup mode for the tier jobs", migrationArtifactScript)
+	}
+
+	workflow := readFileString(t, tier1WorkflowPath)
+	for _, job := range migrationTierJobs {
+		body := workflowJobBody(t, workflow, job)
+		resolve := strings.Index(body, "uses: ./.github/actions/resolve-migration-artifact")
+		cleanup := strings.Index(body, "node .github/scripts/migration-artifact.mjs cleanup")
+		if resolve < 0 || cleanup < 0 || cleanup <= resolve {
+			t.Fatalf("%s job %q must remove the candidate registry after resolving and using it "+
+				"(resolve=%d cleanup=%d). Body:\n%s", tier1WorkflowPath, job, resolve, cleanup, body)
+		}
+		if job == tier1JobName || job == "migration-tier2" {
+			teardown := strings.Index(body, "tear the stack down")
+			if teardown < 0 || cleanup <= teardown {
+				t.Fatalf("%s job %q removes the candidate registry before its stack teardown "+
+					"(teardown=%d cleanup=%d). Body:\n%s", tier1WorkflowPath, job, teardown, cleanup, body)
+			}
 		}
 	}
 }

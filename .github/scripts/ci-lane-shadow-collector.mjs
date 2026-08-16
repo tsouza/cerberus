@@ -475,6 +475,10 @@ export async function discoverWorkflowRuns({
 
 function normalizeJob(job) {
   const status = requiredString(job.status, "workflow job status");
+  const conclusion = nullableConclusion(
+    job.conclusion,
+    "workflow job conclusion",
+  );
   const startedAt = apiTimestamp(job.started_at, "workflow job started_at", {
     nullable: status !== "completed",
   });
@@ -483,22 +487,33 @@ function normalizeJob(job) {
     "workflow job completed_at",
     { nullable: status !== "completed" },
   );
+  let normalizedStartedAt = startedAt;
   let duration = null;
   if (startedAt !== null && completedAt !== null) {
     duration = Date.parse(completedAt) - Date.parse(startedAt);
     if (!Number.isSafeInteger(duration) || duration < 0) {
-      contract(
-        "CI lane shadow collector",
-        "workflow job completion precedes its start",
-      );
+      // Actions assigns synthetic timestamps to jobs skipped before runner
+      // allocation and can report their start after their completion. A
+      // skipped job executed no runner time, so canonicalize that documented
+      // API shape to a zero-duration instant. Every executed conclusion keeps
+      // the strict chronological check.
+      if (status === "completed" && conclusion === "skipped") {
+        normalizedStartedAt = completedAt;
+        duration = 0;
+      } else {
+        contract(
+          "CI lane shadow collector",
+          "workflow job completion precedes its start",
+        );
+      }
     }
   }
   return {
     id: positiveID(job.id, "workflow job id"),
     name: requiredString(job.name, "workflow job name"),
     status,
-    conclusion: nullableConclusion(job.conclusion, "workflow job conclusion"),
-    started_at: startedAt,
+    conclusion,
+    started_at: normalizedStartedAt,
     completed_at: completedAt,
     duration_ms: duration,
   };

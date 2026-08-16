@@ -4,11 +4,10 @@
 // One module, three subcommands (argv[2]):
 //
 //   version-gate
-//     Compare the local Chart.yaml `version:` against the latest chart tag
-//     already published to the OCI registry. Exits 0 and sets the
-//     `publish=true|false` step output. When the local version already exists
-//     remotely, publish=false (an app-only `v*` tag must NOT republish an
-//     unchanged chart). Otherwise publish=true.
+//     Compare the local Chart.yaml `version:` against its chart-v<version>
+//     completion tag. That tag is created only after the package, metadata,
+//     signature, and attestation all succeed. A package that reached OCI before
+//     a later writer failed therefore remains repairable on the next run.
 //
 //   push
 //     Run `helm push <tgz> oci://<repo>`, parse the pushed digest out of helm's
@@ -19,9 +18,7 @@
 //     Idempotently push the artifacthub-repo.yml as the special Artifact Hub
 //     OCI artifact via `oras`.
 //
-// argv `--self-test` runs the in-process assertion suite (pins the pure
-// `notFoundError` / `decideFromProbe` boundary, incl. the maintenance-line
-// "older than latest but absent → publish" case) and exits.
+// argv `--self-test` runs the in-process assertion suite and exits.
 //
 // Env contract (documented here, the single source of truth):
 //   CHART_DIR        path to the chart dir (default: deploy/helm/cerberus)
@@ -79,56 +76,31 @@ function ociHostPath() {
   return `${OCI_REPO.replace(/^oci:\/\//, '')}/${CHART_NAME}`;
 }
 
-// notFoundError — does a `helm show chart` failure mean a DEFINITIVE "this
-// version is not in the registry" (so it's a new version → publish), as opposed
-// to a transient/auth/registry error (which must fail CLOSED rather than risk a
-// wrong publish)? Pure string classification — exported so the self-test pins
-// the exact boundary.
-export function notFoundError(stderr) {
-  return /not found|manifest unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN|no such|404|not.*exist/i.test(stderr || '');
-}
-
-// decideFromProbe — the pure chart gate. Given the `helm show chart` probe
-// result ({ status, stderr }), return { publish } | { error }. publish is true
-// ONLY when the probe DEFINITIVELY reports the chart version is absent from the
-// registry (status !== 0 AND a not-found-shaped stderr); false when the probe
-// succeeds (version already published); { error } when the probe failed for an
-// indeterminate reason (the caller must fail closed). This is the chart-side
-// twin of the app gate's tag-absent rule: publish iff the target artifact does
-// not already exist, which is idempotent and works for main, maintenance, and
-// re-runs alike. Pure: no I/O, no process.exit — so the self-test is exact.
-export function decideFromProbe({ status, stderr }) {
-  if (status === 0) return { publish: false };
-  if (notFoundError(stderr)) return { publish: true };
-  return { error: true };
+export function decideFromCompletionTags(version, existingTags) {
+  const tag = `chart-v${version}`;
+  return { publish: !existingTags.includes(tag), version, tag };
 }
 
 function versionGate() {
   const version = chartVersion();
-  const ref = `${ociHostPath()}:${version}`;
-  // `helm show chart oci://…:<version>` succeeds iff that chart version is
-  // already published. A failure (most commonly "not found") means this is a
-  // new version → publish. A maintenance hotfix whose chart version is OLDER
-  // than the latest published chart still publishes here, because the gate keys
-  // on absence-of-this-version, not newest-wins.
-  const r = run('helm', ['show', 'chart', `${OCI_REPO}/${CHART_NAME}`, '--version', version]);
-  const stderr = `${r.stdout || ''}\n${r.stderr || ''}`;
-  const d = decideFromProbe({ status: r.status, stderr });
-  if (d.error) {
-    // Fail CLOSED: a transient/auth/registry error must NOT default to
-    // publish=true (that risks republishing — or wrongly skipping — on a flaky
-    // registry). Abort.
-    ghError(`version-gate could not determine whether ${ref} exists (exit ${r.status}); failing closed rather than risk a wrong publish. stderr:\n${stderr.trim()}`);
+  const listed = run('git', ['tag', '-l', 'chart-v*']);
+  if (listed.status !== 0) {
+    ghError(`version-gate could not list chart completion tags (exit ${listed.status}): ${(listed.stderr || '').trim()}`);
     process.exit(1);
   }
+  const d = decideFromCompletionTags(
+    version,
+    (listed.stdout || '').split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean),
+  );
   if (d.publish) {
-    ghNotice(`chart ${CHART_NAME} ${version} not yet published — will publish`);
+    ghNotice(`chart ${CHART_NAME} ${version} has no completion tag — will qualify or repair publication`);
     setOutput('publish', 'true');
   } else {
-    ghNotice(`chart ${CHART_NAME} ${version} already published at ${ref} — skipping publish`);
+    ghNotice(`chart ${CHART_NAME} ${version} is complete at ${d.tag} — skipping publication`);
     setOutput('publish', 'false');
   }
   setOutput('version', version);
+  setOutput('tag', d.tag);
   process.exit(0);
 }
 
@@ -137,35 +109,12 @@ function selfTest() {
     if (!c) throw new Error('self-test: ' + m);
   };
 
-  // notFoundError: definitive not-found shapes classify as absent.
-  assert(notFoundError('Error: chart not found'), 'helm not-found');
-  assert(notFoundError('manifest unknown'), 'oci manifest unknown');
-  assert(notFoundError('MANIFEST_UNKNOWN: ...'), 'oci MANIFEST_UNKNOWN code');
-  assert(notFoundError('failed: 404 Not Found'), '404');
-  assert(!notFoundError('Error: unauthorized: authentication required'), 'auth error is NOT not-found');
-  assert(!notFoundError('connection reset by peer'), 'network error is NOT not-found');
-  assert(!notFoundError(''), 'empty stderr is NOT not-found');
-
-  // decideFromProbe: published version (probe ok) -> no publish.
-  let d = decideFromProbe({ status: 0, stderr: '' });
-  assert(d.publish === false, 'probe success means already published -> no publish');
-
-  // decideFromProbe: definitive absent -> publish. THIS is the main, the
-  // maintenance, and the fresh-chart case all at once — the version simply is
-  // not in the registry yet.
-  d = decideFromProbe({ status: 1, stderr: 'Error: cerberus:0.6.4 not found' });
-  assert(d.publish === true, 'definitively absent version must publish');
-
-  // decideFromProbe: MAINTENANCE chart hotfix. A chart version OLDER than the
-  // latest published one (e.g. 0.6.3 backport while 0.7.0 is the newest) is
-  // still absent at THIS exact version -> publish. The "newest-wins" trap a
-  // greater-than comparison would fall into is structurally impossible here.
-  d = decideFromProbe({ status: 1, stderr: 'manifest unknown' });
-  assert(d.publish === true, 'tag-absent maintenance chart hotfix older than latest must still publish');
-
-  // decideFromProbe: indeterminate probe error -> fail closed (no publish flag).
-  d = decideFromProbe({ status: 1, stderr: 'unauthorized: authentication required' });
-  assert(d.error === true && d.publish === undefined, 'indeterminate error must fail closed');
+  let d = decideFromCompletionTags('0.6.4', ['chart-v0.6.3']);
+  assert(d.publish === true && d.tag === 'chart-v0.6.4', 'missing completion tag publishes');
+  d = decideFromCompletionTags('0.6.4', ['chart-v0.6.4']);
+  assert(d.publish === false, 'exact completion tag is a no-op');
+  d = decideFromCompletionTags('0.6.3', ['chart-v0.7.0']);
+  assert(d.publish === true, 'an older maintenance version without its own completion tag publishes');
 
   ghNotice('chart-publish version-gate --self-test: all assertions passed');
 }

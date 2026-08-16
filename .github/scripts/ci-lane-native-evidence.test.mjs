@@ -241,16 +241,17 @@ test("native parser families derive counts, duration, seed, and corpus from raw 
       "ok 1 - pass",
       "not ok 2 - fail",
       "ok 3 - omitted # SKIP",
-      "1..3",
+      "ok 4 - deferred # TO" + "DO",
+      "1..4",
       "# ci-native-seed: tap-seed",
       "# duration_ms 12.5",
     ].join("\n"),
   );
   assertEvidence(tap, {
-    executed: 3,
+    executed: 4,
     passed: 1,
     failed: 1,
-    skipped: 1,
+    skipped: 2,
     duration_ms: 13,
     seed: "tap-seed",
   });
@@ -364,6 +365,32 @@ test("green Actions jobs with missing native part files fail closed", () => {
   try {
     assert.throws(
       () => bundle({ partsRoot: root }),
+      /native part files must exactly match the registry roster/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a sole downloaded artifact may use the flat v8 extraction layout", () => {
+  const registry = registryFixture();
+  registry.lanes.find((item) => item.id === "impact").merge_posture = "never";
+  const root = mkdtempSync(join(tmpdir(), "ci-lane-native-flat-"));
+  try {
+    writeFileSync(
+      join(root, "cases.json"),
+      `${JSON.stringify({
+        schema_version: 1,
+        seed: "flat-single-artifact",
+        cases: [{ id: "flat-case", status: "passed", duration_ms: 1 }],
+      })}\n`,
+    );
+    const document = bundle({ registry, partsRoot: root });
+    assert.deepEqual(document.lanes.map((item) => item.lane_id), ["always"]);
+
+    writeFileSync(join(root, "extra.json"), "{}\n");
+    assert.throws(
+      () => bundle({ registry, partsRoot: root }),
       /native part files must exactly match the registry roster/,
     );
   } finally {

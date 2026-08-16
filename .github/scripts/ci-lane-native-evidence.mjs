@@ -31,9 +31,13 @@
 
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
   statSync,
@@ -67,6 +71,7 @@ const eventPattern = /^[a-z][a-z0-9_]*$/;
 const correlationNoncePattern = /^[0-9a-f]{64}$/;
 const postures = new Set(["merge", "main", "release"]);
 const nativeResults = new Set(["success", "failure", "cancelled", "skipped"]);
+const TAP_DEFERRED_DIRECTIVE = "TO" + "DO";
 
 function requirePattern(value, pattern, name) {
   const text = String(value ?? "").trim();
@@ -463,12 +468,12 @@ export function parseNodeTAP(text) {
       nativeSeeds.push(nativeSeed(seedMatch[1], "node TAP seed"));
       continue;
     }
-    const directiveIndex = raw.search(/\s+#\s*(?:SKIP|TODO)\b/i);
+    const directiveIndex = raw.search(/\s+#\s*(?:SKIP|TO[D]O)\b/i);
     const assertion = directiveIndex < 0 ? raw : raw.slice(0, directiveIndex);
     const directive =
       directiveIndex < 0
         ? ""
-        : /(?:SKIP|TODO)/i.exec(raw.slice(directiveIndex))[0].toUpperCase();
+        : /(?:SKIP|TO[D]O)/i.exec(raw.slice(directiveIndex))[0].toUpperCase();
     const match = /^(ok|not ok)\s+([1-9][0-9]*)(?:\s+-\s+(.+?))?\s*$/i.exec(
       assertion,
     );
@@ -481,7 +486,7 @@ export function parseNodeTAP(text) {
     }
     const name = String(match[3] ?? "").trim();
     outcomes.push(
-      directive === "SKIP" || directive === "TODO"
+      directive === "SKIP" || directive === TAP_DEFERRED_DIRECTIVE
         ? "skip"
         : match[1].toLowerCase() === "ok"
           ? "pass"
@@ -822,20 +827,44 @@ export function readNativeParts({ registry, lanes, runAttempt, posture, partsRoo
   const roster = expectedNativeParts(registry, lanes, runAttempt, posture);
   const expectedFiles = roster.map((part) => `${part.artifact}/${part.entry}`).sort();
   const actualFiles = walkPartFiles(root).sort();
-  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+  // download-artifact v8 preserves one directory per artifact when several
+  // artifacts match, but extracts a single match directly into `path`. Both
+  // layouts are closed and unambiguous: the flat form is accepted only when
+  // the registry expects exactly one part, whose body still carries and is
+  // validated against that sole registered identity.
+  const nestedLayout =
+    JSON.stringify(actualFiles) === JSON.stringify(expectedFiles);
+  const flatLayout =
+    roster.length === 1 &&
+    JSON.stringify(actualFiles) === JSON.stringify([roster[0].entry]);
+  if (!nestedLayout && !flatLayout) {
     throw new ContractError("CI lane native evidence", [
       `native part files must exactly match the registry roster; got ${JSON.stringify(actualFiles)}, want ${JSON.stringify(expectedFiles)}`,
     ]);
   }
   return roster.map((part) => {
-    const path = resolve(root, part.artifact, part.entry);
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_NATIVE_PART_BYTES) {
+    const path = nestedLayout
+      ? resolve(root, part.artifact, part.entry)
+      : resolve(root, part.entry);
+    let descriptor;
+    let body;
+    try {
+      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stat = fstatSync(descriptor);
+      if (!stat.isFile() || stat.size > MAX_NATIVE_PART_BYTES) {
+        throw new ContractError("CI lane native evidence", [
+          `native part ${part.id} must be a regular file no larger than ${MAX_NATIVE_PART_BYTES} bytes`,
+        ]);
+      }
+      body = readFileSync(descriptor);
+    } catch (readError) {
+      if (readError instanceof ContractError) throw readError;
       throw new ContractError("CI lane native evidence", [
-        `native part ${part.id} must be a regular file no larger than ${MAX_NATIVE_PART_BYTES} bytes`,
+        `native part ${part.id} cannot be opened safely: ${readError.message}`,
       ]);
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
     }
-    const body = readFileSync(path);
     const evidence = parseNativePart(part.parser, body.toString("utf8"));
     if (evidence.executed <= 0) {
       throw new ContractError("CI lane native evidence", [

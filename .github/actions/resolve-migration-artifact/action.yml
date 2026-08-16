@@ -1,0 +1,48 @@
+name: resolve migration artifact
+description: Verify and load the unpublished candidate, or build the source-tree migration binary
+
+inputs:
+  candidate-artifact:
+    description: Caller-run artifact containing the sealed candidate
+    required: false
+    default: ''
+  candidate-digest:
+    description: Exact candidate manifest digest
+    required: false
+    default: ''
+  expect-version:
+    description: Exact candidate version
+    required: false
+    default: ''
+  source-sha:
+    description: Exact candidate source commit
+    required: false
+    default: ''
+  source-tree:
+    description: Exact candidate source tree
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: download the sealed candidate
+      if: inputs.candidate-artifact != ''
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.candidate-artifact }}
+        path: build/release-candidate
+
+    - name: install the OCI layout client
+      if: inputs.candidate-artifact != ''
+      uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d  # v2
+
+    - name: resolve the artifact under test
+      shell: bash
+      run: node .github/scripts/migration-artifact.mjs
+      env:
+        CERBERUS_CANDIDATE_DIR_INPUT: ${{ inputs.candidate-artifact != '' && 'build/release-candidate' || '' }}
+        CERBERUS_CANDIDATE_DIGEST_INPUT: ${{ inputs.candidate-digest }}
+        CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect-version }}
+        CERBERUS_SOURCE_SHA_INPUT: ${{ inputs.source-sha }}
+        CERBERUS_SOURCE_TREE_INPUT: ${{ inputs.source-tree }}

@@ -103,6 +103,11 @@ homebrew_casks:
     directory: Casks
     homepage: "https://github.com/tsouza/cerberus"
     description: "Drop-in Prometheus / Loki / Tempo HTTP gateway for ClickHouse"
+    # Snapshot candidates have no future git tag yet, so GoReleaser's default
+    # URL would silently inherit the previous release tag. Bind the generated
+    # cask to the independently validated candidate identity instead.
+    url:
+      template: "{{ .Env.RELEASE_SOURCE_URL }}/releases/download/{{ .Env.RELEASE_APP_TAG }}/{{ .ArtifactName }}"
     # `auto` on its own only keeps PRERELEASES out of the tap. A stable
     # BACKPORT is not a prerelease, so `auto` alone let v1.12.1 — cut after
     # v1.13.0 — write the tap formula and DOWNGRADE every `brew install` to the
@@ -129,7 +134,7 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-snapshot+{{.ShortCommit}}"
+  version_template: "{{ .Env.RELEASE_VERSION }}"
 
 changelog:
   use: github-native

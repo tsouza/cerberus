@@ -1,0 +1,78 @@
+name: prepare release promotion
+description: Download only the sealed candidate and successful qualification attestation, then verify both.
+
+inputs:
+  candidate_artifact:
+    description: Immutable candidate artifact name from this workflow run.
+    required: true
+  candidate_digest:
+    description: Exact sha256 digest of candidate-manifest.json.
+    required: true
+  attestation_artifact:
+    description: Immutable successful qualification-attestation artifact name.
+    required: true
+  attestation_digest:
+    description: Exact sha256 digest of the qualification attestation.
+    required: true
+  source_sha:
+    description: Exact source commit.
+    required: true
+  source_tree:
+    description: Exact source tree.
+    required: true
+  app_version:
+    description: Qualified application version.
+    required: true
+  app_tag:
+    description: Qualified application tag.
+    required: true
+  chart_version:
+    description: Qualified chart version.
+    required: true
+  correlation_nonce:
+    description: Fresh qualification nonce.
+    required: true
+  authorized:
+    description: Literal authorization-barrier result.
+    required: true
+  publish:
+    description: Literal per-artifact version-gate result.
+    required: true
+  dry_run:
+    description: Literal release dry-run policy.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: download the sealed candidate only
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.candidate_artifact }}
+        path: build/release-candidate
+
+    - name: download the successful qualification attestation only
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.attestation_artifact }}
+        path: build
+
+    - name: directly verify promotion authorization
+      shell: bash
+      env:
+        MODE: verify-only
+        RELEASE_CANDIDATE_DIR: build/release-candidate
+        RELEASE_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+        RELEASE_ATTESTATION: build/release-qualification-attestation.json
+        RELEASE_ATTESTATION_DIGEST: ${{ inputs.attestation_digest }}
+        RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+        RELEASE_SOURCE_TREE: ${{ inputs.source_tree }}
+        RELEASE_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        RELEASE_APP_VERSION: ${{ inputs.app_version }}
+        RELEASE_APP_TAG: ${{ inputs.app_tag }}
+        RELEASE_CHART_VERSION: ${{ inputs.chart_version }}
+        RELEASE_CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
+        RELEASE_AUTHORIZED: ${{ inputs.authorized }}
+        RELEASE_PUBLISH: ${{ inputs.publish }}
+        RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+      run: node .github/scripts/release-promote.mjs
