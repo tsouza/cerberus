@@ -434,7 +434,7 @@ const (
 	// expands annotations against the result's labels — so the summary would
 	// render `[no value]` no matter what the rule declares in `labels:`. That
 	// is exactly what the first live Tier-2 run reported.
-	mig18ProbeGroupBy = "by (" + mig18ProbeLabelKey + ")"
+	mig18ProbeGroupBy = "by (" + mig18ProbeLabelKey + ", " + tier2SeedScopeLabel + ")"
 	// mig18ProbeHoldDown must equal the probe rule's `for:`. It is the pending
 	// window MIG-18 asserts the shadow ruler actually honored before firing.
 	mig18ProbeHoldDown = 30 * time.Second
@@ -581,6 +581,25 @@ func (w *World) seedMig18Probe(start, end time.Time, value float64) (time.Time, 
 	}
 	defer func() { _ = conn.Close() }()
 
+	fixture, last, err := mig18ProbeFixture(w.tier2SeedScope, start, end, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if err := seed.InsertFixture(ctx, conn, fixture); err != nil {
+		return time.Time{}, fmt.Errorf("migration harness: seed %s at %g: %w", mig18ProbeMetric, value, err)
+	}
+	return last, nil
+}
+
+// mig18ProbeFixture builds the current run's probe series. Keeping seed_scope
+// in the stored identity means a second run against the same long-lived stack
+// cannot append samples to the first run's alert instance.
+func mig18ProbeFixture(scope string, start, end time.Time, value float64) (seed.Fixture, time.Time, error) {
+	if scope == "" {
+		return seed.Fixture{}, time.Time{}, fmt.Errorf(
+			"migration harness: the fire/resolve probe has no %s identity", tier2SeedScopeLabel,
+		)
+	}
 	samples := make([]seed.Sample, 0, int(end.Sub(start)/mig18SeedStep)+1)
 	last := start
 	for t := start; !t.After(end); t = t.Add(mig18SeedStep) {
@@ -588,21 +607,20 @@ func (w *World) seedMig18Probe(start, end time.Time, value float64) (time.Time, 
 		last = t
 	}
 	if len(samples) == 0 {
-		return time.Time{}, fmt.Errorf(
+		return seed.Fixture{}, time.Time{}, fmt.Errorf(
 			"migration harness: the fire/resolve probe seed window [%s, %s] holds no sample instant, so it would arm nothing",
 			start, end,
 		)
 	}
-	fixture := seed.Fixture{Gauge: []seed.MetricSeries{{
+	return seed.Fixture{Gauge: []seed.MetricSeries{{
 		MetricName:  mig18ProbeMetric,
 		ServiceName: mig18ProbeService,
-		Attributes:  map[string]string{mig18ProbeLabelKey: mig18ProbeLabelValue},
-		Samples:     samples,
-	}}}
-	if err := seed.InsertFixture(ctx, conn, fixture); err != nil {
-		return time.Time{}, fmt.Errorf("migration harness: seed %s at %g: %w", mig18ProbeMetric, value, err)
-	}
-	return last, nil
+		Attributes: map[string]string{
+			mig18ProbeLabelKey:  mig18ProbeLabelValue,
+			tier2SeedScopeLabel: scope,
+		},
+		Samples: samples,
+	}}}, last, nil
 }
 
 // whenMig18ProbeFires polls the ruler's own live rule state until the probe
@@ -627,7 +645,7 @@ func (w *World) whenMig18ProbeFires() error {
 	for {
 		groups, err := fetchRulerGroups(ctx, w.tier2.GrafanaURL)
 		if err == nil {
-			found := findProbeInstance(groups)
+			found := findProbeInstance(groups, w.tier2SeedScope)
 			switch {
 			case !found.ruleFound:
 				return fmt.Errorf(
@@ -692,20 +710,21 @@ type probeLookup struct {
 	instanceFound bool
 }
 
-// findProbeInstance locates the probe rule and its single live alert
-// instance. The rule's expression reduces to one series precisely so "the
-// probe alert" is one identity rather than whatever cardinality the seed
-// happened to write.
-func findProbeInstance(groups []rulerRuleGroup) probeLookup {
+// findProbeInstance locates the probe rule and THIS run's live alert instance.
+// A long-lived stack can retain another run's series, so selecting the first
+// alert would let stale state satisfy the current run's pending/firing poll.
+func findProbeInstance(groups []rulerRuleGroup, scope string) probeLookup {
 	for _, g := range groups {
 		for _, r := range g.Rules {
 			if r.Name != mig18ProbeAlertName {
 				continue
 			}
-			if len(r.Alerts) == 0 {
-				return probeLookup{rule: r, ruleFound: true}
+			for _, instance := range r.Alerts {
+				if instance.Labels[tier2SeedScopeLabel] == scope {
+					return probeLookup{rule: r, instance: instance, ruleFound: true, instanceFound: true}
+				}
 			}
-			return probeLookup{rule: r, instance: r.Alerts[0], ruleFound: true, instanceFound: true}
+			return probeLookup{rule: r, ruleFound: true}
 		}
 	}
 	return probeLookup{}
@@ -832,7 +851,7 @@ func (w *World) pollProbeEdges(status string, budget time.Duration) ([]AlertEven
 	deadline := time.Now().Add(budget)
 	var last error
 	for {
-		events, err := fetchProbeAlertEvents(ctx, w.tier2.DeadEndURL)
+		events, err := fetchProbeAlertEvents(ctx, w.tier2.DeadEndURL, w.tier2SeedScope)
 		if err == nil {
 			matching := filterByStatus(events, status)
 			if len(matching) > 0 {
@@ -883,9 +902,10 @@ func (w *World) thenMig18FiringEdgeCarriesLabels() error {
 	}
 	edge := w.tier2Alerting.firing[0]
 	want := map[string]string{
-		"alertname":        mig18ProbeAlertName,
-		mig18SeverityKey:   mig18SeverityValue,
-		mig18ProbeLabelKey: mig18ProbeLabelValue,
+		"alertname":         mig18ProbeAlertName,
+		mig18SeverityKey:    mig18SeverityValue,
+		mig18ProbeLabelKey:  mig18ProbeLabelValue,
+		tier2SeedScopeLabel: w.tier2SeedScope,
 	}
 	for key, value := range want {
 		got, ok := edge.Labels[key]
@@ -1036,10 +1056,10 @@ type deadEndListResponse struct {
 }
 
 // fetchProbeAlertEvents fetches every notification the dead-end receiver has
-// captured and returns the edges belonging to MIG-18's probe alert. The
-// receiver is shared with MIG-09's contact-point test, so the narrowing is by
-// alert identity — see ParseGrafanaWebhookEventsNamed.
-func fetchProbeAlertEvents(ctx context.Context, deadEndURL string) ([]AlertEvent, error) {
+// captured and returns the MIG-18 edges belonging to THIS run's seed scope.
+// The alert-name filter separates MIG-18 from other scenarios; the seed-scope
+// filter separates reruns of MIG-18 against one long-lived stack.
+func fetchProbeAlertEvents(ctx context.Context, deadEndURL, scope string) ([]AlertEvent, error) {
 	target := strings.TrimRight(deadEndURL, "/") + "/notifications/list"
 	var resp deadEndListResponse
 	if err := fetchJSONGet(ctx, target, &resp); err != nil {
@@ -1053,7 +1073,7 @@ func fetchProbeAlertEvents(ctx context.Context, deadEndURL string) ([]AlertEvent
 		}
 		out = append(out, events...)
 	}
-	return out, nil
+	return filterBySeedScope(out, scope), nil
 }
 
 // fetchJSONGet GETs target, requiring a 200 with a JSON body, and decodes it
