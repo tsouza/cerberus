@@ -46,8 +46,6 @@ jobs:
     steps:
       - name: Checkout trusted workflow controller
         uses: actions/checkout@v7
-        with:
-          path: control
 
       - name: Checkout target branch
         uses: actions/checkout@v7
@@ -73,7 +71,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           WORKFLOW_REF: ${{ github.ref }}
           PUSH_TOKEN_SET: ${{ secrets.RELEASE_PAT != '' }}
-        run: node control/.github/scripts/manual-golden-update.mjs
+        run: node .github/scripts/manual-golden-update.mjs
 
       - name: Verify requested shards cover the target branch diff
         working-directory: target
@@ -81,7 +79,7 @@ jobs:
           GOLDEN_SHARDS: ${{ steps.plan.outputs.shards }}
           GOLDEN_UPDATE_BASE_REF: refs/remotes/origin/${{ github.event.repository.default_branch }}
           GOLDEN_UPDATE_CHECK_ONLY: '1'
-        run: node ../control/.github/scripts/golden-update.mjs
+        run: node "$GITHUB_WORKSPACE/.github/scripts/golden-update.mjs"
 
   regenerate:
     name: regenerate (${{ matrix.shard }})
@@ -90,13 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout trusted workflow controller
         uses: actions/checkout@v7
-        with:
-          path: control
 
       - name: Checkout target commit without write credentials
         uses: actions/checkout@v7
@@ -140,7 +136,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
           ALLOWED_SHARDS: ${{ matrix.allowed_shards }}
           OUTPUT_PATH: patches/${{ matrix.shard }}.patch
-        run: node control/.github/scripts/manual-golden-update.mjs
+        run: node .github/scripts/manual-golden-update.mjs
 
       - name: Upload shard patch
         uses: actions/upload-artifact@v7
@@ -161,8 +157,6 @@ jobs:
     steps:
       - name: Checkout trusted workflow controller
         uses: actions/checkout@v7
-        with:
-          path: control
 
       - name: Checkout unchanged target with trigger-capable credentials
         uses: actions/checkout@v7
@@ -186,7 +180,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           SHARDS_INPUT: ${{ needs.plan.outputs.shards }}
           TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
-        run: node control/.github/scripts/manual-golden-update.mjs
+        run: node .github/scripts/manual-golden-update.mjs
 
       - name: Summary
         env:

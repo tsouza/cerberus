@@ -98,7 +98,7 @@ test('workflow keeps write authority out of matrix jobs and publishes once', () 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /shards:/);
   assert.match(workflow, /branch:/);
-  assert.match(workflow, /strategy:\n\s+fail-fast: false\n\s+matrix:/);
+  assert.match(workflow, /strategy:\n\s+fail-fast: true\n\s+matrix:/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /uses: actions\/upload-artifact@v7/);
   assert.match(workflow, /gh run download/);

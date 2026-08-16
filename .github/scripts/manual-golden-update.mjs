@@ -7,6 +7,9 @@
 //
 // Modes and environment:
 //
+//   node manual-golden-update.mjs dump
+//     Print the complete matrix row catalogue for static check-name indexing.
+//
 //   MODE=plan
 //     TARGET_ROOT, BRANCH, SHARDS_INPUT, DEFAULT_BRANCH, WORKFLOW_REF,
 //     PUSH_TOKEN_SET, GITHUB_OUTPUT
@@ -308,9 +311,14 @@ export function main(env = process.env) {
   fail(`unknown MODE ${JSON.stringify(mode)}`);
 }
 
+function dumpMatrix() {
+  process.stdout.write(`${JSON.stringify(buildPlan('all').matrix.include)}\n`);
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(SCRIPT)) {
   try {
-    main();
+    if (process.argv[2] === 'dump') dumpMatrix();
+    else main();
   } catch (error) {
     if (!String(error?.message ?? '').startsWith('manual-golden-update:')) {
       process.stderr.write(`${error?.stack ?? error}\n`);
