@@ -1898,6 +1898,22 @@ contract failure.
     `test/regression/golden_shard_coverage_test.go` pins that, along with the
     check firing in both directions.
 
+- **`manual-golden-update.mjs`** — `update-golden.yml`, the trusted controller
+  for manually regenerating selected shards on an existing same-repository PR
+  branch. The dispatch accepts `shards` and `branch`; generation runs as a
+  read-only matrix and uploads one patch per shard, then one publisher validates
+  that the branch has not moved, applies only shard-owned paths, commits once and
+  pushes once. Later-stage rows regenerate selected predecessor shards as local
+  context, so `cardinality` observes newly generated fixture SQL without letting
+  a matrix leg publish or letting duplicate predecessor output enter its patch.
+  The workflow rejects the default branch and requires `RELEASE_PAT`: a push
+  made with the default `GITHUB_TOKEN` would not trigger the target PR's checks.
+  - Env: `MODE` (`plan`, `package`, `apply-push`) plus the mode-specific inputs
+    documented at the top of the script.
+  - Exit: `0` only for a valid plan, a shard-owned patch, or an atomic publish;
+    branch movement, missing/duplicate patches, unexpected paths and unsafe refs
+    fail closed before the push.
+
 - **`cardinality-baseline-update.mjs`** — no workflow. The second script here a
   contributor runs by hand, through `just update-cardinality-baseline`. It
   regenerates `test/perf/cardinality-baseline/` by fanning the chDB profile pass

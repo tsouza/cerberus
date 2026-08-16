@@ -1854,6 +1854,10 @@
       "workflow": ".github/workflows/prepare-release.yml",
       "reason": "release_preparation"
     },
-    { "workflow": ".github/workflows/release.yml", "reason": "publication" }
+    { "workflow": ".github/workflows/release.yml", "reason": "publication" },
+    {
+      "workflow": ".github/workflows/update-golden.yml",
+      "reason": "automation"
+    }
   ]
 }

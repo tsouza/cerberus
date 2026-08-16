@@ -574,6 +574,11 @@ jobs:
         run: |
           node --test .github/scripts/ci-lane-contract.test.mjs
           MODE=registry node .github/scripts/ci-lane-contract.mjs
+      # The updater itself is workflow_dispatch-only. Its controller remains
+      # ordinary repository code, so its pure unit/round-trip contract belongs
+      # on the existing PR policy lane without exposing the updater to PR events.
+      - name: Validate the manual golden-update controller
+        run: node --test .github/scripts/manual-golden-update.test.mjs
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
         env:
