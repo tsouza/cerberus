@@ -3,10 +3,11 @@
 // GitHub evaluates workflow concurrency before any job can run, so the policy
 // has two halves: the exact expressions enrolled workflows carry and this
 // executable model that proves which event/ref pairs those expressions may
-// cancel. Only a push or scheduled run bound to refs/heads/main is replaceable.
-// Pull requests, merge groups, manual qualification, reusable-workflow calls,
-// maintenance branches, tags, releases, and unknown inputs receive a unique
-// run group and can never cancel one another.
+// cancel. Main pushes and equivalent scheduled runs are replaceable within
+// separate mode groups, so a routine push can never erase deeper nightly
+// evidence. Pull requests, merge groups, manual qualification,
+// reusable-workflow calls, maintenance branches, tags, releases, and unknown
+// inputs receive a unique run group and can never cancel one another.
 //
 // MODE=check (default) reads CI_LANE_REGISTRY (default .github/ci-lanes.json),
 // checks every enrolled workflow, and rejects registry/workflow drift.
@@ -27,13 +28,13 @@ export const MAIN_REF = 'refs/heads/main';
 export const LATEST_MAIN_SUFFIX = 'latest-main';
 
 export const GROUP_EXPRESSION =
-  "${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}";
+  "${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}";
 export const CANCEL_EXPRESSION =
-  "${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}";
+  "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}";
 
 // These workflows contain replaceable deep-main, soak, or scheduled test work.
-// A schedule and a push on main intentionally share one group per workflow, so
-// the newest run is the only one allowed to consume the deep-test budget.
+// Main pushes share one group per workflow. Scheduled runs share a group only
+// with the same workflow and exact cron expression.
 export const COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/agpl-oracle.yml',
   '.github/workflows/chdb.yml',
@@ -79,17 +80,29 @@ export const QUICKSTART_CANCEL_EXPRESSION =
 export function coalescingDecision({
   eventName,
   ref,
+  schedule,
   workflow = 'workflow',
   runId = 'run',
 } = {}) {
   const event = String(eventName ?? '');
   const boundRef = String(ref ?? '');
-  const replaceable =
-    (event === 'push' || event === 'schedule') && boundRef === MAIN_REF;
+  const cron = String(schedule ?? '').trim();
+  const mainPush = event === 'push' && boundRef === MAIN_REF;
+  const equivalentSchedule =
+    event === 'schedule' && boundRef === MAIN_REF && cron !== '';
+  const groupKey = mainPush
+    ? `${LATEST_MAIN_SUFFIX}-push`
+    : equivalentSchedule
+      ? `${LATEST_MAIN_SUFFIX}-schedule-${cron}`
+      : runId;
   return Object.freeze({
-    cancelInProgress: replaceable,
-    group: `${workflow}-${replaceable ? LATEST_MAIN_SUFFIX : runId}`,
-    reason: replaceable ? 'latest_main' : 'distinct_run',
+    cancelInProgress: mainPush || equivalentSchedule,
+    group: `${workflow}-${groupKey}`,
+    reason: mainPush
+      ? 'latest_main_push'
+      : equivalentSchedule
+        ? 'equivalent_schedule'
+        : 'distinct_run',
   });
 }
 
@@ -177,12 +190,12 @@ export function validateEnrolledWorkflow(workflow, workflowText) {
   }
   if (concurrency.group !== GROUP_EXPRESSION) {
     problems.push(
-      `${workflow}: concurrency group is ${JSON.stringify(concurrency.group)}, want the canonical latest-main/unique-run expression`,
+      `${workflow}: concurrency group is ${JSON.stringify(concurrency.group)}, want the canonical main-push/equivalent-schedule/unique-run expression`,
     );
   }
   if (concurrency.cancelInProgress !== CANCEL_EXPRESSION) {
     problems.push(
-      `${workflow}: cancel-in-progress is ${JSON.stringify(concurrency.cancelInProgress)}, want the canonical main-push/schedule-only expression`,
+      `${workflow}: cancel-in-progress is ${JSON.stringify(concurrency.cancelInProgress)}, want the canonical main-push/equivalent-schedule-only expression`,
     );
   }
 

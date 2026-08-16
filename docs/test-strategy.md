@@ -90,10 +90,12 @@ not wired as a branch-protection gate (typically because it needs the chDB
 substrate, a Docker stack, or a soak streak before promotion).
 
 Replaceable deep-test workflows coalesce only a `push` or `schedule` run whose
-ref is exactly `refs/heads/main`; both event types share that workflow's
-`latest-main` group. Every pull request, merge group, manual dispatch,
-reusable-workflow call, maintenance branch, tag, release event, and unknown
-event/ref pair receives a unique run-id group. The exhaustive E2E workflow,
+ref is exactly `refs/heads/main`. Main pushes share one `latest-main-push`
+group; scheduled runs key their group by the exact cron expression. A routine
+push therefore cannot erase nightly-only coverage, and two differently scoped
+schedules cannot erase each other. Every pull request, merge group, manual
+dispatch, reusable-workflow call, maintenance branch, tag, release event, and
+unknown event/ref pair receives a unique run-id group. The exhaustive E2E workflow,
 the required `quickstart`, post-merge generated-artifact drift, core gates,
 publication, stateful mirroring, and monitors are explicit negative controls.
 `.github/scripts/main-coalescing.mjs` binds the enrolled workflow expressions
