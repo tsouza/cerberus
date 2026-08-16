@@ -757,6 +757,20 @@ test_cases:
   - query: 'count(demo_latency_exp_hist)'
   - query: 'count by (instance) (demo_latency_exp_hist)'
   - query: 'count(demo_shifting_latency_exp_hist)'
+  # Histogram-dropping aggregations. Reference accepts each histogram-only
+  # input and omits every native-histogram sample, producing an empty range
+  # vector with an informational annotation. The mixed probes then prove the
+  # same filtering happens before grouping/ranking: only the float family may
+  # contribute a result.
+  - query: 'min(demo_latency_exp_hist)'
+  - query: 'max(demo_latency_exp_hist)'
+  - query: 'stddev(demo_latency_exp_hist)'
+  - query: 'stdvar(demo_latency_exp_hist)'
+  - query: 'quantile(0.9, demo_latency_exp_hist)'
+  - query: 'topk(3, demo_latency_exp_hist)'
+  - query: 'bottomk(3, demo_latency_exp_hist)'
+  - query: 'min by (job) ({__name__=~"demo_memory_usage_bytes|demo_latency_exp_hist"})'
+  - query: 'topk(2, {__name__=~"demo_memory_usage_bytes|demo_latency_exp_hist"})'
   # Float inputs: the native-histogram value functions skip float samples
   # rather than erroring, so a float family and an absent family both
   # answer the empty vector on both backends. These pin that acceptance,

@@ -38,13 +38,6 @@ import (
 // hands `sum()` an aggregand that is not a bare selector. They stay
 // rejected until each grows its own histogram-aware lowering.
 //
-// `min` / `max` / `stddev` / `stdvar` / `topk` stay here for a DIFFERENT
-// reason from the rest, and it is not "nobody has written the lowering
-// yet": reference Prometheus DROPS native-histogram samples from those
-// aggregations with an annotation, so there is no merged distribution to
-// publish (see [expHistogramAggOpIsMergeable], which admits only `sum`
-// and `avg` for exactly this reason).
-//
 // `count` is deliberately NOT in that list any more, and the difference
 // is reference's own: its aggregation switch reaches `group.groupCount++`
 // with no guard on the sample's value and raises no
@@ -65,12 +58,7 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "irate", query: `irate(latency_exp_hist[5m])`},
 		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "absent_over_time", query: `absent_over_time(latency_exp_hist[5m])`},
-		{name: "min aggregation", query: `min(latency_exp_hist)`},
-		{name: "max aggregation", query: `max(latency_exp_hist)`},
-		{name: "stddev aggregation", query: `stddev(latency_exp_hist)`},
-		{name: "stdvar aggregation", query: `stdvar(latency_exp_hist)`},
 		{name: "abs", query: `abs(latency_exp_hist)`},
-		{name: "topk", query: `topk(3, latency_exp_hist)`},
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 
