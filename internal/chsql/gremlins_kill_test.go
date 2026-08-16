@@ -3942,12 +3942,12 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 		}
 		return sql
 	}
-	computed := build(&chplan.FuncCall{Fn: chplan.FnToFloat64})
-	if !strings.Contains(computed, "isNaN(scalar())") {
+	computed := build(&chplan.ColumnRef{Name: "Phi"})
+	if !strings.Contains(computed, "isNaN(`Phi`)") {
 		t.Errorf("computed-phi native quantile must carry the isNaN(phi) NaN-guard; got:\n%s", computed)
 	}
 	literal := build(nil)
-	if strings.Contains(literal, "isNaN(scalar())") {
+	if strings.Contains(literal, "isNaN(`Phi`)") {
 		t.Errorf("literal-phi native quantile must NOT carry a phi NaN-guard; got:\n%s", literal)
 	}
 	// Both literal and computed phi still carry the isNaN(Sum)
