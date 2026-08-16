@@ -698,6 +698,22 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
     `GITHUB_STEP_SUMMARY`.
   - Exit: `0` when every package clears its floor (or the ledger was
     rewritten), `1` on unreadable input, a lane mismatch, or a violation.
+- **`coverage-package-floor.mjs`** — `coverage.yml`'s cheap structural gate on
+  every PR. Enumerates the default and `chdb,agpl_oracle,chdb_agpl_oracle`
+  builds with `go list`, asks `go tool cover` whether each active source file
+  carries statements, and requires every statement-carrying package to have a
+  positive entry in `test/coverage-floor.json`; it also rejects a floor whose
+  statement-carrying package vanished. Declaration-only packages need no entry.
+  This catches structural drift before merge without running tests or installing
+  chDB; the full push/nightly/release lane remains responsible for measured
+  coverage. `coverage-package-floor.test.mjs`
+  exercises a hermetic temporary Go module with statement and declaration-only
+  packages.
+  - Env: `COVERAGE_FLOORS` (default `test/coverage-floor.json`),
+    `COVERAGE_PACKAGE_PATTERN` (default `./...`; test-fixture override).
+  - Exit: `0` when every statement-carrying full-lane package has a
+    positive floor and every floor names a live package, `1` on
+    listing/instrumentation/input failure or structural drift.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

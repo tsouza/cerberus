@@ -372,6 +372,104 @@ func TestReadBackPlanAcceptsCarrierZero(t *testing.T) {
 	}
 }
 
+// TestReadBackPlanRejectsInvalidRewriteMetadata pins each part of the
+// compiler-backed proof that turns inserted source spans into capture indexes.
+// Every case is a rewrite that looks plausible to one weaker check but cannot
+// safely answer which original carrier participated.
+func TestReadBackPlanRejectsInvalidRewriteMetadata(t *testing.T) {
+	t.Parallel()
+
+	original, err := regexp.Compile(`(?P<orig>x)`)
+	if err != nil {
+		t.Fatalf("regexp.Compile: %v", err)
+	}
+	missingProbe := probeNamePrefix + "missing"
+	cases := []struct {
+		name          string
+		probed        string
+		probeNames    map[int]string
+		negativeNames map[int][]string
+	}{
+		{name: "rewrite_does_not_compile", probed: `(`},
+		{name: "original_group_was_lost", probed: `x`},
+		{name: "original_group_was_renamed", probed: `(?P<other>x)`},
+		{
+			name:       "positive_probe_name_is_absent",
+			probed:     `(?P<orig>x)`,
+			probeNames: map[int]string{1: missingProbe},
+		},
+		{
+			name:          "negative_probe_name_is_absent",
+			probed:        `(?P<orig>x)`,
+			negativeNames: map[int][]string{1: {missingProbe}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, ok := readBackPlan(original, tc.probed, tc.probeNames, tc.negativeNames); ok {
+				t.Fatalf("readBackPlan accepted unsafe rewrite %q", tc.probed)
+			}
+		})
+	}
+}
+
+// TestNegativeSiblingSpansDeclinesUnprovableShapes pins the three structural
+// guards that keep an empty sibling probe from being treated as proof when the
+// carrier itself cannot be classified, its branch can be skipped, or the
+// source-group ancestry no longer reaches the alternation.
+func TestNegativeSiblingSpansDeclinesUnprovableShapes(t *testing.T) {
+	t.Parallel()
+
+	assertDeclined := func(t *testing.T, src string, mutate func([]sourceGroup, int)) {
+		t.Helper()
+		groups, ok := scanSourceGroups(src)
+		if !ok {
+			t.Fatalf("scanSourceGroups(%q) declined", src)
+		}
+		at := groupIndexOf(groups, 1)
+		if mutate != nil {
+			mutate(groups, at)
+		}
+		if spans, usable := negativeSiblingSpans(src, groups, at); usable || len(spans) != 0 {
+			t.Fatalf("negativeSiblingSpans(%q) = %v, %v; want no usable proof", src, spans, usable)
+		}
+	}
+
+	t.Run("capture_shape_is_unknown", func(t *testing.T) {
+		t.Parallel()
+		assertDeclined(t, `(?P<dup>a?)|b`, func(groups []sourceGroup, at int) {
+			groups[at].capIndex = 99
+		})
+	})
+	t.Run("carrier_branch_is_optional", func(t *testing.T) {
+		t.Parallel()
+		assertDeclined(t, `(?P<dup>a)?|b`, nil)
+	})
+	t.Run("alternation_parent_is_missing", func(t *testing.T) {
+		t.Parallel()
+		assertDeclined(t, `(?P<dup>a?)|b`, func(groups []sourceGroup, at int) {
+			groups[at].parent = -1
+		})
+	})
+}
+
+// TestCaptureGroupsRejectMissingShapes pins both callers' conservative answer
+// for a carrier the parse-tree walk could not classify. It must be omitted
+// from the statically cleared set and rejected by the executable search.
+func TestCaptureGroupsRejectMissingShapes(t *testing.T) {
+	t.Parallel()
+
+	groups := captureGroups{shapes: map[int]captureShape{}}
+	if cleared := groups.unclearedCarriers([]int{1}); len(cleared) != 0 {
+		t.Fatalf("unclearedCarriers with no shape = %v, want no static clearance", cleared)
+	}
+	_, _, _, ambiguous, ok := groups.expressibleCarriers([]int{1})
+	if ok || ambiguous != 1 {
+		t.Fatalf("expressibleCarriers with no shape = ambiguous %d, ok %v; want 1, false", ambiguous, ok)
+	}
+}
+
 // compileNames compiles pattern and returns its SubexpNames, failing the
 // test on a compile error rather than every caller repeating the check.
 func compileNames(t *testing.T, pattern string) []string {

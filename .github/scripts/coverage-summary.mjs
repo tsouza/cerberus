@@ -76,9 +76,14 @@ const FLOOR_DECIMALS = 1;
 
 const MODULE_PREFIX = 'github.com/tsouza/cerberus/';
 
+class GateFailure extends Error {}
+
 function fail(message) {
   error(message, { title: 'coverage floor' });
-  process.exit(1);
+  // Do not call process.exit immediately after writing the annotation: stdout
+  // may be piped by Actions or a test harness, and an immediate exit can drop
+  // the only explanation for the red check.
+  throw new GateFailure();
 }
 
 // packageOf maps a cover-profile file path to the package that owns it: strip
@@ -342,7 +347,7 @@ function main() {
     }
     writeFloors(floorsPath, next);
     log(`coverage-summary: ${floorsPath} <- ${Object.keys(next).length} package floor(s)`);
-    process.exit(0);
+    return;
   }
 
   const lanes = resolveLanes(process.env.COVERAGE_LANES || '', process.env.COVERAGE_REQUIRE_LANES || '');
@@ -353,7 +358,7 @@ function main() {
         `to it and were not compared. Install libchdb.so (\`just chdb-install\`) to run the gate.`,
       { title: 'coverage floor' },
     );
-    process.exit(0);
+    return;
   }
 
   const { below, unfloored, unfailable, missing } = compare(packages, floors);
@@ -391,9 +396,13 @@ function main() {
   }
 
   log(`coverage-summary: ${Object.keys(floors).length} package floor(s) clear`);
-  process.exit(0);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  try {
+    main();
+  } catch (e) {
+    if (!(e instanceof GateFailure)) throw e;
+    process.exitCode = 1;
+  }
 }
