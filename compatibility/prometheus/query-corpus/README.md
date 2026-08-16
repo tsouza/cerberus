@@ -2,7 +2,9 @@
 
 `header.yml` and the files listed by `manifest.txt` form one YAML document for the upstream
 PromQL compliance tester. Fragments own independent query families; their numeric prefixes and
-manifest order are canonical.
+manifest order are canonical. Moving a case between fragments must not change its decoded query,
+variant arguments, failure verdict, or relative order in the assembled document. Comments describe
+durable corpus policy only; they are not tester input.
 
 The `querycorpus` loader fails closed when a listed fragment is absent, an unlisted file is present,
 the order or numbering changes, a fragment is empty or malformed, or a complete test case is

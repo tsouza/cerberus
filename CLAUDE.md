@@ -190,8 +190,16 @@ per-layer "catches X / misses Y" guidance.
     worktree path, passed absolutely on every call. Never operate on another checkout of this
     repository — the object store is shared but the branch is not, so a stray `git commit` lands on
     somebody else's branch. `docs/agent-workflow.md` has the recovery procedure.
-18. **PR bodies use real newlines.** Never pass literal `\n` escapes through `gh pr create/edit
-    --body`; use a body file or equivalent newline-safe input.
+18. **Every GitHub prose write uses a body file.** Never submit a pull-request, issue, comment, or
+    review body inline: no `--body`, shell-quoted/interpolated strings, or inline API JSON. Author
+    the complete Markdown in a temporary `.md` file and pass `--body-file <tmp.md>`; when an API has
+    no body-file option, use its file-input form. This also guarantees real newline bytes instead of
+    literal `\n` escapes.
+19. **No transient lifecycle documents in the repository.** Never add an issue/PR plan, status,
+    progress log, or other file whose purpose expires when that issue closes or PR merges — including
+    `docs/specs/<change>.md`. Requirements, history, and progress live in the GitHub issue/PR. Durable
+    behavior belongs in stable subsystem docs or code comments, without checks that require an issue
+    ID or a transient spec path.
 
 ## Workflow for a non-trivial change
 

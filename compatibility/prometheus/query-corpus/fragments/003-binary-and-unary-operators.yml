@@ -18,7 +18,7 @@
     # Check that vector-scalar binops set output timestamps correctly.
   - query: 'timestamp(demo_memory_usage_bytes * 1)'
     # Check that unary minus sets timestamps correctly.
-    # TODO(upstream): Check this more systematically for every node type?
+    # The upstream corpus checks timestamp propagation here only for unary minus.
   - query: 'timestamp(-demo_memory_usage_bytes)'
   - query: 'demo_memory_usage_bytes {{.binOp}} on(instance, job, type) demo_memory_usage_bytes'
     variant_args: ['binOp']
@@ -54,8 +54,8 @@
   # one-to-one-on-instance reason as above.)
   - query: 'demo_num_cpus {{.compBinOp}} bool on(instance) demo_num_cpus'
     variant_args: ['compBinOp']
-  # TODO(upstream): Add non-explicit many-to-one / one-to-many that errors.
-  # TODO(upstream): Add many-to-many match that errors.
+  # The upstream corpus has no error cases for implicit many-to-one / one-to-many
+  # or many-to-many matching in this family.
 
   # Set operators. Prometheus evaluates these once per evaluation
   # timestamp, so an arm only affects the other arm at the timestamps it

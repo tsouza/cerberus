@@ -18,7 +18,10 @@ one-line fix with an obvious test — goes straight to the PR.
    for instance — make the call, state it explicitly, and continue rather than blocking.
 3. **Record the change context.** Put the problem with evidence, scope boundary, design, verification
    plan, and risks in the issue body or PR description. Pin observable behaviour in tests and explain
-   non-obvious implementation decisions in code. Do not create sidecar specification documents.
+   non-obvious implementation decisions in code. Never add a transient lifecycle document to the
+   repository: issue/PR plans, status, and history expire with that lifecycle and stay on GitHub.
+   Stable subsystem docs describe only durable behavior, and no test or source check requires an
+   issue ID or a transient spec path.
 4. **Implementation.** One PR per coherent change, following the shipping ritual below.
 
 ## Shipping ritual
@@ -31,14 +34,25 @@ branch off `origin/main`, so avoid the situation instead. Re-check the base befo
 The push and the `gh pr create` are a single step. A pushed branch with no PR appears in no
 `gh pr list`, gets no check runs, and reaches no reviewer; if the work it belongs to merges without
 it, its commits are stranded. A branch that is not ready for review is a draft PR, not an absent one.
-PR bodies must contain actual newline bytes: never pass literal `\n` escapes through `gh pr create/edit
---body`; use a body file or equivalent newline-safe input.
+Every GitHub prose write uses a temporary Markdown file: pull-request and issue descriptions,
+comments, reviews, and edits are never supplied through `--body`, shell quoting/interpolation, or
+inline API JSON. Author the complete text in a temporary `.md` file and pass
+`--body-file <tmp.md>`; when an API lacks that option, use its file-input form. Besides keeping the
+auditable payload separate from the command, this guarantees actual newline bytes rather than
+literal `\n` escapes.
 
 Verify the push landed by SHA rather than by the client's own report:
 
 ```bash
 rtk proxy git ls-remote origin <branch>
 ```
+
+When reviewed generated artifacts are stale but local regeneration is impractical, dispatch
+`update-golden.yml` from the default branch with the unprotected topic branch and the same required
+shard vocabulary accepted by `just update-golden`. The workflow resolves the topic branch to one
+immutable SHA, fans its shards out, then writes at most one reducer commit back under an exact-SHA
+lease. It refuses `main`, the default branch, protected branches, under-covering shard selections,
+and a topic branch that moves during the run.
 
 Never push to the head branch of a PR that has already merged. A merged PR is closed: its head stops
 advancing, and the commit reaches no branch anyone reads. Confirm with

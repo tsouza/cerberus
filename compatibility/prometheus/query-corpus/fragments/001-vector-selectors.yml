@@ -1,6 +1,6 @@
 
   # Vector selectors.
-  # TODO(upstream): Add tests for staleness support.
+  # The upstream corpus carries no staleness-support case in this family.
   - query: 'demo_memory_usage_bytes'
   - query: '{__name__="demo_memory_usage_bytes"}'
   - query: 'demo_memory_usage_bytes{type="free"}'

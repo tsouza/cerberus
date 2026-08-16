@@ -39,7 +39,9 @@ type document struct {
 // promql-compliance-tester. The manifest is both the complete fragment roster
 // and its canonical order; filesystem enumeration is never load-bearing.
 func Load(dir string) ([]byte, []Case, error) {
-	header, err := os.ReadFile(filepath.Join(dir, headerFilename))
+	// dir is the explicit corpus root selected by the caller; filenames below
+	// are fixed by this package or validated against fragmentNameRE.
+	header, err := os.ReadFile(filepath.Join(dir, headerFilename)) //nolint:gosec // G304: trusted corpus root plus fixed filename
 	if err != nil {
 		return nil, nil, fmt.Errorf("read corpus header: %w", err)
 	}
@@ -61,7 +63,7 @@ func Load(dir string) ([]byte, []Case, error) {
 
 	assembled := append([]byte(nil), header...)
 	for _, name := range manifest {
-		fragment, readErr := os.ReadFile(filepath.Join(dir, fragmentsDirname, name))
+		fragment, readErr := os.ReadFile(filepath.Join(dir, fragmentsDirname, name)) //nolint:gosec // G304: validated manifest filename under the trusted corpus root
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("read corpus fragment %q: %w", name, readErr)
 		}
@@ -82,7 +84,7 @@ func Load(dir string) ([]byte, []Case, error) {
 }
 
 func loadManifest(path string) ([]string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: internal fixed manifest path under the trusted corpus root
 	if err != nil {
 		return nil, fmt.Errorf("read corpus manifest: %w", err)
 	}
