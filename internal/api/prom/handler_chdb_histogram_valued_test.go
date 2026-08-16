@@ -234,6 +234,12 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 			want:       wireHistogram{Count: "30", Sum: "15", Buckets: latestBuckets},
 		},
 		{
+			name:       "label_replace bare selector",
+			query:      `label_replace(latency_exp_hist, "service_copy", "$1-copy", "service", "(.*)")`,
+			wantMetric: map[string]string{"__name__": "latency_exp_hist", "service": "api", "service_copy": "api-copy"},
+			want:       wireHistogram{Count: "30", Sum: "15", Buckets: latestBuckets},
+		},
+		{
 			// An ungrouped sum() reduces ACROSS series, so it publishes
 			// no labels at all. One series in, so the bucket ladder is
 			// unchanged.
@@ -252,6 +258,12 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 			want:       wireHistogram{Count: "30", Sum: "15", Buckets: latestBuckets},
 		},
 		{
+			name:       "label_replace sum by",
+			query:      `label_replace(sum by (service) (latency_exp_hist), "service_copy", "$1-copy", "service", "(.*)")`,
+			wantMetric: map[string]string{"service": "api", "service_copy": "api-copy"},
+			want:       wireHistogram{Count: "30", Sum: "15", Buckets: latestBuckets},
+		},
+		{
 			// The hand-worked expectation from
 			// exp_histogram_rate.txtar: every field scaled by
 			// 1.25/300 = 1/240. Count 24/240 = 0.1, Sum 12/240 =
@@ -261,6 +273,18 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 			name:       "rate",
 			query:      "rate(latency_exp_hist[5m])",
 			wantMetric: map[string]string{"service": "api"},
+			want: wireHistogram{
+				Count: "0.1", Sum: "0.05",
+				Buckets: [][4]any{
+					{float64(0), "1", "2", "0.05"},
+					{float64(0), "2", "4", "0.05"},
+				},
+			},
+		},
+		{
+			name:       "label_replace rate",
+			query:      `label_replace(rate(latency_exp_hist[5m]), "service_copy", "$1-copy", "service", "(.*)")`,
+			wantMetric: map[string]string{"service": "api", "service_copy": "api-copy"},
 			want: wireHistogram{
 				Count: "0.1", Sum: "0.05",
 				Buckets: [][4]any{
@@ -285,6 +309,28 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 			assertBuckets(t, got.Buckets, tc.want.Buckets)
 		})
 	}
+}
+
+// TestQuery_HistogramValuedLabelReplaceCollision_ChDB pins the error half
+// of label_replace's contract. Rewriting the only distinguishing label of
+// two histogram series onto one value must abort instead of merging or
+// publishing duplicate label sets.
+func TestQuery_HistogramValuedLabelReplaceCollision_ChDB(t *testing.T) {
+	c := chclienttest.NewChDB(t)
+	c.Seed(t, histValuedSeed+`
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2025-12-31 23:59:01', 9),  4,  2.0, 0, 1, 0, [1, 2], 0, []),
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:01', 9), 20, 10.0, 0, 1, 0, [9, 10], 0, []);`)
+	h := prom.New(c, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const query = `label_replace(latency_exp_hist, "service", "same", "service", ".*")`
+	status, body := getBody(t, fmt.Sprintf("%s/api/v1/query?query=%s&time=%s",
+		srv.URL, url.QueryEscape(query), histValuedEvalTime.Format(time.RFC3339)))
+	assertDuplicateLabelsetRejected(t, body, status, query)
 }
 
 // assertBuckets compares the decoded bucket tuples element by element.
@@ -448,7 +494,7 @@ func TestQueryRange_HistogramValued_ChDB(t *testing.T) {
 	// values are exp_histogram_rate.txtar's hand-worked ones unchanged.
 	stamp := histValuedEvalTime.Format(time.RFC3339)
 	reqURL := fmt.Sprintf("%s/api/v1/query_range?query=%s&start=%s&end=%s&step=60",
-		srv.URL, url.QueryEscape("rate(latency_exp_hist[5m])"), stamp, stamp)
+		srv.URL, url.QueryEscape(`label_replace(rate(latency_exp_hist[5m]), "service_copy", "$1-copy", "service", "(.*)")`), stamp, stamp)
 
 	resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
 	if err != nil {
@@ -487,7 +533,7 @@ func TestQueryRange_HistogramValued_ChDB(t *testing.T) {
 	if len(series.Values) != 0 {
 		t.Errorf("range query returned BOTH values and histograms: %v", series.Values)
 	}
-	assertMetric(t, series.Metric, map[string]string{"service": "api"})
+	assertMetric(t, series.Metric, map[string]string{"service": "api", "service_copy": "api-copy"})
 
 	// Each entry is [timestamp, {count, sum, buckets}].
 	point, ok := series.Histograms[0].([]any)
