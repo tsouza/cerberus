@@ -203,18 +203,20 @@ func TestTracesScanWindowRealCH(t *testing.T) {
 			readRowsFactor: 12,
 		},
 		{
-			// Bare structural descendant closure (`A >> B`) — the recursive step
-			// `t` scan must be window-pruned. Measured 13800 (13.8x partition-spans)
-			// on a correctly-windowed run: the top-N trace-id-selection subquery
-			// appears twice (anchor restriction + R-side restriction) alongside the
-			// recursive step's own multi-iteration window-only scan.
+			// Bare structural descendant closure (`A >> B`) — both the relation's
+			// recursive `t` scan and the root-reachability gate added for #2128
+			// must stay window-pruned. Measured 27802 (27.8x partition-spans) on a
+			// correctly-windowed run: the original 13.8x relation shape remains,
+			// while the rooted L operand adds one bounded anchor + recursive walk.
+			// A lost window still multiplies those physical scans by scanWinDays;
+			// 37x keeps the same ~1.3x headroom over the measured bounded cost.
 			name: "structural_descendant_search",
 			path: "/api/search",
 			params: url.Values{
 				"q":     {`{ kind = server } >> { kind = client }`},
 				"limit": {"20"},
 			},
-			readRowsFactor: 18,
+			readRowsFactor: 37,
 		},
 	}
 
