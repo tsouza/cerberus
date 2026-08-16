@@ -17,6 +17,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,4 +73,5 @@ jobs:
     with:
       workflow: .github/workflows/config-docs.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

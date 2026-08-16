@@ -25,6 +25,16 @@ name: post-merge-drift
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
+      release_before_sha:
+        description: 'Source parent for release drift qualification'
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -74,7 +84,7 @@ jobs:
 
       - name: Regenerate what this merge implied and diff it
         env:
-          POST_MERGE_BEFORE: ${{ github.event.before }}
+          POST_MERGE_BEFORE: ${{ inputs.release_before_sha || github.event.before }}
           POST_MERGE_AFTER: ${{ github.sha }}
         run: node .github/scripts/post-merge-golden-drift.mjs
 
@@ -92,4 +102,5 @@ jobs:
     with:
       workflow: .github/workflows/post-merge-drift.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: main
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || 'main' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

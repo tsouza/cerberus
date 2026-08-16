@@ -32,6 +32,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
   schedule:
     # nightly at 04:30 UTC (offset from the chdb lane's 04:00)
     - cron: '30 4 * * *'
@@ -162,4 +167,5 @@ jobs:
     with:
       workflow: .github/workflows/schema-integration.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

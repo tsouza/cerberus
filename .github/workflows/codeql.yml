@@ -39,6 +39,12 @@ on:
     branches: [main, 'release/*.x']
   pull_request:
   merge_group:
+  workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
   schedule:
     # Weekly deep scan — outside the standard PR/push gates so the
     # extended query suite runs without gating PRs on its extra latency.
@@ -127,4 +133,5 @@ jobs:
     with:
       workflow: .github/workflows/codeql.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

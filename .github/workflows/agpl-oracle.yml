@@ -75,6 +75,11 @@ on:
   push:
     branches: [main, 'release/*.x']
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
   schedule:
     # nightly at 03:30 UTC (ahead of property at 03:45 and chdb at 04:00)
     - cron: '30 3 * * *'
@@ -187,4 +192,5 @@ jobs:
     with:
       workflow: .github/workflows/agpl-oracle.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}
