@@ -463,6 +463,24 @@ FROM numbers(600)`
 	// (5 m staleness lookback, see internal/api/loki/handler.go:235)
 	// finds ≥1 row inside the lookback regardless of suite drift.
 	//
+	// `service_name="api"` rows (number % 3 = 0, ~14 of the 40) are
+	// pinned to a SINGLE body template ("handled request") and a
+	// SINGLE severity (WARN) — frontend/db keep the original 5-template
+	// / mixed-severity variety. This is load-bearing for
+	// /loki/api/v1/patterns (internal/api/loki/patterns.go): drain
+	// trains one Miner per detected level (minePatterns), and
+	// minimumPatternVolume requires ≥30 lines in one cluster before
+	// it's retained. Splitting api's ~14 rows/tick evenly across 5
+	// templates x up to 2 severities (the pre-fix shape) tops out
+	// around 3 lines/tick per cluster — never clears the floor even
+	// after the rolling re-seeder's full ~587 s retention window
+	// (test/e2e/seed/cmd/seed/stale.go's logsStaleMargin). Concentrating
+	// every api row onto one template+level instead gives that cluster
+	// ~14 lines/tick, clearing the floor within a handful of re-seed
+	// ticks — see internal/api/loki's
+	// TestMinePatternsClearsE2ESeedFloor, which mirrors this exact
+	// formula and pins the regression. Keep the two in sync.
+	//
 	// The column list deliberately omits `TimestampTime`: upstream's
 	// clickhouseexporter removed the column from the logs DDL in
 	// v0.150.0. Before the fork bump to the v0.152 templates, which
@@ -481,11 +499,14 @@ SELECT
     now64(9) + INTERVAL ((number - 20) * 15) SECOND AS ts,
     lpad(toString(number % 4), 32, '0'),
     lpad(toString(number % 4), 16, '0'),
-    multiIf(number % 5 = 0, 'ERROR', number % 3 = 0, 'WARN', 'INFO'),
-    multiIf(number % 5 = 0, 17, number % 3 = 0, 13, 9),
+    multiIf(number % 3 = 0, 'WARN', number % 5 = 0, 'ERROR', 'INFO'),
+    multiIf(number % 3 = 0, 13, number % 5 = 0, 17, 9),
     arrayElement(['api', 'frontend', 'db'], number % 3 + 1),
     concat(
-        arrayElement(['handled request', 'connection refused', 'slow query', 'cache hit', 'auth failed'], number % 5 + 1),
+        multiIf(
+            number % 3 = 0, 'handled request',
+            arrayElement(['connection refused', 'slow query', 'cache hit', 'auth failed'], number % 4 + 1)
+        ),
         ' id=', toString(number)
     ),
     map('service_name', arrayElement(['api', 'frontend', 'db'], number % 3 + 1)),
