@@ -69,7 +69,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "max aggregation", query: `max(latency_exp_hist)`},
 		{name: "stddev aggregation", query: `stddev(latency_exp_hist)`},
 		{name: "stdvar aggregation", query: `stdvar(latency_exp_hist)`},
-		{name: "parenthesised scalar arithmetic", query: `(latency_exp_hist) + 1`},
 		{name: "label_replace", query: `label_replace(latency_exp_hist, "a", "b", "service", "(.*)")`},
 		{name: "abs", query: `abs(latency_exp_hist)`},
 		{name: "topk", query: `topk(3, latency_exp_hist)`},
@@ -83,7 +82,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "sum over rate", query: `sum(rate(latency_exp_hist[5m]))`},
 		{name: "sum over increase", query: `sum(increase(latency_exp_hist[5m]))`},
 		{name: "sum of sum", query: `sum(sum(latency_exp_hist))`},
-		{name: "sum under arithmetic", query: `sum(latency_exp_hist) + 1`},
 		{name: "sum under label_replace", query: `label_replace(sum(latency_exp_hist), "a", "b", "service", "(.*)")`},
 		{name: "sum under topk", query: `topk(3, sum by (service) (latency_exp_hist))`},
 		{name: "sum under abs", query: `abs(sum(latency_exp_hist))`},
@@ -99,7 +97,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "rate under abs", query: `abs(rate(latency_exp_hist[5m]))`},
 		{name: "rate under topk", query: `topk(3, rate(latency_exp_hist[5m]))`},
 		{name: "rate under avg", query: `avg(rate(latency_exp_hist[5m]))`},
-		{name: "increase under arithmetic", query: `increase(latency_exp_hist[5m]) + 1`},
 		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},
 
 		// `resets()` / `changes()` / `count()` over a bare selector ARE

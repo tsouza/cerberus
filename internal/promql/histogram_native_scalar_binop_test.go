@@ -19,11 +19,10 @@ import (
 // publishing the same thirteen-column contract every other
 // histogram-valued shape does.
 //
-// `+` / `-` / `^` / `%` and the comparison family stay rejected
-// (TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly's
-// "sum under arithmetic" / "increase under arithmetic" cases): reference
-// answers those with an empty result plus an info annotation rather than
-// a value, so admitting them here would answer where reference does not.
+// The incompatible scalar operators are covered separately by
+// TestLower_ExpHistogram_IncompatibleScalarBinopDropsSamples: reference
+// answers those with an empty result plus an info annotation, never a
+// histogram value.
 func TestLower_ExpHistogram_ScalarBinopIsHistogramValued(t *testing.T) {
 	t.Parallel()
 
@@ -130,6 +129,80 @@ func TestLower_ExpHistogram_ScalarBinopIsHistogramValued(t *testing.T) {
 			name, ok := hp.GroupBy[0].(*chplan.LitString)
 			if !ok || name.V != "" {
 				t.Fatalf("lower(%q): metric-name projection is %#v, want empty literal", tc.query, hp.GroupBy[0])
+			}
+		})
+	}
+}
+
+func TestLower_ExpHistogram_IncompatibleScalarBinopDropsSamples(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	cases := []struct {
+		name  string
+		query string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{name: "histogram plus scalar", query: `latency_exp_hist + 1`},
+		{name: "scalar plus histogram", query: `1 + latency_exp_hist`},
+		{name: "histogram minus scalar", query: `latency_exp_hist - 1`},
+		{name: "scalar minus histogram", query: `1 - latency_exp_hist`},
+		{name: "histogram power scalar", query: `latency_exp_hist ^ 2`},
+		{name: "scalar power histogram", query: `2 ^ latency_exp_hist`},
+		{name: "histogram modulo scalar", query: `latency_exp_hist % 2`},
+		{name: "scalar modulo histogram", query: `2 % latency_exp_hist`},
+		{name: "scalar divided by histogram", query: `2 / latency_exp_hist`},
+		{name: "equal", query: `latency_exp_hist == 1`},
+		{name: "not equal", query: `latency_exp_hist != 1`},
+		{name: "greater", query: `latency_exp_hist > 1`},
+		{name: "less", query: `latency_exp_hist < 1`},
+		{name: "greater equal", query: `latency_exp_hist >= 1`},
+		{name: "less equal", query: `latency_exp_hist <= 1`},
+		{name: "bool comparison", query: `latency_exp_hist > bool 1`},
+		{name: "atan2", query: `latency_exp_hist atan2 1`},
+		{name: "parenthesised", query: `(latency_exp_hist) + 1`},
+		{name: "sum plus scalar", query: `sum(latency_exp_hist) + 1`},
+		{name: "increase plus scalar", query: `increase(latency_exp_hist[5m]) + 1`},
+		{
+			name:  "range query",
+			query: `latency_exp_hist + 1`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			lower := tc.lower
+			if lower == nil {
+				lower = func(e parser.Expr) (chplan.Node, error) {
+					return promql.LowerAt(context.Background(), e, s, end, end)
+				}
+			}
+			plan, err := lower(expr)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", tc.query, err)
+			}
+			filter, ok := plan.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want constant-false *chplan.Filter", tc.query, plan)
+			}
+			predicate, ok := filter.Predicate.(*chplan.LitBool)
+			if !ok || predicate.V {
+				t.Fatalf("lower(%q): filter predicate is %#v, want false literal", tc.query, filter.Predicate)
+			}
+			if shape := chplan.RowShapeOf(filter.Input); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): filtered input publishes %s, want histogram", tc.query, shape)
 			}
 		})
 	}

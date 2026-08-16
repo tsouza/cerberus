@@ -172,8 +172,10 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // dispatches that can only be decided at the root: the shapes over an
 // exponential (native) histogram that return a HISTOGRAM-VALUED sample —
 // a bare selector, `sum`/`avg` `[by/without] (<selector>)`, and
-// `rate`/`increase` over a range-vector selector — whose answer has a
-// wire representation only when the shape IS the whole query.
+// `rate`/`increase` over a range-vector selector — plus scalar binary
+// operations that either preserve that histogram value or drop it as an
+// incompatible sample. Their answers have a wire representation only when
+// the shape IS the whole query.
 //
 // The distinction cannot be made inside [lowerVectorSelector], because the
 // selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
@@ -189,13 +191,16 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // (issue #1967), and never widens the exemption by accident: a nested
 // selector never reaches this function.
 //
-// The three dispatches are ordered but not mutually exclusive in
-// principle, and the order is arbitrary: [bareExpHistogramSelector],
-// [sumOrAvgOverExpHistogram] and [rateOverExpHistogram] recognise disjoint
-// root node types (a selector, an aggregation, a range-vector call), so
-// none can shadow another. [rateOverExpHistogram] additionally refuses an
-// aggregation WRAPPER, so `sum(rate(...))` — which needs both reductions
-// — matches neither it nor [sumOrAvgOverExpHistogram] and stays rejected.
+// The direct histogram-valued dispatches are ordered but not mutually
+// exclusive in principle, and the order is arbitrary:
+// [bareExpHistogramSelector], [sumOrAvgOverExpHistogram] and
+// [rateOverExpHistogram] recognise disjoint root node types (a selector, an
+// aggregation, a range-vector call), so none can shadow another.
+// [rateOverExpHistogram] additionally refuses an aggregation WRAPPER, so
+// `sum(rate(...))` — which needs both reductions — matches neither it nor
+// [sumOrAvgOverExpHistogram] and stays rejected. The scaling scalar-binop
+// recognizer intentionally precedes the dropping recognizer so histogram /
+// scalar keeps its value while scalar / histogram drops it.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -218,7 +223,10 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		return lowerExpHistogramCount(agg, vs, s, ctx)
 	}
 	if histSide, op, scale, ok := expHistogramScalarBinop(expr, s, ctx); ok {
-		return lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx)
+		return lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
+	}
+	if histSide, ok := expHistogramDroppingScalarBinop(expr, s, ctx); ok {
+		return lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
 	}
 	return lower(expr, s, ctx)
 }
