@@ -109,3 +109,22 @@ jobs:
             exit 1
           fi
           echo "All CodeQL analyses passed."
+
+
+      - name: checkout native evidence controller
+        uses: actions/checkout@v7
+
+      - name: emit native evidence for security.codeql
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: security.codeql.codeql.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [analyze, CodeQL]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/codeql.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

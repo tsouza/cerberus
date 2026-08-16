@@ -53,3 +53,19 @@ jobs:
         run: |
           git diff --exit-code -- docs/configuration.md \
             || { echo "::error::docs/configuration.md is stale - run 'just gen-config-docs' and commit the result"; exit 1; }
+
+
+      - name: emit native evidence for docs.config-drift
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: docs.config-drift.config-docs.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [config-docs]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/config-docs.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

@@ -47,6 +47,11 @@ jobs:
           CHECKOUT_SHA: ${{ github.sha }}
         run: node .github/scripts/quickstart-canary.mjs
 
+
+      - name: emit native evidence for e2e.quickstart
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.quickstart.select.source
   run:
     name: quickstart-run
     needs: select
@@ -106,6 +111,11 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans
 
+
+      - name: emit native evidence for e2e.quickstart
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.quickstart.run.source
   quickstart:
     name: quickstart
     needs: [select, run]
@@ -126,3 +136,13 @@ jobs:
           SELECTED: ${{ needs.select.outputs.selected }}
           RUN_RESULT: ${{ needs.run.result }}
         run: node .github/scripts/quickstart-canary.mjs
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [select, run]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/quickstart.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

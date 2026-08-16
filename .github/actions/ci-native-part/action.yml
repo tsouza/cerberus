@@ -1,0 +1,30 @@
+name: emit CI lane native part
+description: Publish a completion-bound native evidence part for one registered producer
+
+inputs:
+  id:
+    description: Registry native part ID
+    required: true
+  seed:
+    description: Exact seed used by a seeded producer lane
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: emit the completion-bound native case
+      shell: bash
+      env:
+        CI_NATIVE_PART_ID: ${{ inputs.id }}
+        CI_NATIVE_PART_OUTPUT: .ci-native/${{ inputs.id }}/cases.json
+        CI_NATIVE_SEED: ${{ inputs.seed }}
+      run: node .github/scripts/ci-lane-native-part.mjs
+
+    - name: upload the attempt-qualified native part
+      uses: actions/upload-artifact@v7
+      with:
+        name: ci-native-part-${{ inputs.id }}-${{ github.run_attempt }}
+        path: .ci-native/${{ inputs.id }}/cases.json
+        if-no-files-found: error
+        retention-days: 14

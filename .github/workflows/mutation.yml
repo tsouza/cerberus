@@ -242,3 +242,22 @@ jobs:
             exit 1
           fi
           echo "all selected mutation phases green."
+
+
+      - name: checkout native evidence controller
+        uses: actions/checkout@v7
+
+      - name: emit native evidence for quality.mutation
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: quality.mutation.mutation.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [select, mutate, mutation]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/mutation.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

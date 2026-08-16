@@ -90,6 +90,13 @@ const NON_SUCCESS_CONCLUSIONS = [
 
 const root = mkdtempSync(join(tmpdir(), "cerberus-ci-lane-contract-"));
 mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+mkdirSync(join(root, ".github", "actions", "ci-native-part"), {
+  recursive: true,
+});
+writeFileSync(
+  join(root, ".github", "actions", "ci-native-part", "action.yml"),
+  "name: fixture native part\n",
+);
 writeFileSync(
   join(root, "Justfile"),
   [
@@ -118,15 +125,20 @@ const workflowFixtures = {
     "  check:",
     "    steps:",
     "      - run: just test",
-    "  lint:",
+  "  lint:",
     "    steps:",
     "      - run: true",
+    "      - uses: ./.github/actions/ci-native-part",
+    "        with:",
+    "          id: always-go",
     "  oracle-property:",
     "    steps:",
     "      - run: true",
     "  oracle-reference:",
     "    steps:",
     "      - run: ./fixture-tools/reference-oracle",
+    "  native-evidence:",
+    "    uses: ./.github/workflows/ci-native-evidence.yml",
     "",
   ].join("\n"),
   "e2e.yml": [
@@ -135,9 +147,17 @@ const workflowFixtures = {
     "  shard:",
     "    steps:",
     "      - run: true",
+    "      - uses: ./.github/actions/ci-native-part",
+    "        with:",
+    "          id: impact-tap",
     "  aggregate:",
     "    steps:",
     "      - run: true",
+    "      - uses: ./.github/actions/ci-native-part",
+    "        with:",
+    "          id: impact-tap",
+    "  native-evidence:",
+    "    uses: ./.github/workflows/ci-native-evidence.yml",
     "",
   ].join("\n"),
   "release.yml": [
@@ -997,6 +1017,45 @@ test("registry producer jobs are unique owner jobs with an exact native-part ros
     validateRegistry(directContextProducer, { root }),
     directContextProducer,
   );
+
+  const unenrolledPart = registryFixture();
+  unenrolledPart.native_evidence.parts[1].producer_job = "aggregate";
+  unenrolledPart.lanes[1].owner.producer_jobs = ["aggregate"];
+  const workflowPath = join(root, ".github", "workflows", "e2e.yml");
+  const workflow = readFileSync(workflowPath, "utf8");
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      /  aggregate:[\s\S]*$/,
+      "  aggregate:\n    steps:\n      - run: true\n",
+    ),
+  );
+  try {
+    expectContractError(
+      () => validateRegistry(unenrolledPart, { root }),
+      /is not uploaded by \.github\/workflows\/e2e\.yml job aggregate/,
+    );
+  } finally {
+    writeFileSync(workflowPath, workflow);
+  }
+
+  const missingBundle = registryFixture();
+  const bundleWorkflow = readFileSync(workflowPath, "utf8");
+  writeFileSync(
+    workflowPath,
+    bundleWorkflow.replace(
+      /\n  native-evidence:\n    uses: \.\/\.github\/workflows\/ci-native-evidence\.yml\n/,
+      "\n",
+    ),
+  );
+  try {
+    expectContractError(
+      () => validateRegistry(missingBundle, { root }),
+      /owns native parts but does not call ci-native-evidence\.yml/,
+    );
+  } finally {
+    writeFileSync(workflowPath, bundleWorkflow);
+  }
 });
 
 test("registry discovers and rejects an unclassified .yaml workflow", () => {
@@ -1901,7 +1960,7 @@ test("release report set qualifies all release-required source and artifact lane
 });
 
 test("canonical pre-publication qualification validates exactly 45 invocations", () => {
-  const registry = JSON.parse(readFileSync(".github/ci-lanes.json", "utf8"));
+  const registry = loadRegistry(".github/ci-lanes.json");
   const selection = {
     schema_version: registry.selection_schema_version,
     registry_schema_version: registry.schema_version,

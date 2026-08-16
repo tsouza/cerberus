@@ -888,6 +888,14 @@ jobs:
   # child check, and re-gating it here would undo the de-gate on purpose. It is
   # `cancelled` and `skipped` that this job exists to make impossible to ignore.
   # Not a branch-protection context, so it reports without blocking merges.
+
+      - name: checkout native evidence controller
+        uses: actions/checkout@v7
+
+      - name: emit native evidence for e2e.compose-smoke
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.compose-smoke.compose-smoke.source
   crawl-terminal:
     name: crawl-terminal
     needs: [compose-smoke-scope, compose-smoke-setup, compose-smoke-shard-info]
@@ -950,6 +958,11 @@ jobs:
   #                       shard, and a RELEASE-required check (release.yml's
   #                       preflight reads it by name). The clean roll-up + the
   #                       coverage-discipline guard mirror compose-smoke.
+
+      - name: emit native evidence for e2e.compose-crawl
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.compose-crawl.crawl-terminal.source
   dashboard-setup:
     name: dashboard-setup
     # push + nightly + manual dispatch always; pull_request ONLY when the head
@@ -1446,6 +1459,11 @@ jobs:
           CRAWL_SHARD_RESULT: ${{ needs.dashboard-shard-info.result }}
           SWEEP_DEPTH: full
 
+
+      - name: emit native evidence for e2e.dashboard-crawl
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.dashboard-crawl.dashboard-crawl-terminal.source
   dashboard-crawl-merge:
     name: dashboard-crawl-merge
     needs: [dashboard-setup, dashboard-shard-info]
@@ -1538,6 +1556,14 @@ jobs:
            fi
            echo "all dashboard shards passed."
 
+
+      - name: checkout native evidence controller
+        uses: actions/checkout@v7
+
+      - name: emit native evidence for e2e.dashboard
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.dashboard.dashboard.source
   startup-bench:
     # Startup-speed benchmark: spawn cerberus and assert <2 s to /healthz.
     # Informational only — not a required gate. The fast-feedback PR loop
@@ -1657,6 +1683,11 @@ jobs:
         if: always()
         run: docker rm -f clickhouse || true
 
+
+      - name: emit native evidence for e2e.startup-bench
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.startup-bench.startup-bench.source
   chaos:
     name: chaos
     # Live-stack chaos-engineering lane: fault-inject against the running
@@ -1881,6 +1912,12 @@ jobs:
   # pull_request, so NOT a branch-protection check). Own concurrency + timeout;
   # deliberately NOT added to the dashboard/compose disjoint-cover shard
   # matrices — it is a separate single-cluster lane, not a Playwright shard.
+
+      - name: emit native evidence for e2e.chaos
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.chaos.chaos.source
+          seed: ci-${{ github.run_id }}-${{ github.run_attempt }}
   bwc-minio:
     name: bwc-minio
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -2013,3 +2050,19 @@ jobs:
       - name: Tear down
         if: always()
         run: just e2e-bwc-down
+
+
+      - name: emit native evidence for e2e.bwc-minio
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: e2e.bwc-minio.bwc-minio.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [compose-smoke, crawl-terminal, dashboard-crawl-terminal, dashboard, startup-bench, chaos, bwc-minio]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/e2e.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

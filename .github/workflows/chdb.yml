@@ -238,6 +238,11 @@ jobs:
   # docs-only PR every step is skipped and each leg concludes `success`
   # in seconds (no chDB compile/run) — satisfying the required check
   # without doing the work. Do NOT hoist this back to the job level.
+
+      - name: emit native evidence for chdb.probe
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.probe.probe.source
   roundtrip:
     name: roundtrip (${{ matrix.ql }})
     needs: changes
@@ -399,6 +404,24 @@ jobs:
   #
   # COST: N legs = N chDB installs and N compiles — billable minutes rise, while
   # wall-clock drops from the serial sum toward the longest leg plus fixed setup.
+
+      - name: emit native evidence for chdb.roundtrip-logql
+        if: ${{ matrix.ql == 'logql' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.roundtrip-logql.roundtrip.source
+
+      - name: emit native evidence for chdb.roundtrip-promql
+        if: ${{ matrix.ql == 'promql' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.roundtrip-promql.roundtrip.source
+
+      - name: emit native evidence for chdb.roundtrip-traceql
+        if: ${{ matrix.ql == 'traceql' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.roundtrip-traceql.roundtrip.source
   perf-guards-shard:
     name: perf-guards-shard
     needs: changes
@@ -522,6 +545,11 @@ jobs:
   # No golden file + no GOLDEN_UPDATE: expected results are computed at run
   # time by the oracle, so a pass proves PromQL semantics, not reproduction
   # of a recording.
+
+      - name: emit native evidence for chdb.perf-guards
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.perf-guards.perf-guards.source
   integration-promql:
     name: integration (promql)
     needs: changes
@@ -561,6 +589,11 @@ jobs:
   # This is ORTHOGONAL to `roundtrip`: roundtrip pins self-derived SQL and
   # expected_rows; this live HTTP pipeline has no golden/GOLDEN_UPDATE path
   # and catches semantic lowering, optimizer, emitter, and wire drift.
+
+      - name: emit native evidence for chdb.integration-promql
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.integration-promql.integration-promql.source
   integration-logql:
     name: integration (logql)
     needs: changes
@@ -600,6 +633,11 @@ jobs:
   # expected_rows; this live HTTP pipeline has no golden/GOLDEN_UPDATE path
   # and catches semantic selector, structural, aggregate, optimizer, emitter,
   # and wire drift.
+
+      - name: emit native evidence for chdb.integration-logql
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.integration-logql.integration-logql.source
   integration-traceql:
     name: integration (traceql)
     needs: changes
@@ -629,3 +667,19 @@ jobs:
 
       - name: Run exotic TraceQL integration suite (chDB)
         run: go test -tags chdb -count=1 ./test/integration/traceql/...
+
+
+      - name: emit native evidence for chdb.integration-traceql
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.integration-traceql.integration-traceql.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [changes, chdb-build, probe, roundtrip, perf-guards-shard, perf-guards, integration-promql, integration-logql, integration-traceql]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/chdb.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

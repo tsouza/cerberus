@@ -138,3 +138,19 @@ jobs:
             version_flag="--check-version-increment=false"
           fi
           ct lint --chart-dirs deploy/helm --target-branch "$TARGET_BRANCH" --validate-maintainers=false $version_flag
+
+
+      - name: emit native evidence for chart.validate
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chart.validate.chart-validate.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [chart-validate]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/chart-ci.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

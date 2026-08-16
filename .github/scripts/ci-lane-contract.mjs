@@ -732,6 +732,55 @@ function workflowJobCommands(root, workflow, jobs) {
   return commands;
 }
 
+function workflowJobBlock(root, workflow, jobID) {
+  if (
+    typeof workflow !== "string" ||
+    typeof jobID !== "string" ||
+    !existsSync(resolve(root, workflow))
+  ) {
+    return "";
+  }
+  const lines = readFileSync(resolve(root, workflow), "utf8").split("\n");
+  const jobsIndex = lines.findIndex((line) => /^\s*jobs:\s*(?:#.*)?$/.test(line));
+  if (jobsIndex === -1) return "";
+  const jobsIndent = /^\s*/.exec(lines[jobsIndex])[0].length;
+  const jobIndent = jobsIndent + 2;
+  let start = -1;
+  for (let i = jobsIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+    const indent = /^\s*/.exec(line)[0].length;
+    if (indent <= jobsIndent) break;
+    const job = /^\s*([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(line);
+    if (indent !== jobIndent || !job) continue;
+    if (start !== -1) return lines.slice(start, i).join("\n");
+    if (job[1] === jobID) start = i;
+  }
+  return start === -1 ? "" : lines.slice(start).join("\n");
+}
+
+function producerJobEnrollsNativePart(root, workflow, jobID, partID) {
+  const block = workflowJobBlock(root, workflow, jobID);
+  if (block === "") return false;
+  const escapedID = partID.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const enrollment = new RegExp(
+    `uses:\\s*\\./\\.github/actions/ci-native-part(?:/action\\.yml)?\\s*` +
+      `[\\s\\S]{0,500}?\\n\\s*with:\\s*[\\s\\S]{0,300}?\\n\\s*id:\\s*['\"]?${escapedID}['\"]?\\s*(?:#.*)?$`,
+    "m",
+  );
+  return enrollment.test(block);
+}
+
+function workflowCallsNativeEvidence(root, workflow) {
+  if (typeof workflow !== "string" || !existsSync(resolve(root, workflow))) {
+    return false;
+  }
+  const contents = readFileSync(resolve(root, workflow), "utf8");
+  return /uses:\s*\.\/\.github\/workflows\/ci-native-evidence\.yml(?:\s|$)/m.test(
+    contents,
+  );
+}
+
 function normalizedCommand(value) {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -1263,6 +1312,7 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
 
   const nativeJobsByLane = new Map();
   const nativeExecutions = new Set();
+  const nativeWorkflows = new Set();
   for (let i = 0; i < nativeParts.length; i += 1) {
     const part = nativeParts[i];
     const at = `registry.native_evidence.parts[${i}]`;
@@ -1282,6 +1332,18 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
       );
     }
     if (
+      !producerJobEnrollsNativePart(
+        root,
+        lane.owner.workflow,
+        part.producer_job,
+        part.id,
+      )
+    ) {
+      problems.push(
+        `${at} is not uploaded by ${lane.owner.workflow} job ${part.producer_job}`,
+      );
+    }
+    if (
       part.invocation_mode === "source_tree" &&
       !lane.applicability.source
     ) {
@@ -1296,14 +1358,26 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
     const jobs = nativeJobsByLane.get(lane.id) ?? new Set();
     jobs.add(part.producer_job);
     nativeJobsByLane.set(lane.id, jobs);
+    nativeWorkflows.add(lane.owner.workflow);
     nativeExecutions.add(
       `${lane.id}/${part.execution_id}/${part.invocation_mode}`,
     );
   }
+  for (const workflow of [...nativeWorkflows].sort()) {
+    if (!workflowCallsNativeEvidence(root, workflow)) {
+      problems.push(
+        `${workflow} owns native parts but does not call ci-native-evidence.yml`,
+      );
+    }
+  }
   for (const [laneID, jobs] of nativeJobsByLane) {
     const lane = lanesByID.get(laneID);
     const actual = [...jobs].sort();
-    const declared = [...lane.owner.producer_jobs].sort();
+    const declared = [
+      ...(lane.owner.producer_jobs.length > 0
+        ? lane.owner.producer_jobs
+        : [lane.owner.context_job]),
+    ].sort();
     if (JSON.stringify(actual) !== JSON.stringify(declared)) {
       problems.push(
         `registry lane ${laneID} owner.producer_jobs must exactly match native part producers ${JSON.stringify(actual)}`,

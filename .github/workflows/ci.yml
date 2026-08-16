@@ -108,6 +108,11 @@ jobs:
   # the suite does NOT need to wait for is the build / type-check / oracle /
   # tidy work — pure serial tail hanging off the same runner. That moved to
   # `check-build`, and the two halves now overlap instead of queueing.
+
+      - name: emit native evidence for ci.check
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.check.changes.source
   check-test:
     name: check-test
     needs: changes
@@ -136,6 +141,16 @@ jobs:
           just test-chaos-sleep
           just test-unit
 
+
+      - name: emit native evidence for ci.chaos-sleep
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.chaos-sleep.check-test.source
+
+      - name: emit native evidence for ci.check
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.check.check-test.source
   check-build:
     name: check-build
     needs: changes
@@ -194,6 +209,11 @@ jobs:
   # split unchanged. `always()` is load-bearing — with a plain `needs:` this job
   # would be SKIPPED when a half fails, and a skipped required check is green to
   # branch protection. So it always runs and reads the results explicitly.
+
+      - name: emit native evidence for ci.check
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.check.check-build.source
   check:
     name: check
     needs: [changes, check-test, check-build]
@@ -549,6 +569,11 @@ jobs:
   # boundary (and pinned by their respective VERSION files). Runs in
   # parallel with `check` + `lint`; flip on as a required status check
   # via branch protection.
+
+      - name: emit native evidence for ci.lint
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.lint.lint.source
   forbid-skip:
     name: forbid-skip
     runs-on: ubuntu-latest
@@ -1047,6 +1072,11 @@ jobs:
   # Vendored upstream snapshots under `compatibility/*/upstream/**` are
   # excluded, mirroring the markdownlint + forbid-skip exclude set — they are
   # reference material outside cerberus's authorship boundary.
+
+      - name: emit native evidence for ci.forbid-skip
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.forbid-skip.forbid-skip.source
   link-check:
     name: link-check
     runs-on: ubuntu-latest
@@ -1096,6 +1126,11 @@ jobs:
   # grafana/tempo/* except pkg/tempopb). Logic lives in
   # .github/scripts/agpl-clean.mjs (node: builtins only). Add to branch
   # protection as a required status check.
+
+      - name: emit native evidence for ci.link-check
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.link-check.link-check.source
   agpl-clean:
     name: agpl-clean
     needs: changes
@@ -1111,3 +1146,19 @@ jobs:
 
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
+
+
+      - name: emit native evidence for ci.agpl-clean
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: ci.agpl-clean.agpl-clean.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [changes, check-test, check-build, lint, forbid-skip, link-check, agpl-clean]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/ci.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

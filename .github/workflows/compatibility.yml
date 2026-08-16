@@ -201,6 +201,11 @@ jobs:
       - name: go build (compile sanity)
         run: go build ./...
 
+
+      - name: emit native evidence for compatibility.gate
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.gate.gate.source
   prometheus:
     name: compatibility/prometheus
     needs: [changes, gate]
@@ -422,6 +427,11 @@ jobs:
           echo "::error title=compatibility/prometheus suite failed::compatibility harness (steps.compat) exited non-zero — see the 'Run compatibility harness' step log and the uploaded compatibility-prometheus-report artifact"
           exit 1
 
+
+      - name: emit native evidence for compatibility.prometheus
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.prometheus.prometheus.source
   prometheus-forced-route:
     # Phase-2 FLIP proof job for the sharded-pushdown solver. It runs the
     # SAME prometheus differential harness as `compatibility/prometheus`,
@@ -587,6 +597,11 @@ jobs:
           echo "::error title=compatibility/prometheus-forced-route failed::forced-route harness exited non-zero — route B (CERBERUS_EVAL_ROUTE=sharded) diverged from reference Prometheus, OR an infra failure occurred. See the harness log + the uploaded compatibility-prometheus-forced-route-report artifact"
           exit 1
 
+
+      - name: emit native evidence for compatibility.prometheus-forced-route
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.prometheus-forced-route.prometheus-forced-route.source
   prometheus-floor:
     # Floor-pinned proof job for #1500: internal/preflight/preflight.go's
     # minCHBase declares ClickHouse 24.8 as cerberus's supported floor, but
@@ -780,6 +795,11 @@ jobs:
           echo "::error title=compatibility/prometheus-floor failed::floor harness (ClickHouse 24.8) exited non-zero — an infra failure or a hard SQL rejection against the floor server. See the harness log + the uploaded compatibility-prometheus-floor-report artifact"
           exit 1
 
+
+      - name: emit native evidence for compatibility.prometheus-floor
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.prometheus-floor.prometheus-floor.source
   promql-surface:
     # Reference-backed full-surface PromQL rejection-completeness gate (#106).
     #
@@ -854,6 +874,11 @@ jobs:
         # misfile. node ships on ubuntu-latest, so no setup-node is needed.
         run: node .github/scripts/promql-surface-gate.mjs
 
+
+      - name: emit native evidence for compatibility.promql-surface
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.promql-surface.promql-surface.source
   tempo:
     name: compatibility/tempo
     needs: [changes, gate]
@@ -1023,6 +1048,11 @@ jobs:
           echo "::error title=compatibility/tempo suite failed::harness step failed -- see logs and uploaded report"
           exit 1
 
+
+      - name: emit native evidence for compatibility.tempo
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.tempo.tempo.source
   loki:
     name: compatibility/loki
     needs: [changes, gate]
@@ -1177,3 +1207,19 @@ jobs:
         run: |
           echo "::error title=compatibility/loki suite failed::harness step failed -- see logs and uploaded report"
           exit 1
+
+
+      - name: emit native evidence for compatibility.loki
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: compatibility.loki.loki.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [changes, gate, prometheus, prometheus-forced-route, prometheus-floor, promql-surface, tempo, loki]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/compatibility.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

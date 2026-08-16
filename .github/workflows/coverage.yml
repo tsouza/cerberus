@@ -124,3 +124,24 @@ jobs:
             cover-chdb.out
             cover-merged.out
           retention-days: 30
+
+
+      - name: emit native evidence for quality.coverage-enrollment
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: quality.coverage-enrollment.coverage.source
+
+      - name: emit native evidence for quality.coverage-measured
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: quality.coverage-measured.coverage.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [coverage]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/coverage.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

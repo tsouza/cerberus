@@ -147,3 +147,19 @@ jobs:
 
       - name: Run schema/ddl integration tests (real ClickHouse)
         run: just schema-ddl-test
+
+
+      - name: emit native evidence for schema.ddl
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: schema.ddl.schema-ddl.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [changes, schema-ddl]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/schema-integration.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

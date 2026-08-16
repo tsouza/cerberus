@@ -276,3 +276,19 @@ jobs:
       # internal/chclient/conn_teardown_integration_test.go.
       - name: Run chclient connection-teardown differential (real ClickHouse)
         run: just chclient-integration
+
+
+      - name: emit native evidence for chdb.strict-scan
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: chdb.strict-scan.strict-scan.source
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [changes, strict-scan]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/strict-scan.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

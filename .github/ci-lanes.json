@@ -19,7 +19,494 @@
   },
   "native_evidence": {
     "schema_version": 1,
-    "parts": []
+    "parts": [
+      {
+        "id": "agpl.oracle.agpl-oracle.source",
+        "lane_id": "agpl.oracle",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "agpl-oracle",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chart.validate.chart-validate.source",
+        "lane_id": "chart.validate",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "chart-validate",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.integration-logql.integration-logql.source",
+        "lane_id": "chdb.integration-logql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "integration-logql",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.integration-promql.integration-promql.source",
+        "lane_id": "chdb.integration-promql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "integration-promql",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.integration-traceql.integration-traceql.source",
+        "lane_id": "chdb.integration-traceql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "integration-traceql",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.perf-guards.perf-guards.source",
+        "lane_id": "chdb.perf-guards",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "perf-guards",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.probe.probe.source",
+        "lane_id": "chdb.probe",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "probe",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.roundtrip-logql.roundtrip.source",
+        "lane_id": "chdb.roundtrip-logql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "roundtrip",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.roundtrip-promql.roundtrip.source",
+        "lane_id": "chdb.roundtrip-promql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "roundtrip",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.roundtrip-traceql.roundtrip.source",
+        "lane_id": "chdb.roundtrip-traceql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "roundtrip",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "chdb.strict-scan.strict-scan.source",
+        "lane_id": "chdb.strict-scan",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "strict-scan",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.agpl-clean.agpl-clean.source",
+        "lane_id": "ci.agpl-clean",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "agpl-clean",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.chaos-sleep.check-test.source",
+        "lane_id": "ci.chaos-sleep",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "check-test",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.check.changes.source",
+        "lane_id": "ci.check",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "changes",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.check.check-build.source",
+        "lane_id": "ci.check",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "check-build",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.check.check-test.source",
+        "lane_id": "ci.check",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "check-test",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.forbid-skip.forbid-skip.source",
+        "lane_id": "ci.forbid-skip",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "forbid-skip",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.link-check.link-check.source",
+        "lane_id": "ci.link-check",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "link-check",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "ci.lint.lint.source",
+        "lane_id": "ci.lint",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "lint",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.gate.gate.source",
+        "lane_id": "compatibility.gate",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "gate",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.loki.loki.source",
+        "lane_id": "compatibility.loki",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "loki",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.prometheus-floor.prometheus-floor.source",
+        "lane_id": "compatibility.prometheus-floor",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "prometheus-floor",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.prometheus-forced-route.prometheus-forced-route.source",
+        "lane_id": "compatibility.prometheus-forced-route",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "prometheus-forced-route",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.prometheus.prometheus.source",
+        "lane_id": "compatibility.prometheus",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "prometheus",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.promql-surface.promql-surface.source",
+        "lane_id": "compatibility.promql-surface",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "promql-surface",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "compatibility.tempo.tempo.source",
+        "lane_id": "compatibility.tempo",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "tempo",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "docs.config-drift.config-docs.source",
+        "lane_id": "docs.config-drift",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "config-docs",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.bwc-minio.bwc-minio.source",
+        "lane_id": "e2e.bwc-minio",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "bwc-minio",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.chaos.chaos.source",
+        "lane_id": "e2e.chaos",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "chaos",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.compose-crawl.crawl-terminal.source",
+        "lane_id": "e2e.compose-crawl",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "crawl-terminal",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.compose-smoke.compose-smoke.source",
+        "lane_id": "e2e.compose-smoke",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "compose-smoke",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.dashboard-crawl.dashboard-crawl-terminal.source",
+        "lane_id": "e2e.dashboard-crawl",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "dashboard-crawl-terminal",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.dashboard.dashboard.source",
+        "lane_id": "e2e.dashboard",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "dashboard",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.quickstart.run.source",
+        "lane_id": "e2e.quickstart",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "run",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.quickstart.select.source",
+        "lane_id": "e2e.quickstart",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "select",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "e2e.startup-bench.startup-bench.source",
+        "lane_id": "e2e.startup-bench",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "startup-bench",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "governance.forbid-deferral.forbid-deferral.source",
+        "lane_id": "governance.forbid-deferral",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "forbid-deferral",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "governance.pr-body.pr-body.source",
+        "lane_id": "governance.pr-body",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "pr-body",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-setup.artifact",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "candidate_artifact",
+        "producer_job": "migration-setup",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier0.artifact",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "candidate_artifact",
+        "producer_job": "migration-tier0",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier1.artifact",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "candidate_artifact",
+        "producer_job": "migration-tier1",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier2.artifact",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "candidate_artifact",
+        "producer_job": "migration-tier2",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-setup.source",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "migration-setup",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier0.source",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "migration-tier0",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier1.source",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "migration-tier1",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "migration.e2e.migration-tier2.source",
+        "lane_id": "migration.e2e",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "migration-tier2",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "performance.profile.profile.source",
+        "lane_id": "performance.profile",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "profile",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "quality.coverage-enrollment.coverage.source",
+        "lane_id": "quality.coverage-enrollment",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "coverage",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "quality.coverage-measured.coverage.source",
+        "lane_id": "quality.coverage-measured",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "coverage",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "quality.mutation.mutation.source",
+        "lane_id": "quality.mutation",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "mutation",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "quality.post-merge-drift.drift.source",
+        "lane_id": "quality.post-merge-drift",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "drift",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "quality.property.property.source",
+        "lane_id": "quality.property",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "property",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "schema.ddl.schema-ddl.source",
+        "lane_id": "schema.ddl",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "schema-ddl",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      },
+      {
+        "id": "security.codeql.codeql.source",
+        "lane_id": "security.codeql",
+        "execution_id": "default",
+        "invocation_mode": "source_tree",
+        "producer_job": "CodeQL",
+        "parser": "case-json-v1",
+        "entry": "cases.json"
+      }
+    ]
   },
   "layers": [
     { "id": "1", "name": "Parser smoke / AST-shape pinning" },
@@ -245,7 +732,7 @@
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
         "jobs": ["perf-guards-shard", "perf-guards"],
-        "producer_jobs": ["perf-guards-shard"],
+        "producer_jobs": ["perf-guards"],
         "context_job": "perf-guards"
       },
       "executions": ["default"],
@@ -1075,7 +1562,7 @@
           "compose-crawl-merge",
           "crawl-terminal"
         ],
-        "producer_jobs": ["compose-smoke-shard-info"],
+        "producer_jobs": ["crawl-terminal"],
         "context_job": "crawl-terminal"
       },
       "executions": ["default"],
@@ -1135,11 +1622,7 @@
           "compose-smoke-shard",
           "compose-smoke"
         ],
-        "producer_jobs": [
-          "compose-smoke-scope",
-          "compose-smoke-setup",
-          "compose-smoke-shard"
-        ],
+        "producer_jobs": ["compose-smoke"],
         "context_job": "compose-smoke"
       },
       "executions": ["default"],
@@ -1194,7 +1677,7 @@
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
         "jobs": ["dashboard-setup", "dashboard-shard", "dashboard"],
-        "producer_jobs": ["dashboard-setup", "dashboard-shard"],
+        "producer_jobs": ["dashboard"],
         "context_job": "dashboard"
       },
       "executions": ["default"],
@@ -1229,7 +1712,7 @@
           "dashboard-crawl-terminal",
           "dashboard-crawl-merge"
         ],
-        "producer_jobs": ["dashboard-shard-info"],
+        "producer_jobs": ["dashboard-crawl-terminal"],
         "context_job": "dashboard-crawl-terminal"
       },
       "executions": ["default"],
@@ -1682,7 +2165,7 @@
       "owner": {
         "workflow": ".github/workflows/mutation.yml",
         "jobs": ["select", "mutate", "mutation"],
-        "producer_jobs": ["select", "mutate"],
+        "producer_jobs": ["mutation"],
         "context_job": "mutation"
       },
       "executions": ["default"],
@@ -1926,7 +2409,7 @@
       "owner": {
         "workflow": ".github/workflows/codeql.yml",
         "jobs": ["analyze", "CodeQL"],
-        "producer_jobs": ["analyze"],
+        "producer_jobs": ["CodeQL"],
         "context_job": "CodeQL"
       },
       "executions": ["default"],

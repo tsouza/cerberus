@@ -165,3 +165,20 @@ jobs:
             test/property/testdata/rapid/**
           if-no-files-found: ignore
           retention-days: 30
+
+
+      - name: emit native evidence for quality.property
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: quality.property.property.source
+          seed: ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [property]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/property.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

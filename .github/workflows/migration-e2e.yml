@@ -141,6 +141,18 @@ jobs:
   # Tier-0 offline slice: godog over committed fixtures, no Docker, no
   # reference backend. A fixed job like its two siblings — it drives one
   # tag filter on one runner, so there is nothing to fan out over.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-setup.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-setup.source
   migration-tier0:
     name: migration-tier0
     needs: migration-setup
@@ -228,6 +240,18 @@ jobs:
   # migration.yml workflow) so the dual-backend compose stack is brought up
   # and torn down exactly once per run instead of running two separate
   # Docker-backed lanes side by side.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier0.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier0.source
   migration-tier1:
     name: migration-tier1
     needs: migration-setup
@@ -401,6 +425,18 @@ jobs:
   # section 8 builds firing parity on top of proven query parity, and every
   # @tier2 scenario reads the same cerberus/ClickHouse pair Tier 1 proves. A
   # green tier-2 over a red tier-1 would be a verdict about nothing.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier1.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier1.source
   migration-tier2:
     name: migration-tier2
     needs: [migration-setup, migration-tier1]
@@ -541,6 +577,18 @@ jobs:
   # — it holds every tier emit SELECTED to `success`, and separately refuses a
   # tier that ran without being selected — and this repo keeps that in a .mjs
   # so it is testable (see .github/scripts/README.md).
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier2.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier2.source
   migration-aggregate:
     name: migration-e2e
     needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
@@ -601,3 +649,13 @@ jobs:
           RESULT_TIER0: ${{ needs.migration-tier0.result }}
           RESULT_TIER1: ${{ needs.migration-tier1.result }}
           RESULT_TIER2: ${{ needs.migration-tier2.result }}
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/migration-e2e.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ github.event_name == 'workflow_call' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}

@@ -1,0 +1,63 @@
+name: merge-fence
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: merge-fence-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  merge-fence:
+    name: merge-fence
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: checkout the exact projected trunk
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      - name: create evidence workspace
+        run: mkdir -p build/ci-lane-fence
+
+      - id: select
+        name: select the fail-closed merge fence
+        env:
+          CI_LANE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          CI_LANE_HEAD_SHA: ${{ github.sha }}
+          CI_LANE_SELECTION_OUTPUT: build/ci-lane-fence/selection.json
+        run: node .github/scripts/ci-lane-selection.mjs
+
+      - name: publish the immutable selection manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: merge-fence-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-lane-fence/selection.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - id: collect
+        name: collect lane-native shadow evidence
+        env:
+          CI_LANE_SELECTION: build/ci-lane-fence/selection.json
+          CI_LANE_SHADOW_OUTPUT: build/ci-lane-fence/observation.json
+          CI_LANE_SHADOW_TIMEOUT_SECONDS: '1200'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/ci-lane-shadow-collector.mjs
+
+      - name: publish the shadow observation
+        if: always() && steps.select.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: merge-fence-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-lane-fence/observation.json
+          if-no-files-found: error
+          retention-days: 30
