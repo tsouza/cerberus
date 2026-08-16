@@ -805,7 +805,7 @@ function selfTest() {
   check(
     'real compat-ratchet.mjs and docs/compatibility.md state the parity counts by reference',
     assertParityByReference(
-      JSON.parse(readFileSync(PARITY_BASELINE, 'utf8')),
+      loadParityBaseline(PARITY_BASELINE),
       readParityReferenceSites(),
       () => {},
     ),

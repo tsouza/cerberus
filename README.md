@@ -296,13 +296,13 @@ the harness step alone reddens the job only on infrastructure breakage
 The gate is the step after it.
 [`compat-ratchet.mjs`](.github/scripts/compat-ratchet.mjs) compares the
 run's roster against the committed one in
-[`compatibility/parity-baseline.json`](compatibility/parity-baseline.json)
+[`compatibility/parity-baseline/`](compatibility/parity-baseline/manifest.json)
 and **fails the required job on any case that moved**: a recorded case that
 now diverges, one that stopped running, or a new case that either diverges
 on arrival or passes without being recorded. Gating on case identity rather
 than a count means a regression cannot hide behind an unrelated case that
 started passing in the same run, and moving a roster is a deliberate
-same-PR edit to the baseline file.
+same-PR sync of that head's deterministic baseline buckets.
 
 `compatibility/prometheus-forced-route` goes further: `FAIL_ON_DIFF=1`
 hard-fails inside the harness on _any_ per-case diff, which is what proves

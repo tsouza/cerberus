@@ -58,8 +58,8 @@ branch as shields.io badge JSON; the README shows them live. On
   template-expanded to concrete cases, plus a small cerberus-owned tail for
   shapes upstream cannot express — resource-attribute grouping, and native
   histograms, whose data upstream's float-only demo fixture never carries.
-  The case count is `heads.prometheus.total` in
-  [`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json).
+  The case count is reconstructed as `heads.prometheus.total` from
+  [`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
 - **Today**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
   a real reference. (Parity drift is report-only in CI; the score is a
@@ -420,10 +420,10 @@ exactly the reasoning an allow-list encodes, and accepting it would let a
 corpus refresh import known-bad behaviour under a green check.
 
 The rosters live in
-[`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json)
-under `heads.<name>.{passed,total,cases}`, one entry per head
+[`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
+The shared loader reconstructs `heads.<name>.{passed,total,cases}`, one entry per head
 (`prometheus`, `loki`, `tempo`, `tempo-grpc`). Their sizes are stated
-there and nowhere else: the file is regenerated from each run's
+there and nowhere else: the selected head's deterministic buckets are synced from its
 `compat-cases.json`, so a second copy in this page would be a hand-typed
 restatement that every corpus-adding PR has to re-type — and that two
 such PRs conflict over. `doc-counts.mjs` fails the build if one comes
