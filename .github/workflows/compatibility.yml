@@ -79,6 +79,11 @@ on:
     - cron: '23 4 * * *'
     - cron: '37 4 * * *'
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
 
 permissions:
   # `contents: write` is required for the "Publish score to compat-scores
@@ -1222,4 +1227,5 @@ jobs:
     with:
       workflow: .github/workflows/compatibility.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

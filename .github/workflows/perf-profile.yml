@@ -48,6 +48,11 @@ on:
     # branch protection) and it requires this check-run to exist.
     branches: [main, 'release/*.x']
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
   schedule:
     # nightly at 05:00 UTC (after the chdb lane's 04:00 cron)
     - cron: '0 5 * * *'
@@ -126,4 +131,5 @@ jobs:
     with:
       workflow: .github/workflows/perf-profile.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}

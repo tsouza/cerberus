@@ -38,6 +38,11 @@ on:
   # `strict-scan` is a required context and must post on the projected trunk.
   merge_group:
   workflow_dispatch:
+    inputs:
+      release_correlation_nonce:
+        description: 'Internal release-qualification nonce'
+        required: false
+        type: string
   schedule:
     # nightly at 04:45 UTC (offset from the chdb 04:00 and schema 04:30 lanes)
     - cron: '45 4 * * *'
@@ -291,4 +296,5 @@ jobs:
     with:
       workflow: .github/workflows/strict-scan.yml
       needs_json: ${{ toJSON(needs) }}
-      posture: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      posture: ${{ inputs.release_correlation_nonce != '' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
+      correlation_nonce: ${{ inputs.release_correlation_nonce }}
