@@ -333,6 +333,79 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 	assertDuplicateLabelsetRejected(t, body, status, query)
 }
 
+// TestQuery_FloatOnlyFunctionDropsNativeHistogram_ChDB pins the HTTP contract
+// behind issue #2221. The same handler session carries one native histogram
+// and one ordinary float series: abs() must accept both, drop the histogram
+// sample, and continue transforming the representable float sample normally.
+// OTel-CH stores the two sample kinds in different physical tables, so a
+// single logical series containing both kinds is not representable; exercising
+// both routes in one session is the closest storage-faithful mixed control.
+func TestQuery_FloatOnlyFunctionDropsNativeHistogram_ChDB(t *testing.T) {
+	stamp := histValuedEvalTime.Format("2006-01-02 15:04:05.000000000")
+	seed := gaugeDDL + histValuedSeed + fmt.Sprintf(`
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('service', 'api'), toDateTime64('%s', 9), -4.0);`, stamp)
+	srv, _ := newChDBServer(t, seed)
+
+	cases := []struct {
+		query     string
+		wantCount int
+		wantValue string
+	}{
+		{query: "abs(latency_exp_hist)", wantCount: 0},
+		{query: "abs(temperature)", wantCount: 1, wantValue: "4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%s",
+				srv.URL, url.QueryEscape(tc.query), histValuedEvalTime.Format(time.RFC3339))
+			resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
+			if err != nil {
+				t.Fatalf("GET /api/v1/query: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			var body struct {
+				Status string `json:"status"`
+				Data   struct {
+					ResultType string `json:"resultType"`
+					Result     []struct {
+						Value []json.RawMessage `json:"value"`
+					} `json:"result"`
+				} `json:"data"`
+				ErrorType string `json:"errorType"`
+				Error     string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK || body.Status != "success" {
+				t.Fatalf("status=%d body.status=%q errorType=%q error=%q",
+					resp.StatusCode, body.Status, body.ErrorType, body.Error)
+			}
+			if body.Data.ResultType != "vector" {
+				t.Fatalf("resultType = %q, want vector", body.Data.ResultType)
+			}
+			if len(body.Data.Result) != tc.wantCount {
+				t.Fatalf("result count = %d, want %d", len(body.Data.Result), tc.wantCount)
+			}
+			if tc.wantCount == 0 {
+				return
+			}
+			if len(body.Data.Result[0].Value) != 2 {
+				t.Fatalf("value pair = %s, want [timestamp, value]", body.Data.Result[0].Value)
+			}
+			var gotValue string
+			if err := json.Unmarshal(body.Data.Result[0].Value[1], &gotValue); err != nil {
+				t.Fatalf("decode sample value: %v", err)
+			}
+			if gotValue != tc.wantValue {
+				t.Fatalf("sample value = %q, want %q", gotValue, tc.wantValue)
+			}
+		})
+	}
+}
+
 // assertBuckets compares the decoded bucket tuples element by element.
 func assertBuckets(t *testing.T, got, want [][4]any) {
 	t.Helper()

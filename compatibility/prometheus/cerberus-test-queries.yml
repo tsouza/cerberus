@@ -590,6 +590,8 @@ test_cases:
   # powers of two; the two seeded instances carry different positive
   # offsets and different bucket shapes, so a series mix-up cannot pass.
   #
+  # Float-only functions accept native histograms but drop those samples.
+  - query: 'abs(demo_latency_exp_hist)'
   # Value functions: Count / Sum / Sum÷Count, then the bucket-midpoint
   # variance estimate (geometric midpoints for standard exponential
   # buckets) in both its stddev and stdvar spellings.

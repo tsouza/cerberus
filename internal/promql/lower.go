@@ -213,14 +213,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok {
 		return lowerLabelReplaceOverExpHistogram(call, s, ctx)
 	}
-	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
-		return lowerExpHistogramBare(vs, s, ctx)
-	}
-	if agg, vs, ok := sumOrAvgOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
-	}
-	if shape, ok := rateOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramRate(shape, s, ctx)
+	if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
+		return plan, err
 	}
 	if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
@@ -230,9 +224,6 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if agg, vs, ok := droppingAggregationOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingAggregation(agg, vs, s, ctx)
-	}
-	if histSide, op, scale, ok := expHistogramScalarBinop(expr, s, ctx); ok {
-		return lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
 	}
 	if histSide, ok := expHistogramDroppingScalarBinop(expr, s, ctx); ok {
 		return lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
@@ -461,8 +452,9 @@ func lowerHistogramSelectorInput(
 // answers with a chplan.HistogramProjection before the recursive descent
 // that leads to lowerVectorSelector ever starts. That is the whole of the
 // narrowing — the selector nested under anything ELSE still arrives here
-// and is still rejected, because nothing above it can consume a histogram
-// row. Each exempt shape earns its exemption by not reading a Value:
+// and is still rejected unless that consumer explicitly drops histogram
+// samples, as the float-only functions do. Each histogram-valued shape earns
+// its exemption by not reading a Value:
 // `sum()` adds the bucket ladders themselves (`avg()` divides that sum
 // by the group's member count), and `rate`/`increase` difference them
 // across time. `sum(rate(...))`, which stacks the two

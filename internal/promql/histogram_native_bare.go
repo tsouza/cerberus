@@ -18,10 +18,11 @@ import (
 // histogram_sum), which is why [expHistogramSelectorRouting] rejects the
 // bare shape wherever it is NOT the whole query: a consumer that reads a
 // `Value` column the histogram row shape does not carry would silently
-// reduce the placeholder value. Such shapes keep their explicit
-// rejection until each grows its own histogram-AWARE lowering — the one
-// that exists so far is `sum()`, in histogram_native_sum.go, which
-// consumes the bucket ladders rather than a Value (issue #1967).
+// reduce the placeholder value. Such shapes keep their explicit rejection
+// until each grows its own histogram-AWARE lowering. The consumers that do
+// exist either consume the bucket ladders (`sum()`, in
+// histogram_native_sum.go) or deliberately drop histogram samples (the
+// float-only functions, in histogram_native_float_fn.go).
 //
 // The plan shape mirrors the native-quantile siblings in
 // histogram_quantile.go / histogram_quantile_range.go rung for rung —
@@ -54,10 +55,11 @@ const histogramSampleValuePlaceholder = 0.0
 // an exp-histogram metric, i.e. the one shape this file answers.
 //
 // It is deliberately asked only of the ROOT of a query (see [lowerRoot]).
-// A selector nested under anything else — a reducer, a range-vector
-// function, arithmetic, `label_replace` — reaches lowerVectorSelector
-// instead and is rejected there, because its consumer reads a `Value`
-// column a histogram row does not publish.
+// A selector nested under an unrecognised consumer — a reducer, a
+// range-vector function, arithmetic, `label_replace` — reaches
+// lowerVectorSelector instead and is rejected there, because its consumer
+// reads a `Value` column a histogram row does not publish. Histogram-aware
+// consumers recognise the selector before that recursive descent.
 //
 // Metadata enumeration (/series, /labels) is excluded: it consumes only
 // MetricName + Attributes and has its own full-range lowering, which

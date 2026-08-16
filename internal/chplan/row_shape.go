@@ -96,13 +96,11 @@ const (
 	//
 	// Three lowerings build this node today (internal/promql's
 	// histogram_native_bare.go, histogram_native_sum.go and
-	// histogram_native_rate.go), but no forwarder is reached with it:
-	// each is dispatched only at the ROOT of a query, and every shape
-	// that would wrap one — `label_replace(...)`, `abs(...)`, scalar
-	// arithmetic — is still refused by expHistogramSelectorRouting. The
-	// forwarders are unreachable by that guard rather than adapted, so
-	// teaching them this shape remains a prerequisite for lifting it
-	// (issue #1967).
+	// histogram_native_rate.go). Generic forwarders still cannot consume
+	// it: label transforms and scalar arithmetic are refused by
+	// expHistogramSelectorRouting. Float-only functions are the deliberate
+	// exception: they drop every histogram sample and re-project an empty
+	// canonical float shape without invoking the generic forwarder.
 	HistogramRowShape
 )
 
