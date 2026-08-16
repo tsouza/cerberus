@@ -33,37 +33,37 @@ func TestLowerSpansetAggregate_PerTraceShape(t *testing.T) {
 	cases := []struct {
 		name           string
 		query          string
-		wantValueAgg   string // CH aggregate-function name for the Value slot
+		wantValueAgg   chplan.Fn
 		wantOuterShape string // "Aggregate" (bare) or "Filter" (scalar-filter HAVING wrap)
 	}{
 		{
 			name:           "count_threshold",
 			query:          `{ resource.service.name = "frontend" } | count() > 0`,
-			wantValueAgg:   "count",
+			wantValueAgg:   chplan.FnCount,
 			wantOuterShape: "Filter",
 		},
 		{
 			name:           "avg_threshold",
 			query:          `{ status = ok } | avg(duration) > 0`,
-			wantValueAgg:   "avg",
+			wantValueAgg:   chplan.FnAvg,
 			wantOuterShape: "Filter",
 		},
 		{
 			name:           "sum_threshold",
 			query:          `{ resource.service.name = "x" } | sum(duration) > 100ms`,
-			wantValueAgg:   "sum",
+			wantValueAgg:   chplan.FnSum,
 			wantOuterShape: "Filter",
 		},
 		{
 			name:           "min_threshold",
 			query:          `{ resource.service.name = "x" } | min(duration) > 10ms`,
-			wantValueAgg:   "min",
+			wantValueAgg:   chplan.FnMin,
 			wantOuterShape: "Filter",
 		},
 		{
 			name:           "max_threshold",
 			query:          `{ resource.service.name = "x" } | max(duration) > 500ms`,
-			wantValueAgg:   "max",
+			wantValueAgg:   chplan.FnMax,
 			wantOuterShape: "Filter",
 		},
 	}
@@ -118,20 +118,20 @@ func TestLowerSpansetAggregate_PerTraceShape(t *testing.T) {
 
 			// AggFuncs must include Value (with the expected CH agg
 			// name) plus the three envelope columns.
-			aliases := map[string]string{}
+			aliases := map[string]chplan.Fn{}
 			for _, af := range agg.AggFuncs {
-				aliases[af.Alias] = af.Name
+				aliases[af.Alias] = af.Fn
 			}
 			if got := aliases["Value"]; got != tc.wantValueAgg {
 				t.Errorf("Value agg = %q, want %q", got, tc.wantValueAgg)
 			}
-			if got := aliases["MetricName"]; got != "any" {
+			if got := aliases["MetricName"]; got != chplan.FnAny {
 				t.Errorf("MetricName agg = %q, want any", got)
 			}
-			if got := aliases["ResourceAttrs"]; got != "any" {
+			if got := aliases["ResourceAttrs"]; got != chplan.FnAny {
 				t.Errorf("ResourceAttrs agg = %q, want any", got)
 			}
-			if got := aliases["TimeUnix"]; got != "min" {
+			if got := aliases["TimeUnix"]; got != chplan.FnMin {
 				t.Errorf("TimeUnix agg = %q, want min", got)
 			}
 		})

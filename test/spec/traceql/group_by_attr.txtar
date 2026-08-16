@@ -22,6 +22,6 @@ INSERT INTO otel_traces VALUES
   ["span", {"__cerberus_parentSpanID": "", "__cerberus_traceDurationNs": "1000000", "__cerberus_traceID": "a0000000000000000000000000000001", "service.name": "frontend"}, "2026-01-01T00:00:00Z", 1]
 ]
 -- chplan --
-Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+Aggregate groupBy=[ResourceAttributes["service.name"] AS GroupKey] funcs=[FnAny(TraceId) AS TraceId, FnAny(SpanId) AS SpanId, FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   Filter predicate=true
     Scan(otel_traces)

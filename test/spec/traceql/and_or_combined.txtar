@@ -24,5 +24,5 @@ INSERT INTO otel_traces (Duration) VALUES
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "service.name": "frontend"}, "1970-01-01T00:00:00Z", 50000000]
 ]
 -- chplan --
-Filter predicate=((ResourceAttributes["service.name"] = "frontend") AND ((Duration > 100000000) OR (toFloat64OrNull(SpanAttributes["http.status_code"]) >= 500)))
+Filter predicate=((ResourceAttributes["service.name"] = "frontend") AND ((Duration > 100000000) OR (FnToFloat64OrNull(SpanAttributes["http.status_code"]) >= 500)))
   Scan(otel_traces)

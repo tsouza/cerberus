@@ -15,7 +15,7 @@ INSERT INTO otel_traces (_idx) VALUES (0), (1);
 [1] string = "x"
 [2] int64 = -3
 -- chplan --
-Filter predicate=((0 - toFloat64OrNull(SpanAttributes["x"])) > -3)
+Filter predicate=((0 - FnToFloat64OrNull(SpanAttributes["x"])) > -3)
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE ((? - toFloat64OrNull(`SpanAttributes`[?])) > ?)

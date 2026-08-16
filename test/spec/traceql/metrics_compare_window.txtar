@@ -185,6 +185,6 @@ INSERT INTO otel_traces VALUES
   [1, "statusMessage", "", 1]
 ]
 -- chplan --
-MetricsCompare topN=10 selection=(((toUnixTimestamp64Nano(Timestamp) > 1778580000000000000) AND (toUnixTimestamp64Nano(Timestamp) <= 1778580060000000000)) AND (StatusCode = "Error")) window=(1778580000000000000, 1778580060000000000] rootLookup=true valueAlias=Value
+MetricsCompare topN=10 selection=(((FnToUnixNanos(Timestamp) > 1778580000000000000) AND (FnToUnixNanos(Timestamp) <= 1778580060000000000)) AND (StatusCode = "Error")) window=(1778580000000000000, 1778580060000000000] rootLookup=true valueAlias=Value
   Filter predicate=true
     Scan(otel_traces)

@@ -14,7 +14,7 @@ INSERT INTO otel_logs (Body) VALUES ('a'), ('b');
   ["clickhouse", "b"]
 ]
 -- chplan --
-Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), if(mapContains(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], if(mapContains(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (ResourceAttributes["tier"] = "gold"))
+Filter predicate=((FnCoalesce(FnNullIf(ServiceName, ""), FnIf(FnMapContainsKey(ResourceAttributes, "service_name"), ResourceAttributes["service_name"], FnIf(FnMapContainsKey(ResourceAttributes, "service.name"), ResourceAttributes["service.name"], ResourceAttributes["service/name"]))) = "clickhouse") AND (ResourceAttributes["tier"] = "gold"))
   Scan(otel_logs)
 -- sql --
 SELECT * FROM `otel_logs` WHERE (coalesce(nullIf(`ServiceName`, ?), if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], if(mapContains(`ResourceAttributes`, ?), `ResourceAttributes`[?], `ResourceAttributes`[?]))) = ?) AND (`ResourceAttributes`[?] = ?)

@@ -66,7 +66,7 @@ INSERT INTO otel_metrics_sum VALUES
 [25] int64 = 300000000000
 -- chplan --
 Project ["" AS MetricName, mapWithoutEmpty(FnMap("cerberus_ql", gkey_0)) AS Attributes, now64(9) AS TimeUnix, Value AS Value]
-  Aggregate groupBy=[if(mapContains(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], if(mapContains(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0] funcs=[FnCount(Value) AS Value]
+  Aggregate groupBy=[FnIf(FnMapContainsKey(Attributes, "cerberus_ql"), Attributes["cerberus_ql"], FnIf(FnMapContainsKey(Attributes, "cerberus.ql"), Attributes["cerberus.ql"], Attributes["cerberus/ql"])) AS gkey_0] funcs=[FnCount(Value) AS Value]
     Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
       Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
         Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))

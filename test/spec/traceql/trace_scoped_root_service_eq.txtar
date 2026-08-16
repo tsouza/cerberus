@@ -31,7 +31,7 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, Timestamp, ServiceName) 
 [0] string = ""
 [1] string = "checkout"
 -- chplan --
-Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[argMinIf(ServiceName, Timestamp, (ParentSpanId = "")) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
+Filter predicate=(TraceId IN {Project [TraceId] ; Filter predicate=(_cerb_trace_scoped_val = "checkout") ; Aggregate groupBy=[TraceId AS TraceId] funcs=[FnArgMinIf(ServiceName, Timestamp, (ParentSpanId = "")) AS _cerb_trace_scoped_val] ; Scan(otel_traces)})
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM (SELECT `TraceId` AS `TraceId`, argMinIf(`ServiceName`, `Timestamp`, (`ParentSpanId` = ?)) AS `_cerb_trace_scoped_val` FROM (SELECT * FROM `otel_traces`) GROUP BY `TraceId`) WHERE (`_cerb_trace_scoped_val` = ?)))

@@ -258,6 +258,9 @@ func isTimeLiteralCall(e Expr) bool {
 	if !ok {
 		return false
 	}
+	if f.Fn != "" {
+		return f.Fn == FnFromUnixNanos
+	}
 	_, known := scanBoundTimeFuncs[f.Name]
 	return known
 }

@@ -20,5 +20,5 @@ INSERT INTO otel_traces (Duration) VALUES
   ["", {"__cerberus_parentSpanID": "", "__cerberus_spanID": "", "__cerberus_traceID": "", "replicas": "5"}, "1970-01-01T00:00:00Z", 20000000]
 ]
 -- chplan --
-Filter predicate=(toFloat64OrNull(ResourceAttributes["replicas"]) <= 5)
+Filter predicate=(FnToFloat64OrNull(ResourceAttributes["replicas"]) <= 5)
   Scan(otel_traces)

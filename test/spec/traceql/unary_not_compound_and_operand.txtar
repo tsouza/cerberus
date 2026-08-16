@@ -35,7 +35,7 @@ INSERT INTO otel_traces (SpanId, SpanKind) VALUES
 [1] string = "Server"
 [2] string = "Client"
 -- chplan --
-Filter predicate=((SpanKind != "Producer") AND not(((SpanKind = "Server") OR (SpanKind = "Client"))))
+Filter predicate=((SpanKind != "Producer") AND FnNot(((SpanKind = "Server") OR (SpanKind = "Client"))))
   Scan(otel_traces)
 -- sql --
 SELECT * FROM `otel_traces` PREWHERE (`SpanKind` != ?) WHERE not(((`SpanKind` = ?) OR (`SpanKind` = ?)))

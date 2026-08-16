@@ -9,7 +9,7 @@ numeric intent on two attributes.
 -- sql --
 SELECT * FROM `otel_traces` WHERE (toFloat64OrNull(`SpanAttributes`[?]) > toFloat64OrNull(`SpanAttributes`[?]))
 -- chplan --
-Filter predicate=(toFloat64OrNull(SpanAttributes["a"]) > toFloat64OrNull(SpanAttributes["b"]))
+Filter predicate=(FnToFloat64OrNull(SpanAttributes["a"]) > FnToFloat64OrNull(SpanAttributes["b"]))
   Scan(otel_traces)
 -- args --
 [0] string = "a"

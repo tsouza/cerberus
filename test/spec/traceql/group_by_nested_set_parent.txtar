@@ -12,7 +12,7 @@ shape is exercised by the by()-aggregate handler tests).
 [2] bool = true
 [3] bool = true
 -- chplan --
-Aggregate groupBy=[__cerberus_ns_parent AS GroupKey] funcs=[any(TraceId) AS TraceId, any(SpanId) AS SpanId, count(1) AS Value, any(SpanName) AS MetricName, any(ResourceAttributes) AS ResourceAttrs, any(ParentSpanId) AS ParentSpanId, min(Timestamp) AS TimeUnix, min(toUnixTimestamp64Nano(Timestamp)) AS TraceStartNs, max((toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS TraceEndNs]
+Aggregate groupBy=[__cerberus_ns_parent AS GroupKey] funcs=[FnAny(TraceId) AS TraceId, FnAny(SpanId) AS SpanId, FnCount(1) AS Value, FnAny(SpanName) AS MetricName, FnAny(ResourceAttributes) AS ResourceAttrs, FnAny(ParentSpanId) AS ParentSpanId, FnMin(Timestamp) AS TimeUnix, FnMin(FnToUnixNanos(Timestamp)) AS TraceStartNs, FnMax((FnToUnixNanos(Timestamp) + FnToInt64(Duration))) AS TraceEndNs]
   NestedSetAnnotate table=otel_traces
     Filter predicate=true
       Scan(otel_traces)

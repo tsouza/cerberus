@@ -32,10 +32,10 @@ func TestOTelDottedFallbackChainMultipleCandidates(t *testing.T) {
 	got := OTelDottedFallbackChain(m, []string{"http_method", "http.method"})
 
 	want := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapContains",
+				Fn:   chplan.FnMapContainsKey,
 				Args: []chplan.Expr{m, &chplan.LitString{V: "http_method"}},
 			},
 			&chplan.MapAccess{Map: m, Key: &chplan.LitString{V: "http_method"}},
@@ -57,10 +57,10 @@ func TestOTelDottedFallbackChainThreeCandidates(t *testing.T) {
 	got := OTelDottedFallbackChain(m, []string{"k8s_pod_name", "k8s.pod.name", "k8s_pod_name_dotted"})
 
 	inner := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapContains",
+				Fn:   chplan.FnMapContainsKey,
 				Args: []chplan.Expr{m, &chplan.LitString{V: "k8s.pod.name"}},
 			},
 			&chplan.MapAccess{Map: m, Key: &chplan.LitString{V: "k8s.pod.name"}},
@@ -68,10 +68,10 @@ func TestOTelDottedFallbackChainThreeCandidates(t *testing.T) {
 		},
 	}
 	want := &chplan.FuncCall{
-		Name: "if",
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapContains",
+				Fn:   chplan.FnMapContainsKey,
 				Args: []chplan.Expr{m, &chplan.LitString{V: "k8s_pod_name"}},
 			},
 			&chplan.MapAccess{Map: m, Key: &chplan.LitString{V: "k8s_pod_name"}},

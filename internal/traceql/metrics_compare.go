@@ -122,7 +122,7 @@ func lowerMetricsCompare(prev chplan.Node, mc *traceql.MetricsCompare, s schema.
 		// AND the window into the selection predicate so the SQL cohort
 		// flag reproduces that assignment exactly.
 		tsNs := &chplan.FuncCall{
-			Name: "toUnixTimestamp64Nano",
+			Fn:   chplan.FnToUnixNanos,
 			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 		}
 		window := &chplan.Binary{
@@ -204,7 +204,7 @@ func compareRootLookup(s schema.Traces) chplan.Node {
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name: "argMin",
+				Fn: chplan.FnArgMin,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.SpanNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -212,7 +212,7 @@ func compareRootLookup(s schema.Traces) chplan.Node {
 				Alias: rootNameAlias,
 			},
 			{
-				Name: "argMin",
+				Fn: chplan.FnArgMin,
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ServiceNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -255,18 +255,18 @@ func compareRootLookup(s schema.Traces) chplan.Node {
 func compareAttrPairsExpr(s schema.Traces) chplan.Expr {
 	col := func(name string) chplan.Expr { return &chplan.ColumnRef{Name: name} }
 	lit := func(v string) chplan.Expr { return &chplan.LitString{V: v} }
-	call := func(name string, args ...chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: name, Args: args}
+	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
+		return &chplan.FuncCall{Fn: fn, Args: args}
 	}
 	pair := func(name string, val chplan.Expr) chplan.Expr {
-		return call("tuple", lit(name), call("toString", val))
+		return call(chplan.FnTuple, lit(name), call(chplan.FnToString, val))
 	}
 
 	fixed := []chplan.Expr{
 		pair("name", col(s.SpanNameColumn)),
-		pair("status", call("lower", col(s.StatusCodeColumn))),
+		pair("status", call(chplan.FnLower, col(s.StatusCodeColumn))),
 		pair("statusMessage", col(s.StatusMessageColumn)),
-		pair("kind", call("lower", col(s.SpanKindColumn))),
+		pair("kind", call(chplan.FnLower, col(s.SpanKindColumn))),
 	}
 	if s.ParentSpanIDColumn != "" && s.TraceIDColumn != "" && s.SpanNameColumn != "" && s.ServiceNameColumn != "" {
 		fixed = append(
@@ -291,8 +291,8 @@ func compareAttrPairsExpr(s schema.Traces) chplan.Expr {
 			out = append(out, pair(
 				scopePrefix+k,
 				call(
-					"if",
-					call("mapContains", col(mapCol), lit(k)),
+					chplan.FnIf,
+					call(chplan.FnMapContainsKey, col(mapCol), lit(k)),
 					&chplan.MapAccess{Map: col(mapCol), Key: lit(k)},
 					lit(compareNilLiteral),
 				),
@@ -311,29 +311,29 @@ func compareAttrPairsExpr(s schema.Traces) chplan.Expr {
 			exq = append(exq, lit(k))
 		}
 		t := &chplan.BareIdent{Name: "t"}
-		zipped := call("arrayZip", call("mapKeys", col(mapCol)), call("mapValues", col(mapCol)))
+		zipped := call(chplan.FnArrayZip, call(chplan.FnMapKeys, col(mapCol)), call(chplan.FnMapValues, col(mapCol)))
 		filtered := call(
-			"arrayFilter",
+			chplan.FnArrayFilter,
 			&chplan.Lambda{Params: []string{"t"}, Body: call(
-				"not",
-				call("has", call("array", exq...), call("tupleElement", t, &chplan.LitInt{V: tupleKeyIdx})),
+				chplan.FnNot,
+				call(chplan.FnArrayHas, call(chplan.FnArray, exq...), call(chplan.FnTupleElement, t, &chplan.LitInt{V: tupleKeyIdx})),
 			)},
 			zipped,
 		)
 		return call(
-			"arrayMap",
+			chplan.FnArrayMap,
 			&chplan.Lambda{Params: []string{"t"}, Body: call(
-				"tuple",
-				call("concat", lit(scopePrefix), call("tupleElement", t, &chplan.LitInt{V: tupleKeyIdx})),
-				call("toString", call("tupleElement", t, &chplan.LitInt{V: tupleValueIdx})),
+				chplan.FnTuple,
+				call(chplan.FnConcat, lit(scopePrefix), call(chplan.FnTupleElement, t, &chplan.LitInt{V: tupleKeyIdx})),
+				call(chplan.FnToString, call(chplan.FnTupleElement, t, &chplan.LitInt{V: tupleValueIdx})),
 			)},
 			filtered,
 		)
 	}
 
 	return call(
-		"arrayConcat",
-		call("array", fixed...),
+		chplan.FnArrayConcat,
+		call(chplan.FnArray, fixed...),
 		generic(s.ResourceAttributesColumn, "resource.", wellKnownResourceAttrs),
 		generic(s.AttributesColumn, "span.", wellKnownSpanAttrs),
 	)

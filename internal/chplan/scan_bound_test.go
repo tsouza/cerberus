@@ -67,6 +67,16 @@ func TestSpansScanResourceBound_Classification(t *testing.T) {
 		{"nil predicate is unbounded", nil, ScanBoundCols{}, boundNone},
 		{"attribute equality proves nothing", attrPred, ScanBoundCols{}, boundNone},
 		{"window comparison", windowPred(), ScanBoundCols{}, boundWindow},
+		{
+			"sealed window comparison",
+			&Binary{
+				Op:    OpGe,
+				Left:  &ColumnRef{Name: timestampCol},
+				Right: &FuncCall{Fn: FnFromUnixNanos, Args: []Expr{&LitInt{V: 1}}},
+			},
+			ScanBoundCols{Timestamp: timestampCol},
+			boundWindow,
+		},
 		{"literal TraceId IN", traceIDInPred(), ScanBoundCols{}, boundTraceIDSet},
 		{"BoundedTraceScope", btsPred(), ScanBoundCols{}, boundTraceIDSet},
 		{

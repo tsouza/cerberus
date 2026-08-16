@@ -40,10 +40,10 @@ Project [TraceId, SpanId, Timestamp, __cerberus_ns_parent AS nestedSetParent, __
   NestedSetAnnotate table=otel_traces traceLimit=20
     SetOperation op=||
       StructuralJoin op=&>> maxDepth=128
-        Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+        Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
           Scan(otel_traces)
-        Filter predicate=(((SpanKind = "Server") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+        Filter predicate=(((SpanKind = "Server") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
           Scan(otel_traces)
       Project [TraceId, SpanId, ParentSpanId, SpanName, Duration, Timestamp, ResourceAttributes, SpanAttributes, StatusCode, StatusMessage, SpanKind, ScopeName, ScopeVersion]
-        Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= fromUnixTimestamp64Nano(1782571392000000000)) AND (Timestamp <= fromUnixTimestamp64Nano(1782573192000000000))))
+        Filter predicate=(((ParentSpanId = "") AND (TraceId IN topNewestRootTraces(20, window=[1782571392000000000,1782573192000000000]))) AND ((Timestamp >= FnFromUnixNanos(1782571392000000000)) AND (Timestamp <= FnFromUnixNanos(1782573192000000000))))
           Scan(otel_traces)

@@ -22,6 +22,6 @@ INSERT INTO otel_traces (SpanId, ParentSpanId, SpanKind) VALUES
   ["unspecified", 1]
 ]
 -- chplan --
-MetricsAggregate op=rate groupBy=[lower(SpanKind) AS kind] valueAlias=Value
+MetricsAggregate op=rate groupBy=[FnLower(SpanKind) AS kind] valueAlias=Value
   Filter predicate=(ParentSpanId = "")
     Scan(otel_traces)
