@@ -647,23 +647,25 @@ func TestSearchTagsV1_QueryIgnored(t *testing.T) {
 	}
 }
 
-// TestSearchTagsV2_MalformedQuery_GRPCStatus pins the rejection code. An
-// unparseable Query is caller error, and the shared classification
-// (tempo.ClassifyErr → grpcStatusFor) renders that as InvalidArgument —
-// the same fact the HTTP V2 route answers 400 for. Before Query was read
-// at all, any failure behind the lookup collapsed onto codes.Internal.
-func TestSearchTagsV2_MalformedQuery_GRPCStatus(t *testing.T) {
+// TestSearchTagsV2_MalformedQuery_Unfiltered pins Tempo's autocomplete
+// contract: a malformed V2 discovery query is ignored rather than rejected.
+func TestSearchTagsV2_MalformedQuery_Unfiltered(t *testing.T) {
 	t.Parallel()
 
-	client := newTagsTestServer(t, &fakeQuerier{})
+	client := newTagsTestServer(t, &fakeQuerier{strings: []string{"http.method", tagsUnfilteredKey}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 	stream, err := client.SearchTagsV2(ctx, &tempopb.SearchTagsRequest{Query: "{{{"})
 	if err != nil {
 		t.Fatalf("open SearchTagsV2 stream: %v", err)
 	}
-	_, err = stream.Recv()
-	assertCode(t, err, codes.InvalidArgument)
+	frames, err := recvAll[tempopb.SearchTagsV2Response](t, stream)
+	if err != nil {
+		t.Fatalf("recvAll: %v", err)
+	}
+	if got := flattenV2(frames); !slices.Contains(got, tagsUnfilteredKey) {
+		t.Errorf("malformed V2 query narrowed the unfiltered answer: %v", got)
+	}
 }
 
 // flattenV1 / flattenV2 collapse each envelope onto the key list so one
@@ -807,17 +809,13 @@ func TestSearchTagValuesV1_QueryIgnored(t *testing.T) {
 	}
 }
 
-// TestSearchTagValuesV2_MalformedQuery_GRPCStatus pins the rejection
-// code. An unparseable Query is caller error, and the shared
-// classification (tempo.ClassifyErr → grpcStatusFor) renders that as
-// InvalidArgument — the same fact the HTTP V2 values route answers 400
-// for. Before Query was read at all, every failure behind the values
-// lookup collapsed onto codes.Internal, which told Grafana the backend
-// had broken rather than that the query had.
-func TestSearchTagValuesV2_MalformedQuery_GRPCStatus(t *testing.T) {
+// TestSearchTagValuesV2_MalformedQuery_Unfiltered is the value-route half of
+// Tempo's autocomplete contract: malformed discovery queries still answer the
+// complete value set.
+func TestSearchTagValuesV2_MalformedQuery_Unfiltered(t *testing.T) {
 	t.Parallel()
 
-	client := newTagsTestServer(t, &fakeQuerier{})
+	client := newTagsTestServer(t, &fakeQuerier{strings: []string{tagValuesNarrowedValue, tagValuesUnfilteredValue}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 	stream, err := client.SearchTagValuesV2(ctx, &tempopb.SearchTagValuesRequest{
@@ -827,8 +825,19 @@ func TestSearchTagValuesV2_MalformedQuery_GRPCStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open SearchTagValuesV2 stream: %v", err)
 	}
-	_, err = stream.Recv()
-	assertCode(t, err, codes.InvalidArgument)
+	frames, err := recvAll[tempopb.SearchTagValuesV2Response](t, stream)
+	if err != nil {
+		t.Fatalf("recvAll: %v", err)
+	}
+	var got []string
+	for _, frame := range frames {
+		for _, value := range frame.GetTagValues() {
+			got = append(got, value.GetValue())
+		}
+	}
+	if !slices.Contains(got, tagValuesUnfilteredValue) {
+		t.Errorf("malformed V2 query narrowed the unfiltered answer: %v", got)
+	}
 }
 
 // assertTagValuesNarrowed asserts the narrowed value survived and the

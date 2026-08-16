@@ -2,7 +2,6 @@ package tempo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -107,16 +106,6 @@ func (rt TagsRoute) narrowingQuery(raw string) string {
 	return ""
 }
 
-// errTagQueryShape is the sentinel for "this TraceQL query is well-formed
-// but does not reduce to a predicate over a single span row". Structural
-// (`{...} >> {...}`), multi-spanset and metrics-pipeline queries lower to
-// plan shapes whose matching spans are defined by a join or an aggregate,
-// not by a row predicate, so there is no conjunct to push into the key or
-// value lookups. Answering the unfiltered set for those would be a
-// silently wrong answer — wider than the query asked for — so they are
-// rejected.
-var errTagQueryShape = errors.New("traceql: tag discovery filtering needs a query that selects spans by a row predicate")
-
 // tagQueryFilter turns the raw `q` query parameter into the extra WHERE
 // conjunct a discovery lookup runs under — the per-scope key lookups on
 // the name routes, the per-key value lookups on the value routes. An
@@ -128,27 +117,32 @@ var errTagQueryShape = errors.New("traceql: tag discovery filtering needs a quer
 // upstream answers a malformed V1 `q` with a 200 and the unfiltered key
 // set, and a route that parsed it would answer 400 instead.
 //
-// Parsing and lowering go through the same parseExpr + traceql.Lower pair
-// /api/search and /api/metrics/query_range use, including the request
-// window on the context, so a query means the same thing on this route as
-// on the ones that execute it.
+// V2 tag discovery deliberately follows Tempo's backwards-compatible
+// leniency: incomplete matchers retain their valid conjuncts, while a query
+// that still cannot parse, lower, or reduce to one span-row predicate falls
+// back to the unfiltered set. Grafana sends those half-typed queries during
+// autocomplete, and upstream treats an extraction failure as no filter rather
+// than a client error.
 func (h *Handler) tagQueryFilter(ctx context.Context, route TagsRoute, raw string, start, end time.Time) (chsql.Frag, error) {
 	raw = route.narrowingQuery(raw)
 	if raw == "" {
 		return nil, nil
 	}
 	ctx = traceql_lower.WithSearchWindow(ctx, start, end)
-	expr, err := parseExpr(ctx, raw)
+	expr, err := parseLenientExpr(ctx, raw)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errParseStage, err)
+		return nil, nil
 	}
 	plan, err := traceql_lower.Lower(ctx, expr, h.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errLowerStage, err)
+		return nil, nil
 	}
 	pred, ok := spanRowPredicate(plan)
 	if !ok {
-		return nil, fmt.Errorf("%w: %w (%q)", errLowerStage, errTagQueryShape, raw)
+		return nil, nil
+	}
+	if literal, ok := pred.(*chplan.LitBool); ok && literal.V {
+		return nil, nil
 	}
 	return spanPredicateFrag(pred)
 }

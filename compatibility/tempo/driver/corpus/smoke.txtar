@@ -852,6 +852,53 @@ child.index
 span
 
 -- name --
+tags_v2_malformed_query_unfiltered
+-- endpoint --
+tags_v2
+-- scope --
+span
+-- query --
+
+{{{
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+# Tempo treats an autocomplete query it cannot parse as no filter. Child-only
+# keys prove the response is the complete span-key inventory.
+-- expected_values --
+http.method
+http.target
+child.index
+kind
+-- expected_scopes --
+span
+
+-- name --
+tags_v2_incomplete_query_keeps_valid_conjunct
+-- endpoint --
+tags_v2
+-- scope --
+span
+-- query --
+
+{ span.http.method = "GET" && resource.cluster = }
+
+-- expected_min_values --
+1
+-- expected_max_values --
+500
+# The half-typed matcher contributes no condition, but the completed matcher
+# still selects roots. A whole-query fallback would leak child.index here.
+-- expected_values --
+http.method
+http.target
+-- expected_absent_values --
+child.index
+-- expected_scopes --
+span
+
+-- name --
 tags_v2_intrinsic
 -- endpoint --
 tags_v2
@@ -1120,6 +1167,47 @@ checkout.child.0
 -- expected_absent_values --
 GET /api/payments/0
 payments.child.0
+
+-- name --
+tag_values_v2_malformed_query_unfiltered
+-- endpoint --
+tag_values_v2
+-- tag_name --
+.service.name
+-- query --
+
+{{{
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+# A query that cannot be recovered is no filter on Tempo's discovery route.
+-- expected_values --
+checkout
+payments
+search
+shipping
+
+-- name --
+tag_values_v2_incomplete_query_keeps_valid_conjunct
+-- endpoint --
+tag_values_v2
+-- tag_name --
+.service.name
+-- query --
+
+{ resource.service.name = "checkout" && resource.cluster = }
+
+-- expected_min_values --
+1
+-- expected_max_values --
+50
+-- expected_values --
+checkout
+-- expected_absent_values --
+payments
+search
+shipping
 
 -- name --
 tag_values_v1_query_ignored

@@ -43,10 +43,25 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/api/tempo")
 // QL identifier and the (truncated) query string land on the span as
 // `cerberus.ql` + `cerberus.query`.
 func parseExpr(ctx context.Context, query string) (*traceql.RootExpr, error) {
+	return parseExprWith(ctx, query, traceql.Parse)
+}
+
+// parseLenientExpr keeps tag-autocomplete parsing on the same traced parse
+// stage while allowing the half-typed matcher shape Tempo documents for V2
+// discovery routes.
+func parseLenientExpr(ctx context.Context, query string) (*traceql.RootExpr, error) {
+	return parseExprWith(ctx, query, traceql.ParseLenient)
+}
+
+func parseExprWith(
+	ctx context.Context,
+	query string,
+	parse func(string) (*traceql.RootExpr, error),
+) (*traceql.RootExpr, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanParse,
 		trace.WithAttributes(cerbtrace.ParseAttrs("traceql", query)...))
 	defer span.End()
-	expr, err := traceql.Parse(query)
+	expr, err := parse(query)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err

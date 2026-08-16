@@ -239,54 +239,50 @@ func TestSearchTagsQuery_NarrowsTheAnswer(t *testing.T) {
 	}
 }
 
-// TestSearchTagsQuery_Malformed pins the parse rejection. `q` is TraceQL,
-// so an unparseable one is a 400 carrying the same parse-stage message
-// /api/search answers for the identical input — one classification, two
-// routes (errclass.go). V1 has no `q` to reject and is covered by
-// TestSearchTagsV1Query_Ignored instead.
-func TestSearchTagsQuery_Malformed(t *testing.T) {
+// TestSearchTagsQuery_UnextractableFallsBackUnfiltered pins Tempo's V2
+// backwards-compatibility contract: invalid and non-row-shaped autocomplete
+// queries answer 200 with the same unfiltered lookup as an absent q.
+func TestSearchTagsQuery_UnextractableFallsBackUnfiltered(t *testing.T) {
 	t.Parallel()
 
-	status, body, sql, _ := tagsLookup(t, "{{{", true, tagsRouteV2Path, nil)
-	if status != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d body=%s", status, body)
-	}
-	if !strings.Contains(body, "parse") {
-		t.Errorf("body does not name the parse stage: %s", body)
-	}
-	if sql != "" {
-		t.Errorf("a rejected q still hit ClickHouse: %s", sql)
+	_, _, baseSQL, baseArgs := tagsLookup(t, "", false, tagsRouteV2Path, nil)
+	for name, query := range map[string]string{
+		"malformed":        "{{{",
+		"metrics pipeline": `{} | rate()`,
+		"structural":       `{ span.a = 1 } >> { span.b = 2 }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			status, body, sql, args := tagsLookup(t, query, true, tagsRouteV2Path, nil)
+			if status != http.StatusOK {
+				t.Fatalf("status: want 200, got %d body=%s", status, body)
+			}
+			if sql != baseSQL {
+				t.Errorf("fallback query changed SQL\n  base: %s\n   got: %s", baseSQL, sql)
+			}
+			if len(args) != len(baseArgs) {
+				t.Errorf("fallback query changed bound args: %v vs %v", args, baseArgs)
+			}
+		})
 	}
 }
 
-// TestSearchTagsQuery_NonRowShapeRejected covers the queries that parse
-// and lower but whose matching spans are defined by a join or an
-// aggregate rather than a predicate over one row. There is no conjunct
-// to push into a key lookup for those, and answering the unfiltered key
-// set would be a silently WIDER answer than the caller asked for — so
-// they are refused with a 422 that names why. V2 only: V1 promises the
-// unfiltered set to begin with, so there is nothing to refuse.
-func TestSearchTagsQuery_NonRowShapeRejected(t *testing.T) {
+// TestSearchTagsQuery_IncompleteMatcherKeepsValidConjunct pins the other half
+// of lenient parsing: a half-typed matcher disappears, but completed matchers
+// in the same AND expression still narrow autocomplete.
+func TestSearchTagsQuery_IncompleteMatcherKeepsValidConjunct(t *testing.T) {
 	t.Parallel()
 
-	queries := map[string]string{
-		"metrics pipeline": `{} | rate()`,
-		"structural":       `{ span.a = 1 } >> { span.b = 2 }`,
+	query := `{ span.http.method = "GET" && resource.cluster = }`
+	status, body, sql, args := tagsLookup(t, query, true, tagsRouteV2Path, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status: want 200, got %d body=%s", status, body)
 	}
-	for name, query := range queries {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			status, body, sql, _ := tagsLookup(t, query, true, tagsRouteV2Path, nil)
-			if status != http.StatusUnprocessableEntity {
-				t.Fatalf("status: want 422, got %d body=%s", status, body)
-			}
-			if !strings.Contains(body, "row predicate") {
-				t.Errorf("body does not explain the shape requirement: %s", body)
-			}
-			if sql != "" {
-				t.Errorf("a rejected q still hit ClickHouse: %s", sql)
-			}
-		})
+	if !strings.Contains(sql, "`SpanAttributes`") || !argsBind(args, "http.method", "GET") {
+		t.Fatalf("valid conjunct did not narrow the lookup: sql=%s args=%v", sql, args)
+	}
+	if argsBind(args, "cluster") {
+		t.Errorf("incomplete matcher survived in bound args: %v", args)
 	}
 }
 
