@@ -1289,7 +1289,7 @@ func TestMigrationTier1VerifyCorporaSelectSeededSeries(t *testing.T) {
 		t.Run(corpus.name, func(t *testing.T) {
 			t.Parallel()
 			for _, expr := range readTier1CorpusExprs(t, corpus.path) {
-				parsed, err := promparser.ParseExpr(expr)
+				parsed, err := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}).ParseExpr(expr)
 				if err != nil {
 					t.Fatalf("parse %s query %q: %v", corpus.path, expr, err)
 				}
