@@ -18,18 +18,24 @@
 // Env (reports):
 //   CI_LANE_SELECTION     selection manifest path (required)
 //   CI_LANE_REPORT_DIR    recursively-read report directory (required)
-//   CI_LANE_JOB_RESULTS_JSON
-//                         JSON object keyed by <workflow>#<job>. Each value is
-//                         {conclusion, run_id, run_attempt}. This is trusted
-//                         workflow `needs` state, not report-artifact content.
+//   CI_LANE_PRODUCER_MANIFEST
+//                         trusted API-built producer-manifest path (required)
 //   CI_LANE_POSTURE     merge | main | release
 //   CI_EXPECT_SHA         exact source commit selected for qualification
 //   CI_EXPECT_TREE        exact Git tree selected for qualification
+//   CI_EXPECT_CORRELATION_NONCE per-qualification 64-hex correlation value
 //   CI_EXPECT_CANDIDATE_DIGEST
 //                         sha256 digest; required when a selected lane applies
 //                         to an artifact
 //   CI_EXPECT_RUN_ID      selection/qualification workflow run id
 //   CI_EXPECT_RUN_ATTEMPT selection/qualification workflow attempt
+//   CI_EXPECT_SELECTION_SHA256 exact selection-manifest SHA-256
+//   CI_EXPECT_EVENT_KIND  workflow event used for producer-run discovery
+//   CI_EXPECT_PR_NUMBER   PR number; required only for pull_request
+//   CI_EXPECT_EVENT_HEAD_SHA API workflow-run head SHA
+//   CI_EXPECT_EVENT_BASE_SHA event base SHA; required for PR/merge group
+//   CI_EXPECT_PROJECTED_SHA exact projected checkout SHA
+//   CI_EXPECT_REPOSITORY  exact owner/repository slug from trusted context
 //   CI_EXPECT_BASE_SHA    merge base commit; required for merge qualification
 //   CI_EXPECT_CHANGED_PATHS_JSON
 //                         canonical compact changed-path JSON array; required
@@ -40,6 +46,7 @@
 // non-zero on every malformed, missing, stale, skipped, neutral, cancelled,
 // mismatched, or zero-execution state.
 
+import { createHash } from "node:crypto";
 import process from "node:process";
 import {
   appendFileSync,
@@ -53,7 +60,7 @@ import { fileURLToPath } from "node:url";
 
 export const REGISTRY_SCHEMA_VERSION = 1;
 export const SELECTION_SCHEMA_VERSION = 1;
-export const REPORT_SCHEMA_VERSION = 1;
+export const REPORT_SCHEMA_VERSION = 2;
 export const DEFAULT_REGISTRY_PATH = ".github/ci-lanes.json";
 export const MERGE_P95_SLO_MINUTES = 20;
 export const RELEASE_QUALIFICATION_SLO_MINUTES = 120;
@@ -244,6 +251,7 @@ const SELECTION_KEYS = new Set([
   "posture",
   "source",
   "candidate_digest",
+  "correlation_nonce",
   "run",
   "selector",
   "lanes",
@@ -272,13 +280,22 @@ const REPORT_KEYS = new Set([
   "posture",
   "source",
   "candidate_digest",
-  "run",
+  "correlation_nonce",
+  "selection_ref",
   "producer",
   "invocation",
   "evidence",
   "conclusion",
 ]);
-const PRODUCER_KEYS = new Set(["workflow", "job"]);
+const SELECTION_REF_KEYS = new Set(["run", "manifest_sha256"]);
+const PRODUCER_KEYS = new Set(["workflow", "job", "run", "artifact"]);
+const PRODUCER_ARTIFACT_KEYS = new Set([
+  "id",
+  "name",
+  "sha256",
+  "entry",
+  "entry_sha256",
+]);
 const INVOCATION_KEYS = new Set([
   "mode",
   "recipe",
@@ -295,14 +312,62 @@ const EVIDENCE_KEYS = new Set([
   "seed",
   "corpus_id",
 ]);
-const JOB_RESULT_KEYS = new Set(["conclusion", "run_id", "run_attempt"]);
+const PRODUCER_MANIFEST_KEYS = new Set([
+  "schema_version",
+  "correlation_nonce",
+  "selection_ref",
+  "producers",
+]);
+const TRUSTED_PRODUCER_KEYS = new Set([
+  "workflow",
+  "run",
+  "source",
+  "correlation_nonce",
+  "event",
+  "repository",
+  "conclusion",
+  "jobs",
+  "artifacts",
+]);
+const TRUSTED_JOB_KEYS = new Set([
+  "job",
+  "name",
+  "database_id",
+  "conclusion",
+]);
+const TRUSTED_ARTIFACT_KEYS = new Set([
+  "id",
+  "name",
+  "sha256",
+  "entries",
+]);
+const TRUSTED_ARTIFACT_ENTRY_KEYS = new Set([
+  "lane_id",
+  "execution_id",
+  "sha256",
+]);
+// Pull-request Actions runs expose the branch-head SHA through the REST API,
+// while checkout uses the projected merge commit. Keep both identities: run
+// discovery binds the event head/base/PR tuple; native evidence binds the
+// projected commit and tree. Equating the two rejects honest PR evidence.
+const EVENT_IDENTITY_KEYS = new Set([
+  "kind",
+  "pr_number",
+  "event_head_sha",
+  "event_base_sha",
+  "projected_sha",
+]);
 const QUALIFICATION_EXPECTATION_KEYS = new Set([
   "posture",
   "sha",
   "tree",
   "candidateDigest",
+  "correlationNonce",
   "runID",
   "runAttempt",
+  "selectionManifestSHA256",
+  "eventIdentity",
+  "repository",
   "baseSHA",
   "changedPaths",
 ]);
@@ -313,6 +378,16 @@ const WORKFLOW_JOB_ID_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const RUN_ID_RE = /^[1-9][0-9]*$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const CORRELATION_NONCE_RE = /^[0-9a-f]{64}$/;
+const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const EVENT_KINDS = new Set([
+  "merge_group",
+  "pull_request",
+  "push",
+  "schedule",
+  "workflow_dispatch",
+]);
 const DOMAIN_RE = /^[a-z0-9][a-z0-9-]*$/;
 const UNSUPPORTED_GLOB_META_RE = /[?\[\]{}]/;
 
@@ -521,7 +596,7 @@ function validateRepositoryGlob(root, value, path, problems) {
   }
 }
 
-function validateChangedPaths(value, path, problems) {
+export function validateChangedPaths(value, path, problems) {
   if (!stringArray(value, path, problems, { allowEmpty: true })) return false;
   for (let i = 0; i < value.length; i += 1) {
     canonicalRepositoryPath(value[i], `${path}[${i}]`, problems);
@@ -1180,6 +1255,74 @@ function validateRun(run, path, problems) {
   integerValue(run.attempt, `${path}.attempt`, problems, { min: 1 });
 }
 
+function validateSelectionRef(value, path, problems) {
+  if (!exactObject(value, SELECTION_REF_KEYS, path, problems)) return;
+  validateRun(value.run, `${path}.run`, problems);
+  stringValue(value.manifest_sha256, `${path}.manifest_sha256`, problems, {
+    pattern: SHA256_RE,
+  });
+}
+
+function validateArtifact(value, keys, path, problems) {
+  if (!exactObject(value, keys, path, problems)) return;
+  stringValue(value.id, `${path}.id`, problems, { pattern: RUN_ID_RE });
+  stringValue(value.name, `${path}.name`, problems);
+  stringValue(value.sha256, `${path}.sha256`, problems, {
+    pattern: SHA256_RE,
+  });
+}
+
+export function selectionManifestSHA256(document) {
+  return createHash("sha256")
+    .update(`${JSON.stringify(document, null, 2)}\n`)
+    .digest("hex");
+}
+
+function canonicalJSONValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJSONValue);
+  if (!isObject(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonicalJSONValue(value[key])]),
+  );
+}
+
+export function canonicalJSONSHA256(document) {
+  return createHash("sha256")
+    .update(`${JSON.stringify(canonicalJSONValue(document))}\n`)
+    .digest("hex");
+}
+
+// Event-driven merge/main producers cannot share a coordinator-generated
+// random value, so their correlation nonce is deterministically namespaced by
+// posture and the exact projected Git objects. Release qualification must pass
+// an explicit, per-invocation random nonce instead; callers may not derive one
+// through this helper for release evidence.
+export function deriveQualificationCorrelationNonce({ posture, source }) {
+  const problems = [];
+  if (posture !== "merge" && posture !== "main") {
+    problems.push("derived qualification correlation is only valid for merge or main posture");
+  }
+  validateSource(source, "qualification correlation source", problems);
+  if (problems.length > 0) {
+    throw new ContractError("invalid qualification correlation", problems);
+  }
+  return canonicalJSONSHA256({
+    domain: "ci-lane-qualification",
+    posture,
+    source: { sha: source.sha, tree: source.tree },
+  });
+}
+
+export function nativeArtifactName(workflow, run) {
+  const basename = String(workflow ?? "")
+    .replace(/^.*\//, "")
+    .replace(/\.ya?ml$/, "")
+    .replace(/[^A-Za-z0-9_.-]+/g, "-");
+  return `ci-native-${basename}-${run.id}-${run.attempt}`;
+}
+
 function validateDigest(value, path, problems, { required = false } = {}) {
   if (value === null) {
     if (required) problems.push(`${path} is required`);
@@ -1226,6 +1369,12 @@ export function validateSelection(document, registry, expected = {}) {
     "selection.candidate_digest",
     problems,
   );
+  stringValue(
+    document.correlation_nonce,
+    "selection.correlation_nonce",
+    problems,
+    { pattern: CORRELATION_NONCE_RE },
+  );
   validateRun(document.run, "selection.run", problems);
 
   if (expected.posture !== undefined && document.posture !== expected.posture) {
@@ -1249,6 +1398,14 @@ export function validateSelection(document, registry, expected = {}) {
   ) {
     problems.push(
       `selection.candidate_digest is ${document.candidate_digest}, want ${expected.candidateDigest}`,
+    );
+  }
+  if (
+    expected.correlationNonce !== undefined &&
+    document.correlation_nonce !== expected.correlationNonce
+  ) {
+    problems.push(
+      `selection.correlation_nonce is ${document.correlation_nonce}, want ${expected.correlationNonce}`,
     );
   }
   if (expected.runID !== undefined && document.run?.id !== expected.runID) {
@@ -1472,21 +1629,20 @@ export function validateSelection(document, registry, expected = {}) {
           (path) => typeof path === "string",
         )
       : [];
-    const impactLanes = registry.lanes.filter(
-      (lane) => lane.merge_posture === "impact",
+    const conditionalLanes = registry.lanes.filter(
+      (lane) =>
+        lane.merge_posture === "impact" ||
+        lane.merge_posture === "non_documentation",
     );
-    const nonDocumentationLanes = registry.lanes.filter(
-      (lane) => lane.merge_posture === "non_documentation",
-    );
-    const impacted = new Set();
+    const directlyImpacted = new Set();
     const computedUnknown = [];
     const knownNonimpactGlobs =
       registry.impact_selection?.known_nonimpact_globs ?? [];
     for (const path of changedPaths) {
-      const matching = impactLanes.filter((lane) =>
+      const matching = conditionalLanes.filter((lane) =>
         lane.package_globs.some((glob) => matchesGlob(path, glob)),
       );
-      for (const lane of matching) impacted.add(lane.id);
+      for (const lane of matching) directlyImpacted.add(lane.id);
       if (
         matching.length === 0 &&
         !knownNonimpactGlobs.some((glob) => matchesGlob(path, glob))
@@ -1508,26 +1664,43 @@ export function validateSelection(document, registry, expected = {}) {
       );
     }
     if (document.selector.conclusion === "success") {
-      for (const laneID of impacted) {
-        if (selected.get(laneID)?.disposition !== "selected") {
-          problems.push(`selector success must select impacted lane ${laneID}`);
-        }
-      }
-      for (const lane of nonDocumentationLanes) {
-        const required = changedPaths.some(
-          (path) =>
-            !knownNonimpactGlobs.some((glob) => matchesGlob(path, glob)) ||
-            lane.package_globs.some((glob) => matchesGlob(path, glob)),
+      const docsOnly =
+        changedPaths.length > 0 &&
+        changedPaths.every((path) =>
+          knownNonimpactGlobs.some((glob) => matchesGlob(path, glob)),
         );
-        if (required && selected.get(lane.id)?.disposition !== "selected") {
+      for (const lane of conditionalLanes) {
+        const item = selected.get(lane.id);
+        const directHit = directlyImpacted.has(lane.id);
+        const shouldSelect =
+          directHit ||
+          (lane.merge_posture === "non_documentation" && !docsOnly);
+        if (shouldSelect && item?.disposition !== "selected") {
+          const kind =
+            lane.merge_posture === "non_documentation"
+              ? "non-documentation"
+              : "impacted";
+          problems.push(`selector success must select ${kind} lane ${lane.id}`);
+          continue;
+        }
+        if (!shouldSelect && item?.disposition === "selected") {
           problems.push(
-            `selector success must select non-documentation lane ${lane.id}`,
+            `selector success must omit unimpacted lane ${lane.id}`,
           );
+          continue;
+        }
+        if (!shouldSelect && item?.disposition === "omitted") {
+          const expectedReason = docsOnly ? "docs_only" : "not_impacted";
+          if (item.reason !== expectedReason) {
+            problems.push(
+              `selector success must omit ${lane.id} as ${expectedReason}`,
+            );
+          }
         }
       }
     }
     if (document.selector.conclusion === "fallback_full") {
-      for (const lane of [...impactLanes, ...nonDocumentationLanes]) {
+      for (const lane of conditionalLanes) {
         if (selected.get(lane.id)?.disposition !== "selected") {
           problems.push(`fallback_full must select ${lane.id}`);
         }
@@ -1573,6 +1746,21 @@ export function validateSelection(document, registry, expected = {}) {
   }
   if (document.posture !== "release" && document.candidate_digest !== null) {
     problems.push("only release selection may bind a candidate digest");
+  }
+  if (document.posture === "merge" || document.posture === "main") {
+    try {
+      const derived = deriveQualificationCorrelationNonce({
+        posture: document.posture,
+        source: document.source,
+      });
+      if (document.correlation_nonce !== derived) {
+        problems.push(
+          `${document.posture} selection.correlation_nonce does not match its projected Git objects`,
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof ContractError)) throw error;
+    }
   }
 
   if (problems.length > 0)
@@ -1629,7 +1817,17 @@ export function validateReport(document, registry) {
     "report.candidate_digest",
     problems,
   );
-  validateRun(document.run, "report.run", problems);
+  stringValue(
+    document.correlation_nonce,
+    "report.correlation_nonce",
+    problems,
+    { pattern: CORRELATION_NONCE_RE },
+  );
+  validateSelectionRef(
+    document.selection_ref,
+    "report.selection_ref",
+    problems,
+  );
   enumValue(
     document.conclusion,
     REPORT_CONCLUSIONS,
@@ -1659,6 +1857,39 @@ export function validateReport(document, registry) {
     }
     if (document.producer.job !== lane.owner.context_job) {
       problems.push("report.producer.job must be the registry context_job");
+    }
+    validateRun(document.producer.run, "report.producer.run", problems);
+    validateArtifact(
+      document.producer.artifact,
+      PRODUCER_ARTIFACT_KEYS,
+      "report.producer.artifact",
+      problems,
+    );
+    if (
+      isObject(document.producer.run) &&
+      isObject(document.producer.artifact)
+    ) {
+      const expectedArtifactName = nativeArtifactName(
+        document.producer.workflow,
+        document.producer.run,
+      );
+      if (document.producer.artifact.name !== expectedArtifactName) {
+        problems.push(
+          `report.producer.artifact.name must be ${expectedArtifactName}`,
+        );
+      }
+      const expectedEntry = `${document.lane_id}/${document.execution_id}`;
+      if (document.producer.artifact.entry !== expectedEntry) {
+        problems.push(
+          `report.producer.artifact.entry must be ${expectedEntry}`,
+        );
+      }
+      stringValue(
+        document.producer.artifact.entry_sha256,
+        "report.producer.artifact.entry_sha256",
+        problems,
+        { pattern: SHA256_RE },
+      );
     }
   }
 
@@ -1818,30 +2049,232 @@ export function validateReport(document, registry) {
   return document;
 }
 
-export function validateJobResults(document, registry) {
-  const problems = [];
-  if (!isObject(document))
-    throw new ContractError("invalid trusted job results", [
-      "root must be an object",
-    ]);
-  const known = new Set(
-    registry.lanes.flatMap((lane) =>
-      lane.owner.jobs.map((job) => `${lane.owner.workflow}#${job}`),
-    ),
-  );
-  for (const [key, value] of Object.entries(document)) {
-    if (!known.has(key))
+export function validateEventIdentity(value, path, problems) {
+  if (!exactObject(value, EVENT_IDENTITY_KEYS, path, problems)) return;
+  enumValue(value.kind, EVENT_KINDS, `${path}.kind`, problems);
+  if (value.pr_number !== null) {
+    integerValue(value.pr_number, `${path}.pr_number`, problems, { min: 1 });
+  }
+  stringValue(value.event_head_sha, `${path}.event_head_sha`, problems, {
+    pattern: SHA_RE,
+  });
+  if (value.event_base_sha !== null) {
+    stringValue(value.event_base_sha, `${path}.event_base_sha`, problems, {
+      pattern: SHA_RE,
+    });
+  }
+  stringValue(value.projected_sha, `${path}.projected_sha`, problems, {
+    pattern: SHA_RE,
+  });
+  if (value.kind === "pull_request") {
+    if (value.pr_number === null)
+      problems.push(`${path}.pr_number is required for pull_request`);
+    if (value.event_base_sha === null)
+      problems.push(`${path}.event_base_sha is required for pull_request`);
+  } else if (value.pr_number !== null) {
+    problems.push(`${path}.pr_number must be null outside pull_request`);
+  }
+  if (value.kind === "merge_group") {
+    if (value.event_base_sha === null)
+      problems.push(`${path}.event_base_sha is required for merge_group`);
+    if (value.event_head_sha !== value.projected_sha) {
       problems.push(
-        `job result key ${key} does not name a registered owner job`,
+        `${path}.event_head_sha must equal projected_sha for merge_group`,
       );
-    const at = `job_results[${JSON.stringify(key)}]`;
-    if (!exactObject(value, JOB_RESULT_KEYS, at, problems)) continue;
-    enumValue(value.conclusion, JOB_CONCLUSIONS, `${at}.conclusion`, problems);
-    stringValue(value.run_id, `${at}.run_id`, problems, { pattern: RUN_ID_RE });
-    integerValue(value.run_attempt, `${at}.run_attempt`, problems, { min: 1 });
+    }
+  }
+}
+
+export function validateProducerManifest(document, registry) {
+  const problems = [];
+  if (!exactObject(document, PRODUCER_MANIFEST_KEYS, "producer_manifest", problems)) {
+    throw new ContractError("invalid trusted producer manifest", problems);
+  }
+  if (document.schema_version !== REPORT_SCHEMA_VERSION) {
+    problems.push(
+      `producer_manifest.schema_version must be ${REPORT_SCHEMA_VERSION}`,
+    );
+  }
+  stringValue(
+    document.correlation_nonce,
+    "producer_manifest.correlation_nonce",
+    problems,
+    { pattern: CORRELATION_NONCE_RE },
+  );
+  validateSelectionRef(
+    document.selection_ref,
+    "producer_manifest.selection_ref",
+    problems,
+  );
+
+  const knownWorkflows = new Set(
+    registry.lanes.map((lane) => lane.owner.workflow),
+  );
+  const knownJobs = new Map();
+  const knownEntries = new Map();
+  for (const lane of registry.lanes) {
+    if (!knownJobs.has(lane.owner.workflow))
+      knownJobs.set(lane.owner.workflow, new Set());
+    for (const job of lane.owner.jobs)
+      knownJobs.get(lane.owner.workflow).add(job);
+    if (!knownEntries.has(lane.owner.workflow))
+      knownEntries.set(lane.owner.workflow, new Set());
+    for (const executionID of lane.executions) {
+      knownEntries
+        .get(lane.owner.workflow)
+        .add(`${lane.id}/${executionID}`);
+    }
+  }
+  if (!Array.isArray(document.producers)) {
+    problems.push("producer_manifest.producers must be an array");
+  } else {
+    const workflows = new Set();
+    for (let i = 0; i < document.producers.length; i += 1) {
+      const producer = document.producers[i];
+      const at = `producer_manifest.producers[${i}]`;
+      if (!exactObject(producer, TRUSTED_PRODUCER_KEYS, at, problems))
+        continue;
+      if (
+        stringValue(producer.workflow, `${at}.workflow`, problems) &&
+        !knownWorkflows.has(producer.workflow)
+      ) {
+        problems.push(`${at}.workflow is not registered`);
+      }
+      if (workflows.has(producer.workflow)) {
+        problems.push(
+          `${at}.workflow duplicates ${producer.workflow}; the collector must choose exactly one newest run/attempt`,
+        );
+      }
+      workflows.add(producer.workflow);
+      validateRun(producer.run, `${at}.run`, problems);
+      validateSource(producer.source, `${at}.source`, problems);
+      stringValue(
+        producer.correlation_nonce,
+        `${at}.correlation_nonce`,
+        problems,
+        { pattern: CORRELATION_NONCE_RE },
+      );
+      if (producer.correlation_nonce !== document.correlation_nonce) {
+        problems.push(
+          `${at}.correlation_nonce does not match producer_manifest.correlation_nonce`,
+        );
+      }
+      validateEventIdentity(producer.event, `${at}.event`, problems);
+      stringValue(producer.repository, `${at}.repository`, problems, {
+        pattern: REPOSITORY_RE,
+      });
+      enumValue(
+        producer.conclusion,
+        JOB_CONCLUSIONS,
+        `${at}.conclusion`,
+        problems,
+      );
+
+      if (!Array.isArray(producer.jobs) || producer.jobs.length === 0) {
+        problems.push(`${at}.jobs must be a non-empty array`);
+      } else {
+        const jobs = new Set();
+        for (let j = 0; j < producer.jobs.length; j += 1) {
+          const job = producer.jobs[j];
+          const jobAt = `${at}.jobs[${j}]`;
+          if (!exactObject(job, TRUSTED_JOB_KEYS, jobAt, problems)) continue;
+          if (
+            stringValue(job.job, `${jobAt}.job`, problems, {
+              pattern: WORKFLOW_JOB_ID_RE,
+            }) &&
+            !knownJobs.get(producer.workflow)?.has(job.job)
+          ) {
+            problems.push(`${jobAt}.job is not registered for the workflow`);
+          }
+          if (jobs.has(job.job)) problems.push(`${jobAt}.job is duplicated`);
+          jobs.add(job.job);
+          stringValue(job.name, `${jobAt}.name`, problems);
+          stringValue(job.database_id, `${jobAt}.database_id`, problems, {
+            pattern: RUN_ID_RE,
+          });
+          enumValue(
+            job.conclusion,
+            JOB_CONCLUSIONS,
+            `${jobAt}.conclusion`,
+            problems,
+          );
+        }
+      }
+
+      if (!Array.isArray(producer.artifacts) || producer.artifacts.length !== 1) {
+        problems.push(`${at}.artifacts must contain exactly one native bundle`);
+      } else {
+        const artifactIDs = new Set();
+        const artifactNames = new Set();
+        for (let j = 0; j < producer.artifacts.length; j += 1) {
+          const artifact = producer.artifacts[j];
+          const artifactAt = `${at}.artifacts[${j}]`;
+          validateArtifact(
+            artifact,
+            TRUSTED_ARTIFACT_KEYS,
+            artifactAt,
+            problems,
+          );
+          const expectedName = nativeArtifactName(
+            producer.workflow,
+            producer.run,
+          );
+          if (artifact?.name !== expectedName) {
+            problems.push(`${artifactAt}.name must be ${expectedName}`);
+          }
+          if (!Array.isArray(artifact?.entries) || artifact.entries.length === 0) {
+            problems.push(`${artifactAt}.entries must be a non-empty array`);
+          } else {
+            const entries = new Set();
+            for (let k = 0; k < artifact.entries.length; k += 1) {
+              const entry = artifact.entries[k];
+              const entryAt = `${artifactAt}.entries[${k}]`;
+              if (
+                !exactObject(
+                  entry,
+                  TRUSTED_ARTIFACT_ENTRY_KEYS,
+                  entryAt,
+                  problems,
+                )
+              ) {
+                continue;
+              }
+              stringValue(entry.lane_id, `${entryAt}.lane_id`, problems, {
+                pattern: LANE_ID_RE,
+              });
+              stringValue(
+                entry.execution_id,
+                `${entryAt}.execution_id`,
+                problems,
+                { pattern: EXECUTION_ID_RE },
+              );
+              stringValue(entry.sha256, `${entryAt}.sha256`, problems, {
+                pattern: SHA256_RE,
+              });
+              const identity = `${entry.lane_id}/${entry.execution_id}`;
+              if (entries.has(identity)) {
+                problems.push(`${entryAt} duplicates native entry ${identity}`);
+              }
+              if (!knownEntries.get(producer.workflow)?.has(identity)) {
+                problems.push(
+                  `${entryAt} is not registered for ${producer.workflow}`,
+                );
+              }
+              entries.add(identity);
+            }
+          }
+          if (artifactIDs.has(artifact?.id))
+            problems.push(`${artifactAt}.id is duplicated`);
+          if (artifactNames.has(artifact?.name))
+            problems.push(`${artifactAt}.name is duplicated`);
+          artifactIDs.add(artifact?.id);
+          artifactNames.add(artifact?.name);
+        }
+      }
+    }
   }
   if (problems.length > 0)
-    throw new ContractError("invalid trusted job results", problems);
+    throw new ContractError("invalid trusted producer manifest", problems);
   return document;
 }
 
@@ -1868,12 +2301,42 @@ function validateQualificationExpectations(expected, registry, selection) {
   enumValue(expected.posture, SELECTION_POSTURES, "expected.posture", problems);
   stringValue(expected.sha, "expected.sha", problems, { pattern: SHA_RE });
   stringValue(expected.tree, "expected.tree", problems, { pattern: SHA_RE });
+  stringValue(
+    expected.correlationNonce,
+    "expected.correlationNonce",
+    problems,
+    { pattern: CORRELATION_NONCE_RE },
+  );
   stringValue(expected.runID, "expected.runID", problems, {
     pattern: RUN_ID_RE,
   });
   integerValue(expected.runAttempt, "expected.runAttempt", problems, {
     min: 1,
   });
+  stringValue(
+    expected.selectionManifestSHA256,
+    "expected.selectionManifestSHA256",
+    problems,
+    { pattern: SHA256_RE },
+  );
+  validateEventIdentity(
+    expected.eventIdentity,
+    "expected.eventIdentity",
+    problems,
+  );
+  stringValue(expected.repository, "expected.repository", problems, {
+    pattern: REPOSITORY_RE,
+  });
+  if (expected.eventIdentity?.projected_sha !== expected.sha) {
+    problems.push(
+      "expected.eventIdentity.projected_sha must equal expected.sha",
+    );
+  }
+  if (selection?.correlation_nonce !== expected.correlationNonce) {
+    problems.push(
+      "expected.correlationNonce must equal selection.correlation_nonce",
+    );
+  }
 
   if (expected.candidateDigest !== undefined) {
     validateDigest(
@@ -1896,6 +2359,23 @@ function validateQualificationExpectations(expected, registry, selection) {
       "expected.changedPaths",
       problems,
     );
+    if (
+      expected.eventIdentity?.kind !== "pull_request" &&
+      expected.eventIdentity?.kind !== "merge_group"
+    ) {
+      problems.push(
+        "merge qualification event must be pull_request or merge_group",
+      );
+    }
+    if (
+      (expected.eventIdentity?.kind === "pull_request" ||
+        expected.eventIdentity?.kind === "merge_group") &&
+      expected.eventIdentity.event_base_sha !== expected.baseSHA
+    ) {
+      problems.push(
+        "expected.eventIdentity.event_base_sha must equal expected.baseSHA for merge qualification",
+      );
+    }
   }
 
   const selectedIDs = new Set(
@@ -1927,17 +2407,48 @@ export function validateReportSet({
   registry,
   selection,
   reports,
-  jobResults,
+  producerManifest,
   expected = {},
 }) {
   validateQualificationExpectations(expected, registry, selection);
   validateSelection(selection, registry, expected);
-  validateJobResults(jobResults, registry);
+  validateProducerManifest(producerManifest, registry);
   const problems = [];
+  const computedSelectionDigest = selectionManifestSHA256(selection);
+  if (computedSelectionDigest !== expected.selectionManifestSHA256) {
+    problems.push(
+      "selection manifest SHA-256 does not match the trusted expected digest",
+    );
+  }
+  const selectionRef = {
+    run: selection.run,
+    manifest_sha256: expected.selectionManifestSHA256,
+  };
+  if (
+    producerManifest.selection_ref.run.id !== selectionRef.run.id ||
+    producerManifest.selection_ref.run.attempt !== selectionRef.run.attempt ||
+    producerManifest.selection_ref.manifest_sha256 !==
+      selectionRef.manifest_sha256
+  ) {
+    problems.push(
+      "trusted producer manifest selection_ref does not match the current selection",
+    );
+  }
+  if (
+    producerManifest.correlation_nonce !== selection.correlation_nonce ||
+    producerManifest.correlation_nonce !== expected.correlationNonce
+  ) {
+    problems.push(
+      "trusted producer manifest correlation_nonce does not match the current qualification",
+    );
+  }
+
   const lanesByID = new Map(registry.lanes.map((lane) => [lane.id, lane]));
   const expectedReports = new Map();
+  const expectedWorkflows = new Set();
   for (const item of selection.lanes) {
     if (item.disposition !== "selected") continue;
+    expectedWorkflows.add(lanesByID.get(item.lane_id).owner.workflow);
     for (const execution of item.executions) {
       expectedReports.set(`${item.lane_id}/${execution}`, {
         lane: lanesByID.get(item.lane_id),
@@ -1946,7 +2457,49 @@ export function validateReportSet({
     }
   }
 
+  const trustedByWorkflow = new Map();
+  for (const producer of producerManifest.producers) {
+    trustedByWorkflow.set(producer.workflow, producer);
+    if (!expectedWorkflows.has(producer.workflow)) {
+      problems.push(
+        `unexpected trusted producer workflow ${producer.workflow}; no selected lane owns it`,
+      );
+    }
+    if (
+      producer.source.sha !== selection.source.sha ||
+      producer.source.tree !== selection.source.tree
+    ) {
+      problems.push(
+        `${producer.workflow}: trusted producer projected SHA/tree does not match the selection`,
+      );
+    }
+    if (
+      EVENT_IDENTITY_KEYS.size !== Object.keys(producer.event).length ||
+      [...EVENT_IDENTITY_KEYS].some(
+        (key) => producer.event[key] !== expected.eventIdentity[key],
+      )
+    ) {
+      problems.push(
+        `${producer.workflow}: trusted producer event identity does not match the qualification event`,
+      );
+    }
+    if (producer.repository !== expected.repository) {
+      problems.push(
+        `${producer.workflow}: trusted producer repository does not match the qualification repository`,
+      );
+    }
+    // Workflow-level conclusion is telemetry, not a lane verdict. A workflow
+    // may contain an unselected red job alongside a selected green lane; only
+    // the selected context and its native entry decide qualification.
+  }
+  for (const workflow of expectedWorkflows) {
+    if (!trustedByWorkflow.has(workflow)) {
+      problems.push(`trusted producer run for ${workflow} is missing`);
+    }
+  }
+
   const actual = new Map();
+  const claimedEntries = new Set();
   for (let i = 0; i < reports.length; i += 1) {
     let report;
     try {
@@ -1986,12 +2539,18 @@ export function validateReportSet({
         `${identity}: source SHA/tree does not match the selection`,
       );
     }
-    if (report.run.id !== selection.run.id) {
-      problems.push(`${identity}: report run id does not match the selection`);
-    }
-    if (report.run.attempt !== selection.run.attempt) {
+    if (
+      report.selection_ref.run.id !== selectionRef.run.id ||
+      report.selection_ref.run.attempt !== selectionRef.run.attempt ||
+      report.selection_ref.manifest_sha256 !== selectionRef.manifest_sha256
+    ) {
       problems.push(
-        `${identity}: report run attempt does not match the selection`,
+        `${identity}: selection_ref does not match the current selection`,
+      );
+    }
+    if (report.correlation_nonce !== selection.correlation_nonce) {
+      problems.push(
+        `${identity}: correlation_nonce does not match the current qualification`,
       );
     }
     const mode = expectedInvocationMode(lane, selection.posture);
@@ -2034,41 +2593,98 @@ export function validateReportSet({
       problems.push(`${identity}: seeded lane omitted its seed`);
     }
 
-    for (const job of lane.owner.jobs) {
-      const key = `${lane.owner.workflow}#${job}`;
-      const trusted = jobResults[key];
-      if (!trusted) {
-        problems.push(`${identity}: trusted result for ${key} is missing`);
-        continue;
-      }
-      if (trusted.conclusion !== "success") {
+    const trusted = trustedByWorkflow.get(report.producer.workflow);
+    if (!trusted) continue;
+    if (
+      report.producer.run.id !== trusted.run.id ||
+      report.producer.run.attempt !== trusted.run.attempt
+    ) {
+      problems.push(
+        `${identity}: producer run identity does not match the trusted workflow run`,
+      );
+    }
+    const context = trusted.jobs.find(
+      (job) => job.job === report.producer.job,
+    );
+    if (!context) {
+      problems.push(
+        `${identity}: trusted context job ${report.producer.job} is missing`,
+      );
+    } else {
+      const contextNameMatches =
+        lane.context.match === "exact"
+          ? context.name === lane.context.name
+          : context.name.startsWith(lane.context.name);
+      if (!contextNameMatches) {
         problems.push(
-          `${identity}: trusted result for ${key} is ${trusted.conclusion}`,
+          `${identity}: trusted context check name ${context.name} does not match ${lane.context.name}`,
         );
       }
-      if (
-        trusted.run_id !== selection.run.id ||
-        trusted.run_attempt !== selection.run.attempt
-      ) {
+      if (context.conclusion !== "success") {
         problems.push(
-          `${identity}: trusted result for ${key} does not match the selection run`,
+          `${identity}: trusted context job ${report.producer.job} is ${context.conclusion}`,
         );
-      }
-      if (job === lane.owner.context_job) {
-        if (
-          trusted.run_id !== report.run.id ||
-          trusted.run_attempt !== report.run.attempt
-        ) {
-          problems.push(
-            `${identity}: producer run identity does not match trusted ${key}`,
-          );
-        }
       }
     }
+    const artifact = trusted.artifacts.find(
+      (candidate) => candidate.id === report.producer.artifact.id,
+    );
+    if (!artifact) {
+      problems.push(
+        `${identity}: trusted artifact ${report.producer.artifact.id} is missing`,
+      );
+    } else if (
+      artifact.name !== report.producer.artifact.name ||
+      artifact.sha256 !== report.producer.artifact.sha256
+    ) {
+      problems.push(
+        `${identity}: producer artifact name or SHA-256 does not match trusted API provenance`,
+      );
+    } else {
+      const entry = artifact.entries.find(
+        (candidate) =>
+          candidate.lane_id === report.lane_id &&
+          candidate.execution_id === report.execution_id,
+      );
+      if (!entry) {
+        problems.push(
+          `${identity}: trusted native bundle entry is missing`,
+        );
+      } else if (
+        entry.sha256 !== report.producer.artifact.entry_sha256
+      ) {
+        problems.push(
+          `${identity}: native bundle entry SHA-256 does not match trusted provenance`,
+        );
+      }
+    }
+    const entryIdentity =
+      `${report.producer.workflow}#${report.producer.run.id}#` +
+      `${report.producer.run.attempt}#${report.producer.artifact.id}#` +
+      `${report.producer.artifact.entry}`;
+    if (claimedEntries.has(entryIdentity)) {
+      problems.push(`${identity}: native bundle entry is reused by another report`);
+    }
+    claimedEntries.add(entryIdentity);
   }
 
   for (const identity of expectedReports.keys()) {
     if (!actual.has(identity)) problems.push(`missing report ${identity}`);
+  }
+  for (const workflow of expectedWorkflows) {
+    const producer = trustedByWorkflow.get(workflow);
+    if (producer?.artifacts.length !== 1) continue;
+    const artifact = producer.artifacts[0];
+    const consumed = [...claimedEntries].some((identity) =>
+      identity.startsWith(
+        `${workflow}#${producer.run.id}#${producer.run.attempt}#${artifact.id}#`,
+      ),
+    );
+    if (!consumed) {
+      problems.push(
+        `${workflow}: trusted native artifact ${artifact.name} was not consumed by a selected report`,
+      );
+    }
   }
   if (problems.length > 0)
     throw new ContractError("CI lane qualification failed closed", problems);
@@ -2154,13 +2770,25 @@ export function qualificationExpectations(env = process.env) {
   const posture = env.CI_LANE_POSTURE;
   const sha = env.CI_EXPECT_SHA;
   const tree = env.CI_EXPECT_TREE;
+  const correlationNonce = env.CI_EXPECT_CORRELATION_NONCE;
   const runID = env.CI_EXPECT_RUN_ID;
+  const selectionManifestSHA256 = env.CI_EXPECT_SELECTION_SHA256;
+  const eventKind = env.CI_EXPECT_EVENT_KIND;
+  const eventHeadSHA = env.CI_EXPECT_EVENT_HEAD_SHA;
+  const projectedSHA = env.CI_EXPECT_PROJECTED_SHA;
+  const repository = env.CI_EXPECT_REPOSITORY;
   for (const [name, value] of [
     ["CI_LANE_POSTURE", posture],
     ["CI_EXPECT_SHA", sha],
     ["CI_EXPECT_TREE", tree],
+    ["CI_EXPECT_CORRELATION_NONCE", correlationNonce],
     ["CI_EXPECT_RUN_ID", runID],
     ["CI_EXPECT_RUN_ATTEMPT", env.CI_EXPECT_RUN_ATTEMPT],
+    ["CI_EXPECT_SELECTION_SHA256", selectionManifestSHA256],
+    ["CI_EXPECT_EVENT_KIND", eventKind],
+    ["CI_EXPECT_EVENT_HEAD_SHA", eventHeadSHA],
+    ["CI_EXPECT_PROJECTED_SHA", projectedSHA],
+    ["CI_EXPECT_REPOSITORY", repository],
   ]) {
     if (typeof value !== "string" || value === "")
       problems.push(`${name} is required`);
@@ -2168,7 +2796,22 @@ export function qualificationExpectations(env = process.env) {
   enumValue(posture, SELECTION_POSTURES, "CI_LANE_POSTURE", problems);
   stringValue(sha, "CI_EXPECT_SHA", problems, { pattern: SHA_RE });
   stringValue(tree, "CI_EXPECT_TREE", problems, { pattern: SHA_RE });
+  stringValue(
+    correlationNonce,
+    "CI_EXPECT_CORRELATION_NONCE",
+    problems,
+    { pattern: CORRELATION_NONCE_RE },
+  );
   stringValue(runID, "CI_EXPECT_RUN_ID", problems, { pattern: RUN_ID_RE });
+  stringValue(
+    selectionManifestSHA256,
+    "CI_EXPECT_SELECTION_SHA256",
+    problems,
+    { pattern: SHA256_RE },
+  );
+  stringValue(repository, "CI_EXPECT_REPOSITORY", problems, {
+    pattern: REPOSITORY_RE,
+  });
 
   let runAttempt;
   if (env.CI_EXPECT_RUN_ATTEMPT !== undefined) {
@@ -2187,6 +2830,29 @@ export function qualificationExpectations(env = process.env) {
   ) {
     candidateDigest = env.CI_EXPECT_CANDIDATE_DIGEST;
     validateDigest(candidateDigest, "CI_EXPECT_CANDIDATE_DIGEST", problems);
+  }
+
+  let prNumber = null;
+  if (env.CI_EXPECT_PR_NUMBER !== undefined && env.CI_EXPECT_PR_NUMBER !== "") {
+    if (!/^[1-9][0-9]*$/.test(env.CI_EXPECT_PR_NUMBER)) {
+      problems.push("CI_EXPECT_PR_NUMBER must be a canonical positive integer");
+    } else {
+      prNumber = Number(env.CI_EXPECT_PR_NUMBER);
+      if (!Number.isSafeInteger(prNumber)) {
+        problems.push("CI_EXPECT_PR_NUMBER exceeds JavaScript's safe integer range");
+      }
+    }
+  }
+  const eventIdentity = {
+    kind: eventKind,
+    pr_number: prNumber,
+    event_head_sha: eventHeadSHA,
+    event_base_sha: env.CI_EXPECT_EVENT_BASE_SHA || null,
+    projected_sha: projectedSHA,
+  };
+  validateEventIdentity(eventIdentity, "CI event identity", problems);
+  if (projectedSHA !== sha) {
+    problems.push("CI_EXPECT_PROJECTED_SHA must equal CI_EXPECT_SHA");
   }
   if (posture === "release" && candidateDigest === undefined) {
     problems.push(
@@ -2235,9 +2901,13 @@ export function qualificationExpectations(env = process.env) {
     posture,
     sha,
     tree,
+    correlationNonce,
     candidateDigest,
     runID,
     runAttempt,
+    selectionManifestSHA256,
+    eventIdentity,
+    repository,
     baseSHA,
     changedPaths,
   };
@@ -2264,7 +2934,7 @@ function main() {
 
   const selectionPath = process.env.CI_LANE_SELECTION;
   const reportDir = process.env.CI_LANE_REPORT_DIR;
-  const rawResults = process.env.CI_LANE_JOB_RESULTS_JSON;
+  const producerManifestPath = process.env.CI_LANE_PRODUCER_MANIFEST;
   if (!selectionPath)
     throw new ContractError("CI lane contract", [
       "CI_LANE_SELECTION is required",
@@ -2273,17 +2943,9 @@ function main() {
     throw new ContractError("CI lane contract", [
       "CI_LANE_REPORT_DIR is required",
     ]);
-  if (!rawResults) {
+  if (!producerManifestPath) {
     throw new ContractError("CI lane contract", [
-      "CI_LANE_JOB_RESULTS_JSON is required",
-    ]);
-  }
-  let jobResults;
-  try {
-    jobResults = JSON.parse(rawResults);
-  } catch (error) {
-    throw new ContractError("CI lane contract", [
-      `CI_LANE_JOB_RESULTS_JSON is not valid JSON: ${error.message}`,
+      "CI_LANE_PRODUCER_MANIFEST is required",
     ]);
   }
   const reportsWithPaths = readReports(resolve(root, reportDir));
@@ -2291,7 +2953,10 @@ function main() {
     registry,
     selection: parseJSONFile(resolve(root, selectionPath), "CI lane selection"),
     reports: reportsWithPaths.map((entry) => entry.document),
-    jobResults,
+    producerManifest: parseJSONFile(
+      resolve(root, producerManifestPath),
+      "trusted producer manifest",
+    ),
     expected: qualificationExpectations(process.env),
   });
   process.stdout.write(

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "selection_schema_version": 1,
-  "report_schema_version": 1,
+  "report_schema_version": 2,
   "rollout": "shadow",
   "impact_selection": {
     "known_nonimpact_globs": [
@@ -87,7 +87,7 @@
       "timeout_minutes": 15,
       "slo_minutes": 15,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chart.validate",
@@ -128,7 +128,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 12,
       "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.integration-logql",
@@ -163,7 +163,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.integration-promql",
@@ -198,7 +198,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.integration-traceql",
@@ -233,7 +233,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.perf-guards",
@@ -264,7 +264,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.probe",
@@ -299,7 +299,7 @@
       "timeout_minutes": 15,
       "slo_minutes": 15,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.roundtrip-logql",
@@ -334,7 +334,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.roundtrip-promql",
@@ -369,7 +369,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.roundtrip-traceql",
@@ -404,7 +404,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "chdb.strict-scan",
@@ -445,7 +445,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.agpl-clean",
@@ -476,7 +476,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 8,
       "accountable_owner": "security",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.chaos-sleep",
@@ -513,7 +513,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 8,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.check",
@@ -573,7 +573,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 10,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.forbid-skip",
@@ -604,7 +604,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 12,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.link-check",
@@ -635,7 +635,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 8,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "ci.lint",
@@ -666,7 +666,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 20,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.gate",
@@ -697,7 +697,7 @@
       "timeout_minutes": 10,
       "slo_minutes": 8,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.loki",
@@ -736,7 +736,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.prometheus",
@@ -775,7 +775,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.prometheus-floor",
@@ -814,7 +814,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.prometheus-forced-route",
@@ -849,7 +849,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.promql-surface",
@@ -884,7 +884,7 @@
       "timeout_minutes": 15,
       "slo_minutes": 15,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "compatibility.tempo",
@@ -923,7 +923,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "docs.config-drift",
@@ -962,7 +962,7 @@
       "timeout_minutes": 20,
       "slo_minutes": 10,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "docs.external-links",
@@ -997,7 +997,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 30,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.bwc-minio",
@@ -1028,7 +1028,7 @@
       "timeout_minutes": 40,
       "slo_minutes": 40,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.chaos",
@@ -1059,7 +1059,7 @@
       "timeout_minutes": 40,
       "slo_minutes": 40,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.compose-crawl",
@@ -1118,7 +1118,7 @@
       "timeout_minutes": 120,
       "slo_minutes": 20,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.compose-smoke",
@@ -1182,7 +1182,7 @@
       "timeout_minutes": 120,
       "slo_minutes": 20,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.dashboard",
@@ -1213,7 +1213,7 @@
       "timeout_minutes": 120,
       "slo_minutes": 120,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.dashboard-crawl",
@@ -1252,7 +1252,7 @@
       "timeout_minutes": 120,
       "slo_minutes": 120,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.quickstart",
@@ -1306,7 +1306,7 @@
       "timeout_minutes": 25,
       "slo_minutes": 20,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "e2e.startup-bench",
@@ -1341,7 +1341,7 @@
       "timeout_minutes": 10,
       "slo_minutes": 10,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "governance.chaos-applicability",
@@ -1372,7 +1372,7 @@
       "timeout_minutes": 10,
       "slo_minutes": 10,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "governance.forbid-deferral",
@@ -1407,7 +1407,7 @@
       "timeout_minutes": 10,
       "slo_minutes": 5,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "governance.pr-body",
@@ -1438,7 +1438,7 @@
       "timeout_minutes": 5,
       "slo_minutes": 5,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "governance.release-gate-drift",
@@ -1472,7 +1472,7 @@
       "timeout_minutes": 10,
       "slo_minutes": 10,
       "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "migration.e2e",
@@ -1518,7 +1518,7 @@
       "timeout_minutes": 120,
       "slo_minutes": 120,
       "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "performance.benchmark",
@@ -1561,7 +1561,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "performance.profile",
@@ -1592,7 +1592,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 30,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "quality.coverage-enrollment",
@@ -1623,7 +1623,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 10,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "quality.coverage-measured",
@@ -1670,7 +1670,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 60,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "quality.mutation",
@@ -1727,7 +1727,7 @@
       "timeout_minutes": 90,
       "slo_minutes": 20,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "quality.post-merge-drift",
@@ -1762,7 +1762,7 @@
       "timeout_minutes": 45,
       "slo_minutes": 45,
       "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "quality.property",
@@ -1802,7 +1802,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 30,
       "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "release.brew-migration",
@@ -1840,7 +1840,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 60,
       "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "release.brew-verify",
@@ -1875,7 +1875,7 @@
       "timeout_minutes": 60,
       "slo_minutes": 60,
       "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "schema.ddl",
@@ -1914,7 +1914,7 @@
       "timeout_minutes": 25,
       "slo_minutes": 20,
       "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "report_schema_version": 2
     },
     {
       "id": "security.codeql",
@@ -1945,7 +1945,7 @@
       "timeout_minutes": 30,
       "slo_minutes": 20,
       "accountable_owner": "security",
-      "report_schema_version": 1
+      "report_schema_version": 2
     }
   ],
   "non_lane_workflows": [
@@ -1954,10 +1954,18 @@
       "reason": "automation"
     },
     {
+      "workflow": ".github/workflows/ci-native-evidence.yml",
+      "reason": "infrastructure"
+    },
+    {
       "workflow": ".github/workflows/dependabot-tidy-nested-modules.yml",
       "reason": "dependency_maintenance"
     },
     { "workflow": ".github/workflows/issue-label.yml", "reason": "labeling" },
+    {
+      "workflow": ".github/workflows/merge-fence.yml",
+      "reason": "infrastructure"
+    },
     {
       "workflow": ".github/workflows/mirror-images.yml",
       "reason": "infrastructure"

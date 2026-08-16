@@ -1,0 +1,52 @@
+name: ci-native-evidence
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        required: true
+        type: string
+      needs_json:
+        required: true
+        type: string
+      posture:
+        required: true
+        type: string
+      correlation_nonce:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      - id: evidence
+        name: derive evidence from the caller's native job graph
+        env:
+          CI_LANE_WORKFLOW: ${{ inputs.workflow }}
+          CI_LANE_NEEDS_JSON: ${{ inputs.needs_json }}
+          CI_LANE_NATIVE_POSTURE: ${{ inputs.posture }}
+          CI_LANE_CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
+          CI_LANE_NATIVE_OUTPUT: build/ci-native-evidence.json
+        run: |
+          mkdir -p build
+          node .github/scripts/ci-lane-native-evidence.mjs
+
+      - name: publish the attempt-qualified native bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.evidence.outputs.native_artifact_name }}
+          path: ${{ steps.evidence.outputs.native_path }}
+          if-no-files-found: error
+          retention-days: 14

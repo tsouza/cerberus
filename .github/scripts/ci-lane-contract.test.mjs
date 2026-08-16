@@ -19,12 +19,16 @@ import {
   CANONICAL_HEAD_ORACLE_FLOORS,
   ContractError,
   MERGE_P95_SLO_MINUTES,
+  REPORT_SCHEMA_VERSION,
   RELEASE_QUALIFICATION_SLO_MINUTES,
+  deriveQualificationCorrelationNonce,
   loadRegistry,
+  nativeArtifactName,
   parseExpectedRunAttempt,
   qualificationExpectations,
   renderSummary,
-  validateJobResults,
+  selectionManifestSHA256,
+  validateProducerManifest,
   validateRegistry,
   validateReport,
   validateReportSet as validateReportSetContract,
@@ -61,7 +65,18 @@ const OTHER_SHA = "c".repeat(40);
 const CANDIDATE_DIGEST = `sha256:${"d".repeat(64)}`;
 const OTHER_DIGEST = `sha256:${"e".repeat(64)}`;
 const BASE_SHA = "f".repeat(40);
+const MERGE_CORRELATION_NONCE = deriveQualificationCorrelationNonce({
+  posture: "merge",
+  source: { sha: SOURCE_SHA, tree: SOURCE_TREE },
+});
+const RELEASE_CORRELATION_NONCE = "9".repeat(64);
 const RUN = Object.freeze({ id: "321", attempt: 2 });
+const REPOSITORY = "example/project";
+const PRODUCER_RUNS = Object.freeze({
+  ".github/workflows/ci.yml": Object.freeze({ id: "801", attempt: 3 }),
+  ".github/workflows/e2e.yml": Object.freeze({ id: "802", attempt: 4 }),
+  ".github/workflows/release.yml": Object.freeze({ id: "803", attempt: 5 }),
+});
 const NON_SUCCESS_CONCLUSIONS = [
   "action_required",
   "cancelled",
@@ -221,7 +236,7 @@ function lane({
     timeout_minutes: timeoutMinutes,
     slo_minutes: sloMinutes,
     accountable_owner: "quality",
-    report_schema_version: 1,
+    report_schema_version: REPORT_SCHEMA_VERSION,
   };
 }
 
@@ -229,7 +244,7 @@ function registryFixture() {
   return {
     schema_version: 1,
     selection_schema_version: 1,
-    report_schema_version: 1,
+    report_schema_version: REPORT_SCHEMA_VERSION,
     rollout: "shadow",
     impact_selection: { known_nonimpact_globs: ["**/*.md", "docs/**"] },
     layers: CANONICAL_LAYER_IDS.map((id) => ({ id, name: `Layer ${id}` })),
@@ -328,10 +343,11 @@ function mergeSelection({
   return {
     schema_version: 1,
     registry_schema_version: 1,
-    report_schema_version: 1,
+    report_schema_version: REPORT_SCHEMA_VERSION,
     posture: "merge",
     source: { sha: SOURCE_SHA, tree: SOURCE_TREE },
     candidate_digest: null,
+    correlation_nonce: MERGE_CORRELATION_NONCE,
     run: { ...RUN },
     selector: {
       conclusion: selectorConclusion,
@@ -358,7 +374,13 @@ function mergeSelection({
             lane_id: "impact",
             disposition: "omitted",
             executions: [],
-            reason: "not_impacted",
+            reason:
+              changedPaths.length > 0 &&
+              changedPaths.every(
+                (path) => path.endsWith(".md") || path.startsWith("docs/"),
+              )
+                ? "docs_only"
+                : "not_impacted",
           },
       {
         lane_id: "oracle-property",
@@ -414,10 +436,11 @@ function releaseSelection() {
   return {
     schema_version: 1,
     registry_schema_version: 1,
-    report_schema_version: 1,
+    report_schema_version: REPORT_SCHEMA_VERSION,
     posture: "release",
     source: { sha: SOURCE_SHA, tree: SOURCE_TREE },
     candidate_digest: CANDIDATE_DIGEST,
+    correlation_nonce: RELEASE_CORRELATION_NONCE,
     run: { ...RUN },
     selector: {
       conclusion: "success",
@@ -461,24 +484,85 @@ function releaseSelection() {
   };
 }
 
+function eventIdentityFor(selection) {
+  if (selection.posture === "merge") {
+    return {
+      kind: "pull_request",
+      pr_number: 17,
+      event_head_sha: OTHER_SHA,
+      event_base_sha: BASE_SHA,
+      projected_sha: selection.source.sha,
+    };
+  }
+  return {
+    kind: selection.posture === "main" ? "push" : "workflow_dispatch",
+    pr_number: null,
+    event_head_sha: selection.source.sha,
+    event_base_sha: null,
+    projected_sha: selection.source.sha,
+  };
+}
+
+function producerRunFor(workflow) {
+  return PRODUCER_RUNS[workflow];
+}
+
+function nativeArtifactFor(workflow, laneID, executionID, run) {
+  const ordinal = {
+    ".github/workflows/ci.yml": 901,
+    ".github/workflows/e2e.yml": 902,
+    ".github/workflows/release.yml": 903,
+  }[workflow];
+  const digestByte = {
+    always: "1",
+    impact: "2",
+    release: "3",
+    "oracle-property": "4",
+    "oracle-reference": "5",
+  }[laneID];
+  return {
+    id: String(ordinal),
+    name: nativeArtifactName(workflow, run),
+    sha256: String(ordinal % 10).repeat(64),
+    entry: `${laneID}/${executionID}`,
+    entry_sha256: digestByte.repeat(64),
+  };
+}
+
+function selectionRefFor(selection) {
+  return {
+    run: { ...selection.run },
+    manifest_sha256: selectionManifestSHA256(selection),
+  };
+}
+
 function reportFor(registry, selection, laneID, executionID = "default") {
   const registered = registry.lanes.find(
     (candidate) => candidate.id === laneID,
   );
   const candidateArtifact =
     selection.posture === "release" && registered.applicability.artifact;
+  const producerRun = producerRunFor(registered.owner.workflow);
   return {
-    schema_version: 1,
+    schema_version: REPORT_SCHEMA_VERSION,
     registry_schema_version: 1,
     lane_id: laneID,
     execution_id: executionID,
     posture: selection.posture,
     source: { ...selection.source },
     candidate_digest: candidateArtifact ? selection.candidate_digest : null,
-    run: { ...selection.run },
+    correlation_nonce: selection.correlation_nonce,
+    selection_ref: selectionRefFor(selection),
     producer: {
       workflow: registered.owner.workflow,
       job: registered.owner.context_job,
+      run: { ...producerRun },
+      artifact: nativeArtifactFor(
+        registered.owner.workflow,
+        laneID,
+        executionID,
+        producerRun,
+      ),
     },
     invocation: {
       mode: candidateArtifact ? "candidate_artifact" : "source_tree",
@@ -500,24 +584,68 @@ function reportFor(registry, selection, laneID, executionID = "default") {
   };
 }
 
-function jobResultsFor(registry, selection) {
-  const selected = new Set(
-    selection.lanes
-      .filter((item) => item.disposition === "selected")
-      .map((item) => item.lane_id),
-  );
-  const results = {};
-  for (const registered of registry.lanes) {
-    if (!selected.has(registered.id)) continue;
-    for (const job of registered.owner.jobs) {
-      results[`${registered.owner.workflow}#${job}`] = {
+function producerManifestFor(registry, selection) {
+  const producers = new Map();
+  for (const item of selection.lanes) {
+    if (item.disposition !== "selected") continue;
+    const registered = registry.lanes.find((lane) => lane.id === item.lane_id);
+    const workflow = registered.owner.workflow;
+    const run = producerRunFor(workflow);
+    if (!producers.has(workflow)) {
+      producers.set(workflow, {
+        workflow,
+        run: { ...run },
+        source: { ...selection.source },
+        correlation_nonce: selection.correlation_nonce,
+        event: eventIdentityFor(selection),
+        repository: REPOSITORY,
         conclusion: "success",
-        run_id: selection.run.id,
-        run_attempt: selection.run.attempt,
-      };
+        jobs: [],
+        artifacts: [],
+      });
+    }
+    const producer = producers.get(workflow);
+    if (!producer.jobs.some((job) => job.job === registered.owner.context_job))
+      producer.jobs.push({
+        job: registered.owner.context_job,
+        name: registered.context.name,
+        database_id: String(701 + producer.jobs.length),
+        conclusion: "success",
+      });
+    if (producer.artifacts.length === 0) {
+      producer.artifacts.push({
+        id: nativeArtifactFor(workflow, item.lane_id, item.executions[0], run)
+          .id,
+        name: nativeArtifactName(workflow, run),
+        sha256: nativeArtifactFor(
+          workflow,
+          item.lane_id,
+          item.executions[0],
+          run,
+        ).sha256,
+        entries: [],
+      });
+    }
+    for (const execution of item.executions) {
+      const reference = nativeArtifactFor(
+        workflow,
+        item.lane_id,
+        execution,
+        run,
+      );
+      producer.artifacts[0].entries.push({
+        lane_id: item.lane_id,
+        execution_id: execution,
+        sha256: reference.entry_sha256,
+      });
     }
   }
-  return results;
+  return {
+    schema_version: REPORT_SCHEMA_VERSION,
+    correlation_nonce: selection.correlation_nonce,
+    selection_ref: selectionRefFor(selection),
+    producers: [...producers.values()],
+  };
 }
 
 function qualificationExpected(selection) {
@@ -525,10 +653,14 @@ function qualificationExpected(selection) {
     posture: selection.posture,
     sha: selection.source.sha,
     tree: selection.source.tree,
+    correlationNonce: selection.correlation_nonce,
     candidateDigest:
       selection.posture === "release" ? selection.candidate_digest : undefined,
     runID: selection.run.id,
     runAttempt: selection.run.attempt,
+    selectionManifestSHA256: selectionManifestSHA256(selection),
+    eventIdentity: eventIdentityFor(selection),
+    repository: REPOSITORY,
     baseSHA:
       selection.posture === "merge" ? selection.selector.base_sha : undefined,
     changedPaths:
@@ -940,6 +1072,23 @@ test("selection rejects unknown and missing schema fields", () => {
   );
 });
 
+test("selection correlation is mandatory and bound to projected Git objects", () => {
+  const registry = registryFixture();
+  const missing = mergeSelection();
+  delete missing.correlation_nonce;
+  expectContractError(
+    () => validateSelection(missing, registry),
+    /selection\.correlation_nonce is required/,
+  );
+
+  const mismatched = mergeSelection();
+  mismatched.correlation_nonce = "8".repeat(64);
+  expectContractError(
+    () => validateSelection(mismatched, registry),
+    /merge selection\.correlation_nonce does not match its projected Git objects/,
+  );
+});
+
 test("selector failure and unknown paths fail closed to fallback_full", () => {
   const registry = registryFixture();
 
@@ -1169,44 +1318,49 @@ test("report rejects negative, noninteger, inconsistent, and dishonest evidence"
   }
 });
 
-test("trusted job-result schema rejects unknown, missing, invalid, and noninteger values", () => {
+test("trusted producer manifest rejects unknown, missing, duplicate, and invalid provenance", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
-  const valid = jobResultsFor(registry, selection);
-  assert.equal(validateJobResults(valid, registry), valid);
+  const valid = producerManifestFor(registry, selection);
+  assert.equal(validateProducerManifest(valid, registry), valid);
 
   const unknown = structuredClone(valid);
-  unknown[".github/workflows/ci.yml#ghost"] = {
-    conclusion: "success",
-    run_id: RUN.id,
-    run_attempt: RUN.attempt,
-  };
+  unknown.producers[0].workflow = ".github/workflows/ghost.yml";
   expectContractError(
-    () => validateJobResults(unknown, registry),
-    /does not name a registered owner job/,
+    () => validateProducerManifest(unknown, registry),
+    /workflow is not registered/,
   );
 
   const missing = structuredClone(valid);
-  delete missing[".github/workflows/ci.yml#check"].run_attempt;
+  delete missing.producers[0].run.attempt;
   expectContractError(
-    () => validateJobResults(missing, registry),
-    /run_attempt is required/,
+    () => validateProducerManifest(missing, registry),
+    /run\.attempt is required/,
   );
 
   for (const value of [-1, 1.5]) {
     const invalid = structuredClone(valid);
-    invalid[".github/workflows/ci.yml#check"].run_attempt = value;
+    invalid.producers[0].run.attempt = value;
     expectContractError(
-      () => validateJobResults(invalid, registry),
-      /run_attempt must be an integer >= 1/,
+      () => validateProducerManifest(invalid, registry),
+      /run\.attempt must be an integer >= 1/,
     );
   }
 
   const invalidConclusion = structuredClone(valid);
-  invalidConclusion[".github/workflows/ci.yml#check"].conclusion = "running";
+  invalidConclusion.producers[0].conclusion = "running";
   expectContractError(
-    () => validateJobResults(invalidConclusion, registry),
+    () => validateProducerManifest(invalidConclusion, registry),
     /conclusion must be one of/,
+  );
+
+  const superseded = structuredClone(valid);
+  superseded.producers.push(structuredClone(superseded.producers[0]));
+  superseded.producers[1].run.attempt += 1;
+  superseded.producers[1].conclusion = "failure";
+  expectContractError(
+    () => validateProducerManifest(superseded, registry),
+    /collector must choose exactly one newest run\/attempt/,
   );
 });
 
@@ -1219,7 +1373,7 @@ test("report set accepts total green evidence and legitimate impact omission", (
       registry,
       selection,
       reports: [report],
-      jobResults: jobResultsFor(registry, selection),
+      producerManifest: producerManifestFor(registry, selection),
     }),
     { expected: 1, received: 1 },
   );
@@ -1229,7 +1383,7 @@ test("report set rejects missing, unexpected, and duplicate reports", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
   const report = reportFor(registry, selection, "always");
-  const results = jobResultsFor(registry, selection);
+  const results = producerManifestFor(registry, selection);
 
   expectContractError(
     () =>
@@ -1237,7 +1391,7 @@ test("report set rejects missing, unexpected, and duplicate reports", () => {
         registry,
         selection,
         reports: [],
-        jobResults: results,
+        producerManifest: results,
       }),
     /missing report always\/default/,
   );
@@ -1249,7 +1403,7 @@ test("report set rejects missing, unexpected, and duplicate reports", () => {
         registry,
         selection,
         reports: [report, unexpected],
-        jobResults: results,
+        producerManifest: results,
       }),
     /unexpected report impact\/shard-a/,
   );
@@ -1260,7 +1414,7 @@ test("report set rejects missing, unexpected, and duplicate reports", () => {
         registry,
         selection,
         reports: [report, structuredClone(report)],
-        jobResults: results,
+        producerManifest: results,
       }),
     /duplicate report always\/default/,
   );
@@ -1269,7 +1423,7 @@ test("report set rejects missing, unexpected, and duplicate reports", () => {
 test("report set rejects hollow, skipped, and every non-success outcome", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
-  const results = jobResultsFor(registry, selection);
+  const results = producerManifestFor(registry, selection);
   const cases = [
     {
       mutate: (report) => {
@@ -1295,7 +1449,7 @@ test("report set rejects hollow, skipped, and every non-success outcome", () => 
           registry,
           selection,
           reports: [report],
-          jobResults: results,
+          producerManifest: results,
         }),
       pattern,
     );
@@ -1309,17 +1463,17 @@ test("report set rejects hollow, skipped, and every non-success outcome", () => 
           registry,
           selection,
           reports: [report],
-          jobResults: results,
+          producerManifest: results,
         }),
       new RegExp(`conclusion ${conclusion} is not success`),
     );
   }
 });
 
-test("report set binds report SHA, tree, run ID, and run attempt to selection", () => {
+test("report set binds source and selection_ref while allowing an independent producer run", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
-  const results = jobResultsFor(registry, selection);
+  const results = producerManifestFor(registry, selection);
   const cases = [
     {
       mutate: (report) => {
@@ -1335,15 +1489,21 @@ test("report set binds report SHA, tree, run ID, and run attempt to selection", 
     },
     {
       mutate: (report) => {
-        report.run.id = "999";
+        report.selection_ref.run.id = "999";
       },
-      pattern: /report run id does not match the selection/,
+      pattern: /selection_ref does not match the current selection/,
     },
     {
       mutate: (report) => {
-        report.run.attempt = 9;
+        report.selection_ref.run.attempt = 9;
       },
-      pattern: /report run attempt does not match the selection/,
+      pattern: /selection_ref does not match the current selection/,
+    },
+    {
+      mutate: (report) => {
+        report.selection_ref.manifest_sha256 = "9".repeat(64);
+      },
+      pattern: /selection_ref does not match the current selection/,
     },
   ];
   for (const { mutate, pattern } of cases) {
@@ -1355,11 +1515,162 @@ test("report set binds report SHA, tree, run ID, and run attempt to selection", 
           registry,
           selection,
           reports: [report],
-          jobResults: results,
+          producerManifest: results,
         }),
       pattern,
     );
   }
+
+  assert.notEqual(reportFor(registry, selection, "always").producer.run.id, selection.run.id);
+});
+
+test("pull-request API head identity is distinct from projected checkout identity", () => {
+  const registry = registryFixture();
+  const selection = mergeSelection();
+  const report = reportFor(registry, selection, "always");
+  const manifest = producerManifestFor(registry, selection);
+  assert.notEqual(
+    manifest.producers[0].event.event_head_sha,
+    manifest.producers[0].event.projected_sha,
+  );
+  assert.deepEqual(
+    validateReportSet({
+      registry,
+      selection,
+      reports: [report],
+      producerManifest: manifest,
+    }),
+    { expected: 1, received: 1 },
+  );
+
+  const wrongPR = producerManifestFor(registry, selection);
+  wrongPR.producers[0].event.pr_number += 1;
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: wrongPR,
+      }),
+    /trusted producer event identity does not match the qualification event/,
+  );
+
+  const wrongRepository = producerManifestFor(registry, selection);
+  wrongRepository.producers[0].repository = "example/other";
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: wrongRepository,
+      }),
+    /trusted producer repository does not match the qualification repository/,
+  );
+
+  const headAsCheckout = producerManifestFor(registry, selection);
+  headAsCheckout.producers[0].source.sha =
+    headAsCheckout.producers[0].event.event_head_sha;
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: headAsCheckout,
+      }),
+    /trusted producer projected SHA\/tree does not match the selection/,
+  );
+});
+
+test("merge-group API head must equal the projected checkout", () => {
+  const registry = registryFixture();
+  const selection = mergeSelection();
+  const manifest = producerManifestFor(registry, selection);
+  manifest.producers[0].event = {
+    kind: "merge_group",
+    pr_number: null,
+    event_head_sha: OTHER_SHA,
+    event_base_sha: BASE_SHA,
+    projected_sha: SOURCE_SHA,
+  };
+  expectContractError(
+    () => validateProducerManifest(manifest, registry),
+    /event_head_sha must equal projected_sha for merge_group/,
+  );
+});
+
+test("report set binds the exact selection manifest digest", () => {
+  const registry = registryFixture();
+  const selection = mergeSelection();
+  const expected = qualificationExpected(selection);
+  expected.selectionManifestSHA256 = "9".repeat(64);
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [reportFor(registry, selection, "always")],
+        producerManifest: producerManifestFor(registry, selection),
+        expected,
+      }),
+    /selection manifest SHA-256 does not match the trusted expected digest/,
+  );
+});
+
+test("report set binds artifact ID, attempt-qualified name, and SHA-256", () => {
+  const registry = registryFixture();
+  const selection = mergeSelection();
+  const report = reportFor(registry, selection, "always");
+
+  const missing = producerManifestFor(registry, selection);
+  missing.producers[0].artifacts = [];
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: missing,
+      }),
+    /artifacts must contain exactly one native bundle/,
+  );
+
+  const wrongDigest = producerManifestFor(registry, selection);
+  wrongDigest.producers[0].artifacts[0].sha256 = "9".repeat(64);
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: wrongDigest,
+      }),
+    /artifact name or SHA-256 does not match trusted API provenance/,
+  );
+
+  const priorAttempt = reportFor(registry, selection, "always");
+  priorAttempt.producer.artifact.name = nativeArtifactName(
+    priorAttempt.producer.workflow,
+    {
+      id: priorAttempt.producer.run.id,
+      attempt: priorAttempt.producer.run.attempt - 1,
+    },
+  );
+  expectContractError(
+    () => validateReport(priorAttempt, registry),
+    /producer\.artifact\.name must be ci-native-ci-801-3/,
+  );
+
+  const duplicate = producerManifestFor(registry, selection);
+  duplicate.producers[0].artifacts.push(
+    structuredClone(duplicate.producers[0].artifacts[0]),
+  );
+  expectContractError(
+    () => validateProducerManifest(duplicate, registry),
+    /artifacts must contain exactly one native bundle/,
+  );
 });
 
 test("report set rejects artifact digest mismatch", () => {
@@ -1376,96 +1687,130 @@ test("report set rejects artifact digest mismatch", () => {
         registry,
         selection,
         reports,
-        jobResults: jobResultsFor(registry, selection),
+        producerManifest: producerManifestFor(registry, selection),
       }),
     /release\/artifact: candidate digest does not match the selection/,
   );
 });
 
-test("a stale report plus matching stale trusted results cannot qualify a new selection run", () => {
-  // This is the critical negative control: before the run-binding checks, the
-  // report and context job could agree with each other while both belonged to
-  // an older workflow run than the selection.
+test("a stale report plus matching stale manifest cannot qualify a new selection", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
   const report = reportFor(registry, selection, "always");
-  report.run = { id: "999", attempt: 9 };
-  const results = jobResultsFor(registry, selection);
-  for (const result of Object.values(results)) {
-    result.run_id = "999";
-    result.run_attempt = 9;
-  }
+  report.selection_ref = {
+    run: { id: "999", attempt: 9 },
+    manifest_sha256: "9".repeat(64),
+  };
+  const manifest = producerManifestFor(registry, selection);
+  manifest.selection_ref = structuredClone(report.selection_ref);
   expectContractError(
     () =>
       validateReportSet({
         registry,
         selection,
         reports: [report],
-        jobResults: results,
+        producerManifest: manifest,
       }),
-    /report run id does not match the selection/,
-    /report run attempt does not match the selection/,
-    /trusted result for \.github\/workflows\/ci\.yml#check does not match the selection run/,
-    /trusted result for \.github\/workflows\/ci\.yml#lint does not match the selection run/,
+    /producer manifest selection_ref does not match the current selection/,
+    /selection_ref does not match the current selection/,
   );
 });
 
-test("every trusted owner job binds the selection run, not only the context job", () => {
+test("release evidence from another qualification nonce cannot be replayed", () => {
+  const registry = registryFixture();
+  const prior = releaseSelection();
+  const report = reportFor(registry, prior, "always");
+  const manifest = producerManifestFor(registry, prior);
+
+  const current = releaseSelection();
+  current.correlation_nonce = "7".repeat(64);
+  const currentRef = selectionRefFor(current);
+  report.selection_ref = structuredClone(currentRef);
+  manifest.selection_ref = structuredClone(currentRef);
+
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection: current,
+        reports: [report],
+        producerManifest: manifest,
+      }),
+    /producer manifest correlation_nonce does not match the current qualification/,
+    /correlation_nonce does not match the current qualification/,
+  );
+});
+
+test("report producer run must match API provenance, not the selection run", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
   const report = reportFor(registry, selection, "always");
-
   for (const [field, value] of [
-    ["run_id", "999"],
-    ["run_attempt", 9],
+    ["id", "999"],
+    ["attempt", 9],
   ]) {
-    const results = jobResultsFor(registry, selection);
-    results[".github/workflows/ci.yml#lint"][field] = value;
+    const manifest = producerManifestFor(registry, selection);
+    report.producer.run[field] = value;
+    report.producer.artifact.name = nativeArtifactName(
+      report.producer.workflow,
+      report.producer.run,
+    );
     expectContractError(
       () =>
         validateReportSet({
           registry,
           selection,
           reports: [report],
-          jobResults: results,
+          producerManifest: manifest,
         }),
-      /trusted result for \.github\/workflows\/ci\.yml#lint does not match the selection run/,
+      /producer run identity does not match the trusted workflow run/,
     );
   }
 });
 
-test("report set rejects missing and non-success trusted owner jobs", () => {
+test("report set rejects missing and non-success trusted context jobs", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
   const report = reportFor(registry, selection, "always");
 
-  const missing = jobResultsFor(registry, selection);
-  delete missing[".github/workflows/ci.yml#lint"];
+  const missing = producerManifestFor(registry, selection);
+  missing.producers[0].jobs = [];
   expectContractError(
     () =>
       validateReportSet({
         registry,
         selection,
         reports: [report],
-        jobResults: missing,
+        producerManifest: missing,
       }),
-    /trusted result for \.github\/workflows\/ci\.yml#lint is missing/,
+    /jobs must be a non-empty array/,
+  );
+
+  const wrongName = producerManifestFor(registry, selection);
+  wrongName.producers[0].jobs[0].name = "another-check";
+  expectContractError(
+    () =>
+      validateReportSet({
+        registry,
+        selection,
+        reports: [report],
+        producerManifest: wrongName,
+      }),
+    /trusted context check name another-check does not match always-context/,
   );
 
   for (const conclusion of NON_SUCCESS_CONCLUSIONS) {
-    const failed = jobResultsFor(registry, selection);
-    failed[".github/workflows/ci.yml#lint"].conclusion = conclusion;
+    const failed = producerManifestFor(registry, selection);
+    failed.producers[0].jobs[0].conclusion = conclusion;
     expectContractError(
       () =>
         validateReportSet({
           registry,
           selection,
           reports: [report],
-          jobResults: failed,
+          producerManifest: failed,
         }),
-      new RegExp(
-        `trusted result for \\.github/workflows/ci\\.yml#lint is ${conclusion}`,
-      ),
+      new RegExp(`trusted context job check is ${conclusion}`),
     );
   }
 });
@@ -1484,7 +1829,7 @@ test("release report set qualifies all release-required source and artifact lane
       registry,
       selection,
       reports,
-      jobResults: jobResultsFor(registry, selection),
+      producerManifest: producerManifestFor(registry, selection),
     }),
     { expected: 4, received: 4 },
   );
@@ -1506,12 +1851,21 @@ test("CI_EXPECT_RUN_ATTEMPT uses strict canonical integer parsing", () => {
 });
 
 test("reports-mode expectations wire strict run-attempt parsing into qualification", () => {
+  const selection = mergeSelection({ changedPaths: [] });
   const valid = qualificationExpectations({
     CI_LANE_POSTURE: "merge",
     CI_EXPECT_SHA: SOURCE_SHA,
     CI_EXPECT_TREE: SOURCE_TREE,
+    CI_EXPECT_CORRELATION_NONCE: selection.correlation_nonce,
     CI_EXPECT_RUN_ID: RUN.id,
     CI_EXPECT_RUN_ATTEMPT: String(RUN.attempt),
+    CI_EXPECT_SELECTION_SHA256: selectionManifestSHA256(selection),
+    CI_EXPECT_EVENT_KIND: "pull_request",
+    CI_EXPECT_PR_NUMBER: "17",
+    CI_EXPECT_EVENT_HEAD_SHA: OTHER_SHA,
+    CI_EXPECT_EVENT_BASE_SHA: BASE_SHA,
+    CI_EXPECT_PROJECTED_SHA: SOURCE_SHA,
+    CI_EXPECT_REPOSITORY: REPOSITORY,
     CI_EXPECT_BASE_SHA: BASE_SHA,
     CI_EXPECT_CHANGED_PATHS_JSON: "[]",
   });
@@ -1519,9 +1873,19 @@ test("reports-mode expectations wire strict run-attempt parsing into qualificati
     posture: "merge",
     sha: SOURCE_SHA,
     tree: SOURCE_TREE,
+    correlationNonce: selection.correlation_nonce,
     candidateDigest: undefined,
     runID: RUN.id,
     runAttempt: RUN.attempt,
+    selectionManifestSHA256: selectionManifestSHA256(selection),
+    eventIdentity: {
+      kind: "pull_request",
+      pr_number: 17,
+      event_head_sha: OTHER_SHA,
+      event_base_sha: BASE_SHA,
+      projected_sha: SOURCE_SHA,
+    },
+    repository: REPOSITORY,
     baseSHA: BASE_SHA,
     changedPaths: [],
   });
