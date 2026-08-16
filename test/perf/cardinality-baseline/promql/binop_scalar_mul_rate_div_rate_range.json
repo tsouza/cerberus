@@ -1,7 +1,7 @@
 {
   "fixture": "promql/binop_scalar_mul_rate_div_rate_range",
-  "fan_factor": 5.833333333333333,
-  "scan_rows": 6,
+  "fan_factor": 2.9166666666666665,
+  "scan_rows": 12,
   "peak_intermediate": 35,
   "has_cross_join": false,
   "has_array_join": true,
