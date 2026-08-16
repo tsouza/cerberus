@@ -77,7 +77,23 @@ func (s *stubQuerier) QueryStrings(_ context.Context, sql string, args ...any) (
 	return s.strings, nil
 }
 
-func newServer(q tempo.Querier, version string) *httptest.Server {
+// testServer owns a Tempo test server without owning http.DefaultTransport.
+// httptest.Server.Close calls http.DefaultTransport.CloseIdleConnections,
+// which lets one parallel test cancel another test's in-flight dial. Shutdown
+// closes only this server; the server's private client transport is closed
+// separately.
+type testServer struct {
+	*httptest.Server
+}
+
+func (s *testServer) Close() {
+	if err := s.Config.Shutdown(context.Background()); err != nil {
+		panic(fmt.Sprintf("shut down Tempo test server: %v", err))
+	}
+	s.Client().CloseIdleConnections()
+}
+
+func newServer(q tempo.Querier, version string) *testServer {
 	return newServerWithSchema(q, schema.DefaultOTelTraces(), version)
 }
 
@@ -85,11 +101,49 @@ func newServer(q tempo.Querier, version string) *httptest.Server {
 // schema other than the OTel default — e.g. one that points
 // ScopeAttributesColumn at a real column, which the upstream traces DDL
 // does not declare.
-func newServerWithSchema(q tempo.Querier, s schema.Traces, version string) *httptest.Server {
+func newServerWithSchema(q tempo.Querier, s schema.Traces, version string) *testServer {
 	h := tempo.New(q, s, version, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
-	return httptest.NewServer(mux)
+	return &testServer{Server: httptest.NewServer(mux)}
+}
+
+type closeTrackingTransport struct {
+	http.RoundTripper
+	closeCalls int
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closeCalls++
+}
+
+func TestServerCleanupDoesNotCloseSharedDefaultTransport(t *testing.T) {
+	// Deliberately not parallel: the test temporarily instruments the package-
+	// global transport to pin the isolation boundary every parallel test relies
+	// on. A raw httptest.Server.Close increments closeCalls here.
+	original := http.DefaultTransport
+	tracking := &closeTrackingTransport{RoundTripper: original}
+	http.DefaultTransport = tracking
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	srv := newServer(&stubQuerier{}, "v1.0.0-test")
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			srv.Close()
+		}
+	})
+	resp, err := http.Get(srv.URL + "/api/echo")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	srv.Close()
+	closed = true
+
+	if tracking.closeCalls != 0 {
+		t.Fatalf("Tempo test server cleanup closed http.DefaultTransport %d time(s), want 0", tracking.closeCalls)
+	}
 }
 
 func readBody(t *testing.T, resp *http.Response) string {
