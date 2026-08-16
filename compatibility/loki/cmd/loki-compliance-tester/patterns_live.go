@@ -68,7 +68,7 @@ func livePatternsAxes() []livePatternsAxis {
 }
 
 func readLivePatternsMetadata(path string, now time.Time) (livePatternsMetadata, error) {
-	payload, err := os.ReadFile(path)
+	payload, err := os.ReadFile(path) //nolint:gosec // operator-supplied handshake path; offline harness input
 	if err != nil {
 		return livePatternsMetadata{}, err
 	}
