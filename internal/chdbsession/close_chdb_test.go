@@ -1,12 +1,21 @@
 //go:build chdb
 
-package chdbsession
+package chdbsession_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/chdb-io/chdb-go/chdb"
+
+	"github.com/tsouza/cerberus/internal/chdbsession"
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	chdbsession.CloseForExit()
+	os.Exit(code)
+}
 
 // TestCloseForExitClosesTheCachedSessionOnce observes both promises through
 // chdb-go's public cache contract: the first call replaces the cached session,
@@ -23,7 +32,7 @@ func TestCloseForExitClosesTheCachedSessionOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open first session: %v", err)
 	}
-	CloseForExit()
+	chdbsession.CloseForExit()
 
 	second, err := chdb.NewSession()
 	if err != nil {
@@ -34,7 +43,7 @@ func TestCloseForExitClosesTheCachedSessionOnce(t *testing.T) {
 		t.Fatal("CloseForExit retained the cached session instead of closing it")
 	}
 
-	CloseForExit()
+	chdbsession.CloseForExit()
 	third, err := chdb.NewSession()
 	if err != nil {
 		t.Fatalf("read cached replacement session: %v", err)
