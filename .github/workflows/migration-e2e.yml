@@ -49,9 +49,10 @@ on:
         description: 'a single MIG id to drive, e.g. MIG-04'
         type: string
         required: false
-  # Called by release.yml to re-run this lane against the sealed, unpublished
-  # candidate. The source invocation and the candidate invocation are distinct
-  # required release proofs over the same source SHA/tree.
+  # Called by release.yml's `release-artifact-migration`, which re-runs this lane
+  # against the image goreleaser just built — the push-triggered run above proves
+  # the SOURCE TREE, this one proves the ARTIFACT. `inputs.*` reads identically
+  # for workflow_dispatch and workflow_call, so the job bodies are unchanged.
   #
   # This is still NOT a `pull_request:` trigger: the workflow remains ineligible
   # as a branch-protection check, and release.yml's preflight is what makes it
@@ -66,36 +67,28 @@ on:
         description: 'a single MIG id to drive, e.g. MIG-04'
         type: string
         required: false
-      candidate_artifact:
-        description: 'caller-run artifact containing the sealed unpublished candidate; empty = source tree'
-        type: string
-        default: ''
-      candidate_digest:
-        description: 'exact sha256 digest of the candidate manifest'
+      cerberus_image:
+        description: 'released image to drive instead of a locally built one; empty = build from this tree'
         type: string
         default: ''
       expect_version:
-        description: 'version the candidate binary and server must report'
-        type: string
-        default: ''
-      source_sha:
-        description: 'exact candidate source commit'
-        type: string
-        default: ''
-      source_tree:
-        description: 'exact candidate source tree'
+        description: 'version the running server must report; empty = no version assertion'
         type: string
         default: ''
 
 permissions:
   contents: read
+  # Pulling the released image from GHCR. A called workflow gets the
+  # INTERSECTION of the caller's grant and this block, so omitting it here would
+  # silently drop the caller's `packages: read`.
+  packages: read
 
 concurrency:
-  # Only replaceable source-tree push/schedule work on main shares a group.
-  # Candidate workflow calls, dispatches, and maintenance qualification use a
-  # unique run-id group and can neither queue behind nor cancel source work.
-  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+  # Main pushes and matching cron schedules replace only their own modes.
+  # Artifact calls, dispatches, and maintenance qualification use a unique
+  # run-id group and can neither queue behind nor cancel source work.
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
   # Enumerate the Gherkin features, hold them to the 26-story anchor, and
@@ -148,6 +141,18 @@ jobs:
   # Tier-0 offline slice: godog over committed fixtures, no Docker, no
   # reference backend. A fixed job like its two siblings — it drives one
   # tag filter on one runner, so there is nothing to fan out over.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-setup.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-setup.source
   migration-tier0:
     name: migration-tier0
     needs: migration-setup
@@ -177,16 +182,32 @@ jobs:
           name: migration-scenarios
           path: build
 
-      # Source mode compiles from the checkout. Candidate mode downloads the
-      # sealed caller-run artifact, verifies its complete digest roster, and
-      # loads its exact OCI digest into an ephemeral loopback registry.
-      - uses: ./.github/actions/resolve-migration-artifact
-        with:
-          candidate-artifact: ${{ inputs.candidate_artifact }}
-          candidate-digest: ${{ inputs.candidate_digest }}
-          expect-version: ${{ inputs.expect_version }}
-          source-sha: ${{ inputs.source_sha }}
-          source-tree: ${{ inputs.source_tree }}
+      # Unconditional, in every tier job, ahead of the resolver: the released
+      # image lives in GHCR, and a first-publish package is not necessarily
+      # public at the instant the artifact lane pulls it. No `if:` guard, so
+      # there is no condition whose falsification would let the release path
+      # silently fall back to a source build.
+      - name: Log in to GHCR
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      # WHICH cerberus this run tests. On a PR / dispatch / push run both inputs
+      # are empty and the resolver compiles the CLI from this tree; on
+      # release.yml's `release-artifact-migration` call it extracts the CLI out
+      # of the released image, so the binary the scenarios exec and the server
+      # the stack runs are the same bytes. Either way it probes `--version` and
+      # refuses a binary that is not the one this run claims to test, and
+      # exports CERBERUS_BIN / CERBERUS_IMAGE / CERBERUS_EXPECT_VERSION for
+      # every later step. Keeping it its own step also keeps a build failure
+      # separate from a scenario failure in the log.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: run the migration scenarios
         run: node .github/scripts/migration-e2e.mjs
@@ -211,10 +232,6 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-      - name: remove the candidate registry
-        if: always()
-        run: node .github/scripts/migration-artifact.mjs cleanup
-
   # Tier-1 dual-backend substrate + parity + Gherkin (Layer 14). Unlike
   # migration-tier0 it brings a compose stack up, seeds every @tier1 archetype
   # and tears it down around the suite. It drives the fixed `TIER=tier1` slice
@@ -223,6 +240,18 @@ jobs:
   # migration.yml workflow) so the dual-backend compose stack is brought up
   # and torn down exactly once per run instead of running two separate
   # Docker-backed lanes side by side.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier0.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier0.source
   migration-tier1:
     name: migration-tier1
     needs: migration-setup
@@ -267,6 +296,15 @@ jobs:
         with:
           tool: just
 
+      # See migration-tier0's identical block: unconditional so the artifact
+      # lane's GHCR pull can never silently degrade into a source build.
+      - name: Log in to GHCR
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
       # Anonymous Docker Hub pulls are rate-limited hard enough to fail a cold
       # runner mid-`compose up` from a shared runner IP, and this stack pulls
       # five upstream images; the other Docker-backed lanes log in first for
@@ -296,13 +334,17 @@ jobs:
           name: migration-scenarios
           path: build
 
-      - uses: ./.github/actions/resolve-migration-artifact
-        with:
-          candidate-artifact: ${{ inputs.candidate_artifact }}
-          candidate-digest: ${{ inputs.candidate_digest }}
-          expect-version: ${{ inputs.expect_version }}
-          source-sha: ${{ inputs.source_sha }}
-          source-tree: ${{ inputs.source_tree }}
+      # See migration-tier0's identical step. This tier used to acquire no CLI
+      # at all (lib.BuildCerberus compiled one in-process), which meant the
+      # release path had no seam to hand a released binary through and no place
+      # to fail early on a wrong one. It also puts CERBERUS_IMAGE into the env
+      # `just migration-cerberus-image` and the compose file read, so the stack
+      # below runs the image this run resolved.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: bring the Tier-1 stack up
         run: just migration-tier1-up
@@ -374,10 +416,6 @@ jobs:
         if: always()
         run: just migration-tier1-down
 
-      - name: remove the candidate registry
-        if: always()
-        run: node .github/scripts/migration-artifact.mjs cleanup
-
   # Tier-2 ruler substrate + the @tier2 Gherkin scenarios (Layer 14). Same
   # shape as migration-tier1, over the Tier-1 compose file PLUS
   # tiers/tier2-ruler's, merged into the one compose project
@@ -387,6 +425,18 @@ jobs:
   # section 8 builds firing parity on top of proven query parity, and every
   # @tier2 scenario reads the same cerberus/ClickHouse pair Tier 1 proves. A
   # green tier-2 over a red tier-1 would be a verdict about nothing.
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier1.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier1.source
   migration-tier2:
     name: migration-tier2
     needs: [migration-setup, migration-tier1]
@@ -425,6 +475,14 @@ jobs:
         with:
           tool: just
 
+      # See migration-tier0's identical block.
+      - name: Log in to GHCR
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
       # An unreachable Docker Hub no longer takes this job down with it: the
       # login exhausts its retries on a transport fault and downgrades the job
       # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
@@ -445,13 +503,14 @@ jobs:
           name: migration-scenarios
           path: build
 
-      - uses: ./.github/actions/resolve-migration-artifact
-        with:
-          candidate-artifact: ${{ inputs.candidate_artifact }}
-          candidate-digest: ${{ inputs.candidate_digest }}
-          expect-version: ${{ inputs.expect_version }}
-          source-sha: ${{ inputs.source_sha }}
-          source-tree: ${{ inputs.source_tree }}
+      # See migration-tier1's identical step — the Tier-2 stack is a superset of
+      # Tier-1's and runs the same `cerberus` service, so it resolves the same
+      # artifact.
+      - name: resolve the cerberus artifact under test
+        run: node .github/scripts/migration-artifact.mjs
+        env:
+          CERBERUS_IMAGE_INPUT: ${{ inputs.cerberus_image }}
+          CERBERUS_EXPECT_VERSION_INPUT: ${{ inputs.expect_version }}
 
       - name: bring the Tier-2 stack up
         run: just migration-tier2-up
@@ -511,10 +570,6 @@ jobs:
         if: always()
         run: just migration-tier2-down
 
-      - name: remove the candidate registry
-        if: always()
-        run: node .github/scripts/migration-artifact.mjs cleanup
-
   # Roll-up. `contains(needs.*.result, 'failure')` is the shape e2e.yml
   # documents as unsafe: a job rolls up to `cancelled`, not `failure`, when it
   # is cancelled, so a cancelled tier would pass the fold silently.
@@ -522,6 +577,18 @@ jobs:
   # — it holds every tier emit SELECTED to `success`, and separately refuses a
   # tier that ran without being selected — and this repo keeps that in a .mjs
   # so it is testable (see .github/scripts/README.md).
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image != '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier2.artifact
+
+      - name: emit native evidence for migration.e2e
+        if: ${{ inputs.cerberus_image == '' }}
+        uses: ./.github/actions/ci-native-part
+        with:
+          id: migration.e2e.migration-tier2.source
   migration-aggregate:
     name: migration-e2e
     needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
@@ -582,3 +649,13 @@ jobs:
           RESULT_TIER0: ${{ needs.migration-tier0.result }}
           RESULT_TIER1: ${{ needs.migration-tier1.result }}
           RESULT_TIER2: ${{ needs.migration-tier2.result }}
+
+  native-evidence:
+    name: native-evidence
+    if: always()
+    needs: [migration-aggregate, migration-setup, migration-tier0, migration-tier1, migration-tier2]
+    uses: ./.github/workflows/ci-native-evidence.yml
+    with:
+      workflow: .github/workflows/migration-e2e.yml
+      needs_json: ${{ toJSON(needs) }}
+      posture: ${{ github.event_name == 'workflow_call' && 'release' || (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'merge' || (github.ref == 'refs/heads/main' && 'main') || 'merge' }}
