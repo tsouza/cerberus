@@ -464,6 +464,9 @@ func selectExpHistogramSorted(sorted chplan.Expr, selection histogramWindowSampl
 // countValues is the whole-histogram Count series rather than any one bucket's
 // counts. Its per-series temporality selects the DELTA numerator when needed.
 func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) histogramWindowTimeFold {
+	if shape.windowFn == sumOverTimeWindowFn || shape.windowFn == avgOverTimeWindowFn {
+		return expHistogramValuedOverTimeFold(shape.windowFn)
+	}
 	var perSecond chplan.Expr
 	if shape.windowFn == rateWindowFn {
 		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}

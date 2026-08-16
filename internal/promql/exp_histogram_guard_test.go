@@ -54,7 +54,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		name  string
 		query string
 	}{
-		{name: "sum_over_time", query: `sum_over_time(latency_exp_hist[5m])`},
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 

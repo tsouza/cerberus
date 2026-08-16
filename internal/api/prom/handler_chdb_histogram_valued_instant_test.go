@@ -106,6 +106,16 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 		{float64(0), "1", "2", "14"},
 		{float64(0), "2", "4", "15"},
 	}
+	summedBuckets := [][4]any{
+		{float64(3), "0", "0", "2"},
+		{float64(0), "1", "2", "16"},
+		{float64(0), "2", "4", "18"},
+	}
+	averagedBuckets := [][4]any{
+		{float64(3), "0", "0", "1"},
+		{float64(0), "1", "2", "8"},
+		{float64(0), "2", "4", "9"},
+	}
 
 	cases := []struct {
 		name  string
@@ -159,6 +169,21 @@ func TestQuery_HistogramValued_ChDB(t *testing.T) {
 			query:      `label_replace(sum by (service) (latency_exp_hist), "service_copy", "$1-copy", "service", "(.*)")`,
 			wantMetric: map[string]string{"service": "api", "service_copy": "api-copy"},
 			want:       wireHistogram{Count: "30", Sum: "15", Buckets: latestBuckets},
+		},
+		{
+			// Over-time reducers add the two in-window histogram
+			// distributions component by component. They reduce along
+			// time, so the series labels survive and __name__ is dropped.
+			name:       "sum over time",
+			query:      "sum_over_time(latency_exp_hist[5m])",
+			wantMetric: map[string]string{"service": "api"},
+			want:       wireHistogram{Count: "36", Sum: "18", Buckets: summedBuckets},
+		},
+		{
+			name:       "avg over time",
+			query:      "avg_over_time(latency_exp_hist[5m])",
+			wantMetric: map[string]string{"service": "api"},
+			want:       wireHistogram{Count: "18", Sum: "9", Buckets: averagedBuckets},
 		},
 		{
 			// The hand-worked expectation from

@@ -216,6 +216,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
 		return plan, err
 	}
+	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
+		return lowerExpHistogramOverTime(shape, s, ctx)
+	}
 	if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
 	}
@@ -474,7 +477,7 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
 			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
-				"sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/resets()/changes() over one, "+
+				"sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, "+
 				"histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q "+
 				"companion selectors are supported",
 			metricName, metricName, metricName+"_count", metricName+"_sum",
