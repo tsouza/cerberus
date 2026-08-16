@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "1a",
+  "cases": [
+    "tag_values_v2 | tag_values_v2_intrinsic_scoped_by_query",
+    "tags_v1 | tags_v1_scoped_by_query"
+  ]
+}

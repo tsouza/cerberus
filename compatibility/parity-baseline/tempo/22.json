@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "22",
+  "cases": [
+    "search | avg_duration_per_trace_status_ok",
+    "search | set_and_checkout_and_status_error"
+  ]
+}

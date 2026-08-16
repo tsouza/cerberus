@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "13",
+  "cases": [
+    "1 != bool time()",
+    "count_over_time(demo_memory_usage_bytes[5m])",
+    "day_of_month({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})",
+    "delta(demo_cpu_usage_seconds_total[15s])",
+    "demo_memory_usage_bytes * (1 * 2 + 4 / 6 - 10)",
+    "histogram_quantile(0.5, sum by (k8s_namespace_name, le) (rate(demo_resource_latency_seconds_bucket[1m])))",
+    "histogram_quantile(0.9, sum(demo_memory_usage_bytes))",
+    "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "idelta(demo_cpu_usage_seconds_total[15m])",
+    "idelta(demo_shifting_latency_exp_hist[1m])",
+    "increase(demo_delta_requests_total[15s])",
+    "label_replace(demo_num_cpus, \"job\", \"\", \"dst\", \".*\")",
+    "max by(instance, type) (demo_memory_usage_bytes)",
+    "max_over_time(absent(demo_memory_usage_bytes)[5m:1m])",
+    "min_over_time(demo_memory_usage_bytes[15m])",
+    "quantile_over_time(0.99, demo_memory_usage_bytes[15s])",
+    "stddev without(instance, type) (demo_memory_usage_bytes)",
+    "sum without(instance, type) (demo_memory_usage_bytes)"
+  ]
+}

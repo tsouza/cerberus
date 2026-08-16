@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "2a",
+  "cases": [
+    "metrics_instant | metrics_rate_instant"
+  ]
+}

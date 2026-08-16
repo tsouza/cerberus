@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "30",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=streams",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum by (level) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Sum over time grouped by single label",
+    "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-5\", region=\"us-east-1\", service=\"prometheus\", service_name=\"prometheus\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" | Drilldown with error level filter"
+  ]
+}

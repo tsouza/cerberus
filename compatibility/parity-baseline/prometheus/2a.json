@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "2a",
+  "cases": [
+    "bottomk without() (2, demo_memory_usage_bytes)",
+    "days_in_month(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "delta(demo_cpu_usage_seconds_total[1m] offset 5m)",
+    "demo_intermittent_metric",
+    "demo_memory_usage_bytes <= 1.2345",
+    "increase(demo_cpu_usage_seconds_total[15s] offset 1m)",
+    "min by(nonexistent) (demo_memory_usage_bytes)",
+    "quantile_over_time(-0.5, demo_memory_usage_bytes[1m])",
+    "quantile_over_time(0.1, demo_memory_usage_bytes[15s])",
+    "quantile_over_time(0.99, demo_memory_usage_bytes[5m])",
+    "timestamp(demo_num_cpus)",
+    "topk(scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}) * 2, demo_memory_usage_bytes)",
+    "year(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))"
+  ]
+}

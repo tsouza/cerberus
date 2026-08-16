@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "18",
+  "cases": [
+    "regression/anchored-regex-matcher.yaml | log | range | BACKWARD | {service_name=\"auth-service\"} | service_name=~\"auth\" | label-filter regex matcher that is a strict prefix of an actual value matches nothing",
+    "regression/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | level=\"error\" | detected_level=\"error\" | Logfmt parsing with level filter"
+  ]
+}

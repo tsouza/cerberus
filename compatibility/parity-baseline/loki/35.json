@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "35",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | detected_field values parity: service=web-server field=msg",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=error",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum(avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} |= \"level\" | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Average over time with line filter and unwrap",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m]) | step=1m0s | Duration seconds conversion"
+  ]
+}

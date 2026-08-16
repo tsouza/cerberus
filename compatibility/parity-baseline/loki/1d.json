@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "1d",
+  "cases": [
+    "cerberus/patterns-live | patterns_samples | range | n/a | {service_name=\"cerberus-patterns-live\"} | step=10s | live /patterns sample tuple encoding",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-11\", region=\"us-east-1\", service=\"kubernetes\", service_name=\"kubernetes\"} | detected_field values parity: service=kubernetes field=detected_level",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m]) | step=1m0s | Avg duration without grouping",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | min by (level) (min_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Min duration with conversion",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | size != \"\" | unwrap size [5m]) | step=1m0s | Logfmt size unwrap",
+    "regression/anchored-regex-matcher.yaml | log | range | FORWARD | {service_name=~\"auth\"} | stream-selector regex matcher that is a strict prefix of an actual service_name matches nothing",
+    "regression/structured-metadata-generic.yaml | log | range | BACKWARD | {service_name=\"metadata-probe\"} | request_id=~\"req-.+\" | generic structured-metadata label filter - present folds the value into log-query stream identity"
+  ]
+}

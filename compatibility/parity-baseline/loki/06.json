@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "06",
+  "cases": [
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | max(avg by (level) (avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m]))) | step=1m0s | Nested aggregations"
+  ]
+}

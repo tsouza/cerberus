@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "22",
+  "cases": [
+    "avg by (instance) (demo_latency_exp_hist)",
+    "avg without(instance) (demo_memory_usage_bytes)",
+    "day_of_week(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
+    "demo_memory_usage_bytes / on(instance, job) group_left demo_num_cpus",
+    "demo_num_cpus * NaN",
+    "demo_num_cpus + (1 > bool 2)",
+    "histogram_stddev(demo_memory_usage_bytes)",
+    "idelta(demo_cpu_usage_seconds_total[5m] offset 5m)",
+    "increase(demo_cpu_usage_seconds_total[1m] offset 10m)",
+    "label_replace(rate(demo_cpu_usage_seconds_total[1m]), \"core\", \"$1\", \"mode\", \"(.*)\")",
+    "min_over_time(demo_memory_usage_bytes[5m] offset 5m)",
+    "month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
+    "rate(demo_cpu_usage_seconds_total[1m] offset 1m)",
+    "sum by(instance, type) (demo_memory_usage_bytes) % on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "time() - time()",
+    "time() > demo_memory_usage_bytes",
+    "year(demo_batch_last_success_timestamp_seconds offset 5m)"
+  ]
+}

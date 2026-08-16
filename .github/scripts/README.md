@@ -622,12 +622,12 @@ contract failure.
     "N-layer test map" / "tested in N layers" claims in `CLAUDE.md`,
     `docs/test-strategy.md`, and `README.md` match.
   - **compat parity by reference** — the per-head `<passed>/<total>` is
-    generated into `compatibility/parity-baseline.json`, and the two
+    reconstructed from `compatibility/parity-baseline/`, and the two
     hand-written descriptions of the parity gate (`compat-ratchet.mjs`'s
-    header and `docs/compatibility.md`) state it by pointing at that file
+    header and `docs/compatibility.md`) state it by pointing at that tree
     rather than copying it. The assertion is therefore an ABSENCE check:
     neither site may write a baseline integer down as its own standalone
-    number, and each must still name `compatibility/parity-baseline.json`.
+    number, and each must still name `compatibility/parity-baseline/`.
     The `.mjs` is scanned through its `//` comment prose only, so an exit
     code or an array index cannot read as a count. Copies had to go, not
     just be compared: the roster table drifted below the baseline across
@@ -1204,7 +1204,7 @@ contract failure.
   `compatibility/{prometheus,loki,tempo}` checks fail on a parity
   regression (not just on infra breakage). Compares the run's
   `compat-cases.json` roster against the committed roster in
-  `compatibility/parity-baseline.json` and fails on any case that moved:
+  `compatibility/parity-baseline/` and fails on any case that moved:
   REGRESSED (recorded case now diverges), VANISHED (recorded case did not
   run), ARRIVED-FAILING (new case diverges on arrival), UNRECORDED (new
   case passes but nothing gates on it yet). Gating on case identity rather
@@ -1216,7 +1216,7 @@ contract failure.
   - Env: `HEAD` (`prometheus`, `tempo`, or `loki`), `SCORE` (path to that
     head's `compat-score.json`), `CASES` (path to that head's
     `compat-cases.json`), `BASELINE` (optional; default
-    `compatibility/parity-baseline.json`).
+    `compatibility/parity-baseline/`).
   - Exit: `0` when the run matches the baseline roster exactly, `1` on any
     moved case or a missing/malformed/internally-inconsistent score,
     cases, or baseline file.
@@ -1226,15 +1226,17 @@ contract failure.
     aggregate count is satisfied and the gate must still fail.
 - **`compat-baseline-sync.mjs`** — not wired into a workflow; run by hand
   when a corpus change legitimately moves a head's roster. Rewrites
-  `heads.<head>` in `compatibility/parity-baseline.json` from a run's
-  `compat-cases.json` artefact, sorted and with counts derived from the
-  roster, so the committed list cannot drift from what the harness ran.
+  one head's deterministic buckets in `compatibility/parity-baseline/`
+  from a run's `compat-cases.json` artefact. The shared loader reconstructs
+  a globally sorted roster with counts derived from it, so the committed
+  list cannot drift from what the harness ran; every other head stays
+  byte-identical.
   Refuses to write a roster that omits a failing case — that would make it
   an allow-list generator.
   - Args: path to a `compat-cases.json` (its `head` field selects the
     entry to rewrite).
   - Env: `BASELINE` (optional; default
-    `compatibility/parity-baseline.json`).
+    `compatibility/parity-baseline/`).
   - Exit: `0` on a rewritten (or already-current) entry, `1` on bad
     arguments, unreadable/malformed input, or a run containing a failing
     case.

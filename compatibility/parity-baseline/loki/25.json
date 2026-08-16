@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "25",
+  "cases": [
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | sum by (level) (last_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | last_over_time: time-latest unwrapped value per window",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum by (level) (rate({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Rate with grouping by level",
+    "fast/basic-selectors.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} |= \"level\" | Label selector with line filter",
+    "regression/metric-queries.yaml | metric | range | FORWARD | sum by (level) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | unwrap bytes [5m])) | step=1m0s | Bytes grouped by level",
+    "regression/structured-metadata-generic.yaml | log | range | FORWARD | {request_id=\"req-00000000\"} | stream selector referencing a structured-metadata-only key matches nothing on both backends"
+  ]
+}

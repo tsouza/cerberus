@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "23",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) <= demo_memory_usage_bytes",
+    "-avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m])",
+    "absent_over_time(demo_memory_usage_bytes[15m])",
+    "changes(demo_batch_last_success_timestamp_seconds[15m])",
+    "changes(demo_gauge_with_nan_run[15s])",
+    "changes(demo_gauge_with_nan_run[5m])",
+    "clamp(demo_memory_usage_bytes, 1000000000000, 0)",
+    "count_over_time(demo_memory_usage_bytes[5m] offset 1m)",
+    "day_of_week(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
+    "demo_memory_usage_bytes - time()",
+    "demo_memory_usage_bytes < on(instance, job, type) demo_memory_usage_bytes",
+    "max_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "quantile_over_time(0.5, demo_memory_usage_bytes[1m])",
+    "stdvar_over_time(demo_memory_usage_bytes[1m])",
+    "sum by(instance, type) (demo_memory_usage_bytes) > on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "time() <= bool time()",
+    "year(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))"
+  ]
+}

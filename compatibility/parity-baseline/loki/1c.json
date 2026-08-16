@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "1c",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=msg",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=operation",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | max without () (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Max sum without grouping modifier",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum(sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Sum over time with top-level aggregation"
+  ]
+}

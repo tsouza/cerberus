@@ -22,7 +22,7 @@ import (
 //
 // The file is written next to compat-score.json as compat-cases.json
 // and is the input to `heads.<head>.cases` in
-// compatibility/parity-baseline.json.
+// compatibility/parity-baseline/.
 
 // caseIDOccurrenceSuffix disambiguates two cases that reduce to the same
 // base ID (a corpus can legitimately carry the same query twice). The

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "1f",
+  "cases": [
+    "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]) * 2",
+    "days_in_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "demo_memory_usage_bytes > 1.2345",
+    "histogram_quantile(-0.5, rate(demo_shifting_latency_exp_hist[1m]))",
+    "histogram_quantile(1, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "histogram_sum(demo_latency_exp_hist)",
+    "stddev without() (demo_memory_usage_bytes)",
+    "stddev_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "stdvar without(nonexistent) (demo_memory_usage_bytes)",
+    "sum without(nonexistent) (demo_memory_usage_bytes)",
+    "time() ^ demo_memory_usage_bytes",
+    "{type=\"free\", instance!=\"demo.promlabs.com:10000\"}"
+  ]
+}

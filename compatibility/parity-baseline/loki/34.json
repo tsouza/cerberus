@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "34",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | detected_field values parity: service=cache field=ts",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_field values parity: service=tempo field=msg"
+  ]
+}

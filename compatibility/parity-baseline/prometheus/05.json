@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "05",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) < demo_memory_usage_bytes",
+    "-avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m])",
+    "2 * {__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}",
+    "clamp(demo_memory_usage_bytes, 1000000000000, 1000000000000)",
+    "demo_memory_usage_bytes > bool on(instance, job, type) demo_memory_usage_bytes",
+    "demo_num_cpus == bool on(instance) demo_num_cpus",
+    "max_over_time(demo_memory_usage_bytes[15s])",
+    "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))",
+    "resets(demo_cpu_usage_seconds_total[1m])",
+    "time() != bool 1",
+    "time() == bool 1"
+  ]
+}

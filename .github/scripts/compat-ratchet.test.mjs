@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -23,10 +23,15 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { baselineRoster, runRoster, verdicts } from './compat-ratchet.mjs';
+import {
+  SUPPORTED_HEADS,
+  loadParityBaseline,
+  materializeParityBaseline,
+} from './lib/compat-baseline.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./compat-ratchet.mjs', import.meta.url));
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
-const REAL_BASELINE = path.join(REPO, 'compatibility', 'parity-baseline.json');
+const REAL_BASELINE = path.join(REPO, 'compatibility', 'parity-baseline');
 
 const HEAD = 'prometheus';
 
@@ -37,15 +42,23 @@ function passingRoster(ids) {
   return { passed: cases.length, total: cases.length, cases };
 }
 
+function completeBaseline(partial) {
+  const heads = {};
+  for (const head of SUPPORTED_HEADS) {
+    heads[head] = partial?.heads?.[head] ?? passingRoster([`${head} | fixture seed`]);
+  }
+  return { heads };
+}
+
 // runRatchet writes a baseline / score / cases triple to a temp dir and
 // runs the real script against them.
 function runRatchet({ baseline, cases, score, head = HEAD }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'compat-ratchet-'));
   try {
-    const baselinePath = path.join(dir, 'parity-baseline.json');
+    const baselinePath = path.join(dir, 'parity-baseline');
     const casesPath = path.join(dir, 'compat-cases.json');
     const scorePath = path.join(dir, 'compat-score.json');
-    writeFileSync(baselinePath, JSON.stringify(baseline, null, 2));
+    materializeParityBaseline(baselinePath, completeBaseline(baseline));
     writeFileSync(casesPath, JSON.stringify({ head, cases }, null, 2));
     const derived = score ?? {
       passed: cases.filter((c) => c.passed).length,
@@ -175,10 +188,10 @@ test('a cases file from another head fails the gate', () => {
   const baseline = { heads: { [HEAD]: passingRoster(['a']) } };
   const dir = mkdtempSync(path.join(tmpdir(), 'compat-ratchet-head-'));
   try {
-    const baselinePath = path.join(dir, 'parity-baseline.json');
+    const baselinePath = path.join(dir, 'parity-baseline');
     const casesPath = path.join(dir, 'compat-cases.json');
     const scorePath = path.join(dir, 'compat-score.json');
-    writeFileSync(baselinePath, JSON.stringify(baseline));
+    materializeParityBaseline(baselinePath, completeBaseline(baseline));
     writeFileSync(casesPath, JSON.stringify({ head: 'loki', cases: [{ id: 'a', passed: true }] }));
     writeFileSync(scorePath, JSON.stringify({ passed: 1, total: 1 }));
     const res = spawnSync(process.execPath, [SCRIPT], {
@@ -195,9 +208,12 @@ test('a cases file from another head fails the gate', () => {
 test('a missing cases file fails the gate rather than passing on absent data', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'compat-ratchet-missing-'));
   try {
-    const baselinePath = path.join(dir, 'parity-baseline.json');
+    const baselinePath = path.join(dir, 'parity-baseline');
     const scorePath = path.join(dir, 'compat-score.json');
-    writeFileSync(baselinePath, JSON.stringify({ heads: { [HEAD]: passingRoster(['a']) } }));
+    materializeParityBaseline(
+      baselinePath,
+      completeBaseline({ heads: { [HEAD]: passingRoster(['a']) } }),
+    );
     writeFileSync(scorePath, JSON.stringify({ passed: 1, total: 1 }));
     const res = spawnSync(process.execPath, [SCRIPT], {
       encoding: 'utf8',
@@ -261,7 +277,7 @@ test('verdicts partitions every movement into exactly one bucket', () => {
 });
 
 test('the committed baseline is a roster the ratchet can gate on', () => {
-  const baseline = JSON.parse(readFileSync(REAL_BASELINE, 'utf8'));
+  const baseline = loadParityBaseline(REAL_BASELINE);
   const heads = Object.keys(baseline.heads ?? {});
   assert.deepEqual(heads.sort(), ['loki', 'prometheus', 'tempo', 'tempo-grpc']);
   for (const head of heads) {

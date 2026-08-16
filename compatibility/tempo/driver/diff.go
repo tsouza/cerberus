@@ -196,7 +196,7 @@ func computeScore(results []CaseResult) (passed, total int) {
 }
 
 // headName is the harness identifier the ratchet keys its baseline
-// entry on; it must match compatibility/parity-baseline.json's
+// entry on; it must match compatibility/parity-baseline/'s reconstructed
 // heads.<name> and the workflow's HEAD env var.
 const headName = "tempo"
 

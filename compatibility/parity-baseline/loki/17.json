@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "17",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=ts",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=bytes",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | detected_field values parity: service=tempo field=detected_level",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_field values parity: service=grafana field=ts",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum by (cluster, namespace) (count_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"}[5m])) | step=1m0s | Count aggregated by cluster and namespace"
+  ]
+}

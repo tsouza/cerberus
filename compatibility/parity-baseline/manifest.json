@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "hash": "sha256-first-32-bits-modulo-v1",
+  "bucket_count": 64,
+  "heads": [
+    "prometheus",
+    "loki",
+    "tempo",
+    "tempo-grpc"
+  ],
+  "_comment": "Parity-regression ratchet baseline. Required compatibility checks reconstruct each head through .github/scripts/lib/compat-baseline.mjs and fail on any recorded case that diverges or vanishes, and on any new case that diverges or is not yet recorded. See .github/scripts/compat-ratchet.mjs and docs/compatibility.md.",
+  "_contract": "Every case in every deterministic bucket agreed with its reference backend. The loader derives passed == total == cases.length and reconstructs one globally sorted roster per head; there is no shape for recording an acceptable divergence. Sync a changed head from that run's compat-cases.json artifact in the same PR rather than hand-editing buckets."
+}

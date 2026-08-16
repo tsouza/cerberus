@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "36",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=detected_level",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=msg",
+    "regression/drilldown-patterns.yaml | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"} | json | logfmt | drop __error__, __error_details__ | level=\"error\" or level=\"warn\" | Drilldown with error or warn level filter"
+  ]
+}

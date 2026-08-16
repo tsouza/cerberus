@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "2c",
+  "cases": [
+    "search | count_spans_per_trace_status_error_root_identity"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "11",
+  "cases": [
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_fields parity: service=kafka",
+    "fast/simple-metrics.yaml | metric | range | FORWARD | sum(count_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} |= \"level\" [5m])) | step=1m0s | Count with line filter",
+    "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_level=\"error\" | Structured metadata error level filter",
+    "regression/unpack.yaml | metric | range | FORWARD | sum by (category) (count_over_time({service_name=\"packed-source\"} | unpack | __error__=\"\" [24h])) | step=1h0m0s | metric query grouped by an unpack-extracted label"
+  ]
+}

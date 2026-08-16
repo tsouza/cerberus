@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "38",
+  "cases": [
+    "search | resource_deployment_env_not_nil",
+    "search | scoped_span_status_error"
+  ]
+}

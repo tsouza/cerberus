@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "20",
+  "cases": [
+    "clamp_max(demo_memory_usage_bytes, scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}))",
+    "clamp_min(demo_memory_usage_bytes, scalar(demo_num_cpus{instance=\"demo.promlabs.com:10000\"}))",
+    "demo_memory_usage_bytes >= on(instance, job, type) demo_memory_usage_bytes",
+    "demo_num_cpus * -Inf",
+    "deriv(demo_disk_usage_bytes[1m])",
+    "histogram_quantile(0.1, demo_latency_exp_hist)",
+    "log2(-demo_memory_usage_bytes)",
+    "max_over_time(histogram_avg(demo_latency_exp_hist)[5m:1m])",
+    "min(demo_memory_usage_bytes)",
+    "month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
+    "quantile_over_time(0.75, demo_memory_usage_bytes[15m])",
+    "quantile_over_time(0.75, demo_memory_usage_bytes[1s])",
+    "quantile_over_time(0.90, demo_memory_usage_bytes[15s])",
+    "rate(demo_cpu_usage_seconds_total[15m] offset 1m)",
+    "rate(demo_cpu_usage_seconds_total[15m])",
+    "resets(demo_shifting_latency_exp_hist[5m])",
+    "sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left demo_memory_usage_bytes"
+  ]
+}

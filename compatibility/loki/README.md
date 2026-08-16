@@ -225,7 +225,7 @@ rejections both backends have always agreed on — case selection avoids
 any request shape tied to an open rejection-parity issue (a label or
 matcher case upstream accepts and cerberus currently rejects, or vice
 versa); those belong to their own issue once fixed, not to this list,
-because the committed `compatibility/parity-baseline.json` roster
+because the committed `compatibility/parity-baseline/` roster
 requires full parity from every entry it carries.
 
 ## Upstream-skip baseline

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "0b",
+  "cases": [
+    "metrics_range | metrics_histogram_over_time_duration"
+  ]
+}

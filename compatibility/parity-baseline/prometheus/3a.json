@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "3a",
+  "cases": [
+    "demo_memory_usage_bytes % time()",
+    "demo_memory_usage_bytes - 1.2345",
+    "demo_memory_usage_bytes > time()",
+    "increase(demo_cpu_usage_seconds_total[5m] offset 10m)",
+    "increase(demo_delta_requests_total[5m])",
+    "rate(demo_cpu_usage_seconds_total[1m] offset 5m)",
+    "stdvar by(instance) (demo_memory_usage_bytes)",
+    "sum by(instance, type) (demo_memory_usage_bytes) * on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "sum(demo_latency_exp_hist)",
+    "sum_over_time(demo_memory_usage_bytes[1h])",
+    "sum_over_time(demo_memory_usage_bytes[5m] offset 5m)",
+    "time() == demo_memory_usage_bytes",
+    "topk(10, sum by(instance) (rate(demo_cpu_usage_seconds_total[1m]) + rate(demo_http_requests_total[1m])))"
+  ]
+}

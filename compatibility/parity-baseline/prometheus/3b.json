@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "3b",
+  "cases": [
+    "clamp_max(demo_memory_usage_bytes, 2)",
+    "count by(instance) (demo_memory_usage_bytes)",
+    "histogram_quantile(0.1, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "max_over_time(hour(demo_memory_usage_bytes)[5m:1m])",
+    "stdvar_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "sum by(instance, type) (demo_memory_usage_bytes) != on(instance, type) group_left(job) demo_memory_usage_bytes",
+    "sum_over_time(demo_memory_usage_bytes[5m])"
+  ]
+}

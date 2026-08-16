@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "31",
+  "cases": [
+    "absent(sum(demo_memory_usage_bytes))",
+    "changes(demo_batch_last_success_timestamp_seconds[5m])",
+    "clamp(demo_memory_usage_bytes, 0, 1)",
+    "demo_memory_usage_bytes unless demo_sparse_memory_bytes",
+    "demo_num_cpus * on(instance) demo_num_cpus",
+    "deriv(demo_disk_usage_bytes[1s])",
+    "histogram_quantile(0.9, demo_api_request_duration_seconds)",
+    "max(demo_latency_exp_hist)",
+    "min without(instance) (demo_memory_usage_bytes)",
+    "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "month(demo_batch_last_success_timestamp_seconds offset 5m)",
+    "predict_linear(demo_disk_usage_bytes[15s], 600)",
+    "quantile_over_time(0.95, demo_memory_usage_bytes[15m])",
+    "quantile_over_time(1, demo_memory_usage_bytes[1m])",
+    "sqrt(demo_memory_usage_bytes)",
+    "sum by(nonexistent) (demo_memory_usage_bytes)"
+  ]
+}

@@ -1,5 +1,5 @@
-// compat-baseline-sync.mjs — rewrite one head's entry in
-// compatibility/parity-baseline.json from a run's compat-cases.json.
+// compat-baseline-sync.mjs — rewrite one head's deterministic buckets in
+// compatibility/parity-baseline/ from a run's compat-cases.json.
 //
 // The ratchet (compat-ratchet.mjs) gates on the exact, sorted roster of
 // case IDs, so moving the baseline by hand means transcribing hundreds
@@ -18,24 +18,29 @@
 //   node .github/scripts/compat-baseline-sync.mjs <compat-cases.json>
 //
 // Env contract:
-//   BASELINE  path to the baseline JSON to rewrite in place
-//             (default: compatibility/parity-baseline.json).
+//   BASELINE  path to the baseline shard directory to update
+//             (default: compatibility/parity-baseline/).
 //
 // Exit codes:
 //   0  the baseline entry now matches the run's roster (or already did).
 //   1  bad arguments, unreadable/malformed input, or the run contains a
 //      failing case.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { error, log } from './lib/gh.mjs';
+import {
+  DEFAULT_BASELINE,
+  SUPPORTED_HEADS,
+  syncParityBaselineHead,
+} from './lib/compat-baseline.mjs';
 import { runRoster } from './compat-ratchet.mjs';
 
-const DEFAULT_BASELINE = 'compatibility/parity-baseline.json';
+class SyncFailure extends Error {}
 
 function fail(message) {
   error(message, { title: 'compat baseline sync' });
-  process.exit(1);
+  throw new SyncFailure();
 }
 
 function main() {
@@ -55,6 +60,9 @@ function main() {
   if (typeof head !== 'string' || head.trim() === '') {
     fail(`${casesPath} has no 'head' field — cannot tell which baseline entry to rewrite`);
   }
+  if (!SUPPORTED_HEADS.includes(head)) {
+    fail(`${casesPath} names unknown parity head ${JSON.stringify(head)}`);
+  }
   const { cases, err } = runRoster(casesDoc, head);
   if (err) {
     fail(`bad ${casesPath}: ${err}`);
@@ -69,24 +77,26 @@ function main() {
     );
   }
 
-  let baseline;
-  try {
-    baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
-  } catch (e) {
-    fail(`could not read ${baselinePath}: ${e.message}`);
-  }
-  if (!baseline?.heads?.[head]) {
-    fail(`${baselinePath} has no heads.${head} entry to rewrite`);
-  }
-
   const ids = [...cases.keys()].sort();
-  baseline.heads[head] = { passed: ids.length, total: ids.length, cases: ids };
-  writeFileSync(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`);
+  let result;
+  try {
+    result = syncParityBaselineHead(baselinePath, head, ids);
+  } catch (e) {
+    fail(`could not sync ${baselinePath}: ${e.message}`);
+  }
 
-  log(`compat-baseline-sync: heads.${head} <- ${ids.length} passing case(s) from ${casesPath}`);
-  process.exit(0);
+  log(
+    `compat-baseline-sync: heads.${head} <- ${ids.length} passing case(s) from ${casesPath}; ` +
+      `${result.changed.length} bucket(s) rewritten, ${result.removed.length} stale file(s) pruned`,
+  );
+  process.exitCode = 0;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  try {
+    main();
+  } catch (e) {
+    if (e instanceof SyncFailure) process.exitCode = 1;
+    else throw e;
+  }
 }

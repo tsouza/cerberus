@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "17",
+  "cases": [
+    "search | spansets_select_nested_set"
+  ]
+}

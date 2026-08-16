@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "35",
+  "cases": [
+    "search | resource_service_name_regex_shipping",
+    "tag_values_v2 | tag_values_v2_span_attr_scoped_by_query"
+  ]
+}

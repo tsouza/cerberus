@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "21",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-1\", region=\"us-east-1\", service=\"database\", service_name=\"database\"} | detected_field values parity: service=database field=duration_ms",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-7\", region=\"us-east-1\", service=\"mimir\", service_name=\"mimir\"} | detected_field values parity: service=mimir field=detected_level",
+    "fast/structured-metadata.yaml | log | range | BACKWARD | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-1\", pod=\"pod-2\", region=\"us-east-1\", service=\"cache\", service_name=\"cache\"} | json | detected_level=\"error\" | JSON parsing with structured metadata filter"
+  ]
+}

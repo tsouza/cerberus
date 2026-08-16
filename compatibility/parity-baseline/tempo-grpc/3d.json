@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "3d",
+  "cases": [
+    "metrics_range | metrics_quantile_over_time_p95",
+    "search | set_or_two_services",
+    "tag_values_v2 | tag_values_v2_service_name",
+    "tags_v2 | tags_v2_span_scoped_by_query"
+  ]
+}

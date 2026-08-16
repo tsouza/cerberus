@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "0e",
+  "cases": [
+    "tags_v2 | tags_v2_event"
+  ]
+}

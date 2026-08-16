@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "39",
+  "cases": [
+    "search | scoped_span_kind_server",
+    "search | set_or_two_kinds"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "33",
+  "cases": [
+    "0.12345 == demo_memory_usage_bytes",
+    "2 * avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s])",
+    "absent(demo_memory_usage_bytes)",
+    "absent_over_time(demo_memory_usage_bytes[5m] offset -5m)",
+    "avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]) * 2",
+    "day_of_week({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"})",
+    "days_in_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))",
+    "demo_memory_usage_bytes != time()",
+    "demo_memory_usage_bytes / on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes < time()",
+    "demo_memory_usage_bytes >= time()",
+    "deriv(demo_disk_usage_bytes[15s])",
+    "histogram_quantile(0.1, sum(rate(demo_shifting_latency_exp_hist[1m])))",
+    "histogram_sum(demo_memory_usage_bytes)",
+    "idelta(demo_cpu_usage_seconds_total[5m] offset 1m)",
+    "last_over_time(last_over_time(demo_memory_usage_bytes[5m])[10m:1m])",
+    "quantile(1.5, demo_memory_usage_bytes)",
+    "quantile_over_time(1.5, demo_memory_usage_bytes[1s])",
+    "stdvar without(instance, type) (demo_memory_usage_bytes)"
+  ]
+}

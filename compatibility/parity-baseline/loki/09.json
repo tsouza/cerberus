@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "09",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-10\", region=\"us-east-1\", service=\"nginx\", service_name=\"nginx\"} | detected_field values parity: service=nginx field=detected_level",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-2\", pod=\"pod-4\", region=\"us-east-1\", service=\"kafka\", service_name=\"kafka\"} | detected_field values parity: service=kafka field=ts",
+    "detected-fields | detected_fields | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_fields parity: service=loki",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | avg by (level) (avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Avg duration by level",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | avg by (level) (avg_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Average duration with conversion"
+  ]
+}

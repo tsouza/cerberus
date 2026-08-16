@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "09",
+  "cases": [
+    "search | resource_deployment_env_eq_compat_test"
+  ]
+}

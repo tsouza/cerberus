@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "25",
+  "cases": [
+    "0.12345 >= demo_memory_usage_bytes",
+    "1.2345 == bool demo_memory_usage_bytes",
+    "absent_over_time(demo_memory_usage_bytes[1m])",
+    "count_over_time(demo_memory_usage_bytes[5m] offset 5m)",
+    "day_of_month(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "histogram_quantile(0.75, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "max_over_time(demo_memory_usage_bytes[5m] offset 10m)",
+    "quantile_over_time(0.99, demo_memory_usage_bytes[1h])"
+  ]
+}

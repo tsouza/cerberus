@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "1e",
+  "cases": [
+    "search | const_boolean_true_matches_all",
+    "search | duration_gt_100ms",
+    "search | scoped_event_name_no_events",
+    "search | span_http_method_eq_get"
+  ]
+}

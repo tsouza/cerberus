@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "14",
+  "cases": [
+    "search | direct_child_op_client_under_checkout",
+    "tag_values_v2 | tag_values_v2_malformed_query_unfiltered"
+  ]
+}

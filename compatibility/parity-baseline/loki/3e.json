@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "3e",
+  "cases": [
+    "cerberus/wrong-rejection-burndown | metric | range | FORWARD | sort_desc(sum by (detected_level) (count_over_time({cluster=\"cluster-0\", container=\"container-0\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-0\", pod=\"pod-0\", region=\"us-east-1\", service=\"web-server\", service_name=\"web-server\"}[5m]))) | step=1m0s | sort_desc: sample set unchanged",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | min_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m]) | step=1m0s | Min over time - no grouping",
+    "exhaustive/unwrap-aggregations.yaml | metric | range | FORWARD | sum by (level, namespace) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-8\", region=\"us-east-1\", service=\"tempo\", service_name=\"tempo\"} | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Sum over time grouped by multiple labels",
+    "regression/unpack.yaml | log | range | BACKWARD | {service_name=\"packed-source\"} | unpack | __error__=\"JSONParserErr\" | unpack error path - only lines unpack rejected"
+  ]
+}

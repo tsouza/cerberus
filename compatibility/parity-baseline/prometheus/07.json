@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "07",
+  "cases": [
+    "Inf",
+    "days_in_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "delta(demo_cpu_usage_seconds_total[5m] offset 5m)",
+    "demo_memory_usage_bytes <= (1 * 2 + 4 / 6 - 10)",
+    "deriv(demo_disk_usage_bytes[1h])",
+    "increase(demo_cpu_usage_seconds_total[15s])",
+    "increase(demo_cpu_usage_seconds_total[1s])",
+    "label_join(demo_num_cpus, \"job\", \"-\", \"instance\")",
+    "max_over_time(sum(demo_memory_usage_bytes + demo_memory_usage_bytes)[5m:1m])",
+    "min(nonexistent_metric_name)",
+    "quantile(-0.5, demo_memory_usage_bytes)",
+    "quantile(0.99, demo_memory_usage_bytes)",
+    "quantile_over_time(1.5, demo_memory_usage_bytes[5m])",
+    "stddev(demo_memory_usage_bytes)",
+    "sum(nonexistent_metric_name)",
+    "time() != demo_memory_usage_bytes"
+  ]
+}

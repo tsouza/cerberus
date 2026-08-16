@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "35",
+  "cases": [
+    "changes(demo_shifting_latency_exp_hist[1m])",
+    "day_of_week(demo_batch_last_success_timestamp_seconds offset 1m)",
+    "delta(demo_cpu_usage_seconds_total[5m] offset -1m)",
+    "demo_memory_usage_bytes * on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes > (1 * 2 + 4 / 6 - 10)",
+    "demo_memory_usage_bytes{instance=~\"host\"}",
+    "demo_num_cpus * Inf",
+    "increase(demo_cpu_usage_seconds_total[1m] offset 1m)",
+    "increase(demo_delta_requests_total[1m])",
+    "label_replace(demo_num_cpus, \"instance\", \"merged\", \"instance\", \".*\")",
+    "last_over_time(demo_memory_usage_bytes[1s])",
+    "min without(nonexistent) (demo_memory_usage_bytes)",
+    "quantile(0.75, demo_memory_usage_bytes)",
+    "rate(demo_cpu_usage_seconds_total[1s])",
+    "sum(demo_memory_usage_bytes)",
+    "ts_of_first_over_time(demo_memory_usage_bytes[10m:1m])"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "30",
+  "cases": [
+    "(1 * 2 + 4 / 6 - (10%7)^2) % demo_memory_usage_bytes",
+    "1 * time()",
+    "bottomk(scalar(vector(2)) + 1, demo_memory_usage_bytes)",
+    "demo_memory_usage_bytes != on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes + ignoring(job) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes / ignoring(job) demo_memory_usage_bytes",
+    "label_join(demo_num_cpus, \"new_label\", \"-\", \"instance\", \"job\")",
+    "log10(demo_memory_usage_bytes)",
+    "max by() (demo_memory_usage_bytes)",
+    "max_over_time(demo_memory_usage_bytes[1s])",
+    "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "quantile_over_time(0.90, demo_memory_usage_bytes[1h])",
+    "quantile_over_time(1.5, demo_memory_usage_bytes[1h])",
+    "rate(demo_cpu_usage_seconds_total[1h] offset 1m)",
+    "rate(demo_cpu_usage_seconds_total[1s] offset 5m)",
+    "rate(demo_cpu_usage_seconds_total[5m] offset -5m)",
+    "resets(demo_shifting_latency_exp_hist[1m])",
+    "stddev(demo_latency_exp_hist)",
+    "stdvar_over_time(demo_memory_usage_bytes[15m])",
+    "ts_of_max_over_time(demo_memory_usage_bytes[10m:1m])"
+  ]
+}

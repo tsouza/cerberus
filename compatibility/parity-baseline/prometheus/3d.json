@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "3d",
+  "cases": [
+    "count(demo_memory_usage_bytes)",
+    "count_over_time(rate(demo_cpu_usage_seconds_total[1m])[5m:30s] offset 2m)",
+    "day_of_week(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1s]))",
+    "days_in_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15s]))",
+    "delta(demo_cpu_usage_seconds_total[1s] offset 1m)",
+    "demo_num_cpus + (1 == bool 2)",
+    "exp(-demo_memory_usage_bytes)",
+    "histogram_quantile(1.5, rate(demo_api_request_duration_seconds_bucket[1m]))",
+    "min_over_time(demo_memory_usage_bytes[5m] offset -1m)",
+    "predict_linear(demo_disk_usage_bytes[5m], scalar(vector(3600)))",
+    "rate(demo_cpu_usage_seconds_total[1h]) or rate(demo_http_requests_total[1h])",
+    "time() * time()",
+    "time() + time()"
+  ]
+}

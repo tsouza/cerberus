@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo",
+  "bucket": "12",
+  "cases": [
+    "search | spansets_resource_checkout_complete",
+    "search | status_not_nil"
+  ]
+}

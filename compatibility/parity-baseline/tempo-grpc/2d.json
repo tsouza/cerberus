@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "2d",
+  "cases": [
+    "search | scoped_span_name_regex"
+  ]
+}

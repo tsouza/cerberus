@@ -58,8 +58,8 @@ branch as shields.io badge JSON; the README shows them live. On
   template-expanded to concrete cases, plus a small cerberus-owned tail for
   shapes upstream cannot express — resource-attribute grouping, and native
   histograms, whose data upstream's float-only demo fixture never carries.
-  The case count is `heads.prometheus.total` in
-  [`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json).
+  The case count is reconstructed as `heads.prometheus.total` from
+  [`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
 - **Today**: every case passes; no allow-list exists. This is the
   highest-confidence leg — an industry-standard conformance suite against
   a real reference. (Parity drift is report-only in CI; the score is a
@@ -107,7 +107,7 @@ branch as shields.io badge JSON; the README shows them live. On
   the transport Grafana's Tempo datasource actually opens when
   "Streaming" is enabled, which the HTTP-only harness could not exercise
   at all. Both arms run inside the one `compatibility/tempo` job and gate
-  independently (`compatibility/parity-baseline.json`'s `heads.tempo` /
+  independently (`compatibility/parity-baseline/`'s reconstructed `heads.tempo` /
   `heads.tempo-grpc`), so a regression on either transport fails the
   check. The gRPC arm's roster is 59 cases, not 61: `traces` /
   `traces_v2` have no `StreamingQuerier` RPC (trace-by-id is
@@ -394,7 +394,7 @@ The **parity-regression ratchet** closes that hole and makes
 "compatibility is the source of truth" a real gate. After each harness
 runs, `.github/scripts/compat-ratchet.mjs` reads the run's
 `compat-cases.json` and the committed roster in
-`compatibility/parity-baseline.json`, and **fails the required job on any
+`compatibility/parity-baseline/`, and **fails the required job on any
 case that moved**. It gates on case *identity*, not on a count, because a
 count cannot tell a swap from a steady state: one case regressing while a
 different one starts passing leaves `passed`/`total` untouched, so an
@@ -420,17 +420,17 @@ exactly the reasoning an allow-list encodes, and accepting it would let a
 corpus refresh import known-bad behaviour under a green check.
 
 The rosters live in
-[`compatibility/parity-baseline.json`](../compatibility/parity-baseline.json)
-under `heads.<name>.{passed,total,cases}`, one entry per head
-(`prometheus`, `loki`, `tempo`, `tempo-grpc`). Their sizes are stated
-there and nowhere else: the file is regenerated from each run's
-`compat-cases.json`, so a second copy in this page would be a hand-typed
-restatement that every corpus-adding PR has to re-type — and that two
-such PRs conflict over. `doc-counts.mjs` fails the build if one comes
-back.
+[`compatibility/parity-baseline/`](../compatibility/parity-baseline/manifest.json).
+The shared loader reconstructs `heads.<name>.{passed,total,cases}`, one
+entry per head (`prometheus`, `loki`, `tempo`, `tempo-grpc`). Their sizes
+are stated there and nowhere else: the selected head's deterministic
+buckets are synced from its `compat-cases.json`, so a second copy in this
+page would be a hand-typed restatement that every corpus-adding PR has to
+re-type — and that two such PRs conflict over. `doc-counts.mjs` fails the
+build if one comes back.
 
 The baseline records **full parity** for every head — the ratchet asserts
-`passed == total == cases.length`, so the file has no shape in which a
+`passed == total == cases.length`, so the tree has no shape in which a
 divergence can be recorded as acceptable. That is what keeps it the
 opposite of the deleted `expected-failures.json`: an allow-list names the
 cases you are permitted to fail, whereas this roster names the cases that
@@ -445,17 +445,17 @@ tolerance over canonical-key-sorted result sets against a deterministic
 seed. There is no float, timing or ordering surface left to jitter.
 
 When the corpus legitimately grows, or a case is deliberately renamed or
-retired, **move the head's entry** in
-`compatibility/parity-baseline.json` in the same PR. Take the roster from
-the run's `compat-cases.json` (uploaded as a job artefact) rather than
-hand-editing it:
+retired, **sync that head's buckets** in `compatibility/parity-baseline/`
+in the same PR. Take the roster from the run's `compat-cases.json`
+(uploaded as a job artefact) rather than hand-editing it:
 
 ```sh
 node .github/scripts/compat-baseline-sync.mjs path/to/compat-cases.json
 ```
 
-That writes the entry sorted and with counts derived from the roster, so
-the committed list cannot drift from what the harness actually ran and
+That writes only the selected head's owning buckets and reconstructs a
+globally sorted roster with counts derived from it, so the committed list
+cannot drift from what the harness actually ran and
 the diff shows exactly which cases moved. It refuses to write a roster
 that omits a failing case — never make a real parity bug merge by moving
 the baseline around it; fix the bug at the source instead.

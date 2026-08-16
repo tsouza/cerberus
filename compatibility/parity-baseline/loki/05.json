@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "head": "loki",
+  "bucket": "05",
+  "cases": [
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | detected_field values parity: service=loki field=streams",
+    "detected-field-values | detected_field_values | range | backward | {cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} | detected_field values parity: service=grafana field=duration",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum by (level) (sum_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-3\", pod=\"pod-6\", region=\"us-east-1\", service=\"loki\", service_name=\"loki\"} | logfmt | duration != \"\" | unwrap duration_seconds(duration) [5m])) | step=1m0s | Loki duration unwrap with logfmt",
+    "exhaustive/aggregations.yaml | metric | range | FORWARD | sum(max_over_time({cluster=\"cluster-1\", container=\"container-1\", datacenter=\"dc1\", env=\"production\", namespace=\"namespace-4\", pod=\"pod-9\", region=\"us-east-1\", service=\"grafana\", service_name=\"grafana\"} |= \"level\" | logfmt | duration != \"\" | unwrap duration(duration) [5m])) | step=1m0s | Max over time with unwrap"
+  ]
+}

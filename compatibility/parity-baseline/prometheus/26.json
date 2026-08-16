@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "26",
+  "cases": [
+    "0.12345 <= demo_memory_usage_bytes",
+    "absent_over_time(demo_memory_usage_bytes[5m])",
+    "avg without() (demo_memory_usage_bytes)",
+    "avg_over_time(demo_memory_usage_bytes[15s])",
+    "ceil(demo_memory_usage_bytes)",
+    "count_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "demo_memory_usage_bytes offset 1m",
+    "demo_sparse_memory_bytes or demo_memory_usage_bytes",
+    "histogram_count(demo_memory_usage_bytes)",
+    "histogram_quantile(0.9, sum by (le) (demo_api_request_duration_seconds_bucket))",
+    "irate(demo_cpu_usage_seconds_total[5m:1m])",
+    "max_over_time((time() - max(demo_batch_last_success_timestamp_seconds) < 1000)[5m:10s] offset 5m)",
+    "min by (job) ({__name__=~\"demo_memory_usage_bytes|demo_latency_exp_hist\"})",
+    "quantile_over_time(0.1, demo_memory_usage_bytes[5m])",
+    "stddev without(nonexistent) (demo_memory_usage_bytes)",
+    "sum by(instance) (demo_memory_usage_bytes)",
+    "year(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
+    "year(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[5m]))"
+  ]
+}

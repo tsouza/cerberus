@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "head": "tempo-grpc",
+  "bucket": "34",
+  "cases": [
+    "search | resource_service_name_eq_checkout",
+    "search | scoped_span_parent_id_not_nil"
+  ]
+}

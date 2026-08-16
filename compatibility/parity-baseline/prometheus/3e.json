@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "3e",
+  "cases": [
+    "-avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h])",
+    "0.12345 / demo_memory_usage_bytes",
+    "day_of_week()",
+    "demo_latency_exp_hist",
+    "irate(demo_cpu_usage_seconds_total[5m] offset 5m)",
+    "label_join(demo_num_cpus, \"job\", \"-\", \"instance\", \"job\")",
+    "max_over_time(sort_by_label_desc(demo_memory_usage_bytes, \"instance\")[5m:1m])",
+    "quantile(0.1, demo_memory_usage_bytes)",
+    "rate(demo_cpu_usage_seconds_total[15s] offset 1m)",
+    "stddev by(instance, type) (demo_memory_usage_bytes)",
+    "stdvar without(instance) (demo_memory_usage_bytes)",
+    "time() != bool time()",
+    "topk without() (2, demo_memory_usage_bytes)",
+    "{__name__=\"demo_memory_usage_bytes\"}"
+  ]
+}

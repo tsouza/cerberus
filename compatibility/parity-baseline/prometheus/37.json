@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "37",
+  "cases": [
+    "0.12345 > demo_memory_usage_bytes",
+    "day_of_week(demo_batch_last_success_timestamp_seconds offset 10m)",
+    "demo_num_cpus + on(instance) demo_num_cpus",
+    "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1h]))",
+    "last_over_time(demo_memory_usage_bytes[15s])",
+    "quantile_over_time(-0.5, demo_memory_usage_bytes[15s])",
+    "rate(demo_cpu_usage_seconds_total[15s] offset 5m)",
+    "rate(demo_cpu_usage_seconds_total[1m])",
+    "time() + demo_memory_usage_bytes",
+    "timestamp(timestamp(demo_num_cpus))",
+    "topk without(instance) (2, demo_memory_usage_bytes)"
+  ]
+}

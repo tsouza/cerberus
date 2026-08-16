@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "03",
+  "cases": [
+    "absent_over_time(demo_memory_usage_bytes[5m] offset 5m)",
+    "count_values(\"value\", demo_api_request_duration_seconds_bucket)",
+    "demo_memory_usage_bytes % on(instance, job, type) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes / on(instance, type, job, non_existent) demo_memory_usage_bytes",
+    "demo_memory_usage_bytes atan2 2",
+    "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
+    "last_over_time(demo_memory_usage_bytes[5m])",
+    "quantile_over_time(0.5, demo_memory_usage_bytes[1s])",
+    "rate(demo_delta_requests_total[5m])",
+    "sum_over_time(demo_memory_usage_bytes[1m])"
+  ]
+}

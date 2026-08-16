@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "head": "prometheus",
+  "bucket": "02",
+  "cases": [
+    "bottomk(3, demo_latency_exp_hist)",
+    "changes(demo_gauge_with_nan_run[15m])",
+    "demo_latency_exp_hist{instance=\"demo.promlabs.com:10001\"}",
+    "demo_memory_usage_bytes ^ 1.2345",
+    "last_over_time(demo_memory_usage_bytes[5m] offset -10m)",
+    "max_over_time((-demo_memory_usage_bytes)[5m:1m])",
+    "max_over_time(absent(nonexistent_metric_name)[5m:1m])",
+    "max_over_time(rate(demo_cpu_usage_seconds_total[1m])[5m:30s])",
+    "minute(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
+    "quantile_over_time(1, demo_memory_usage_bytes[5m])",
+    "stddev_over_time(demo_memory_usage_bytes[1m])",
+    "year(demo_batch_last_success_timestamp_seconds offset 1m)"
+  ]
+}
