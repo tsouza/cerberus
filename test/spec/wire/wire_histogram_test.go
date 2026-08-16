@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,35 @@ func TestDecodeVectorHistogram(t *testing.T) {
 	}
 	if got := row.Histogram.Buckets[0]; got.Boundaries != 1 || got.Lower != -4 || got.Upper != -2 || got.Count != 1.5 {
 		t.Errorf("first bucket = %+v", got)
+	}
+}
+
+func TestDecodeVectorRejectsMissingOrAmbiguousValueKind(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "both_float_and_histogram",
+			raw:  `[{"metric":{"job":"api"},"value":[1,"2"],"histogram":[1,{"count":"1","sum":"1","buckets":[]}]}]`,
+			want: "both float and histogram",
+		},
+		{
+			name: "neither_float_nor_histogram",
+			raw:  `[{"metric":{"job":"api"}}]`,
+			want: "neither float nor histogram",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := decodeVector(json.RawMessage(tc.raw))
+			if out.Err == nil || !strings.Contains(out.Err.Error(), tc.want) {
+				t.Fatalf("decodeVector error = %v, want substring %q", out.Err, tc.want)
+			}
+		})
 	}
 }

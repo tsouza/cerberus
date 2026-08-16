@@ -16,10 +16,9 @@ name: coverage
 #
 # Informational on push/nightly, but ALSO a parity lane on the
 # publish-on-merge release flow: it runs on EVERY pull_request so it can be a
-# required status check, short-circuiting to a green no-op on a non-release PR
-# and doing the real `just coverage` work only on a `release/*` PR (so a
-# release PR's green status actually includes coverage). Mirrors chart-ci.yml's
-# changes-filter no-op pattern, keyed on the release branch instead.
+# required status check. Ordinary PRs run the cheap package-enrollment gate;
+# release PRs additionally run full coverage, so their green status includes
+# the measured floor comparison.
 #
 # Triggers: pull_request + push-to-main + nightly + manual dispatch.
 
@@ -57,10 +56,11 @@ jobs:
     # nothing on the PR path — and a timeout here lands red on main, where
     # nobody's PR was ever asked to catch it.
     timeout-minutes: 60
-    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
-    # a release PR (head branch release/*). On a regular PR every heavy step is
-    # skipped and the job reports green without work — so `coverage` can be a
-    # required check that gates release PRs but never blocks ordinary PRs.
+    # RUN_HEAVY gates the measured profile: true on push / schedule / dispatch,
+    # and on a release PR (head branch release/*). Every event still runs the
+    # structural enrollment check over both build configurations, so an
+    # ordinary PR cannot add code the first post-merge profile discovers has no
+    # floor.
     #
     # A merge-queue entry is held to the PR posture, not the push posture. The
     # queue validates the projected trunk against the SAME contexts branch
@@ -73,11 +73,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - if: env.RUN_HEAVY == 'true'
-        uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
+
+      - name: Test coverage gates
+        run: |
+          node --test .github/scripts/coverage-summary.test.mjs
+          node --test .github/scripts/coverage-package-floor.test.mjs
+
+      - name: Verify package floor enrollment
+        run: node .github/scripts/coverage-package-floor.mjs
 
       - if: env.RUN_HEAVY == 'true'
         uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
@@ -101,9 +108,9 @@ jobs:
           COVERAGE_REQUIRE_LANES: default+chdb
         run: just coverage
 
-      - name: No-op (non-release PR)
+      - name: Full coverage deferred (ordinary PR)
         if: env.RUN_HEAVY != 'true'
-        run: echo "coverage is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
+        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs."
 
       - name: Upload coverage profile
         if: always() && env.RUN_HEAVY == 'true'
