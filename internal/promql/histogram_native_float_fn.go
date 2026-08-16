@@ -28,6 +28,10 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramRangeFn(shape, s, ctx)
 		return plan, true, err
 	}
+	if shape, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
+		return plan, true, err
+	}
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
 		if err != nil {

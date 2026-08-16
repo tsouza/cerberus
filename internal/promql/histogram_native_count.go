@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -83,6 +85,76 @@ func countOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*p
 		return nil, nil, false
 	}
 	return agg, vs, true
+}
+
+// countOrGroupOverExpHistogramValue recognizes the presence-only
+// aggregations over any already histogram-valued expression. The direct
+// count(selector) path above remains first in lowerRoot because its
+// per-series collapse avoids materializing the nine histogram payload
+// columns that count never reads. Nested inputs have already crossed the
+// thirteen-column HistogramProjection boundary, so this consumer counts or
+// groups those published rows without reaching into the producer.
+func countOrGroupOverExpHistogramValue(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, false
+	}
+	agg, ok := unwrapAggregateExpr(expr)
+	if !ok || agg.Param != nil || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) {
+		return nil, false
+	}
+	return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)
+}
+
+// lowerExpHistogramCountOrGroupOverPlan applies count() or group() to an
+// already histogram-valued instant vector. Both operators are value-blind in
+// Prometheus: count increments once per sample and group publishes one for
+// every non-empty group, irrespective of whether the sample carries a float
+// or a histogram. Grouping by the published evaluation timestamp keeps range
+// query anchors independent while using the same plan for instant queries.
+func lowerExpHistogramCountOrGroupOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram count/group input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	}
+
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
+		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
+	groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
+	groupByAliases = append([]string{s.TimestampColumn}, groupByAliases...)
+
+	var valueAgg chplan.AggFunc
+	switch agg.Op {
+	case parser.COUNT:
+		valueAgg = chplan.AggFunc{Fn: chplan.FnCount, Alias: s.ValueColumn}
+	case parser.GROUP:
+		valueAgg = chplan.AggFunc{
+			Fn: chplan.FnAny,
+			Args: []chplan.Expr{&chplan.FuncCall{
+				Fn:   chplan.FnToFloat64,
+				Args: []chplan.Expr{&chplan.LitInt{V: 1}},
+			}},
+			Alias: s.ValueColumn,
+		}
+	default:
+		return nil, fmt.Errorf("promql: internal invariant violated: %s is not count/group", agg.Op.String())
+	}
+
+	reduced := &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupByAliases,
+		AggFuncs:           []chplan.AggFunc{valueAgg},
+		DropEmptyOnNoGroup: true,
+	}
+	return &chplan.Project{
+		Input: reduced,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}, nil
 }
 
 // lowerExpHistogramCount lowers the `count()` shape across the three

@@ -166,6 +166,9 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if _, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
 		return true
 	}
+	if _, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
+		return true
+	}
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		return isExpHistogramValuedShape(agg.Expr, s, ctx)
 	}

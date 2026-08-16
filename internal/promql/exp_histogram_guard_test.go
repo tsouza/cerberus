@@ -57,11 +57,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "raw range vector", query: `latency_exp_hist[5m]`},
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 
-		{name: "rate over subquery", query: `rate(latency_exp_hist[5m:1m])`},
-		{name: "delta over subquery", query: `delta(latency_exp_hist[5m:1m])`},
-		{name: "irate over subquery", query: `irate(latency_exp_hist[5m:1m])`},
-		{name: "idelta over subquery", query: `idelta(latency_exp_hist[5m:1m])`},
-
 		// `resets()` / `changes()` / `count()` over a bare selector ARE
 		// answered (see TestLower_ExpHistogram_ResetsChangesCountAreFloatValued).
 		// Their answer is an ordinary float sample, so unlike the
@@ -78,8 +73,6 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		{name: "changes over subquery", query: `changes(latency_exp_hist[5m:1m])`},
 		{name: "count under arithmetic", query: `count(latency_exp_hist) + 1`},
 		{name: "count of count", query: `count(count(latency_exp_hist))`},
-		{name: "count over rate", query: `count(rate(latency_exp_hist[5m]))`},
-		{name: "count_values", query: `count_values("v", latency_exp_hist)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
