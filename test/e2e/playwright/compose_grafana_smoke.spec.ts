@@ -95,6 +95,62 @@ test.beforeAll(async ({ request }) => {
   await awaitSeedFixtureSignal(request);
 });
 
+test('compose: Trace Drilldown Database calls reaches its post-histogram query', async ({
+  request,
+}) => {
+  // grafana-exploretraces-app v2.1.0 defines Database calls as
+  // `span.db.system.name != ""`. Its duration view first runs the histogram
+  // query, derives latencyThreshold from the returned buckets, then retries
+  // the raw search with a concrete `duration > <threshold>` predicate.
+  // Keep all three stages load-bearing: a legacy-only db.system seed makes
+  // the selector and histogram empty, so latencyThreshold never resolves.
+  const baseURL = process.env.GRAFANA_BASE_URL ?? 'http://localhost:3000';
+  const tempoProxy =
+    `${baseURL}/api/datasources/proxy/uid/cerberus-tempo/api`;
+  const primarySignal = 'span.db.system.name != ""';
+  const direct = await request.get(
+    `${tempoProxy}/search?q=${encodeURIComponent(`{ ${primarySignal} }`)}`,
+  );
+  expect(direct.status(), 'Database calls primary signal search').toBe(200);
+  const directBody = await direct.json();
+  expect(
+    directBody.traces?.length ?? 0,
+    'seeded database spans match db.system.name',
+  ).toBeGreaterThan(0);
+
+  const end = Math.floor(Date.now() / 1000);
+  const histogramParams = new URLSearchParams({
+    q: `{ ${primarySignal} && true } | histogram_over_time(duration) with(sample=true)`,
+    start: String(end - 3600),
+    end: String(end),
+    step: '60s',
+  });
+  const histogram = await request.get(
+    `${tempoProxy}/metrics/query_range?${histogramParams.toString()}`,
+  );
+  expect(histogram.status(), 'Database calls duration histogram').toBe(200);
+  const histogramBody = await histogram.json();
+  expect(
+    histogramBody.series?.length ?? 0,
+    'histogram resolves a latency threshold',
+  ).toBeGreaterThan(0);
+
+  // A concrete threshold is the settled query shape emitted after the
+  // histogram. The app's separate empty-threshold initial query remains an
+  // upstream bug (grafana/traces-drilldown#850 / cerberus#2009); this test
+  // neither sends nor tolerates that malformed request.
+  const settledQuery = `{ ${primarySignal} && true && duration > 1ms }`;
+  const settled = await request.get(
+    `${tempoProxy}/search?q=${encodeURIComponent(settledQuery)}`,
+  );
+  expect(settled.status(), 'settled Database calls duration search').toBe(200);
+  const settledBody = await settled.json();
+  expect(
+    settledBody.traces?.length ?? 0,
+    'post-histogram query matches seeded spans',
+  ).toBeGreaterThan(0);
+});
+
 test('compose: home, drilldown app, and every provisioned dashboard load without datasource errors', async ({
   page,
   request,

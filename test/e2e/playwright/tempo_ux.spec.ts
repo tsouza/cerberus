@@ -15,7 +15,7 @@ import { test, expect } from '@playwright/test';
  *   Trace 3 (a0…003): api → db              (cron.refresh / cache.refresh)
  *
  * Span attributes seeded: http.method, http.status_code, db.system,
- * cron.name. Resource attribute: service.name.
+ * db.system.name, cron.name. Resource attribute: service.name.
  */
 
 const tempoProxy = '/api/datasources/proxy/uid/cerberus-tempo/api';

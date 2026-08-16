@@ -188,6 +188,48 @@ func TestTracesSeedHasFrontendAndApiServices(t *testing.T) {
 	}
 }
 
+// TestDatabaseSpanSeedsCarryBothSystemKeys pins the two contracts the E2E
+// database spans serve. Grafana Traces Drilldown v2.1.0's Database calls
+// primary signal queries span.db.system.name, while older compatibility probes
+// still consume the legacy db.system key. Every seeded database map must carry
+// both keys with the same value so adding the current semantic-convention key
+// cannot silently erase the legacy coverage (issue #2195).
+func TestDatabaseSpanSeedsCarryBothSystemKeys(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{seedSource, showcaseTraceSeedSource} {
+		buf, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		assertDBSystemNameCompanions(t, path, string(buf))
+	}
+}
+
+func assertDBSystemNameCompanions(t *testing.T, path, content string) {
+	t.Helper()
+
+	mapRE := regexp.MustCompile(`map\(([^)]*'db\.system'[^)]*)\)`)
+	legacyRE := regexp.MustCompile(`'db\.system'\s*,\s*'([^']+)'`)
+	currentRE := regexp.MustCompile(`'db\.system\.name'\s*,\s*'([^']+)'`)
+	maps := mapRE.FindAllStringSubmatch(content, -1)
+	if len(maps) == 0 {
+		t.Fatalf("%s: no seeded db.system maps found", path)
+	}
+	for _, match := range maps {
+		legacy := legacyRE.FindStringSubmatch(match[1])
+		current := currentRE.FindStringSubmatch(match[1])
+		switch {
+		case len(legacy) == 0:
+			t.Errorf("%s: database attribute map lost legacy db.system: map(%s)", path, match[1])
+		case len(current) == 0:
+			t.Errorf("%s: db.system=%q has no db.system.name companion for the Trace Drilldown Database calls signal: map(%s)", path, legacy[1], match[1])
+		case legacy[1] != current[1]:
+			t.Errorf("%s: db.system=%q and db.system.name=%q disagree in map(%s)", path, legacy[1], current[1], match[1])
+		}
+	}
+}
+
 // showcaseTraceSeedSource is the Go file holding the showcase-traceql
 // rolling re-seed (INSERT + stale-row DELETE) for the b0... trace range.
 const showcaseTraceSeedSource = "../e2e/seed/cmd/seed/showcase_traceql.go"
