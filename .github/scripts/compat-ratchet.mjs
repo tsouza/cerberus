@@ -112,9 +112,11 @@ import { DEFAULT_BASELINE, loadParityBaseline } from './lib/compat-baseline.mjs'
 // is for orientation, and a 700-line error block orients nobody.
 const maxListedCases = 25;
 
+class RatchetFailure extends Error {}
+
 function fail(message, props) {
   error(message, props);
-  process.exit(1);
+  throw new RatchetFailure();
 }
 
 // listCases renders IDs for a log line, one per row, truncated at
@@ -357,9 +359,14 @@ function main() {
       `${baselineIds.size} case(s) ran and agreed with the reference, and the run introduced ` +
       `none the baseline does not record.`,
   );
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  try {
+    main();
+  } catch (e) {
+    if (e instanceof RatchetFailure) process.exitCode = 1;
+    else throw e;
+  }
 }

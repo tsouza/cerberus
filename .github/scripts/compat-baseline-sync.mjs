@@ -36,9 +36,11 @@ import {
 } from './lib/compat-baseline.mjs';
 import { runRoster } from './compat-ratchet.mjs';
 
+class SyncFailure extends Error {}
+
 function fail(message) {
   error(message, { title: 'compat baseline sync' });
-  process.exit(1);
+  throw new SyncFailure();
 }
 
 function main() {
@@ -87,9 +89,14 @@ function main() {
     `compat-baseline-sync: heads.${head} <- ${ids.length} passing case(s) from ${casesPath}; ` +
       `${result.changed.length} bucket(s) rewritten, ${result.removed.length} stale file(s) pruned`,
   );
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  try {
+    main();
+  } catch (e) {
+    if (e instanceof SyncFailure) process.exitCode = 1;
+    else throw e;
+  }
 }
