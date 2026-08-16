@@ -2,10 +2,10 @@
   "query": "edge_rate_negative_offset/fanout",
   "lowering": "fanout",
   "routed": true,
-  "k": 6,
+  "k": 8,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
-  "cumulative_d": "10m0s",
+  "cumulative_d": "5m0s",
   "outer_range": "1h0m0s"
 }

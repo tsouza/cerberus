@@ -1,8 +1,8 @@
 {
   "fixture": "promql/native_rate_temporality_delta",
-  "fan_factor": 5.833333333333333,
+  "fan_factor": 6,
   "scan_rows": 6,
-  "peak_intermediate": 35,
+  "peak_intermediate": 36,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
