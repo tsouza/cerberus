@@ -49,7 +49,6 @@ import {
   statSync,
 } from "node:fs";
 import {
-  dirname,
   isAbsolute,
   join,
   normalize,
