@@ -451,6 +451,17 @@ test("missing and extra workflow needs fail closed", () => {
   );
 });
 
+test("a lane that registers the evidence job in owner.jobs does not require it in needs", () => {
+  // The registry lists the evidence job in owner.jobs too (TestCILaneRegistry
+  // requires every workflow job, including native-evidence itself, to be
+  // claimed by some lane), but that job can never appear in its OWN `needs:`
+  // — a job cannot depend on itself. createNativeBundle must exclude it from
+  // the roster it checks against `needs`, not just from job_results.
+  const registry = registryFixture();
+  registry.lanes[0].owner.jobs = [...registry.lanes[0].owner.jobs, "native-evidence"];
+  assert.doesNotThrow(() => bundle({ registry }));
+});
+
 test("downloaded bundles are closed, total, and entry-digested", () => {
   const registry = registryFixture();
   const document = bundle({ registry });

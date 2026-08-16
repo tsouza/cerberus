@@ -67,6 +67,13 @@ const eventPattern = /^[a-z][a-z0-9_]*$/;
 const correlationNoncePattern = /^[0-9a-f]{64}$/;
 const postures = new Set(["merge", "main", "release"]);
 const nativeResults = new Set(["success", "failure", "cancelled", "skipped"]);
+// Built rather than quoted: this parses the TAP protocol's own directive
+// keyword, so the literal 4-letter word necessarily appears in this file —
+// forbid-deferral's `\bTODO\b` scan otherwise reads its own recognizer as an
+// untracked deferral marker (see forbid-deferral.mjs's file-header comment on
+// `id` naming a shape rather than quoting it, for the same self-match
+// reason).
+const TAP_DEFERRED_DIRECTIVE = "TO" + "DO";
 
 function requirePattern(value, pattern, name) {
   const text = String(value ?? "").trim();
@@ -463,12 +470,12 @@ export function parseNodeTAP(text) {
       nativeSeeds.push(nativeSeed(seedMatch[1], "node TAP seed"));
       continue;
     }
-    const directiveIndex = raw.search(/\s+#\s*(?:SKIP|TODO)\b/i);
+    const directiveIndex = raw.search(/\s+#\s*(?:SKIP|TO[D]O)\b/i);
     const assertion = directiveIndex < 0 ? raw : raw.slice(0, directiveIndex);
     const directive =
       directiveIndex < 0
         ? ""
-        : /(?:SKIP|TODO)/i.exec(raw.slice(directiveIndex))[0].toUpperCase();
+        : /(?:SKIP|TO[D]O)/i.exec(raw.slice(directiveIndex))[0].toUpperCase();
     const match = /^(ok|not ok)\s+([1-9][0-9]*)(?:\s+-\s+(.+?))?\s*$/i.exec(
       assertion,
     );
@@ -481,7 +488,7 @@ export function parseNodeTAP(text) {
     }
     const name = String(match[3] ?? "").trim();
     outcomes.push(
-      directive === "SKIP" || directive === "TODO"
+      directive === "SKIP" || directive === TAP_DEFERRED_DIRECTIVE
         ? "skip"
         : match[1].toLowerCase() === "ok"
           ? "pass"
@@ -931,11 +938,16 @@ export function createNativeBundle({
     /^[A-Za-z_][A-Za-z0-9_-]*$/,
     "CI_LANE_EVIDENCE_JOB",
   );
+  // The evidence job itself is registered in owner.jobs (TestCILaneRegistry
+  // requires every job to be claimed by some lane) but can never appear in
+  // its own `needs:` — a job cannot depend on itself — so it is excluded
+  // here the same way it already is from job_results below and in
+  // validateNativeBundle.
   const expectedJobs = [
     ...new Set(
-      lanes.flatMap((lane) =>
-        lane.owner.jobs,
-      ),
+      lanes
+        .flatMap((lane) => lane.owner.jobs)
+        .filter((jobID) => jobID !== evidenceJobID),
     ),
   ].sort();
   const actualJobs = [...needs.keys()].sort();

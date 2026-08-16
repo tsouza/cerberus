@@ -535,6 +535,30 @@ test("malformed or reversed job timestamps are rejected", async (t) => {
   }
 });
 
+test("a skipped job's reversed timestamps are tolerated with no recorded duration", async () => {
+  // The Actions API is observed to backfill a SKIPPED job's started_at a few
+  // seconds AFTER completed_at (both stamped around when the scheduler
+  // resolves the skip, not around any real execution) — reproduced live on
+  // e2e.yml's dashboard-setup / compose-smoke-shard / compose-crawl-merge.
+  // Unlike a genuinely reversed timestamp on a job that actually ran, this
+  // must not fail the collector closed.
+  const run = workflowRun({ id: 701 });
+  const { document } = await collect({
+    runs: [run],
+    jobsByRun: {
+      "701:1": [
+        workflowJob({
+          id: 7011,
+          conclusion: "skipped",
+          startedAt: "2026-08-16T11:02:00Z",
+          completedAt: "2026-08-16T11:01:00Z",
+        }),
+      ],
+    },
+  });
+  assert.equal(document.workflow_runs[0].jobs[0].duration_ms, null);
+});
+
 test("selection binding rejects stale run identity and the wrong event base", () => {
   const registry = registryFixture();
   const identity = pullRequestIdentity();

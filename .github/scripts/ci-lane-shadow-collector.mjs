@@ -475,6 +475,7 @@ export async function discoverWorkflowRuns({
 
 function normalizeJob(job) {
   const status = requiredString(job.status, "workflow job status");
+  const conclusion = nullableConclusion(job.conclusion, "workflow job conclusion");
   const startedAt = apiTimestamp(job.started_at, "workflow job started_at", {
     nullable: status !== "completed",
   });
@@ -487,17 +488,28 @@ function normalizeJob(job) {
   if (startedAt !== null && completedAt !== null) {
     duration = Date.parse(completedAt) - Date.parse(startedAt);
     if (!Number.isSafeInteger(duration) || duration < 0) {
-      contract(
-        "CI lane shadow collector",
-        "workflow job completion precedes its start",
-      );
+      // A job the DAG never ran carries no real duration to begin with, and
+      // the Actions API is observed to backfill a SKIPPED job's started_at a
+      // few seconds AFTER completed_at (both stamped around when the
+      // scheduler resolves the skip, not around any actual execution) —
+      // reproduced live on e2e.yml's dashboard-setup / compose-smoke-shard /
+      // compose-crawl-merge. Record no duration rather than fail closed on a
+      // job that was never timed. A non-skipped job reporting the same
+      // inversion is still a real data-integrity problem.
+      if (conclusion !== "skipped") {
+        contract(
+          "CI lane shadow collector",
+          "workflow job completion precedes its start",
+        );
+      }
+      duration = null;
     }
   }
   return {
     id: positiveID(job.id, "workflow job id"),
     name: requiredString(job.name, "workflow job name"),
     status,
-    conclusion: nullableConclusion(job.conclusion, "workflow job conclusion"),
+    conclusion,
     started_at: startedAt,
     completed_at: completedAt,
     duration_ms: duration,
