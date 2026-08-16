@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -169,9 +170,13 @@ func run(logger *slog.Logger) error {
 		password = flag.String("password", envOr("CERBERUS_CH_PASSWORD", "cerberus"), "ClickHouse password")
 		lokiURL  = flag.String("loki-url", envOr("LOKI_URL", "http://localhost:23100"), "Reference Loki base URL")
 		cerbURL  = flag.String("cerberus-url", envOr("CERBERUS_URL", "http://localhost:29092"), "cerberus LogQL base URL")
+		livePath = flag.String("live-patterns-metadata", envOr("LIVE_PATTERNS_METADATA", ""), "Path for the now-anchored /patterns fixture handshake (required)")
 		timeout  = flag.Duration("timeout", 4*time.Minute, "overall dial + push + verify timeout")
 	)
 	flag.Parse()
+	if *livePath == "" {
+		return errors.New("-live-patterns-metadata is required")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -206,7 +211,8 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("parse anchor: %w", err)
 	}
 
-	streams := buildStreams(start)
+	fixture := buildLivePatternsFixture(time.Now().UTC())
+	streams := append(buildStreams(start), fixture.stream)
 	totalEntries := 0
 	for _, s := range streams {
 		totalEntries += len(s.entries)
@@ -272,11 +278,20 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("verify: %w", err)
 	}
 
+	logger.Info("waiting for live /patterns fixture on both targets", "selector", fixture.metadata.Selector)
+	if err := waitLivePatternsBoth(ctx, *lokiURL, *cerbURL, fixture.metadata, logger); err != nil {
+		return fmt.Errorf("verify live patterns: %w", err)
+	}
+	if err := writeLivePatternsMetadata(*livePath, fixture.metadata); err != nil {
+		return fmt.Errorf("write live patterns metadata: %w", err)
+	}
+
 	logger.Info("sample log line", "line", streams[0].entries[0].line)
 	logger.Info(
 		"seed done",
 		"streams", len(streams),
 		"total_entries", totalEntries,
+		"live_patterns_metadata", *livePath,
 	)
 	return nil
 }
