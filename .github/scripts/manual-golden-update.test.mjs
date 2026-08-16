@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { buildPlan, pathOwnedBy, validateBranch } from './manual-golden-update.mjs';
+import { buildPlan, main, pathOwnedBy, validateBranch } from './manual-golden-update.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./manual-golden-update.mjs', import.meta.url));
 
@@ -93,8 +94,39 @@ test('generated path ownership understands recursive roots and one-segment globs
   );
 });
 
+test('packaging rejects a generated symlink before it becomes an artifact', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-unsafe-'));
+  try {
+    git(root, ['init', '-q', '-b', 'agent/topic']);
+    const generated = 'test/spec/promql/a.txtar';
+    write(root, generated, 'old\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-qm', 'test: seed']);
+    rmSync(path.join(root, generated));
+    symlinkSync('../../../../README.md', path.join(root, generated));
+
+    assert.throws(
+      () =>
+        main({
+          MODE: 'package',
+          TARGET_ROOT: root,
+          SHARD: 'promql',
+          ALLOWED_SHARDS: 'promql',
+          OUTPUT_PATH: path.join(root, 'patches', 'promql.patch'),
+        }),
+      /generated changes must be regular, non-executable files/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('workflow keeps write authority out of matrix jobs and publishes once', () => {
   const workflow = readFileSync(new URL('../workflows/update-golden.yml', import.meta.url), 'utf8');
+  const regenerate = workflow.slice(
+    workflow.indexOf('\n  regenerate:'),
+    workflow.indexOf('\n  publish:'),
+  );
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /shards:/);
   assert.match(workflow, /branch:/);
@@ -104,6 +136,10 @@ test('workflow keeps write authority out of matrix jobs and publishes once', () 
   assert.match(workflow, /gh run download/);
   assert.match(workflow, /token: \$\{\{ secrets\.RELEASE_PAT \}\}/);
   assert.equal((workflow.match(/MODE: apply-push/g) ?? []).length, 1);
+  assert.match(regenerate, /permissions:\n\s+contents: read/);
+  assert.match(regenerate, /cache: false/);
+  assert.doesNotMatch(regenerate, /\bsecrets\./);
+  assert.doesNotMatch(regenerate, /uses: actions\/cache@/);
 });
 
 test('two independently generated shard patches publish as one commit', () => {

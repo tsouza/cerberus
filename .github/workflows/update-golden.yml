@@ -38,6 +38,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: contract
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       shards: ${{ steps.plan.outputs.shards }}
@@ -53,12 +55,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: target
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: target/go.mod
-          cache: true
-          cache-dependency-path: target/go.sum
 
       - name: Validate dispatch and build matrix
         id: plan
@@ -86,6 +82,8 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     strategy:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -103,19 +101,14 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: target/go.mod
-          cache: true
-          cache-dependency-path: target/go.sum
+          # Target-branch code runs below. A shared dependency cache would let
+          # that code persist bytes into later workflows, crossing the exact
+          # read-only boundary this job is meant to provide.
+          cache: false
 
       - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
         with:
           tool: just
-
-      - name: Cache libchdb.so
-        if: matrix.needs_chdb
-        uses: actions/cache@v6
-        with:
-          path: /usr/local/lib/libchdb.so
-          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
 
       - name: Install libchdb.so
         if: matrix.needs_chdb

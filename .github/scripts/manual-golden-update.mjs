@@ -171,6 +171,23 @@ function assertOwnedChanges(root, shards) {
   }
 }
 
+function assertSafeGeneratedChanges(root) {
+  const unsafe = [];
+  for (const file of changedPaths(root)) {
+    let stat;
+    try {
+      stat = lstatSync(path.join(root, file));
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue; // Deleting a generated file is safe.
+      throw error;
+    }
+    if (!stat.isFile() || (stat.mode & 0o111) !== 0) unsafe.push(file);
+  }
+  if (unsafe.length > 0) {
+    fail(`generated changes must be regular, non-executable files: ${unsafe.join(', ')}`);
+  }
+}
+
 function writeOutput(name, value, output = process.env.GITHUB_OUTPUT) {
   if (!output) return;
   writeFileSync(output, `${name}=${value}\n`, { flag: 'a' });
@@ -211,6 +228,7 @@ function packagePatch(env) {
   if (!allowed.includes(shard[0])) fail('ALLOWED_SHARDS must include SHARD');
 
   assertOwnedChanges(targetRoot, allowed);
+  assertSafeGeneratedChanges(targetRoot);
   const pathspecs = shardPathspecs(targetRoot, shard);
   git(targetRoot, ['add', '-A', '--', ...pathspecs]);
 
@@ -284,6 +302,7 @@ function applyAndPush(env) {
     git(targetRoot, ['apply', '--index', patch]);
   }
   assertOwnedChanges(targetRoot, selected);
+  assertSafeGeneratedChanges(targetRoot);
 
   const staged = git(targetRoot, ['diff', '--cached', '--name-only', '-z']).stdout;
   if (nulLines(staged).length === 0) {
