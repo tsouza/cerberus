@@ -1,7 +1,7 @@
 {
   "fixture": "promql/sum_by_rate_range_offset_negative",
-  "fan_factor": 1.6666666666666667,
-  "scan_rows": 24,
+  "fan_factor": 3.3333333333333335,
+  "scan_rows": 12,
   "peak_intermediate": 40,
   "has_cross_join": false,
   "has_array_join": true,

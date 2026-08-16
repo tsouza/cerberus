@@ -1,7 +1,7 @@
 {
   "fixture": "promql/label_replace_over_rate_range_step",
-  "fan_factor": 2.9166666666666665,
-  "scan_rows": 24,
+  "fan_factor": 5.833333333333333,
+  "scan_rows": 12,
   "peak_intermediate": 70,
   "has_cross_join": false,
   "has_array_join": true,
