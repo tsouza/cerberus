@@ -6,9 +6,10 @@
 #
 #   trace t1  s1 (x) and s2 (y) are both roots -> siblings, so s2 is OUT.
 #   trace t2  s3 (x) and s4 (y) share the real parent p1 -> s4 is OUT.
-#   trace t3  s5 (x) and s6 (y) both name parent 'absent', a SpanId no row
-#             carries -> not siblings upstream (both keep nestedSetParent
-#             = 0), so s6 has no sibling and is IN.
+#   trace t3  q1 names absent parent 'absent', then s5 (x) and s6 (y)
+#             share q1 -> still not siblings upstream because q1 and its
+#             descendants are unreachable and keep nestedSetParent=0, so s6
+#             has no sibling and is IN.
 #
 # The last row is the half of issue #1990 that a negated shape exposes:
 # reading the shared absent parent as a sibling relation made cerberus
@@ -38,11 +39,12 @@ INSERT INTO otel_traces (TraceId, SpanId, ParentSpanId, SpanName, _svc) VALUES
     ('t2', 'p1', '',       'root',    'p'),
     ('t2', 's3', 'p1',     'child-a', 'x'),
     ('t2', 's4', 'p1',     'child-b', 'y'),
-    ('t3', 's5', 'absent', 'orphan-a', 'x'),
-    ('t3', 's6', 'absent', 'orphan-b', 'y');
+    ('t3', 'q1', 'absent', 'orphan-parent', 'p'),
+    ('t3', 's5', 'q1',     'orphan-a', 'x'),
+    ('t3', 's6', 'q1',     'orphan-b', 'y');
 -- expected_rows --
 [
-  ["orphan-b", {"__cerberus_parentSpanID": "absent", "__cerberus_spanID": "s6", "__cerberus_traceID": "t3", "service.name": "y"}, "1970-01-01T00:00:00Z", 0]
+  ["orphan-b", {"__cerberus_parentSpanID": "q1", "__cerberus_spanID": "s6", "__cerberus_traceID": "t3", "service.name": "y"}, "1970-01-01T00:00:00Z", 0]
 ]
 -- parity --
 oracle: tempo
@@ -62,4 +64,4 @@ StructuralJoin op=!~ maxDepth=128
   Filter predicate=(ResourceAttributes["service.name"] = "y")
     Scan(otel_traces)
 -- sql --
-SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R LEFT JOIN (SELECT `TraceId`, `ParentSpanId`, count() AS _l_cnt, groupUniqArray(`SpanId`) AS _l_span_ids FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS _sib_l WHERE (`ParentSpanId` = '' OR (`TraceId`, `ParentSpanId`) IN (SELECT `TraceId`, `SpanId` FROM `otel_traces` WHERE `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)))))) AS _l GROUP BY `TraceId`, `ParentSpanId`) AS L ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` WHERE (L._l_cnt - has(L._l_span_ids, R.`SpanId`)) = 0
+SELECT R.`TraceId` AS `TraceId`, R.`SpanId` AS `SpanId`, R.`ParentSpanId` AS `ParentSpanId`, R.`SpanName` AS `SpanName`, R.`Duration` AS `Duration`, R.`Timestamp` AS `Timestamp`, R.`ResourceAttributes` AS `ResourceAttributes`, R.`SpanAttributes` AS `SpanAttributes`, R.`StatusCode` AS `StatusCode`, R.`StatusMessage` AS `StatusMessage`, R.`SpanKind` AS `SpanKind`, R.`ScopeName` AS `ScopeName`, R.`ScopeVersion` AS `ScopeVersion` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS R LEFT JOIN (SELECT `TraceId`, `ParentSpanId`, count() AS _l_cnt, groupUniqArray(`SpanId`) AS _l_span_ids FROM (SELECT * FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?)) AS _rooted_l WHERE (`TraceId`, `SpanId`) IN (WITH RECURSIVE _struct_rooted_1 AS (SELECT DISTINCT `TraceId`, `SpanId`, `ParentSpanId`, 0 AS _depth FROM `otel_traces` WHERE `ParentSpanId` = '' AND `TraceId` IN (SELECT `TraceId` FROM (SELECT * FROM `otel_traces` WHERE (`ResourceAttributes`[?] = ?))) UNION ALL SELECT DISTINCT t.`TraceId`, t.`SpanId`, t.`ParentSpanId`, c._depth + 1 FROM `otel_traces` AS t INNER JOIN _struct_rooted_1 AS c ON t.`TraceId` = c.`TraceId` AND t.`ParentSpanId` = c.`SpanId` WHERE c._depth < 128) SELECT DISTINCT `TraceId`, `SpanId` FROM _struct_rooted_1)) AS _l GROUP BY `TraceId`, `ParentSpanId`) AS L ON L.`TraceId` = R.`TraceId` AND L.`ParentSpanId` = R.`ParentSpanId` WHERE (L._l_cnt - has(L._l_span_ids, R.`SpanId`)) = 0

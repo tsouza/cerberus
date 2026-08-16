@@ -142,7 +142,8 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 		"UNION ALL",
 		// Closure CTE name carries a per-emit sequence suffix; the
 		// recursive arm self-joins it aliased `c`.
-		"_struct_closure_1 AS c",
+		// The rootedness gate consumes sequence 1; the relation closure is 2.
+		"_struct_closure_2 AS c",
 		// The recursive arm is bounded by the default safety cap.
 		"c._depth < 128",
 		// Both sides are cheap selective leaves, so the anchor seed is
@@ -162,10 +163,11 @@ func TestEmitRecursiveDescendant_EndToEnd(t *testing.T) {
 		t.Errorf("emitted SQL must not carry the dropped seed-trace-id pushdown\n  got: %s", sql)
 	}
 
-	// 6 string args: the L subquery's two ("service.name" / "root") at the
-	// _seed position, then R's two ("service.name" / "leaf") in the candidate-
-	// prefilter subquery, then R's two again at the final INNER JOIN.
-	if got, expectedLen := len(args), 6; got != expectedLen {
+	// 8 string args: the L subquery's two ("service.name" / "root") at the
+	// _seed position plus the same two in its rootedness trace scope, then R's
+	// two ("service.name" / "leaf") in the candidate-prefilter subquery, then
+	// R's two again at the final INNER JOIN.
+	if got, expectedLen := len(args), 8; got != expectedLen {
 		t.Errorf("args length = %d, want %d (args=%v)", got, expectedLen, args)
 	}
 }

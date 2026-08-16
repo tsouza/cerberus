@@ -70,8 +70,8 @@ func TestLower_NestedSetPositionShapes(t *testing.T) {
 // TestLower_RootIdiomLiteralVariants pins the exact predicate every
 // supported (op, literal) spelling of a nested-set parent comparison
 // lowers to. Tempo evaluates root-ness as nestedSetParent == -1; spans
-// of an unbuilt tree carry 0, which never matches a root test —
-// cerberus's domain model is {-1} ∪ {>= 1}. Asserting the lowered
+// of an unbuilt tree carry 0, which never matches a root test — the full
+// domain is {-1} ∪ {0} ∪ {>= 1}. Asserting the lowered
 // chplan predicate (not just "lowers without error") is what
 // distinguishes each comparison operator from its neighbours:
 //   - evalIntCmp(-1, op, v) decides whether the predicate holds for
@@ -98,12 +98,12 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 		{`{ nestedSetParent < 0 }`, `(ParentSpanId = "")`},
 		{`{ nestedSetParent <= -1 }`, `(ParentSpanId = "")`},
 		{`{ nestedSetParent = -1 }`, `(ParentSpanId = "")`},
-		{`{ nestedSetParent < 1 }`, `(ParentSpanId = "")`},
-		{`{ nestedSetParent <= 0 }`, `(ParentSpanId = "")`},
+		{`{ nestedSetParent < 1 }`, `(__cerberus_ns_parent < 1)`},
+		{`{ nestedSetParent <= 0 }`, `(__cerberus_ns_parent <= 0)`},
 		{`{ nestedSetParent >= 0 }`, `(ParentSpanId != "")`},
-		{`{ nestedSetParent >= 1 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent >= 1 }`, `(__cerberus_ns_parent >= 1)`},
 		{`{ nestedSetParent > -1 }`, `(ParentSpanId != "")`},
-		{`{ nestedSetParent > 0 }`, `(ParentSpanId != "")`},
+		{`{ nestedSetParent > 0 }`, `(__cerberus_ns_parent > 0)`},
 		{`{ nestedSetParent != -1 }`, `(ParentSpanId != "")`},
 		// Strictly below the root position: false for root (-1) and
 		// for every non-root position (>= 1) — constant false.
@@ -111,9 +111,10 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 		// At or above the root position: true for root and for every
 		// non-root position — constant true.
 		{`{ nestedSetParent >= -1 }`, `true`},
-		// Position 0 never occurs in the domain {-1} ∪ {>= 1}.
-		{`{ nestedSetParent = 0 }`, `false`},
-		{`{ nestedSetParent != 0 }`, `true`},
+		// Position 0 is the unnumbered/orphan domain, so these need the
+		// actual annotation rather than a ParentSpanId rootness shortcut.
+		{`{ nestedSetParent = 0 }`, `(__cerberus_ns_parent = 0)`},
+		{`{ nestedSetParent != 0 }`, `(__cerberus_ns_parent != 0)`},
 		// Literal-on-the-left spelling flips the comparison.
 		{`{ 0 > nestedSetParent }`, `(ParentSpanId = "")`},
 		{`{ -1 >= nestedSetParent }`, `(ParentSpanId = "")`},
@@ -124,10 +125,10 @@ func TestLower_RootIdiomLiteralVariants(t *testing.T) {
 		// path only ever matched a bare attribute operand). `-x op v` is
 		// `x flip(op) -v`, so these must match their already-pinned
 		// negated-literal equivalents above exactly.
-		{`{ -nestedSetParent = 1 }`, `(ParentSpanId = "")`},   // nestedSetParent = -1
-		{`{ -nestedSetParent < 0 }`, `(ParentSpanId != "")`},  // nestedSetParent > 0
-		{`{ -nestedSetParent <= 0 }`, `(ParentSpanId != "")`}, // nestedSetParent >= 0
-		{`{ 2 = -nestedSetParent }`, `false`},                 // nestedSetParent = -2 (outside {-1} ∪ {>= 1})
+		{`{ -nestedSetParent = 1 }`, `(ParentSpanId = "")`},        // nestedSetParent = -1
+		{`{ -nestedSetParent < 0 }`, `(__cerberus_ns_parent > 0)`}, // nestedSetParent > 0
+		{`{ -nestedSetParent <= 0 }`, `(ParentSpanId != "")`},      // nestedSetParent >= 0
+		{`{ 2 = -nestedSetParent }`, `false`},                      // nestedSetParent = -2 (outside {-1} ∪ {>= 1})
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {

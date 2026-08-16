@@ -2130,16 +2130,18 @@ func isNumericExpr(expr chplan.Expr) bool {
 //
 // Tempo materialises a nested-set tree model per trace at ingest time:
 // every span gets left/right interval bounds plus the parent's left
-// bound, with root spans carrying nestedSetParent == -1 and every
-// non-root span a positive position (>= 1). The OTel-CH schema has no
+// bound, with root spans carrying nestedSetParent == -1, rooted non-root
+// spans a positive position (>= 1), and spans unreachable from a real root
+// left at 0. The OTel-CH schema has no
 // equivalent columns, but cerberus recomputes the exact numbering at
 // query time from the (TraceId, SpanId, ParentSpanId) adjacency via
 // chplan.NestedSetAnnotate (see select.go / nested_set_annotate.go).
 //
 // Two lowering shapes result:
 //
-//   - The root-span idiom `nestedSetParent <op> <int>` whose truth
-//     depends only on root-ness (e.g. `nestedSetParent < 0`, what
+//   - A `nestedSetParent <op> <int>` idiom whose truth is expressible from
+//     raw root-ness even across the unnumbered-0 domain (e.g.
+//     `nestedSetParent < 0`, what
 //     Grafana's Traces Drilldown stamps on every query) reduces to a
 //     cheap `ParentSpanId = ”` / `!= ”` test with no annotation pass.
 //   - Every other position-dependent comparison
@@ -2189,9 +2191,9 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 	}
 
 	// Fast path: a `nestedSetParent <op> <int-literal>` comparison whose
-	// truth is constant across the non-root position domain reduces to a
-	// ParentSpanId root-ness test (root parent = -1, every non-root
-	// position >= 1) — no recursive numbering needed.
+	// truth is expressible from ParentSpanId root-ness across all three
+	// domains (root=-1, unnumbered=0, rooted non-root>=1) reduces without a
+	// recursive numbering pass.
 	if attr.Intrinsic == traceql.IntrinsicNestedSetParent {
 		if lit, ok := fieldExprStatic(other); ok && lit.Type == traceql.TypeInt {
 			if expr, ok := rootnessReduction(op, lit, s); ok {
@@ -2219,15 +2221,20 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 	return &chplan.Binary{Op: op, Left: left, Right: rhs}, true, nil
 }
 
-// rootSpanNestedSetParent is the nestedSetParent value Tempo assigns to a
-// root span (no parent); every non-root span has a position >= 1.
-const rootSpanNestedSetParent int64 = -1
+const (
+	// rootSpanNestedSetParent is Tempo's sentinel for a real root span.
+	rootSpanNestedSetParent int64 = -1
+	// unnumberedNestedSetParent is Tempo's zero value for an orphan, cycle,
+	// or any other span its root-seeded walk cannot reach.
+	unnumberedNestedSetParent int64 = 0
+)
 
 // rootnessReduction returns the cheap ParentSpanId-based predicate for a
-// `nestedSetParent <op> <int>` comparison whose result is constant
-// across the non-root position domain (positions >= 1), or ok=false
-// when the comparison genuinely depends on the position value (and must
-// therefore go through the annotation pass).
+// `nestedSetParent <op> <int>` comparison whose result can be represented by
+// `ParentSpanId = ”`, `ParentSpanId != ”`, or a constant across Tempo's
+// root (-1), unnumbered (0), and rooted non-root (>=1) domains. It reports
+// ok=false when distinguishing an orphan from a rooted non-root requires the
+// annotation pass.
 func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) (chplan.Expr, bool) {
 	v64, _ := lit.Int()
 	v := int64(v64)
@@ -2235,7 +2242,11 @@ func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) 
 	if err != nil {
 		return nil, false
 	}
-	nonRoot, constant := nonRootCmpConstant(op, v)
+	unnumbered, err := evalIntCmp(unnumberedNestedSetParent, op, v)
+	if err != nil {
+		return nil, false
+	}
+	rootedNonRoot, constant := nonRootCmpConstant(op, v)
 	if !constant {
 		return nil, false
 	}
@@ -2244,12 +2255,14 @@ func rootnessReduction(op chplan.BinaryOp, lit traceql.Static, s schema.Traces) 
 	// rule traceScopedRootSpanCond encodes; see rootParentSpanID.
 	empty := &chplan.LitString{V: rootParentSpanID}
 	switch {
-	case root && !nonRoot:
+	case root && !unnumbered && !rootedNonRoot:
 		return &chplan.Binary{Op: chplan.OpEq, Left: parentCol, Right: empty}, true
-	case !root && nonRoot:
+	case !root && unnumbered && rootedNonRoot:
 		return &chplan.Binary{Op: chplan.OpNe, Left: parentCol, Right: empty}, true
-	default:
+	case root == unnumbered && unnumbered == rootedNonRoot:
 		return &chplan.LitBool{V: root}, true
+	default:
+		return nil, false
 	}
 }
 
