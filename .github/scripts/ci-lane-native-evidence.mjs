@@ -938,13 +938,18 @@ export function createNativeBundle({
       ),
     ),
   ].sort();
+  const knownWorkflowJobs = new Set(
+    registry.lanes
+      .filter((lane) => lane.owner.workflow === workflowPath)
+      .flatMap((lane) => lane.owner.jobs),
+  );
   const actualJobs = [...needs.keys()].sort();
   const problems = [];
   for (const job of expectedJobs) {
     if (!needs.has(job)) problems.push(`native needs is missing registered job ${job}`);
   }
   for (const job of actualJobs) {
-    if (!expectedJobs.includes(job)) {
+    if (!knownWorkflowJobs.has(job)) {
       problems.push(`native needs contains unregistered extra job ${job}`);
     }
   }

@@ -1156,7 +1156,7 @@ jobs:
   native-evidence:
     name: native-evidence
     if: always()
-    needs: [changes, check-test, check-build, lint, forbid-skip, link-check, agpl-clean]
+    needs: [changes, check, check-test, check-build, lint, forbid-skip, link-check, agpl-clean]
     uses: ./.github/workflows/ci-native-evidence.yml
     with:
       workflow: .github/workflows/ci.yml

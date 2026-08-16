@@ -653,7 +653,7 @@ jobs:
   native-evidence:
     name: native-evidence
     if: always()
-    needs: [migration-setup, migration-tier0, migration-tier1, migration-tier2]
+    needs: [migration-aggregate, migration-setup, migration-tier0, migration-tier1, migration-tier2]
     uses: ./.github/workflows/ci-native-evidence.yml
     with:
       workflow: .github/workflows/migration-e2e.yml

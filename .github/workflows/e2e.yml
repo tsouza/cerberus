@@ -2060,7 +2060,7 @@ jobs:
   native-evidence:
     name: native-evidence
     if: always()
-    needs: [compose-smoke, crawl-terminal, dashboard-crawl-terminal, dashboard, startup-bench, chaos, bwc-minio]
+    needs: [bwc-minio, chaos, compose-crawl-merge, compose-smoke, compose-smoke-scope, compose-smoke-setup, compose-smoke-shard, compose-smoke-shard-info, crawl-terminal, dashboard, dashboard-crawl-merge, dashboard-crawl-terminal, dashboard-setup, dashboard-shard, dashboard-shard-info, startup-bench]
     uses: ./.github/workflows/ci-native-evidence.yml
     with:
       workflow: .github/workflows/e2e.yml
