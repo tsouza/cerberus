@@ -76,7 +76,7 @@ VALUES
   (now64(9) - INTERVAL 38 SECOND, 'b0000000000000000000000000000001', 'b000000000000104', 'b000000000000102',
    'orders.insert', 'Client', 'db', map('service.name', 'db'),
    'showcase-instrumentation', '1.2.3',
-   map('db.system', 'postgres', 'payload_bytes', '64'),
+   map('db.system', 'postgres', 'db.system.name', 'postgres', 'payload_bytes', '64'),
    50000000, 'Ok', '', [], [], [], [], [], [], []),
   (now64(9) - INTERVAL 37 SECOND, 'b0000000000000000000000000000001', 'b000000000000105', 'b000000000000103',
    'charge-retry', 'Internal', 'payments', map('service.name', 'payments'),
@@ -105,7 +105,7 @@ VALUES
   (now64(9) - INTERVAL 22 SECOND, 'b0000000000000000000000000000002', 'b000000000000204', 'b000000000000203',
    'orders.update', 'Client', 'db', map('service.name', 'db'),
    'showcase-instrumentation', '1.2.3',
-   map('db.system', 'postgres', 'payload_bytes', '96'),
+   map('db.system', 'postgres', 'db.system.name', 'postgres', 'payload_bytes', '96'),
    40000000, 'Ok', '', [], [], [], [], [], [], [])`
 
 // deleteStaleShowcaseTracesSQL drops the *previous* ticks' showcase
