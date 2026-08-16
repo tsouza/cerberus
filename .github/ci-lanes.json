@@ -537,7 +537,7 @@
       "description": "Test-only differential oracles behind the AGPL quarantine boundary.",
       "owner": {
         "workflow": ".github/workflows/agpl-oracle.yml",
-        "jobs": ["changes", "agpl-oracle"],
+        "jobs": ["changes", "agpl-oracle", "native-evidence"],
         "producer_jobs": [],
         "context_job": "agpl-oracle"
       },
@@ -585,7 +585,7 @@
       "description": "Helm lint, generated documentation, render, and schema validation.",
       "owner": {
         "workflow": ".github/workflows/chart-ci.yml",
-        "jobs": ["chart-validate"],
+        "jobs": ["chart-validate", "native-evidence"],
         "producer_jobs": [],
         "context_job": "chart-validate"
       },
@@ -626,7 +626,7 @@
       "description": "Exotic LogQL integration corpus executed through chDB and the AGPL oracle.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["integration-logql"],
+        "jobs": ["integration-logql", "native-evidence"],
         "producer_jobs": [],
         "context_job": "integration-logql"
       },
@@ -661,7 +661,7 @@
       "description": "Exotic PromQL integration corpus executed through chDB.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["integration-promql"],
+        "jobs": ["integration-promql", "native-evidence"],
         "producer_jobs": [],
         "context_job": "integration-promql"
       },
@@ -696,7 +696,7 @@
       "description": "Exotic TraceQL integration corpus executed through chDB.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["integration-traceql"],
+        "jobs": ["integration-traceql", "native-evidence"],
         "producer_jobs": [],
         "context_job": "integration-traceql"
       },
@@ -731,8 +731,8 @@
       "description": "Sharded cardinality, scale-wall, and compute fan-out ratchets.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["perf-guards-shard", "perf-guards"],
-        "producer_jobs": ["perf-guards"],
+        "jobs": ["perf-guards-shard", "perf-guards", "native-evidence"],
+        "producer_jobs": ["perf-guards-shard"],
         "context_job": "perf-guards"
       },
       "executions": ["default"],
@@ -762,7 +762,7 @@
       "description": "chDB build, driver sanity, and handler execution tests.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["changes", "chdb-build", "probe"],
+        "jobs": ["changes", "chdb-build", "probe", "native-evidence"],
         "producer_jobs": [],
         "context_job": "probe"
       },
@@ -797,7 +797,7 @@
       "description": "LogQL TXTAR SQL executed against seeded chDB rows.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["roundtrip"],
+        "jobs": ["roundtrip", "native-evidence"],
         "producer_jobs": [],
         "context_job": "roundtrip"
       },
@@ -832,7 +832,7 @@
       "description": "PromQL TXTAR SQL executed against seeded chDB rows.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["roundtrip"],
+        "jobs": ["roundtrip", "native-evidence"],
         "producer_jobs": [],
         "context_job": "roundtrip"
       },
@@ -867,7 +867,7 @@
       "description": "TraceQL TXTAR SQL executed against seeded chDB rows.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["roundtrip"],
+        "jobs": ["roundtrip", "native-evidence"],
         "producer_jobs": [],
         "context_job": "roundtrip"
       },
@@ -902,7 +902,7 @@
       "description": "Real-ClickHouse strict decoding, resource-bound, schema, and teardown differentials.",
       "owner": {
         "workflow": ".github/workflows/strict-scan.yml",
-        "jobs": ["changes", "strict-scan"],
+        "jobs": ["changes", "strict-scan", "native-evidence"],
         "producer_jobs": [],
         "context_job": "strict-scan"
       },
@@ -943,7 +943,7 @@
       "description": "Production dependency graph remains free of AGPL packages.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["agpl-clean"],
+        "jobs": ["agpl-clean", "native-evidence"],
         "producer_jobs": [],
         "context_job": "agpl-clean"
       },
@@ -974,7 +974,7 @@
       "description": "Focused deterministic sleep-injection assertions under the production chaos build tag.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["check-test", "check"],
+        "jobs": ["check-test", "check", "native-evidence"],
         "producer_jobs": ["check-test"],
         "context_job": "check"
       },
@@ -1011,7 +1011,7 @@
       "description": "Race-detected default-tag tests, build, tagged vet, oracle module, and module-tidy drift.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["changes", "check-test", "check-build", "check"],
+        "jobs": ["changes", "check-test", "check-build", "check", "native-evidence"],
         "producer_jobs": ["changes", "check-test", "check-build"],
         "context_job": "check"
       },
@@ -1071,7 +1071,7 @@
       "description": "Behavioural anti-skip, anti-escape-hatch, and CI harness integrity scans.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["forbid-skip"],
+        "jobs": ["forbid-skip", "native-evidence"],
         "producer_jobs": [],
         "context_job": "forbid-skip"
       },
@@ -1102,7 +1102,7 @@
       "description": "Repository-local markdown link integrity.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["link-check"],
+        "jobs": ["link-check", "native-evidence"],
         "producer_jobs": [],
         "context_job": "link-check"
       },
@@ -1133,7 +1133,7 @@
       "description": "Go, architecture, Actions, commits, markdown, TypeScript, and generated-doc linting.",
       "owner": {
         "workflow": ".github/workflows/ci.yml",
-        "jobs": ["lint"],
+        "jobs": ["lint", "native-evidence"],
         "producer_jobs": [],
         "context_job": "lint"
       },
@@ -1164,7 +1164,7 @@
       "description": "Compatibility workflow's duplicated compile and discipline pre-gate.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["changes", "gate"],
+        "jobs": ["changes", "gate", "native-evidence"],
         "producer_jobs": [],
         "context_job": "gate"
       },
@@ -1195,7 +1195,7 @@
       "description": "LogQL differential against Loki plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["loki"],
+        "jobs": ["loki", "native-evidence"],
         "producer_jobs": [],
         "context_job": "loki"
       },
@@ -1234,7 +1234,7 @@
       "description": "PromQL differential against Prometheus plus exact parity-ratchet roster.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["prometheus"],
+        "jobs": ["prometheus", "native-evidence"],
         "producer_jobs": [],
         "context_job": "prometheus"
       },
@@ -1273,7 +1273,7 @@
       "description": "PromQL differential against the minimum supported ClickHouse version.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["prometheus-floor"],
+        "jobs": ["prometheus-floor", "native-evidence"],
         "producer_jobs": [],
         "context_job": "prometheus-floor"
       },
@@ -1312,7 +1312,7 @@
       "description": "Forced solver route B must remain byte-identical to route A against Prometheus.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["prometheus-forced-route"],
+        "jobs": ["prometheus-forced-route", "native-evidence"],
         "producer_jobs": [],
         "context_job": "prometheus-forced-route"
       },
@@ -1347,7 +1347,7 @@
       "description": "Flag-on live Prometheus function-surface completeness probe.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["promql-surface"],
+        "jobs": ["promql-surface", "native-evidence"],
         "producer_jobs": [],
         "context_job": "promql-surface"
       },
@@ -1382,7 +1382,7 @@
       "description": "TraceQL HTTP and gRPC differentials against Tempo plus exact parity rosters.",
       "owner": {
         "workflow": ".github/workflows/compatibility.yml",
-        "jobs": ["tempo"],
+        "jobs": ["tempo", "native-evidence"],
         "producer_jobs": [],
         "context_job": "tempo"
       },
@@ -1421,7 +1421,7 @@
       "description": "Configuration registry, environment documentation, and generated defaults stay aligned.",
       "owner": {
         "workflow": ".github/workflows/config-docs.yml",
-        "jobs": ["config-docs"],
+        "jobs": ["config-docs", "native-evidence"],
         "producer_jobs": [],
         "context_job": "config-docs"
       },
@@ -1495,7 +1495,7 @@
       "description": "Bundled ClickHouse plus MinIO object-storage placement and query smoke.",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
-        "jobs": ["bwc-minio"],
+        "jobs": ["bwc-minio", "native-evidence"],
         "producer_jobs": [],
         "context_job": "bwc-minio"
       },
@@ -1526,7 +1526,7 @@
       "description": "Live k3d fault injection over the gateway and its dependencies.",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
-        "jobs": ["chaos"],
+        "jobs": ["chaos", "native-evidence"],
         "producer_jobs": [],
         "context_job": "chaos"
       },
@@ -1562,7 +1562,7 @@
           "compose-crawl-merge",
           "crawl-terminal"
         ],
-        "producer_jobs": ["crawl-terminal"],
+        "producer_jobs": ["compose-smoke-shard-info"],
         "context_job": "crawl-terminal"
       },
       "executions": ["default"],
@@ -1622,7 +1622,7 @@
           "compose-smoke-shard",
           "compose-smoke"
         ],
-        "producer_jobs": ["compose-smoke"],
+        "producer_jobs": ["compose-smoke-scope", "compose-smoke-setup", "compose-smoke-shard"],
         "context_job": "compose-smoke"
       },
       "executions": ["default"],
@@ -1676,8 +1676,8 @@
       "description": "k3d, real telemetry, Go E2E, Grafana Playwright, and restart gate.",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
-        "jobs": ["dashboard-setup", "dashboard-shard", "dashboard"],
-        "producer_jobs": ["dashboard"],
+        "jobs": ["dashboard-setup", "dashboard-shard", "dashboard", "native-evidence"],
+        "producer_jobs": ["dashboard-setup", "dashboard-shard"],
         "context_job": "dashboard"
       },
       "executions": ["default"],
@@ -1712,7 +1712,7 @@
           "dashboard-crawl-terminal",
           "dashboard-crawl-merge"
         ],
-        "producer_jobs": ["dashboard-crawl-terminal"],
+        "producer_jobs": ["dashboard-shard-info"],
         "context_job": "dashboard-crawl-terminal"
       },
       "executions": ["default"],
@@ -1746,7 +1746,7 @@
       "description": "Required one-stack proof of the repository-root README quickstart.",
       "owner": {
         "workflow": ".github/workflows/quickstart.yml",
-        "jobs": ["select", "run", "quickstart"],
+        "jobs": ["select", "run", "quickstart", "native-evidence"],
         "producer_jobs": ["select", "run"],
         "context_job": "quickstart"
       },
@@ -1800,7 +1800,7 @@
       "description": "Gateway reaches health within the startup threshold against ClickHouse.",
       "owner": {
         "workflow": ".github/workflows/e2e.yml",
-        "jobs": ["startup-bench"],
+        "jobs": ["startup-bench", "native-evidence"],
         "producer_jobs": [],
         "context_job": "startup-bench"
       },
@@ -1866,7 +1866,7 @@
       "description": "Every work-deferral marker is bound to an open repository issue.",
       "owner": {
         "workflow": ".github/workflows/forbid-deferral.yml",
-        "jobs": ["forbid-deferral"],
+        "jobs": ["forbid-deferral", "native-evidence"],
         "producer_jobs": [],
         "context_job": "forbid-deferral"
       },
@@ -1901,7 +1901,7 @@
       "description": "Pull request descriptions carry meaningful review context.",
       "owner": {
         "workflow": ".github/workflows/pr-hygiene.yml",
-        "jobs": ["pr-body"],
+        "jobs": ["pr-body", "native-evidence"],
         "producer_jobs": [],
         "context_job": "pr-body"
       },
@@ -1971,7 +1971,8 @@
           "migration-tier0",
           "migration-tier1",
           "migration-tier2",
-          "migration-aggregate"
+          "migration-aggregate",
+          "native-evidence"
         ],
         "producer_jobs": [
           "migration-setup",
@@ -2055,7 +2056,7 @@
       "description": "Corpus-wide deterministic compute fan-out profile.",
       "owner": {
         "workflow": ".github/workflows/perf-profile.yml",
-        "jobs": ["profile"],
+        "jobs": ["profile", "native-evidence"],
         "producer_jobs": [],
         "context_job": "profile"
       },
@@ -2086,7 +2087,7 @@
       "description": "Ordinary-PR structural enrollment of every production package in a positive floor.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage"],
+        "jobs": ["coverage", "native-evidence"],
         "producer_jobs": [],
         "context_job": "coverage"
       },
@@ -2117,7 +2118,7 @@
       "description": "Merged default-tag and chDB profiles held to per-package floors; absent on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage"],
+        "jobs": ["coverage", "native-evidence"],
         "producer_jobs": [],
         "context_job": "coverage"
       },
@@ -2164,8 +2165,8 @@
       "description": "Impact-selected gremlins package phases rolled into one efficacy gate.",
       "owner": {
         "workflow": ".github/workflows/mutation.yml",
-        "jobs": ["select", "mutate", "mutation"],
-        "producer_jobs": ["mutation"],
+        "jobs": ["select", "mutate", "mutation", "native-evidence"],
+        "producer_jobs": ["select", "mutate"],
         "context_job": "mutation"
       },
       "executions": ["default"],
@@ -2221,7 +2222,7 @@
       "description": "Regenerate every golden shard implied by the landed merge and fail on drift.",
       "owner": {
         "workflow": ".github/workflows/post-merge-drift.yml",
-        "jobs": ["drift"],
+        "jobs": ["drift", "native-evidence"],
         "producer_jobs": [],
         "context_job": "drift"
       },
@@ -2256,7 +2257,7 @@
       "description": "Rapid PromQL, LogQL, and TraceQL oracle properties; required context is a no-op on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/property.yml",
-        "jobs": ["property"],
+        "jobs": ["property", "native-evidence"],
         "producer_jobs": [],
         "context_job": "property"
       },
@@ -2369,7 +2370,7 @@
       "description": "Auto-create and schema DDL integration against a real ClickHouse server.",
       "owner": {
         "workflow": ".github/workflows/schema-integration.yml",
-        "jobs": ["changes", "schema-ddl"],
+        "jobs": ["changes", "schema-ddl", "native-evidence"],
         "producer_jobs": [],
         "context_job": "schema-ddl"
       },
@@ -2408,8 +2409,8 @@
       "description": "Advanced-setup CodeQL scan and umbrella findings gate.",
       "owner": {
         "workflow": ".github/workflows/codeql.yml",
-        "jobs": ["analyze", "CodeQL"],
-        "producer_jobs": ["CodeQL"],
+        "jobs": ["analyze", "CodeQL", "native-evidence"],
+        "producer_jobs": ["analyze"],
         "context_job": "CodeQL"
       },
       "executions": ["default"],

@@ -1373,14 +1373,22 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
   for (const [laneID, jobs] of nativeJobsByLane) {
     const lane = lanesByID.get(laneID);
     const actual = [...jobs].sort();
-    const declared = [
-      ...(lane.owner.producer_jobs.length > 0
-        ? lane.owner.producer_jobs
-        : [lane.owner.context_job]),
-    ].sort();
-    if (JSON.stringify(actual) !== JSON.stringify(declared)) {
+    // owner.producer_jobs names the upstream jobs a fail-closed AGGREGATE
+    // context observes (test/regression/ci_lane_registry_test.go), which is a
+    // separate claim from where evidence is actually UPLOADED from. The two
+    // coincide when every producer can safely call ci-native-part, but a
+    // matrix/sharded producer cannot: its artifact name
+    // (ci-native-part-<id>-<run_attempt>) is shared across shards, so a
+    // fan-out job never emits its own part and the aggregate context job
+    // emits on its behalf instead. Allowing either — actual producers
+    // restricted to {context_job} ∪ producer_jobs — accepts both shapes
+    // while still rejecting a part uploaded by a job this lane never claims.
+    const allowed = new Set([lane.owner.context_job, ...lane.owner.producer_jobs]);
+    const unclaimed = actual.filter((job) => !allowed.has(job));
+    if (unclaimed.length > 0) {
       problems.push(
-        `registry lane ${laneID} owner.producer_jobs must exactly match native part producers ${JSON.stringify(actual)}`,
+        `registry lane ${laneID} native part producers ${JSON.stringify(unclaimed)} are neither ` +
+          `owner.context_job nor listed in owner.producer_jobs`,
       );
     }
     const invocationModes = [];
