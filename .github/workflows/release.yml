@@ -243,6 +243,7 @@ jobs:
             perf-guards
             strict-scan
             pr-body
+            quickstart
             compose-smoke
             dashboard
             coverage

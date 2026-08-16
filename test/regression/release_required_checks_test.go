@@ -83,6 +83,7 @@ var branchProtectionContexts = []string{
 	"pr-body",
 	"probe",
 	"property (PromQL + LogQL + TraceQL, rapid N=500)",
+	"quickstart",
 	"roundtrip (logql)",
 	"roundtrip (promql)",
 	"roundtrip (traceql)",

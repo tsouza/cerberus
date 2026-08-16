@@ -48,14 +48,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import {
-  isAbsolute,
-  join,
-  normalize,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REGISTRY_SCHEMA_VERSION = 1;
@@ -198,7 +191,12 @@ const SUBSTRATES = new Set([
   "reference-stack",
   "runner",
 ]);
-const MERGE_POSTURES = new Set(["always", "impact", "never"]);
+const MERGE_POSTURES = new Set([
+  "always",
+  "impact",
+  "never",
+  "non_documentation",
+]);
 const MAIN_POSTURES = new Set(["always", "coalesced", "never"]);
 const RELEASE_POSTURES = new Set(["required", "advisory", "post_publish"]);
 const DETERMINISM = new Set(["deterministic", "observational", "seeded"]);
@@ -556,7 +554,7 @@ function globRegExp(glob) {
   return new RegExp(`${pattern}$`);
 }
 
-function matchesGlob(path, glob) {
+export function matchesGlob(path, glob) {
   return globRegExp(glob).test(path);
 }
 
@@ -1399,6 +1397,15 @@ export function validateSelection(document, registry, expected = {}) {
         }
       }
       if (
+        posture === "non_documentation" &&
+        item.disposition === "omitted" &&
+        item.reason !== "docs_only"
+      ) {
+        problems.push(
+          `${lane.id} is merge-non-documentation and may omit only as docs_only`,
+        );
+      }
+      if (
         posture === "never" &&
         (item.disposition !== "omitted" || item.reason !== "posture_excluded")
       ) {
@@ -1467,6 +1474,9 @@ export function validateSelection(document, registry, expected = {}) {
     const impactLanes = registry.lanes.filter(
       (lane) => lane.merge_posture === "impact",
     );
+    const nonDocumentationLanes = registry.lanes.filter(
+      (lane) => lane.merge_posture === "non_documentation",
+    );
     const impacted = new Set();
     const computedUnknown = [];
     const knownNonimpactGlobs =
@@ -1502,9 +1512,21 @@ export function validateSelection(document, registry, expected = {}) {
           problems.push(`selector success must select impacted lane ${laneID}`);
         }
       }
+      for (const lane of nonDocumentationLanes) {
+        const required = changedPaths.some(
+          (path) =>
+            !knownNonimpactGlobs.some((glob) => matchesGlob(path, glob)) ||
+            lane.package_globs.some((glob) => matchesGlob(path, glob)),
+        );
+        if (required && selected.get(lane.id)?.disposition !== "selected") {
+          problems.push(
+            `selector success must select non-documentation lane ${lane.id}`,
+          );
+        }
+      }
     }
     if (document.selector.conclusion === "fallback_full") {
-      for (const lane of impactLanes) {
+      for (const lane of [...impactLanes, ...nonDocumentationLanes]) {
         if (selected.get(lane.id)?.disposition !== "selected") {
           problems.push(`fallback_full must select ${lane.id}`);
         }

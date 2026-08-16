@@ -1,0 +1,125 @@
+name: quickstart
+
+# Required canary for every non-documentation change and the exact
+# repository-root quickstart shown in README.md. The browser-depth suites remain
+# release qualification; this lane boots one stack and proves the published
+# startup plus functional Grafana, datasource, and seeded-query contracts.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, "release/*.x"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quickstart-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  # A projected-trunk result is evidence for that exact queue entry. Cancelling
+  # it would dequeue otherwise-valid work, so only superseded PR-head runs cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  select:
+    name: quickstart-select
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      checkout_sha: ${{ steps.select.outputs.checkout_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      - id: select
+        name: select the README quickstart canary
+        env:
+          MODE: select
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: node .github/scripts/quickstart-canary.mjs
+
+  run:
+    name: quickstart-run
+    needs: select
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.selected == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    # The bounded startup + probe steps consume at most 17 minutes. Keep a
+    # separate eight-minute margin for checkout, pulls, diagnostics, and the
+    # always-run destructive teardown without letting this gate reach 30m.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      - name: verify the clean projected-trunk checkout
+        env:
+          MODE: verify-checkout
+          EXPECTED_SHA: ${{ github.sha }}
+        run: node .github/scripts/quickstart-canary.mjs
+
+      - name: log in to the image mirror
+        env:
+          REGISTRY: ghcr.io
+          USERNAME: ${{ github.repository_owner }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/registry-login.mjs
+
+      - uses: ./.github/actions/setup-buildx
+
+      - name: pre-pull root Compose images
+        run: node .github/scripts/compose-pull-images.mjs docker-compose.yml
+
+      - name: run the published root Compose quickstart
+        env:
+          MODE: up
+        run: node .github/scripts/quickstart-canary.mjs
+
+      - name: probe Cerberus and Grafana
+        env:
+          MODE: probe
+          CERBERUS_URL: http://localhost:8080
+          GRAFANA_URL: http://localhost:3000
+        run: node .github/scripts/quickstart-canary.mjs
+
+      - name: capture Compose diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps --all
+          docker compose logs --no-color --tail=300
+
+      - name: tear down the quickstart stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  quickstart:
+    name: quickstart
+    needs: [select, run]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+
+      - name: require selected work to finish successfully
+        env:
+          MODE: aggregate
+          SELECT_RESULT: ${{ needs.select.result }}
+          SELECTED: ${{ needs.select.outputs.selected }}
+          RUN_RESULT: ${{ needs.run.result }}
+        run: node .github/scripts/quickstart-canary.mjs

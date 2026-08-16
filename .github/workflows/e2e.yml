@@ -11,12 +11,11 @@ name: e2e
 # it did not disappear. That preflight is now the ONLY reader of either name —
 # renaming an aggregator job de-gates it everywhere at once.
 #
-# How much of each lane an ordinary PR still gets differs, and the difference is
-# deliberate: `dashboard` skips outright unless the head branch is `release/*`
-# (k3d is too slow to spend on a PR that cannot be blocked by it), while
-# `compose-smoke` still boots when the PR changed a path the compose stack can
-# see differently from chDB and short-circuits green in seconds otherwise (see
-# `compose-smoke-scope`). Either way the result reports without blocking.
+# Both exhaustive lanes skip ordinary pull requests. The separate, required
+# `quickstart` workflow boots one root Compose stack on the projected commit and
+# owns the published startup/readiness/Grafana contract. Repeating that boot per
+# Playwright shard here would add release-depth browser coverage to merge time.
+# A `release/*` pull request still runs both exhaustive lanes in full.
 #
 # Hosts both:
 #   - `compose-smoke` — repo-root quickstart compose stack smoke
@@ -26,8 +25,8 @@ name: e2e
 #     truth .github/scripts/compose-smoke-matrix.mjs; compose-smoke-shard
 #     runs each shard's specs against its own stack; the aggregator job
 #     literally named `compose-smoke` needs the matrix and gates on it).
-#     Runs at SWEEP_DEPTH=lean on an in-scope pull_request and on
-#     push-to-main, and at SWEEP_DEPTH=full on the nightly schedule.
+#     Runs at SWEEP_DEPTH=lean on push-to-main and at SWEEP_DEPTH=full on a
+#     `release/*` pull request or the nightly/manual qualification paths.
 #     The clickhouse / host / otelcol dashboards are compose-only surfaces
 #     (their receivers don't run in the k3d stack), so the nightly
 #     full-depth sweep of them has to happen HERE — the dashboard job
@@ -64,8 +63,8 @@ name: e2e
 #     Runs on push-to-main + nightly + manual dispatch, and on a
 #     `release/*` PR; the aggregator is named in release.yml's
 #     RELEASE_REQUIRED_CHECKS, so a k3d regression blocks the release
-#     that would ship it. Push-to-main and an ordinary PR get a
-#     smoke-only matrix; schedule, manual dispatch, AND a `release/*`
+#     that would ship it. Push-to-main gets a smoke-only matrix; schedule,
+#     manual dispatch, AND a `release/*`
 #     PR get the FULL matrix (dashboard-setup's INCLUDE_CRAWL) — a
 #     release must never ship a mode the gate did not exercise, so the
 #     ~50min crawl shard is part of what gates a release cut, not just
@@ -81,11 +80,11 @@ name: e2e
 #   - `startup-bench` — startup-speed bench (cerberus to /healthz in
 #     <2s). Same trigger set as `dashboard`; informational only.
 #
-# Why `compose-smoke` matters on top of `dashboard`: the dashboard
-# job uses k3d, not docker-compose. Without `compose-smoke` the
-# quickstart compose stack has zero PR coverage and silently breaks
-# when a contributor edits docker-compose.yml / Dockerfile.local /
-# Grafana provisioning / the cerberus binary.
+# Why `compose-smoke` remains on top of the required `quickstart` and k3d
+# `dashboard`: quickstart proves the one-stack published startup contract;
+# compose-smoke adds exhaustive dashboard interactions and the Compose-only
+# surface crawl before publication. The k3d dashboard lane cannot cover those
+# Compose-specific receivers and provisioning paths.
 #
 # What `compose-smoke` does:
 #   1. `docker compose up --wait` — build cerberus, bring up CH +
@@ -100,16 +99,11 @@ name: e2e
 #   4. Teardown with `docker compose down -v`.
 
 on:
-  # `pull_request` is still declared, but neither lane spends a PR's time
-  # unconditionally. `dashboard-setup`'s `if:` skips the whole k3d lane unless
-  # the head branch is `release/*`; `compose-smoke-scope` short-circuits the
-  # compose lane unless the diff touched a stack-visible path. Both lanes boot
-  # real substrate (a compose stack per shard, a k3d cluster per shard) and were
-  # by a wide margin the two longest PR gates, so an ordinary PR sat waiting on
-  # them long after every correctness lane had gone green. They are RELEASE
-  # gates now: they run on the merge commit, and release.yml's preflight refuses
-  # to publish until both posted a green check-run on it. Keeping the trigger
-  # (rather than deleting it) is what
+# `pull_request` remains because a `release/*` head runs the full qualification
+# matrices. Ordinary pull requests short-circuit both lanes; the required
+# `quickstart` workflow owns projected-trunk Compose validation. The exhaustive
+# lanes run again on the commit that lands, and release.yml refuses to publish
+# until both posted green. Keeping the trigger is what
   # preserves the release-PR run — crawl + split coverage is selected off
   # `github.head_ref`, which only exists on a pull_request event, and a release
   # must never ship a mode the gate did not exercise (see the v1.4.0 split
@@ -187,13 +181,12 @@ jobs:
   # COST: N shards = N parallel compose builds/boots — billable minutes rise
   # ~Nx, but wall-clock drops from the serial sum toward the longest shard.
   # That latency win on the slowest lane in the release gate is the whole point.
-  # Decides whether THIS pull request has to boot the stack. push / schedule /
-  # `release/*` PRs always do, exactly as before; an ordinary PR does
-  # only when it changed a path this stack can see differently from chDB — the
-  # emitted column types, the HTTP surface, the driver, the binary's own startup.
-  # Everything else short-circuits in seconds, which is the de-gating this lane
-  # was traded for. Costs ~10s and boots nothing. The rationale and the two path
-  # lists live in the module, not here.
+  # Event gate for the exhaustive Compose/Playwright qualification. Push,
+  # schedule, and `release/*` pull requests run it; an ordinary pull request
+  # reports a clean omission because the required one-stack `quickstart`
+  # context already validated that projected commit. Manual dispatch runs only
+  # when it asks for Compose inventory regeneration. Costs seconds and boots
+  # nothing on an ordinary pull request.
   compose-smoke-scope:
     name: compose-smoke-scope
     runs-on: ubuntu-latest
@@ -201,29 +194,15 @@ jobs:
     outputs:
       in_scope: ${{ steps.scope.outputs.in_scope }}
     steps:
-      # fetch-depth: 0 — the module diffs the PR head against its merge base,
-      # which a shallow clone cannot reach. Without the full history the diff
-      # comes back uncomputable and the lane boots the stack anyway; correct,
-      # but it would silently pay 25 minutes on every PR.
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - id: scope
-        name: decide whether this change is visible to the compose stack
+        name: decide whether this event requires exhaustive Compose qualification
         run: node .github/scripts/compose-smoke-scope.mjs
-        # The base/head pair is wired for both shapes the shared scope-gate
-        # understands, so this caller and mutation.yml's satisfy its contract
-        # identically. This lane declares no `merge_group:` trigger — it is a
-        # release gate that does its work on the merge commit — so the second
-        # half is inert today; leaving the two callers asymmetric is exactly the
-        # subtle divergence the shared module exists to prevent.
         env:
           MODE: emit
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           # A workflow_dispatch requesting the compose (or both) inventory
           # regen must boot the stack despite being on the NON_BOOTING_EVENTS
           # list otherwise — see the module's own comment on that list. Empty
@@ -235,11 +214,8 @@ jobs:
   compose-smoke-setup:
     name: compose-smoke-setup
     needs: compose-smoke-scope
-    # The scope job answers push / schedule / `release/*` with an unconditional
-    # true and `workflow_dispatch` with an unconditional false, so every path
-    # runs exactly as it did when this guard was an inline event test. What
-    # changed is the ordinary PR: it now boots the stack when it touched
-    # something the stack can see.
+    # The scope job answers push / schedule / `release/*` with true, ordinary
+    # pull requests with false, and dispatch from its explicit inventory input.
     if: needs.compose-smoke-scope.outputs.in_scope == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -686,8 +662,8 @@ jobs:
       # compose (or both) inventory regen ALSO forces this shard full, because
       # crawl.spec.ts hard-asserts `depth === 'full'` before it will write
       # grafana-surface-inventory.compose.json (the "inventory regeneration
-      # requires the exhaustive crawl" expect() in that file). Every other
-      # event/selection keeps the lean PR/push default.
+      # requires the exhaustive crawl" expect() in that file). Push-to-main
+      # keeps the lean default; ordinary pull requests omit this matrix.
       #
       # It is read from the matrix rather than recomputed here so that the
       # depth and this job's `timeout-minutes` come from ONE decision. They
@@ -870,7 +846,7 @@ jobs:
               echo "::error::compose-smoke-setup skipped although compose-smoke-scope reported in_scope='${{ needs.compose-smoke-scope.outputs.in_scope }}' — the stack should have booted."
               exit 1
             fi
-            echo "no changed path is visible to the compose stack — passing the release gate without booting it."
+            echo "this event does not run exhaustive Compose qualification — the required quickstart context owns ordinary projected-trunk validation."
             exit 0
           fi
           if [ "${{ needs.compose-smoke-scope.result }}" != "success" ]; then
@@ -1063,8 +1039,7 @@ jobs:
       cancel-in-progress: false
     env:
       # The crawl shard (CRAWL_STACK=k3d) only does work on schedule + manual
-      # dispatch — the per-PR/per-merge crawl fast lane is the compose stack's
-      # job. On push-to-main the crawl shard is a near-instant green no-op: every
+      # dispatch. On push-to-main the crawl shard is a near-instant green no-op: every
       # expensive step below is gated on RUN_SHARD, which is false for the crawl
       # shard on a push event. The smoke shards always run.
       RUN_SHARD: ${{ matrix.crawlStack != 'k3d' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release/') }}
@@ -1229,8 +1204,8 @@ jobs:
           # stack's). The host / otelcol dashboards are fed by receivers the
           # k3d collector intentionally doesn't run (host_metrics, prometheus
           # self-scrape), so probing them here reports empty panels for data
-          # this stack never ships; that compose set is covered per-PR by the
-          # required compose-smoke job. ClickHouse query_log IS seeded on k3d
+          # this stack never ships; that compose set is covered by the
+          # release-qualified compose-smoke job. ClickHouse query_log IS seeded on k3d
           # (the gateway's sqlquery/clickhouse-logs receiver mirrors compose),
           # so loki_explore_columns.spec.ts — the #908 Logs-Drilldown column
           # gate that queries {service_name="clickhouse"} directly — runs here.
@@ -1238,7 +1213,7 @@ jobs:
         run: npx playwright test ${{ matrix.specs }} --reporter=list,html
 
       # ---- crawl shard (CRAWL_STACK=k3d) ----
-      # The same crawl framework the compose-smoke job runs per-PR
+      # The same crawl framework the compose-smoke release lane runs
       # (test/e2e/playwright/crawl/ — BFS + universal oracles + inventory
       # ratchet, ds/query replays, data-quality lints), pointed at THIS stack
       # via CRAWL_STACK=k3d. Runs only on schedule + manual dispatch (RUN_SHARD

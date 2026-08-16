@@ -382,6 +382,34 @@ function mergeSelection({
   };
 }
 
+function addNonDocumentationLane(
+  registry,
+  selection,
+  { selected = false, reason = "docs_only" } = {},
+) {
+  const quickstart = lane({
+    id: "quickstart",
+    workflow: ".github/workflows/e2e.yml",
+    jobs: ["quickstart"],
+    contextJob: "quickstart",
+    mergePosture: "non_documentation",
+    mainPosture: "always",
+    releasePosture: "required",
+  });
+  quickstart.package_globs = ["README.md", "runtime/**"];
+  registry.lanes.push(quickstart);
+  registry.lanes.sort((left, right) => left.id.localeCompare(right.id));
+  selection.lanes.push({
+    lane_id: "quickstart",
+    disposition: selected ? "selected" : "omitted",
+    executions: selected ? ["default"] : [],
+    reason: selected ? null : reason,
+  });
+  selection.lanes.sort((left, right) =>
+    left.lane_id.localeCompare(right.lane_id),
+  );
+}
+
 function releaseSelection() {
   return {
     schema_version: 1,
@@ -831,6 +859,67 @@ test("selection accepts a legitimate merge-impact omission", () => {
   const registry = registryFixture();
   const selection = mergeSelection();
   assert.equal(validateSelection(selection, registry), selection);
+});
+
+test("non-documentation posture selects the canary even when another impact lane owns the path", () => {
+  const registry = registryFixture();
+  const omitted = mergeSelection({
+    selectImpact: true,
+    changedPaths: ["impact/change.go"],
+  });
+  addNonDocumentationLane(registry, omitted);
+  expectContractError(
+    () => validateSelection(omitted, registry),
+    /selector success must select non-documentation lane quickstart/,
+  );
+
+  Object.assign(
+    omitted.lanes.find((item) => item.lane_id === "quickstart"),
+    {
+      disposition: "selected",
+      executions: ["default"],
+      reason: null,
+    },
+  );
+  assert.equal(validateSelection(omitted, registry), omitted);
+});
+
+test("non-documentation posture permits docs-only omission but direct contract docs still select", () => {
+  const registry = registryFixture();
+  const docsOnly = mergeSelection({ changedPaths: ["docs/readme.md"] });
+  addNonDocumentationLane(registry, docsOnly);
+  assert.equal(validateSelection(docsOnly, registry), docsOnly);
+
+  const contractDoc = mergeSelection({ changedPaths: ["README.md"] });
+  const contractRegistry = registryFixture();
+  addNonDocumentationLane(contractRegistry, contractDoc);
+  expectContractError(
+    () => validateSelection(contractDoc, contractRegistry),
+    /selector success must select non-documentation lane quickstart/,
+  );
+
+  docsOnly.lanes.find(
+    (item) => item.lane_id === "quickstart",
+  ).reason = "not_impacted";
+  expectContractError(
+    () => validateSelection(docsOnly, registry),
+    /merge-non-documentation and may omit only as docs_only/,
+  );
+});
+
+test("fallback-full includes the non-documentation canary", () => {
+  const registry = registryFixture();
+  const selection = mergeSelection({
+    selectImpact: true,
+    selectorConclusion: "fallback_full",
+    changedPaths: ["unknown/file.txt"],
+    unknownPaths: ["unknown/file.txt"],
+  });
+  addNonDocumentationLane(registry, selection);
+  expectContractError(
+    () => validateSelection(selection, registry),
+    /fallback_full must select quickstart/,
+  );
 });
 
 test("selection rejects unknown and missing schema fields", () => {
