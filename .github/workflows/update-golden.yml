@@ -7,7 +7,6 @@ name: update-golden
 # artifacts. RELEASE_PAT is required because GitHub suppresses workflow triggers
 # for pushes made with the default GITHUB_TOKEN.
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       shards:
