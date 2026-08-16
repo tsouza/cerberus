@@ -541,7 +541,7 @@ func TestQueryRange_AggregationOverMatrixWindow_Unchanged_ChDB(t *testing.T) {
 
 // TestQueryRange_DuplicateLabelsetCorpusShapes_ChDB drives, at
 // /api/v1/query_range, every collision shape the Prometheus compatibility
-// corpus now carries (`compatibility/prometheus/cerberus-test-queries.yml`,
+// corpus now carries (`compatibility/prometheus/query-corpus/fragments/007-duplicate-labelsets.yml`,
 // header edit 8). The corpus runs against a real ClickHouse and a real
 // reference Prometheus and cannot be settled locally; this pins cerberus's
 // half of each row against chDB so a corpus row can never be the first

@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	goparser "go/parser"
 	"go/token"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -14,8 +13,8 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
-	"gopkg.in/yaml.v3"
 
+	"github.com/tsouza/cerberus/compatibility/prometheus/querycorpus"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -38,7 +37,7 @@ import (
 const (
 	compatSeedSource   = "../../compatibility/prometheus/cmd/seed/main.go"
 	compatMirrorSource = "../../compatibility/prometheus/cmd/seed/prom_remote.go"
-	compatCorpusPath   = "../../compatibility/prometheus/cerberus-test-queries.yml"
+	compatCorpusDir    = "../../compatibility/prometheus/query-corpus"
 
 	// absentMetricPrefix marks a family a query references BECAUSE it must
 	// not exist (`absent(...)`, empty-result shape pins). It is a contract
@@ -449,40 +448,27 @@ func basicLitValue(t *testing.T, path string, expr ast.Expr) string {
 	return v
 }
 
-// corpusCase is the subset of the upstream compliance test-case shape this
-// gate needs.
-type corpusCase struct {
-	Query      string `yaml:"query"`
-	ShouldFail bool   `yaml:"should_fail"`
-}
-
 // parseCorpusMetricNames returns every metric name the corpus selects, plus
 // the set of `{{.var}}` placeholders it actually used.
 func parseCorpusMetricNames(t *testing.T) (referenced, usedVariants map[string]bool) {
 	t.Helper()
 
-	raw, err := os.ReadFile(compatCorpusPath)
+	_, cases, err := querycorpus.Load(compatCorpusDir)
 	if err != nil {
-		t.Fatalf("read %s: %v", compatCorpusPath, err)
+		t.Fatalf("load %s: %v", compatCorpusDir, err)
 	}
-	var corpus struct {
-		TestCases []corpusCase `yaml:"test_cases"`
-	}
-	if err := yaml.Unmarshal(raw, &corpus); err != nil {
-		t.Fatalf("parse %s: %v", compatCorpusPath, err)
-	}
-	if len(corpus.TestCases) == 0 {
-		t.Fatalf("%s decoded to zero test cases", compatCorpusPath)
+	if len(cases) == 0 {
+		t.Fatalf("%s decoded to zero test cases", compatCorpusDir)
 	}
 
 	parser := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	referenced = map[string]bool{}
 	usedVariants = map[string]bool{}
 	parsed := 0
-	for i, c := range corpus.TestCases {
+	for i, c := range cases {
 		if c.Query == "" {
 			t.Fatalf("%s: test case %d has an empty query; the decoder and the file shape "+
-				"have drifted apart", compatCorpusPath, i)
+				"have drifted apart", compatCorpusDir, i)
 		}
 		query := expandCorpusVariants(t, c.Query, usedVariants)
 		expr, err := parser.ParseExpr(query)
@@ -494,13 +480,13 @@ func parseCorpusMetricNames(t *testing.T) (referenced, usedVariants map[string]b
 				continue
 			}
 			t.Fatalf("%s: test case %d (%q) does not parse and is not marked should_fail: %v",
-				compatCorpusPath, i, query, err)
+				compatCorpusDir, i, query, err)
 		}
 		parsed++
 		collectSelectorNames(expr, referenced)
 	}
 	if parsed == 0 {
-		t.Fatalf("%s: no test case parsed; this test would inspect nothing", compatCorpusPath)
+		t.Fatalf("%s: no test case parsed; this test would inspect nothing", compatCorpusDir)
 	}
 	return referenced, usedVariants
 }
@@ -515,7 +501,7 @@ func expandCorpusVariants(t *testing.T, query string, usedVariants map[string]bo
 		value, ok := corpusVariantSubstitutions[variable]
 		if !ok {
 			t.Fatalf("%s: query %q uses the unknown variant variable %q; "+
-				"add it to corpusVariantSubstitutions", compatCorpusPath, query, variable)
+				"add it to corpusVariantSubstitutions", compatCorpusDir, query, variable)
 		}
 		usedVariants[variable] = true
 		return value
