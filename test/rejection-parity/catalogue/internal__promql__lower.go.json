@@ -295,6 +295,51 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/lower.go:lowerRoot#53e0f9b3",
+      "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
+          "past returning if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok",
+          "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
+          "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
+          "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
+          "past returning if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok",
+          "if agg, ok := countValuesOverExpHistogramValue(expr, s, ctx); ok",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "Lower",
+          "LowerAtRangeOpts"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerRoot#c7dbd629",
+      "message": "promql: internal invariant violated: count/group input is not histogram-valued: %v",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
+          "past returning if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok",
+          "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
+          "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
+          "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
+          "if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "Lower",
+          "LowerAtRangeOpts"
+        ]
+      }
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/lower.go:plainAggCH#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
