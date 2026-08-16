@@ -1,11 +1,71 @@
 package drain_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/drain"
 )
+
+// TestDrain_CompactJSONCollapsesBySchema pins #2080: compact JSON has no
+// whitespace, so treating the whole line as one token creates one cluster per
+// observation. Field-aware tokenisation must expose the stable schema and
+// literals to Drain while allowing timestamps, paths, and measurements to
+// generalise.
+func TestDrain_CompactJSONCollapsesBySchema(t *testing.T) {
+	t.Parallel()
+	d := drain.New(drain.DefaultConfig())
+	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
+	const lineCount = 32
+	for i := 0; i < lineCount; i++ {
+		line := fmt.Sprintf(
+			`{"level":"info","ts":%q,"msg":"HTTP request","method":"GET","path":"/api/users/%d","status":200,"latency_ms":%d}`,
+			base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339), i, 10+i,
+		)
+		d.Train(line, base.Add(time.Duration(i)*time.Minute).UnixNano())
+	}
+
+	clusters := d.Clusters()
+	if len(clusters) != 1 {
+		t.Fatalf("compact JSON produced %d clusters for %d schema-identical lines, want 1", len(clusters), lineCount)
+	}
+	if got := clusters[0].Count(); got != lineCount {
+		t.Fatalf("cluster count = %d, want %d", got, lineCount)
+	}
+	for _, want := range []string{`"method"`, `"GET"`, "<_>"} {
+		if !contains(clusters[0].String(), want) {
+			t.Fatalf("template %q does not preserve %q", clusters[0].String(), want)
+		}
+	}
+}
+
+// TestDrain_LogfmtKeepsQuotedFields pins the structured fallback: quoted
+// values containing whitespace remain one field value, while variable values
+// generalise independently from their stable keys.
+func TestDrain_LogfmtKeepsQuotedFields(t *testing.T) {
+	t.Parallel()
+	d := drain.New(drain.DefaultConfig())
+	base := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		line := fmt.Sprintf(
+			`level=info ts=%q msg="HTTP request" method=GET path=/api/users/%d status=200`,
+			base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339), i,
+		)
+		d.Train(line, base.Add(time.Duration(i)*time.Minute).UnixNano())
+	}
+
+	clusters := d.Clusters()
+	if len(clusters) != 1 {
+		t.Fatalf("logfmt produced %d clusters, want 1", len(clusters))
+	}
+	template := clusters[0].String()
+	for _, want := range []string{`level = info`, `msg = "HTTP request"`, `method = GET`, "<_>"} {
+		if !contains(template, want) {
+			t.Fatalf("template %q does not preserve %q", template, want)
+		}
+	}
+}
 
 // findCluster returns the first cluster whose template contains every
 // given substring, or nil.
