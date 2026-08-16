@@ -133,7 +133,7 @@ func TestCanonicalizeSeriesIdentityKeys_IgnoresNonMapKey(t *testing.T) {
 }
 
 // nativeRate builds the native-ToGrid node the PromQL head lowers a range-mode
-// `rate(...)` to, with the deferred label shaping supplied by the caller.
+// `rate(...)` to, with post-aggregate label shaping supplied by the caller.
 func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowGridNative {
 	return &chplan.RangeWindowGridNative{
 		Input:           gaugeScan(),
@@ -149,14 +149,14 @@ func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowGridNative {
 	}
 }
 
-// TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone pins that the
-// repair does NOT fire on a RangeWindowGridNative whose label shaping is deferred
-// past the aggregate. Its GroupBy holds the RAW attribute Map on purpose — that
+// TestCanonicalizeSeriesIdentityKeys_LeavesPostAggregateShapingAlone pins that the
+// repair does NOT fire on a RangeWindowGridNative whose label shaping occurs
+// after the aggregate. Its GroupBy holds the RAW attribute Map on purpose — that
 // is the raw per-series key the inner state level groups on — but the node's
 // OUTPUT identity is the shaping tower above the merge, which is already
 // mapSort-rooted. Splicing a repair beneath the node would shape twice, at the
 // wrong level, and re-split the series the merge just pooled.
-func TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone(t *testing.T) {
+func TestCanonicalizeSeriesIdentityKeys_LeavesPostAggregateShapingAlone(t *testing.T) {
 	in := nativeRate([]chplan.Projection{{
 		Expr:  chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
 		Alias: "Attributes",
