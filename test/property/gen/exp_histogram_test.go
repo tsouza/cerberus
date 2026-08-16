@@ -246,12 +246,10 @@ var expHistogramAcceptSet = []string{
 // A generator that silently lost a function — a typo in the pool, or a
 // name PromQL does not define — would leave that function unexercised
 // while the differential still reported green. Asserting reachability
-// from a random sweep instead would make this test flaky: a specific
-// value function is drawn with probability 1/15 per query, so it is
-// missed across 100 draws roughly once in a thousand runs. The
-// vocabulary is checked exactly, and the three-way shape draw that
-// selects between the pools is left to the sweep below, where a miss
-// has probability (2/3)^100.
+// from a random sweep instead would make this test flaky: the generator keeps
+// all five functions in one weighted family, so any one function is deliberately
+// sparse. The vocabulary and stable per-function roster are checked exactly;
+// the random sweep below widens values rather than proving finite reach.
 func TestExpHistogramValueFnVocabulary(t *testing.T) {
 	for _, fn := range expHistogramValueFns {
 		if parser.Functions[fn] == nil {

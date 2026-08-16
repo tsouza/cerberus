@@ -30,20 +30,20 @@
 // (~weeks after the 2026-05-13 seed anchor), so the (serverNow-range,
 // serverNow] window misses every seeded sample and the result is empty.
 // The oracle evaluates the (T-range, T] window directly off the in-memory
-// series, so its result is non-empty whenever the window contains the
-// required samples. The comparator then flags the empty-vs-nonempty
-// drift, and rapid shrinks the failing draw to the minimal (interval,
+// series and computes the exact PromQL result, including extrapolation and
+// counter-reset arithmetic. The comparator pins row presence, labels,
+// timestamp, and value, then rapid shrinks any drift to the minimal (interval,
 // range, offset).
 //
 // # CI lane
 //
 // Build-tagged `chdb`; runs in the same `property` workflow as the other
-// property tests (the workflow runs `go test -tags chdb ./test/property/...`).
+// property tests under the full `chdb,agpl_oracle,chdb_agpl_oracle` tag set.
 package property_test
 
 import (
 	"context"
-	"math"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -59,99 +59,10 @@ import (
 	"github.com/tsouza/cerberus/test/spec/wire"
 )
 
-// minWindowSamplesFor is the minimum sample count the (T-range, T]
-// window must hold for the given function to produce a value. rate /
-// increase / delta need >=2 in-window points to form a difference;
-// every other windowed reducer needs >=1.
-func minWindowSamplesFor(fn string) int {
-	switch fn {
-	case "rate", "increase", "delta":
-		return 2
-	default:
-		return 1
-	}
-}
-
-// oracleInstantWindow is the from-scratch evaluator: it computes the
-// (T-range, T] window result for a single-series range-vector instant
-// query DIRECTLY off the in-memory MetricsModel, implementing the
-// window semantics off the PromQL spec (no delegation to cerberus or
-// Prometheus). It returns ok=false when the window holds fewer than the
-// function's minimum sample count (the PromQL "empty result" case).
-//
-// The third return, valueExact, reports whether `value` is a reference-
-// exact result the test can assert byte-close against cerberus. The
-// plain windowed reducers (sum / count / avg / min / max) are exact —
-// no extrapolation, so their value pins the window CONTENTS too. The
-// extrapolated counter functions (rate / increase / delta) depend on
-// Prometheus's boundary-extrapolation heuristic (extends the first/last
-// sample toward the window edge by up to half the average interval, then
-// rescales) which the from-scratch oracle does NOT reimplement; for
-// those, valueExact=false and the test asserts only NON-EMPTINESS — the
-// bug's exact symptom — not the value. That keeps the oracle honest
-// (it never claims a value it can't derive from the spec) while still
-// catching the empty-window regression on every function in the pool.
-func oracleInstantWindow(c gen.InstantWindowCase) (value float64, ok, valueExact bool) {
-	rangeMs := c.RangeSec * 1000
-	endMs := c.Query.EvalTs * 1000
-	startMs := endMs - rangeMs // window is (start, end]
-
-	pts := c.Dataset.Metrics.Series[0].Points
-	var win []property.Point
-	for _, p := range pts {
-		if p.TimestampMs > startMs && p.TimestampMs <= endMs {
-			win = append(win, p)
-		}
-	}
-	sort.Slice(win, func(i, j int) bool { return win[i].TimestampMs < win[j].TimestampMs })
-
-	if len(win) < minWindowSamplesFor(c.Fn) {
-		return 0, false, false
-	}
-
-	switch c.Fn {
-	case "sum_over_time":
-		var s float64
-		for _, p := range win {
-			s += p.Value
-		}
-		return s, true, true
-	case "count_over_time":
-		return float64(len(win)), true, true
-	case "avg_over_time":
-		var s float64
-		for _, p := range win {
-			s += p.Value
-		}
-		return s / float64(len(win)), true, true
-	case "min_over_time":
-		m := win[0].Value
-		for _, p := range win[1:] {
-			m = math.Min(m, p.Value)
-		}
-		return m, true, true
-	case "max_over_time":
-		m := win[0].Value
-		for _, p := range win[1:] {
-			m = math.Max(m, p.Value)
-		}
-		return m, true, true
-	case "rate", "increase", "delta":
-		// Extrapolated counter / gauge-difference functions. The window
-		// has >=2 samples (minWindowSamplesFor), so a non-empty result
-		// is mandated — but the exact value rides Prometheus's boundary
-		// extrapolation, which this oracle deliberately does not mirror.
-		// Assert non-emptiness only (valueExact=false).
-		return 0, true, false
-	}
-	return 0, false, false
-}
-
 // TestPromQL_InstantWindowSweep_FromScratch sweeps the eval instant T
 // across a continuous series and asserts cerberus's instant range-vector
-// result agrees with the from-scratch window oracle — in particular that
-// cerberus is NON-EMPTY exactly when the (T-range, T] window is
-// non-empty.
+// result agrees exactly with the from-scratch window oracle for the
+// (T-range, T] sample set, row presence, labels, timestamp, and value.
 //
 // Without the modifiers.go fix the emitted window bound is now64(9)
 // (wall-clock at chDB execution, weeks after the seed anchor), so the
@@ -168,76 +79,559 @@ func TestPromQL_InstantWindowSweep_FromScratch(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		c := gen.InstantWindowSweep().Draw(rt, "case")
+		if invalid := property.ValidateMetricsDataset(c.Dataset); invalid != "" {
+			rt.Fatalf("instant-window property: invalid generated dataset: %s", invalid)
+		}
+		if invalid := property.ValidateGeneratedQuery(c.Query); invalid != "" {
+			rt.Fatalf("instant-window property: invalid generated query: %s", invalid)
+		}
 		cli.Seed(t, c.Dataset.DDL)
 
-		wantVal, wantOK, valueExact := oracleInstantWindow(c)
-
+		want := oracleInstantWindow(c)
 		got := wire.RunInstant(context.Background(), srv.URL, c.Query, wire.InstantOptions{})
-		if got.Err != nil {
-			rt.Fatalf("instant-window sweep: cerberus error\nquery=%s evalTs=%d offset=%ds range=%ds scrape=%ds\nerr=%v",
-				c.Query.String, c.Query.EvalTs, c.EvalOffset, c.RangeSec, c.ScrapeSec, got.Err)
-		}
-
-		gotOK := len(got.Rows) > 0
-
-		// PRIMARY assertion: non-emptiness must agree. This is the bug's
-		// exact symptom — without the fix cerberus is empty here while the
-		// oracle window is non-empty.
-		if wantOK != gotOK {
-			rt.Fatalf("instant-window sweep: emptiness drift\n"+
-				"query=%s\nevalTs=%d offset=%ds range=%ds scrape=%ds fn=%s temporality=%d latestSample=%d\n"+
-				"oracle: nonEmpty=%v (value=%g)\ncerberus: nonEmpty=%v (rows=%d)\n"+
-				"=> WITHOUT the modifiers.go window-anchor fix cerberus anchors the\n"+
-				"   (T-range,T] window to now64(9) wall-clock, missing every seeded\n"+
-				"   sample and returning empty at this offset.",
+		if diff := property.ValidateOutcomes(want, got); diff != "" {
+			rt.Fatalf("instant-window sweep: drift\n"+
+				"query=%s evalTs=%d offset=%ds range=%ds scrape=%ds fn=%s valueProfile=%d latestSample=%d\n"+
+				"--- diff ---\n%s",
 				c.Query.String, c.Query.EvalTs, c.EvalOffset, c.RangeSec, c.ScrapeSec,
-				c.Fn, c.Temporality, c.LatestSample, wantOK, wantVal, gotOK, len(got.Rows))
-		}
-
-		if !wantOK {
-			return // both empty — agreement, nothing more to compare.
-		}
-
-		// Non-empty agreement holds. Every case carries exactly one
-		// series (single seeded series), so pin that invariant.
-		if len(got.Rows) != 1 {
-			rt.Fatalf("instant-window sweep: expected exactly 1 series, got %d\nquery=%s evalTs=%d",
-				len(got.Rows), c.Query.String, c.Query.EvalTs)
-		}
-
-		// SECONDARY assertion (exact-value functions only): the single-
-		// series value must agree within tolerance. A range query at a
-		// grid-aligned T returns the same value, so this also pins the
-		// window CONTENTS, not just its non-emptiness. The extrapolated
-		// rate/increase/delta functions, whose reference value this
-		// oracle does not reimplement (valueExact=false), only run the
-		// non-emptiness assertion above and return here.
-		if !valueExact {
-			return
-		}
-		if !valuesCloseLocal(wantVal, got.Rows[0].Value) {
-			rt.Fatalf("instant-window sweep: value drift\nquery=%s evalTs=%d offset=%ds range=%ds scrape=%ds fn=%s\noracle=%g cerberus=%g",
-				c.Query.String, c.Query.EvalTs, c.EvalOffset, c.RangeSec, c.ScrapeSec, c.Fn,
-				wantVal, got.Rows[0].Value)
+				c.Fn, c.ValueProfile, c.LatestSample, diff)
 		}
 	})
 }
 
-// valuesCloseLocal mirrors the framework's valuesClose tolerance so this
-// file doesn't reach into the unexported helper. abs=1e-6 / rel=1e-6 is
-// looser than the framework's 1e-9 because rate/increase extrapolation
-// and CH float arithmetic diverge by more than nano-scale; the
-// non-emptiness assertion is the bug-catching one, and 1e-6 still pins
-// the value to six significant figures.
-func valuesCloseLocal(a, b float64) bool {
-	const absEpsilon, relEpsilon = 1e-6, 1e-6
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
+// TestPromQL_InstantWindowShapeRoster executes one deterministic live value
+// differential for every function/value-profile pair in the exact
+// instant-window roster.
+func TestPromQL_InstantWindowShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	type instantWindowShapeExample struct {
+		generated gen.InstantWindowCase
+		oracle    property.Outcome
 	}
-	delta := math.Abs(a - b)
-	if delta <= absEpsilon {
-		return true
+
+	property.RunShapeCases(
+		t,
+		gen.InstantWindowShapeIDs(),
+		func(shapeID gen.ShapeID, _ int) (property.Dataset, instantWindowShapeExample, property.ShapeID, string) {
+			propertyShapeID := property.ShapeID(shapeID)
+			for attempt := range property.ShapeExampleAttemptLimit {
+				seed := property.ShapeExampleAttemptSeed(propertyShapeID, attempt)
+				generated := gen.InstantWindowSweepForShape(shapeID).Example(seed)
+				if invalid := property.ValidateGeneratedDataset(generated.Dataset); invalid != "" {
+					t.Fatalf("instant-window shape %q generated an invalid dataset: %s", shapeID, invalid)
+				}
+				if generated.Query.ShapeID != propertyShapeID {
+					t.Fatalf("instant-window shape generator stamped %q, want %q",
+						generated.Query.ShapeID, propertyShapeID)
+				}
+				if invalid := property.ValidateGeneratedQuery(generated.Query); invalid != "" {
+					t.Fatalf("instant-window shape %q generated an invalid query: %s", shapeID, invalid)
+				}
+
+				oracleOut := oracleInstantWindow(generated)
+				if oracleOut.Err != nil {
+					t.Fatalf("instant-window shape %q oracle failed\nquery=%s\nerr=%v",
+						shapeID, generated.Query.String, oracleOut.Err)
+				}
+				if len(oracleOut.Rows) == 0 {
+					continue
+				}
+				return generated.Dataset, instantWindowShapeExample{
+					generated: generated,
+					oracle:    oracleOut,
+				}, generated.Query.ShapeID, generated.Query.String
+			}
+			t.Fatalf("instant-window shape %q produced no oracle rows across %d stable attempts",
+				propertyShapeID, property.ShapeExampleAttemptLimit)
+			return property.Dataset{}, instantWindowShapeExample{}, "", ""
+		},
+		func(t *testing.T, _ property.Dataset, example instantWindowShapeExample) {
+			generated := example.generated
+			cli.Seed(t, generated.Dataset.DDL)
+			systemOut := wire.RunInstant(t.Context(), srv.URL, generated.Query, wire.InstantOptions{})
+			if diff := property.ValidateDeterministicOutcomes(example.oracle, systemOut); diff != "" {
+				t.Fatalf("instant-window shape %q failed\nquery=%s\n--- diff ---\n%s",
+					generated.Query.ShapeID, generated.Query.String, diff)
+			}
+		},
+	)
+}
+
+const (
+	prometheusExtrapolationThresholdFactor = 1.1
+	millisecondsPerSecond                  = 1000
+)
+
+// oracleInstantWindow independently evaluates the single-series PromQL
+// instant-window cases generated by gen.InstantWindowSweep. Every enrolled
+// function produces a complete expected Outcome: labels, evaluation timestamp,
+// presence, and value. Unsupported functions are harness errors, never an
+// implicit empty result.
+func oracleInstantWindow(c gen.InstantWindowCase) property.Outcome {
+	if invalid := property.ValidateGeneratedDataset(c.Dataset); invalid != "" {
+		return property.Outcome{Err: fmt.Errorf("instant-window oracle: invalid dataset: %s", invalid)}
 	}
-	scale := math.Max(math.Abs(a), math.Abs(b))
-	return delta <= relEpsilon*scale
+	if len(c.Dataset.Metrics.Series) != 1 {
+		return property.Outcome{Err: fmt.Errorf(
+			"instant-window oracle: got %d series, want exactly one",
+			len(c.Dataset.Metrics.Series),
+		)}
+	}
+	if c.RangeSec <= 0 {
+		return property.Outcome{Err: fmt.Errorf("instant-window oracle: non-positive range %d", c.RangeSec)}
+	}
+	switch c.ValueProfile {
+	case gen.InstantWindowValueProfileWave,
+		gen.InstantWindowValueProfilePositiveIncrements,
+		gen.InstantWindowValueProfileMonotonicRunningTotal:
+	default:
+		return property.Outcome{Err: fmt.Errorf(
+			"instant-window oracle: unsupported value profile %d",
+			c.ValueProfile,
+		)}
+	}
+
+	minimumSamples, err := instantWindowMinimumSamples(c.Fn)
+	if err != nil {
+		return property.Outcome{Err: err}
+	}
+
+	endMs := c.Query.EvalTs * millisecondsPerSecond
+	startMs := endMs - c.RangeSec*millisecondsPerSecond
+	points := c.Dataset.Metrics.Series[0].Points
+	window := make([]property.Point, 0, len(points))
+	for _, point := range points {
+		if point.TimestampMs > startMs && point.TimestampMs <= endMs {
+			window = append(window, point)
+		}
+	}
+	sort.Slice(window, func(i, j int) bool {
+		return window[i].TimestampMs < window[j].TimestampMs
+	})
+	for index := 1; index < len(window); index++ {
+		if window[index].TimestampMs == window[index-1].TimestampMs {
+			return property.Outcome{Err: fmt.Errorf(
+				"instant-window oracle: duplicate timestamp %d",
+				window[index].TimestampMs,
+			)}
+		}
+	}
+	if len(window) < minimumSamples {
+		return property.Outcome{}
+	}
+
+	value, err := instantWindowValue(c.Fn, window, startMs, endMs, c.RangeSec)
+	if err != nil {
+		return property.Outcome{Err: err}
+	}
+	labels := make(map[string]string, len(c.Dataset.Metrics.Series[0].Labels))
+	for name, value := range c.Dataset.Metrics.Series[0].Labels {
+		labels[name] = value
+	}
+	return property.Outcome{Rows: []property.OutcomeRow{{
+		Labels:      labels,
+		TimestampMs: endMs,
+		Value:       value,
+	}}}
+}
+
+func instantWindowMinimumSamples(fn string) (int, error) {
+	switch fn {
+	case "sum_over_time", "count_over_time", "avg_over_time", "min_over_time", "max_over_time":
+		return 1, nil
+	case "rate", "increase", "delta":
+		return 2, nil
+	default:
+		return 0, fmt.Errorf("instant-window oracle: unsupported function %q", fn)
+	}
+}
+
+func instantWindowValue(
+	fn string,
+	window []property.Point,
+	startMs int64,
+	endMs int64,
+	rangeSec int64,
+) (float64, error) {
+	switch fn {
+	case "sum_over_time":
+		var sum float64
+		for _, point := range window {
+			sum += point.Value
+		}
+		return sum, nil
+	case "count_over_time":
+		return float64(len(window)), nil
+	case "avg_over_time":
+		var sum float64
+		for _, point := range window {
+			sum += point.Value
+		}
+		return sum / float64(len(window)), nil
+	case "min_over_time":
+		minimum := window[0].Value
+		for _, point := range window[1:] {
+			if point.Value < minimum {
+				minimum = point.Value
+			}
+		}
+		return minimum, nil
+	case "max_over_time":
+		maximum := window[0].Value
+		for _, point := range window[1:] {
+			if point.Value > maximum {
+				maximum = point.Value
+			}
+		}
+		return maximum, nil
+	case "rate", "increase", "delta":
+		return instantWindowExtrapolatedValue(fn, window, startMs, endMs, rangeSec)
+	default:
+		return 0, fmt.Errorf("instant-window oracle: unsupported function %q", fn)
+	}
+}
+
+// instantWindowExtrapolatedValue is a from-scratch transcription of the
+// PromQL rate/increase/delta specification. The generator's ValueProfile field
+// selects input value geometry only; all cases are gauge-table samples, so
+// rate/increase apply Prometheus counter-reset arithmetic to every geometry and
+// delta always applies a straight gauge difference.
+func instantWindowExtrapolatedValue(
+	fn string,
+	window []property.Point,
+	startMs int64,
+	endMs int64,
+	rangeSec int64,
+) (float64, error) {
+	if len(window) < 2 {
+		return 0, fmt.Errorf("instant-window oracle: %s needs at least two samples", fn)
+	}
+	first := window[0]
+	last := window[len(window)-1]
+	sampledIntervalMs := float64(last.TimestampMs - first.TimestampMs)
+	if sampledIntervalMs <= 0 {
+		return 0, fmt.Errorf(
+			"instant-window oracle: non-positive sampled interval %gms",
+			sampledIntervalMs,
+		)
+	}
+
+	isCounter := fn == "rate" || fn == "increase"
+	result := last.Value - first.Value
+	if isCounter {
+		previous := first.Value
+		for _, point := range window[1:] {
+			if point.Value < previous {
+				result += previous
+			}
+			previous = point.Value
+		}
+	}
+
+	averageIntervalMs := sampledIntervalMs / float64(len(window)-1)
+	thresholdMs := averageIntervalMs * prometheusExtrapolationThresholdFactor
+	durationToStartMs := float64(first.TimestampMs - startMs)
+	if durationToStartMs >= thresholdMs {
+		durationToStartMs = averageIntervalMs / 2
+	}
+	if isCounter && result > 0 && first.Value >= 0 {
+		durationToZeroMs := sampledIntervalMs * first.Value / result
+		if durationToZeroMs < durationToStartMs {
+			durationToStartMs = durationToZeroMs
+		}
+	}
+	durationToEndMs := float64(endMs - last.TimestampMs)
+	if durationToEndMs >= thresholdMs {
+		durationToEndMs = averageIntervalMs / 2
+	}
+
+	factor := (sampledIntervalMs + durationToStartMs + durationToEndMs) / sampledIntervalMs
+	if fn == "rate" {
+		factor /= float64(rangeSec)
+	}
+	return result * factor, nil
+}
+
+func TestInstantWindowOracleComputesEveryFunctionValue(t *testing.T) {
+	points := []property.Point{
+		{TimestampMs: 15 * millisecondsPerSecond, Value: 10},
+		{TimestampMs: 30 * millisecondsPerSecond, Value: 20},
+		{TimestampMs: 45 * millisecondsPerSecond, Value: 30},
+	}
+	tests := []struct {
+		fn   string
+		want float64
+	}{
+		{fn: "sum_over_time", want: 60},
+		{fn: "count_over_time", want: 3},
+		{fn: "avg_over_time", want: 20},
+		{fn: "min_over_time", want: 10},
+		{fn: "max_over_time", want: 30},
+		{fn: "rate", want: 2.0 / 3.0},
+		{fn: "increase", want: 40},
+		{fn: "delta", want: 40},
+	}
+	for _, tc := range tests {
+		t.Run(tc.fn, func(t *testing.T) {
+			outcome := oracleInstantWindow(instantWindowOracleCase(
+				tc.fn,
+				gen.InstantWindowValueProfileWave,
+				points,
+			))
+			if outcome.Err != nil {
+				t.Fatalf("oracleInstantWindow() error: %v", outcome.Err)
+			}
+			if len(outcome.Rows) != 1 {
+				t.Fatalf("oracleInstantWindow() rows = %d, want 1", len(outcome.Rows))
+			}
+			want := property.Outcome{Rows: []property.OutcomeRow{{
+				Labels:      map[string]string{"job": "api"},
+				TimestampMs: 60 * millisecondsPerSecond,
+				Value:       tc.want,
+			}}}
+			if diff := property.ValidateOutcomes(want, outcome); diff != "" {
+				t.Fatal(diff)
+			}
+		})
+	}
+}
+
+func TestInstantWindowOracleExtrapolatedFunctionsCoverEveryValueGeometry(t *testing.T) {
+	points := []property.Point{
+		{TimestampMs: 15 * millisecondsPerSecond, Value: 10},
+		{TimestampMs: 30 * millisecondsPerSecond, Value: 3},
+		{TimestampMs: 45 * millisecondsPerSecond, Value: 8},
+	}
+	want := map[string]float64{
+		"rate":     16.0 / 60.0,
+		"increase": 16,
+		"delta":    -4,
+	}
+	for _, profile := range []gen.InstantWindowValueProfile{
+		gen.InstantWindowValueProfileWave,
+		gen.InstantWindowValueProfilePositiveIncrements,
+		gen.InstantWindowValueProfileMonotonicRunningTotal,
+	} {
+		for fn, wantValue := range want {
+			name := fmt.Sprintf("value-profile-%d/%s", profile, fn)
+			t.Run(name, func(t *testing.T) {
+				outcome := oracleInstantWindow(instantWindowOracleCase(fn, profile, points))
+				if outcome.Err != nil || len(outcome.Rows) != 1 {
+					t.Fatalf("oracleInstantWindow() = %+v, want one successful row", outcome)
+				}
+				if diff := property.ValidateOutcomes(
+					property.Outcome{Rows: []property.OutcomeRow{{
+						Labels:      map[string]string{"job": "api"},
+						TimestampMs: 60 * millisecondsPerSecond,
+						Value:       wantValue,
+					}}},
+					outcome,
+				); diff != "" {
+					t.Fatal(diff)
+				}
+			})
+		}
+	}
+}
+
+func TestInstantWindowOracleUsesLeftExclusiveRightInclusiveWindow(t *testing.T) {
+	points := []property.Point{
+		{TimestampMs: 0, Value: 100},
+		{TimestampMs: 1, Value: 1},
+		{TimestampMs: 60 * millisecondsPerSecond, Value: 2},
+		{TimestampMs: 60*millisecondsPerSecond + 1, Value: 1000},
+	}
+	outcome := oracleInstantWindow(instantWindowOracleCase(
+		"sum_over_time",
+		gen.InstantWindowValueProfileWave,
+		points,
+	))
+	want := property.Outcome{Rows: []property.OutcomeRow{{
+		Labels:      map[string]string{"job": "api"},
+		TimestampMs: 60 * millisecondsPerSecond,
+		Value:       3,
+	}}}
+	if diff := property.ValidateOutcomes(want, outcome); diff != "" {
+		t.Fatal(diff)
+	}
+}
+
+func TestInstantWindowOracleReturnsAbsentForInsufficientSamples(t *testing.T) {
+	tests := []struct {
+		name   string
+		fn     string
+		points []property.Point
+	}{
+		{name: "zero samples", fn: "sum_over_time"},
+		{
+			name:   "one sample",
+			fn:     "rate",
+			points: []property.Point{{TimestampMs: 30 * millisecondsPerSecond, Value: 1}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome := oracleInstantWindow(instantWindowOracleCase(
+				tc.fn,
+				gen.InstantWindowValueProfileWave,
+				tc.points,
+			))
+			if outcome.Err != nil {
+				t.Fatalf("oracleInstantWindow() error: %v", outcome.Err)
+			}
+			if len(outcome.Rows) != 0 {
+				t.Fatalf("oracleInstantWindow() rows = %v, want absent result", outcome.Rows)
+			}
+		})
+	}
+}
+
+func TestInstantWindowOracleExtrapolationThresholdIsInclusive(t *testing.T) {
+	tests := []struct {
+		name    string
+		firstMs int64
+		want    float64
+	}{
+		{
+			name:    "just below threshold is not clamped",
+			firstMs: 10*millisecondsPerSecond + 999,
+			want:    4.1998,
+		},
+		{
+			name:    "equal threshold is clamped",
+			firstMs: 11 * millisecondsPerSecond,
+			want:    3,
+		},
+		{
+			name:    "above threshold is clamped",
+			firstMs: 12 * millisecondsPerSecond,
+			want:    3,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			points := []property.Point{
+				{TimestampMs: tc.firstMs, Value: 1},
+				{TimestampMs: tc.firstMs + 10*millisecondsPerSecond, Value: 3},
+			}
+			got, err := instantWindowExtrapolatedValue(
+				"delta",
+				points,
+				0,
+				points[1].TimestampMs,
+				points[1].TimestampMs/millisecondsPerSecond,
+			)
+			if err != nil {
+				t.Fatalf("instantWindowExtrapolatedValue() error: %v", err)
+			}
+			assertInstantWindowFloat(t, got, tc.want)
+		})
+	}
+}
+
+func TestInstantWindowOracleCounterZeroClamp(t *testing.T) {
+	tests := []struct {
+		name   string
+		values [2]float64
+		want   float64
+	}{
+		{
+			name:   "non-negative counter clamps to implied zero",
+			values: [2]float64{1, 101},
+			want:   101,
+		},
+		{
+			name:   "negative first value disables zero clamp",
+			values: [2]float64{-1, 99},
+			want:   200,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := instantWindowExtrapolatedValue(
+				"increase",
+				[]property.Point{
+					{TimestampMs: 10 * millisecondsPerSecond, Value: tc.values[0]},
+					{TimestampMs: 20 * millisecondsPerSecond, Value: tc.values[1]},
+				},
+				0,
+				20*millisecondsPerSecond,
+				20,
+			)
+			if err != nil {
+				t.Fatalf("instantWindowExtrapolatedValue() error: %v", err)
+			}
+			assertInstantWindowFloat(t, got, tc.want)
+		})
+	}
+}
+
+func TestInstantWindowOracleRejectsDuplicateTimestamp(t *testing.T) {
+	duplicateTimestamp := int64(30 * millisecondsPerSecond)
+	outcome := oracleInstantWindow(instantWindowOracleCase(
+		"rate",
+		gen.InstantWindowValueProfileWave,
+		[]property.Point{
+			{TimestampMs: duplicateTimestamp, Value: 1},
+			{TimestampMs: duplicateTimestamp, Value: 2},
+		},
+	))
+	if outcome.Err == nil {
+		t.Fatal("oracleInstantWindow() accepted a zero-interval duplicate timestamp")
+	}
+}
+
+func TestInstantWindowOracleRejectsUnknownFunction(t *testing.T) {
+	caseWithUnknownFunction := instantWindowOracleCase(
+		"unknown_over_time",
+		gen.InstantWindowValueProfileWave,
+		[]property.Point{{TimestampMs: 30 * millisecondsPerSecond, Value: 1}},
+	)
+	outcome := oracleInstantWindow(caseWithUnknownFunction)
+	if outcome.Err == nil {
+		t.Fatal("oracleInstantWindow() accepted an unsupported function")
+	}
+}
+
+func assertInstantWindowFloat(t *testing.T, got, want float64) {
+	t.Helper()
+	wantOutcome := property.Outcome{Rows: []property.OutcomeRow{{Value: want}}}
+	gotOutcome := property.Outcome{Rows: []property.OutcomeRow{{Value: got}}}
+	if diff := property.ValidateOutcomes(wantOutcome, gotOutcome); diff != "" {
+		t.Fatal(diff)
+	}
+}
+
+func instantWindowOracleCase(
+	fn string,
+	profile gen.InstantWindowValueProfile,
+	points []property.Point,
+) gen.InstantWindowCase {
+	labels := map[string]string{"job": "api"}
+	return gen.InstantWindowCase{
+		Dataset: property.Dataset{
+			DDL: "seed",
+			Metrics: &property.MetricsModel{Series: []property.SeriesData{{
+				MetricName: "series",
+				Labels:     labels,
+				Points:     points,
+			}}},
+		},
+		RangeSec:     60,
+		ValueProfile: profile,
+		Fn:           fn,
+		MetricName:   "series",
+		Labels:       labels,
+		Query: property.Query{
+			ShapeID: "test.instant-window",
+			String:  fn + `(series{job="api"}[60s])`,
+			EvalTs:  60,
+		},
+	}
 }

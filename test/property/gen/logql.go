@@ -369,30 +369,48 @@ func escapeSQLString(s string) string {
 // generated records out of the result.
 func LogQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
-		if d.Logs == nil || len(d.Logs.Records) == 0 {
-			return property.Query{}
-		}
-
-		streamLabels := d.Logs.StreamLabelsPresent()
-		if len(streamLabels) == 0 {
-			return property.Query{}
-		}
-
-		sel := drawLogQLSelector(t, streamLabels)
-		query := drawLogQLShape(t, sel, d.Logs)
-
-		// EvalTs lives at the end of the dataset's active window plus
-		// a buffer, mirroring the prom generator's strategy. The
-		// LogQL handler treats /query as `[ts-5m, ts]`, so 60s after
-		// the last record keeps every record inside the instant
-		// lookback.
-		lastRecord := d.Logs.Records[len(d.Logs.Records)-1]
-		evalTs := time.Unix(0, lastRecord.TimestampNanos).Add(60 * time.Second).Unix()
-		return property.Query{
-			String: query,
-			EvalTs: evalTs,
-		}
+		family := rapid.SampledFrom(logQLRandomShapeFamilies).Draw(t, "shapeFamily")
+		shapeID := rapid.SampledFrom(family).Draw(t, "shapeID")
+		return drawLogQLQuery(t, d, shapeID)
 	})
+}
+
+// LogQLQueryForShape fixes the LogQL generator to one exact roster member for
+// deterministic one-per-shape execution.
+func LogQLQueryForShape(d property.Dataset, shapeID ShapeID) *rapid.Generator[property.Query] {
+	if !containsShapeID(logQLShapeRoster[:], shapeID) {
+		panic("gen/logql: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) property.Query {
+		return drawLogQLQuery(t, d, shapeID)
+	})
+}
+
+func drawLogQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Query {
+	if d.Logs == nil || len(d.Logs.Records) == 0 {
+		return property.Query{ShapeID: property.ShapeID(shapeID)}
+	}
+
+	streamLabels := d.Logs.StreamLabelsPresent()
+	if len(streamLabels) == 0 {
+		return property.Query{ShapeID: property.ShapeID(shapeID)}
+	}
+
+	sel := drawLogQLSelector(t, streamLabels)
+	query := drawLogQLShape(t, sel, d.Logs, streamLabels, shapeID)
+
+	// EvalTs lives at the end of the dataset's active window plus
+	// a buffer, mirroring the prom generator's strategy. The
+	// LogQL handler treats /query as `[ts-5m, ts]`, so 60s after
+	// the last record keeps every record inside the instant
+	// lookback.
+	lastRecord := d.Logs.Records[len(d.Logs.Records)-1]
+	evalTs := time.Unix(0, lastRecord.TimestampNanos).Add(60 * time.Second).Unix()
+	return property.Query{
+		ShapeID: property.ShapeID(shapeID),
+		String:  query,
+		EvalTs:  evalTs,
+	}
 }
 
 // drawLogQLSelector picks one stream-selector matcher and renders
@@ -410,66 +428,81 @@ func drawLogQLSelector(t *rapid.T, present map[string][]string) string {
 	return fmt.Sprintf(`{%s=%q}`, name, value)
 }
 
-// drawLogQLShape picks the random expression shape per the LogQL
-// generator accept-set. Uniform draw over the eight shapes:
+// drawLogQLShape renders one stable roster member from the LogQL generator
+// accept-set:
 //
-//	0: bare selector                — exercises the matcher path
-//	1: selector |= "<tok>"          — line-filter contains
-//	2: selector != "<tok>"          — line-filter not-contains
-//	3: selector | label_format renamed=<src>
-//	                                — rename label, post-process path
-//	4: selector |= ip("<pat>")      — ip line-filter (CIDR/range/single)
-//	5: selector != ip("<pat>")      — negated ip line-filter
-//	6: selector |> "<pattern>"      — pattern line-filter (`<_>` wildcards)
-//	7: selector !> "<pattern>"      — negated pattern line-filter
+//   - logql.stream.selector — bare selector and matcher path
+//   - logql.stream.line-contains / line-excludes — literal line filters
+//   - logql.stream.label-format — label rename and post-processing
+//   - logql.stream.ip-contains / ip-excludes — CIDR/range/single-IP filters
+//   - logql.stream.pattern-* — contains/excludes across middle, prefix, and
+//     suffix-anchored pattern forms
 //
-// The token for shapes 1 / 2 / 6 / 7 is drawn from the dataset's body
-// tokens so the filter has at least one record it could match. For
-// shape 3 the source label is drawn from the stream-label pool so
-// the rename actually fires; shapes 4 / 5 draw from LogIPPatternPool
-// (paired with the IP tokens drawBody splices into lines).
-func drawLogQLShape(t *rapid.T, sel string, logs *property.LogsModel) string {
-	shape := rapid.IntRange(0, 7).Draw(t, "shape")
-	switch shape {
-	case 0:
+// Literal and pattern tokens come from observed bodies so those shapes cannot
+// collapse to the selector. The label-format source comes from observed
+// stream labels, and IP filters use LogIPPatternPool.
+func drawLogQLShape(
+	t *rapid.T,
+	sel string,
+	logs *property.LogsModel,
+	streamLabels map[string][]string,
+	shapeID ShapeID,
+) string {
+	switch shapeID {
+	case logQLSelectorShape:
 		return sel
-	case 1, 2:
+	case logQLLineContainsShape, logQLLineExcludesShape:
 		tokens := logs.BodyTokensPresent()
 		if len(tokens) == 0 {
-			return sel
+			panic("gen/logql: line-filter shape has no observed body token")
 		}
 		tok := rapid.SampledFrom(tokens).Draw(t, "filterToken")
 		op := "|="
-		if shape == 2 {
+		if shapeID == logQLLineExcludesShape {
 			op = "!="
 		}
 		return fmt.Sprintf(`%s %s %q`, sel, op, tok)
-	case 3:
-		srcLabel := rapid.SampledFrom(LogStreamLabelPool).Draw(t, "renameSrc")
+	case logQLLabelFormatShape:
+		srcLabel := rapid.SampledFrom(mapKeys(streamLabels)).Draw(t, "renameSrc")
 		return fmt.Sprintf(`%s | label_format renamed=%s`, sel, srcLabel)
-	case 4, 5:
+	case logQLIPContainsShape, logQLIPExcludesShape:
 		pat := rapid.SampledFrom(LogIPPatternPool).Draw(t, "ipPattern")
 		op := "|="
-		if shape == 5 {
+		if shapeID == logQLIPExcludesShape {
 			op = "!="
 		}
 		return fmt.Sprintf(`%s %s ip(%q)`, sel, op, pat)
-	case 6, 7:
+	case logQLPatternContainsShape,
+		logQLPatternContainsPrefixShape,
+		logQLPatternContainsSuffixShape,
+		logQLPatternExcludesShape,
+		logQLPatternExcludesPrefixShape,
+		logQLPatternExcludesSuffixShape:
 		tokens := logs.BodyTokensPresent()
 		if len(tokens) == 0 {
-			return sel
+			panic("gen/logql: pattern-filter shape has no observed body token")
 		}
 		tok := rapid.SampledFrom(tokens).Draw(t, "patternToken")
-		// The three structural positions exercise the reference
-		// Test() walk's distinct branches: floating leading literal,
-		// anchored trailing literal, and the gaps-on-both-sides form
-		// (every wildcard must consume ≥ 1 byte).
-		form := rapid.SampledFrom([]string{"<_>%s<_>", "%s<_>", "<_>%s"}).Draw(t, "patternForm")
-		op := "|>"
-		if shape == 7 {
-			op = "!>"
-		}
+		op, form := logQLPatternOperatorAndForm(shapeID)
 		return fmt.Sprintf(`%s %s %q`, sel, op, fmt.Sprintf(form, tok))
 	}
-	return sel
+	panic("gen/logql: unhandled shape " + string(shapeID))
+}
+
+func logQLPatternOperatorAndForm(shapeID ShapeID) (string, string) {
+	switch shapeID {
+	case logQLPatternContainsShape:
+		return "|>", "<_>%s<_>"
+	case logQLPatternContainsPrefixShape:
+		return "|>", "%s<_>"
+	case logQLPatternContainsSuffixShape:
+		return "|>", "<_>%s"
+	case logQLPatternExcludesShape:
+		return "!>", "<_>%s<_>"
+	case logQLPatternExcludesPrefixShape:
+		return "!>", "%s<_>"
+	case logQLPatternExcludesSuffixShape:
+		return "!>", "<_>%s"
+	}
+	panic("gen/logql: unhandled pattern shape " + string(shapeID))
 }

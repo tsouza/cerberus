@@ -226,6 +226,10 @@ func (m *MetricsModel) LabelsPresentFor(name string) map[string][]string {
 // produces the AST first, then pretty-prints it via expr.String(); the
 // two are guaranteed in lock-step by construction.
 type Query struct {
+	// ShapeID is the stable semantic-shape identifier selected by the
+	// generator. It is deliberately independent of a generator's switch
+	// order so adding or reordering shapes cannot silently relabel evidence.
+	ShapeID ShapeID
 	// String is the AST pretty-printed by parser.Expr.String(). Cerberus
 	// re-parses it before lowering. The oracle's bridge re-parses it
 	// inside Prometheus's engine as well.
@@ -235,6 +239,43 @@ type Query struct {
 	// active window so the query has at least one matching sample to
 	// see. Range queries are out of scope for PR 1 (instant only).
 	EvalTs int64
+}
+
+// ShapeID is a stable, human-readable identifier for one generated semantic
+// query shape. Generators publish exact rosters of these IDs and stamp every
+// generated query with the selected member.
+type ShapeID string
+
+// ShapeExampleAttemptLimit bounds the stable oracle-guided search for a
+// non-empty deterministic example. A roster case that cannot produce row
+// evidence within this many seeds fails instead of becoming a hollow green.
+const ShapeExampleAttemptLimit = 64
+
+// ShapeExampleSeed derives a stable rapid.Example seed from a semantic shape
+// ID. The seed does not depend on roster position, so reordering or inserting
+// shapes cannot change another shape's deterministic enrollment case.
+func ShapeExampleSeed(id ShapeID) int {
+	const (
+		fnvOffsetBasis   uint64 = 14695981039346656037
+		fnvPrime         uint64 = 1099511628211
+		shapeSeedModulus        = 2147483647
+	)
+	hash := fnvOffsetBasis
+	for _, b := range []byte(id) {
+		hash ^= uint64(b)
+		hash *= fnvPrime
+	}
+	return int(hash % shapeSeedModulus)
+}
+
+// ShapeExampleAttemptSeed derives a stable seed for one bounded attempt. The
+// first attempt preserves ShapeExampleSeed's original value; later attempts
+// depend only on the shape ID and attempt number, never roster position.
+func ShapeExampleAttemptSeed(id ShapeID, attempt int) int {
+	if attempt == 0 {
+		return ShapeExampleSeed(id)
+	}
+	return ShapeExampleSeed(ShapeID(fmt.Sprintf("%s#attempt-%d", id, attempt)))
 }
 
 // Outcome is the structured result of an oracle or cerberus invocation
@@ -319,6 +360,16 @@ type OracleFn func(d Dataset, q Query) Outcome
 // httptest.Server lifecycle.
 type CerberusFn func(d Dataset, q Query) Outcome
 
+// ShapeExampleFn builds the deterministic dataset/query pair for one exact
+// roster member. The supplied seed is derived from the shape ID rather than
+// its roster position.
+type ShapeExampleFn[S ~string] func(shapeID S, seed int) (Dataset, Query)
+
+// ShapeOutcomeFn evaluates one deterministic roster example inside its own
+// subtest. The supplied *testing.T is the child created for that shape, so live
+// clients, request contexts, and failures are all owned by the correct test.
+type ShapeOutcomeFn func(t *testing.T, d Dataset, q Query) Outcome
+
 // Config is a forward-looking knob bag. Today it carries no fields
 // that the framework reads — rapid's per-test iteration count is
 // controlled via the `-rapid.checks=N` CLI flag (default 100), so a
@@ -327,6 +378,230 @@ type CerberusFn func(d Dataset, q Query) Outcome
 // fields (e.g., per-runner timeout, generator-specific knobs) can land
 // without breaking the Run signature.
 type Config struct{}
+
+// ValidateGeneratedQuery rejects vacuous generator output before either side
+// executes. A randomized property without a stable shape ID cannot contribute
+// evidence to the exact roster, even when its query text happens to be valid.
+func ValidateGeneratedQuery(query Query) string {
+	var failures []string
+	if strings.TrimSpace(string(query.ShapeID)) == "" {
+		failures = append(failures, "missing shape ID")
+	}
+	if strings.TrimSpace(query.String) == "" {
+		failures = append(failures, "empty query")
+	}
+	return strings.Join(failures, "; ")
+}
+
+// ValidateMetricsDataset and ValidateLogsDataset keep a generator defect from
+// consuming a randomized check without executing either side of the fence.
+func ValidateMetricsDataset(dataset Dataset) string {
+	if dataset.Metrics == nil {
+		return "missing metrics model"
+	}
+	if len(dataset.Metrics.Series) == 0 {
+		return "empty metrics series"
+	}
+	if len(dataset.Metrics.NamesPresent()) == 0 {
+		return "metrics dataset has no metric names"
+	}
+	hasSamplePoint := false
+	for _, series := range dataset.Metrics.Series {
+		if len(series.Points) > 0 {
+			hasSamplePoint = true
+			break
+		}
+	}
+	if !hasSamplePoint {
+		return "metrics dataset has no sample points"
+	}
+	if strings.TrimSpace(dataset.DDL) == "" {
+		return "empty seed DDL"
+	}
+	return ""
+}
+
+func ValidateLogsDataset(dataset Dataset) string {
+	if dataset.Logs == nil {
+		return "missing logs model"
+	}
+	if len(dataset.Logs.Records) == 0 {
+		return "empty log records"
+	}
+	if strings.TrimSpace(dataset.DDL) == "" {
+		return "empty seed DDL"
+	}
+	return ""
+}
+
+// ValidateGeneratedDataset selects the one model family a deterministic
+// example carries. Multiple populated models would make it ambiguous which
+// oracle contract the example is proving.
+func ValidateGeneratedDataset(dataset Dataset) string {
+	switch {
+	case dataset.Metrics != nil && dataset.Logs != nil:
+		return "dataset contains both metrics and logs models"
+	case dataset.Metrics != nil:
+		return ValidateMetricsDataset(dataset)
+	case dataset.Logs != nil:
+		return ValidateLogsDataset(dataset)
+	default:
+		return "missing metrics or logs model"
+	}
+}
+
+func validateShapeRoster[S ~string](shapeIDs []S) string {
+	if len(shapeIDs) == 0 {
+		return "property shape roster is empty"
+	}
+	seen := make(map[ShapeID]struct{}, len(shapeIDs))
+	for _, shapeID := range shapeIDs {
+		propertyShapeID := ShapeID(shapeID)
+		if strings.TrimSpace(string(propertyShapeID)) == "" {
+			return "property shape roster contains an empty ID"
+		}
+		if _, duplicate := seen[propertyShapeID]; duplicate {
+			return fmt.Sprintf("property shape roster contains duplicate ID %q", propertyShapeID)
+		}
+		seen[propertyShapeID] = struct{}{}
+	}
+	return ""
+}
+
+// RunShapeCases is the shared fail-closed orchestration seam for every
+// deterministic property roster. It validates the complete roster before any
+// example callback can run, then validates each example's dataset and stamped
+// query identity before handing the payload to run.
+//
+// Q lets callers retain family-specific query geometry (for example a PromQL
+// range grid or an instant-window case) without weakening the common dataset,
+// roster, and query-shape contract.
+func RunShapeCases[S ~string, Q any](
+	t *testing.T,
+	shapeIDs []S,
+	example func(shapeID S, seed int) (Dataset, Q, ShapeID, string),
+	run func(t *testing.T, dataset Dataset, generated Q),
+) {
+	t.Helper()
+	if invalid := runShapeCases(t, shapeIDs, example, run); invalid != "" {
+		t.Fatal(invalid)
+	}
+}
+
+// runShapeCases keeps roster rejection observable without deliberately
+// failing a parent test. Public runners turn its validation result into a
+// fatal assertion; negative controls call this seam directly to prove no
+// callback is reachable from an invalid roster.
+func runShapeCases[S ~string, Q any](
+	t *testing.T,
+	shapeIDs []S,
+	example func(shapeID S, seed int) (Dataset, Q, ShapeID, string),
+	run func(t *testing.T, dataset Dataset, generated Q),
+) string {
+	t.Helper()
+	if invalid := validateShapeRoster(shapeIDs); invalid != "" {
+		return invalid
+	}
+	type preparedShapeCase struct {
+		name      string
+		dataset   Dataset
+		generated Q
+	}
+	prepared := make([]preparedShapeCase, 0, len(shapeIDs))
+	for _, shapeID := range shapeIDs {
+		propertyShapeID := ShapeID(shapeID)
+		dataset, generated, generatedShapeID, queryText := example(
+			shapeID,
+			ShapeExampleSeed(propertyShapeID),
+		)
+		if invalid := ValidateGeneratedDataset(dataset); invalid != "" {
+			return fmt.Sprintf("shape %q generated an invalid dataset: %s", shapeID, invalid)
+		}
+		if generatedShapeID != propertyShapeID {
+			return fmt.Sprintf("shape generator stamped %q, want %q", generatedShapeID, propertyShapeID)
+		}
+		if strings.TrimSpace(queryText) == "" {
+			return fmt.Sprintf("shape %q generated an empty query", shapeID)
+		}
+		prepared = append(prepared, preparedShapeCase{
+			name:      string(propertyShapeID),
+			dataset:   dataset,
+			generated: generated,
+		})
+	}
+	for _, shapeCase := range prepared {
+		shapeCase := shapeCase
+		t.Run(shapeCase.name, func(t *testing.T) {
+			run(t, shapeCase.dataset, shapeCase.generated)
+		})
+	}
+	return ""
+}
+
+// RunShapeExamples executes exactly one deterministic live differential for
+// every enrolled shape. This is the non-probabilistic floor beneath the rapid
+// sweep: random iterations widen values and geometry, while this roster pass
+// proves no semantic shape can disappear from a green run by chance.
+func RunShapeExamples[S ~string](
+	t *testing.T,
+	shapeIDs []S,
+	example ShapeExampleFn[S],
+	oracle ShapeOutcomeFn,
+	system ShapeOutcomeFn,
+) {
+	t.Helper()
+	if invalid := runShapeExamples(t, shapeIDs, example, oracle, system); invalid != "" {
+		t.Fatal(invalid)
+	}
+}
+
+func runShapeExamples[S ~string](
+	t *testing.T,
+	shapeIDs []S,
+	example ShapeExampleFn[S],
+	oracle ShapeOutcomeFn,
+	system ShapeOutcomeFn,
+) string {
+	t.Helper()
+	if invalid := validateShapeRoster(shapeIDs); invalid != "" {
+		return invalid
+	}
+	for _, shapeID := range shapeIDs {
+		shapeID := shapeID
+		propertyShapeID := ShapeID(shapeID)
+		t.Run(string(propertyShapeID), func(t *testing.T) {
+			for attempt := range ShapeExampleAttemptLimit {
+				dataset, query := example(shapeID, ShapeExampleAttemptSeed(propertyShapeID, attempt))
+				if invalid := ValidateGeneratedDataset(dataset); invalid != "" {
+					t.Fatalf("shape %q generated an invalid dataset: %s", shapeID, invalid)
+				}
+				if query.ShapeID != propertyShapeID {
+					t.Fatalf("shape generator stamped %q, want %q", query.ShapeID, propertyShapeID)
+				}
+				if strings.TrimSpace(query.String) == "" {
+					t.Fatalf("shape %q generated an empty query", shapeID)
+				}
+
+				oracleOutcome := oracle(t, dataset, query)
+				if oracleOutcome.Err != nil {
+					t.Fatalf("property shape %q oracle failed\n--- query ---\n%s\n--- dataset ---\n%s\n--- error ---\n%v",
+						query.ShapeID, query.String, dumpDataset(dataset), oracleOutcome.Err)
+				}
+				if len(oracleOutcome.Rows) == 0 {
+					continue
+				}
+				if diff := ValidateDeterministicOutcomes(oracleOutcome, system(t, dataset, query)); diff != "" {
+					t.Fatalf("property shape %q failed\n--- query ---\n%s\n--- dataset ---\n%s\n--- diff ---\n%s",
+						query.ShapeID, query.String, dumpDataset(dataset), diff)
+				}
+				return
+			}
+			t.Fatalf("property shape %q produced no oracle rows across %d stable attempts",
+				propertyShapeID, ShapeExampleAttemptLimit)
+		})
+	}
+	return ""
+}
 
 // Run is the top-level property runner. It walks the rapid.Check loop:
 // each iteration draws a dataset and a query, evaluates both sides,
@@ -339,8 +614,8 @@ type Config struct{}
 // keeps the package free of chdb tags except in chdb.go.
 //
 // Iteration count is controlled by `-rapid.checks=N` (default 100).
-// CI inherits the default; local debug runs can pass
-// `-rapid.checks=1000` for a deeper sweep.
+// The deep CI lane overrides this to 500; local debug runs can pass
+// `-rapid.checks=1000` for a wider sweep.
 func Run(
 	t *testing.T,
 	_ Config,
@@ -353,21 +628,18 @@ func Run(
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ds := dgen(rt)
-		if len(ds.Metrics.Series) == 0 || len(ds.Metrics.NamesPresent()) == 0 {
-			// Generator produced an empty dataset — skip this draw.
-			// rapid treats Skipf as "this case isn't interesting,
-			// don't count it against the budget".
-			rt.Skipf("empty dataset")
+		if invalid := ValidateMetricsDataset(ds); invalid != "" {
+			rt.Fatalf("invalid generated dataset: %s", invalid)
 		}
 		q := qgen(rt, ds)
-		if q.String == "" {
-			rt.Skipf("empty query")
+		if invalid := ValidateGeneratedQuery(q); invalid != "" {
+			rt.Fatalf("invalid generated query: %s", invalid)
 		}
 
 		oracleOut := oracle(ds, q)
 		cerberusOut := ch(ds, q)
 
-		if diff := CompareOutcomes(oracleOut, cerberusOut); diff != "" {
+		if diff := ValidateOutcomes(oracleOut, cerberusOut); diff != "" {
 			rt.Fatalf("property drift\n--- query ---\n%s\nevalTs=%d\n--- dataset ---\n%s\n--- diff ---\n%s",
 				q.String, q.EvalTs, dumpDataset(ds), diff)
 		}
@@ -380,9 +652,8 @@ func Run(
 // applies; the rapid.Check loop minimises the failing (dataset,
 // query) pair before reporting.
 //
-// The runner skips an iteration only when the generator produces a
-// degenerate draw (empty record set, empty query). It NEVER calls
-// t.Skip — a comparator drift is always a real property failure.
+// Degenerate datasets and queries are harness failures: every counted
+// iteration must execute both sides of the differential.
 func RunLogs(
 	t *testing.T,
 	_ Config,
@@ -395,48 +666,78 @@ func RunLogs(
 
 	rapid.Check(t, func(rt *rapid.T) {
 		ds := dgen(rt)
-		if ds.Logs == nil || len(ds.Logs.Records) == 0 {
-			rt.Skipf("empty logs dataset")
+		if invalid := ValidateLogsDataset(ds); invalid != "" {
+			rt.Fatalf("invalid generated dataset: %s", invalid)
 		}
 		q := qgen(rt, ds)
-		if q.String == "" {
-			rt.Skipf("empty query")
+		if invalid := ValidateGeneratedQuery(q); invalid != "" {
+			rt.Fatalf("invalid generated query: %s", invalid)
 		}
 
 		oracleOut := oracle(ds, q)
 		cerberusOut := ch(ds, q)
 
-		if diff := CompareOutcomes(oracleOut, cerberusOut); diff != "" {
+		if diff := ValidateOutcomes(oracleOut, cerberusOut); diff != "" {
 			rt.Fatalf("property drift\n--- query ---\n%s\nevalTs=%d\n--- dataset ---\n%s\n--- diff ---\n%s",
 				q.String, q.EvalTs, dumpDataset(ds), diff)
 		}
 	})
 }
 
-// CompareOutcomes returns "" when both sides agree and a multiline
-// diff string otherwise. The shape mirrors what shadow.Compare emits
-// but is local to this package so the property test can render a
-// failure without dragging shadow's VectorResult shape into the test
-// code.
+// ValidateOutcomes is the fail-closed property verdict. An oracle error is a
+// harness failure and a system error is a product/substrate failure; neither
+// can become a green agreement merely because both sides errored. When both
+// sides produced rows, the verdict delegates to the value comparator.
+//
+// The function is pure so negative controls can prove every error state is
+// rejected without booting chDB or an HTTP handler.
+func ValidateOutcomes(oracle, system Outcome) string {
+	var failures []string
+	if oracle.Err != nil {
+		failures = append(failures, fmt.Sprintf("oracle error: %v", oracle.Err))
+	}
+	if system.Err != nil {
+		failures = append(failures, fmt.Sprintf("system error: %v", system.Err))
+	}
+	if len(failures) > 0 {
+		return strings.Join(failures, "\n")
+	}
+	return compareOutcomeRows(oracle, system)
+}
+
+// ValidateDeterministicOutcomes is the non-vacuity verdict for an enrolled
+// roster case. Random properties may legitimately draw a query whose successful
+// result is empty, but a deterministic floor must contribute observable row
+// evidence on both sides. An empty agreement therefore fails after the normal
+// fail-closed error and value comparison.
+func ValidateDeterministicOutcomes(oracle, system Outcome) string {
+	if diff := ValidateOutcomes(oracle, system); diff != "" {
+		return diff
+	}
+	if len(oracle.Rows) == 0 {
+		return "deterministic property case produced no rows on either side"
+	}
+	return ""
+}
+
+// CompareOutcomes is the compatibility entry point used by the property and
+// integration suites. It is intentionally fail-closed and therefore has the
+// same verdict as [ValidateOutcomes].
+func CompareOutcomes(want, got Outcome) string {
+	return ValidateOutcomes(want, got)
+}
+
+// compareOutcomeRows returns "" when two successful outcomes agree and a
+// multiline diff otherwise. The shape mirrors what shadow.Compare emits but
+// is local to this package so the property test can render a failure without
+// dragging shadow's VectorResult shape into the test code.
 //
 // Comparison is multiset-aware: row order doesn't matter, but every
 // row on one side must have a same-(labels, ts, value) row on the
 // other. Numeric tolerance follows shadow's defaults
 // (abs=1e-9, rel=1e-9) so floating-point noise from a different
 // evaluation order doesn't flag.
-func CompareOutcomes(want, got Outcome) string {
-	if (want.Err == nil) != (got.Err == nil) {
-		return fmt.Sprintf("error mismatch: want_err=%v got_err=%v", want.Err, got.Err)
-	}
-	if want.Err != nil && got.Err != nil {
-		// Both errored — we don't try to match error messages
-		// byte-for-byte; the cerberus errors get wrapped through
-		// classify*, and the oracle errors come from Prometheus's
-		// internals. Treat any same-side error as "both refused"
-		// and pass.
-		return ""
-	}
-
+func compareOutcomeRows(want, got Outcome) string {
 	wantIdx := indexOutcomeRows(want.Rows)
 	gotIdx := indexOutcomeRows(got.Rows)
 

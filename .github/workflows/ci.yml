@@ -132,7 +132,9 @@ jobs:
           tool: just
 
       - name: test
-        run: just test-unit
+        run: |
+          just test-chaos-sleep
+          just test-unit
 
   check-build:
     name: check-build

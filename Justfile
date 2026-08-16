@@ -123,12 +123,12 @@ migrate *ARGS:
 # these recipes and the workflows and fails on any drift, so the numbers below
 # do not have to be remembered.
 
-# Run unit + spec tests with race detector, then type-check the build-tagged
-# lanes no other recipe compiles. This is the whole `check` gate in one
-# command, which is what you want locally; CI splits it across two concurrent
-# jobs via the two recipes below, so keep this one a pure composition of them
-# rather than a third copy of the commands.
-test: test-unit vet-tagged
+# Run unit + spec tests with race detector, execute the focused chaos-tag
+# assertions, then type-check the build-tagged lanes no other recipe compiles.
+# This is the whole `check` gate in one command, which is what you want locally;
+# CI may schedule the constituent recipes independently, so keep this one a
+# pure composition rather than a copy of their commands.
+test: test-unit test-chaos-sleep vet-tagged
 
 # The race-detected unit + spec suite. CI's `check-test` job runs exactly this
 # and nothing else: it is the long pole of the gate, and pairing it with the
@@ -136,6 +136,12 @@ test: test-unit vet-tagged
 # wait on each other.
 test-unit:
     go test -timeout 15m -race ./...
+
+# Run the deterministic chaos_sleep injection assertions. The live chaos lane
+# builds this tag into the binary, but only this focused recipe executes the six
+# tagged unit assertions that prove header propagation and SQL splicing.
+test-chaos-sleep:
+    go test -timeout 2m -race -tags=chaos_sleep -count=1 -run '^(TestApplyChaosSleep_|TestChaosSleep_)' ./internal/api/prom/... ./internal/chsql/...
 
 # Type-check the build-tagged migration lanes no other recipe compiles. `go vet`
 # typechecks, so a rename in an untagged package that breaks a `migration_tier1`
@@ -152,21 +158,22 @@ vet-tagged:
     go vet -tags=migration_tier2 ./test/e2e/migration/...
     go vet -tags=agpl_oracle ./internal/... ./test/agpl_oracle/...
 
-# Run the agpl_oracle differential oracle tests. These compare the in-house
-# LogQL and TraceQL parser reimplementations against the upstream AGPL
-# reference parsers (grafana/loki + grafana/tempo). Requires no CGO /
-# Docker / libchdb — just pure Go with the root-module deps.
-# Mirrors the `agpl-oracle` CI lane in .github/workflows/agpl-oracle.yml.
+# Run only the tests and compile probes whose evidence depends on the
+# agpl_oracle tag. The focused filters avoid re-running the entire untagged
+# internal and TXTAR suites after the required check gate already ran them.
+# Requires no CGO, Docker, or libchdb.
 test-agpl-oracle:
-    go test -race -tags agpl_oracle -count=1 ./internal/... ./test/agpl_oracle/...
+    go test -timeout 12m -race -tags agpl_oracle -count=1 -run '^(TestAGPLOracle_|TestJSONPathParse_MatchesLokiJSONExpr$|TestParseExprPermissive_MatchAllAccepted$|TestPattern_)' ./internal/logql/...
+    go test -timeout 12m -race -tags agpl_oracle -count=1 ./test/agpl_oracle/... ./test/spec/parityoracle/logql/... ./test/spec/parityoracle/traceql/... ./test/property/oracle/logql/...
+    go test -timeout 12m -race -tags agpl_oracle -count=1 -run '^Test(LogQL|TraceQL)ReferenceVerdictsAreCurrent$' ./test/surface-parity/...
 
-# Run the internal/schema/ddl integration tests against a real ClickHouse
-# container (spun up via testcontainers-go). Requires Docker. Gated behind
-# the `integration` build tag so regular `just test` doesn't pull in
-# Docker.
+# Run the schema DDL and command auto-create integration tests against real
+# ClickHouse containers (spun up via testcontainers-go). `-p=1` keeps the two
+# packages from competing for the same Docker substrate. Requires Docker and is
+# gated behind `integration`, so regular `just test` stays container-free.
 schema-ddl-test:
     @just _pull-retry {{CH_TEST_IMAGE}} {{CH_TEST_IMAGE_PRIOR}}
-    go test -timeout 20m -race -tags=integration ./internal/schema/ddl/...
+    go test -timeout 20m -p=1 -race -tags=integration ./internal/schema/ddl/... ./cmd/cerberus/...
 
 # Run the TXTAR spec suite with the chDB-backed round-trip assertion
 # layer enabled. Requires libchdb.so (see `just chdb-install`). The
@@ -205,11 +212,12 @@ spec-chdb:
 test-chdb:
     go test -timeout 10m -tags chdb -count=1 ./internal/chclienttest/... ./internal/api/... ./internal/chsql/... ./internal/optcorpus/... ./internal/routerrules/... ./internal/schema/ddl/... ./internal/solver/... ./test/consumer-corpus/...
 
-# Run the chDB-tagged property tests (rapid + from-scratch oracle).
+# Run the chDB-tagged property tests (rapid + from-scratch oracle) for all three
+# query heads. The synthetic composite tag activates the LogQL live runner.
 # Requires libchdb.so (see `just chdb-install`). Local default is rapid's
 # 100 iterations; the nightly `property` CI workflow overrides to 500.
 property:
-    go test -tags chdb -count=1 ./test/property/...
+    go test -tags chdb,agpl_oracle,chdb_agpl_oracle -count=1 ./test/property/...
 
 # Run the chDB-tagged perf regression guards (test/perf). These are
 # deterministic ASSERTION pins — not wall-clock benchmarks — that bite a
@@ -506,6 +514,13 @@ update-coverage-floor:
     @echo "Diff of regenerated floors:"
     @git --no-pager diff --stat test/coverage-floor.json || true
 
+# Regenerate the exact per-head roster of TXTAR fixtures carrying a live
+# reference parity contract. The assertion mode never writes; this recipe is
+# the explicit, review-visible way to accept a deliberate roster change.
+update-parity-enrolment-baseline:
+    UPDATE_PARITY_ENROLMENT_BASELINE=1 go test -count=1 -run '^TestParityEnrolmentBaseline$' ./test/regression
+    @git --no-pager diff --stat test/regression/parity-enrolment-baselines/ || true
+
 # Regenerate the fixture-derived artefacts named by SHARD, one or more of:
 #
 #     promql logql traceql chsql optimizer codegen migration parity solver
@@ -548,13 +563,12 @@ update-coverage-floor:
 #   body's default-tag lane runs TestSolverDecisionRatchet in ASSERT mode, which
 #   fails on a brand-new fixture not yet in the routing baseline and would abort
 #   before the body could finish.
-# - `migration` and `parity` also run BEFORE it. Neither reads `test/spec/**`
-#   nor either perf baseline — `migration` re-derives every Tier-0 explain
-#   report from the migration corpus's own committed dashboards and rules,
-#   `parity` re-probes the three parsers' symbol tables and catalogued rejection
-#   sites from `internal/**` — so the body cannot change what they record.
-#   Running them first puts their output inside the closing diff-stat, which is
-#   the point: drift has to appear in the diff a contributor is asked to review,
+# - `migration` and `parity` also run BEFORE it. `migration` re-derives every
+#   Tier-0 explain report from its own committed dashboards and rules. `parity`
+#   re-probes the parsers from `internal/**` and records which TXTAR fixtures
+#   carry `-- parity --`; the body rewrites neither of those inputs. Running
+#   them first puts their output inside the closing diff-stat, which is the
+#   point: drift has to appear in the diff a contributor is asked to review,
 #   not just in a file that quietly changed. Both are seconds of pure Go.
 # - `cardinality` runs AFTER it. It profiles the fixture's RECORDED `-- sql --`
 #   section verbatim: spec.PrepareRoundTrip rewrites that literal text and hands
@@ -617,7 +631,7 @@ update-golden *shards:
 #
 #   CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
 #   CERBERUS_UPDATE_TRACEQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle -run TestTraceQLReferenceVerdictsAreCurrent ./test/surface-parity/
-update-parity-ledgers:
+update-parity-ledgers: update-parity-enrolment-baseline
     CERBERUS_UPDATE_INVENTORY=1 go test -count=1 ./test/surface-parity/ ./test/rejection-parity/
     @echo
     @echo "Diff of regenerated parity ledgers:"

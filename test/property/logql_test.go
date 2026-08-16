@@ -43,7 +43,7 @@
 //
 // Like TestPromQL_Property_FromScratch, this test runs in two lanes:
 //
-//   - Locally and on any explicit `go test -tags chdb ./test/property/...`
+//   - Locally and on any explicit composite-tag property invocation
 //     invocation, rapid uses its default of 100 iterations.
 //   - The nightly `property` workflow (`.github/workflows/property.yml`)
 //     overrides to `-rapid.checks=500` for a deeper sweep.
@@ -51,7 +51,7 @@
 // To reproduce a failing CI run locally, copy the rapid seed from the
 // workflow log and re-run:
 //
-//	go test -tags chdb -run TestLogQL_Property \
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestLogQL_Property \
 //	    -rapid.seed=<N> ./test/property/...
 //
 // rapid persists the shrunk failing draw under `testdata/rapid/`; the
@@ -124,6 +124,33 @@ func TestLogQL_Property(t *testing.T) {
 	property.RunLogs(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
 }
 
+// TestLogQL_PropertyShapeRoster executes one deterministic live differential
+// per enrolled stream-query shape under the full chDB/oracle composite tags.
+func TestLogQL_PropertyShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := loki.New(cli, schema.DefaultOTelLogs(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	property.RunShapeExamples(
+		t,
+		gen.LogQLShapeIDs(),
+		func(shapeID gen.ShapeID, seed int) (property.Dataset, property.Query) {
+			dataset := gen.LogsDataset().Example(seed)
+			return dataset, gen.LogQLQueryForShape(dataset, shapeID).Example(seed)
+		},
+		func(_ *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			return oraclelogql.Evaluate(dataset, query)
+		},
+		func(t *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			cli.Seed(t, dataset.DDL)
+			return runCerberusLogQLInstant(t.Context(), srv.URL, query, dataset.Logs)
+		},
+	)
+}
+
 // runCerberusLogQLInstant POSTs to /loki/api/v1/query and decodes
 // the Loki-shaped response into the framework's property.Outcome.
 //
@@ -192,9 +219,8 @@ func runCerberusLogQLInstant(ctx context.Context, baseURL string, q property.Que
 		}
 	}
 	if parsed.Status != "success" {
-		// A failed-status response is a legitimate outcome — the
-		// oracle may also fail on the same query. Surface the
-		// error so the comparator can pair both-error outcomes.
+		// Surface a failed-status response as a system error. The
+		// fail-closed verdict rejects it even when the oracle also errors.
 		return property.Outcome{
 			Err: fmt.Errorf("cerberus returned status=%q errorType=%q err=%q",
 				parsed.Status, parsed.ErrorType, parsed.Error),

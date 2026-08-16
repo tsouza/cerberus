@@ -37,10 +37,9 @@ var ExpHistogramFractionBoundPool = []float64{-8, -1.5, -0.25, 0, 0.25, 1.5, 8}
 // the lower == upper boundary itself in the sweep.
 const expHistogramDegenerateFractionRate = 8
 
-// expHistogramValueFns are the native-histogram functions whose only
-// argument is the histogram vector. Each reduces a histogram sample to
-// one float, so the result encodes on the Prom wire as an ordinary
-// vector and the comparator can diff it directly.
+// expHistogramValueFns is the exact scalar-function vocabulary. Stable shape
+// IDs select these functions individually; this list remains the independent
+// accept-set used by generator grammar tests.
 var expHistogramValueFns = []string{
 	"histogram_count",
 	"histogram_sum",
@@ -86,30 +85,57 @@ const expHistogramRangeWindow = 5 * time.Minute
 // re-parse.
 func ExpHistogramQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
-		names := d.Metrics.NamesPresent()
-		if len(names) == 0 {
-			// Run() skips datasets with no series before drawing a
-			// query; guard anyway so the generator cannot panic.
-			return property.Query{}
-		}
-
-		name := rapid.SampledFrom(names).Draw(t, "expHistMetric")
-		matchers := drawMatchers(t, name, d.Metrics)
-		labelNames := mapKeys(d.Metrics.LabelsPresentFor(name))
-		groupLabel := ""
-		if len(labelNames) > 0 {
-			groupLabel = rapid.SampledFrom(labelNames).Draw(t, "expHistGroupLabel")
-		}
-
-		return property.Query{
-			String: drawExpHistogramExpr(t, name, matchers, groupLabel).String(),
-			EvalTs: AnchorTime().Add(expHistogramEvalOffset).Unix(),
-		}
+		family := rapid.SampledFrom(expHistogramRandomShapeFamilies).Draw(t, "expHistShapeFamily")
+		shapeID := rapid.SampledFrom(family).Draw(t, "expHistShapeID")
+		return drawExpHistogramQuery(t, d, shapeID)
 	})
 }
 
+// ExpHistogramQueryForShape fixes the native-histogram generator to one exact
+// roster member for deterministic one-per-shape execution.
+func ExpHistogramQueryForShape(
+	d property.Dataset,
+	shapeID ShapeID,
+) *rapid.Generator[property.Query] {
+	if !containsShapeID(expHistogramShapeRoster[:], shapeID) {
+		panic("gen/promql-native-histogram: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) property.Query {
+		return drawExpHistogramQuery(t, d, shapeID)
+	})
+}
+
+func drawExpHistogramQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Query {
+	names := d.Metrics.NamesPresent()
+	if len(names) == 0 {
+		// The framework rejects this generator defect before execution;
+		// preserve a non-panicking diagnostic value for direct callers.
+		return property.Query{ShapeID: property.ShapeID(shapeID)}
+	}
+
+	name := rapid.SampledFrom(names).Draw(t, "expHistMetric")
+	matchers := drawMatchers(t, name, d.Metrics)
+	labelNames := mapKeys(d.Metrics.LabelsPresentFor(name))
+	groupLabel := ""
+	if len(labelNames) > 0 {
+		groupLabel = rapid.SampledFrom(labelNames).Draw(t, "expHistGroupLabel")
+	}
+
+	return property.Query{
+		ShapeID: property.ShapeID(shapeID),
+		String:  drawExpHistogramExpr(t, name, matchers, groupLabel, shapeID).String(),
+		EvalTs:  AnchorTime().Add(expHistogramEvalOffset).Unix(),
+	}
+}
+
 // drawExpHistogramExpr picks one of the supported native-histogram shapes.
-func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher, groupLabel string) parser.Expr {
+func drawExpHistogramExpr(
+	t *rapid.T,
+	name string,
+	matchers []*labels.Matcher,
+	groupLabel string,
+	shapeID ShapeID,
+) parser.Expr {
 	selectorMatchers := func(grouped bool) []*labels.Matcher {
 		out := append([]*labels.Matcher(nil), matchers...)
 		if grouped && groupLabel != "" {
@@ -134,7 +160,10 @@ func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher, g
 	}
 	sum := func(expr parser.Expr, grouped bool) parser.Expr {
 		agg := &parser.AggregateExpr{Op: parser.SUM, Expr: expr}
-		if grouped && groupLabel != "" {
+		if grouped {
+			if groupLabel == "" {
+				panic("gen/promql-native-histogram: grouped shape has no observed label")
+			}
 			agg.Grouping = []string{groupLabel}
 		}
 		return agg
@@ -147,11 +176,18 @@ func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher, g
 		}
 	}
 
-	switch rapid.IntRange(0, 15).Draw(t, "expHistShape") {
-	case 0:
-		fn := rapid.SampledFrom(expHistogramValueFns).Draw(t, "expHistValueFn")
-		return &parser.Call{Func: parser.Functions[fn], Args: []parser.Expr{sel(false)}}
-	case 1:
+	switch shapeID {
+	case expHistogramCountFunctionShape:
+		return &parser.Call{Func: parser.Functions["histogram_count"], Args: []parser.Expr{sel(false)}}
+	case expHistogramSumFunctionShape:
+		return &parser.Call{Func: parser.Functions["histogram_sum"], Args: []parser.Expr{sel(false)}}
+	case expHistogramAverageFunctionShape:
+		return &parser.Call{Func: parser.Functions["histogram_avg"], Args: []parser.Expr{sel(false)}}
+	case expHistogramStddevFunctionShape:
+		return &parser.Call{Func: parser.Functions["histogram_stddev"], Args: []parser.Expr{sel(false)}}
+	case expHistogramStdvarFunctionShape:
+		return &parser.Call{Func: parser.Functions["histogram_stdvar"], Args: []parser.Expr{sel(false)}}
+	case expHistogramFractionShape:
 		lower := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionLower")
 		upper := rapid.SampledFrom(ExpHistogramFractionBoundPool).Draw(t, "expHistFractionUpper")
 		degenerate := rapid.IntRange(0, expHistogramDegenerateFractionRate-1).
@@ -167,33 +203,34 @@ func drawExpHistogramExpr(t *rapid.T, name string, matchers []*labels.Matcher, g
 				sel(false),
 			},
 		}
-	case 2:
+	case expHistogramSelectorShape:
 		return sel(false)
-	case 3:
+	case expHistogramSumShape:
 		return sum(sel(false), false)
-	case 4:
+	case expHistogramSumByShape:
 		return sum(sel(true), true)
-	case 5:
+	case expHistogramRateShape:
 		return window("rate", false)
-	case 6:
+	case expHistogramIncreaseShape:
 		return window("increase", false)
-	case 7:
+	case expHistogramQuantileSelectorShape:
 		return quantile(sel(false))
-	case 8:
+	case expHistogramQuantileSumShape:
 		return quantile(sum(sel(false), false))
-	case 9:
+	case expHistogramQuantileSumByShape:
 		return quantile(sum(sel(true), true))
-	case 10:
+	case expHistogramQuantileRateShape:
 		return quantile(window("rate", false))
-	case 11:
+	case expHistogramQuantileIncreaseShape:
 		return quantile(window("increase", false))
-	case 12:
+	case expHistogramQuantileSumRateShape:
 		return quantile(sum(window("rate", false), false))
-	case 13:
+	case expHistogramQuantileSumByRateShape:
 		return quantile(sum(window("rate", true), true))
-	case 14:
+	case expHistogramQuantileSumIncreaseShape:
 		return quantile(sum(window("increase", false), false))
-	default:
+	case expHistogramQuantileSumByIncreaseShape:
 		return quantile(sum(window("increase", true), true))
 	}
+	panic("gen/promql-native-histogram: unhandled shape " + string(shapeID))
 }

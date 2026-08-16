@@ -192,7 +192,7 @@ func TraceQLDataset() *rapid.Generator[property.Dataset] {
 type traceQLSpan struct {
 	traceID    string // 32-hex, shared by every span in a trace's chain
 	spanID     string // 16-hex
-	parentID   string // 16-hex (traceQLRootParentID for a chain root)
+	parentID   string // 16-hex for children; empty for a chain root
 	service    string
 	cluster    string
 	httpMethod string
@@ -421,23 +421,14 @@ func statusQueryLiteral(chStatus string) string {
 // TraceQLQuery returns a rapid generator that draws a property.Query
 // targeted at dataset d. The accept-set, widened from the first sweep's
 // single selector shape (issue #1471) to a breadth comparable to the
-// PromQL leg's drawExpr (test/property/gen/promql.go), spans 14 shapes
-// drawn uniformly via rapid.IntRange(0, 13):
+// PromQL leg's drawExpr (test/property/gen/promql.go), spans 17 stable
+// semantic IDs across 14 equally weighted random families:
 //
-//   - 0: bare service-name selector          — `{ resource.service.name = "<v>" }`
-//   - 1: selector + count() scalar filter    — `{ ... } | count() OP N`
-//   - 2: resource attribute beyond service.name — `{ resource.cluster = "<v>" }`
-//   - 3: span attribute matcher              — `{ span.http.method = "<v>" }`
-//   - 4: duration intrinsic                  — `{ duration OP Nms }`
-//   - 5: status intrinsic (eq or negated)    — `{ status OP <ok|error|unset> }`
-//   - 6: name intrinsic (exact match)        — `{ name = "<v>" }`
-//   - 7: regex attribute matcher             — `{ resource.service.name =~ "<pattern>" }`
-//   - 8: negated attribute matcher           — `{ resource.service.name != "<v>" }`
-//   - 9: multi-condition (&&) filter         — `{ resource.service.name = "<v>" && status = <lit> }`
-//   - 10: structural child (`>`)             — `{ A } > { B }`
-//   - 11: structural descendant (`>>`)       — `{ A } >> { B }`
-//   - 12: metric beyond count()              — `{ ... } | avg|min|max|sum(duration) OP Nms`
-//   - 13: select() pipeline stage            — `{ ... } | select(span.http.method)`
+//   - traceql.selector.service / resource-attribute / span-attribute /
+//     regex / negated-attribute / conjunction
+//   - traceql.intrinsic.duration / status / name
+//   - traceql.structural.child / descendant
+//   - traceql.pipeline.count / duration-aggregate (avg/min/max/sum) / select
 //
 // Every shape's oracle counterpart lives in test/property/oracle/traceql
 // — see that package's parseQuery/Evaluate for the independent
@@ -459,82 +450,102 @@ func statusQueryLiteral(chStatus string) string {
 // dataset out), but the query value itself doesn't carry it.
 func TraceQLQuery(d property.Dataset) *rapid.Generator[property.Query] {
 	return rapid.Custom(func(t *rapid.T) property.Query {
-		shape := rapid.IntRange(0, 13).Draw(t, "shape")
-		query := drawTraceQLQueryString(t, d, shape)
-
-		evalTs := traceQLAnchor.Add(time.Hour).Unix()
-		return property.Query{
-			String: query,
-			EvalTs: evalTs,
-		}
+		family := rapid.SampledFrom(traceQLRandomShapeFamilies).Draw(t, "shapeFamily")
+		shapeID := rapid.SampledFrom(family).Draw(t, "shapeID")
+		return drawTraceQLQuery(t, d, shapeID)
 	})
 }
 
-// drawTraceQLQueryString renders the query string for the given shape
-// index. Split out of TraceQLQuery so each shape's construction reads
+// TraceQLQueryForShape fixes the TraceQL generator to one exact roster member
+// for deterministic one-per-shape execution.
+func TraceQLQueryForShape(d property.Dataset, shapeID ShapeID) *rapid.Generator[property.Query] {
+	if !containsShapeID(traceQLShapeRoster[:], shapeID) {
+		panic("gen/traceql: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) property.Query {
+		return drawTraceQLQuery(t, d, shapeID)
+	})
+}
+
+func drawTraceQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Query {
+	query := drawTraceQLQueryString(t, d, shapeID)
+
+	evalTs := traceQLAnchor.Add(time.Hour).Unix()
+	return property.Query{
+		ShapeID: property.ShapeID(shapeID),
+		String:  query,
+		EvalTs:  evalTs,
+	}
+}
+
+// drawTraceQLQueryString renders the query string for the given stable shape
+// ID. Split out of TraceQLQuery so each shape's construction reads
 // as one focused case rather than a single sprawling closure.
-func drawTraceQLQueryString(t *rapid.T, d property.Dataset, shape int) string {
-	switch shape {
-	case 0:
+func drawTraceQLQueryString(t *rapid.T, d property.Dataset, shapeID ShapeID) string {
+	switch shapeID {
+	case traceQLServiceShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		return fmt.Sprintf(`{ resource.service.name = "%s" }`, service)
-	case 1:
+	case traceQLCountShape:
 		return drawTraceQLCountQuery(t, d)
-	case 2:
+	case traceQLResourceAttributeShape:
 		cluster := rapid.SampledFrom(TraceQLClusterPool).Draw(t, "cluster")
 		return fmt.Sprintf(`{ resource.cluster = "%s" }`, cluster)
-	case 3:
+	case traceQLSpanAttributeShape:
 		method := rapid.SampledFrom(TraceQLHTTPMethodPool).Draw(t, "httpMethod")
 		return fmt.Sprintf(`{ span.http.method = "%s" }`, method)
-	case 4:
+	case traceQLDurationShape:
 		op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "durationOp")
 		thresholdMs := rapid.SampledFrom(TraceQLDurationThresholdPoolMs).Draw(t, "durationThresholdMs")
 		return fmt.Sprintf(`{ duration %s %dms }`, op, thresholdMs)
-	case 5:
+	case traceQLStatusShape:
 		op := rapid.SampledFrom(traceQLEqualityOps).Draw(t, "statusOp")
 		statusCH := rapid.SampledFrom(TraceQLStatusPool).Draw(t, "status")
 		return fmt.Sprintf(`{ status %s %s }`, op, statusQueryLiteral(statusCH))
-	case 6:
+	case traceQLNameShape:
 		return fmt.Sprintf(`{ name = %q }`, drawTraceQLNameValue(t, d))
-	case 7:
+	case traceQLRegexShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		pattern := service[:1] + ".*"
 		return fmt.Sprintf(`{ resource.service.name =~ %q }`, pattern)
-	case 8:
+	case traceQLNegatedAttributeShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		return fmt.Sprintf(`{ resource.service.name != "%s" }`, service)
-	case 9:
+	case traceQLConjunctionShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		statusCH := rapid.SampledFrom(TraceQLStatusPool).Draw(t, "status")
 		return fmt.Sprintf(`{ resource.service.name = "%s" && status = %s }`,
 			service, statusQueryLiteral(statusCH))
-	case 10:
+	case traceQLStructuralChildShape:
 		left := rapid.SampledFrom(TraceQLServicePool).Draw(t, "leftService")
 		right := rapid.SampledFrom(TraceQLServicePool).Draw(t, "rightService")
 		return fmt.Sprintf(`{ resource.service.name = "%s" } > { resource.service.name = "%s" }`, left, right)
-	case 11:
+	case traceQLStructuralDescendantShape:
 		left := rapid.SampledFrom(TraceQLServicePool).Draw(t, "leftService")
 		right := rapid.SampledFrom(TraceQLServicePool).Draw(t, "rightService")
 		return fmt.Sprintf(`{ resource.service.name = "%s" } >> { resource.service.name = "%s" }`, left, right)
-	case 12:
-		return drawTraceQLMetricQuery(t)
-	case 13:
+	case traceQLDurationAggregateShape:
+		return drawTraceQLMetricQuery(t, "avg")
+	case traceQLDurationAggregateMinShape:
+		return drawTraceQLMetricQuery(t, "min")
+	case traceQLDurationAggregateMaxShape:
+		return drawTraceQLMetricQuery(t, "max")
+	case traceQLDurationAggregateSumShape:
+		return drawTraceQLMetricQuery(t, "sum")
+	case traceQLSelectShape:
 		service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 		return fmt.Sprintf(`{ resource.service.name = "%s" } | select(span.http.method)`, service)
 	}
-	// Unreachable: rapid.IntRange(0, 13) never draws outside [0, 13].
-	panic(fmt.Sprintf("gen/traceql: unhandled query shape %d", shape))
+	panic("gen/traceql: unhandled query shape " + string(shapeID))
 }
 
-// drawTraceQLCountQuery renders shape 1: a service selector with an
-// optional `| count() OP N` scalar filter — the accept-set the first
-// sweep shipped, preserved verbatim as one shape among the widened set.
+// drawTraceQLCountQuery renders traceql.pipeline.count: a service selector
+// with a
+// mandatory `| count() OP N` scalar filter. It never collapses to the bare
+// selector roster member.
 func drawTraceQLCountQuery(t *rapid.T, d property.Dataset) string {
 	service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
 	query := fmt.Sprintf(`{ resource.service.name = "%s" }`, service)
-	if !rapid.Bool().Draw(t, "hasCount") {
-		return query
-	}
 	op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "countOp")
 	// Bound N at [0, len(spans)+1] so the threshold is sometimes
 	// satisfied and sometimes not, including the "above ceiling" case.
@@ -542,13 +553,12 @@ func drawTraceQLCountQuery(t *rapid.T, d property.Dataset) string {
 	return fmt.Sprintf("%s | count() %s %d", query, op, n)
 }
 
-// drawTraceQLMetricQuery renders shape 12: a service selector piped
-// into one of avg|min|max|sum(duration) with a scalar comparison —
-// count()'s sibling aggregates, exercising the same trace-scoped
-// aggregate pipeline with a different reducer.
-func drawTraceQLMetricQuery(t *rapid.T) string {
+// drawTraceQLMetricQuery renders one stable duration-aggregate reducer: a
+// service selector piped into avg|min|max|sum(duration) with a scalar
+// comparison. The caller fixes fn so each reducer has deterministic live
+// enrollment while the random generator preserves the original family weight.
+func drawTraceQLMetricQuery(t *rapid.T, fn string) string {
 	service := rapid.SampledFrom(TraceQLServicePool).Draw(t, "service")
-	fn := rapid.SampledFrom([]string{"avg", "min", "max", "sum"}).Draw(t, "metricFn")
 	op := rapid.SampledFrom(traceQLComparisonOps).Draw(t, "metricOp")
 	thresholdMs := rapid.SampledFrom(TraceQLDurationThresholdPoolMs).Draw(t, "metricThresholdMs")
 	return fmt.Sprintf(`{ resource.service.name = "%s" } | %s(duration) %s %dms`,

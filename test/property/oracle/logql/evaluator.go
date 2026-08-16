@@ -33,11 +33,10 @@ import (
 // comparator consumes — one OutcomeRow per record that survives the
 // pipeline.
 //
-// On parse error or any AST node the oracle doesn't support, the
-// returned Outcome carries the error and an empty row set. The
-// framework's CompareOutcomes treats both-erroring queries as
-// agreement, so an unsupported shape doesn't fail the property; it
-// just means the test doesn't exercise that shape.
+// On parse error or any AST node the oracle doesn't support, the returned
+// Outcome carries the error and an empty row set. The framework rejects every
+// oracle error, including when the system also errors, so unsupported generated
+// shapes fail closed instead of consuming a hollow property iteration.
 func Evaluate(d property.Dataset, q property.Query) property.Outcome {
 	if d.Logs == nil {
 		return property.Outcome{Err: fmt.Errorf("oracle/logql: dataset has no Logs mirror")}
@@ -280,9 +279,8 @@ func applyStages(stages syntax.MultiStageExpr, records []property.LogRecord) ([]
 	return current, nil
 }
 
-// applyStage dispatches to the per-stage handler. Unsupported stages
-// surface as a Loki-shaped error so the property framework treats
-// both-side errors as agreement.
+// applyStage dispatches to the per-stage handler. Unsupported stages surface as
+// an oracle error, which the property framework rejects unconditionally.
 func applyStage(stage syntax.StageExpr, records []property.LogRecord) ([]property.LogRecord, error) {
 	switch st := stage.(type) {
 	case *syntax.LineFilterExpr:

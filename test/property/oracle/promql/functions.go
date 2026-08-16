@@ -215,10 +215,10 @@ func (e *Evaluator) evalTrendFunction(c *parser.Call, evalTsMs int64) ([]VectorR
 // family. Returns (value, true, nil) on success, (0, false, nil) when
 // the function's output is undefined for this window (matching Prom's
 // silent row-drop for <2 samples), or a non-nil error when Prom itself
-// would refuse the query (double_exponential_smoothing's out-of-range sf
-// / tf, which upstream implements as a panic that surfaces as a query
-// execution error — both sides erroring is agreement per Evaluate's
-// both-erroring convention).
+// would refuse the query (double_exponential_smoothing's out-of-range sf / tf,
+// which upstream implements as a panic that surfaces as a query execution
+// error). The framework rejects that oracle error even if the system also
+// errors, so generators must remain inside the supported factor domain.
 func applyTrendFn(name string, samples []Sample, evalTsMs int64, scalars []float64) (float64, bool, error) {
 	switch name {
 	case "deriv":

@@ -57,7 +57,7 @@
 //
 // Reproduce a CI failure with the seed from the log:
 //
-//	go test -tags chdb -run TestPromQL_Property_NativeHistogram \
+//	go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run TestPromQL_Property_NativeHistogram \
 //	    -rapid.seed=<N> ./test/property/...
 package property_test
 
@@ -105,4 +105,31 @@ func TestPromQL_Property_NativeHistogram(t *testing.T) {
 	}
 
 	property.Run(t, property.Config{}, dgen, qgen, oracleFn, cerberusFn)
+}
+
+// TestPromQL_NativeHistogramShapeRoster executes one deterministic live
+// differential for every enrolled native-histogram semantic shape.
+func TestPromQL_NativeHistogramShapeRoster(t *testing.T) {
+	cli := chclienttest.NewChDB(t)
+	h := prom.New(cli, schema.DefaultOTelMetrics(), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	property.RunShapeExamples(
+		t,
+		gen.ExpHistogramShapeIDs(),
+		func(shapeID gen.ShapeID, seed int) (property.Dataset, property.Query) {
+			dataset := gen.ExpHistogramDataset().Example(seed)
+			return dataset, gen.ExpHistogramQueryForShape(dataset, shapeID).Example(seed)
+		},
+		func(_ *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			return oraclepromql.Evaluate(dataset, query, oraclepromql.Options{})
+		},
+		func(t *testing.T, dataset property.Dataset, query property.Query) property.Outcome {
+			cli.Seed(t, dataset.DDL)
+			return wire.RunInstant(t.Context(), srv.URL, query, wire.InstantOptions{})
+		},
+	)
 }

@@ -12,7 +12,7 @@
 // the release PR, where it blocks the release instead of the change that caused
 // it. That is a hollow green: a required check reporting on work it never did.
 //
-// The answer is neither "skip" nor "run all ~15 legs on every PR" (the matrix
+// The answer is neither "skip" nor "run all 18 legs on every PR" (the matrix
 // cost the skip existed to avoid). It is to run the legs whose SCOPE the PR
 // actually changed. A PR editing internal/chplan runs phase1. A PR editing only
 // docs runs nothing and the aggregator passes through honestly, because there
@@ -42,8 +42,8 @@
 //   MODE          `emit` | `verify` | `dump` (also argv[2]); default `verify`.
 //   EVENT_NAME    github.event_name.
 //   HEAD_REF      github.head_ref (empty off pull_request).
-//   BASE_SHA      (emit, PR) github.event.pull_request.base.sha.
-//   HEAD_SHA      (emit, PR) github.event.pull_request.head.sha.
+//   BASE_SHA      (emit, PR/merge group) base commit used for the changed-path projection.
+//   HEAD_SHA      (emit, PR/merge group) candidate commit used for the changed-path projection.
 //   GITHUB_OUTPUT (emit) runner file the matrix JSON is appended to.
 //
 // Exit: 0 clean / matrix emitted; 1 on a table violation, a coverage gap, or a
@@ -51,11 +51,18 @@
 //
 // node: builtins only — no npm deps, no setup-node needed.
 
-import { statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { error, log, notice, setOutput } from './lib/gh.mjs';
 import { changedPaths, matchesAny, normalise, runsFullLane, underPrefix } from './lib/scope-gate.mjs';
-import { HARNESS_PATHS, PHASES } from './mutation-phases.mjs';
+import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
+
+export const MUTATION_LANE_ID = 'quality.mutation';
+export const MUTATION_REGISTRY_PATH = '.github/ci-lanes.json';
+export const MUTATION_MIN_EFFICACY = 95;
+const MUTATION_SEMANTIC_HARNESS_PATHS = new Set([MUTATION_REGISTRY_PATH]);
 
 // Constructs Go's regexp (RE2) rejects outright. gremlins passes exclude_files
 // straight to Go, so a JS-valid pattern using any of these compiles fine here
@@ -100,6 +107,10 @@ export function tableViolations(phases) {
 
     if (!Number.isInteger(p.efficacy) || p.efficacy < 0 || p.efficacy > 100) {
       problems.push(`phase "${name}" has a non-percentage \`efficacy\`: ${JSON.stringify(p.efficacy)}`);
+    } else if (p.efficacy < MUTATION_MIN_EFFICACY) {
+      problems.push(
+        `phase "${name}" has efficacy ${p.efficacy}, below the committed minimum ${MUTATION_MIN_EFFICACY}`,
+      );
     }
     if (!Number.isInteger(p.workers) || p.workers < 0) {
       problems.push(`phase "${name}" has a negative or non-integer \`workers\`: ${JSON.stringify(p.workers)}`);
@@ -143,6 +154,222 @@ function isDirectory(path) {
   }
 }
 
+// mutationPackageGlobs reads the mutation lane's independently declared source
+// surface. Phase scopes are deliberately not consulted: if a complete phase is
+// deleted, the registry still remembers the files that phase used to own.
+export function mutationPackageGlobs(registry) {
+  const problems = [];
+  const lanes = Array.isArray(registry?.lanes) ? registry.lanes : [];
+  const matches = lanes.filter((lane) => lane?.id === MUTATION_LANE_ID);
+  if (matches.length !== 1) {
+    problems.push(`registry must contain exactly one ${MUTATION_LANE_ID} lane (found ${matches.length})`);
+    return { globs: [], problems };
+  }
+  const globs = matches[0].package_globs;
+  if (!Array.isArray(globs) || globs.length === 0) {
+    problems.push(`${MUTATION_LANE_ID}.package_globs must be a non-empty array`);
+    return { globs: [], problems };
+  }
+  for (const glob of globs) {
+    if (typeof glob !== 'string' || glob === '') {
+      problems.push(`${MUTATION_LANE_ID}.package_globs contains an empty or non-string entry`);
+      continue;
+    }
+    const stars = glob.indexOf('*');
+    const invalidShape =
+      /[?\[\]{}]/.test(glob) ||
+      glob.startsWith('/') ||
+      glob.split('/').some((segment) => segment === '' || segment === '.' || segment === '..') ||
+      (stars !== -1 && (!glob.endsWith('/**') || glob.slice(0, -3).includes('*')));
+    if (invalidShape) {
+      problems.push(
+        `${MUTATION_LANE_ID}.package_globs contains unsupported shape ${JSON.stringify(glob)}; ` +
+          'only literal paths and directory/** globs are accepted',
+      );
+    }
+  }
+  if (problems.length === 0) {
+    problems.push(...mutationProductionScopeViolations(globs));
+  }
+  return { globs, problems };
+}
+
+export function mutationProductionScopeViolations(globs, canonical = MUTATION_PRODUCTION_GLOBS) {
+  const actual = [...new Set(globs.filter((glob) => glob.endsWith('/**')))].sort();
+  const expected = [...new Set(canonical)].sort();
+  if (JSON.stringify(actual) === JSON.stringify(expected)) return [];
+  const missing = expected.filter((glob) => !actual.includes(glob));
+  const extra = actual.filter((glob) => !expected.includes(glob));
+  return [
+    `${MUTATION_LANE_ID}.package_globs production scope differs from the canonical mutation surface` +
+      (missing.length > 0 ? `; missing ${missing.join(', ')}` : '') +
+      (extra.length > 0 ? `; extra ${extra.join(', ')}` : ''),
+  ];
+}
+
+function sortedStrings(values) {
+  return Array.isArray(values) ? [...new Set(values)].sort() : [];
+}
+
+function selectedObject(value, keys) {
+  const out = {};
+  for (const key of keys) out[key] = value?.[key] ?? null;
+  return out;
+}
+
+// Project only fields that can change mutation ownership or execution. Editing
+// another lane's metadata must not buy eighteen gremlins jobs, while changing
+// this lane's package surface or entrypoint still exercises the full harness.
+export function mutationRegistryProjection(source) {
+  const registry = JSON.parse(source);
+  const parsed = mutationPackageGlobs(registry);
+  if (parsed.problems.length > 0) throw new Error(parsed.problems.join('; '));
+  const lanes = registry.lanes.filter((lane) => lane?.id === MUTATION_LANE_ID);
+  if (lanes.length !== 1) throw new Error(`expected exactly one ${MUTATION_LANE_ID} lane`);
+  const lane = lanes[0];
+  return {
+    id: lane.id,
+    owner: {
+      workflow: lane.owner?.workflow ?? null,
+      jobs: sortedStrings(lane.owner?.jobs),
+      producer_jobs: sortedStrings(lane.owner?.producer_jobs),
+      context_job: lane.owner?.context_job ?? null,
+    },
+    executions: sortedStrings(lane.executions),
+    context: selectedObject(lane.context, ['match', 'name', 'protected']),
+    recipes: sortedStrings(lane.recipes),
+    command: lane.command ?? null,
+    build_tags: sortedStrings(lane.build_tags),
+    package_globs: sortedStrings(lane.package_globs),
+    merge_posture: lane.merge_posture ?? null,
+    main_posture: lane.main_posture ?? null,
+    release_posture: lane.release_posture ?? null,
+    applicability: selectedObject(lane.applicability, ['source', 'artifact']),
+    selector: selectedObject(lane.selector, ['unknown_paths', 'failure']),
+    report_schema_version: lane.report_schema_version ?? null,
+  };
+}
+
+function readRevisionFile(revision, path) {
+  if (!/^[0-9a-f]{7,64}$/i.test(revision || '')) throw new Error(`invalid git revision for ${path}`);
+  return execFileSync('git', ['show', `${revision}:${path}`], { encoding: 'utf8' });
+}
+
+export function mutationSemanticHarnessStatus({
+  eventName,
+  changed,
+  baseSha,
+  headSha,
+  readAtRevision = readRevisionFile,
+}) {
+  const semanticPaths = [MUTATION_REGISTRY_PATH].filter((path) => changed?.has(path));
+  if (semanticPaths.length === 0) return { changed: false, failed: false, paths: [] };
+  if (eventName !== 'pull_request' && eventName !== 'merge_group') {
+    return { changed: true, failed: false, paths: semanticPaths };
+  }
+  try {
+    const paths = semanticPaths.filter((path) => {
+      const before = mutationRegistryProjection(readAtRevision(baseSha, path));
+      const after = mutationRegistryProjection(readAtRevision(headSha, path));
+      return JSON.stringify(before) !== JSON.stringify(after);
+    });
+    return { changed: paths.length > 0, failed: false, paths };
+  } catch (cause) {
+    return { changed: false, failed: true, paths: semanticPaths, cause: cause.message };
+  }
+}
+
+function globClaimsPath(glob, path) {
+  if (!glob.endsWith('/**')) return normalise(path) === normalise(glob);
+  return underPrefix(path, glob.slice(0, -3));
+}
+
+function registryClaimsPath(globs, path) {
+  return globs.some((glob) => globClaimsPath(glob, path));
+}
+
+function walkMutableGoFiles(root, directory, problems) {
+  const out = [];
+  const absolute = join(root, directory);
+  let entries;
+  try {
+    entries = readdirSync(absolute, { withFileTypes: true });
+  } catch (e) {
+    problems.push(`cannot enumerate mutation registry directory ${directory}: ${e.message}`);
+    return out;
+  }
+  for (const entry of entries) {
+    const child = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'testdata') out.push(...walkMutableGoFiles(root, child, problems));
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith('.go') && !entry.name.endsWith('_test.go')) {
+      out.push(normalise(child));
+    }
+  }
+  return out;
+}
+
+export function registryMutableFiles({ registry, root = process.cwd() }) {
+  const parsed = mutationPackageGlobs(registry);
+  const problems = [...parsed.problems];
+  const files = new Set();
+  if (problems.length > 0) return { files, globs: parsed.globs, problems };
+  for (const glob of parsed.globs) {
+    if (glob.endsWith('/**')) {
+      for (const file of walkMutableGoFiles(root, glob.slice(0, -3), problems)) files.add(file);
+      continue;
+    }
+    if (glob.endsWith('.go') && !glob.endsWith('_test.go')) files.add(normalise(glob));
+  }
+  if (files.size === 0) problems.push(`${MUTATION_LANE_ID}.package_globs match no mutable Go files`);
+  return { files, globs: parsed.globs, problems };
+}
+
+function phaseMutableFiles(phases, root, problems) {
+  const files = new Set();
+  for (const phase of phases) {
+    if (typeof phase?.scope !== 'string' || phase.scope === '') continue;
+    const directory = normalise(phase.scope);
+    for (const file of walkMutableGoFiles(root, directory, problems)) files.add(file);
+  }
+  return files;
+}
+
+// ownershipViolations checks both directions against the registry-owned file
+// universe: every owned source has exactly one phase, and no phase reaches
+// source outside that universe.
+export function ownershipViolations({ phases, registryFiles, root = process.cwd() }) {
+  const problems = [];
+  if (!Array.isArray(phases) || phases.length === 0) {
+    return ['the mutation phase table is empty'];
+  }
+  const claimedFiles = phaseMutableFiles(phases, root, problems);
+  const registryClaimCounts = new Map(phases.map((phase) => [phase, 0]));
+  for (const file of registryFiles) {
+    const ownerPhases = phases.filter((phase) => phaseClaims(phase, file));
+    for (const phase of ownerPhases) registryClaimCounts.set(phase, registryClaimCounts.get(phase) + 1);
+    const owners = ownerPhases.map((phase) => phase.phase);
+    if (owners.length === 0) problems.push(`${file} is registry-owned but claimed by no mutation phase`);
+    if (owners.length > 1) {
+      problems.push(`${file} is registry-owned but claimed by ${owners.length} mutation phases (${owners.join(', ')})`);
+    }
+  }
+  for (const file of claimedFiles) {
+    const owners = phases.filter((phase) => phaseClaims(phase, file));
+    if (owners.length > 0 && !registryFiles.has(file)) {
+      problems.push(`${file} is claimed by mutation phase ${owners[0].phase} but is outside the registry surface`);
+    }
+  }
+  for (const phase of phases) {
+    if (registryClaimCounts.get(phase) === 0) {
+      problems.push(`mutation phase ${phase.phase} claims zero registry-owned mutable Go files`);
+    }
+  }
+  return problems;
+}
+
 // phaseClaims — does this phase mutate `path`? True when the path lies under the
 // phase's scope AND its SCOPE-RELATIVE form is not excluded — the same two-step
 // gremlins itself applies, so the selection can never claim a file the run would
@@ -169,12 +396,34 @@ export function phaseClaims(phase, path) {
 // mutation lane owns, yet every leg's exclude regex skips it, so no leg mutates
 // it on ANY event. Reported rather than shrugged off — silently dropping it
 // would let a leg partition drift into leaving a file permanently unmutated.
-export function selectPhases({ phases, harnessPaths, eventName, headRef, changed }) {
+export function selectPhases({
+  phases,
+  harnessPaths,
+  registryGlobs = [],
+  eventName,
+  headRef,
+  changed,
+  semanticHarness = { changed: false, failed: false, paths: [] },
+}) {
   if (runsFullLane({ eventName, headRef })) {
     return { phases, reason: `event "${eventName}" always runs the full matrix`, gaps: [] };
   }
   if (changed === null) {
     return { phases, reason: 'the changed-path set could not be computed', gaps: [] };
+  }
+  if (semanticHarness.failed) {
+    return {
+      phases,
+      reason: `a semantic harness projection could not be computed (${semanticHarness.cause || 'unknown error'})`,
+      gaps: [],
+    };
+  }
+  if (semanticHarness.changed) {
+    return {
+      phases,
+      reason: `mutation-relevant harness material changed (${semanticHarness.paths.join(', ')})`,
+      gaps: [],
+    };
   }
 
   const paths = [...changed];
@@ -189,7 +438,10 @@ export function selectPhases({ phases, harnessPaths, eventName, headRef, changed
 
   const selected = phases.filter((phase) => paths.some((p) => phaseClaims(phase, p)));
   const gaps = paths.filter(
-    (p) => phases.some((phase) => underPrefix(p, phase.scope)) && !phases.some((phase) => phaseClaims(phase, p)),
+    (p) =>
+      !MUTATION_SEMANTIC_HARNESS_PATHS.has(p) &&
+      registryClaimsPath(registryGlobs, p) &&
+      !phases.some((phase) => phaseClaims(phase, p)),
   );
 
   return {
@@ -213,7 +465,18 @@ function main() {
     process.exit(1);
   }
 
-  const problems = tableViolations(PHASES);
+  let registry;
+  try {
+    registry = JSON.parse(readFileSync(MUTATION_REGISTRY_PATH, 'utf8'));
+  } catch (e) {
+    error(`mutation-matrix: cannot read ${MUTATION_REGISTRY_PATH}: ${e.message}`);
+    process.exit(1);
+  }
+  const surface = registryMutableFiles({ registry });
+  const problems = [...tableViolations(PHASES), ...surface.problems];
+  if (problems.length === 0) {
+    problems.push(...ownershipViolations({ phases: PHASES, registryFiles: surface.files }));
+  }
   for (const p of problems) error(`mutation-matrix: ${p}`);
   if (problems.length > 0) process.exit(1);
 
@@ -235,13 +498,24 @@ function main() {
   const changed = runsFullLane({ eventName, headRef })
     ? null
     : changedPaths({ baseSha: process.env.BASE_SHA, headSha: process.env.HEAD_SHA });
+  const semanticHarness =
+    changed === null
+      ? { changed: false, failed: false, paths: [] }
+      : mutationSemanticHarnessStatus({
+          eventName,
+          changed,
+          baseSha: process.env.BASE_SHA,
+          headSha: process.env.HEAD_SHA,
+        });
 
   const { phases, reason, gaps } = selectPhases({
     phases: PHASES,
     harnessPaths: HARNESS_PATHS,
+    registryGlobs: surface.globs,
     eventName,
     headRef,
     changed,
+    semanticHarness,
   });
 
   for (const gap of gaps) {

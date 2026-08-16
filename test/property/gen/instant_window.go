@@ -16,11 +16,11 @@ import (
 // load-bearing ways that target the instant range-vector window bug
 // (the rc.8 "empty hole at ~-60s/-90s"):
 //
-//   - The dataset is a SINGLE continuous series whose samples are spaced
-//     exactly `scrapeIntervalSec` apart, drawn from {15,30,60} so the
-//     range/scrape relationship is realistic. The series is a delta /
-//     cumulative / gauge shape so rate / increase / sum_over_time all
-//     have meaningful inputs.
+//   - The dataset is a SINGLE continuous gauge-table series whose samples are
+//     spaced exactly `scrapeIntervalSec` apart, drawn from {15,30,60} so the
+//     range/scrape relationship is realistic. Its value geometry varies across
+//     a wave, resetting positive readings, and a monotonic running total so all
+//     enrolled range functions have meaningful inputs.
 //   - The eval instant T is the LATEST sample minus a swept
 //     `evalOffsetSec` drawn from a pool that deliberately includes the
 //     60s / 90s offsets where the bug surfaced. This is the axis the
@@ -40,34 +40,22 @@ import (
 // starts to fall off the data and BOTH sides must still agree.
 var EvalSweepOffsetsSec = []int64{0, 15, 30, 60, 90, 120, 180, 300}
 
-// InstantWindowFnPool is the range-vector function set whose instant
-// window is anchored through anchorFromSelector — the single helper the
-// fix back-fills. Each lowers to a RangeWindow whose End was the bug's
-// zero-anchor. sum_over_time / count_over_time / rate / increase / delta
-// all read the (T-range, T] window directly, so an empty-window
-// regression flips their result from a value to nothing.
-var InstantWindowFnPool = []string{
-	"sum_over_time",
-	"count_over_time",
-	"avg_over_time",
-	"max_over_time",
-	"min_over_time",
-	"rate",
-	"increase",
-	"delta",
-}
-
-// Temporality selects the value shape of the seeded series so the swept
-// window covers the three real OTel temporalities cerberus serves.
-type Temporality int
+// InstantWindowValueProfile selects the gauge-table value geometry used by an
+// instant-window case. These profiles deliberately do not claim physical OTel
+// aggregation temporality: every case is stored in otel_metrics_gauge. They
+// exercise a non-monotonic wave, periodically resetting positive readings,
+// and a monotonic running total against the same PromQL functions.
+type InstantWindowValueProfile int
 
 const (
-	// TemporalityGauge is an arbitrary-valued series (temperature-like).
-	TemporalityGauge Temporality = iota
-	// TemporalityDelta is a per-scrape positive increment.
-	TemporalityDelta
-	// TemporalityCumulative is a monotonically increasing counter.
-	TemporalityCumulative
+	// InstantWindowValueProfileWave is an arbitrary non-monotonic series.
+	InstantWindowValueProfileWave InstantWindowValueProfile = iota
+	// InstantWindowValueProfilePositiveIncrements repeats positive readings
+	// and therefore includes periodic drops under counter functions.
+	InstantWindowValueProfilePositiveIncrements
+	// InstantWindowValueProfileMonotonicRunningTotal is a steadily increasing
+	// prefix sum of the positive-increments profile.
+	InstantWindowValueProfileMonotonicRunningTotal
 )
 
 // InstantWindowCase is the fully-drawn parameter bundle for one
@@ -80,7 +68,7 @@ type InstantWindowCase struct {
 	ScrapeSec    int64
 	RangeSec     int64
 	EvalOffset   int64
-	Temporality  Temporality
+	ValueProfile InstantWindowValueProfile
 	Fn           string
 	MetricName   string
 	Labels       map[string]string
@@ -100,73 +88,94 @@ const instantWindowMetric = "series"
 // hid in.
 func InstantWindowSweep() *rapid.Generator[InstantWindowCase] {
 	return rapid.Custom(func(t *rapid.T) InstantWindowCase {
-		scrapeSec := rapid.SampledFrom([]int64{15, 30, 60}).Draw(t, "scrapeSec")
-		// rangeMult in [2,8] so the window spans at least two scrape
-		// intervals (rate/increase need >=2 in-window samples) and the
-		// range is always a clean multiple of the scrape interval.
-		rangeMult := rapid.Int64Range(2, 8).Draw(t, "rangeMult")
-		rangeSec := scrapeSec * rangeMult
-		evalOffset := rapid.SampledFrom(EvalSweepOffsetsSec).Draw(t, "evalOffsetSec")
-		temporality := Temporality(rapid.IntRange(0, 2).Draw(t, "temporality"))
-		fn := rapid.SampledFrom(InstantWindowFnPool).Draw(t, "fn")
-
-		// Seed enough samples that the data spans well past the largest
-		// swept offset + range, so the oracle window is genuinely
-		// non-empty across the sweep (the boundary offsets near the
-		// data edge are still agreement checks, just possibly empty).
-		const numSamples = 40
-		labels := map[string]string{"job": "api"}
-
-		points := make([]property.Point, 0, numSamples)
-		var acc float64
-		for i := 0; i < numSamples; i++ {
-			tsMs := AnchorTime().Add(time.Duration(i) * time.Duration(scrapeSec) * time.Second).UnixMilli()
-			var v float64
-			switch temporality {
-			case TemporalityGauge:
-				// A non-trivial but deterministic gauge wave.
-				v = float64((i*7)%50) + 1
-			case TemporalityDelta:
-				v = float64((i % 5) + 1)
-			case TemporalityCumulative:
-				acc += float64((i % 5) + 1)
-				v = acc
-			}
-			points = append(points, property.Point{TimestampMs: tsMs, Value: v})
-		}
-
-		series := []property.SeriesData{{
-			MetricName: instantWindowMetric,
-			Labels:     labels,
-			Points:     points,
-		}}
-		ds := property.Dataset{
-			DDL:     renderDDL(series),
-			Metrics: &property.MetricsModel{Series: series},
-		}
-
-		latestMs := points[len(points)-1].TimestampMs
-		latestSec := latestMs / 1000
-		evalTs := latestSec - evalOffset
-
-		queryStr := fmt.Sprintf("%s(%s%s[%ds])", fn, instantWindowMetric, matcherString(labels), rangeSec)
-
-		return InstantWindowCase{
-			Dataset:      ds,
-			ScrapeSec:    scrapeSec,
-			RangeSec:     rangeSec,
-			EvalOffset:   evalOffset,
-			Temporality:  temporality,
-			Fn:           fn,
-			MetricName:   instantWindowMetric,
-			Labels:       labels,
-			LatestSample: latestSec,
-			Query: property.Query{
-				String: queryStr,
-				EvalTs: evalTs,
-			},
-		}
+		shapeID := rapid.SampledFrom(InstantWindowShapeIDs()).Draw(t, "shapeID")
+		return drawInstantWindowCase(t, shapeID)
 	})
+}
+
+// InstantWindowSweepForShape fixes the function/value-profile axes to one
+// exact roster member while leaving the window geometry available to rapid.
+func InstantWindowSweepForShape(shapeID ShapeID) *rapid.Generator[InstantWindowCase] {
+	if _, ok := instantWindowShapeByID(shapeID); !ok {
+		panic("gen/instant-window: unknown shape " + string(shapeID))
+	}
+	return rapid.Custom(func(t *rapid.T) InstantWindowCase {
+		return drawInstantWindowCase(t, shapeID)
+	})
+}
+
+func drawInstantWindowCase(t *rapid.T, shapeID ShapeID) InstantWindowCase {
+	spec, ok := instantWindowShapeByID(shapeID)
+	if !ok {
+		panic("gen/instant-window: unhandled shape " + string(shapeID))
+	}
+	scrapeSec := rapid.SampledFrom([]int64{15, 30, 60}).Draw(t, "scrapeSec")
+	// rangeMult in [2,8] so the window spans at least two scrape
+	// intervals (rate/increase need >=2 in-window samples) and the
+	// range is always a clean multiple of the scrape interval.
+	rangeMult := rapid.Int64Range(2, 8).Draw(t, "rangeMult")
+	rangeSec := scrapeSec * rangeMult
+	evalOffset := rapid.SampledFrom(EvalSweepOffsetsSec).Draw(t, "evalOffsetSec")
+	profile := spec.profile
+	fn := spec.fn
+
+	// Seed enough samples that the data spans well past the largest
+	// swept offset + range, so the oracle window is genuinely
+	// non-empty across the sweep (the boundary offsets near the
+	// data edge are still agreement checks, just possibly empty).
+	const numSamples = 40
+	labels := map[string]string{"job": "api"}
+
+	points := make([]property.Point, 0, numSamples)
+	var acc float64
+	for i := 0; i < numSamples; i++ {
+		tsMs := AnchorTime().Add(time.Duration(i) * time.Duration(scrapeSec) * time.Second).UnixMilli()
+		var v float64
+		switch profile {
+		case InstantWindowValueProfileWave:
+			// A non-trivial but deterministic gauge wave.
+			v = float64((i*7)%50) + 1
+		case InstantWindowValueProfilePositiveIncrements:
+			v = float64((i % 5) + 1)
+		case InstantWindowValueProfileMonotonicRunningTotal:
+			acc += float64((i % 5) + 1)
+			v = acc
+		}
+		points = append(points, property.Point{TimestampMs: tsMs, Value: v})
+	}
+
+	series := []property.SeriesData{{
+		MetricName: instantWindowMetric,
+		Labels:     labels,
+		Points:     points,
+	}}
+	ds := property.Dataset{
+		DDL:     renderDDL(series),
+		Metrics: &property.MetricsModel{Series: series},
+	}
+
+	latestMs := points[len(points)-1].TimestampMs
+	latestSec := latestMs / 1000
+	evalTs := latestSec - evalOffset
+
+	queryStr := fmt.Sprintf("%s(%s%s[%ds])", fn, instantWindowMetric, matcherString(labels), rangeSec)
+
+	return InstantWindowCase{
+		Dataset:      ds,
+		ScrapeSec:    scrapeSec,
+		RangeSec:     rangeSec,
+		EvalOffset:   evalOffset,
+		ValueProfile: profile,
+		Fn:           fn,
+		MetricName:   instantWindowMetric,
+		Labels:       labels,
+		LatestSample: latestSec,
+		Query: property.Query{
+			ShapeID: property.ShapeID(shapeID),
+			String:  queryStr,
+			EvalTs:  evalTs,
+		},
+	}
 }
 
 // matcherString renders a label set as a PromQL `{k="v",…}` matcher

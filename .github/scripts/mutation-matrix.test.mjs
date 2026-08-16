@@ -8,7 +8,7 @@
 //      checkout + toolchain setup per leg before failing.
 //
 //   2. The selection is EXACT, not merely non-empty. Asserting "chplan.go
-//      selects at least one leg" would pass while quietly running all fifteen;
+//      selects at least one leg" would pass while quietly running all eighteen;
 //      asserting the precise leg set is what proves the scoping actually scopes,
 //      and that a file claimed by one leg's exclude alternation is not silently
 //      claimed by a sibling's too.
@@ -17,16 +17,34 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { phaseClaims, selectPhases, tableViolations } from './mutation-matrix.mjs';
-import { HARNESS_PATHS, PHASES } from './mutation-phases.mjs';
+import {
+  MUTATION_LANE_ID,
+  MUTATION_MIN_EFFICACY,
+  MUTATION_REGISTRY_PATH,
+  mutationPackageGlobs,
+  mutationRegistryProjection,
+  mutationSemanticHarnessStatus,
+  ownershipViolations,
+  phaseClaims,
+  registryMutableFiles,
+  selectPhases,
+  tableViolations,
+} from './mutation-matrix.mjs';
+import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
 import { underPrefix } from './lib/scope-gate.mjs';
+
+const REGISTRY_SOURCE = readFileSync('.github/ci-lanes.json', 'utf8');
+const REGISTRY = JSON.parse(REGISTRY_SOURCE);
+const REGISTRY_SURFACE = registryMutableFiles({ registry: REGISTRY });
 
 const select = (changed, over = {}) =>
   selectPhases({
     phases: PHASES,
     harnessPaths: HARNESS_PATHS,
+    registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
     headRef: 'feat/some-branch',
     changed: changed === null ? null : new Set(changed),
@@ -37,6 +55,127 @@ const names = (result) => result.phases.map((p) => p.phase).sort();
 
 test('the shipped PHASES table is sound against this tree', () => {
   assert.deepEqual(tableViolations(PHASES), []);
+  assert.deepEqual(REGISTRY_SURFACE.problems, []);
+  assert.deepEqual(
+    ownershipViolations({ phases: PHASES, registryFiles: REGISTRY_SURFACE.files }),
+    [],
+  );
+});
+
+test('the registry-owned universe survives deletion of a complete phase', () => {
+  const withoutChplan = PHASES.filter((phase) => phase.phase !== 'phase1');
+  const problems = ownershipViolations({
+    phases: withoutChplan,
+    registryFiles: REGISTRY_SURFACE.files,
+  });
+  assert.ok(problems.some((problem) => /internal\/chplan\/.+claimed by no mutation phase/.test(problem)));
+});
+
+test('the canonical production anchor survives synchronized registry and phase deletion', () => {
+  const narrowed = structuredClone(REGISTRY);
+  const lane = narrowed.lanes.find((candidate) => candidate.id === MUTATION_LANE_ID);
+  lane.package_globs = lane.package_globs.filter((glob) => glob !== 'internal/chplan/**');
+  const surface = registryMutableFiles({ registry: narrowed });
+  assert.deepEqual(PHASES.filter((phase) => phase.phase !== 'phase1').some((phase) => phase.scope === './internal/chplan'), false);
+  assert.equal(MUTATION_PRODUCTION_GLOBS.includes('internal/chplan/**'), true);
+  assert.ok(surface.problems.some((problem) => /canonical mutation surface.*internal\/chplan/.test(problem)));
+});
+
+test('the canonical production anchor rejects synchronized registry and phase expansion', () => {
+  const expanded = structuredClone(REGISTRY);
+  const lane = expanded.lanes.find((candidate) => candidate.id === MUTATION_LANE_ID);
+  lane.package_globs.push('cmd/cerberus/**');
+  const expandedPhases = [
+    ...PHASES,
+    { phase: 'phase-cmd', scope: './cmd/cerberus', efficacy: 95, workers: 0 },
+  ];
+  assert.deepEqual(tableViolations(expandedPhases), []);
+
+  const surface = registryMutableFiles({ registry: expanded });
+  assert.ok(surface.problems.some((problem) => /canonical mutation surface.*extra cmd\/cerberus\/\*\*/.test(problem)));
+});
+
+test('registry projection ignores unrelated metadata but includes mutation ownership', () => {
+  const unrelated = structuredClone(REGISTRY);
+  unrelated.lanes.find((lane) => lane.id !== MUTATION_LANE_ID).description = 'unrelated metadata changed';
+  assert.deepEqual(mutationRegistryProjection(JSON.stringify(unrelated)), mutationRegistryProjection(REGISTRY_SOURCE));
+
+  const relevant = structuredClone(REGISTRY);
+  relevant.lanes.find((lane) => lane.id === MUTATION_LANE_ID).package_globs.push('scripts/mutation-helper.sh');
+  assert.notDeepEqual(mutationRegistryProjection(JSON.stringify(relevant)), mutationRegistryProjection(REGISTRY_SOURCE));
+});
+
+test('registry semantic projection comparison fails closed and distinguishes relevant changes', () => {
+  const base = 'a'.repeat(40);
+  const head = 'b'.repeat(40);
+  const unrelated = structuredClone(REGISTRY);
+  unrelated.lanes.find((lane) => lane.id !== MUTATION_LANE_ID).description = 'changed';
+  const relevant = structuredClone(REGISTRY);
+  relevant.lanes.find((lane) => lane.id === MUTATION_LANE_ID).command = 'changed mutation command';
+  const sources = new Map([
+    [`${base}:${MUTATION_REGISTRY_PATH}`, REGISTRY_SOURCE],
+    [`${head}:${MUTATION_REGISTRY_PATH}`, JSON.stringify(unrelated)],
+  ]);
+  const status = (over = {}) =>
+    mutationSemanticHarnessStatus({
+      eventName: 'pull_request',
+      changed: new Set([MUTATION_REGISTRY_PATH]),
+      baseSha: base,
+      headSha: head,
+      readAtRevision: (revision, path) => sources.get(`${revision}:${path}`),
+      ...over,
+    });
+  assert.deepEqual(status(), { changed: false, failed: false, paths: [] });
+
+  sources.set(`${head}:${MUTATION_REGISTRY_PATH}`, JSON.stringify(relevant));
+  assert.deepEqual(status(), { changed: true, failed: false, paths: [MUTATION_REGISTRY_PATH] });
+  assert.deepEqual(status({ eventName: 'merge_group' }), {
+    changed: true,
+    failed: false,
+    paths: [MUTATION_REGISTRY_PATH],
+  });
+
+  sources.set(`${head}:${MUTATION_REGISTRY_PATH}`, '{');
+  assert.equal(status().failed, true);
+  assert.equal(select([MUTATION_REGISTRY_PATH], { semanticHarness: status() }).phases.length, PHASES.length);
+});
+
+test('phase claims outside the registry surface fail bidirectionally', () => {
+  const narrowed = new Set(
+    [...REGISTRY_SURFACE.files].filter((path) => !path.startsWith('internal/chplan/')),
+  );
+  const problems = ownershipViolations({ phases: PHASES, registryFiles: narrowed });
+  assert.ok(problems.some((problem) => /internal\/chplan\/.+outside the registry surface/.test(problem)));
+});
+
+test('a phase that owns zero registry mutable files is rejected', () => {
+  const phases = PHASES.map((phase) =>
+    phase.phase === 'phase1' ? { ...phase, exclude_files: '.*' } : phase,
+  );
+  const problems = ownershipViolations({ phases, registryFiles: REGISTRY_SURFACE.files });
+  assert.ok(
+    problems.some((problem) => problem === 'mutation phase phase1 claims zero registry-owned mutable Go files'),
+  );
+});
+
+test('empty phases and unknown registry glob shapes fail closed', () => {
+  assert.deepEqual(
+    ownershipViolations({ phases: [], registryFiles: REGISTRY_SURFACE.files }),
+    ['the mutation phase table is empty'],
+  );
+  const parsed = mutationPackageGlobs({
+    lanes: [{ id: MUTATION_LANE_ID, package_globs: ['internal/{chplan,chsql}/**'] }],
+  });
+  assert.equal(parsed.problems.length, 1);
+  assert.match(parsed.problems.join('\n'), /unsupported shape/);
+});
+
+test('a changed registry-owned file with its complete phase removed is a selector gap', () => {
+  const result = select(['internal/chplan/plan.go'], {
+    phases: PHASES.filter((phase) => phase.phase !== 'phase1'),
+  });
+  assert.deepEqual(result.phases, []);
+  assert.deepEqual(result.gaps, ['internal/chplan/plan.go']);
 });
 
 test('duplicate phase names are rejected', () => {
@@ -64,6 +203,12 @@ test('a non-percentage efficacy and a negative worker count are rejected', () =>
   assert.equal(problems.length, 2);
 });
 
+test('the committed mutation efficacy floor rejects weakening', () => {
+  assert.equal(MUTATION_MIN_EFFICACY, 95);
+  const problems = tableViolations([{ ...PHASES[0], efficacy: 94 }]);
+  assert.deepEqual(problems, ['phase "phase1" has efficacy 94, below the committed minimum 95']);
+});
+
 test('push, schedule, dispatch and release PRs all run the full matrix', () => {
   for (const eventName of ['push', 'schedule', 'workflow_dispatch']) {
     assert.equal(select(['docs/engine.md'], { eventName }).phases.length, PHASES.length, eventName);
@@ -75,7 +220,7 @@ test('push, schedule, dispatch and release PRs all run the full matrix', () => {
 test('a merge-queue batch selects legs from its own diff, like a pull request', () => {
   // The queue entry is a pre-merge gate on a projected trunk: `base_sha..head_sha`
   // is the union of the batched PRs' diffs, so it selects the same legs those PRs
-  // selected. Sweeping the full matrix here instead would bill every batch ~15
+  // selected. Sweeping the full matrix here instead would bill every batch 18
   // gremlins legs on top of the push-to-main sweep that lands the same SHA — the
   // wall-clock cost scoping exists to remove, paid twice.
   const inQueue = { eventName: 'merge_group', headRef: '' };
@@ -97,6 +242,24 @@ test('a change to the lane harness runs the full matrix', () => {
   for (const path of HARNESS_PATHS) {
     assert.equal(select([path]).phases.length, PHASES.length, path);
   }
+});
+
+test('only the registry uses a semantic harness projection', () => {
+  assert.equal(HARNESS_PATHS.includes(MUTATION_REGISTRY_PATH), false);
+  assert.deepEqual(select([MUTATION_REGISTRY_PATH]), {
+    phases: [],
+    reason: 'no changed path falls in any phase scope',
+    gaps: [],
+  });
+  assert.deepEqual(select(['Justfile']), {
+    phases: [],
+    reason: 'no changed path falls in any phase scope',
+    gaps: [],
+  });
+  const result = select([MUTATION_REGISTRY_PATH], {
+    semanticHarness: { changed: true, failed: false, paths: [MUTATION_REGISTRY_PATH] },
+  });
+  assert.equal(result.phases.length, PHASES.length);
 });
 
 test('a docs-only PR runs no phase at all', () => {
@@ -163,6 +326,7 @@ test('a file every leg excludes is reported as a coverage gap, not dropped', () 
   const result = selectPhases({
     phases,
     harnessPaths: HARNESS_PATHS,
+    registryGlobs: REGISTRY_SURFACE.globs,
     eventName: 'pull_request',
     headRef: 'feat/x',
     changed: new Set(['internal/chplan/plan.go']),

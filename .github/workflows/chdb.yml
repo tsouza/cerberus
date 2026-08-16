@@ -253,7 +253,7 @@ jobs:
         # three-tag set property.yml already passes. Without them the
         # Loki/Tempo oracles compile out (test/spec/parity_tempo_absent.go
         # for Tempo) and RunParity either fails loudly (Loki, see
-        # test/spec/parity_chdb.go's lokiParityEvaluator) or the 42
+        # test/spec/parity_chdb.go's lokiParityEvaluator) or all
         # `parity:`-enrolled TraceQL fixtures round-trip against
         # cerberus's own output alone.
         include:

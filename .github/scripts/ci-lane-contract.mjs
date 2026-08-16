@@ -89,6 +89,30 @@ const CANONICAL_LAYERS = [
   "14",
 ];
 
+// Each query head needs three genuinely different semantic signals. These are
+// policy facts, not lane IDs: providers may be renamed or split without
+// weakening the fence, but deleting or reclassifying a provider must fail.
+export const CANONICAL_HEAD_ORACLE_FLOORS = Object.freeze({
+  promql: Object.freeze({ layer: "6a", classes: Object.freeze(["execution", "property", "reference"]) }),
+  logql: Object.freeze({ layer: "6b", classes: Object.freeze(["execution", "property", "reference"]) }),
+  traceql: Object.freeze({ layer: "6c", classes: Object.freeze(["execution", "property", "reference"]) }),
+});
+
+const CANONICAL_HEAD_ORACLE_SOURCE_ROOTS = Object.freeze({
+  promql: Object.freeze({
+    execution: "test/spec/promql",
+    reference: "compatibility/prometheus",
+  }),
+  logql: Object.freeze({
+    execution: "test/spec/logql",
+    reference: "compatibility/loki",
+  }),
+  traceql: Object.freeze({
+    execution: "test/spec/traceql",
+    reference: "compatibility/tempo",
+  }),
+});
+
 const TOP_KEYS = new Set([
   "schema_version",
   "selection_schema_version",
@@ -536,18 +560,140 @@ function matchesGlob(path, glob) {
   return globRegExp(glob).test(path);
 }
 
-function justRecipes(root) {
+function justRecipeCommands(root) {
   const text = readFileSync(join(root, "Justfile"), "utf8");
-  const names = new Set();
+  const recipes = new Map();
+  let current = null;
   for (const line of text.split("\n")) {
     // A recipe may declare parameters before the colon and dependencies after
     // it. Just assignments use `:=`, so the negative lookahead keeps settings
     // and variables out of the recipe namespace without discarding dependency
     // recipes such as `e2e-up: e2e-down`.
     const match = /^([A-Za-z0-9_-]+)(?:\s+[^:]*)?:(?!=)/.exec(line);
-    if (match) names.add(match[1]);
+    if (match) {
+      current = match[1];
+      recipes.set(current, []);
+      continue;
+    }
+    if (current !== null && /^\s+/.test(line)) {
+      const command = line.trim().replace(/^@/, "");
+      if (command !== "" && !command.startsWith("#")) {
+        recipes.get(current).push(command);
+      }
+      continue;
+    }
+    if (line.trim() !== "" && !line.trim().startsWith("#")) current = null;
   }
-  return names;
+  return recipes;
+}
+
+function workflowJobCommands(root, workflow, jobs) {
+  if (
+    typeof workflow !== "string" ||
+    !Array.isArray(jobs) ||
+    !existsSync(resolve(root, workflow))
+  ) {
+    return [];
+  }
+  const lines = readFileSync(resolve(root, workflow), "utf8").split("\n");
+  const jobsIndex = lines.findIndex((line) => /^\s*jobs:\s*(?:#.*)?$/.test(line));
+  if (jobsIndex === -1) return [];
+  const jobsIndent = /^\s*/.exec(lines[jobsIndex])[0].length;
+  const jobIndent = jobsIndent + 2;
+  const wanted = new Set(jobs);
+  const commands = [];
+  let active = false;
+
+  for (let i = jobsIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const indent = /^\s*/.exec(line)[0].length;
+    if (indent <= jobsIndent) break;
+    const job = /^\s*([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(line);
+    if (indent === jobIndent && job) {
+      active = wanted.has(job[1]);
+      continue;
+    }
+    if (!active) continue;
+
+    const run = /^\s*(?:-\s*)?run:\s*(.*)$/.exec(line);
+    if (!run) continue;
+    const value = run[1].trim();
+    if (!/^[|>][-+]?\s*$/.test(value)) {
+      if (value !== "" && !value.startsWith("#")) commands.push(value);
+      continue;
+    }
+
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const bodyLine = lines[j];
+      const bodyTrimmed = bodyLine.trim();
+      if (bodyTrimmed === "") continue;
+      const bodyIndent = /^\s*/.exec(bodyLine)[0].length;
+      if (bodyIndent <= indent) break;
+      if (!bodyTrimmed.startsWith("#")) commands.push(bodyTrimmed);
+    }
+  }
+  return commands;
+}
+
+function normalizedCommand(value) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function commandAppears(commands, evidence) {
+  if (typeof evidence !== "string" || evidence.trim() === "") return false;
+  const needle = normalizedCommand(evidence);
+  return commands.some((command) => normalizedCommand(command).includes(needle));
+}
+
+function recipeInvocationAppears(commands, recipe) {
+  const escaped = recipe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const invocation = new RegExp(
+    `(?:^|[\\s;&|()])just\\s+(?:-[^\\s]+\\s+)*${escaped}(?:$|[\\s;&|()])`,
+  );
+  return commands.some((command) => invocation.test(normalizedCommand(command)));
+}
+
+function providerHasCommandEvidence(lane, root, recipeCommands) {
+  const commands = workflowJobCommands(
+    root,
+    lane.owner?.workflow,
+    lane.owner?.jobs,
+  );
+  if (commandAppears(commands, lane.command)) return true;
+  if (!Array.isArray(lane.recipes)) return false;
+  return lane.recipes.some((recipe) => {
+    if (recipeInvocationAppears(commands, recipe)) return true;
+    const adapterCommands = recipeCommands.get(recipe) ?? [];
+    return adapterCommands.some((command) => commandAppears(commands, command));
+  });
+}
+
+function repositoryFilesUnder(root, repositoryDirectory) {
+  const directory = resolve(root, repositoryDirectory);
+  if (!existsSync(directory) || !statSync(directory).isDirectory()) return [];
+  const files = [];
+  const pending = [directory];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const absolute = join(current, entry.name);
+      if (entry.isDirectory()) pending.push(absolute);
+      else if (entry.isFile()) {
+        files.push(relative(resolve(root), absolute).split(sep).join("/"));
+      }
+    }
+  }
+  return files;
+}
+
+function providerHasCanonicalSource(lane, root, sourceRoot) {
+  if (!Array.isArray(lane.package_globs)) return false;
+  const globs = lane.package_globs.filter((glob) => typeof glob === "string");
+  return repositoryFilesUnder(root, sourceRoot).some((file) =>
+    globs.some((glob) => matchesGlob(file, glob)),
+  );
 }
 
 function workflowFiles(root) {
@@ -560,6 +706,49 @@ function workflowFiles(root) {
     )
     .map((entry) => `.github/workflows/${entry.name}`)
     .sort();
+}
+
+function validateCanonicalHeadOracleFloors(lanes, root, recipeCommands, problems) {
+  if (!Array.isArray(lanes)) return;
+  for (const [head, requirement] of Object.entries(CANONICAL_HEAD_ORACLE_FLOORS)) {
+    for (const oracleClass of requirement.classes) {
+      const providers = lanes.filter(
+        (lane) =>
+          isObject(lane) &&
+          lane.oracle_class === oracleClass &&
+          Array.isArray(lane.layers) &&
+          lane.layers.includes(requirement.layer) &&
+          Array.isArray(lane.risk_domains) &&
+          lane.risk_domains.includes(head) &&
+          lane.main_posture === "always" &&
+          lane.release_posture === "required" &&
+          lane.applicability?.source === true,
+      );
+      if (providers.length === 0) {
+        problems.push(
+          `canonical head ${head} layer ${requirement.layer} requires a source-applicable ` +
+            `${oracleClass} oracle with risk domain ${head}, main_posture always, and ` +
+            `release_posture required`,
+        );
+      }
+      if (oracleClass !== "execution" && oracleClass !== "reference") continue;
+      for (const provider of providers) {
+        if (!providerHasCommandEvidence(provider, root, recipeCommands)) {
+          problems.push(
+            `canonical head ${head} ${oracleClass} provider ${provider.id} has no command ` +
+              `evidence in its declared workflow jobs`,
+          );
+        }
+        const sourceRoot = CANONICAL_HEAD_ORACLE_SOURCE_ROOTS[head][oracleClass];
+        if (!providerHasCanonicalSource(provider, root, sourceRoot)) {
+          problems.push(
+            `canonical head ${head} ${oracleClass} provider ${provider.id} has no real ` +
+              `oracle/test source under ${sourceRoot} covered by package_globs`,
+          );
+        }
+      }
+    }
+  }
 }
 
 export function validateRegistry(document, { root = process.cwd() } = {}) {
@@ -637,7 +826,8 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
   const coveredLayers = new Set();
   const laneIDs = new Set();
   const protectedContexts = new Set();
-  const recipes = justRecipes(root);
+  const recipeCommands = justRecipeCommands(root);
+  const recipes = new Set(recipeCommands.keys());
   const ownedWorkflows = new Set();
 
   if (!Array.isArray(document.lanes) || document.lanes.length === 0) {
@@ -912,6 +1102,13 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
       }
     }
   }
+
+  validateCanonicalHeadOracleFloors(
+    document.lanes,
+    root,
+    recipeCommands,
+    problems,
+  );
 
   for (const layer of CANONICAL_LAYERS) {
     if (!coveredLayers.has(layer))
