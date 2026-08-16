@@ -15,8 +15,19 @@ const ciLaneRegistryPath = "../../.github/ci-lanes.json"
 
 type ciLaneRegistry struct {
 	Lanes []struct {
-		ID    string `json:"id"`
-		Owner struct {
+		ID           string   `json:"id"`
+		Layers       []string `json:"layers"`
+		OracleClass  string   `json:"oracle_class"`
+		Recipes      []string `json:"recipes"`
+		Command      string   `json:"command"`
+		BuildTags    []string `json:"build_tags"`
+		PackageGlobs []string `json:"package_globs"`
+		Substrate    string   `json:"substrate"`
+		RiskDomains  []string `json:"risk_domains"`
+		MergePosture string   `json:"merge_posture"`
+		MainPosture  string   `json:"main_posture"`
+		Determinism  string   `json:"determinism"`
+		Owner        struct {
 			Workflow     string   `json:"workflow"`
 			Jobs         []string `json:"jobs"`
 			ProducerJobs []string `json:"producer_jobs"`
