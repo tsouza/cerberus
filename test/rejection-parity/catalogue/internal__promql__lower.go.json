@@ -73,11 +73,11 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:expHistogramSelectorRouting#71e3ce4e",
-      "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
+      "site": "internal/promql/lower.go:expHistogramSelectorRouting#ac7bd066",
+      "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "delta(demo_latency_exp_hist[5m])",
-      "tracking_issue": 2224,
+      "trigger_query": "sum_over_time(demo_latency_exp_hist[5m])",
+      "tracking_issue": 2225,
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",

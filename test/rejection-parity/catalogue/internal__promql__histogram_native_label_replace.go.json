@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#3e91de20",
       "message": "promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection",
       "class": "internal",
-      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and the three shapes that recognizer admits are lowered by lowerExpHistogramValuedShape through lowerExpHistogramBare, lowerExpHistogramSumOrAvg, or lowerExpHistogramRate, each of which caps its result with HistogramProjection",
+      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and the three shapes that recognizer admits are lowered by lowerExpHistogramValuedShape through lowerExpHistogramBare, lowerExpHistogramSumOrAvg, or lowerExpHistogramRangeFn, each of which caps its result with HistogramProjection",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -20,7 +20,7 @@
           "isExpHistogramValuedShape",
           "labelReplaceOverExpHistogram",
           "lowerExpHistogramBare",
-          "lowerExpHistogramRate",
+          "lowerExpHistogramRangeFn",
           "lowerExpHistogramSumOrAvg",
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram"
@@ -32,7 +32,7 @@
       "site": "internal/promql/histogram_native_label_replace.go:lowerLabelReplaceOverExpHistogram#f5fecb3d",
       "message": "promql: internal invariant violated: expression is not a known histogram-valued shape: %v",
       "class": "internal",
-      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and that recognizer's bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rateOverExpHistogram shapes are the first three cases lowerExpHistogramValuedShape accepts, so the matched operand cannot reach the unmatched fallback",
+      "rationale": "lowerLabelReplaceOverExpHistogram is called only after labelReplaceOverExpHistogram proved isExpHistogramValuedShape, and that recognizer's bareExpHistogramSelector, sumOrAvgOverExpHistogram, and rangeFnOverExpHistogram shapes are the first three cases lowerExpHistogramValuedShape accepts, so the matched operand cannot reach the unmatched fallback",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -48,7 +48,7 @@
           "labelReplaceOverExpHistogram",
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram",
-          "rateOverExpHistogram",
+          "rangeFnOverExpHistogram",
           "sumOrAvgOverExpHistogram"
         ]
       }
