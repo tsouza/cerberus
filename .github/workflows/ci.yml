@@ -820,6 +820,14 @@ jobs:
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
 
+      # The runner half of the same lane: the env contract gremlins actually
+      # receives, and the two-invocation changed-line/full fallback. A bug here
+      # is the same class of silent failure as the selector's — a phase that
+      # LOOKS like it ran (exit 0) after actually executing zero mutants, which
+      # is exactly what the zero-mutant fallback exists to prevent.
+      - name: Assert the mutation runner's env contract and fallback
+        run: node --test .github/scripts/mutation-run.test.mjs
+
       # Whether a job that pulls an image logged in first. An anonymous pull is
       # not an error: it succeeds until the shared per-runner-IP quota happens to
       # be spent, and then reads as flake — which is how #1572 fixed the class by
