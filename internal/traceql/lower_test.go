@@ -109,7 +109,7 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
-		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 
 		// A fixture carrying a `parity:` section is additionally checked
 		// against the REAL upstream Tempo engine — including its own
@@ -123,7 +123,7 @@ func TestLower(t *testing.T) {
 		// The zero ParityEval is the honest value here: a spanset query
 		// selects spans rather than sampling a time series, so no
 		// evaluation instant or step participates in the comparison.
-		spec.RunParity(t, c, spec.ParityEval{})
+		spec.RunParity(t, c, spec.ParityEval{}, roundTripResult)
 	})
 }
 

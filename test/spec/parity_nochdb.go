@@ -20,7 +20,7 @@ import (
 
 // RunParity is a no-op when the `chdb` build tag is not set. The real
 // implementation lives in parity_chdb.go.
-func RunParity(t *testing.T, c *Case, eval ParityEval) {
+func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult) {
 	t.Helper()
-	_, _, _ = c, eval, t
+	_, _, _, _ = c, eval, roundTrip, t
 }

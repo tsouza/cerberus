@@ -94,7 +94,7 @@ func TestLower(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit(optimized plan): %v", err)
 		}
-		spec.RunRoundTripSQL(t, c, optSQL, optArgs)
+		roundTripResult := spec.RunRoundTripSQL(t, c, optSQL, optArgs)
 
 		// A fixture carrying a `parity:` section is additionally answered
 		// by the REAL upstream Loki engine over the same seeded data, and
@@ -105,7 +105,7 @@ func TestLower(t *testing.T) {
 		// test/spec/parity.go for why the fixture stores the parity
 		// CONTRACT and not the parity ANSWER.
 		parityStart, parityEnd, parityStep := parityWindow(start, end, step)
-		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep})
+		spec.RunParity(t, c, spec.ParityEval{Start: parityStart, End: parityEnd, Step: parityStep}, roundTripResult)
 	})
 }
 

@@ -99,6 +99,18 @@ type RoundTripSections struct {
 	expectedRowsPresent bool
 }
 
+// RoundTripResult is the opaque handoff from [RunRoundTripSQL] to
+// [RunParity]. A successful post-optimizer round trip proves two facts parity
+// otherwise used to rediscover expensively: this fixture's isolated database
+// has already been seeded, and the driver has already reported the result
+// projection's column names. Its fields stay private so callers can only pass
+// the result through; they cannot fabricate a weaker parity input.
+type RoundTripResult struct {
+	fixtureName       string
+	projectionColumns []string
+	seeded            bool
+}
+
 // IsRoundTrip reports whether the fixture opted into the
 // seed+expected_rows assertion path. An explicit `expected_rows: []`
 // counts as opt-in.
