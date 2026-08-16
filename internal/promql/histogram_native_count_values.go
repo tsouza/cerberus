@@ -46,7 +46,8 @@ func lowerExpHistogramCountValuesOverPlan(agg *parser.AggregateExpr, input chpla
 //
 // HistogramProjection has already normalized every producer onto contiguous
 // OTel exponential ladders. arrayEnumerate supplies the 1-based ladder index;
-// adding Offset-1 recovers Prometheus's bucket index. Negative buckets are
+// adding it to Offset recovers the exponent of the bucket's upper edge.
+// Negative buckets are
 // reversed after mapping because their numeric order runs from the most
 // negative interval back toward zero.
 func nativeHistogramStringExpr(s schema.Metrics) chplan.Expr {
@@ -105,7 +106,7 @@ func nativeHistogramBucketStrings(buckets, offset, scale chplan.Expr, positive b
 	idx := histStringBinary(
 		chplan.OpAdd,
 		offset,
-		histStringBinary(chplan.OpSub, index, &chplan.LitInt{V: 1}),
+		index,
 	)
 	lowerBound := nativeHistogramBoundExpr(
 		histStringBinary(chplan.OpSub, idx, &chplan.LitInt{V: 1}), scale,

@@ -76,10 +76,10 @@ func TestQuery_NativeHistogramCountValues_ChDB(t *testing.T) {
 		wantLabel  string
 		wantMetric map[string]string
 	}{
-		{query: `count_values("hist", latency_exp_hist)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (0.5,1]:14, (1,2]:15}`},
-		{query: `count_values("hist", latency_exp_hist) by (service)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (0.5,1]:14, (1,2]:15}`, wantMetric: map[string]string{"service": "api"}},
-		{query: `count_values("hist", rate(latency_exp_hist[5m]))`, wantLabel: `{count:0.1, sum:0.05, (0.5,1]:0.05, (1,2]:0.05}`},
-		{query: `count_values("hist", rate(latency_exp_hist[5m])) by (service)`, wantLabel: `{count:0.1, sum:0.05, (0.5,1]:0.05, (1,2]:0.05}`, wantMetric: map[string]string{"service": "api"}},
+		{query: `count_values("hist", latency_exp_hist)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (1,2]:14, (2,4]:15}`},
+		{query: `count_values("hist", latency_exp_hist) by (service)`, wantLabel: `{count:30, sum:15, [-0,0]:1, (1,2]:14, (2,4]:15}`, wantMetric: map[string]string{"service": "api"}},
+		{query: `count_values("hist", rate(latency_exp_hist[5m]))`, wantLabel: `{count:0.1, sum:0.05, (1,2]:0.05, (2,4]:0.05}`},
+		{query: `count_values("hist", rate(latency_exp_hist[5m])) by (service)`, wantLabel: `{count:0.1, sum:0.05, (1,2]:0.05, (2,4]:0.05}`, wantMetric: map[string]string{"service": "api"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			samples := decodeVectorQuery(t, srv.URL, tc.query, histValuedEvalTime.Unix())
@@ -104,14 +104,10 @@ func TestQuery_NativeHistogramCountValues_ChDB(t *testing.T) {
 func TestQuery_HistogramValuedSubqueryConsumers_ChDB(t *testing.T) {
 	seed := histValuedDDL + `
 INSERT INTO otel_metrics_exponential_histogram VALUES
-    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23
-58:00', 9), 10,  5.0, 0, 0, 0, [10], 0, []),
-    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23
-59:00', 9), 20, 10.0, 0, 0, 0, [20], 0, []),
-    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00
-00:00', 9), 30, 15.0, 0, 0, 0, [30], 0, []),
-    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00
-01:00', 9), 40, 20.0, 0, 0, 0, [40], 0, []);`
+    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:58:00', 9), 10,  5.0, 0, 0, 0, [10], 0, []),
+    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:59:00', 9), 20, 10.0, 0, 0, 0, [20], 0, []),
+    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 30, 15.0, 0, 0, 0, [30], 0, []),
+    ('subquery_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 40, 20.0, 0, 0, 0, [40], 0, []);`
 	srv, _ := newChDBServer(t, seed)
 	anchor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
