@@ -91,6 +91,15 @@ var branchProtectionContexts = []string{
 
 const workflowsDir = "../../.github/workflows"
 
+func isWorkflowYAML(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".yml", ".yaml":
+		return true
+	default:
+		return false
+	}
+}
+
 // maintenanceBranchPattern is the push-trigger glob every workflow owning a
 // release-required check must carry, so the check-run exists on the
 // maintenance publish path where no PR is opened.
@@ -637,7 +646,7 @@ func workflowCheckOwners(t *testing.T) checkOwnerIndex {
 	exact := map[string]checkOwner{}
 
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".yml" {
+		if e.IsDir() || !isWorkflowYAML(e.Name()) {
 			continue
 		}
 		path := filepath.Join(workflowsDir, e.Name())
