@@ -767,7 +767,8 @@ type histogramAggShape struct {
 // nothing with fewer; sum_over_time folds whatever is there, so one sample
 // is a valid window.
 func histogramWindowMinSamples(fn string) int {
-	if fn == "rate" || fn == "increase" {
+	switch fn {
+	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
 		return rateMinSamples
 	}
 	return stalenessMinSamples

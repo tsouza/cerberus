@@ -181,6 +181,12 @@ type histogramWindowInputs struct {
 	// rangeStart / rangeEnd are the requested window's own edges.
 	rangeStart, rangeEnd chplan.Expr
 
+	// factorOrder optionally carries the full window's timestamp array when
+	// the histogram fields themselves have been narrowed to endpoint samples.
+	// delta subtracts first from last but computes its extrapolation cadence
+	// from every in-window sample, exactly like Prometheus's extrapolatedRate.
+	factorOrder chplan.Expr
+
 	// countValues is the series-wide total-observation count series the
 	// durationToZero clamp reads, or nil to read the folded rung's own
 	// values.
@@ -301,7 +307,11 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 					if in.countValues != nil {
 						cv = in.countValues
 					}
-					factor := histogramExtrapolationFactorExpr(ord, cv, in)
+					factorOrder := ord
+					if in.factorOrder != nil {
+						factorOrder = in.factorOrder
+					}
+					factor := histogramExtrapolationFactorExpr(factorOrder, cv, in, true)
 					if in.perSecond != nil {
 						// Reference divides the FACTOR and then multiplies
 						// once (`factor /= ms.Range.Seconds()`, then one
@@ -323,12 +333,114 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 				})
 			})
 		}
+	case deltaWindowFn:
+		return func(values, order chplan.Expr) chplan.Expr {
+			return hqLet(paramWindowValues, values, func(vals chplan.Expr) chplan.Expr {
+				return hqLet(paramWindowOrder, order, func(ord chplan.Expr) chplan.Expr {
+					factorOrder := ord
+					if in.factorOrder != nil {
+						factorOrder = in.factorOrder
+					}
+					return &chplan.Binary{
+						Op:    chplan.OpMul,
+						Left:  gaugeEndpointDeltaFold(vals, ord),
+						Right: histogramExtrapolationFactorExpr(factorOrder, vals, in, false),
+					}
+				})
+			})
+		}
+	case irateWindowFn, ideltaWindowFn:
+		return func(values, order chplan.Expr) chplan.Expr {
+			return instantHistogramFold(fn, values, order, in.temporality, in.resets)
+		}
 	case "":
 		return latestSampleFold
 	default:
 		return func(values, _ chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}}
 		}
+	}
+}
+
+func gaugeEndpointDeltaFold(values, order chplan.Expr) chplan.Expr {
+	sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramCurrCum, paramRowTime},
+			Body:   &chplan.BareIdent{Name: paramRowTime},
+		},
+		values,
+		order,
+	}}
+	return hqLet(paramIncreaseSorted, sorted, func(inTimeOrder chplan.Expr) chplan.Expr {
+		return &chplan.Binary{
+			Op:   chplan.OpSub,
+			Left: lastArrayValue(inTimeOrder),
+			Right: &chplan.Subscript{
+				Container: inTimeOrder,
+				Key:       &chplan.LitInt{V: 1},
+			},
+		}
+	})
+}
+
+func instantHistogramFold(windowFn string, values, order, temporality, resets chplan.Expr) chplan.Expr {
+	sortedValues := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramCurrCum, paramRowTime},
+			Body:   &chplan.BareIdent{Name: paramRowTime},
+		},
+		values,
+		order,
+	}}
+	return hqLet(paramIncreaseSorted, sortedValues, func(inTimeOrder chplan.Expr) chplan.Expr {
+		current := lastArrayValue(inTimeOrder)
+		previous := &chplan.Subscript{
+			Container: inTimeOrder,
+			Key: &chplan.Binary{
+				Op:    chplan.OpSub,
+				Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{inTimeOrder}},
+				Right: &chplan.LitInt{V: 1},
+			},
+		}
+		value := chplan.Expr(&chplan.Binary{Op: chplan.OpSub, Left: current, Right: previous})
+		if windowFn == irateWindowFn {
+			reset := chplan.Expr(&chplan.Binary{Op: chplan.OpLt, Left: current, Right: previous})
+			if resets != nil {
+				reset = lastArrayValue(resets)
+			}
+			counterValue := chplan.Expr(&chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+				reset,
+				current,
+				value,
+			}})
+			if temporality != nil {
+				counterValue = &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+					&chplan.Binary{
+						Op:    chplan.OpEq,
+						Left:  temporality,
+						Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
+					},
+					current,
+					counterValue,
+				}}
+			}
+			value = &chplan.Binary{
+				Op:   chplan.OpDiv,
+				Left: counterValue,
+				Right: secondsBetweenTsExpr(
+					&chplan.Subscript{Container: order, Key: &chplan.LitInt{V: 1}},
+					lastArrayValue(order),
+				),
+			}
+		}
+		return value
+	})
+}
+
+func lastArrayValue(values chplan.Expr) chplan.Expr {
+	return &chplan.Subscript{
+		Container: values,
+		Key:       &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{values}},
 	}
 }
 
@@ -410,7 +522,7 @@ const histogramExtrapolationThresholdFactor = 1.1
 // order, and the bindings are the ONLY reason this function's rendered
 // size stays proportional to the arithmetic it denotes; unbinding any one
 // of them re-multiplies every read below it (see hqLet).
-func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogramWindowInputs) chplan.Expr {
+func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogramWindowInputs, isCounter bool) chplan.Expr {
 	return hqLet(paramWindowCounts, countValues, func(counts chplan.Expr) chplan.Expr {
 		sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{order}}
 		return hqLet(paramWindowSorted, sorted, func(sortedOrder chplan.Expr) chplan.Expr {
@@ -441,6 +553,9 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 					}
 					return hqLet(paramClampedStart, clamp(secondsBetweenTsExpr(in.rangeStart, firstTs)), func(thresholdClampedStart chplan.Expr) chplan.Expr {
 						durationToEnd := clamp(secondsBetweenTsExpr(lastTs, in.rangeEnd))
+						if !isCounter {
+							return histogramExtrapolationFactorFromDurations(sampledInterval, thresholdClampedStart, durationToEnd)
+						}
 
 						// durationToZero: a counter that rose across the window
 						// (resultCount > 0) could not have been negative firstCount seconds
@@ -470,33 +585,37 @@ func histogramExtrapolationFactorExpr(order, countValues chplan.Expr, in histogr
 								thresholdClampedStart,
 							}}
 
-							factor := &chplan.Binary{
-								Op: chplan.OpDiv,
-								Left: &chplan.Binary{
-									Op:    chplan.OpAdd,
-									Left:  &chplan.Binary{Op: chplan.OpAdd, Left: sampledInterval, Right: durationToStart},
-									Right: durationToEnd,
-								},
-								Right: sampledInterval,
-							}
-							// A degenerate `order` (fewer than two DISTINCT timestamps — e.g. a
-							// classic-histogram rung a mid-window layout change left under-
-							// reported) collapses sampledInterval to 0, which the division above
-							// leaves undefined. counterIncreaseFold already answers 0 for that
-							// shape (arraySum of an empty consecutive-diff array), so multiplying
-							// by 1 rather than by the undefined factor preserves that fallback
-							// instead of turning it into a NaN that poisons every downstream sum.
-							return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-								&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
-								factor,
-								&chplan.LitFloat{V: 1},
-							}}
+							return histogramExtrapolationFactorFromDurations(sampledInterval, durationToStart, durationToEnd)
 						})
 					})
 				})
 			})
 		})
 	})
+}
+
+func histogramExtrapolationFactorFromDurations(sampledInterval, durationToStart, durationToEnd chplan.Expr) chplan.Expr {
+	factor := &chplan.Binary{
+		Op: chplan.OpDiv,
+		Left: &chplan.Binary{
+			Op: chplan.OpAdd,
+			Left: &chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  sampledInterval,
+				Right: durationToStart,
+			},
+			Right: durationToEnd,
+		},
+		Right: sampledInterval,
+	}
+	// A degenerate timestamp array collapses sampledInterval to zero. The
+	// paired difference already answers zero for that shape, so multiplying
+	// by one preserves the fallback instead of poisoning it with NaN.
+	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+		&chplan.Binary{Op: chplan.OpGt, Left: sampledInterval, Right: &chplan.LitInt{V: 0}},
+		factor,
+		&chplan.LitFloat{V: 1},
+	}}
 }
 
 // secondsBetweenTsExpr renders the signed gap `to - from` between two
@@ -687,14 +806,14 @@ func counterIncreaseFold(values, order, temporality, resets chplan.Expr) chplan.
 }
 
 // counterWindowFn reports whether windowFn reduces its window as a
-// COUNTER — the two range-vector functions whose fold applies
+// COUNTER — the range-vector functions whose fold applies
 // Prometheus's counter-reset rule, through counterIncreaseFold. Every
 // other windowFn ("sum_over_time" and the #1692 bare-selector ""
 // sentinel) reads its samples as plain values, so neither the
 // temporality signal nor the counter-reset mask has anything to say
 // about it.
 func counterWindowFn(windowFn string) bool {
-	return windowFn == rateWindowFn || windowFn == increaseWindowFn
+	return windowFn == rateWindowFn || windowFn == increaseWindowFn || windowFn == irateWindowFn
 }
 
 // needsTemporalityAgg reports whether windowFn's histogramWindowFold

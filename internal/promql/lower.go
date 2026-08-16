@@ -172,7 +172,7 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // dispatches that can only be decided at the root: the shapes over an
 // exponential (native) histogram that return a HISTOGRAM-VALUED sample —
 // a bare selector, `sum`/`avg` `[by/without] (<selector>)`, and
-// `rate`/`increase` over a range-vector selector — plus scalar binary
+// histogram-valued range functions over a range-vector selector — plus scalar binary
 // operations that preserve or drop that value and histogram-aware wrappers
 // such as label_replace that preserve the payload. Their answers have a wire
 // representation only when the histogram-valued shape (possibly under such
@@ -195,11 +195,11 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // The direct histogram-valued dispatches are ordered but not mutually
 // exclusive in principle, and the order is arbitrary:
 // [bareExpHistogramSelector], [sumOrAvgOverExpHistogram] and
-// [rateOverExpHistogram] recognise disjoint root node types (a selector, an
+// [rangeFnOverExpHistogram] recognise disjoint root node types (a selector, an
 // aggregation, a range-vector call), so none can shadow another.
 // Histogram-preserving wrappers dispatch before them because their operand
 // is one of those payload shapes.
-// [rateOverExpHistogram] additionally refuses an aggregation WRAPPER, so
+// [rangeFnOverExpHistogram] additionally refuses an aggregation WRAPPER, so
 // `sum(rate(...))` — which needs both reductions — matches neither it nor
 // [sumOrAvgOverExpHistogram] and stays rejected. The scaling scalar-binop
 // recognizer intentionally precedes the dropping recognizer so histogram /
@@ -474,7 +474,7 @@ func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerC
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(
 			"promql: %q is an exponential histogram metric; only a bare %q selector, "+
-				"sum()/avg()/count() over one, rate()/increase()/resets()/changes() over one, "+
+				"sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/resets()/changes() over one, "+
 				"histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q "+
 				"companion selectors are supported",
 			metricName, metricName, metricName+"_count", metricName+"_sum",

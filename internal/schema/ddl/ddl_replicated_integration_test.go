@@ -36,14 +36,19 @@ import (
 // store, so both forms read identically there. The strict-server rejection of
 // explicit args — code 36 on the production cluster — is environment-, not
 // version-deterministic, so it is not relied on here.)
-const replicatedServerConfig = `<clickhouse>
+const (
+	// The container wait strategy covers ClickHouse's HTTP endpoint, not the
+	// embedded Keeper election. A saturated runner can therefore accept SQL
+	// before its single Keeper node can serve the first coordination request.
+	replicatedKeeperOperationTimeout = 60 * time.Second
+	replicatedServerConfigTemplate   = `<clickhouse>
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>1</server_id>
         <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
         <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
         <coordination_settings>
-            <operation_timeout_ms>10000</operation_timeout_ms>
+            <operation_timeout_ms>%d</operation_timeout_ms>
             <session_timeout_ms>30000</session_timeout_ms>
         </coordination_settings>
         <raft_configuration>
@@ -66,6 +71,7 @@ const replicatedServerConfig = `<clickhouse>
     </macros>
 </clickhouse>
 `
+)
 
 // startClickHouseReplicated spins up a real ClickHouse whose ONLY database is
 // the built-in `default`, configured with an embedded Keeper + {shard}/{replica}
@@ -78,6 +84,10 @@ func startClickHouseReplicated(t *testing.T) driver.Conn {
 	defer cancel()
 
 	cfgPath := filepath.Join(t.TempDir(), "replicated.xml")
+	replicatedServerConfig := fmt.Sprintf(
+		replicatedServerConfigTemplate,
+		replicatedKeeperOperationTimeout.Milliseconds(),
+	)
 	if err := os.WriteFile(cfgPath, []byte(replicatedServerConfig), 0o644); err != nil {
 		t.Fatalf("write replicated config: %v", err)
 	}

@@ -5,7 +5,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
       "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramResetsWindowed joined the caller set: it resolves its anchor exactly as expHistogramRateWindowed does, from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
       "evidence": {
         "guard": [
           "case parser.END of switch vs.StartOrEnd",
@@ -13,7 +13,7 @@
         ],
         "callers": [
           "andInstantWindow",
-          "expHistogramRateWindowed",
+          "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
@@ -28,8 +28,7 @@
         "cited": [
           "Lower",
           "LowerAtRange",
-          "expHistogramRateWindowed",
-          "expHistogramResetsWindowed",
+          "expHistogramRangeFnWindowed",
           "lowerRoot"
         ]
       }
@@ -39,7 +38,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
       "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramResetsWindowed joined the caller set: it resolves its anchor exactly as expHistogramRateWindowed does, from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
       "evidence": {
         "guard": [
           "case parser.START of switch vs.StartOrEnd",
@@ -47,7 +46,7 @@
         ],
         "callers": [
           "andInstantWindow",
-          "expHistogramRateWindowed",
+          "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
@@ -62,8 +61,7 @@
         "cited": [
           "Lower",
           "LowerAtRange",
-          "expHistogramRateWindowed",
-          "expHistogramResetsWindowed",
+          "expHistogramRangeFnWindowed",
           "lowerRoot"
         ]
       }
@@ -73,14 +71,14 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
       "message": "promql: unexpected StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so expHistogramResetsWindowed joining the caller set cannot bear on it.",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so the expanded histogram range-function caller set cannot bear on it.",
       "evidence": {
         "guard": [
           "default of switch vs.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
         ],
         "callers": [
           "andInstantWindow",
-          "expHistogramRateWindowed",
+          "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
           "lowerHistogramQuantileAgg",
@@ -91,9 +89,6 @@
           "lowerQuantileOverTime",
           "lowerRangeVectorCall",
           "selectorAnchor"
-        ],
-        "cited": [
-          "expHistogramResetsWindowed"
         ]
       }
     }

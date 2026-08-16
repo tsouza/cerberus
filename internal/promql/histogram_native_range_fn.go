@@ -7,21 +7,18 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// histogram_native_rate.go lowers `rate(<selector>[range])` and
-// `increase(<selector>[range])` over an OTel exponential (native)
-// histogram — `<base>_exp_hist` — into a histogram-VALUED result, the
-// third and last lowering of issue #1967 to cap a plan with a
-// [chplan.HistogramProjection] (after the bare selector in
-// histogram_native_bare.go and `sum()` in histogram_native_sum.go).
+// histogram_native_range_fn.go lowers the five histogram-valued PromQL range
+// functions — rate, increase, delta, irate and idelta — over an OTel
+// exponential (native) histogram into a [chplan.HistogramProjection]. The
+// rate/increase path originated in issue #1967; issue #2224 extended the
+// same row and wire contract to the gauge-delta and instant-rate families.
 //
-// Reference Prometheus answers both with a native histogram, not a
-// float: promql's extrapolatedRate hands a range of native-histogram
-// samples to histogramRate, which returns a *histogram.FloatHistogram,
-// and the caller scales THAT by the boundary-extrapolation factor
-// (`resultHistogram.Mul(factor)`). The whole distribution is the answer;
-// there is no scalar anywhere in it.
+// Reference Prometheus answers all five with a native histogram, not a
+// float. rate/increase/delta use extrapolatedRate; irate/idelta use
+// instantValue over the final pair. Both kernels return the whole
+// distribution as the sample value rather than collapsing it to a scalar.
 //
-// Two reductions, and only one of them is new here.
+// The lowering has two stages.
 //
 //  1. The window reduction — per series, fold the in-window samples into
 //     one distribution under the counter-reset rule, then stretch it by
@@ -35,8 +32,7 @@ import (
 //  2. Publishing it — which the quantile path never does, because it
 //     consumes the folded distribution with an interpolation kernel.
 //
-// What this file adds on top of the shared window stage is therefore
-// small and entirely about being a histogram-VALUED answer:
+// The shared window stage is widened here for a histogram-VALUED answer:
 //
 //   - Count and Sum, the two whole-histogram scalars the quantile kernel
 //     never reads (it works off the bucket ladder). Reference folds them
@@ -71,7 +67,7 @@ import (
 //	HistogramProjection [MetricName='', Attributes, now64(9), Value=0, <nine histogram columns>]
 //	  Project [Attributes, folded Count / Sum / Scale / ZeroCount /
 //	           {Pos,Neg}{Offset,BucketCounts}]
-//	    Filter uniqExact(TimeUnix) >= 2                    ← rate/increase floor
+//	    Filter uniqExact(TimeUnix) >= 2                    ← range-function floor
 //	      Aggregate groupBy=[series identity] funcs=<expHistogramValuedWindowAggs>
 //	        Filter <matchers> AND <window bounds>
 //	          Scan(otel_metrics_exponential_histogram)
@@ -82,14 +78,10 @@ import (
 // stacks both — is a further shape and stays on
 // [expHistogramSelectorRouting]'s explicit rejection.
 //
-// Counter-reset detection follows reference's whole-histogram verdict
-// rather than each component's own: the shared window stage projects a
-// per-series reset mask (`FloatHistogram.DetectReset` transcribed in
-// histogram_native_reset.go) and every component this file publishes —
-// each bucket, the zero bucket, Count and Sum — folds under it. Sum
-// matters most here, since it is the one component reference explicitly
-// does NOT let vote on a reset and the one a histogram with negative
-// observations can drive downward without any restart at all.
+// Counter functions follow reference's whole-histogram reset verdict rather
+// than letting each component decide independently. Gauge functions bypass
+// that mask: delta/idelta preserve a negative difference, while irate retains
+// the current whole histogram when the final pair is a reset.
 
 // hqWindowSumArrayAlias holds the group's groupArray of each row's Sum —
 // the total observed VALUE, positionally parallel to the counts / scales
@@ -101,17 +93,46 @@ import (
 // SELECT.
 const hqWindowSumArrayAlias = "_hq_sum_list"
 
-// rateWindowFn / increaseWindowFn are the two range-vector functions this
-// file answers, spelled once so the matcher and the per-second division
-// cannot disagree about which is which.
+// hqWindowAllTsListAlias preserves the full window's timestamps while the
+// delta path narrows every histogram field to the first and last samples.
+// Prometheus subtracts only those endpoint histograms, but its extrapolation
+// factor still divides the endpoint span by the number of gaps across every
+// in-window sample.
+const hqWindowAllTsListAlias = "_hq_all_ts_list"
+
+const hqWindowAllArrayAliasPrefix = "_hq_all_"
+
+// lastTwoSamplesSliceOffset is ClickHouse arraySlice's negative offset for
+// retaining exactly the final pair consumed by irate and idelta.
+const lastTwoSamplesSliceOffset int64 = -2
+
+type histogramWindowSampleSelection uint8
+
+const (
+	histogramWindowAllSamples histogramWindowSampleSelection = iota
+	histogramWindowEndpoints
+	histogramWindowLastTwo
+)
+
+const (
+	paramWindowSelectedValue = "wsv"
+	paramWindowSelectedTime  = "wst"
+)
+
+// Histogram-valued range functions are spelled once so the matcher and the
+// fold dispatch cannot disagree about which functions publish a native
+// histogram rather than an ordinary float sample.
 const (
 	rateWindowFn     = "rate"
 	increaseWindowFn = "increase"
+	deltaWindowFn    = "delta"
+	irateWindowFn    = "irate"
+	ideltaWindowFn   = "idelta"
 )
 
-// rateOverExpHistogram reports whether expr is `rate(<bare exp-histogram
-// selector>[range])` or the `increase` twin — the two shapes this file
-// answers — returning the matched [histogramAggShape].
+// rangeFnOverExpHistogram reports whether expr is one of Prometheus's five
+// histogram-valued range functions over a bare exponential-histogram selector,
+// returning the matched [histogramAggShape].
 //
 // Like [bareExpHistogramSelector] and [sumOrAvgOverExpHistogram] it is asked
 // only of the ROOT of a query (see [lowerRoot]), and for the same reason:
@@ -120,42 +141,52 @@ const (
 // reaches lowerVectorSelector through the ordinary descent and is still
 // rejected there.
 //
-// An aggregation WRAPPER disqualifies the match: `sum(rate(...))` stacks
-// the window reduction and the across-series merge, and admitting it here
-// would answer it with the window reduction alone — silently dropping the
-// sum. [matchHistogramAggIdiom] captures any such wrapper into
-// shape.agg, so testing that field for nil is the whole of the check.
+// An aggregation wrapper never reaches the direct call assertion above:
+// `sum(rate(...))` stacks the window reduction and the across-series merge,
+// and admitting it here would answer it with the window reduction alone —
+// silently dropping the sum.
 //
 // A non-positive `[range]` is refused rather than answered: `rate`
 // divides by it (see [expHistogramValuedWindowFold]), and falling through
 // leaves the shape on the explicit rejection path instead of emitting a
 // division by zero.
-func rateOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
+func rangeFnOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return histogramAggShape{}, false
 	}
-	shape, ok := matchHistogramAggIdiom(expr, s)
-	if !ok || shape.agg != nil || shape.windowRange <= 0 {
+	call, ok := peelWrappers(expr).(*parser.Call)
+	if !ok || len(call.Args) != 1 {
 		return histogramAggShape{}, false
 	}
-	if shape.windowFn != rateWindowFn && shape.windowFn != increaseWindowFn {
+	switch call.Func.Name {
+	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
+	default:
 		return histogramAggShape{}, false
 	}
+	ms, ok := peelWrappers(call.Args[0]).(*parser.MatrixSelector)
+	if !ok || ms.Range <= 0 {
+		return histogramAggShape{}, false
+	}
+	vs, ok := peelWrappers(ms.VectorSelector).(*parser.VectorSelector)
+	if !ok {
+		return histogramAggShape{}, false
+	}
+	shape := histogramAggShape{selector: vs, windowRange: ms.Range, windowFn: call.Func.Name}
 	if !s.IsExpHistogramMetric(metricNameFromMatchers(shape.selector.LabelMatchers)) {
 		return histogramAggShape{}, false
 	}
 	return shape, true
 }
 
-// lowerExpHistogramRate lowers the `rate` / `increase` shape across the
-// three evaluation shapes [rangeGridShapeFor] distinguishes, the same
-// three its two siblings handle — see [lowerExpHistogramBare] for what
-// each one means.
-func lowerExpHistogramRate(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+// lowerExpHistogramRangeFn lowers a histogram-valued range function across
+// the three evaluation shapes [rangeGridShapeFor] distinguishes, the same
+// three its two siblings handle — see [lowerExpHistogramBare] for what each
+// one means.
+func lowerExpHistogramRangeFn(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if grid := rangeGridShapeFor(shape.selector, ctx); grid == gridFanout {
-		return lowerExpHistogramRateRange(shape, s, ctx), nil
+		return lowerExpHistogramRangeFnRange(shape, s, ctx), nil
 	} else if grid == gridBroadcast {
-		windowed, err := expHistogramRateWindowed(shape, s, ctx)
+		windowed, err := expHistogramRangeFnWindowed(shape, s, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -171,14 +202,14 @@ func lowerExpHistogramRate(shape histogramAggShape, s schema.Metrics, ctx lowerC
 			s,
 		), nil
 	}
-	windowed, err := expHistogramRateWindowed(shape, s, ctx)
+	windowed, err := expHistogramRangeFnWindowed(shape, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	return aggregatedHistogramProjection(windowed, chplan.NowNano(), s), nil
 }
 
-// expHistogramRateWindowed builds the instant-mode subtree beneath the
+// expHistogramRangeFnWindowed builds the instant-mode subtree beneath the
 // histogram projection: the filtered scan reduced, per series, to that
 // series' window rate. Its prologue is lowerHistogramQuantileNativeAgg's
 // rung for rung — same anchor resolution, same `(anchor - range, anchor]`
@@ -186,7 +217,7 @@ func lowerExpHistogramRate(shape histogramAggShape, s schema.Metrics, ctx lowerC
 // the reason [fanoutWindowBoundsExpr]'s doc gives about its range-mode
 // twin: the extrapolation correction must read the SAME window edges the
 // Filter selects rows against, or the two drift apart.
-func expHistogramRateWindowed(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func expHistogramRangeFnWindowed(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	vs := shape.selector
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(vs.LabelMatchers, s)
@@ -210,15 +241,15 @@ func expHistogramRateWindowed(shape histogramAggShape, s schema.Metrics, ctx low
 	return expHistogramValuedWindowStage(input, shape, rangeStart, rangeEnd, s), nil
 }
 
-// lowerExpHistogramRateRange is the query_range shape: the per-anchor
+// lowerExpHistogramRangeFnRange is the query_range shape: the per-anchor
 // [chplan.RangeBucketFanout] the sibling range paths build — one
 // `[range]` window per step anchor, keyed on SERIES identity — with the
 // window reduction on top and the histogram projection as the cap.
 //
-// The fan-out owns the rate/increase two-sample floor natively through
+// The fan-out owns the range function's two-sample floor natively through
 // [chplan.RangeBucketFanout.MinSamples] (emitted as a HAVING), which is
 // why this path does not repeat the instant stage's minSamplesFilter.
-func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	scan := &chplan.Scan{Table: s.ExpHistogramTable}
 	pred := buildPredicate(shape.selector.LabelMatchers, s)
 	win := aggWindowFor(shape)
@@ -227,13 +258,19 @@ func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx l
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
 	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 
+	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
+	grouped := buildHistogramBucketFanout(
+		scan, pred, nil, win,
+		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
+		aggs, s, ctx,
+	)
+	selected := selectExpHistogramWindowSamples(
+		grouped, aggs, []string{stepGridAnchorColumn, s.AttributesColumn},
+		histogramWindowSelectionFor(shape.windowFn),
+	)
 	perSeries := expHistogramWindowReshape(
-		buildHistogramBucketFanout(
-			scan, pred, nil, win,
-			[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
-			expHistogramValuedWindowAggs(s, shape.windowFn), s, ctx,
-		),
-		expHistogramValuedWindowAggs(s, shape.windowFn),
+		selected,
+		aggs,
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
@@ -250,22 +287,148 @@ func lowerExpHistogramRateRange(shape histogramAggShape, s schema.Metrics, ctx l
 // the reshaped row.
 func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
 	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	group := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(expHistogramValuedWindowAggs(s, shape.windowFn), windowSampleCountAgg(s)),
+		AggFuncs:           append(aggs, windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
+	selected := selectExpHistogramWindowSamples(
+		minSamplesFilter(group, shape.minSamples()), aggs, []string{s.AttributesColumn},
+		histogramWindowSelectionFor(shape.windowFn),
+	)
 	return expHistogramWindowReshape(
-		minSamplesFilter(group, shape.minSamples()),
-		expHistogramValuedWindowAggs(s, shape.windowFn),
+		selected,
+		aggs,
 		[]string{s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
+}
+
+func histogramWindowSelectionFor(windowFn string) histogramWindowSampleSelection {
+	switch windowFn {
+	case deltaWindowFn:
+		return histogramWindowEndpoints
+	case irateWindowFn, ideltaWindowFn:
+		return histogramWindowLastTwo
+	default:
+		return histogramWindowAllSamples
+	}
+}
+
+// selectExpHistogramWindowSamples narrows the grouped row arrays to the
+// histogram samples the reference kernel actually subtracts. delta uses the
+// first and last histograms; irate/idelta use the last two. rate/increase keep
+// the whole window because reset detection visits every consecutive pair.
+func selectExpHistogramWindowSamples(
+	input chplan.Node,
+	aggs []chplan.AggFunc,
+	keyAliases []string,
+	selection histogramWindowSampleSelection,
+) chplan.Node {
+	if selection == histogramWindowAllSamples {
+		return input
+	}
+
+	input = aliasExpHistogramWindowArrays(input, aggs, keyAliases)
+	times := &chplan.ColumnRef{Name: hqWindowAllTsListAlias}
+	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)
+	for _, alias := range keyAliases {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: alias}, Alias: alias})
+	}
+	projs = append(projs, chplan.Projection{Expr: times, Alias: hqWindowAllTsListAlias})
+
+	for _, agg := range aggs {
+		expr := chplan.Expr(&chplan.ColumnRef{Name: agg.Alias})
+		switch {
+		case agg.Alias == hqAggMergedScaleAlias:
+			expr = &chplan.FuncCall{Fn: chplan.FnArrayMin, Args: []chplan.Expr{
+				selectExpHistogramValues(&chplan.ColumnRef{Name: fullExpHistogramWindowArrayAlias(hqAggScalesArrayAlias)}, times, selection),
+			}}
+		case agg.Fn == chplan.FnGroupArray:
+			if agg.Alias == hqWindowTsListAlias {
+				expr = selectExpHistogramTimes(times, selection)
+			} else {
+				expr = selectExpHistogramValues(
+					&chplan.ColumnRef{Name: fullExpHistogramWindowArrayAlias(agg.Alias)},
+					times,
+					selection,
+				)
+			}
+		}
+		projs = append(projs, chplan.Projection{Expr: expr, Alias: agg.Alias})
+	}
+	return &chplan.Project{Input: input, Projections: projs}
+}
+
+// aliasExpHistogramWindowArrays puts every full groupArray under a name the
+// selection Project never overwrites. ClickHouse substitutes SELECT aliases
+// across sibling expressions, including forward references; selecting a
+// shortened array beside expressions that read its original name would apply
+// the selection twice and make arraySort see unequal lengths.
+func aliasExpHistogramWindowArrays(input chplan.Node, aggs []chplan.AggFunc, keyAliases []string) chplan.Node {
+	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs))
+	for _, alias := range keyAliases {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: alias}, Alias: alias})
+	}
+	for _, agg := range aggs {
+		alias := agg.Alias
+		if agg.Fn == chplan.FnGroupArray {
+			alias = fullExpHistogramWindowArrayAlias(alias)
+		}
+		projs = append(projs, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: agg.Alias},
+			Alias: alias,
+		})
+	}
+	return &chplan.Project{Input: input, Projections: projs}
+}
+
+func fullExpHistogramWindowArrayAlias(alias string) string {
+	if alias == hqWindowTsListAlias {
+		return hqWindowAllTsListAlias
+	}
+	return hqWindowAllArrayAliasPrefix + alias
+}
+
+func selectExpHistogramValues(values, times chplan.Expr, selection histogramWindowSampleSelection) chplan.Expr {
+	sorted := &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramWindowSelectedValue, paramWindowSelectedTime},
+			Body:   &chplan.BareIdent{Name: paramWindowSelectedTime},
+		},
+		values,
+		times,
+	}}
+	return selectExpHistogramSorted(sorted, selection)
+}
+
+func selectExpHistogramTimes(times chplan.Expr, selection histogramWindowSampleSelection) chplan.Expr {
+	return selectExpHistogramSorted(
+		&chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{times}},
+		selection,
+	)
+}
+
+func selectExpHistogramSorted(sorted chplan.Expr, selection histogramWindowSampleSelection) chplan.Expr {
+	if selection == histogramWindowLastTwo {
+		return &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+			sorted, &chplan.LitInt{V: lastTwoSamplesSliceOffset},
+		}}
+	}
+	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+			sorted, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 1},
+		}},
+		&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+			sorted, &chplan.LitInt{V: -1}, &chplan.LitInt{V: 1},
+		}},
+	}}
 }
 
 // expHistogramValuedWindowFold is [histogramWindowFold] over the
@@ -305,9 +468,14 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 	if shape.windowFn == rateWindowFn {
 		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
 	}
+	var factorOrder chplan.Expr
+	if shape.windowFn == deltaWindowFn {
+		factorOrder = &chplan.ColumnRef{Name: hqWindowAllTsListAlias}
+	}
 	return histogramWindowFold(shape.windowFn, histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
+		factorOrder: factorOrder,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      expHistogramResetMaskFor(shape.windowFn),

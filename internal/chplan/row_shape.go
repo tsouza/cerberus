@@ -96,11 +96,12 @@ const (
 	//
 	// Three lowerings build this node today (internal/promql's
 	// histogram_native_bare.go, histogram_native_sum.go and
-	// histogram_native_rate.go). Generic forwarders still cannot consume
-	// it: label transforms and scalar arithmetic are refused by
-	// expHistogramSelectorRouting. Float-only functions are the deliberate
-	// exception: they drop every histogram sample and re-project an empty
-	// canonical float shape without invoking the generic forwarder.
+	// histogram_native_range_fn.go). Generic forwarders still cannot
+	// consume it. Histogram-aware label transforms and scalar arithmetic
+	// intercept it before those forwarders, while float-only functions drop
+	// every histogram sample and re-project an empty canonical float shape.
+	// Every other wrapping shape remains behind expHistogramSelectorRouting
+	// until it grows its own histogram-aware lowering (issue #1967).
 	HistogramRowShape
 )
 
