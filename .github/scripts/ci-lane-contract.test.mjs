@@ -247,12 +247,36 @@ function registryFixture() {
     report_schema_version: REPORT_SCHEMA_VERSION,
     rollout: "shadow",
     impact_selection: { known_nonimpact_globs: ["**/*.md", "docs/**"] },
+    native_evidence: {
+      schema_version: 1,
+      parts: [
+        {
+          id: "always-go",
+          lane_id: "always",
+          execution_id: "default",
+          invocation_mode: "source_tree",
+          producer_job: "lint",
+          parser: "go-test-json-v1",
+          entry: "go-test.json",
+        },
+        {
+          id: "impact-tap",
+          lane_id: "impact",
+          execution_id: "shard-a",
+          invocation_mode: "source_tree",
+          producer_job: "shard",
+          parser: "node-tap-v1",
+          entry: "node.tap",
+        },
+      ],
+    },
     layers: CANONICAL_LAYER_IDS.map((id) => ({ id, name: `Layer ${id}` })),
     lanes: [
       lane({
         id: "always",
         workflow: ".github/workflows/ci.yml",
         jobs: ["check", "lint"],
+        producerJobs: ["lint"],
         contextJob: "check",
         layers: CANONICAL_LAYER_IDS,
         recipes: ["test"],
@@ -507,7 +531,13 @@ function producerRunFor(workflow) {
   return PRODUCER_RUNS[workflow];
 }
 
-function nativeArtifactFor(workflow, laneID, executionID, run) {
+function nativeArtifactFor(
+  workflow,
+  laneID,
+  executionID,
+  invocationMode,
+  run,
+) {
   const ordinal = {
     ".github/workflows/ci.yml": 901,
     ".github/workflows/e2e.yml": 902,
@@ -524,7 +554,7 @@ function nativeArtifactFor(workflow, laneID, executionID, run) {
     id: String(ordinal),
     name: nativeArtifactName(workflow, run),
     sha256: String(ordinal % 10).repeat(64),
-    entry: `${laneID}/${executionID}`,
+    entry: `${laneID}/${executionID}/${invocationMode}`,
     entry_sha256: digestByte.repeat(64),
   };
 }
@@ -536,12 +566,24 @@ function selectionRefFor(selection) {
   };
 }
 
-function reportFor(registry, selection, laneID, executionID = "default") {
+function reportFor(
+  registry,
+  selection,
+  laneID,
+  executionID = "default",
+  invocationMode,
+) {
   const registered = registry.lanes.find(
     (candidate) => candidate.id === laneID,
   );
-  const candidateArtifact =
-    selection.posture === "release" && registered.applicability.artifact;
+  const mode =
+    invocationMode ??
+    (selection.posture === "release" &&
+    registered.applicability.artifact &&
+    !registered.applicability.source
+      ? "candidate_artifact"
+      : "source_tree");
+  const candidateArtifact = mode === "candidate_artifact";
   const producerRun = producerRunFor(registered.owner.workflow);
   return {
     schema_version: REPORT_SCHEMA_VERSION,
@@ -561,11 +603,12 @@ function reportFor(registry, selection, laneID, executionID = "default") {
         registered.owner.workflow,
         laneID,
         executionID,
+        mode,
         producerRun,
       ),
     },
     invocation: {
-      mode: candidateArtifact ? "candidate_artifact" : "source_tree",
+      mode,
       recipe: registered.recipes[0] ?? null,
       command: registered.command,
       build_tags: [...registered.build_tags],
@@ -605,6 +648,9 @@ function producerManifestFor(registry, selection) {
       });
     }
     const producer = producers.get(workflow);
+    const artifactMode = registered.applicability.source
+      ? "source_tree"
+      : "candidate_artifact";
     if (!producer.jobs.some((job) => job.job === registered.owner.context_job))
       producer.jobs.push({
         job: registered.owner.context_job,
@@ -614,30 +660,45 @@ function producerManifestFor(registry, selection) {
       });
     if (producer.artifacts.length === 0) {
       producer.artifacts.push({
-        id: nativeArtifactFor(workflow, item.lane_id, item.executions[0], run)
-          .id,
+        id: nativeArtifactFor(
+          workflow,
+          item.lane_id,
+          item.executions[0],
+          artifactMode,
+          run,
+        ).id,
         name: nativeArtifactName(workflow, run),
         sha256: nativeArtifactFor(
           workflow,
           item.lane_id,
           item.executions[0],
+          artifactMode,
           run,
         ).sha256,
         entries: [],
       });
     }
     for (const execution of item.executions) {
-      const reference = nativeArtifactFor(
-        workflow,
-        item.lane_id,
-        execution,
-        run,
-      );
-      producer.artifacts[0].entries.push({
-        lane_id: item.lane_id,
-        execution_id: execution,
-        sha256: reference.entry_sha256,
-      });
+      const modes = [];
+      if (registered.applicability.source) modes.push("source_tree");
+      if (selection.posture === "release" && registered.applicability.artifact) {
+        modes.push("candidate_artifact");
+      }
+      for (const mode of modes) {
+        const reference = nativeArtifactFor(
+          workflow,
+          item.lane_id,
+          execution,
+          mode,
+          run,
+        );
+        producer.artifacts[0].entries.push({
+          lane_id: item.lane_id,
+          execution_id: execution,
+          invocation_mode: mode,
+          sha256: reference.entry_sha256,
+        });
+      }
     }
   }
   return {
@@ -912,7 +973,7 @@ test("registry rejects invalid enums and invalid workflow job IDs", () => {
   }
 });
 
-test("registry producer jobs are unique owner jobs and exclude the terminal context", () => {
+test("registry producer jobs are unique owner jobs with an exact native-part roster", () => {
   const cases = [
     {
       producerJobs: ["shard", "shard"],
@@ -922,16 +983,20 @@ test("registry producer jobs are unique owner jobs and exclude the terminal cont
       producerJobs: ["ghost"],
       pattern: /producer_jobs contains ghost, which is not in owner\.jobs/,
     },
-    {
-      producerJobs: ["aggregate"],
-      pattern: /producer_jobs must exclude the context_job aggregate/,
-    },
   ];
   for (const { producerJobs, pattern } of cases) {
     const document = registryFixture();
     document.lanes[1].owner.producer_jobs = producerJobs;
     expectContractError(() => validateRegistry(document, { root }), pattern);
   }
+
+  const directContextProducer = registryFixture();
+  directContextProducer.lanes[1].owner.producer_jobs = ["aggregate"];
+  directContextProducer.native_evidence.parts[1].producer_job = "aggregate";
+  assert.equal(
+    validateRegistry(directContextProducer, { root }),
+    directContextProducer,
+  );
 });
 
 test("registry discovers and rejects an unclassified .yaml workflow", () => {
@@ -1689,7 +1754,7 @@ test("report set rejects artifact digest mismatch", () => {
         reports,
         producerManifest: producerManifestFor(registry, selection),
       }),
-    /release\/artifact: candidate digest does not match the selection/,
+    /release\/artifact\/candidate_artifact: candidate digest does not match the selection/,
   );
 });
 
@@ -1832,6 +1897,203 @@ test("release report set qualifies all release-required source and artifact lane
       producerManifest: producerManifestFor(registry, selection),
     }),
     { expected: 4, received: 4 },
+  );
+});
+
+test("canonical pre-publication qualification validates exactly 45 invocations", () => {
+  const registry = JSON.parse(readFileSync(".github/ci-lanes.json", "utf8"));
+  const selection = {
+    schema_version: registry.selection_schema_version,
+    registry_schema_version: registry.schema_version,
+    report_schema_version: registry.report_schema_version,
+    posture: "release",
+    source: { sha: SOURCE_SHA, tree: SOURCE_TREE },
+    candidate_digest: CANDIDATE_DIGEST,
+    correlation_nonce: RELEASE_CORRELATION_NONCE,
+    run: { ...RUN },
+    selector: {
+      conclusion: "success",
+      base_sha: null,
+      head_sha: null,
+      changed_paths: [],
+      unknown_paths: [],
+    },
+    lanes: registry.lanes.map((registered) => {
+      if (registered.release_posture === "post_publish") {
+        return {
+          lane_id: registered.id,
+          disposition: "omitted",
+          executions: [],
+          reason: "post_publish",
+        };
+      }
+      if (registered.determinism === "observational") {
+        return {
+          lane_id: registered.id,
+          disposition: "omitted",
+          executions: [],
+          reason: "advisory",
+        };
+      }
+      return {
+        lane_id: registered.id,
+        disposition: "selected",
+        executions: [...registered.executions],
+        reason: null,
+      };
+    }),
+  };
+  const selected = selection.lanes.filter(
+    (item) => item.disposition === "selected",
+  );
+  const workflows = [
+    ...new Set(
+      selected.map(
+        (item) =>
+          registry.lanes.find((lane) => lane.id === item.lane_id).owner
+            .workflow,
+      ),
+    ),
+  ].sort();
+  const producerRuns = new Map(
+    workflows.map((workflow, index) => [
+      workflow,
+      { id: String(5001 + index), attempt: 1 },
+    ]),
+  );
+  const producers = new Map(
+    workflows.map((workflow, index) => {
+      const run = producerRuns.get(workflow);
+      const digestByte = ((index % 15) + 1).toString(16);
+      return [
+        workflow,
+        {
+          workflow,
+          run,
+          source: { ...selection.source },
+          correlation_nonce: selection.correlation_nonce,
+          event: eventIdentityFor(selection),
+          repository: REPOSITORY,
+          conclusion: "success",
+          jobs: [],
+          artifacts: [
+            {
+              id: String(6001 + index),
+              name: nativeArtifactName(workflow, run),
+              sha256: digestByte.repeat(64),
+              entries: [],
+            },
+          ],
+        },
+      ];
+    }),
+  );
+  const reports = [];
+  for (const item of selected) {
+    const registered = registry.lanes.find(
+      (lane) => lane.id === item.lane_id,
+    );
+    const producer = producers.get(registered.owner.workflow);
+    if (
+      !producer.jobs.some(
+        (job) =>
+          job.job === registered.owner.context_job &&
+          job.name === registered.context.name,
+      )
+    ) {
+      producer.jobs.push({
+        job: registered.owner.context_job,
+        name: registered.context.name,
+        database_id: String(
+          700001 +
+            workflows.indexOf(registered.owner.workflow) * 100 +
+            producer.jobs.length,
+        ),
+        conclusion: "success",
+      });
+    }
+    const modes = [];
+    if (registered.applicability.source) modes.push("source_tree");
+    if (registered.applicability.artifact) {
+      modes.push("candidate_artifact");
+    }
+    for (const executionID of item.executions) {
+      for (const mode of modes) {
+        const entrySHA256 = ((reports.length % 15) + 1)
+          .toString(16)
+          .repeat(64);
+        producer.artifacts[0].entries.push({
+          lane_id: registered.id,
+          execution_id: executionID,
+          invocation_mode: mode,
+          sha256: entrySHA256,
+        });
+        reports.push({
+          schema_version: registry.report_schema_version,
+          registry_schema_version: registry.schema_version,
+          lane_id: registered.id,
+          execution_id: executionID,
+          posture: selection.posture,
+          source: { ...selection.source },
+          candidate_digest:
+            mode === "candidate_artifact"
+              ? selection.candidate_digest
+              : null,
+          correlation_nonce: selection.correlation_nonce,
+          selection_ref: selectionRefFor(selection),
+          producer: {
+            workflow: registered.owner.workflow,
+            job: registered.owner.context_job,
+            run: { ...producer.run },
+            artifact: {
+              id: producer.artifacts[0].id,
+              name: producer.artifacts[0].name,
+              sha256: producer.artifacts[0].sha256,
+              entry: `${registered.id}/${executionID}/${mode}`,
+              entry_sha256: entrySHA256,
+            },
+          },
+          invocation: {
+            mode,
+            recipe: registered.recipes[0] ?? null,
+            command: registered.command,
+            build_tags: [...registered.build_tags],
+            selected_domains: [registered.risk_domains[0]],
+          },
+          evidence: {
+            executed: 1,
+            passed: 1,
+            failed: 0,
+            skipped: 0,
+            duration_ms: 1,
+            seed:
+              registered.determinism === "seeded"
+                ? "canonical-release-seed"
+                : null,
+            corpus_id: `canonical-${registered.id}-${executionID}-${mode}`,
+          },
+          conclusion: "success",
+        });
+      }
+    }
+  }
+  const producerManifest = {
+    schema_version: registry.report_schema_version,
+    correlation_nonce: selection.correlation_nonce,
+    selection_ref: selectionRefFor(selection),
+    producers: [...producers.values()],
+  };
+
+  assert.equal(selected.length, 44);
+  assert.equal(reports.length, 45);
+  assert.deepEqual(
+    validateReportSet({
+      registry,
+      selection,
+      reports,
+      producerManifest,
+    }),
+    { expected: 45, received: 45 },
   );
 });
 

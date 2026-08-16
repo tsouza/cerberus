@@ -61,6 +61,14 @@ import { fileURLToPath } from "node:url";
 export const REGISTRY_SCHEMA_VERSION = 1;
 export const SELECTION_SCHEMA_VERSION = 1;
 export const REPORT_SCHEMA_VERSION = 2;
+export const NATIVE_PART_SCHEMA_VERSION = 1;
+export const NATIVE_PART_PARSERS = Object.freeze([
+  "case-json-v1",
+  "compat-cases-json-v1",
+  "go-test-json-v1",
+  "junit-xml-v1",
+  "node-tap-v1",
+]);
 export const DEFAULT_REGISTRY_PATH = ".github/ci-lanes.json";
 export const MERGE_P95_SLO_MINUTES = 20;
 export const RELEASE_QUALIFICATION_SLO_MINUTES = 120;
@@ -119,12 +127,23 @@ const TOP_KEYS = new Set([
   "report_schema_version",
   "rollout",
   "impact_selection",
+  "native_evidence",
   "layers",
   "lanes",
   "non_lane_workflows",
 ]);
 const LAYER_KEYS = new Set(["id", "name"]);
 const IMPACT_SELECTION_KEYS = new Set(["known_nonimpact_globs"]);
+const NATIVE_EVIDENCE_KEYS = new Set(["schema_version", "parts"]);
+const NATIVE_PART_KEYS = new Set([
+  "id",
+  "lane_id",
+  "execution_id",
+  "invocation_mode",
+  "producer_job",
+  "parser",
+  "entry",
+]);
 const LANE_KEYS = new Set([
   "id",
   "description",
@@ -161,6 +180,8 @@ const CONTEXT_KEYS = new Set(["match", "name", "protected"]);
 const APPLICABILITY_KEYS = new Set(["source", "artifact"]);
 const SELECTOR_POLICY_KEYS = new Set(["unknown_paths", "failure"]);
 const NON_LANE_KEYS = new Set(["workflow", "reason"]);
+const NATIVE_PART_ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
+const NATIVE_PART_ENTRY_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 
 const PURPOSES = new Set([
   "correctness",
@@ -344,6 +365,7 @@ const TRUSTED_ARTIFACT_KEYS = new Set([
 const TRUSTED_ARTIFACT_ENTRY_KEYS = new Set([
   "lane_id",
   "execution_id",
+  "invocation_mode",
   "sha256",
 ]);
 // Pull-request Actions runs expose the branch-head SHA through the REST API,
@@ -877,6 +899,71 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
     }
   }
 
+  const nativeParts = [];
+  if (
+    exactObject(
+      document.native_evidence,
+      NATIVE_EVIDENCE_KEYS,
+      "registry.native_evidence",
+      problems,
+    )
+  ) {
+    if (document.native_evidence.schema_version !== NATIVE_PART_SCHEMA_VERSION) {
+      problems.push(
+        `registry.native_evidence.schema_version must be ${NATIVE_PART_SCHEMA_VERSION}`,
+      );
+    }
+    if (!Array.isArray(document.native_evidence.parts)) {
+      problems.push("registry.native_evidence.parts must be an array");
+    } else {
+      let previousIdentity = "";
+      const partIDs = new Set();
+      for (let i = 0; i < document.native_evidence.parts.length; i += 1) {
+        const part = document.native_evidence.parts[i];
+        const at = `registry.native_evidence.parts[${i}]`;
+        if (!exactObject(part, NATIVE_PART_KEYS, at, problems)) continue;
+        stringValue(part.id, `${at}.id`, problems, {
+          pattern: NATIVE_PART_ID_RE,
+        });
+        stringValue(part.lane_id, `${at}.lane_id`, problems, {
+          pattern: LANE_ID_RE,
+        });
+        stringValue(part.execution_id, `${at}.execution_id`, problems, {
+          pattern: EXECUTION_ID_RE,
+        });
+        enumValue(
+          part.invocation_mode,
+          INVOCATION_MODES,
+          `${at}.invocation_mode`,
+          problems,
+        );
+        stringValue(part.producer_job, `${at}.producer_job`, problems, {
+          pattern: WORKFLOW_JOB_ID_RE,
+        });
+        enumValue(
+          part.parser,
+          new Set(NATIVE_PART_PARSERS),
+          `${at}.parser`,
+          problems,
+        );
+        stringValue(part.entry, `${at}.entry`, problems, {
+          pattern: NATIVE_PART_ENTRY_RE,
+        });
+        if (partIDs.has(part.id)) problems.push(`${at}.id duplicates ${part.id}`);
+        partIDs.add(part.id);
+        const identity =
+          `${part.lane_id}/${part.execution_id}/${part.invocation_mode}/${part.id}`;
+        if (previousIdentity !== "" && identity.localeCompare(previousIdentity) <= 0) {
+          problems.push(
+            `${at} identity ${identity} is not strictly sorted after ${previousIdentity}`,
+          );
+        }
+        previousIdentity = identity;
+        nativeParts.push(part);
+      }
+    }
+  }
+
   if (!Array.isArray(document.layers)) {
     problems.push("registry.layers must be an array");
   } else {
@@ -899,6 +986,7 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
   const knownLayers = new Set(CANONICAL_LAYERS);
   const coveredLayers = new Set();
   const laneIDs = new Set();
+  const lanesByID = new Map();
   const protectedContexts = new Set();
   const recipeCommands = justRecipeCommands(root);
   const recipes = new Set(recipeCommands.keys());
@@ -922,6 +1010,7 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
           );
         }
         laneIDs.add(lane.id);
+        lanesByID.set(lane.id, lane);
         previousID = lane.id;
       }
       stringValue(lane.description, `${at}.description`, problems);
@@ -953,11 +1042,6 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
             ) {
               problems.push(
                 `${at}.owner.producer_jobs contains ${job}, which is not in owner.jobs`,
-              );
-            }
-            if (job === lane.owner.context_job) {
-              problems.push(
-                `${at}.owner.producer_jobs must exclude the context_job ${job}`,
               );
             }
           }
@@ -1177,6 +1261,69 @@ export function validateRegistry(document, { root = process.cwd() } = {}) {
     }
   }
 
+  const nativeJobsByLane = new Map();
+  const nativeExecutions = new Set();
+  for (let i = 0; i < nativeParts.length; i += 1) {
+    const part = nativeParts[i];
+    const at = `registry.native_evidence.parts[${i}]`;
+    const lane = lanesByID.get(part.lane_id);
+    if (!lane) {
+      problems.push(`${at}.lane_id names unknown lane ${part.lane_id}`);
+      continue;
+    }
+    if (!lane.executions.includes(part.execution_id)) {
+      problems.push(
+        `${at}.execution_id ${part.execution_id} is not registered by lane ${lane.id}`,
+      );
+    }
+    if (!lane.owner.jobs.includes(part.producer_job)) {
+      problems.push(
+        `${at}.producer_job ${part.producer_job} is not owned by lane ${lane.id}`,
+      );
+    }
+    if (
+      part.invocation_mode === "source_tree" &&
+      !lane.applicability.source
+    ) {
+      problems.push(`${at}.invocation_mode belongs to a non-source lane`);
+    }
+    if (
+      part.invocation_mode === "candidate_artifact" &&
+      !lane.applicability.artifact
+    ) {
+      problems.push(`${at}.invocation_mode belongs to a non-artifact lane`);
+    }
+    const jobs = nativeJobsByLane.get(lane.id) ?? new Set();
+    jobs.add(part.producer_job);
+    nativeJobsByLane.set(lane.id, jobs);
+    nativeExecutions.add(
+      `${lane.id}/${part.execution_id}/${part.invocation_mode}`,
+    );
+  }
+  for (const [laneID, jobs] of nativeJobsByLane) {
+    const lane = lanesByID.get(laneID);
+    const actual = [...jobs].sort();
+    const declared = [...lane.owner.producer_jobs].sort();
+    if (JSON.stringify(actual) !== JSON.stringify(declared)) {
+      problems.push(
+        `registry lane ${laneID} owner.producer_jobs must exactly match native part producers ${JSON.stringify(actual)}`,
+      );
+    }
+    const invocationModes = [];
+    if (lane.applicability.source) invocationModes.push("source_tree");
+    if (lane.applicability.artifact) invocationModes.push("candidate_artifact");
+    for (const executionID of lane.executions) {
+      for (const invocationMode of invocationModes) {
+        if (nativeExecutions.has(`${laneID}/${executionID}/${invocationMode}`)) {
+          continue;
+        }
+        problems.push(
+          `registry lane ${laneID}/${executionID}/${invocationMode} has native parts for another invocation but none for this invocation`,
+        );
+      }
+    }
+  }
+
   validateCanonicalHeadOracleFloors(
     document.lanes,
     root,
@@ -1321,6 +1468,17 @@ export function nativeArtifactName(workflow, run) {
     .replace(/\.ya?ml$/, "")
     .replace(/[^A-Za-z0-9_.-]+/g, "-");
   return `ci-native-${basename}-${run.id}-${run.attempt}`;
+}
+
+export function nativePartArtifactName(partID, runAttempt) {
+  const id = String(partID ?? "").trim();
+  const attempt = String(runAttempt ?? "").trim();
+  if (!NATIVE_PART_ID_RE.test(id) || !/^[1-9][0-9]*$/.test(attempt)) {
+    throw new ContractError("invalid CI lane native part artifact", [
+      "part id and run attempt must be canonical",
+    ]);
+  }
+  return `ci-native-part-${id}-${attempt}`;
 }
 
 function validateDigest(value, path, problems, { required = false } = {}) {
@@ -1878,7 +2036,8 @@ export function validateReport(document, registry) {
           `report.producer.artifact.name must be ${expectedArtifactName}`,
         );
       }
-      const expectedEntry = `${document.lane_id}/${document.execution_id}`;
+      const expectedEntry =
+        `${document.lane_id}/${document.execution_id}/${document.invocation?.mode}`;
       if (document.producer.artifact.entry !== expectedEntry) {
         problems.push(
           `report.producer.artifact.entry must be ${expectedEntry}`,
@@ -2119,10 +2278,15 @@ export function validateProducerManifest(document, registry) {
       knownJobs.get(lane.owner.workflow).add(job);
     if (!knownEntries.has(lane.owner.workflow))
       knownEntries.set(lane.owner.workflow, new Set());
+    const modes = [];
+    if (lane.applicability.source) modes.push("source_tree");
+    if (lane.applicability.artifact) modes.push("candidate_artifact");
     for (const executionID of lane.executions) {
-      knownEntries
-        .get(lane.owner.workflow)
-        .add(`${lane.id}/${executionID}`);
+      for (const mode of modes) {
+        knownEntries
+          .get(lane.owner.workflow)
+          .add(`${lane.id}/${executionID}/${mode}`);
+      }
     }
   }
   if (!Array.isArray(document.producers)) {
@@ -2173,7 +2337,8 @@ export function validateProducerManifest(document, registry) {
       if (!Array.isArray(producer.jobs) || producer.jobs.length === 0) {
         problems.push(`${at}.jobs must be a non-empty array`);
       } else {
-        const jobs = new Set();
+        const jobExecutions = new Set();
+        const jobDatabaseIDs = new Set();
         for (let j = 0; j < producer.jobs.length; j += 1) {
           const job = producer.jobs[j];
           const jobAt = `${at}.jobs[${j}]`;
@@ -2186,12 +2351,19 @@ export function validateProducerManifest(document, registry) {
           ) {
             problems.push(`${jobAt}.job is not registered for the workflow`);
           }
-          if (jobs.has(job.job)) problems.push(`${jobAt}.job is duplicated`);
-          jobs.add(job.job);
           stringValue(job.name, `${jobAt}.name`, problems);
           stringValue(job.database_id, `${jobAt}.database_id`, problems, {
             pattern: RUN_ID_RE,
           });
+          const jobExecution = `${job.job}/${job.name}`;
+          if (jobExecutions.has(jobExecution)) {
+            problems.push(`${jobAt} duplicates job execution ${jobExecution}`);
+          }
+          if (jobDatabaseIDs.has(job.database_id)) {
+            problems.push(`${jobAt}.database_id is duplicated`);
+          }
+          jobExecutions.add(jobExecution);
+          jobDatabaseIDs.add(job.database_id);
           enumValue(
             job.conclusion,
             JOB_CONCLUSIONS,
@@ -2248,10 +2420,17 @@ export function validateProducerManifest(document, registry) {
                 problems,
                 { pattern: EXECUTION_ID_RE },
               );
+              enumValue(
+                entry.invocation_mode,
+                INVOCATION_MODES,
+                `${entryAt}.invocation_mode`,
+                problems,
+              );
               stringValue(entry.sha256, `${entryAt}.sha256`, problems, {
                 pattern: SHA256_RE,
               });
-              const identity = `${entry.lane_id}/${entry.execution_id}`;
+              const identity =
+                `${entry.lane_id}/${entry.execution_id}/${entry.invocation_mode}`;
               if (entries.has(identity)) {
                 problems.push(`${entryAt} duplicates native entry ${identity}`);
               }
@@ -2279,13 +2458,16 @@ export function validateProducerManifest(document, registry) {
 }
 
 function reportIdentity(report) {
-  return `${report.lane_id}/${report.execution_id}`;
+  return `${report.lane_id}/${report.execution_id}/${report.invocation.mode}`;
 }
 
-function expectedInvocationMode(lane, posture) {
-  if (posture === "release" && lane.applicability.artifact)
-    return "candidate_artifact";
-  return "source_tree";
+function expectedInvocationModes(lane, posture) {
+  const modes = [];
+  if (lane.applicability.source) modes.push("source_tree");
+  if (posture === "release" && lane.applicability.artifact) {
+    modes.push("candidate_artifact");
+  }
+  return modes;
 }
 
 function validateQualificationExpectations(expected, registry, selection) {
@@ -2449,11 +2631,15 @@ export function validateReportSet({
   for (const item of selection.lanes) {
     if (item.disposition !== "selected") continue;
     expectedWorkflows.add(lanesByID.get(item.lane_id).owner.workflow);
+    const lane = lanesByID.get(item.lane_id);
     for (const execution of item.executions) {
-      expectedReports.set(`${item.lane_id}/${execution}`, {
-        lane: lanesByID.get(item.lane_id),
-        execution,
-      });
+      for (const mode of expectedInvocationModes(lane, selection.posture)) {
+        expectedReports.set(`${item.lane_id}/${execution}/${mode}`, {
+          lane,
+          execution,
+          mode,
+        });
+      }
     }
   }
 
@@ -2553,10 +2739,10 @@ export function validateReportSet({
         `${identity}: correlation_nonce does not match the current qualification`,
       );
     }
-    const mode = expectedInvocationMode(lane, selection.posture);
-    if (report.invocation.mode !== mode) {
+    const mode = report.invocation.mode;
+    if (expectedReports.get(identity)?.mode !== mode) {
       problems.push(
-        `${identity}: invocation mode ${report.invocation.mode} must be ${mode}`,
+        `${identity}: invocation mode ${mode} is not selected for this lane execution`,
       );
     }
     if (
@@ -2603,23 +2789,28 @@ export function validateReportSet({
         `${identity}: producer run identity does not match the trusted workflow run`,
       );
     }
-    const context = trusted.jobs.find(
+    const jobCandidates = trusted.jobs.filter(
       (job) => job.job === report.producer.job,
     );
-    if (!context) {
+    const contexts = jobCandidates.filter((job) => {
+      return lane.context.match === "exact"
+        ? job.name === lane.context.name
+        : job.name.startsWith(lane.context.name);
+    });
+    if (jobCandidates.length === 0) {
       problems.push(
         `${identity}: trusted context job ${report.producer.job} is missing`,
       );
+    } else if (contexts.length === 0) {
+      problems.push(
+        `${identity}: trusted context check name ${jobCandidates[0].name} does not match ${lane.context.name}`,
+      );
+    } else if (contexts.length > 1) {
+      problems.push(
+        `${identity}: trusted context job ${report.producer.job} is ambiguous`,
+      );
     } else {
-      const contextNameMatches =
-        lane.context.match === "exact"
-          ? context.name === lane.context.name
-          : context.name.startsWith(lane.context.name);
-      if (!contextNameMatches) {
-        problems.push(
-          `${identity}: trusted context check name ${context.name} does not match ${lane.context.name}`,
-        );
-      }
+      const [context] = contexts;
       if (context.conclusion !== "success") {
         problems.push(
           `${identity}: trusted context job ${report.producer.job} is ${context.conclusion}`,
@@ -2644,7 +2835,8 @@ export function validateReportSet({
       const entry = artifact.entries.find(
         (candidate) =>
           candidate.lane_id === report.lane_id &&
-          candidate.execution_id === report.execution_id,
+          candidate.execution_id === report.execution_id &&
+          candidate.invocation_mode === report.invocation.mode,
       );
       if (!entry) {
         problems.push(

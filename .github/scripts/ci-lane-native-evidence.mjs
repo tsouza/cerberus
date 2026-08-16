@@ -2,14 +2,16 @@
 // evidence from a workflow's own `needs` graph.
 //
 // A workflow calls this once from an unconditional terminal evidence job. The
-// job passes GitHub's `toJSON(needs)` value; this script derives the lane and
-// check rosters from the registry and derives every count from those results.
-// It never accepts caller-supplied counts, lane conclusions, source trees, or
-// execution rosters.
+// job passes GitHub's `toJSON(needs)` value only to attest which registered
+// jobs reached which terminal result. Executed/passed/failed/skipped counts are
+// parsed from the registry's exact raw-part roster; a job result is never a
+// test count.
 //
 // Required environment:
 //   CI_LANE_WORKFLOW       canonical repository-relative workflow path.
 //   CI_LANE_NEEDS_JSON     GitHub `toJSON(needs)` for the evidence job.
+//   CI_LANE_NATIVE_PARTS   directory populated from attempt-qualified raw-part
+//                          artifacts declared by registry.native_evidence.
 //   CI_LANE_NATIVE_OUTPUT  new bundle path (must not already exist).
 //   GITHUB_EVENT_NAME      producer event.
 //   GITHUB_REPOSITORY      producer repository as owner/name.
@@ -31,6 +33,9 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   linkSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -46,10 +51,13 @@ import {
   deriveQualificationCorrelationNonce,
   loadRegistry,
   nativeArtifactName,
+  nativePartArtifactName,
+  NATIVE_PART_PARSERS,
 } from "./ci-lane-contract.mjs";
 import { capture, error, notice, setOutput } from "./lib/gh.mjs";
 
-export const NATIVE_EVIDENCE_SCHEMA_VERSION = 1;
+export const NATIVE_EVIDENCE_SCHEMA_VERSION = 2;
+export const MAX_NATIVE_PART_BYTES = 64 * 1024 * 1024;
 
 const shaPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const runIDPattern = /^[1-9][0-9]*$/;
@@ -165,23 +173,551 @@ export function parseNeeds(raw) {
   return results;
 }
 
-function laneConclusion(checks) {
-  const results = checks.map((check) => check.result);
-  if (results.includes("failure")) return "failure";
-  if (results.includes("cancelled")) return "cancelled";
-  if (results.includes("skipped")) return "skipped";
-  return "success";
+const nativeSeedPattern = /^[^\u0000-\u001f\u007f]{1,1024}$/;
+
+function evidenceCounts({ passed = 0, failed = 0, skipped = 0 } = {}) {
+  for (const [name, value] of Object.entries({ passed, failed, skipped })) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new ContractError("CI lane native evidence", [
+        `${name} evidence count must be a non-negative safe integer`,
+      ]);
+    }
+  }
+  return Object.freeze({
+    executed: passed + failed + skipped,
+    passed,
+    failed,
+    skipped,
+  });
 }
 
-function evidenceCounts(checks) {
-  return Object.freeze({
-    executed: checks.length,
-    passed: checks.filter((check) => check.result === "success").length,
-    failed: checks.filter(
-      (check) => check.result === "failure" || check.result === "cancelled",
-    ).length,
-    skipped: checks.filter((check) => check.result === "skipped").length,
+function safeIntegerSum(values, label) {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new ContractError("CI lane native evidence", [
+        `${label} values must be non-negative safe integers`,
+      ]);
+    }
+    total += value;
+    if (!Number.isSafeInteger(total)) {
+      throw new ContractError("CI lane native evidence", [
+        `${label} total exceeds the safe integer range`,
+      ]);
+    }
+  }
+  return total;
+}
+
+function milliseconds(value, label, { seconds = false } = {}) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} must be a non-negative finite number`,
+    ]);
+  }
+  const duration = Math.round(seconds ? value * 1000 : value);
+  if (!Number.isSafeInteger(duration)) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} exceeds the safe integer range when converted to milliseconds`,
+    ]);
+  }
+  return duration;
+}
+
+function nativeSeed(value, label) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || !nativeSeedPattern.test(value)) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} must be null or a non-empty printable string no longer than 1024 bytes`,
+    ]);
+  }
+  return value;
+}
+
+function uniqueSeed(values, label) {
+  const seeds = values.filter((value) => value !== null);
+  const unique = [...new Set(seeds)];
+  if (unique.length > 1) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} reports conflicting native seeds`,
+    ]);
+  }
+  return unique[0] ?? null;
+}
+
+function corpusIdentity(parser, identities) {
+  if (!Array.isArray(identities) || identities.length === 0) {
+    throw new ContractError("CI lane native evidence", [
+      `${parser} contains no native corpus identities`,
+    ]);
+  }
+  for (const [index, identity] of identities.entries()) {
+    if (
+      typeof identity !== "string" ||
+      identity === "" ||
+      identity.includes("\u0000")
+    ) {
+      throw new ContractError("CI lane native evidence", [
+        `${parser} corpus identity ${index} is invalid`,
+      ]);
+    }
+  }
+  return `sha256:${canonicalJSONSHA256({
+    parser,
+    identities: [...identities].sort(),
+  })}`;
+}
+
+function parsedEvidence({ parser, outcomes, identities, durationMs, seed }) {
+  const counts = evidenceCounts({
+    passed: outcomes.filter((value) => value === "pass").length,
+    failed: outcomes.filter((value) => value === "fail").length,
+    skipped: outcomes.filter((value) => value === "skip").length,
   });
+  return Object.freeze({
+    ...counts,
+    duration_ms: milliseconds(durationMs, `${parser} duration_ms`),
+    seed: nativeSeed(seed, `${parser} seed`),
+    corpus_id: corpusIdentity(parser, identities),
+  });
+}
+
+function aggregateEvidence(parts, lane) {
+  const counts = evidenceCounts({
+    passed: safeIntegerSum(
+      parts.map((part) => part.evidence.passed),
+      `${lane.id} passed evidence`,
+    ),
+    failed: safeIntegerSum(
+      parts.map((part) => part.evidence.failed),
+      `${lane.id} failed evidence`,
+    ),
+    skipped: safeIntegerSum(
+      parts.map((part) => part.evidence.skipped),
+      `${lane.id} skipped evidence`,
+    ),
+  });
+  const seeds = parts.map((part) => part.evidence.seed);
+  if (
+    lane.determinism === "deterministic" &&
+    seeds.some((seed) => seed !== null)
+  ) {
+    throw new ContractError("CI lane native evidence", [
+      `${lane.id} is deterministic but a native part reports a seed`,
+    ]);
+  }
+  if (
+    lane.determinism === "seeded" &&
+    seeds.some((seed) => seed === null)
+  ) {
+    throw new ContractError("CI lane native evidence", [
+      `${lane.id} is seeded but a native part omitted its seed`,
+    ]);
+  }
+  const seed = uniqueSeed(seeds, lane.id);
+  return Object.freeze({
+    ...counts,
+    duration_ms: safeIntegerSum(
+      parts.map((part) => part.evidence.duration_ms),
+      `${lane.id} duration evidence`,
+    ),
+    seed,
+    corpus_id: corpusIdentity(
+      "lane-native-parts-v1",
+      parts.map(
+        (part) =>
+          JSON.stringify([part.id, part.parser, part.evidence.corpus_id]),
+      ),
+    ),
+  });
+}
+
+function parseJSON(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (parseError) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} is not valid JSON: ${parseError.message}`,
+    ]);
+  }
+}
+
+function exactKeys(value, keys, label) {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new ContractError("CI lane native evidence", [
+      `${label} must be an object`,
+    ]);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new ContractError("CI lane native evidence", [
+      `${label} keys must be exactly ${expected.join(", ")}`,
+    ]);
+  }
+}
+
+export function parseGoTestJSON(text) {
+  const terminal = new Map();
+  const packageTerminal = new Map();
+  const nativeSeeds = [];
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "");
+  for (let index = 0; index < lines.length; index += 1) {
+    const event = parseJSON(lines[index], `go-test-json line ${index + 1}`);
+    if (typeof event?.Action !== "string") {
+      throw new ContractError("CI lane native evidence", [
+        `go-test-json line ${index + 1} has no Action`,
+      ]);
+    }
+    if (typeof event.Output === "string") {
+      const seedMatch = /^CI_NATIVE_SEED=(.+)\r?\n?$/.exec(event.Output);
+      if (seedMatch) nativeSeeds.push(nativeSeed(seedMatch[1], "go-test-json seed"));
+    }
+    if (!new Set(["pass", "fail", "skip"]).has(event.Action)) continue;
+    const packageName = String(event.Package ?? "");
+    if (typeof event.Test !== "string" || event.Test === "") {
+      if (packageName === "" || packageTerminal.has(packageName)) {
+        throw new ContractError("CI lane native evidence", [
+          packageName === ""
+            ? `go-test-json line ${index + 1} has a package terminal with no Package`
+            : `go-test-json repeats package terminal result for ${packageName}`,
+        ]);
+      }
+      packageTerminal.set(packageName, {
+        action: event.Action,
+        duration_ms: milliseconds(
+          event.Elapsed,
+          `go-test-json package ${packageName} Elapsed`,
+          { seconds: true },
+        ),
+      });
+      continue;
+    }
+    if (packageName === "") {
+      throw new ContractError("CI lane native evidence", [
+        `go-test-json terminal result for ${event.Test} has no Package`,
+      ]);
+    }
+    const key = `${packageName}\u0000${event.Test}`;
+    if (terminal.has(key)) {
+      throw new ContractError("CI lane native evidence", [
+        `go-test-json repeats terminal result for ${packageName}/${event.Test}`,
+      ]);
+    }
+    terminal.set(key, event.Action);
+  }
+  const testPackages = new Set(
+    [...terminal.keys()].map((key) => key.split("\u0000", 1)[0]),
+  );
+  const missingPackageTerminals = [...testPackages].filter(
+    (packageName) => !packageTerminal.has(packageName),
+  );
+  if (missingPackageTerminals.length > 0) {
+    throw new ContractError("CI lane native evidence", [
+      `go-test-json is missing package terminal result(s): ${missingPackageTerminals.sort().join(", ")}`,
+    ]);
+  }
+  return parsedEvidence({
+    parser: "go-test-json-v1",
+    outcomes: [...terminal.values()],
+    identities: [...terminal.keys()].map((key) =>
+      JSON.stringify(key.split("\u0000")),
+    ),
+    durationMs: safeIntegerSum(
+      [...testPackages].map(
+        (packageName) => packageTerminal.get(packageName).duration_ms,
+      ),
+      "go-test-json package durations",
+    ),
+    seed: uniqueSeed(nativeSeeds, "go-test-json"),
+  });
+}
+
+export function parseNodeTAP(text) {
+  const outcomes = [];
+  const identities = [];
+  const plans = [];
+  const durations = [];
+  const nativeSeeds = [];
+  for (const raw of String(text ?? "").split(/\r?\n/)) {
+    if (/^1\.\.[0-9]+(?:\s|$)/.test(raw)) {
+      plans.push(Number(raw.match(/^1\.\.([0-9]+)/)[1]));
+      continue;
+    }
+    const durationMatch = /^#\s*duration_ms(?::|\s)\s*([0-9]+(?:\.[0-9]+)?)\s*$/i.exec(
+      raw,
+    );
+    if (durationMatch) {
+      durations.push(
+        milliseconds(
+          Number(durationMatch[1]),
+          "node TAP duration_ms summary",
+        ),
+      );
+      continue;
+    }
+    const seedMatch = /^#\s*ci-native-seed:\s*(.+)\s*$/i.exec(raw);
+    if (seedMatch) {
+      nativeSeeds.push(nativeSeed(seedMatch[1], "node TAP seed"));
+      continue;
+    }
+    const directiveIndex = raw.search(/\s+#\s*(?:SKIP|TODO)\b/i);
+    const assertion = directiveIndex < 0 ? raw : raw.slice(0, directiveIndex);
+    const directive =
+      directiveIndex < 0
+        ? ""
+        : /(?:SKIP|TODO)/i.exec(raw.slice(directiveIndex))[0].toUpperCase();
+    const match = /^(ok|not ok)\s+([1-9][0-9]*)(?:\s+-\s+(.+?))?\s*$/i.exec(
+      assertion,
+    );
+    if (!match) continue;
+    const ordinal = Number(match[2]);
+    if (ordinal !== outcomes.length + 1) {
+      throw new ContractError("CI lane native evidence", [
+        `node TAP result ordinal ${ordinal} is not the expected ${outcomes.length + 1}`,
+      ]);
+    }
+    const name = String(match[3] ?? "").trim();
+    outcomes.push(
+      directive === "SKIP" || directive === "TODO"
+        ? "skip"
+        : match[1].toLowerCase() === "ok"
+          ? "pass"
+          : "fail",
+    );
+    identities.push(JSON.stringify([ordinal, name]));
+  }
+  if (plans.length !== 1 || plans[0] !== outcomes.length) {
+    throw new ContractError("CI lane native evidence", [
+      `node TAP top-level plan must exactly match its ${outcomes.length} result(s)`,
+    ]);
+  }
+  if (durations.length !== 1) {
+    throw new ContractError("CI lane native evidence", [
+      `node TAP must contain exactly one top-level duration_ms summary; found ${durations.length}`,
+    ]);
+  }
+  return parsedEvidence({
+    parser: "node-tap-v1",
+    outcomes,
+    identities,
+    durationMs: durations[0],
+    seed: uniqueSeed(nativeSeeds, "node TAP"),
+  });
+}
+
+function xmlAttribute(opening, name, label, { required = true } = {}) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\s${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, "i").exec(
+    opening,
+  );
+  if (!match) {
+    if (!required) return null;
+    throw new ContractError("CI lane native evidence", [
+      `${label} is missing XML attribute ${name}`,
+    ]);
+  }
+  return match[2]
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+export function parseJUnitXML(text) {
+  const xml = String(text ?? "");
+  if (!/<testsuites?\b/i.test(xml)) {
+    throw new ContractError("CI lane native evidence", [
+      "JUnit has no testsuite root",
+    ]);
+  }
+  const cases =
+    xml.match(
+      /<testcase\b[^>]*\/\s*>|<testcase\b[^>]*>[\s\S]*?<\/testcase\s*>/gi,
+    ) ?? [];
+  const openings = xml.match(/<testcase\b/gi) ?? [];
+  if (cases.length !== openings.length) {
+    throw new ContractError("CI lane native evidence", [
+      "JUnit contains an unterminated testcase",
+    ]);
+  }
+  const outcomes = [];
+  const identities = [];
+  const durations = [];
+  for (const [index, testcase] of cases.entries()) {
+    const opening = /^<testcase\b[^>]*>/i.exec(testcase)?.[0];
+    if (!opening) {
+      throw new ContractError("CI lane native evidence", [
+        `JUnit testcase ${index} has no opening element`,
+      ]);
+    }
+    const name = xmlAttribute(opening, "name", `JUnit testcase ${index}`);
+    const className =
+      xmlAttribute(opening, "classname", `JUnit testcase ${index}`, {
+        required: false,
+      }) ?? "";
+    const file =
+      xmlAttribute(opening, "file", `JUnit testcase ${index}`, {
+        required: false,
+      }) ?? "";
+    const seconds = Number(
+      xmlAttribute(opening, "time", `JUnit testcase ${index}`),
+    );
+    durations.push(
+      milliseconds(seconds, `JUnit testcase ${index} time`, { seconds: true }),
+    );
+    identities.push(JSON.stringify([className, file, name]));
+    if (/<(?:failure|error)\b/i.test(testcase)) outcomes.push("fail");
+    else if (/<skipped\b/i.test(testcase)) outcomes.push("skip");
+    else outcomes.push("pass");
+  }
+  const nativeSeeds = [];
+  for (const property of xml.match(/<property\b[^>]*\/?\s*>/gi) ?? []) {
+    if (
+      xmlAttribute(property, "name", "JUnit property", { required: false }) ===
+      "ci-native-seed"
+    ) {
+      nativeSeeds.push(
+        nativeSeed(
+          xmlAttribute(property, "value", "JUnit ci-native-seed property"),
+          "JUnit seed",
+        ),
+      );
+    }
+  }
+  return parsedEvidence({
+    parser: "junit-xml-v1",
+    outcomes,
+    identities,
+    durationMs: safeIntegerSum(durations, "JUnit testcase durations"),
+    seed: uniqueSeed(nativeSeeds, "JUnit"),
+  });
+}
+
+export function parseCaseJSON(text) {
+  const document = parseJSON(String(text ?? ""), "case-json-v1");
+  exactKeys(document, ["schema_version", "seed", "cases"], "case-json-v1");
+  if (document.schema_version !== 1 || !Array.isArray(document.cases)) {
+    throw new ContractError("CI lane native evidence", [
+      "case-json-v1 schema_version must be 1 and cases must be an array",
+    ]);
+  }
+  const seen = new Set();
+  const durations = [];
+  const outcomes = document.cases.map((item, index) => {
+    exactKeys(
+      item,
+      ["id", "status", "duration_ms"],
+      `case-json-v1 cases[${index}]`,
+    );
+    if (typeof item.id !== "string" || item.id.trim() === "" || seen.has(item.id)) {
+      throw new ContractError("CI lane native evidence", [
+        `case-json-v1 cases[${index}].id must be unique and non-empty`,
+      ]);
+    }
+    seen.add(item.id);
+    if (!new Set(["passed", "failed", "skipped"]).has(item.status)) {
+      throw new ContractError("CI lane native evidence", [
+        `case-json-v1 cases[${index}].status is invalid`,
+      ]);
+    }
+    durations.push(
+      milliseconds(
+        item.duration_ms,
+        `case-json-v1 cases[${index}].duration_ms`,
+      ),
+    );
+    return { passed: "pass", failed: "fail", skipped: "skip" }[item.status];
+  });
+  return parsedEvidence({
+    parser: "case-json-v1",
+    outcomes,
+    identities: [...seen],
+    durationMs: safeIntegerSum(durations, "case-json-v1 case durations"),
+    seed: nativeSeed(document.seed, "case-json-v1 seed"),
+  });
+}
+
+export function parseCompatCasesJSON(text) {
+  const document = parseJSON(String(text ?? ""), "compat-cases-json-v1");
+  exactKeys(
+    document,
+    ["schema_version", "head", "seed", "cases"],
+    "compat-cases-json-v1",
+  );
+  if (
+    document.schema_version !== 1 ||
+    typeof document.head !== "string" ||
+    document.head.trim() === "" ||
+    !Array.isArray(document.cases)
+  ) {
+    throw new ContractError("CI lane native evidence", [
+      "compat-cases-json-v1 requires schema_version 1, a non-empty head, and a cases array",
+    ]);
+  }
+  const seen = new Set();
+  const outcomes = [];
+  const durations = [];
+  for (let index = 0; index < document.cases.length; index += 1) {
+    const item = document.cases[index];
+    exactKeys(
+      item,
+      ["id", "passed", "duration_ms"],
+      `compat-cases-json-v1 cases[${index}]`,
+    );
+    if (
+      typeof item.id !== "string" ||
+      item.id.trim() === "" ||
+      seen.has(item.id) ||
+      typeof item.passed !== "boolean"
+    ) {
+      throw new ContractError("CI lane native evidence", [
+        `compat-cases-json-v1 cases[${index}] must have a unique id and boolean passed`,
+      ]);
+    }
+    seen.add(item.id);
+    outcomes.push(item.passed ? "pass" : "fail");
+    durations.push(
+      milliseconds(
+        item.duration_ms,
+        `compat-cases-json-v1 cases[${index}].duration_ms`,
+      ),
+    );
+  }
+  return parsedEvidence({
+    parser: "compat-cases-json-v1",
+    outcomes,
+    identities: [...seen].map((id) => JSON.stringify([document.head, id])),
+    durationMs: safeIntegerSum(
+      durations,
+      "compat-cases-json-v1 case durations",
+    ),
+    seed: nativeSeed(document.seed, "compat-cases-json-v1 seed"),
+  });
+}
+
+export function parseNativePart(parser, text) {
+  if (!NATIVE_PART_PARSERS.includes(parser)) {
+    throw new ContractError("CI lane native evidence", [
+      `native part parser ${JSON.stringify(parser)} is not registered`,
+    ]);
+  }
+  if (parser === "go-test-json-v1") return parseGoTestJSON(text);
+  if (parser === "node-tap-v1") return parseNodeTAP(text);
+  if (parser === "junit-xml-v1") return parseJUnitXML(text);
+  if (parser === "case-json-v1") return parseCaseJSON(text);
+  return parseCompatCasesJSON(text);
+}
+
+function laneConclusion(jobResults, evidence) {
+  const results = jobResults.map((job) => job.result);
+  if (results.includes("failure") || evidence.failed > 0) return "failure";
+  if (results.includes("cancelled")) return "cancelled";
+  if (results.includes("skipped") || evidence.skipped > 0) return "skipped";
+  return "success";
 }
 
 function postureIncludes(lane, posture) {
@@ -197,6 +733,130 @@ function nativeRoster(registry, workflow, posture) {
   );
 }
 
+function nativeInvocationModes(lane, posture) {
+  const modes = [];
+  if (lane.applicability?.source) modes.push("source_tree");
+  if (posture === "release" && lane.applicability?.artifact) {
+    modes.push("candidate_artifact");
+  }
+  return modes;
+}
+
+function walkPartFiles(root, relative = "") {
+  const directory = resolve(root, relative);
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new ContractError("CI lane native evidence", [
+      `native part path is not a real directory: ${directory}`,
+    ]);
+  }
+  const files = [];
+  for (const name of readdirSync(directory).sort()) {
+    const childRelative = relative === "" ? name : `${relative}/${name}`;
+    const child = resolve(root, childRelative);
+    const childStat = lstatSync(child);
+    if (childStat.isSymbolicLink()) {
+      throw new ContractError("CI lane native evidence", [
+        `native part tree contains a symbolic link: ${childRelative}`,
+      ]);
+    }
+    if (childStat.isDirectory()) files.push(...walkPartFiles(root, childRelative));
+    else if (childStat.isFile()) files.push(childRelative);
+    else {
+      throw new ContractError("CI lane native evidence", [
+        `native part tree contains a non-file entry: ${childRelative}`,
+      ]);
+    }
+  }
+  return files;
+}
+
+function expectedNativeParts(registry, lanes, runAttempt, posture) {
+  const identities = new Set(
+    lanes.flatMap((lane) =>
+      lane.executions.flatMap((executionID) =>
+        nativeInvocationModes(lane, posture).map(
+          (invocationMode) =>
+            `${lane.id}/${executionID}/${invocationMode}`,
+        ),
+      ),
+    ),
+  );
+  const parts = (registry.native_evidence?.parts ?? [])
+    .filter((part) =>
+      identities.has(
+        `${part.lane_id}/${part.execution_id}/${part.invocation_mode}`,
+      ),
+    )
+    .map((part) => ({
+      ...part,
+      artifact: nativePartArtifactName(part.id, runAttempt),
+    }))
+    .sort((left, right) =>
+      `${left.lane_id}/${left.execution_id}/${left.invocation_mode}/${left.id}`.localeCompare(
+        `${right.lane_id}/${right.execution_id}/${right.invocation_mode}/${right.id}`,
+      ),
+    );
+  const covered = new Set(
+    parts.map(
+      (part) =>
+        `${part.lane_id}/${part.execution_id}/${part.invocation_mode}`,
+    ),
+  );
+  const missing = [...identities].filter((identity) => !covered.has(identity)).sort();
+  if (missing.length > 0) {
+    throw new ContractError("CI lane native evidence", [
+      ...missing.map((identity) => `registry has no native part for ${identity}`),
+    ]);
+  }
+  return parts;
+}
+
+export function readNativeParts({ registry, lanes, runAttempt, posture, partsRoot }) {
+  const root = resolve(String(partsRoot ?? ""));
+  if (!existsSync(root)) {
+    throw new ContractError("CI lane native evidence", [
+      `native part directory does not exist: ${root}`,
+    ]);
+  }
+  const roster = expectedNativeParts(registry, lanes, runAttempt, posture);
+  const expectedFiles = roster.map((part) => `${part.artifact}/${part.entry}`).sort();
+  const actualFiles = walkPartFiles(root).sort();
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new ContractError("CI lane native evidence", [
+      `native part files must exactly match the registry roster; got ${JSON.stringify(actualFiles)}, want ${JSON.stringify(expectedFiles)}`,
+    ]);
+  }
+  return roster.map((part) => {
+    const path = resolve(root, part.artifact, part.entry);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_NATIVE_PART_BYTES) {
+      throw new ContractError("CI lane native evidence", [
+        `native part ${part.id} must be a regular file no larger than ${MAX_NATIVE_PART_BYTES} bytes`,
+      ]);
+    }
+    const body = readFileSync(path);
+    const evidence = parseNativePart(part.parser, body.toString("utf8"));
+    if (evidence.executed <= 0) {
+      throw new ContractError("CI lane native evidence", [
+        `native part ${part.id} executed zero tests/checks`,
+      ]);
+    }
+    return Object.freeze({
+      id: part.id,
+      lane_id: part.lane_id,
+      execution_id: part.execution_id,
+      invocation_mode: part.invocation_mode,
+      producer_job: part.producer_job,
+      parser: part.parser,
+      artifact: part.artifact,
+      entry: part.entry,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      evidence,
+    });
+  });
+}
+
 export function createNativeBundle({
   registry,
   workflow,
@@ -209,6 +869,7 @@ export function createNativeBundle({
   posture = "merge",
   evidenceJob = "native-evidence",
   correlationNonce,
+  partsRoot,
 }) {
   const workflowPath = requirePattern(
     workflow,
@@ -291,32 +952,61 @@ export function createNativeBundle({
     throw new ContractError("CI lane native evidence", problems);
   }
 
+  const parsedParts = readNativeParts({
+    registry,
+    lanes,
+    runAttempt: attempt,
+    posture: postureName,
+    partsRoot,
+  });
+
   const laneEvidence = lanes
     .flatMap((lane) =>
-      lane.executions.map((executionID) => {
-        const checks = lane.owner.jobs
-          .filter((jobID) => jobID !== evidenceJobID)
-          .map((jobID) => ({
-            job_id: jobID,
-            result: needs.get(jobID),
-          }));
-        return {
-          lane_id: lane.id,
-          execution_id: executionID,
-          context: {
-            match: lane.context.match,
-            name: lane.context.name,
-            job_id: lane.owner.context_job,
-          },
-          checks,
-          evidence: evidenceCounts(checks),
-          conclusion: laneConclusion(checks),
-        };
-      }),
+      lane.executions.flatMap((executionID) =>
+        nativeInvocationModes(lane, postureName).map((invocationMode) => {
+          const jobResults = lane.owner.jobs
+            .filter((jobID) => jobID !== evidenceJobID)
+            .map((jobID) => ({
+              job_id: jobID,
+              result: needs.get(jobID),
+            }));
+          const parts = parsedParts
+            .filter(
+              (part) =>
+                part.lane_id === lane.id &&
+                part.execution_id === executionID &&
+                part.invocation_mode === invocationMode,
+            )
+            .map((part) => ({
+              id: part.id,
+              producer_job: part.producer_job,
+              parser: part.parser,
+              artifact: part.artifact,
+              entry: part.entry,
+              sha256: part.sha256,
+              evidence: part.evidence,
+            }));
+          const evidence = aggregateEvidence(parts, lane);
+          return {
+            lane_id: lane.id,
+            execution_id: executionID,
+            invocation_mode: invocationMode,
+            context: {
+              match: lane.context.match,
+              name: lane.context.name,
+              job_id: lane.owner.context_job,
+            },
+            job_results: jobResults,
+            parts,
+            evidence,
+            conclusion: laneConclusion(jobResults, evidence),
+          };
+        }),
+      ),
     )
     .sort((left, right) =>
-      `${left.lane_id}/${left.execution_id}`.localeCompare(
-        `${right.lane_id}/${right.execution_id}`,
+      `${left.lane_id}/${left.execution_id}/${left.invocation_mode}`.localeCompare(
+        `${right.lane_id}/${right.execution_id}/${right.invocation_mode}`,
       ),
     );
 
@@ -422,12 +1112,31 @@ export function validateNativeBundle(document, registry, expected = {}) {
   );
   const expectedEntries = new Map(
     lanes.flatMap((lane) =>
-      lane.executions.map((executionID) => [
-        `${lane.id}/${executionID}`,
-        lane,
-      ]),
+      lane.executions.flatMap((executionID) =>
+        nativeInvocationModes(lane, document.posture).map(
+          (invocationMode) => [
+            `${lane.id}/${executionID}/${invocationMode}`,
+            lane,
+          ],
+        ),
+      ),
     ),
   );
+  let expectedParts = [];
+  try {
+    expectedParts = expectedNativeParts(
+      registry,
+      lanes,
+      document.producer?.run?.attempt,
+      document.posture,
+    );
+  } catch (partError) {
+    problems.push(
+      ...(partError instanceof ContractError
+        ? partError.problems
+        : [String(partError)]),
+    );
+  }
   const actualEntries = new Map();
   if (!Array.isArray(document.lanes)) {
     problems.push("native bundle lanes must be an array");
@@ -438,11 +1147,12 @@ export function validateNativeBundle(document, registry, expected = {}) {
       if (
         !exact(
           entry,
-          ["lane_id", "execution_id", "context", "checks", "evidence", "conclusion"],
+          ["lane_id", "execution_id", "invocation_mode", "context", "job_results", "parts", "evidence", "conclusion"],
           at,
         )
       ) continue;
-      const identity = `${entry.lane_id}/${entry.execution_id}`;
+      const identity =
+        `${entry.lane_id}/${entry.execution_id}/${entry.invocation_mode}`;
       const lane = expectedEntries.get(identity);
       if (!lane) problems.push(`${at} is unexpected: ${identity}`);
       if (actualEntries.has(identity)) problems.push(`${at} duplicates ${identity}`);
@@ -455,24 +1165,119 @@ export function validateNativeBundle(document, registry, expected = {}) {
       const expectedJobs = lane
         ? lane.owner.jobs.filter((job) => job !== (expected.evidenceJob || "native-evidence"))
         : [];
-      const checkJobs = Array.isArray(entry.checks)
-        ? entry.checks.map((check) => check?.job_id)
+      const resultJobs = Array.isArray(entry.job_results)
+        ? entry.job_results.map((job) => job?.job_id)
         : [];
-      if (JSON.stringify(checkJobs) !== JSON.stringify(expectedJobs))
-        problems.push(`${at} checks do not match the registry job roster`);
-      if (!Array.isArray(entry.checks)) {
-        problems.push(`${at} checks must be an array`);
+      if (JSON.stringify(resultJobs) !== JSON.stringify(expectedJobs))
+        problems.push(`${at} job_results do not match the registry job roster`);
+      if (!Array.isArray(entry.job_results)) {
+        problems.push(`${at} job_results must be an array`);
         continue;
       }
-      for (const check of entry.checks) {
-        if (!exact(check, ["job_id", "result"], `${at} check`)) continue;
-        if (!nativeResults.has(check.result)) problems.push(`${at} check result is invalid`);
+      for (const job of entry.job_results) {
+        if (!exact(job, ["job_id", "result"], `${at} job result`)) continue;
+        if (!nativeResults.has(job.result)) problems.push(`${at} job result is invalid`);
       }
-      const counts = evidenceCounts(entry.checks);
-      if (JSON.stringify(entry.evidence) !== JSON.stringify(counts))
-        problems.push(`${at} evidence counts are not derived from checks`);
-      if (entry.conclusion !== laneConclusion(entry.checks))
-        problems.push(`${at} conclusion is not derived from checks`);
+      const wantedParts = expectedParts.filter(
+        (part) =>
+          part.lane_id === entry.lane_id &&
+          part.execution_id === entry.execution_id &&
+          part.invocation_mode === entry.invocation_mode,
+      );
+      const wantedPartIDs = wantedParts.map((part) => part.id);
+      const actualPartIDs = Array.isArray(entry.parts)
+        ? entry.parts.map((part) => part?.id)
+        : [];
+      if (JSON.stringify(actualPartIDs) !== JSON.stringify(wantedPartIDs)) {
+        problems.push(`${at} parts do not match the registry part roster`);
+      }
+      if (!Array.isArray(entry.parts)) {
+        problems.push(`${at} parts must be an array`);
+        continue;
+      }
+      for (let partIndex = 0; partIndex < entry.parts.length; partIndex += 1) {
+        const part = entry.parts[partIndex];
+        const partAt = `${at} parts[${partIndex}]`;
+        if (!exact(part, ["id", "producer_job", "parser", "artifact", "entry", "sha256", "evidence"], partAt)) continue;
+        const registered = wantedParts[partIndex];
+        if (
+          registered &&
+          JSON.stringify({
+            id: part.id,
+            producer_job: part.producer_job,
+            parser: part.parser,
+            artifact: part.artifact,
+            entry: part.entry,
+          }) !==
+            JSON.stringify({
+              id: registered.id,
+              producer_job: registered.producer_job,
+              parser: registered.parser,
+              artifact: registered.artifact,
+              entry: registered.entry,
+            })
+        ) {
+          problems.push(`${partAt} identity does not match the registry`);
+        }
+        if (!/^[0-9a-f]{64}$/.test(part.sha256)) {
+          problems.push(`${partAt} sha256 is invalid`);
+        }
+        if (
+          !exact(
+            part.evidence,
+            [
+              "executed",
+              "passed",
+              "failed",
+              "skipped",
+              "duration_ms",
+              "seed",
+              "corpus_id",
+            ],
+            `${partAt} evidence`,
+          )
+        ) continue;
+        for (const key of ["executed", "passed", "failed", "skipped"]) {
+          if (!Number.isSafeInteger(part.evidence[key]) || part.evidence[key] < 0) {
+            problems.push(`${partAt} evidence.${key} must be a non-negative safe integer`);
+          }
+        }
+        if (
+          part.evidence.executed !==
+          part.evidence.passed + part.evidence.failed + part.evidence.skipped
+        ) {
+          problems.push(`${partAt} evidence totals are inconsistent`);
+        }
+        if (part.evidence.executed <= 0) {
+          problems.push(`${partAt} executed zero tests/checks`);
+        }
+        if (
+          !Number.isSafeInteger(part.evidence.duration_ms) ||
+          part.evidence.duration_ms < 0
+        ) {
+          problems.push(`${partAt} evidence.duration_ms must be a non-negative safe integer`);
+        }
+        if (
+          part.evidence.seed !== null &&
+          (typeof part.evidence.seed !== "string" ||
+            !nativeSeedPattern.test(part.evidence.seed))
+        ) {
+          problems.push(`${partAt} evidence.seed is invalid`);
+        }
+        if (!/^sha256:[0-9a-f]{64}$/.test(part.evidence.corpus_id)) {
+          problems.push(`${partAt} evidence.corpus_id is invalid`);
+        }
+      }
+      let counts;
+      try {
+        counts = aggregateEvidence(entry.parts, lane);
+      } catch (countError) {
+        problems.push(countError instanceof Error ? countError.message : String(countError));
+      }
+      if (counts && JSON.stringify(entry.evidence) !== JSON.stringify(counts))
+        problems.push(`${at} evidence counts are not derived from native parts`);
+      if (counts && entry.conclusion !== laneConclusion(entry.job_results, counts))
+        problems.push(`${at} conclusion is not derived from native parts and job provenance`);
     }
   }
   for (const identity of expectedEntries.keys()) {
@@ -487,6 +1292,7 @@ export function nativeBundleEntries(document) {
   return document.lanes.map((entry) => ({
     lane_id: entry.lane_id,
     execution_id: entry.execution_id,
+    invocation_mode: entry.invocation_mode,
     sha256: canonicalJSONSHA256({
       correlation_nonce: document.correlation_nonce,
       entry,
@@ -530,6 +1336,12 @@ function main(env = process.env) {
       "CI_LANE_NATIVE_OUTPUT is required",
     ]);
   }
+  const partsRoot = String(env.CI_LANE_NATIVE_PARTS ?? "").trim();
+  if (partsRoot === "") {
+    throw new ContractError("CI lane native evidence", [
+      "CI_LANE_NATIVE_PARTS is required",
+    ]);
+  }
   const registry = loadRegistry(
     env.CI_LANE_REGISTRY || DEFAULT_REGISTRY_PATH,
     { root },
@@ -550,10 +1362,11 @@ function main(env = process.env) {
     posture: env.CI_LANE_NATIVE_POSTURE || "merge",
     evidenceJob: env.CI_LANE_EVIDENCE_JOB || "native-evidence",
     correlationNonce: env.CI_LANE_CORRELATION_NONCE,
+    partsRoot,
   });
   const written = writeNativeBundle(output, bundle);
   setOutput("native_path", written.path);
-  setOutput("native_sha256", written.sha256);
+  setOutput("native_bundle_sha256", written.sha256);
   setOutput("native_lane_count", String(bundle.lanes.length));
   setOutput("native_correlation_nonce", bundle.correlation_nonce);
   setOutput("native_artifact_name", nativeArtifactName(bundle.producer.workflow, bundle.producer.run));

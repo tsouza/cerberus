@@ -16,6 +16,19 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      native_artifact_name:
+        value: ${{ jobs.emit.outputs.native_artifact_name }}
+      native_artifact_id:
+        value: ${{ jobs.emit.outputs.native_artifact_id }}
+      native_artifact_digest:
+        value: ${{ jobs.emit.outputs.native_artifact_digest }}
+      native_bundle_sha256:
+        value: ${{ jobs.emit.outputs.native_bundle_sha256 }}
+      native_lane_count:
+        value: ${{ jobs.emit.outputs.native_lane_count }}
+      native_correlation_nonce:
+        value: ${{ jobs.emit.outputs.native_correlation_nonce }}
 
 permissions:
   contents: read
@@ -24,6 +37,13 @@ jobs:
   emit:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      native_artifact_name: ${{ steps.evidence.outputs.native_artifact_name }}
+      native_artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+      native_artifact_digest: ${{ steps.bundle.outputs.artifact-digest }}
+      native_bundle_sha256: ${{ steps.evidence.outputs.native_bundle_sha256 }}
+      native_lane_count: ${{ steps.evidence.outputs.native_lane_count }}
+      native_correlation_nonce: ${{ steps.evidence.outputs.native_correlation_nonce }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -31,19 +51,25 @@ jobs:
           fetch-depth: 0
           clean: true
 
+      - name: download the attempt-qualified native parts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ci-native-part-*-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-native-parts
+
       - id: evidence
-        name: derive evidence from the caller's native job graph
+        name: derive counts from the registry-owned native part roster
         env:
           CI_LANE_WORKFLOW: ${{ inputs.workflow }}
           CI_LANE_NEEDS_JSON: ${{ inputs.needs_json }}
           CI_LANE_NATIVE_POSTURE: ${{ inputs.posture }}
           CI_LANE_CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
-          CI_LANE_NATIVE_OUTPUT: build/ci-native-evidence.json
-        run: |
-          mkdir -p build
-          node .github/scripts/ci-lane-native-evidence.mjs
+          CI_LANE_NATIVE_PARTS: ${{ runner.temp }}/ci-native-parts
+          CI_LANE_NATIVE_OUTPUT: ${{ runner.temp }}/ci-native-evidence.json
+        run: node .github/scripts/ci-lane-native-evidence.mjs
 
-      - name: publish the attempt-qualified native bundle
+      - id: bundle
+        name: publish the attempt-qualified native bundle
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.evidence.outputs.native_artifact_name }}

@@ -17,6 +17,10 @@
       "docs/**"
     ]
   },
+  "native_evidence": {
+    "schema_version": 1,
+    "parts": []
+  },
   "layers": [
     { "id": "1", "name": "Parser smoke / AST-shape pinning" },
     { "id": "2a", "name": "chplan IR snapshots in TXTAR" },
