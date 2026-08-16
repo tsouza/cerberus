@@ -13,7 +13,7 @@ import (
 
 var seedAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 
-const rootParentID = "0000000000000000"
+const rootParentID = ""
 
 type spanSeed struct {
 	traceID    string
