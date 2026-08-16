@@ -13,5 +13,5 @@ Feature: MIG-17 — semantic hotspots verified specifically
     And every configured head returned at least one comparison unit
     And the diverge count is exactly zero
     And no family compared zero evidence
-    And every hotspot query is individually evidenced, not only the aggregate
+    And every replayed query is individually evidenced, not only the aggregate
     And the verify command's exit status agrees with the report's own verdict

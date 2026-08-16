@@ -47,7 +47,8 @@ const verifyReportName = "verify.json"
 // left over from a torn-down run.
 const liveProbeBudget = 2 * time.Minute
 
-// registerVerifySteps binds the MIG-16 / MIG-17 Tier-1 dual-backend steps:
+// registerVerifySteps binds the MIG-11 / MIG-12 / MIG-16 / MIG-17 Tier-1
+// dual-backend steps:
 // establishing the live stack, selecting a committed verify corpus, driving
 // `cerberus migrate verify` against it, and asserting the honesty-contract
 // shape of the returned report (docs/migration-testing.md section 5) rather
@@ -64,7 +65,7 @@ func (w *World) registerVerifySteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the diverge count is exactly zero$`, w.thenDivergeIsZero)
 	ctx.Step(`^no family compared zero evidence$`, w.thenNoDeadFamily)
 	ctx.Step(`^the verify command's exit status agrees with the report's own verdict$`, w.thenExitAgreesWithVerdict)
-	ctx.Step(`^every hotspot query is individually evidenced, not only the aggregate$`,
+	ctx.Step(`^every replayed query is individually evidenced, not only the aggregate$`,
 		w.thenEveryQueryIndividuallyEvidenced)
 }
 
@@ -304,11 +305,9 @@ func (w *World) thenExitAgreesWithVerdict() error {
 	})
 }
 
-// thenEveryQueryIndividuallyEvidenced asserts every per-query result in the
-// hotspot run carries its own query and its own non-zero comparison-unit
-// count, so a bug hiding in one hotspot query can never be masked by the
-// aggregate summary matching — the "per-query max/median divergence
-// reported" half of MIG-17's PASS assertion.
+// thenEveryQueryIndividuallyEvidenced asserts every per-query result carries
+// its own query and its own non-zero comparison-unit count, so a bug hiding in
+// one corpus entry can never be masked by the aggregate summary matching.
 func (w *World) thenEveryQueryIndividuallyEvidenced() error {
 	return w.eachVerifyReport(func(a string, rep migrateverify.Report) error {
 		if len(rep.Results) == 0 {
