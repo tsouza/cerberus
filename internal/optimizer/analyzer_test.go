@@ -260,8 +260,8 @@ func TestConstantFoldSemantic_PreservesFuncCallFn(t *testing.T) {
 	}
 	project := out.(*chplan.Project)
 	call := project.Projections[0].Expr.(*chplan.FuncCall)
-	if call.Fn != chplan.FnAbs || call.Name != "" {
-		t.Fatalf("FuncCall identity changed during fold rebuild: Fn=%q Name=%q", call.Fn, call.Name)
+	if call.Fn != chplan.FnAbs {
+		t.Fatalf("FuncCall identity changed during fold rebuild: Fn=%q", call.Fn)
 	}
 	arg, ok := call.Args[0].(*chplan.LitInt)
 	if !ok || arg.V != 3 {
@@ -301,8 +301,8 @@ func TestConstantFoldSemantic_PreservesAggFuncParams(t *testing.T) {
 		t.Fatalf("expected *Aggregate, got %T", out)
 	}
 	af := agg.AggFuncs[0]
-	if af.Fn != chplan.FnQuantile || af.Name != "" {
-		t.Fatalf("AggFunc identity changed during fold rebuild: Fn=%q Name=%q", af.Fn, af.Name)
+	if af.Fn != chplan.FnQuantile {
+		t.Fatalf("AggFunc identity changed during fold rebuild: Fn=%q", af.Fn)
 	}
 	if len(af.Params) != 1 {
 		t.Fatalf("AggFunc.Params dropped by the fold rebuild: got %d params, want 1", len(af.Params))
@@ -331,7 +331,7 @@ func TestConstantFoldSemantic_FoldsAggFuncParams(t *testing.T) {
 		Input:   &chplan.Scan{Table: "t"},
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		AggFuncs: []chplan.AggFunc{{
-			Name: "quantile",
+			Fn: chplan.FnQuantile,
 			Params: []chplan.Expr{&chplan.Binary{
 				Op:    chplan.OpAdd,
 				Left:  &chplan.LitInt{V: 1},

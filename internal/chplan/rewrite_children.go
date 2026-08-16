@@ -132,7 +132,7 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v
 			cp.Input = in
@@ -162,7 +162,7 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
-	case *RangeWindowResample:
+	case *RangeWindowStaleResample:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v
 			cp.Input = in

@@ -305,7 +305,7 @@ func groupedArm(rw *chplan.RangeWindow, groupKey string) chplan.Node {
 			},
 			GroupByAliases: []string{"gkey_0"},
 			AggFuncs: []chplan.AggFunc{{
-				Name:  "sum",
+				Fn:    chplan.FnSum,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 				Alias: "Value",
 			}},
@@ -439,7 +439,7 @@ func ungroupedArm(rw *chplan.RangeWindow) chplan.Node {
 		Input: &chplan.Aggregate{
 			Input: rw,
 			AggFuncs: []chplan.AggFunc{{
-				Name:  "sum",
+				Fn:    chplan.FnSum,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 				Alias: "Value",
 			}},

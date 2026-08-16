@@ -13,10 +13,10 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// TestFnSpellings_CoversEveryDeclaredFn and TestFnSpellings_NoOrphanEntry
+// TestFnResolutions_CoversEveryDeclaredFn and TestFnResolutions_NoOrphanEntry
 // are the two completeness ratchets #2060 PR 1 asks for: chplan.Fn (the
 // engine-agnostic vocabulary, internal/chplan/fn.go) and chsql's
-// fnSpellings (its ClickHouse resolution, fnspelling.go) must name the
+// fnResolutions (its ClickHouse resolution, fnresolution.go) must name the
 // exact same set of functions.
 //
 // Both derive the declared side from source with go/parser, the same
@@ -33,11 +33,11 @@ import (
 // and parsing the literal RHS is the same "declarations only, no
 // go/types" scan sealedscan itself uses to stay lightweight.
 
-// TestFnSpellings_CoversEveryDeclaredFn fails when internal/chplan/fn.go
-// declares an Fn constant fnSpellings does not resolve — the gap #2060's
+// TestFnResolutions_CoversEveryDeclaredFn fails when internal/chplan/fn.go
+// declares an Fn constant fnResolutions does not resolve — the gap #2060's
 // design calls out explicitly: "a missing one is a named test failure,
 // not a runtime CH error."
-func TestFnSpellings_CoversEveryDeclaredFn(t *testing.T) {
+func TestFnResolutions_CoversEveryDeclaredFn(t *testing.T) {
 	t.Parallel()
 
 	declared := declaredFnValues(t)
@@ -47,19 +47,19 @@ func TestFnSpellings_CoversEveryDeclaredFn(t *testing.T) {
 	}
 
 	for name, value := range declared {
-		if _, ok := fnSpellings[chplan.Fn(value)]; !ok {
-			t.Errorf("chplan.%s (%q) has no entry in chsql.fnSpellings (fnspelling.go) — "+
+		if _, ok := fnResolutions[chplan.Fn(value)]; !ok {
+			t.Errorf("chplan.%s (%q) has no entry in chsql.fnResolutions (fnresolution.go) — "+
 				"add one, or the emitter falls through to a runtime ClickHouse error instead "+
 				"of a compile/test failure", name, value)
 		}
 	}
 }
 
-// TestFnSpellings_NoOrphanEntry fails when fnSpellings carries an entry
+// TestFnResolutions_NoOrphanEntry fails when fnResolutions carries an entry
 // naming a Fn value fn.go no longer declares — the const block IS the
 // vocabulary, so a table entry with no matching const is a ghost left
 // behind by a rename or deletion.
-func TestFnSpellings_NoOrphanEntry(t *testing.T) {
+func TestFnResolutions_NoOrphanEntry(t *testing.T) {
 	t.Parallel()
 
 	declared := declaredFnValues(t)
@@ -73,9 +73,9 @@ func TestFnSpellings_NoOrphanEntry(t *testing.T) {
 		declaredValues[value] = true
 	}
 
-	for fn := range fnSpellings {
+	for fn := range fnResolutions {
 		if !declaredValues[string(fn)] {
-			t.Errorf("chsql.fnSpellings has an entry for %q, which internal/chplan/fn.go no "+
+			t.Errorf("chsql.fnResolutions has an entry for %q, which internal/chplan/fn.go no "+
 				"longer declares as an Fn constant — drop it", string(fn))
 		}
 	}

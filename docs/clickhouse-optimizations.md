@@ -799,7 +799,7 @@ The legacy `LegacyFlag` is carried on `Config` (e.g.
    (`internal/api/prom` `Handler.ExperimentalTSGridRange`,
    `internal/promql.LowerOpts.ExperimentalTSGridRange`,
    `internal/preflight` `Requirements.NativeRateEnabled`,
-   `internal/chplan/range_window_native.go`) are **unchanged** — they keep
+   `internal/chplan/range_window_grid_native.go`) are **unchanged** — they keep
    reading the bool, now a derived value.
 
 3. **`cmd/cerberus/main.go`** — owns the boot resolve: build client -> probe

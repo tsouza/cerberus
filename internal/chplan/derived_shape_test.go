@@ -37,37 +37,37 @@ var derivedShapeVerdicts = map[string]bool{
 	"MetricsAggregate":         true,
 	"MetricsHistogramOverTime": true,
 	"RangeWindow":              true,
-	"RangeWindowNative":        true,
+	"RangeWindowGridNative":    true,
 
 	// Everything else keeps the canonical columns in scope (or is
 	// re-canonicalised by its own emit, as a nested VectorSetOp is).
-	"AbsentOverTime":          false,
-	"CrossJoin":               false,
-	"Filter":                  false,
-	"HistogramQuantile":       false,
-	"HistogramQuantileNative": false,
-	"HistogramProjection":     false,
-	"InfoJoin":                false,
-	"Limit":                   false,
-	"MetricsCompare":          false,
-	"MetricsSecondStage":      false,
-	"NaryVectorSetOp":         false,
-	"NestedSetAnnotate":       false,
-	"OneRow":                  false,
-	"OrderBy":                 false,
-	"Project":                 false,
-	"RangeBucketFanout":       false,
-	"RangeLWR":                false,
-	"RangeWindowResample":     false,
-	"Scan":                    false,
-	"SearchTraceLimit":        false,
-	"SetOperation":            false,
-	"StepGrid":                false,
-	"StructuralJoin":          false,
-	"TopK":                    false,
-	"UnionAll":                false,
-	"VectorJoin":              false,
-	"VectorSetOp":             false,
+	"AbsentOverTime":           false,
+	"CrossJoin":                false,
+	"Filter":                   false,
+	"HistogramQuantile":        false,
+	"HistogramQuantileNative":  false,
+	"HistogramProjection":      false,
+	"InfoJoin":                 false,
+	"Limit":                    false,
+	"MetricsCompare":           false,
+	"MetricsSecondStage":       false,
+	"NaryVectorSetOp":          false,
+	"NestedSetAnnotate":        false,
+	"OneRow":                   false,
+	"OrderBy":                  false,
+	"Project":                  false,
+	"RangeBucketFanout":        false,
+	"RangeLWR":                 false,
+	"RangeWindowStaleResample": false,
+	"Scan":                     false,
+	"SearchTraceLimit":         false,
+	"SetOperation":             false,
+	"StepGrid":                 false,
+	"StructuralJoin":           false,
+	"TopK":                     false,
+	"UnionAll":                 false,
+	"VectorJoin":               false,
+	"VectorSetOp":              false,
 }
 
 // TestIsDerivedShape_CoversEveryNodeKind is the class-level ratchet behind
@@ -139,7 +139,7 @@ func TestIsDerivedShape_Transparency(t *testing.T) {
 	// The `projectValueOverInner` shape: replaces Value, widens nothing.
 	valueRewrite := []chplan.Projection{
 		col(testSampleColumns.Attributes),
-		{Expr: &chplan.FuncCall{Name: "abs", Args: []chplan.Expr{&chplan.ColumnRef{Name: testSampleColumns.Value}}}, Alias: testSampleColumns.Value},
+		{Expr: &chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{&chplan.ColumnRef{Name: testSampleColumns.Value}}}, Alias: testSampleColumns.Value},
 	}
 
 	for _, tc := range []struct {
@@ -274,7 +274,7 @@ func TestProjectionOutputsColumn(t *testing.T) {
 		},
 		{
 			name: "unaliased non-column expression",
-			proj: chplan.Projection{Expr: &chplan.FuncCall{Name: "now64"}},
+			proj: chplan.Projection{Expr: &chplan.FuncCall{Fn: chplan.FnNow64}},
 		},
 	} {
 		if got := chplan.ProjectionOutputsColumn(tc.proj, col); got != tc.want {
@@ -290,7 +290,7 @@ func TestProjectionOutputsColumn(t *testing.T) {
 func TestProjectionOutputsColumn_EmptyColumn(t *testing.T) {
 	t.Parallel()
 
-	if chplan.ProjectionOutputsColumn(chplan.Projection{Expr: &chplan.FuncCall{Name: "now64"}}, "") {
+	if chplan.ProjectionOutputsColumn(chplan.Projection{Expr: &chplan.FuncCall{Fn: chplan.FnNow64}}, "") {
 		t.Error("ProjectionOutputsColumn(computed projection, \"\") = true, want false")
 	}
 }

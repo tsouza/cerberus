@@ -51,10 +51,10 @@ func carrierTokenCases() []carrierTokenCase {
 			},
 		},
 		{
-			kind:  "RangeWindowNative",
+			kind:  "RangeWindowGridNative",
 			token: "rwn",
 			node: func(in chplan.Node) chplan.Node {
-				return &chplan.RangeWindowNative{
+				return &chplan.RangeWindowGridNative{
 					Input: in, Func: "rate", Range: shapeCarrierWindow, Step: shapeGridStep,
 					Start: shapeGridStart, End: shapeGridEnd,
 					TimestampColumn: "TimeUnix", ValueColumn: "Value",
@@ -62,10 +62,10 @@ func carrierTokenCases() []carrierTokenCase {
 			},
 		},
 		{
-			kind:  "RangeWindowResample",
+			kind:  "RangeWindowStaleResample",
 			token: "rwr",
 			node: func(in chplan.Node) chplan.Node {
-				return &chplan.RangeWindowResample{
+				return &chplan.RangeWindowStaleResample{
 					Input: in, Start: shapeGridStart, End: shapeGridEnd, Step: shapeGridStep,
 					Lookback: shapeCarrierWindow, MetricNameCol: "MetricName", AttributesCol: "Attributes",
 					TimestampCol: "TimeUnix", ValueCol: "Value",

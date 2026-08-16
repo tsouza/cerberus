@@ -187,7 +187,7 @@ func TestMetricsCompare_Walk_VisitsInnerAndRootLookup(t *testing.T) {
 	t.Parallel()
 	root := &chplan.MetricsCompare{
 		Selection:  &chplan.LitBool{V: true},
-		Pairs:      &chplan.FuncCall{Name: "array"},
+		Pairs:      &chplan.FuncCall{Fn: chplan.FnArray},
 		Inner:      &chplan.Scan{Table: "mc_inner"},
 		RootLookup: &chplan.Scan{Table: "mc_roots"},
 	}

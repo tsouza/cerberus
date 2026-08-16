@@ -693,7 +693,7 @@ func (c *Client) QueryIndexVolume(ctx context.Context, query string, args ...any
 // ClickHouse settings the engine stamped onto ctx via
 // chclient.WithQuerySetting — most notably
 // allow_experimental_time_series_aggregate_functions=1, which the engine
-// attaches whenever the optimized plan carries a chplan.RangeWindowNative
+// attaches whenever the optimized plan carries a chplan.RangeWindowGridNative
 // node (the native timeSeriesRateToGrid family).
 //
 // Production's *chclient.Client applies these through the clickhouse-go

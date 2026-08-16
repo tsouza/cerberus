@@ -1,13 +1,13 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental
-// timeSeriesChangesToGrid lowering (chplan.RangeWindowNative, Func="changes").
+// timeSeriesChangesToGrid lowering (chplan.RangeWindowGridNative, Func="changes").
 //
 // The test lowers the SAME `sum by (host) (changes(load_state[5m]))`
 // query_range expression TWICE against the SAME seed — once with the native
 // changes strategy OFF (the arrayPopBack/arrayPopFront `c != p` count fan-out,
 // RangeWindow) and once with it ON (the native timeSeriesChangesToGrid,
-// RangeWindowNative) — runs BOTH on the same ephemeral chDB session, and
+// RangeWindowGridNative) — runs BOTH on the same ephemeral chDB session, and
 // compares the per-(series, anchor) change-count values.
 //
 // Why this is the parity proof. The fan-out's per-window count is the
@@ -141,7 +141,7 @@ const changesQuery = `sum by(host) (changes(load_state[5m]))`
 // offset here is hand-derived from the seed's own window membership — not an
 // opaque "don't check this" entry — and every cell NOT listed here must still
 // be bit-identical (see the assertion below). Reading
-// internal/chsql/range_window_native.go confirms cerberus passes (ts, val)
+// internal/chsql/range_window_grid_native.go confirms cerberus passes (ts, val)
 // straight into the ClickHouse builtin with no NaN-specific pre/post
 // processing anywhere in cerberus's own SQL — the gap lives inside the
 // builtin itself, not in code this test's assertion could paper over.
@@ -202,7 +202,7 @@ func TestNativeTSGridChanges_DualEmitParity(t *testing.T) {
 	native := runChangesEmit(t, db, true, false)
 
 	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide native
-	// scan (ProjectionPushdown narrows the RangeWindowNative inner Scan to the
+	// scan (ProjectionPushdown narrows the RangeWindowGridNative inner Scan to the
 	// exact {Attributes, TimeUnix, Value} the emit reads).
 	nativeOpt := runChangesEmit(t, db, true, true)
 	if len(nativeOpt) != len(native) {

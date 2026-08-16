@@ -185,7 +185,7 @@ func strategyFor(meta Meta) string {
 
 // execContext wraps the execute-stage ctx with any per-plan ClickHouse
 // settings the emitted plan requires. Today the single rule is: when the
-// optimized plan contains a chplan.RangeWindowNative node (the
+// optimized plan contains a chplan.RangeWindowGridNative node (the
 // experimental timeSeriesRateToGrid lowering), mark the ctx with
 // chclient.WithTSGridSetting so the chclient query path adds
 // `allow_experimental_time_series_aggregate_functions=1` to THAT query's
@@ -513,15 +513,15 @@ func clampU8(v int64) uint8 {
 
 // planHasTSGridNative reports whether plan contains a node from the
 // experimental timeSeries*ToGrid family anywhere in the tree — either a
-// chplan.RangeWindowNative (timeSeriesRateToGrid for Func="rate",
+// chplan.RangeWindowGridNative (timeSeriesRateToGrid for Func="rate",
 // timeSeriesChangesToGrid for Func="changes", timeSeriesResetsToGrid for
 // Func="resets", timeSeriesDerivToGrid for Func="deriv",
 // timeSeriesPredictLinearToGrid for Func="predict_linear") or a
-// chplan.RangeWindowResample (timeSeriesResampleToGridWithStaleness). All share
+// chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness). All share
 // the allow_experimental_time_series_aggregate_functions gate, so the engine
 // stamps the experimental setting on a query carrying ANY such node — the
 // changes / resets / deriv / predict_linear matrix functions ride the
-// RangeWindowNative match with no engine change.
+// RangeWindowGridNative match with no engine change.
 //
 // The sweep is chplan.WalkDeep, not chplan.Walk: a per-step scalar parameter
 // binds its vector as a chplan.ScalarSubquery, so a query whose ONLY ts-grid
@@ -533,7 +533,7 @@ func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		switch n.(type) {
-		case *chplan.RangeWindowNative, *chplan.RangeWindowResample:
+		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample:
 			found = true
 			return false // stop descending this branch
 		}
@@ -892,7 +892,7 @@ func (e *GuardError) Unwrap() error { return e.Err }
 // same optimize → resource-bound → execContext → emit → execute pipeline
 // the main statement does. That is not bookkeeping. A guard plan is
 // lowered with the caller's own lowerers, so it can carry a
-// RangeWindowNative that only runs with the experimental ts-grid setting
+// RangeWindowGridNative that only runs with the experimental ts-grid setting
 // execContext attaches; it scans the parameter's whole series, so it
 // wants the same spill settings and the same subquery sample budget; and
 // it is a real ClickHouse dispatch, so it belongs in the corpus the same
@@ -1224,7 +1224,7 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // of the same spine, so the two agree, and reading what is emitted is what
 // keeps them agreeing.
 //
-// This became reachable when RangeWindowNative entered the routable spine
+// This became reachable when RangeWindowGridNative entered the routable spine
 // family (issue #2117). Before that every ts-grid-carrying plan was refused as
 // not-sliceable — by the slice-invariance registry on the main spine and by the
 // same registry inside walkScalarInterior for an Expr-embedded one — so no

@@ -97,7 +97,7 @@ func TestExprEqual_MismatchedTypes(t *testing.T) {
 		{
 			"Binary vs FuncCall",
 			&chplan.Binary{Op: chplan.OpEq, Left: &chplan.LitInt{V: 1}, Right: &chplan.LitInt{V: 1}},
-			&chplan.FuncCall{Name: "eq", Args: []chplan.Expr{&chplan.LitInt{V: 1}, &chplan.LitInt{V: 1}}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitInt{V: 1}, &chplan.LitInt{V: 1}}},
 		},
 		{
 			"MapAccess vs FieldAccess",
@@ -106,7 +106,7 @@ func TestExprEqual_MismatchedTypes(t *testing.T) {
 		},
 		{
 			"FuncCall vs LineContent",
-			&chplan.FuncCall{Name: "match", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}, &chplan.LitString{V: "x"}}},
+			&chplan.FuncCall{Fn: chplan.FnRegexMatch, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}, &chplan.LitString{V: "x"}}},
 			&chplan.LineContent{Source: &chplan.ColumnRef{Name: "Body"}, Pattern: "x"},
 		},
 	}
@@ -159,13 +159,13 @@ func TestExprEqual_SameTypeDifferentValues(t *testing.T) {
 		},
 		{
 			"FuncCall different name",
-			&chplan.FuncCall{Name: "abs", Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
-			&chplan.FuncCall{Name: "ceil", Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
+			&chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
+			&chplan.FuncCall{Fn: chplan.FnCeil, Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
 		},
 		{
 			"FuncCall different arg count",
-			&chplan.FuncCall{Name: "f", Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
-			&chplan.FuncCall{Name: "f", Args: []chplan.Expr{&chplan.LitInt{V: 1}, &chplan.LitInt{V: 2}}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitInt{V: 1}}},
+			&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.LitInt{V: 1}, &chplan.LitInt{V: 2}}},
 		},
 		{
 			"MapAccess different key",

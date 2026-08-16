@@ -3,5 +3,5 @@ SELECT now() AS `current_time` FROM (SELECT * FROM `otel_metrics_gauge`)
 -- args --
 (none)
 -- chplan --
-Project [now() AS current_time]
+Project [FnNow() AS current_time]
   Scan(otel_metrics_gauge)

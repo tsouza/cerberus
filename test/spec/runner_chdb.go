@@ -184,7 +184,7 @@ func OpenChDB(t *testing.T) *sql.DB {
 		t.Fatalf("ping chdb: %v", err)
 	}
 	// Enable the experimental timeSeries*ToGrid aggregate family at the
-	// session level so the native-rate fixtures (RangeWindowNative ->
+	// session level so the native-rate fixtures (RangeWindowGridNative ->
 	// timeSeriesRateToGrid) run. The setting is harmless for every other
 	// fixture -- it gates only those aggregates, which no other fixture
 	// emits -- and chDB does not enforce the gate, so this is belt-and-

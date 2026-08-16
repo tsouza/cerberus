@@ -109,9 +109,9 @@ func carrierCases() []carrierCase {
 			// the whole point — sliceable when the evidence says slice, and
 			// below MinFanout on its own so ModeAuto does not shard a
 			// flat-memory statement for a memory problem it does not have.
-			kind: "RangeWindowNative",
+			kind: "RangeWindowGridNative",
 			plan: func() chplan.Node {
-				return &chplan.RangeWindowNative{
+				return &chplan.RangeWindowGridNative{
 					Input:           leafScan(),
 					Func:            "rate",
 					Range:           geomNativeRange,
@@ -134,9 +134,9 @@ func carrierCases() []carrierCase {
 			// either, so its fan-out is singlePassFanout for exactly the same
 			// reason. It is not re-anchored, so that answer is telemetry only —
 			// the row is refused by the reanchorable fail-close whatever its F.
-			kind: "RangeWindowResample",
+			kind: "RangeWindowStaleResample",
 			plan: func() chplan.Node {
-				return &chplan.RangeWindowResample{
+				return &chplan.RangeWindowStaleResample{
 					Input:         leafScan(),
 					Start:         gridStart,
 					End:           gridEnd,
@@ -164,7 +164,7 @@ func carrierCases() []carrierCase {
 					GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 					GroupByAliases: []string{"Attributes"},
 					AggFuncs: []chplan.AggFunc{
-						{Name: "argMax", Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "BucketCounts"},
+						{Fn: chplan.FnArgMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}, Alias: "BucketCounts"},
 					},
 					AnchorAlias:  "anchor_ts",
 					TimestampCol: "TimeUnix",
@@ -215,8 +215,8 @@ func carrierCases() []carrierCase {
 // outer_range, cumulative_d, fanout) readout on the Decision that reaches the
 // calibration corpus.
 //
-// Reverting the fix breaks this on four rows at once — RangeWindowNative,
-// RangeWindowResample, RangeBucketFanout and StepGrid all collapse to
+// Reverting the fix breaks this on four rows at once — RangeWindowGridNative,
+// RangeWindowStaleResample, RangeBucketFanout and StepGrid all collapse to
 // NAnchors=0 / OuterRange=0 / CumulativeD=0, because walkNode had no arm that
 // recorded them and every feature is produced by that walk. AbsentOverTime
 // collapses on CumulativeD alone for the same reason.
@@ -387,29 +387,29 @@ func TestCarrierGeometryOf_UnclassifiableCarrierFailsClosed(t *testing.T) {
 
 // nativeCarrierPlan builds the dominant natively-lowered shape —
 // `sum(rate(m[3m]))` with the rate on the timeSeriesRateToGrid path — whose
-// RangeWindowNative is the plan's ONLY grid carrier. It is the subject of the
+// RangeWindowGridNative is the plan's ONLY grid carrier. It is the subject of the
 // three native pins below, built from the table row so the two cannot drift.
 func nativeCarrierPlan(t *testing.T) (plan, native chplan.Node) {
 	t.Helper()
 
 	for _, tc := range carrierCases() {
-		if tc.kind == "RangeWindowNative" {
+		if tc.kind == "RangeWindowGridNative" {
 			native = tc.plan()
 		}
 	}
 	if native == nil {
-		t.Fatal("carrierCases lost its RangeWindowNative row; this pin has no subject")
+		t.Fatal("carrierCases lost its RangeWindowGridNative row; this pin has no subject")
 	}
 	return &chplan.Aggregate{
 		Input:    native,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}, native
 }
 
 // TestCarrierGeometry_NativeIsMeasuredAndSliceable pins BOTH halves of the
 // natively-lowered spine's classification, which are independently wrong-able.
 //
-// Measurement half: the plan's only carrier is the RangeWindowNative, so an
+// Measurement half: the plan's only carrier is the RangeWindowGridNative, so an
 // extractor blind to it records an all-zero cost grid — the regression the
 // seven-kind table exists for, restated here on the real sum(rate(...)) shape.
 //
@@ -443,7 +443,7 @@ func TestCarrierGeometry_NativeIsMeasuredAndSliceable(t *testing.T) {
 	// Slicing half, at the threshold-free seam.
 	ed, eligible := (&Planner{Cfg: autoCfg()}).Eligible(plan, meta)
 	if !eligible {
-		t.Fatalf("Eligible refused a RangeWindowNative spine (reason=%q) — ReanchorRange re-grids "+
+		t.Fatalf("Eligible refused a RangeWindowGridNative spine (reason=%q) — ReanchorRange re-grids "+
 			"this kind, so a plan that carries nothing else must be sliceable", ed.Reason)
 	}
 	if ed.K < 2 {
@@ -455,7 +455,7 @@ func TestCarrierGeometry_NativeIsMeasuredAndSliceable(t *testing.T) {
 	// ReanchorRange arm leaves the plan refused for a reason that reads like a
 	// cost judgement.
 	if !chplan.IsSliceInvariant(native) {
-		t.Error("RangeWindowNative is not registered slice-invariant, so gate (1) refuses every " +
+		t.Error("RangeWindowGridNative is not registered slice-invariant, so gate (1) refuses every " +
 			"plan carrying one and the ReanchorRange arm is unreachable")
 	}
 }
@@ -464,7 +464,7 @@ func TestCarrierGeometry_NativeIsMeasuredAndSliceable(t *testing.T) {
 // slicing pin above: being ALLOWED to slice is worthless unless the shards
 // actually tile the original anchor grid.
 //
-// It reads the re-anchored RangeWindowNative out of every produced shard and
+// It reads the re-anchored RangeWindowGridNative out of every produced shard and
 // asserts the shards' anchor sets are pairwise disjoint and union to the
 // unsliced grid exactly, and that each shard's node carries that shard's own
 // bounds. The failure this catches is the specific one UnpinSpine's missing arm
@@ -485,16 +485,16 @@ func TestCarrierGeometry_NativeShardsPartitionTheGrid(t *testing.T) {
 
 	seen := map[int64]int{}
 	for _, s := range d.Slices {
-		var found *chplan.RangeWindowNative
+		var found *chplan.RangeWindowGridNative
 		chplan.Walk(s.Plan, func(n chplan.Node) bool {
-			if rw, ok := n.(*chplan.RangeWindowNative); ok {
+			if rw, ok := n.(*chplan.RangeWindowGridNative); ok {
 				found = rw
 				return false
 			}
 			return true
 		})
 		if found == nil {
-			t.Fatalf("shard %d carries no RangeWindowNative; the slicer lost the spine node", s.Index)
+			t.Fatalf("shard %d carries no RangeWindowGridNative; the slicer lost the spine node", s.Index)
 		}
 		if !found.Start.Equal(s.Start) || !found.End.Equal(s.End) {
 			t.Fatalf("shard %d node bounds [%v,%v] != shard bounds [%v,%v] — the node was shared "+
@@ -724,7 +724,7 @@ func TestCarrierGeometry_NonReanchorableCarrierRefusedAtEveryPlacement(t *testin
 //
 // Two independent gates refuse a non-re-anchorable carrier: (1) chplan's
 // slice-invariance registry, and (1b) recordGridCarrier's reanchorable
-// fail-close. For RangeWindowNative / RangeWindowResample / AbsentOverTime the
+// fail-close. For RangeWindowGridNative / RangeWindowStaleResample / AbsentOverTime the
 // registry alone would refuse. But RangeBucketFanout and StepGrid ARE registered
 // slice-invariant — per-node they genuinely are — so for those kinds gate (1) is
 // silent and (1b) is the whole barrier. This test asserts that silence, so a

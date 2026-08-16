@@ -1,12 +1,12 @@
 package chplan
 
-// Fn is a symbolic, engine-agnostic function identifier used by FuncCall
+// Fn is a symbolic, head-agnostic function identifier used by FuncCall
 // and AggFunc in place of a raw ClickHouse spelling. Each constant names
 // what the function DOES, not what CH calls it — the const block below is
 // the complete vocabulary chsql's per-dialect resolution table
-// (internal/chsql/fnspelling.go) must cover, and it is derived from
+// (internal/chsql/fnresolution.go) must cover, and it is derived from
 // source (see internal/chplan/fn_completeness_test.go and
-// internal/chsql/fnspelling_completeness_test.go) rather than restated by
+// internal/chsql/fnresolution_completeness_test.go) rather than restated by
 // hand anywhere else.
 //
 // A doc comment on each constant states its contract as this codebase's
@@ -15,10 +15,8 @@ package chplan
 // self-describing (a combinator suffix, an unrelated spelling for a
 // PromQL-side concept) the doc comment says so.
 //
-// This PR (#2060 PR 1) only adds the vocabulary, the resolution table and
-// the ratchets — see FuncCall.Fn / AggFunc.Fn for the dual-mode
-// contract. Construction sites keep using Name until PRs 2-5 convert
-// them per query-language head; nothing observable changes yet.
+// The vocabulary is sealed: construction sites use these symbols exclusively,
+// and the emitter fails closed if a symbol has no resolution.
 type Fn string
 
 const (
@@ -219,6 +217,11 @@ const (
 	// object as Array(Tuple(String, String)).
 	FnJSONExtractKeysAndValuesRaw Fn = "JSONExtractKeysAndValuesRaw"
 
+	// JSONExtract(json, returnType[, path...]) — a JSON value decoded as the
+	// supplied ClickHouse type. Used by generic expression-shape tests and kept
+	// symbolic so even uncommon typed calls cannot bypass the vocabulary.
+	FnJSONExtract Fn = "JSONExtract"
+
 	// JSONExtractString(json, path...) — a JSON string field, unescaped; returns
 	// '' if the path is absent or not a string.
 	FnJSONExtractString Fn = "JSONExtractString"
@@ -392,6 +395,18 @@ const (
 	// the Unix epoch.
 	FnFromUnixNanos Fn = "fromUnixTimestamp64Nano"
 
+	// fromUnixTimestamp64Micro(n) — the DateTime64(6) instant n microseconds
+	// after the Unix epoch.
+	FnFromUnixMicros Fn = "fromUnixTimestamp64Micro"
+
+	// fromUnixTimestamp64Milli(n) — the DateTime64(3) instant n milliseconds
+	// after the Unix epoch.
+	FnFromUnixMillis Fn = "fromUnixTimestamp64Milli"
+
+	// fromUnixTimestamp(n) — the whole-second DateTime instant n seconds after
+	// the Unix epoch.
+	FnFromUnixSeconds Fn = "fromUnixTimestamp"
+
 	// now() — the current instant as DateTime (second resolution).
 	FnNow Fn = "now"
 
@@ -559,6 +574,9 @@ const (
 
 	// sum(x) aggregate — the sum of non-NULL x in the group.
 	FnSum Fn = "sum"
+
+	// sumForEach(array) aggregate — the positional sum of equally shaped arrays.
+	FnSumForEach Fn = "sumForEach"
 
 	// uniqExact(x) aggregate — the exact count of distinct x values in the group
 	// (no sketch approximation).

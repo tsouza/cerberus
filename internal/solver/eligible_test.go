@@ -27,7 +27,7 @@ func belowAutoThresholdWindow() chplan.Node {
 	return &chplan.Aggregate{
 		Input:    rw,
 		GroupBy:  nil,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
@@ -85,7 +85,7 @@ func TestEligible_StructuralGatesStillApply(t *testing.T) {
 		Predicate: &chplan.Binary{
 			Op:    chplan.OpLt,
 			Left:  &chplan.ColumnRef{Name: "TimeUnix"},
-			Right: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+			Right: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
 		},
 	}
 	d, routed := p.Eligible(plan, oomMeta())

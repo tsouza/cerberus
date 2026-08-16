@@ -80,7 +80,7 @@ func countNativeNodes(plan chplan.Node) int {
 	n := 0
 	chplan.Walk(plan, func(node chplan.Node) bool {
 		switch node.(type) {
-		case *chplan.RangeWindowNative, *chplan.RangeWindowResample:
+		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample:
 			n++
 		}
 		return true

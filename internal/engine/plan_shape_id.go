@@ -67,9 +67,9 @@ func shapeModifiers(plan chplan.Node) []string {
 			}
 		case *chplan.RangeWindow:
 			hasRange = true
-		case *chplan.RangeWindowNative:
+		case *chplan.RangeWindowGridNative:
 			hasNative = true
-		case *chplan.RangeWindowResample:
+		case *chplan.RangeWindowStaleResample:
 			hasResample = true
 		case *chplan.RangeLWR:
 			hasLWR = true
@@ -146,9 +146,9 @@ func nodeKind(n chplan.Node) string {
 		return "agg"
 	case *chplan.RangeWindow:
 		return "rw"
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		return "rwn"
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		return "rwr"
 	case *chplan.RangeLWR:
 		return "lwr"

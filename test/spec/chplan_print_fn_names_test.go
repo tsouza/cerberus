@@ -16,8 +16,8 @@ import (
 // TestFnGoNames_CoversEveryDeclaredFn and TestFnGoNames_NoOrphanEntry
 // ratchet fnGoNames (chplan_print.go) against internal/chplan/fn.go's
 // const block, the same derive-from-source approach
-// internal/chsql/fnspelling_completeness_test.go already uses for
-// fnSpellings: a hand-maintained list compared against another
+// internal/chsql/fnresolution_completeness_test.go already uses for
+// fnResolutions: a hand-maintained list compared against another
 // hand-maintained list proves nothing when both get edited in the same
 // commit, so the declared side is parsed straight out of fn.go instead
 // of restated by hand here.
@@ -68,7 +68,7 @@ func TestFnGoNames_NoOrphanEntry(t *testing.T) {
 // declaredFnNames scans every non-test .go file in internal/chplan for
 // `const` declarations typed Fn, returning symbol name -> underlying
 // string value (e.g. "FnArrayMap" -> "arrayMap"). Mirrors
-// internal/chsql/fnspelling_completeness_test.go's declaredFnValues,
+// internal/chsql/fnresolution_completeness_test.go's declaredFnValues,
 // duplicated here rather than shared because that helper lives in a
 // _test.go file and is not importable from this package.
 func declaredFnNames(t *testing.T) map[string]string {

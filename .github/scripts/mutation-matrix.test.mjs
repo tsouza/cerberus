@@ -117,8 +117,8 @@ test('the chsql legs partition the package by exclude_files, one leg per file', 
   // a prefix of three siblings split across all three legs — the `$` anchor on
   // every alternation is what keeps those from colliding.
   assert.deepEqual(names(select(['internal/chsql/emit.go'])), ['phase2-compare']);
-  assert.deepEqual(names(select(['internal/chsql/range_window_native.go'])), ['phase2-compare']);
-  assert.deepEqual(names(select(['internal/chsql/range_window_resample.go'])), ['phase2-builder']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_grid_native.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_stale_resample.go'])), ['phase2-builder']);
   // The catch-all leg owns range_window.go and everything no sibling names.
   assert.deepEqual(names(select(['internal/chsql/range_window.go'])), ['phase2-other']);
   assert.deepEqual(names(select(['internal/chsql/tableshape.go'])), ['phase2-other']);

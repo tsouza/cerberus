@@ -565,7 +565,7 @@ const rangeAggSynthValueColumn = "Value"
 //     exists SOMEWHERE below and then resolve its name separately
 //     ([matrixBucketColumn]) — LogQL's nested shape re-aliases the bucket
 //     to `TimeUnix`, which is exactly the alias PromQL's guard rejects.
-//   - PromQL also answers true for a RangeWindowNative. Nothing here can
+//   - PromQL also answers true for a RangeWindowGridNative. Nothing here can
 //     see one: the native timeSeries*ToGrid nodes are built only by
 //     internal/promql, so an arm for them would be unreachable.
 //

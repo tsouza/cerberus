@@ -425,8 +425,8 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 // avg-shaped caller.
 func hqQuantileRankScalarMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	return append([]chplan.AggFunc{
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
-		{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
+		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
 	}, expHistogramMergeAggs(s)...)
 }
 

@@ -823,7 +823,7 @@ func assembleClientFromConn(cfg Config, conn driver.Conn, m *connMetrics) *Clien
 //   - the per-request settings map attached by WithQuerySetting — every
 //     plan-shape-gated setting the engine stamps for THIS query
 //     (SettingExperimentalTSGridAggregate=1 when the plan has a
-//     chplan.RangeWindowNative node; optimize_aggregation_in_order=1 when
+//     chplan.RangeWindowGridNative node; optimize_aggregation_in_order=1 when
 //     the GROUP BY is a sorting-key prefix; ...). Merged into the SAME map
 //     as max_memory_usage, never via a second independent
 //     clickhouse.WithSettings wrap — a second wrap REPLACES rather than

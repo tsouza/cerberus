@@ -136,7 +136,7 @@ func TestTermination_FilterAggregateTranspose_Idempotent(t *testing.T) {
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: labelFilter("job", "api"),

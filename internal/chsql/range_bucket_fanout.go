@@ -23,7 +23,7 @@ const fanoutNoMinSampleFilter = 1
 // intermediate cardinality is rows × (Lookback/Step + 1), constant in N):
 //
 //	SELECT <user-key_1> AS <alias_1>, …, anchor_ts AS <AnchorAlias>,
-//	       <AggFuncs[i].Name>(<args>) AS <AggFuncs[i].Alias>, …
+//	       <resolve(AggFuncs[i].Fn)>(<args>) AS <AggFuncs[i].Alias>, …
 //	FROM (
 //	  SELECT *,
 //	         arrayJoin(arrayMap(i -> <grid_base> - toIntervalNanosecond(i * <stepNS>),

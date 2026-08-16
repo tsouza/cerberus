@@ -140,7 +140,7 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 //     for `label_replace(rate(m[5m]), …)` at /api/v1/query_range whenever
 //     the ts_grid_range lowering was active, because the classifier used
 //     to be a `*chplan.RangeWindow` type assertion and that path builds a
-//     `*chplan.RangeWindowNative` with the identical row shape.
+//     `*chplan.RangeWindowGridNative` with the identical row shape.
 //
 //   - A GRID window (one row per (series, anchor)) does NOT lose its
 //     timestamp: it publishes the anchor both as

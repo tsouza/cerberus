@@ -478,7 +478,7 @@ func TestProjectSamples_LogQuerySurfacesDetectedLevelWhenReferenced(t *testing.T
 			attrsSlot.Expr)
 	}
 	if fn.Fn != chplan.FnMapMerge {
-		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
+		t.Errorf("attributes slot FuncCall.Fn: got %q, want %q "+
 			"(wire-wrap must fold detected_level via mapConcat when "+
 			"referenced)", fn.Fn, chplan.FnMapMerge)
 	}
@@ -544,7 +544,7 @@ func TestProjectSamples_BareLogQueryAlsoSurfacesDetectedLevel(t *testing.T) {
 			attrsSlot.Expr)
 	}
 	if fn.Fn != chplan.FnMapMerge {
-		t.Errorf("attributes slot FuncCall.Name: got %q, want %q "+
+		t.Errorf("attributes slot FuncCall.Fn: got %q, want %q "+
 			"(bare selector must fold detected_level via mapConcat)",
 			fn.Fn, chplan.FnMapMerge)
 	}
@@ -605,7 +605,7 @@ func TestProjectSamples_ParserStageQuerySurfacesDetectedLevel(t *testing.T) {
 					"detected_level alongside their extracted keys", attrsSlot.Expr, q)
 			}
 			if fn.Fn != chplan.FnMapMerge {
-				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+				t.Errorf("attributes slot FuncCall.Fn: got %q, want %q for query %q",
 					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
@@ -665,7 +665,7 @@ func TestProjectSamples_LineFilterQuerySurfacesDetectedLevel(t *testing.T) {
 					"surfaces detected_level on these too", attrsSlot.Expr, q)
 			}
 			if fn.Fn != chplan.FnMapMerge {
-				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+				t.Errorf("attributes slot FuncCall.Fn: got %q, want %q for query %q",
 					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
@@ -856,7 +856,7 @@ func TestProjectSamples_LogQueryWithDetectedLevelFilterTriggersWrap(t *testing.T
 					attrsSlot.Expr, q)
 			}
 			if fn.Fn != chplan.FnMapMerge {
-				t.Errorf("attributes slot FuncCall.Name: got %q, want %q for query %q",
+				t.Errorf("attributes slot FuncCall.Fn: got %q, want %q for query %q",
 					fn.Fn, chplan.FnMapMerge, q)
 			}
 		})
@@ -974,7 +974,7 @@ func TestProjectSamples_DropDetectedLevelStillSurfacesWhenNotUnconditional(t *te
 					"detected_level is dropped, so the wrap must still run", q, attrsSlot.Expr)
 			}
 			if fn.Fn != chplan.FnMapMerge {
-				t.Errorf("attributes slot FuncCall.Name for query %q: got %q, want %q",
+				t.Errorf("attributes slot FuncCall.Fn for query %q: got %q, want %q",
 					q, fn.Fn, chplan.FnMapMerge)
 			}
 		})

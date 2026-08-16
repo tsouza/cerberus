@@ -1,9 +1,9 @@
 //go:build chdb
 
-// Perf A/B for the RangeWindowNative inner-scan projection narrowing
+// Perf A/B for the RangeWindowGridNative inner-scan projection narrowing
 // (follow-up to the lever-1 Aggregate/RangeWindow pushdown).
 //
-// ProjectionPushdown's stage-aware arm now fires on a chplan.RangeWindowNative
+// ProjectionPushdown's stage-aware arm now fires on a chplan.RangeWindowGridNative
 // over Scan/Filter(Scan), narrowing the inner Scan from `SELECT *` to the
 // exact column union the timeSeriesRateToGrid emit reads — the GroupBy
 // series-identity columns plus the (TimestampColumn, ValueColumn) pair fed
@@ -124,7 +124,7 @@ func TestNativeScanProjection_ProjectedBytesShrink(t *testing.T) {
 }
 
 // innerScanColumns lowers the native-rate query, optionally runs the default
-// optimizer pipeline (which fires the new RangeWindowNative pushdown arm),
+// optimizer pipeline (which fires the new RangeWindowGridNative pushdown arm),
 // emits the SQL, and extracts the column set the INNERMOST scan projects.
 // The wide form emits `SELECT *`; the narrowed form emits an explicit column
 // list — exactly the difference the bytes A/B measures.

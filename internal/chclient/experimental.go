@@ -38,13 +38,13 @@ import "context"
 // loudly rather than the rename silently slipping past (chDB does not
 // enforce the gate the same way, and registers the alias too, so the chdb
 // parity lane alone cannot catch a mis-spelled or omitted setting — see
-// the package note in internal/chsql/range_window_native.go).
+// the package note in internal/chsql/range_window_grid_native.go).
 const SettingExperimentalTSGridAggregate = "allow_experimental_time_series_aggregate_functions"
 
 // WithTSGridSetting returns a ctx that signals the data-plane query
 // methods to add SettingExperimentalTSGridAggregate=1 to the per-query
 // ClickHouse settings map. The engine calls this ONLY when the emitted
-// plan contains a chplan.RangeWindowNative node — so the experimental
+// plan contains a chplan.RangeWindowGridNative node — so the experimental
 // knob rides exactly the queries that use the native aggregate and never
 // the unrelated ones (a plain unknown setting can itself error on an
 // older ClickHouse, so it must not be sent globally).

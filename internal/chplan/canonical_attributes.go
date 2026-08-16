@@ -33,8 +33,8 @@ const CanonicalMapFunc = "mapSort"
 // all three heads bind the same invariant against the same Map columns;
 // each head's lowering wraps its own identity projection with it.
 func CanonicalAttributesExpr(expr Expr) Expr {
-	if call, ok := expr.(*FuncCall); ok && call.Name == CanonicalMapFunc {
+	if call, ok := expr.(*FuncCall); ok && call.Fn == FnMapSort {
 		return expr
 	}
-	return &FuncCall{Name: CanonicalMapFunc, Args: []Expr{expr}}
+	return &FuncCall{Fn: FnMapSort, Args: []Expr{expr}}
 }

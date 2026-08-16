@@ -39,7 +39,7 @@ buffer field in `emit.go`, and the regex escaper `regexQuoteMeta`. Nothing else.
 pre-rendered subquery — never for a whole expression shape.
 
 The domain emitters build query and expression *shapes* and must compose Frags:
-`range_window.go`, `range_window_fused.go`, `range_window_native.go`, `range_window_resample.go`,
+`range_window.go`, `range_window_fused.go`, `range_window_grid_native.go`, `range_window_stale_resample.go`,
 `range_lwr.go`, `range_bucket_fanout.go`, `absent_over_time.go`, `histogram_over_time.go`,
 `histogram_quantile.go`, `histogram_quantile_native.go`, `metrics_compare.go`,
 `metrics_second_stage.go`, `vector_join.go`, `vector_set_op.go`, `nary_vector_set_op.go`,

@@ -118,7 +118,6 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 			}
 			newFuncs[i] = chplan.AggFunc{
 				Fn:     af.Fn,
-				Name:   af.Name,
 				Params: newParams,
 				Args:   newArgs,
 				Alias:  af.Alias,
@@ -176,7 +175,7 @@ func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, b
 		if !anyChange {
 			return v, false
 		}
-		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: newArgs}, true
+		return &chplan.FuncCall{Fn: v.Fn, Args: newArgs}, true
 	}
 	return e, false
 }

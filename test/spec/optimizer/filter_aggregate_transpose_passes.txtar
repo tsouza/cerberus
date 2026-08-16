@@ -3,10 +3,10 @@ SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT `Value`, `job` FROM `otel
 -- unoptimized --
 SELECT * FROM (SELECT `job`, sum(`Value`) AS `sum_value` FROM (SELECT * FROM `otel_metrics_gauge`) GROUP BY `job`) WHERE (`job` = ?)
 -- chplan_optimized --
-Aggregate groupBy=[job] funcs=[sum(Value) AS sum_value]
+Aggregate groupBy=[job] funcs=[FnSum(Value) AS sum_value]
   Filter predicate=(job = "api")
     Scan(otel_metrics_gauge, columns=[Value, job])
 -- chplan_unoptimized --
 Filter predicate=(job = "api")
-  Aggregate groupBy=[job] funcs=[sum(Value) AS sum_value]
+  Aggregate groupBy=[job] funcs=[FnSum(Value) AS sum_value]
     Scan(otel_metrics_gauge)

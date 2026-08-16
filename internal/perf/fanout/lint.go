@@ -214,9 +214,9 @@ func collapsesFanout(n chplan.Node) bool {
 	switch n.(type) {
 	case *chplan.Aggregate,
 		*chplan.RangeWindow,
-		*chplan.RangeWindowNative,
+		*chplan.RangeWindowGridNative,
 		*chplan.RangeLWR,
-		*chplan.RangeWindowResample,
+		*chplan.RangeWindowStaleResample,
 		*chplan.RangeBucketFanout,
 		*chplan.MetricsCompare,
 		*chplan.MetricsAggregate,

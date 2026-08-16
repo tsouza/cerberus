@@ -143,7 +143,7 @@ func emitWindowScan(t *testing.T, s schema.Traces, start, end time.Time) string 
 			Op:   op,
 			Left: &chplan.ColumnRef{Name: s.TimestampColumn},
 			Right: &chplan.FuncCall{
-				Name: "fromUnixTimestamp64Nano",
+				Fn:   chplan.FnFromUnixNanos,
 				Args: []chplan.Expr{&chplan.LitInt{V: ts.UnixNano()}},
 			},
 		}

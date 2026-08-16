@@ -337,14 +337,14 @@ func vectorSetOpSynthesizedAnchorFrag() Frag {
 // vectorSetOpArmTimestampCol reports whether arm is — after walking past
 // any value-rewrite Project / Filter — a matrix-mode range arm
 // (RangeWindow with OuterRange > 0, or the ClickHouse-native
-// timeSeriesRateToGrid RangeWindowNative), and if so the column name its
+// timeSeriesRateToGrid RangeWindowGridNative), and if so the column name its
 // outer SELECT surfaces the per-row grid anchor under. Mirrors
 // `isMatrixRangeWindow` in internal/api/prom/handler.go.
 //
 // Both matrix emitters alias the anchor to the node's own
 // TimestampColumn — `anchor_ts AS <TimestampColumn>` (see
 // emitWindowedArrayPairsMatrix / emitWindowedArrayMatrix and
-// emitRangeWindowNative) — and skip the alias when TimestampColumn is
+// emitRangeWindowGridNative) — and skip the alias when TimestampColumn is
 // already `anchor_ts`, which is what a subquery-fed arm carries: its
 // input is itself a grid, so the timestamp it reduces over is the inner
 // grid's anchor. The arm's timestamp therefore lives under the NODE's
@@ -381,7 +381,7 @@ func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, b
 		if v.OuterRange > 0 {
 			return v.TimestampColumn, true
 		}
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		return v.TimestampColumn, true
 	case *chplan.Project:
 		if chplan.ProjectExposesCanonical(v, vectorSetOpSampleColumns(s)) {

@@ -220,7 +220,7 @@ func TestPromCanonicalTopLevelLabel(t *testing.T) {
 func canonicalAttributesInner(t *testing.T, expr chplan.Expr) chplan.Expr {
 	t.Helper()
 	call, ok := expr.(*chplan.FuncCall)
-	if !ok || call.Name != "mapSort" {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("attrs expr is not canonicalised: got %#v, want mapSort(...)", expr)
 	}
 	if len(call.Args) != 1 {

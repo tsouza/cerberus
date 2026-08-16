@@ -34,7 +34,7 @@ func TestCanonicalizeSeriesIdentityKeys_WrapsRawAttributeMapKey(t *testing.T) {
 	in := &chplan.Aggregate{
 		Input:    gaugeScan(),
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -47,7 +47,7 @@ func TestCanonicalizeSeriesIdentityKeys_WrapsRawAttributeMapKey(t *testing.T) {
 		t.Fatalf("replacement must keep the column NAME so every reference above it still resolves; got alias %q", reps[0].Alias)
 	}
 	call, ok := reps[0].Expr.(*chplan.FuncCall)
-	if !ok || call.Name != chplan.CanonicalMapFunc {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("replacement expr = %#v, want a %s call", reps[0].Expr, chplan.CanonicalMapFunc)
 	}
 	if len(call.Args) != 1 {
@@ -74,7 +74,7 @@ func TestCanonicalizeSeriesIdentityKeys_LeavesCanonicalPlanUntouched(t *testing.
 			},
 		},
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(chplan.CloneNode(in), attrCols())
@@ -88,7 +88,7 @@ func TestCanonicalizeSeriesIdentityKeys_IsIdempotent(t *testing.T) {
 	in := &chplan.Aggregate{
 		Input:    gaugeScan(),
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 
 	once := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -108,7 +108,7 @@ func TestCanonicalizeSeriesIdentityKeys_WrapsThroughMapWithoutKeys(t *testing.T)
 			Map:  &chplan.ColumnRef{Name: "Attributes"},
 			Keys: []string{"instance"},
 		}},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -122,7 +122,7 @@ func TestCanonicalizeSeriesIdentityKeys_IgnoresNonMapKey(t *testing.T) {
 	in := &chplan.Aggregate{
 		Input:    &chplan.Scan{Table: "otel_metrics_gauge", Columns: []string{"MetricName", "Value"}},
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "total"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(chplan.CloneNode(in), attrCols())
@@ -133,9 +133,9 @@ func TestCanonicalizeSeriesIdentityKeys_IgnoresNonMapKey(t *testing.T) {
 }
 
 // nativeRate builds the native-ToGrid node the PromQL head lowers a range-mode
-// `rate(...)` to, with the deferred label shaping supplied by the caller.
-func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowNative {
-	return &chplan.RangeWindowNative{
+// `rate(...)` to, with post-aggregate label shaping supplied by the caller.
+func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowGridNative {
+	return &chplan.RangeWindowGridNative{
 		Input:           gaugeScan(),
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -149,14 +149,14 @@ func nativeRate(recollapse []chplan.Projection) *chplan.RangeWindowNative {
 	}
 }
 
-// TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone pins that the
-// repair does NOT fire on a RangeWindowNative whose label shaping is deferred
-// past the aggregate. Its GroupBy holds the RAW attribute Map on purpose — that
+// TestCanonicalizeSeriesIdentityKeys_LeavesPostAggregateShapingAlone pins that the
+// repair does NOT fire on a RangeWindowGridNative whose label shaping occurs
+// after the aggregate. Its GroupBy holds the RAW attribute Map on purpose — that
 // is the raw per-series key the inner state level groups on — but the node's
 // OUTPUT identity is the shaping tower above the merge, which is already
 // mapSort-rooted. Splicing a repair beneath the node would shape twice, at the
 // wrong level, and re-split the series the merge just pooled.
-func TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone(t *testing.T) {
+func TestCanonicalizeSeriesIdentityKeys_LeavesPostAggregateShapingAlone(t *testing.T) {
 	in := nativeRate([]chplan.Projection{{
 		Expr:  chplan.CanonicalAttributesExpr(&chplan.ColumnRef{Name: "Attributes"}),
 		Alias: "Attributes",
@@ -172,7 +172,7 @@ func TestCanonicalizeSeriesIdentityKeys_LeavesDeferredShapingAlone(t *testing.T)
 // TestCanonicalizeSeriesIdentityKeys_RepairsTwoLevelNativeRate is the
 // non-vacuity guard for the test above: the SAME node without the deferred
 // shaping keys series identity on the raw Map directly, so the repair must
-// fire. Without this, an arm that simply never matched RangeWindowNative would
+// fire. Without this, an arm that simply never matched RangeWindowGridNative would
 // pass the no-op assertion.
 func TestCanonicalizeSeriesIdentityKeys_RepairsTwoLevelNativeRate(t *testing.T) {
 	in := nativeRate(nil)
@@ -216,7 +216,7 @@ func TestCanonicalizeSeriesIdentityKeys_RepairsPassThroughMapKeyOfDeferredShapin
 			"the shaping input ResourceAttributes must NOT be repaired, the merge re-pools it; got %#v", reps)
 	}
 	call, ok := reps[0].Expr.(*chplan.FuncCall)
-	if !ok || call.Name != chplan.CanonicalMapFunc {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("replacement expr = %#v, want a %s call", reps[0].Expr, chplan.CanonicalMapFunc)
 	}
 }
@@ -232,7 +232,7 @@ func TestCanonicalizeSeriesKeyExprs_WrapsOnlyRawKeys(t *testing.T) {
 		t.Fatalf("key count must be preserved, got %d", len(out))
 	}
 	call, ok := out[0].(*chplan.FuncCall)
-	if !ok || call.Name != chplan.CanonicalMapFunc {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("raw attribute key = %#v, want a %s call", out[0], chplan.CanonicalMapFunc)
 	}
 	if out[1] != scalar {
@@ -273,7 +273,7 @@ func TestCanonicalizeSeriesKeyExprs_WrapsARawKeyAfterANonRawOne(t *testing.T) {
 		t.Errorf("the non-raw key must pass through untouched; got %#v", out[0])
 	}
 	call, ok := out[1].(*chplan.FuncCall)
-	if !ok || call.Name != chplan.CanonicalMapFunc {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("the raw key behind it must be wrapped in %s; got %#v", chplan.CanonicalMapFunc, out[1])
 	}
 }
@@ -289,7 +289,7 @@ func TestCanonicalizeSeriesIdentityKeys_WrapsARawKeyAfterANonRawOne(t *testing.T
 			&chplan.ColumnRef{Name: "Value"},
 			&chplan.ColumnRef{Name: "Attributes"},
 		},
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -310,10 +310,10 @@ func TestCanonicalizeSeriesIdentityKeys_WrapsThroughAMapValuedCall(t *testing.T)
 	in := &chplan.Aggregate{
 		Input: gaugeScan(),
 		GroupBy: []chplan.Expr{&chplan.FuncCall{
-			Name: "mapConcat",
+			Fn:   chplan.FnMapMerge,
 			Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		}},
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -343,7 +343,7 @@ func TestCanonicalizeSeriesIdentityKeys_ResolvesTheProjectionThatBindsTheName(t 
 	in := &chplan.Aggregate{
 		Input:    canonicalising,
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())
@@ -373,7 +373,7 @@ func TestCanonicalizeSeriesIdentityKeys_ScansPastANonBindingProjection(t *testin
 	in := &chplan.Aggregate{
 		Input:    binding,
 		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 
 	out := chplan.CanonicalizeSeriesIdentityKeys(in, attrCols())

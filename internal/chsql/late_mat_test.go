@@ -9,8 +9,7 @@ import (
 )
 
 // TestQualifyExprPreservesFuncCallFn pins the sealed function identity while
-// late materialisation qualifies nested column references. A rebuilt Fn-only
-// call must not fall back to the empty legacy Name field.
+// late materialisation qualifies nested column references.
 func TestQualifyExprPreservesFuncCallFn(t *testing.T) {
 	t.Parallel()
 
@@ -19,8 +18,8 @@ func TestQualifyExprPreservesFuncCallFn(t *testing.T) {
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
 	}, map[string]struct{}{"Body": {}})
 	call := qualified.(*chplan.FuncCall)
-	if call.Fn != chplan.FnLength || call.Name != "" {
-		t.Fatalf("FuncCall identity changed during qualification: Fn=%q Name=%q", call.Fn, call.Name)
+	if call.Fn != chplan.FnLength {
+		t.Fatalf("FuncCall identity changed during qualification: Fn=%q", call.Fn)
 	}
 	ref := call.Args[0].(*chplan.ColumnRef)
 	if ref.Qualifier != "w" {
@@ -188,7 +187,7 @@ func TestIsLateMatCandidateConditions(t *testing.T) {
 				Projections: []chplan.Projection{
 					{
 						Expr: &chplan.FuncCall{
-							Name: "length",
+							Fn:   chplan.FnLength,
 							Args: []chplan.Expr{&chplan.ColumnRef{Name: "Body"}},
 						},
 					},

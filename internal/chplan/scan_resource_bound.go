@@ -100,11 +100,11 @@ type ScanBoundCols struct {
 // comparison of the Timestamp column against one of these calls, so their
 // presence on one side of a comparison is the reliable "this is a request
 // window, not an attribute predicate" tell.
-var scanBoundTimeFuncs = map[string]struct{}{
-	"fromUnixTimestamp64Nano":  {},
-	"fromUnixTimestamp64Milli": {},
-	"fromUnixTimestamp64Micro": {},
-	"fromUnixTimestamp":        {},
+var scanBoundTimeFuncs = map[Fn]struct{}{
+	FnFromUnixNanos:   {},
+	FnFromUnixMillis:  {},
+	FnFromUnixMicros:  {},
+	FnFromUnixSeconds: {},
 }
 
 // SpansScanResourceBound inspects pred — the conjunction at a spans Scan's
@@ -258,10 +258,7 @@ func isTimeLiteralCall(e Expr) bool {
 	if !ok {
 		return false
 	}
-	if f.Fn != "" {
-		return f.Fn == FnFromUnixNanos
-	}
-	_, known := scanBoundTimeFuncs[f.Name]
+	_, known := scanBoundTimeFuncs[f.Fn]
 	return known
 }
 

@@ -897,6 +897,12 @@ jobs:
       - name: Reject raw SQL writes outside the chsql Frag layer
         run: node .github/scripts/forbid-sql-raw.mjs
 
+      - name: Assert the sealed chplan Fn vocabulary gate
+        run: node --test .github/scripts/forbid-chplan-fn-literal.test.mjs
+
+      - name: Reject raw chplan Fn literal construction
+        run: node .github/scripts/forbid-chplan-fn-literal.mjs
+
       # #1568: GitHub's server-side merge does NOT honour the `-merge`
       # .gitattributes driver (verified empirically — see the script's own
       # doc comment for the experiment). Most `-merge`-marked generated

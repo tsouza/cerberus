@@ -47,7 +47,7 @@ import (
 // Scan/Filter input) is intrinsic and lives inside the implementation; it is
 // NOT a feature-flag branch.
 type RateLowerer interface {
-	// LowerRate returns the chplan node for rw — the native RangeWindowNative
+	// LowerRate returns the chplan node for rw — the native RangeWindowGridNative
 	// for a shape the impl handles, or the fan-out lowering otherwise. It never
 	// returns nil.
 	LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
@@ -61,7 +61,7 @@ type RateLowerer interface {
 // shape from it (never a feature flag).
 type StalenessLowerer interface {
 	// LowerStaleness returns the chplan node for in — the native
-	// RangeWindowResample for a shape the impl handles, or the fan-out RangeLWR
+	// RangeWindowStaleResample for a shape the impl handles, or the fan-out RangeLWR
 	// otherwise. It never returns nil.
 	LowerStaleness(in stalenessLowerInput) chplan.Node
 }
@@ -104,24 +104,24 @@ type stalenessLowerInput struct {
 
 // ChangesLowerer lowers a range-mode changes(<v>[range]) RangeWindow to a
 // chplan node. It ALWAYS returns a valid lowering: the native impl emits the
-// native RangeWindowNative (Func="changes" -> timeSeriesChangesToGrid) for a
+// native RangeWindowGridNative (Func="changes" -> timeSeriesChangesToGrid) for a
 // shape-eligible window and delegates to its embedded fan-out fallback for any
 // other shape; the fan-out impl returns the generic RangeWindow directly. The
 // shape eligibility is intrinsic and lives inside the implementation; it is NOT
 // a feature-flag branch.
 type ChangesLowerer interface {
 	// LowerChanges returns the chplan node for rw — the native
-	// RangeWindowNative for a shape the impl handles, or the fan-out lowering
+	// RangeWindowGridNative for a shape the impl handles, or the fan-out lowering
 	// otherwise. It never returns nil.
 	LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
 // ResetsLowerer lowers a range-mode resets(<counter>[range]) RangeWindow to a
-// chplan node, mirroring [ChangesLowerer]: native impl emits RangeWindowNative
+// chplan node, mirroring [ChangesLowerer]: native impl emits RangeWindowGridNative
 // (Func="resets" -> timeSeriesResetsToGrid) for an eligible window, fan-out
 // fallback otherwise. It never returns nil.
 type ResetsLowerer interface {
-	// LowerResets returns the chplan node for rw — the native RangeWindowNative
+	// LowerResets returns the chplan node for rw — the native RangeWindowGridNative
 	// for a shape the impl handles, or the fan-out lowering otherwise. It never
 	// returns nil.
 	LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
@@ -129,11 +129,11 @@ type ResetsLowerer interface {
 
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
-// RangeWindowNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
+// RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
 // simple-linear-regression slope) for an eligible window, the fan-out fallback
 // otherwise. It never returns nil.
 type DerivLowerer interface {
-	// LowerDeriv returns the chplan node for rw — the native RangeWindowNative
+	// LowerDeriv returns the chplan node for rw — the native RangeWindowGridNative
 	// for a shape the impl handles, or the fan-out lowering otherwise. It never
 	// returns nil.
 	LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
@@ -141,7 +141,7 @@ type DerivLowerer interface {
 
 // PredictLinearLowerer lowers a range-mode predict_linear(<gauge>[range], t)
 // RangeWindow to a chplan node, mirroring [ChangesLowerer]: the native impl
-// emits a RangeWindowNative (Func="predict_linear" ->
+// emits a RangeWindowGridNative (Func="predict_linear" ->
 // timeSeriesPredictLinearToGrid, the per-window slope*t + intercept forecast)
 // for an eligible window, the fan-out fallback otherwise. Only a single
 // whole-second literal horizon t is native-eligible — the aggregate's 5th
@@ -149,7 +149,7 @@ type DerivLowerer interface {
 // the fan-out. It never returns nil.
 type PredictLinearLowerer interface {
 	// LowerPredictLinear returns the chplan node for rw — the native
-	// RangeWindowNative for a shape the impl handles, or the fan-out lowering
+	// RangeWindowGridNative for a shape the impl handles, or the fan-out lowering
 	// otherwise. It never returns nil.
 	LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
@@ -228,7 +228,7 @@ func (FanoutRateLowerer) LowerRate(rw *chplan.RangeWindow, _ schema.Metrics) chp
 }
 
 // NativeRateLowerer is the boot-wired RateLowerer that emits the native
-// timeSeriesRateToGrid lowering (a chplan.RangeWindowNative) for shape-eligible
+// timeSeriesRateToGrid lowering (a chplan.RangeWindowGridNative) for shape-eligible
 // rate range-windows. cmd/cerberus wires it ONLY when chopt resolved the
 // ts_grid_range feature at boot. It embeds a concrete Fallback (the fan-out
 // impl): a shape it cannot handle delegates to Fallback rather than returning
@@ -250,7 +250,7 @@ type NativeRateLowerer struct {
 	Recollapse bool
 }
 
-// LowerRate returns a RangeWindowNative for an eligible range-mode rate shape,
+// LowerRate returns a RangeWindowGridNative for an eligible range-mode rate shape,
 // or delegates to the embedded Fallback otherwise. A temporality-bearing window
 // splits into complementary CUMULATIVE-native and DELTA-fan-out arms: the
 // native aggregate has no DELTA semantics, while the fan-out emitter does.
@@ -355,7 +355,7 @@ func (FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node
 
 // NativeStalenessLowerer is the boot-wired StalenessLowerer that emits the
 // native timeSeriesResampleToGridWithStaleness lowering (a
-// chplan.RangeWindowResample). cmd/cerberus wires it ONLY when chopt resolved
+// chplan.RangeWindowStaleResample). cmd/cerberus wires it ONLY when chopt resolved
 // the ts_grid_resample feature at boot. It embeds a concrete Fallback (the
 // fan-out impl) for future shape carve-outs, so the interface method always
 // yields a valid lowering and the dispatch site stays branch-free.
@@ -365,7 +365,7 @@ type NativeStalenessLowerer struct {
 	Fallback StalenessLowerer
 }
 
-// LowerStaleness returns a RangeWindowResample for the range-mode staleness
+// LowerStaleness returns a RangeWindowStaleResample for the range-mode staleness
 // input, or delegates to the embedded Fallback for the one shape the native
 // aggregate cannot express.
 //
@@ -383,7 +383,7 @@ func (n NativeStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.No
 	if in.sampleTimestamp {
 		return n.Fallback.LowerStaleness(in)
 	}
-	return &chplan.RangeWindowResample{
+	return &chplan.RangeWindowStaleResample{
 		Input:         in.input,
 		Start:         in.start,
 		End:           in.end,
@@ -409,7 +409,7 @@ func (FanoutChangesLowerer) LowerChanges(rw *chplan.RangeWindow, _ schema.Metric
 }
 
 // NativeChangesLowerer is the boot-wired ChangesLowerer that emits the native
-// timeSeriesChangesToGrid lowering (a chplan.RangeWindowNative with
+// timeSeriesChangesToGrid lowering (a chplan.RangeWindowGridNative with
 // Func="changes") for shape-eligible changes range-windows. cmd/cerberus wires
 // it ONLY when chopt resolved the ts_grid_changes feature (server >= 25.9) at
 // boot. It embeds a concrete Fallback (the fan-out impl): a shape it cannot
@@ -421,7 +421,7 @@ type NativeChangesLowerer struct {
 	Fallback ChangesLowerer
 }
 
-// LowerChanges returns a RangeWindowNative for an eligible range-mode changes
+// LowerChanges returns a RangeWindowGridNative for an eligible range-mode changes
 // shape, or delegates to the embedded Fallback otherwise. The eligibility
 // predicate is the intrinsic SHAPE check (changes func, materialised grid,
 // plain Scan/Filter input) — see nativeTSGridMatrixNode.
@@ -444,7 +444,7 @@ func (FanoutResetsLowerer) LowerResets(rw *chplan.RangeWindow, _ schema.Metrics)
 }
 
 // NativeResetsLowerer is the boot-wired ResetsLowerer that emits the native
-// timeSeriesResetsToGrid lowering (a chplan.RangeWindowNative with
+// timeSeriesResetsToGrid lowering (a chplan.RangeWindowGridNative with
 // Func="resets") for shape-eligible resets range-windows. cmd/cerberus wires it
 // ONLY when chopt resolved the ts_grid_resets feature (server >= 25.9) at boot.
 // It embeds a concrete Fallback for shapes it cannot handle, so the interface
@@ -455,7 +455,7 @@ type NativeResetsLowerer struct {
 	Fallback ResetsLowerer
 }
 
-// LowerResets returns a RangeWindowNative for an eligible range-mode resets
+// LowerResets returns a RangeWindowGridNative for an eligible range-mode resets
 // shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
 // check as changes (resets func, materialised grid, plain Scan/Filter input).
 func (n NativeResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
@@ -477,7 +477,7 @@ func (FanoutDerivLowerer) LowerDeriv(rw *chplan.RangeWindow, _ schema.Metrics) c
 }
 
 // NativeDerivLowerer is the boot-wired DerivLowerer that emits the native
-// timeSeriesDerivToGrid lowering (a chplan.RangeWindowNative with Func="deriv")
+// timeSeriesDerivToGrid lowering (a chplan.RangeWindowGridNative with Func="deriv")
 // for shape-eligible deriv range-windows. cmd/cerberus wires it ONLY when the
 // chopt resolved the ts_grid_deriv feature (server >= 25.9) at boot. It embeds
 // a concrete Fallback for shapes it cannot handle, so the interface method
@@ -488,7 +488,7 @@ type NativeDerivLowerer struct {
 	Fallback DerivLowerer
 }
 
-// LowerDeriv returns a RangeWindowNative for an eligible range-mode deriv
+// LowerDeriv returns a RangeWindowGridNative for an eligible range-mode deriv
 // shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
 // check as changes/resets (deriv func, materialised grid, plain Scan/Filter
 // input) — deriv takes no scalar, so no extra parameter gate applies.
@@ -511,7 +511,7 @@ func (FanoutPredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, _ s
 }
 
 // NativePredictLinearLowerer is the boot-wired PredictLinearLowerer that emits
-// the native timeSeriesPredictLinearToGrid lowering (a chplan.RangeWindowNative
+// the native timeSeriesPredictLinearToGrid lowering (a chplan.RangeWindowGridNative
 // with Func="predict_linear") for shape-eligible predict_linear range-windows.
 // cmd/cerberus wires it ONLY when the chopt resolved the ts_grid_predict_linear
 // feature (server >= 25.9) at boot. It embeds a concrete Fallback for shapes it
@@ -523,7 +523,7 @@ type NativePredictLinearLowerer struct {
 	Fallback PredictLinearLowerer
 }
 
-// LowerPredictLinear returns a RangeWindowNative for an eligible range-mode
+// LowerPredictLinear returns a RangeWindowGridNative for an eligible range-mode
 // predict_linear shape, or delegates to the embedded Fallback otherwise. On top
 // of the shared shape check (predict_linear func, materialised grid, plain
 // Scan/Filter input) the horizon t must be a single whole-second literal:

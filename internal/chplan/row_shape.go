@@ -24,7 +24,7 @@ package chplan
 //     as `Attributes`, an evaluation-time `TimeUnix`) — which is why an
 //     [Aggregate] is never the node a forwarder sits directly on, its
 //     lowering always caps it with exactly that Project.
-//     [RangeWindowResample] and RangeLWR likewise emit all four by
+//     [RangeWindowStaleResample] and RangeLWR likewise emit all four by
 //     construction. What each name CONTAINS is a separate question, and
 //     [IsDerivedShape] is what answers it.
 //   - [GridWindowRowShape] — one row per (series, ANCHOR). A window that
@@ -45,7 +45,7 @@ package chplan
 // recognised by asserting ONE concrete node kind at each consumer. That
 // spelling answers "is this a *RangeWindow", not "what does my input
 // expose", and the two questions came apart the moment a second node grew
-// the same row shape: [RangeWindowNative] publishes byte-for-byte the
+// the same row shape: [RangeWindowGridNative] publishes byte-for-byte the
 // columns a matrix [RangeWindow] does, so every `label_replace` /
 // `label_join` / `abs` over a range-mode `rate()` on the ts_grid path fell
 // through to the canonical branch and emitted a reference to a
@@ -128,7 +128,7 @@ func (s RowShape) String() string {
 // A matrix [RangeWindow] (`OuterRange > 0`) fans its samples across the
 // anchors of a materialised grid and emits one row per (series, anchor);
 // an instant one has already reduced each series to a single row.
-// [RangeWindowNative] is ALWAYS the matrix case — the lowering builds it
+// [RangeWindowGridNative] is ALWAYS the matrix case — the lowering builds it
 // only in range mode, with `Step > 0` and both `Start` and `End` pinned
 // (see its doc comment), so it has no instant form to distinguish.
 //
@@ -147,11 +147,11 @@ func RowShapeOf(n Node) RowShape {
 			return GridWindowRowShape
 		}
 		return ReducedWindowRowShape
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		return GridWindowRowShape
 	case *HistogramProjection:
 		return HistogramRowShape
-	case *RangeWindowResample:
+	case *RangeWindowStaleResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter
 		// publishes `[MetricName, Attributes, anchor_ts AS TimeUnix,

@@ -188,6 +188,12 @@ pre-push:
     forbid-sql-raw:
       tags: discipline
       run: node .github/scripts/forbid-sql-raw.mjs
+    # Keeps chplan's function vocabulary sealed: call sites use named Fn*
+    # constants, never chplan.Fn("raw-spelling") conversions. The resolution
+    # boundary is the only deliberate negative-test exception.
+    forbid-chplan-fn-literal:
+      tags: discipline
+      run: node .github/scripts/forbid-chplan-fn-literal.mjs
     # Mirrors the CI `repo-hygiene` gate's two checks:
     #   - binary:         rejects committed ELF/Mach-O/PE executables and
     #                     other binary artefacts tracked in git

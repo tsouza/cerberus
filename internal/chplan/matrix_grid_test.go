@@ -43,7 +43,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 			agg: aggregateOn(
 				[]string{matrixGridColumns.Attributes, chplan.RangeWindowAnchorColumn, matrixGridColumns.Timestamp},
 				chplan.AggFunc{
-					Name:  "any",
+					Fn:    chplan.FnAny,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				},
@@ -59,7 +59,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 			agg: aggregateOn(
 				[]string{"gkey_0", "bucket_ts"},
 				chplan.AggFunc{
-					Name:  "sum",
+					Fn:    chplan.FnSum,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				},
@@ -75,7 +75,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 			agg: aggregateOn(
 				[]string{matrixGridColumns.Attributes, matrixGridColumns.Timestamp},
 				chplan.AggFunc{
-					Name:  "any",
+					Fn:    chplan.FnAny,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				},
@@ -89,7 +89,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 			agg: aggregateOn(
 				[]string{chplan.RangeWindowAnchorColumn},
 				chplan.AggFunc{
-					Name:  "sum",
+					Fn:    chplan.FnSum,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				},
@@ -109,7 +109,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 					&chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn},
 				},
 				AggFuncs: []chplan.AggFunc{{
-					Name:  "any",
+					Fn:    chplan.FnAny,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				}},
@@ -129,7 +129,7 @@ func TestAggregatePreservesMatrixGrid(t *testing.T) {
 					chplan.RangeWindowAnchorColumn,
 				},
 				AggFuncs: []chplan.AggFunc{{
-					Name:  "any",
+					Fn:    chplan.FnAny,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: matrixGridColumns.Value}},
 					Alias: matrixGridColumns.Value,
 				}},
@@ -159,7 +159,7 @@ func TestAggregatePreservesMatrixGrid_ReadsConfiguredAttributesName(t *testing.T
 	}
 	onRenamed := aggregateOn(
 		[]string{"labels", chplan.RangeWindowAnchorColumn},
-		chplan.AggFunc{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "val"}}, Alias: "val"},
+		chplan.AggFunc{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "val"}}, Alias: "val"},
 	)
 	if !chplan.AggregatePreservesMatrixGrid(onRenamed, renamed) {
 		t.Error("an Aggregate keyed on the CONFIGURED attributes column must preserve the grid")
@@ -174,7 +174,7 @@ func TestAggregatePreservesMatrixGrid_ReadsConfiguredAttributesName(t *testing.T
 	noAttrs.Attributes = ""
 	emptyKeyed := aggregateOn(
 		[]string{"", chplan.RangeWindowAnchorColumn},
-		chplan.AggFunc{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "val"}}, Alias: "val"},
+		chplan.AggFunc{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "val"}}, Alias: "val"},
 	)
 	if chplan.AggregatePreservesMatrixGrid(emptyKeyed, noAttrs) {
 		t.Error("an empty attributes column names nothing; no Aggregate can expose it")

@@ -18,11 +18,11 @@ func newCompareFixture() *chplan.MetricsCompare {
 		TopN:    10,
 		StartNs: 100,
 		EndNs:   200,
-		Pairs:   &chplan.FuncCall{Name: "array"},
+		Pairs:   &chplan.FuncCall{Fn: chplan.FnArray},
 		RootLookup: &chplan.Aggregate{
 			Input:    &chplan.Scan{Table: "otel_traces"},
 			GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "TraceId"}},
-			AggFuncs: []chplan.AggFunc{{Name: "any", Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"}},
+			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: "SpanName"}}, Alias: "__root_name"}},
 		},
 		TraceIDColumn:    "TraceId",
 		RootNameAlias:    "__root_name",
@@ -56,7 +56,7 @@ func TestMetricsCompare_Equal_Negative_Fields(t *testing.T) {
 		}},
 		{"selectionNil", func(m *chplan.MetricsCompare) { m.Selection = nil }},
 		{"pairs", func(m *chplan.MetricsCompare) {
-			m.Pairs = &chplan.FuncCall{Name: "arrayConcat"}
+			m.Pairs = &chplan.FuncCall{Fn: chplan.FnArrayConcat}
 		}},
 		{"pairsNil", func(m *chplan.MetricsCompare) { m.Pairs = nil }},
 		{"rootLookupNil", func(m *chplan.MetricsCompare) { m.RootLookup = nil }},

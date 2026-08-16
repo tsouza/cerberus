@@ -142,7 +142,7 @@ func requireNativeNodeCount(t *testing.T, plan chplan.Node, want int) {
 	got := 0
 	chplan.Walk(plan, func(n chplan.Node) bool {
 		switch n.(type) {
-		case *chplan.RangeWindowNative, *chplan.RangeWindowResample:
+		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample:
 			got++
 		}
 		return true

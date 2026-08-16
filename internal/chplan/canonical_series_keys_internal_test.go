@@ -1,6 +1,6 @@
 // Internal-package (`package chplan`) companion to
 // canonical_series_keys_test.go. It pins what [seriesIdentityKeys] and
-// [seriesIdentityKeyAliases] answer for a [RangeWindowNative] that defers its
+// [seriesIdentityKeyAliases] answer for a [RangeWindowGridNative] that defers its
 // label shaping, which the external chplan_test package cannot reach directly.
 //
 // Why it is worth its own test rather than being left to the whole-plan
@@ -19,8 +19,8 @@ import (
 // deferredShapingNode is the hoisted shape: GroupBy carries the RAW columns
 // the inner state level groups on, and Recollapse carries the shaping tower
 // the merge level re-collapses them by, under the OUTPUT column name.
-func deferredShapingNode(recollapse []Projection) *RangeWindowNative {
-	return &RangeWindowNative{
+func deferredShapingNode(recollapse []Projection) *RangeWindowGridNative {
+	return &RangeWindowGridNative{
 		Input:           &Scan{Table: "otel_metrics_sum", Columns: []string{"Attributes", "Value"}},
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -39,7 +39,7 @@ func deferredShapingNode(recollapse []Projection) *RangeWindowNative {
 
 func shapedAttributes() Projection {
 	return Projection{
-		Expr:  &FuncCall{Name: CanonicalMapFunc, Args: []Expr{&ColumnRef{Name: "Attributes"}}},
+		Expr:  &FuncCall{Fn: FnMapSort, Args: []Expr{&ColumnRef{Name: "Attributes"}}},
 		Alias: "Attributes",
 	}
 }

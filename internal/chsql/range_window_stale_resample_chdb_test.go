@@ -1,12 +1,12 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental
-// timeSeriesResampleToGridWithStaleness lowering (chplan.RangeWindowResample).
+// timeSeriesResampleToGridWithStaleness lowering (chplan.RangeWindowStaleResample).
 //
 // The test lowers the SAME range-mode bare instant-vector selector (`up` over
 // query_range) TWICE against the SAME seed — once with the native-staleness
 // strategy OFF (the argMax sample-fan-out, RangeLWR) and once with it ON (the
-// native timeSeriesResampleToGridWithStaleness, RangeWindowResample) — runs
+// native timeSeriesResampleToGridWithStaleness, RangeWindowStaleResample) — runs
 // BOTH on the same ephemeral chDB session, and compares the per-(series,
 // anchor) selected value.
 //
@@ -29,7 +29,7 @@
 // on the left boundary — a measure-zero, nanosecond-exact coincidence. The seed
 // below is DELIBERATELY off-boundary (samples at :30 / :2:30 against a 1m grid)
 // so both paths agree; the divergence is documented on
-// chplan.RangeWindowResample, not masked by an epsilon.
+// chplan.RangeWindowStaleResample, not masked by an epsilon.
 package chsql_test
 
 import (
@@ -96,7 +96,7 @@ func TestNativeTSGridResample_DualEmitParity(t *testing.T) {
 	native := runResampleEmit(t, db, true, false)
 
 	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide native
-	// scan. ProjectionPushdown narrows the RangeWindowResample inner Scan to the
+	// scan. ProjectionPushdown narrows the RangeWindowStaleResample inner Scan to the
 	// exact {MetricName, Attributes, TimeUnix, Value} the emit reads; dropping
 	// any of those identity/grid-input columns would 502 or silently change the
 	// grid. This proves the narrowing changes NEITHER the row set NOR a value.

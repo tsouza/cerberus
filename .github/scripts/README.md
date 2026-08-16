@@ -167,6 +167,15 @@ the pinned numbers cannot drift away from what the crawl actually asks for.
   files (`emit_node.go`, `emit.go`). See CLAUDE.md § "No raw SQL strings" and
   #1441. No env inputs; always runs the full scan.
   - Exit: `0` clean, `1` on any raw-write violation.
+- **`forbid-chplan-fn-literal.mjs`** — `ci.yml`, the `forbid-skip` job step
+  "Reject raw chplan Fn literal construction", and the matching pre-push
+  lefthook. Scans tracked and untracked Go sources and rejects direct
+  `chplan.Fn("raw-spelling")` / `Fn("raw-spelling")` conversions outside the
+  `fnresolution` boundary. Call sites must use a named constant declared in
+  `internal/chplan/fn.go`, whose ClickHouse spelling is resolved centrally in
+  `internal/chsql/fnresolution.go`. The companion Node test pins tracked,
+  untracked, dynamic-conversion, and boundary behavior.
+  - Exit: `0` clean, `1` on any raw literal construction.
 - **`crawl-surface-inventory-guard.mjs`** — `ci.yml`, the `forbid-skip` job
   step "Crawl surface inventory canonical-form ratchet (#1674)". The PR-time
   content ratchet over

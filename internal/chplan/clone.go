@@ -122,7 +122,7 @@ func cloneRangeNode(n Node) Node {
 		c.Variants = slices.Clone(v.Variants)
 		// InstantScanBounded is a bool — copied by the `c := *v` above.
 		return &c
-	case *RangeWindowNative:
+	case *RangeWindowGridNative:
 		c := *v
 		c.Input = CloneNode(v.Input)
 		c.GroupBy = cloneExprs(v.GroupBy)
@@ -133,7 +133,7 @@ func cloneRangeNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
-	case *RangeWindowResample:
+	case *RangeWindowStaleResample:
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
@@ -353,7 +353,7 @@ func cloneExpr(e Expr) Expr {
 	case *Binary:
 		return &Binary{Op: v.Op, Left: cloneExpr(v.Left), Right: cloneExpr(v.Right)}
 	case *FuncCall:
-		return &FuncCall{Fn: v.Fn, Name: v.Name, Args: cloneExprs(v.Args)}
+		return &FuncCall{Fn: v.Fn, Args: cloneExprs(v.Args)}
 	case *InList:
 		return &InList{Left: cloneExpr(v.Left), List: cloneExprs(v.List), Negated: v.Negated}
 	case *FieldAccess:
@@ -447,7 +447,6 @@ func cloneAggFuncs(in []AggFunc) []AggFunc {
 	for i := range in {
 		out[i] = AggFunc{
 			Fn:     in[i].Fn,
-			Name:   in[i].Name,
 			Params: cloneExprs(in[i].Params),
 			Args:   cloneExprs(in[i].Args),
 			Alias:  in[i].Alias,

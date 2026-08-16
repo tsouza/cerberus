@@ -135,7 +135,7 @@ func fanoutFixture() *chplan.RangeBucketFanout {
 		Offset:         time.Minute,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 		GroupByAliases: []string{"g0"},
-		AggFuncs:       []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "BucketCounts"}},
+		AggFuncs:       []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "BucketCounts"}},
 		AnchorAlias:    "anchor_ts",
 		TimestampCol:   "TimeUnix",
 	}
@@ -174,7 +174,7 @@ func TestRangeBucketFanout_Equal_Negative_Fields(t *testing.T) {
 			r.GroupBy = append(r.GroupBy, &chplan.ColumnRef{Name: "Extra"})
 		}},
 		{"aggFuncsLen", func(r *chplan.RangeBucketFanout) {
-			r.AggFuncs = append(r.AggFuncs, chplan.AggFunc{Name: "count", Alias: "Extra"})
+			r.AggFuncs = append(r.AggFuncs, chplan.AggFunc{Fn: chplan.FnCount, Alias: "Extra"})
 		}},
 	}
 	for _, tc := range cases {
@@ -404,7 +404,7 @@ func lwrNodeKill(start, end time.Time, step, lookback, offset time.Duration) *ch
 // -----------------------------------------------------------------------
 // Nil-child guards on the two experimental grid nodes.
 //
-// RangeWindowResample and RangeWindowNative are the only Equal methods that
+// RangeWindowStaleResample and RangeWindowGridNative are the only Equal methods that
 // tolerate a nil Input, and they do it with an explicit `r.Input == nil ||
 // o.Input == nil` guard. TestNodeEqual_DiscriminatesEveryField cannot reach
 // the guard — it compares fully-populated nodes — so the contract is pinned
@@ -412,11 +412,11 @@ func lwrNodeKill(start, end time.Time, step, lookback, offset time.Duration) *ch
 // must answer it rather than dereference the nil.
 // -----------------------------------------------------------------------
 
-func TestRangeWindowResample_Equal_NilInputIsADifference(t *testing.T) {
+func TestRangeWindowStaleResample_Equal_NilInputIsADifference(t *testing.T) {
 	t.Parallel()
 
-	populated := func(input chplan.Node) *chplan.RangeWindowResample {
-		return &chplan.RangeWindowResample{
+	populated := func(input chplan.Node) *chplan.RangeWindowStaleResample {
+		return &chplan.RangeWindowStaleResample{
 			Input:         input,
 			Start:         time.Unix(1_700_000_000, 0).UTC(),
 			End:           time.Unix(1_700_003_600, 0).UTC(),
@@ -443,11 +443,11 @@ func TestRangeWindowResample_Equal_NilInputIsADifference(t *testing.T) {
 	}
 }
 
-func TestRangeWindowNative_Equal_NilInputIsADifference(t *testing.T) {
+func TestRangeWindowGridNative_Equal_NilInputIsADifference(t *testing.T) {
 	t.Parallel()
 
-	populated := func(input chplan.Node) *chplan.RangeWindowNative {
-		return &chplan.RangeWindowNative{
+	populated := func(input chplan.Node) *chplan.RangeWindowGridNative {
+		return &chplan.RangeWindowGridNative{
 			Input:           input,
 			Func:            "rate",
 			Range:           5 * time.Minute,
@@ -602,14 +602,14 @@ func TestCanonicalAttributesExpr_WrapsAnotherMapValuedCall(t *testing.T) {
 	t.Parallel()
 
 	inner := &chplan.FuncCall{
-		Name: "mapConcat",
+		Fn:   chplan.FnMapMerge,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 
 	got := chplan.CanonicalAttributesExpr(inner)
 
 	call, ok := got.(*chplan.FuncCall)
-	if !ok || call.Name != chplan.CanonicalMapFunc {
+	if !ok || call.Fn != chplan.FnMapSort {
 		t.Fatalf("got %#v, want a %s call wrapping the mapConcat", got, chplan.CanonicalMapFunc)
 	}
 	if len(call.Args) != 1 || call.Args[0] != chplan.Expr(inner) {
@@ -621,7 +621,7 @@ func TestCanonicalAttributesExpr_LeavesACanonicalCallAlone(t *testing.T) {
 	t.Parallel()
 
 	inner := &chplan.FuncCall{
-		Name: chplan.CanonicalMapFunc,
+		Fn:   chplan.FnMapSort,
 		Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	}
 

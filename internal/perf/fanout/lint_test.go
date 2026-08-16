@@ -22,7 +22,7 @@ func rawScan() chplan.Node {
 func collapsed(in chplan.Node) chplan.Node {
 	return &chplan.Aggregate{
 		Input:    in,
-		AggFuncs: []chplan.AggFunc{{Name: "count", Alias: "n"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnCount, Alias: "n"}},
 	}
 }
 
@@ -66,7 +66,7 @@ func TestRule1_BroadcastCrossJoin_OK(t *testing.T) {
 			Input:   rawScan(),
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			AggFuncs: []chplan.AggFunc{{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}, &chplan.ColumnRef{Name: "TimeUnix"}},
 				Alias: "lwr_value",
 			}},

@@ -42,13 +42,13 @@ func scalarInteriorTSGridPlan(interior chplan.Node) chplan.Node {
 	}
 }
 
-// resampleInterior builds an emittable RangeWindowResample — the node a
+// resampleInterior builds an emittable RangeWindowStaleResample — the node a
 // per-step scalar binding puts inside the ScalarSubquery. The column names and
 // the pinned grid are what the emitter requires, so the guard test can drive it
 // all the way through emit.
-func resampleInterior() *chplan.RangeWindowResample {
+func resampleInterior() *chplan.RangeWindowStaleResample {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	return &chplan.RangeWindowResample{
+	return &chplan.RangeWindowStaleResample{
 		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
 		Start:         start,
 		End:           start.Add(5 * time.Minute),
@@ -68,8 +68,8 @@ func resampleInterior() *chplan.RangeWindowResample {
 func tsGridInteriors() map[string]chplan.Node {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return map[string]chplan.Node{
-		"RangeWindowResample": resampleInterior(),
-		"RangeWindowNative": &chplan.RangeWindowNative{
+		"RangeWindowStaleResample": resampleInterior(),
+		"RangeWindowGridNative": &chplan.RangeWindowGridNative{
 			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 			Func:            "rate",
 			Range:           5 * time.Minute,
@@ -114,7 +114,7 @@ func TestExecContext_LeavesTSGridSettingOffPlainPlans(t *testing.T) {
 	e := &Engine{Optimizer: optimizer.Default()}
 	plain := scalarInteriorTSGridPlan(&chplan.Aggregate{
 		Input:    &chplan.Scan{Table: "otel_metrics_gauge"},
-		AggFuncs: []chplan.AggFunc{{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"}},
 	})
 	ctx, _ := e.execContext(context.Background(), plain, "promql", nil)
 	if got, ok := chclient.QuerySettingsFromContext(ctx)[chclient.SettingExperimentalTSGridAggregate]; ok {

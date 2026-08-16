@@ -294,7 +294,7 @@ func TestWalkDeep_ReachesNodesBehindExprSlots(t *testing.T) {
 
 	// The PromQL per-step scalar binding shape: the only ts-grid node in the
 	// plan sits inside a ScalarSubquery hanging off a Project projection.
-	buried := &RangeWindowResample{Input: &Scan{Table: "otel_metrics_gauge"}}
+	buried := &RangeWindowStaleResample{Input: &Scan{Table: "otel_metrics_gauge"}}
 	root := Node(&Project{
 		Input: &Scan{Table: "otel_metrics_gauge"},
 		Projections: []Projection{{
@@ -323,7 +323,7 @@ func TestWalkDeep_ReachesNodesBehindExprSlots(t *testing.T) {
 			"if Walk's contract widened, every caller that relies on the spine-only walk needs revisiting")
 	}
 	if !contains(WalkDeep) {
-		t.Error("WalkDeep did not reach the RangeWindowResample inside the ScalarSubquery")
+		t.Error("WalkDeep did not reach the RangeWindowStaleResample inside the ScalarSubquery")
 	}
 }
 

@@ -134,7 +134,7 @@ func (p *Planner) slice(plan chplan.Node, meta RequestMeta, k int) ([]Slice, err
 }
 
 // UnpinSpine returns a copy-on-write view of plan whose windowed-spine bounds
-// (RangeWindow / RangeWindowNative / RangeLWR Start, End, and the matrix
+// (RangeWindow / RangeWindowGridNative / RangeLWR Start, End, and the matrix
 // OuterRange) are zeroed, so ReanchorRange treats every spine node as the
 // unpinned subquery-inner shape and fills each slice's grid in.
 //
@@ -202,7 +202,7 @@ func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
 		c := *v
 		c.Input = input
 		return &c, true
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		// The native timeSeries<fn>ToGrid spine node. It is pinned at the full
 		// request grid by construction (the lowering only builds it in range
 		// mode), and chplan.ReanchorRange re-grids it — so it must be zeroed
@@ -272,13 +272,13 @@ func descendOffSpine(n chplan.Node) (chplan.Node, bool) {
 // only through Node children, never through Expr-embedded ScalarSubquery
 // interiors -- which UnpinSpine never zeroed) contains a windowed node whose
 // grid UnpinSpine would zero: any RangeLWR, or a matrix RangeWindow /
-// RangeWindowNative (Step > 0).
+// RangeWindowGridNative (Step > 0).
 //
 // It must name exactly the kinds unpinSpineCOW zeroes. A kind zeroed there but
 // missing here is invisible to the off-spine probe, so a subtree carrying only
 // that kind is shared verbatim and reaches ReanchorRange still pinned at the
 // full grid -- the ErrReanchorGridMismatch / silent-route-A failure the arms
-// themselves describe. The mixed `UnionAll{RangeWindowNative, RangeWindow}`
+// themselves describe. The mixed `UnionAll{RangeWindowGridNative, RangeWindow}`
 // spine is precisely a subtree reached this way.
 func subtreeHasZeroableSpine(n chplan.Node) bool {
 	found := false
@@ -290,7 +290,7 @@ func subtreeHasZeroableSpine(n chplan.Node) bool {
 			if v.Step > 0 {
 				found = true
 			}
-		case *chplan.RangeWindowNative:
+		case *chplan.RangeWindowGridNative:
 			if v.Step > 0 {
 				found = true
 			}
@@ -314,7 +314,7 @@ func zeroSpineInPlace(n chplan.Node) {
 		}
 		zeroSpineInPlace(v.Input)
 		return
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		if v.Step > 0 {
 			v.Start = time.Time{}
 			v.End = time.Time{}

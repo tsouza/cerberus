@@ -39,16 +39,16 @@ The signals, each gathered in the one pass:
    sends the whole plan to route A. A new node defaults to route A until its
    marker is proven.
 2. **Routable spine family.** Re-anchoring rewrites the grid carried by the
-   `RangeWindow` matrix family, the `RangeWindowNative` ClickHouse-native
+   `RangeWindow` matrix family, the `RangeWindowGridNative` ClickHouse-native
    `timeSeries*ToGrid` family, and the `RangeLWR` bare-selector
    last-with-respect-to family. Every other grid carrier —
-   `RangeWindowResample`, `RangeBucketFanout`, `StepGrid`, `AbsentOverTime` —
+   `RangeWindowStaleResample`, `RangeBucketFanout`, `StepGrid`, `AbsentOverTime` —
    carries its own eval grid that re-anchoring clones verbatim, so a plan whose
    spine bound-carrier is one of those fails closed to route A (every shard
    would otherwise emit stale bounds).
 
    `UnionAll` carries no grid of its own and re-anchors every arm onto the same
-   sub-grid, so a mixed spine — `UnionAll{RangeWindowNative, RangeWindow}`, the
+   sub-grid, so a mixed spine — `UnionAll{RangeWindowGridNative, RangeWindow}`, the
    shape a cumulative/delta temporality split emits — slices as a unit. All arms
    move together or none does: the arms are concatenated positionally, so a
    shard that re-gridded one and shared another verbatim would compose the
@@ -235,7 +235,7 @@ emptied. `D` is the cumulative spine lookback recovered by walking the spine.
 request grid (the grid-prediction guard already verified it sits exactly
 there). To re-grid each slice onto a sub-window, the slicer first builds one
 spine-unpinned, copy-on-write view (`unpinSpine`): the windowed-spine bounds
-(`RangeWindow` / `RangeWindowNative` / `RangeLWR` `Start`, `End`, and the matrix
+(`RangeWindow` / `RangeWindowGridNative` / `RangeLWR` `Start`, `End`, and the matrix
 `OuterRange`) are zeroed. This is safe because signal 5 already proved every spine node sits on
 the predicted grid, so the zeroed information is exactly what the re-anchor
 recomputes. `unpinSpine` clones ONLY the spine-path nodes it zeroes (and their

@@ -1,14 +1,14 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental
-// timeSeriesPredictLinearToGrid lowering (chplan.RangeWindowNative,
+// timeSeriesPredictLinearToGrid lowering (chplan.RangeWindowGridNative,
 // Func="predict_linear").
 //
 // The test lowers the SAME `sum by (host) (predict_linear(load_state[5m], 3600))`
 // query_range expression TWICE against the SAME seed — once with the native
 // predict_linear strategy OFF (the simpleLinearRegression intercept + slope*t
 // forecast fan-out, RangeWindow) and once with it ON (the native
-// timeSeriesPredictLinearToGrid, RangeWindowNative) — runs BOTH on the same
+// timeSeriesPredictLinearToGrid, RangeWindowGridNative) — runs BOTH on the same
 // ephemeral chDB session, and compares the per-(series, anchor) forecast values.
 //
 // Why this is the parity proof. The fan-out's per-window forecast is the
@@ -117,7 +117,7 @@ func TestNativeTSGridPredictLinear_DualEmitParity(t *testing.T) {
 	native := runPredictLinearEmit(t, db, true, false)
 
 	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide native
-	// scan (ProjectionPushdown narrows the RangeWindowNative inner Scan to the
+	// scan (ProjectionPushdown narrows the RangeWindowGridNative inner Scan to the
 	// exact {Attributes, TimeUnix, Value} the emit reads — it must change neither
 	// the row set nor a single forecast value at full float64 precision).
 	nativeOpt := runPredictLinearEmit(t, db, true, true)

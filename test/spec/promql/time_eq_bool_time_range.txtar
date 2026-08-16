@@ -33,7 +33,7 @@ CREATE TABLE otel_metrics_gauge (
 [7] int64 = 9
 [8] int64 = 1000000000
 -- chplan --
-Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, now64(9) AS TimeUnix, FnToFloat64((FnToFloat64((FnToUnixNanos(FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) = FnToFloat64((FnToUnixNanos(FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)))) AS Value]
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnNow64(9) AS TimeUnix, FnToFloat64((FnToFloat64((FnToUnixNanos(FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)) = FnToFloat64((FnToUnixNanos(FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) / 1000000000)))) AS Value]
   OneRow
 -- sql --
 SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64((toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)) = toFloat64((toUnixTimestamp64Nano(toDateTime64(?, ?)) / ?)))) AS `Value` FROM (SELECT 1)

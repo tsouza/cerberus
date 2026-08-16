@@ -12,8 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
-// PR #1272 (commit ddd4a2f5) fixed a bug where RangeWindowNative,
-// RangeWindowResample, and AbsentOverTime were missing from the old
+// PR #1272 (commit ddd4a2f5) fixed a bug where RangeWindowGridNative,
+// RangeWindowStaleResample, and AbsentOverTime were missing from the old
 // grid-classification kind-switch: a plan whose ONLY grid carrier was one
 // of those node kinds silently reported a zero grid, indistinguishable
 // from a genuine instant query. internal/api/prom/native_range_grid_test.go

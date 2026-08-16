@@ -48,7 +48,7 @@ func IsSliceInvariant(n Node) bool {
 //     bounded sample-fan-out families: each (series, anchor) value is the
 //     reduce of exactly that anchor's `(anchor - Offset - Range, anchor -
 //     Offset]` window membership, independent of the scan lower bound.
-//   - RangeWindowNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
+//   - RangeWindowGridNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
 //     of the SAME window semantics. The aggregate is handed (start, end, step,
 //     window) and evaluates grid point i from exactly the samples inside
 //     `(anchor_i - Offset - Range, anchor_i - Offset]`, so its per-(series,
@@ -88,7 +88,7 @@ func IsSliceInvariant(n Node) bool {
 //     each is its own PR.
 //
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
-// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, RangeWindowResample,
+// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, RangeWindowStaleResample,
 // the metrics_* TraceQL family, nested spines under the lcm clamp) are
 // DELIBERATELY ABSENT:
 // each enters this registry only with its own slice-invariance proof + the
@@ -103,7 +103,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&Project{},
 		&Aggregate{},
 		&RangeWindow{},
-		&RangeWindowNative{},
+		&RangeWindowGridNative{},
 		&RangeLWR{},
 		&RangeBucketFanout{},
 		&StepGrid{},

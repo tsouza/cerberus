@@ -26,7 +26,7 @@ const stalenessLookbackNanos = 5 * int64(time.Second)
 // `now64(9)` — CH's nanosecond-precision wall clock. Use this instead of
 // hand-constructing the FuncCall so the NanoScale arg stays in one place.
 func NowNano() Expr {
-	return &FuncCall{Name: "now64", Args: []Expr{&LitInt{V: NanoScale}}}
+	return &FuncCall{Fn: FnNow64, Args: []Expr{&LitInt{V: NanoScale}}}
 }
 
 // NowNanoMinusStaleness builds `now64(9) - toIntervalNanosecond(5e9)` —
@@ -37,7 +37,7 @@ func NowNanoMinusStaleness() Expr {
 		Op:   OpSub,
 		Left: NowNano(),
 		Right: &FuncCall{
-			Name: "toIntervalNanosecond",
+			Fn:   FnToIntervalNanosecond,
 			Args: []Expr{&LitInt{V: stalenessLookbackNanos}},
 		},
 	}

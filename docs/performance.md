@@ -449,7 +449,7 @@ it serve the million-row queries that would otherwise hit the cap.
 **What you give up** is exact bit-for-bit agreement with Prometheus — but only
 just barely. The native path is the *same algorithm*; the only difference is the
 order the floating-point arithmetic happens in inside C++ vs. SQL. A dual-emit
-parity test (`internal/chsql/range_window_native_chdb_test.go`) runs both paths
+parity test (`internal/chsql/range_window_grid_native_chdb_test.go`) runs both paths
 on the same data and compares the decoded `float64` grids: the overwhelming
 majority of grid cells are **bit-identical**, and the few that differ do so by
 **exactly one ULP** — one unit in the last place, the next representable double
@@ -485,7 +485,7 @@ The native path is the default on a capable server; you only need to act to opt
 list that omits `ts_grid_range` (or set `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE=false`).
 
 Under `auto`, an eligible `rate(<counter>[<range>])` query_range
-lowers to a `chplan.RangeWindowNative` node that emits the native aggregate; the
+lowers to a `chplan.RangeWindowGridNative` node that emits the native aggregate; the
 wrapping outer aggregate (`sum by (...)`) is byte-identical, so only the
 windowed-rate subquery changes, and pinning the fan-out restores the
 established, Prometheus-exact path. The full env-var contract and CH-version

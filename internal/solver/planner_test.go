@@ -44,7 +44,7 @@ func oomWindow() chplan.Node {
 	return &chplan.Aggregate{
 		Input:    rw,
 		GroupBy:  nil,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
@@ -219,7 +219,7 @@ func TestPlan_RejectionTable(t *testing.T) {
 					Predicate: &chplan.Binary{
 						Op:    chplan.OpLt,
 						Left:  &chplan.ColumnRef{Name: "TimeUnix"},
-						Right: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+						Right: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
 					},
 				}
 			},
@@ -234,7 +234,7 @@ func TestPlan_RejectionTable(t *testing.T) {
 				// whose interior projects now64.
 				scalarInner := &chplan.Project{
 					Input:       leafScan(),
-					Projections: []chplan.Projection{{Expr: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "v"}},
+					Projections: []chplan.Projection{{Expr: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}, Alias: "v"}},
 				}
 				return &chplan.Filter{
 					Input: agg,
@@ -385,11 +385,11 @@ func TestPlan_Now64InAggregateArgsRejected(t *testing.T) {
 	agg := oomWindow().(*chplan.Aggregate)
 	// Inject now64 into the outer sum's argument: sum(rate(m[5m]) * now64()).
 	agg.AggFuncs = []chplan.AggFunc{{
-		Name: "sum",
+		Fn: chplan.FnSum,
 		Args: []chplan.Expr{&chplan.Binary{
 			Op:    chplan.OpMul,
 			Left:  &chplan.ColumnRef{Name: "Value"},
-			Right: &chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
+			Right: &chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}},
 		}},
 	}}
 	p := &Planner{Cfg: autoCfg()}
@@ -407,7 +407,7 @@ func TestPlan_Now64InAggregateArgsRejected(t *testing.T) {
 func TestPlan_Now64InAggregateGroupByRejected(t *testing.T) {
 	t.Parallel()
 	agg := oomWindow().(*chplan.Aggregate)
-	agg.GroupBy = []chplan.Expr{&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}}
+	agg.GroupBy = []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}}
 	p := &Planner{Cfg: autoCfg()}
 	d, routed := p.Plan(agg, oomMeta())
 	if routed {
@@ -428,8 +428,8 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 	scalarInner := &chplan.Aggregate{
 		Input: leafScan(),
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "sum",
-			Args:  []chplan.Expr{&chplan.FuncCall{Name: "now64", Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
+			Fn:    chplan.FnSum,
+			Args:  []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
 			Alias: "v",
 		}},
 	}
@@ -474,7 +474,7 @@ func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
 					AnchorAlias:  "anchor_ts",
 					TimestampCol: "TimeUnix",
 					AggFuncs: []chplan.AggFunc{{
-						Name:  "sumForEach",
+						Fn:    chplan.FnSumForEach,
 						Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
 						Alias: "BucketCounts",
 					}},
@@ -628,7 +628,7 @@ func TestPlan_ScalarAnchorCompatibleRoutes(t *testing.T) {
 // than the one the fan-out family gets.
 func TestPlan_ScalarNativeAnchorCompatibleRoutes(t *testing.T) {
 	t.Parallel()
-	anchoredInner := &chplan.RangeWindowNative{
+	anchoredInner := &chplan.RangeWindowGridNative{
 		Input:           leafScan(),
 		Func:            "rate",
 		Range:           5 * time.Minute,
@@ -709,8 +709,8 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 			// walkScalarInterior's sweep no longer refuses it and
 			// scalarInteriorAnchorCompatible's own arm is the only thing between
 			// this and replicating a 30-day single-pass grid aggregate K times.
-			name: "RangeWindowNative, span diverges",
-			inner: &chplan.RangeWindowNative{
+			name: "RangeWindowGridNative, span diverges",
+			inner: &chplan.RangeWindowGridNative{
 				Input:           leafScan(),
 				Func:            "rate",
 				Range:           5 * time.Minute,
@@ -725,8 +725,8 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 			// The same native interior on the outer grid's exact span but at a
 			// coarser cadence: not provably one value per OUTER anchor, so it
 			// stays heavy for the same reason the fan-out row above does.
-			name: "RangeWindowNative, grid matches, step diverges",
-			inner: &chplan.RangeWindowNative{
+			name: "RangeWindowGridNative, grid matches, step diverges",
+			inner: &chplan.RangeWindowGridNative{
 				Input:           leafScan(),
 				Func:            "rate",
 				Range:           5 * time.Minute,
@@ -753,7 +753,7 @@ func TestPlan_ScalarAnchorIncompatibleRejected(t *testing.T) {
 				AnchorAlias:  "anchor_ts",
 				TimestampCol: "TimeUnix",
 				AggFuncs: []chplan.AggFunc{{
-					Name:  "sumForEach",
+					Fn:    chplan.FnSumForEach,
 					Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
 					Alias: "BucketCounts",
 				}},

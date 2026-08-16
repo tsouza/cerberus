@@ -27,8 +27,8 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	// The two windows that publish a query_range grid: one row per
 	// (series, anchor), the anchor under both its own name and the
 	// timestamp column, and no MetricName.
-	"RangeWindow":       chplan.GridWindowRowShape,
-	"RangeWindowNative": chplan.GridWindowRowShape,
+	"RangeWindow":           chplan.GridWindowRowShape,
+	"RangeWindowGridNative": chplan.GridWindowRowShape,
 
 	// Everything else republishes the canonical four names, whether by
 	// passing its input's through or by projecting them itself.
@@ -52,7 +52,7 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"Project":                  chplan.SampleRowShape,
 	"RangeBucketFanout":        chplan.SampleRowShape,
 	"RangeLWR":                 chplan.SampleRowShape,
-	"RangeWindowResample":      chplan.SampleRowShape,
+	"RangeWindowStaleResample": chplan.SampleRowShape,
 	"Scan":                     chplan.SampleRowShape,
 	"SearchTraceLimit":         chplan.SampleRowShape,
 	"SetOperation":             chplan.SampleRowShape,

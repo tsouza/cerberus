@@ -1,7 +1,7 @@
 # `label_replace` wrapped around a range-mode `rate(...)`, lowered through
 # the ClickHouse-NATIVE timeSeriesRateToGrid table: the
 # `experimental_ts_grid_range` section wires NativeRateLowerer, so the
-# inner windowed node is a chplan.RangeWindowNative rather than the
+# inner windowed node is a chplan.RangeWindowGridNative rather than the
 # fan-out chplan.RangeWindow.
 #
 # This is the half that pins the shape of the live 502. The two node
@@ -114,15 +114,15 @@ Project [MetricName, Attributes, TimeUnix, Value]
     Project [MetricName, labelReplace(Attributes, dst="engine", replacement="engine-\\1", src="cerberus_ql", regex="(.*)", emptyReplacement="engine-") AS Attributes, TimeUnix, Value]
       UnionAll arms=2
         Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
-          RangeWindowNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
-            Project [MetricName AS MetricName, mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          RangeWindowGridNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+            Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
               Filter predicate=(AggregationTemporality != 1)
                 Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
                   Scan(otel_metrics_sum)
         Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
           RangeWindow func=rate range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value temporality=AggregationTemporality groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
             Filter predicate=(AggregationTemporality = 1)
-              Project [MetricName AS MetricName, mapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
+              Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
                 Filter predicate=(MetricName IN ("cerberus_queries_total", "cerberus.queries.total", "cerberus.queries/total", "cerberus.queries_total", "cerberus/queries/total", "cerberus/queries_total", "cerberus_queries.total"))
                   Scan(otel_metrics_sum)
 -- sql --

@@ -28,30 +28,30 @@ var fixtureDir = filepath.Join("..", "..", "test", "spec", "optimizer")
 // and the outermost CanonicalMapFunc.
 func deferredShapingTower() chplan.Expr {
 	sanitize := func(src chplan.Expr) chplan.Expr {
-		return &chplan.FuncCall{Name: "mapFromArrays", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "arrayMap", Args: []chplan.Expr{
+		return &chplan.FuncCall{Fn: chplan.FnMapFromArrays, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 				&chplan.Lambda{Params: []string{"k"}, Body: &chplan.FuncCall{
-					Name: "replaceRegexpAll",
+					Fn: chplan.FnRegexReplaceAll,
 					Args: []chplan.Expr{
 						&chplan.BareIdent{Name: "k"},
 						&chplan.InlineString{V: `[^a-zA-Z0-9_]`},
 						&chplan.InlineString{V: "_"},
 					},
 				}},
-				&chplan.FuncCall{Name: "mapKeys", Args: []chplan.Expr{src}},
+				&chplan.FuncCall{Fn: chplan.FnMapKeys, Args: []chplan.Expr{src}},
 			}},
-			&chplan.FuncCall{Name: "mapValues", Args: []chplan.Expr{src}},
+			&chplan.FuncCall{Fn: chplan.FnMapValues, Args: []chplan.Expr{src}},
 		}}
 	}
-	return &chplan.FuncCall{Name: chplan.CanonicalMapFunc, Args: []chplan.Expr{
-		&chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
-			&chplan.FuncCall{Name: "mapUpdate", Args: []chplan.Expr{
+	return &chplan.FuncCall{Fn: chplan.FnMapSort, Args: []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMapUpdate, Args: []chplan.Expr{
 				sanitize(&chplan.ColumnRef{Name: "ResourceAttributes"}),
 				&chplan.ColumnRef{Name: "Attributes"},
 			}},
-			&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 				&chplan.InlineString{V: "service_name"},
-				&chplan.FuncCall{Name: "toString", Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnToString, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "ServiceName"},
 				}},
 			}},
@@ -198,7 +198,7 @@ var inputs = map[string]chplan.Node{
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -217,7 +217,7 @@ var inputs = map[string]chplan.Node{
 			Input:   &chplan.Scan{Table: "otel_metrics_gauge"},
 			GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 			},
 		},
 		Predicate: &chplan.Binary{
@@ -369,8 +369,8 @@ var inputs = map[string]chplan.Node{
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			GroupByAliases: []string{"Attributes"},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "max", Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}}, Alias: "lwr_ts"},
-				{Name: "argMax", Args: []chplan.Expr{
+				{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "TimeUnix"}}, Alias: "lwr_ts"},
+				{Fn: chplan.FnArgMax, Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "Value"},
 					&chplan.ColumnRef{Name: "TimeUnix"},
 				}, Alias: "lwr_value"},
@@ -406,9 +406,9 @@ var inputs = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 
-	// pushdown_through_range_window_native: the experimental
-	// ClickHouse-native rate-range shape RangeWindowNative(Filter(Scan)).
-	// The stage-aware arm fires on the RangeWindowNative and narrows the
+	// pushdown_through_range_window_grid_native: the experimental
+	// ClickHouse-native rate-range shape RangeWindowGridNative(Filter(Scan)).
+	// The stage-aware arm fires on the RangeWindowGridNative and narrows the
 	// inner Scan to the union of the (TimestampColumn, ValueColumn) pair the
 	// timeSeriesRateToGrid aggregate consumes, the GroupBy series-identity
 	// refs (Attributes — the inner SELECT's GROUP BY keys), and the Filter
@@ -416,7 +416,7 @@ var inputs = map[string]chplan.Node{
 	// native emit names are produced inside the subquery and are NOT Scan
 	// reads, so they never enter the narrowed set. This is the #860/#861
 	// correctness-critical arm: a dropped identity column 502s at runtime.
-	"pushdown_through_range_window_native": &chplan.RangeWindowNative{
+	"pushdown_through_range_window_grid_native": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
 			Input: &chplan.Scan{Table: "otel_metrics_sum"},
 			Predicate: &chplan.Binary{
@@ -435,7 +435,7 @@ var inputs = map[string]chplan.Node{
 		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 	},
 
-	// pushdown_through_range_window_native_recollapse: the same native shape
+	// pushdown_through_range_window_grid_native_recollapse: the same native shape
 	// with the label shaping DEFERRED past the aggregate — the only fixture that
 	// runs hoist → optimizer → emit as one composition. The unit tests either
 	// side of it each see half the pipeline: the chplan test exercises
@@ -454,7 +454,7 @@ var inputs = map[string]chplan.Node{
 	//     the repair correctly stays out. A rule (or a canonicaliser change)
 	//     that re-splices it would put the shaped map through a second mapSort
 	//     ABOVE the merge and undo nothing visible in the result rows.
-	"pushdown_through_range_window_native_recollapse": &chplan.RangeWindowNative{
+	"pushdown_through_range_window_grid_native_recollapse": &chplan.RangeWindowGridNative{
 		Input: &chplan.Filter{
 			Input: &chplan.Scan{Table: "otel_metrics_sum"},
 			Predicate: &chplan.Binary{
@@ -513,9 +513,9 @@ var inputs = map[string]chplan.Node{
 		},
 		Projections: []chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: "SpanName"}, Alias: "MetricName"},
-			{Expr: &chplan.FuncCall{Name: "mapConcat", Args: []chplan.Expr{
+			{Expr: &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: "ResourceAttributes"},
-				&chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+				&chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 					&chplan.LitString{V: "__cerberus_sel_str_http.method"},
 					&chplan.FieldAccess{
 						Source: &chplan.ColumnRef{Name: "SpanAttributes"},
@@ -525,7 +525,7 @@ var inputs = map[string]chplan.Node{
 			}}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "TimeUnix"},
 			{Expr: &chplan.FuncCall{
-				Name: "toFloat64",
+				Fn:   chplan.FnToFloat64,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: "Duration"}},
 			}, Alias: "Value"},
 		},
@@ -558,7 +558,7 @@ var inputs = map[string]chplan.Node{
 		TimestampCol: "TimeUnix",
 		AggFuncs: []chplan.AggFunc{
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "BucketCounts",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "BucketCounts"},
@@ -566,7 +566,7 @@ var inputs = map[string]chplan.Node{
 				},
 			},
 			{
-				Name:  "argMax",
+				Fn:    chplan.FnArgMax,
 				Alias: "ExplicitBounds",
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: "ExplicitBounds"},

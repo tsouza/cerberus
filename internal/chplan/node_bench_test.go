@@ -49,7 +49,7 @@ func buildDeepTree() chplan.Node {
 		Input:   rw,
 		GroupBy: []chplan.Expr{&chplan.ColumnRef{Name: "job"}},
 		AggFuncs: []chplan.AggFunc{
-			{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "sum_value"},
 		},
 	}
 	return &chplan.Project{

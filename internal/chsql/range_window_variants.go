@@ -209,7 +209,7 @@ func selectVariantVals(q *QueryBuilder, r *chplan.RangeWindow, armSlots []int) {
 // output row, turning one row per (series[, anchor]) carrying N values into N
 // rows each carrying one value and its arm's label. This is the clause form
 // (contrast the `arrayJoin(...)` scalar function, which cross-products
-// independent arrays) — the same shape range_window_native.go uses to unpivot
+// independent arrays) — the same shape range_window_grid_native.go uses to unpivot
 // its grid.
 func arrayJoinVariants(q *QueryBuilder, r *chplan.RangeWindow, armValues []Frag) {
 	labels := make([]Frag, 0, len(r.Variants))

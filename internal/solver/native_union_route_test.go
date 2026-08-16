@@ -21,13 +21,13 @@ import (
 const unionArmRange = 5 * time.Minute
 
 // nativeUnionPlan builds the plan shape issue #2117 exists to make routable:
-// `sum(<UnionAll{RangeWindowNative, RangeWindow}>)` — the CUMULATIVE/DELTA
+// `sum(<UnionAll{RangeWindowGridNative, RangeWindow}>)` — the CUMULATIVE/DELTA
 // temporality split, where the cumulative half lowers to the ClickHouse-native
 // timeSeriesRateToGrid aggregate and the delta half stays on the arrayJoin
 // fan-out. Both arms sit on the same request grid and project the same
 // positional column shape, which is what makes the UNION ALL well-formed.
 func nativeUnionPlan() chplan.Node {
-	native := &chplan.RangeWindowNative{
+	native := &chplan.RangeWindowGridNative{
 		Input:           leafScan(),
 		Func:            "rate",
 		Range:           unionArmRange,
@@ -52,15 +52,15 @@ func nativeUnionPlan() chplan.Node {
 	}
 	return &chplan.Aggregate{
 		Input:    &chplan.UnionAll{Inputs: []chplan.Node{native, fanout}},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
 // TestPlan_NativeUnionSpineRoutes is the end-to-end pin for issue #2117: the
-// mixed `UnionAll{RangeWindowNative, RangeWindow}` spine routes B under
+// mixed `UnionAll{RangeWindowGridNative, RangeWindow}` spine routes B under
 // ModeAuto.
 //
-// Before #2117 it was refused twice over — RangeWindowNative was absent from
+// Before #2117 it was refused twice over — RangeWindowGridNative was absent from
 // chplan's slice-invariance registry (gate 1) AND marked non-re-anchorable
 // (gate 1b) — so shipping the CUMULATIVE/DELTA split would have turned a
 // previously-routable counter panel into a not-sliceable rejection for any
@@ -107,7 +107,7 @@ func TestPlan_NativeUnionSpineRoutes(t *testing.T) {
 // numbers.
 //
 // It fails on any of the three independent seams this change had to widen:
-// chplan.ReanchorRange's UnionAll arm, its RangeWindowNative arm, and the
+// chplan.ReanchorRange's UnionAll arm, its RangeWindowGridNative arm, and the
 // slicer's UnpinSpine (which must zero the native node's bounds, or every slice
 // aborts with ErrReanchorGridMismatch and sliceAndDecide silently falls back to
 // route A).
@@ -124,12 +124,12 @@ func TestPlan_NativeUnionShardsMoveBothArms(t *testing.T) {
 	fanoutSeen := map[int64]int{}
 	for _, s := range d.Slices {
 		var (
-			native *chplan.RangeWindowNative
+			native *chplan.RangeWindowGridNative
 			fanout *chplan.RangeWindow
 		)
 		chplan.Walk(s.Plan, func(n chplan.Node) bool {
 			switch v := n.(type) {
-			case *chplan.RangeWindowNative:
+			case *chplan.RangeWindowGridNative:
 				native = v
 			case *chplan.RangeWindow:
 				fanout = v
@@ -186,7 +186,7 @@ func TestPlan_ProductionTemporalitySplitReanchorsBothArms(t *testing.T) {
 		var nativeCount, fanoutCount int
 		chplan.Walk(shard.Plan, func(n chplan.Node) bool {
 			switch arm := n.(type) {
-			case *chplan.RangeWindowNative:
+			case *chplan.RangeWindowGridNative:
 				nativeCount++
 				if !arm.Start.Equal(shard.Start) || !arm.End.Equal(shard.End) {
 					t.Errorf("shard %d native arm = [%v,%v], want [%v,%v]", shard.Index, arm.Start, arm.End, shard.Start, shard.End)
@@ -221,11 +221,11 @@ func productionTemporalitySplitPlan(t *testing.T) chplan.Node {
 	return plan
 }
 
-// nativeSpinePlan builds `<wrap>(RangeWindowNative)` on the canonical grid —
+// nativeSpinePlan builds `<wrap>(RangeWindowGridNative)` on the canonical grid —
 // the pure-native shape, with the wrapper chosen by the caller so both of
 // UnpinSpine's two structurally different routes to the same node are covered.
 func nativeSpinePlan(wrap func(chplan.Node) chplan.Node) chplan.Node {
-	return wrap(&chplan.RangeWindowNative{
+	return wrap(&chplan.RangeWindowGridNative{
 		Input:           leafScan(),
 		Func:            "rate",
 		Range:           unionArmRange,
@@ -249,7 +249,7 @@ func nativeSpinePlan(wrap func(chplan.Node) chplan.Node) chplan.Node {
 // reaches the node, and they exercise DIFFERENT code:
 //
 //   - under a Project: the copy-on-write spine walk (unpinSpineCOW's own
-//     RangeWindowNative arm);
+//     RangeWindowGridNative arm);
 //   - under an Aggregate, and inside the mixed union: the off-spine
 //     descend-and-clone fallback (subtreeHasZeroableSpine must SEE the node,
 //     then zeroSpineInPlace must zero it).
@@ -280,7 +280,7 @@ func TestUnpinSpine_ZeroesNativeBounds(t *testing.T) {
 				return nativeSpinePlan(func(n chplan.Node) chplan.Node {
 					return &chplan.Aggregate{
 						Input:    n,
-						AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+						AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 					}
 				})
 			},
@@ -298,7 +298,7 @@ func TestUnpinSpine_ZeroesNativeBounds(t *testing.T) {
 
 			found := 0
 			chplan.Walk(base, func(n chplan.Node) bool {
-				v, ok := n.(*chplan.RangeWindowNative)
+				v, ok := n.(*chplan.RangeWindowGridNative)
 				if !ok {
 					return true
 				}
@@ -311,7 +311,7 @@ func TestUnpinSpine_ZeroesNativeBounds(t *testing.T) {
 				return true
 			})
 			if found != 1 {
-				t.Fatalf("expected exactly 1 RangeWindowNative in the unpinned view, found %d", found)
+				t.Fatalf("expected exactly 1 RangeWindowGridNative in the unpinned view, found %d", found)
 			}
 			if !plan.Equal(snapshot) {
 				t.Error("UnpinSpine mutated the caller's plan")
@@ -336,8 +336,8 @@ func TestUnpinSpine_ZeroesNativeBounds(t *testing.T) {
 func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 	t.Parallel()
 
-	native := func(mut func(*chplan.RangeWindowNative)) chplan.Node {
-		n := &chplan.RangeWindowNative{
+	native := func(mut func(*chplan.RangeWindowGridNative)) chplan.Node {
+		n := &chplan.RangeWindowGridNative{
 			Input:           leafScan(),
 			Func:            "rate",
 			Range:           unionArmRange,
@@ -362,7 +362,7 @@ func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 			// does not predict. Re-anchoring would move them onto the request
 			// grid and answer the un-pinned query.
 			name: "at-pinned bounds diverge from the request grid",
-			plan: native(func(n *chplan.RangeWindowNative) {
+			plan: native(func(n *chplan.RangeWindowGridNative) {
 				n.Start = gridStart.Add(-24 * time.Hour)
 				n.End = gridEnd.Add(-24 * time.Hour)
 			}),
@@ -373,7 +373,7 @@ func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 			// grid is whatever the re-anchor invents, which is not a query
 			// anybody asked for.
 			name: "both bounds unpinned",
-			plan: native(func(n *chplan.RangeWindowNative) {
+			plan: native(func(n *chplan.RangeWindowGridNative) {
 				n.Start = time.Time{}
 				n.End = time.Time{}
 			}),
@@ -381,7 +381,7 @@ func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 		},
 		{
 			name: "half-pinned bounds",
-			plan: native(func(n *chplan.RangeWindowNative) {
+			plan: native(func(n *chplan.RangeWindowGridNative) {
 				n.Start = time.Time{}
 			}),
 			wantReason: ReasonInstant,
@@ -391,7 +391,7 @@ func TestPlan_NativeGridGuardsRefuse(t *testing.T) {
 			// is widened by the outer window's Range, so a native node pinned at
 			// the OUTER grid does not sit where its own depth predicts.
 			name:       "nested under a routable window",
-			plan:       geomRoutableSpine(native(func(*chplan.RangeWindowNative) {})),
+			plan:       geomRoutableSpine(native(func(*chplan.RangeWindowGridNative) {})),
 			wantReason: ReasonGridMismatch,
 		},
 	} {
@@ -437,7 +437,7 @@ const nestedNativeRange = time.Minute
 // grid-prediction gate long before the quantum is considered.
 func nestedNativeSpine(innerStep time.Duration) chplan.Node {
 	outer := geomRoutableSpine(nil)
-	outer.Input = &chplan.RangeWindowNative{
+	outer.Input = &chplan.RangeWindowGridNative{
 		Input:           leafScan(),
 		Func:            "rate",
 		Range:           nestedNativeRange,

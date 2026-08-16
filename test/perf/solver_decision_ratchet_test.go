@@ -61,10 +61,10 @@
 // resolves to the all-fan-out table unconditionally, so it classified the
 // configuration that is NOT what a capable server actually runs
 // (docs/performance.md: "the native path is the default on a capable server;
-// you only need to act to opt *out* of it"). #2117's `RangeWindowNative`
+// you only need to act to opt *out* of it"). #2117's `RangeWindowGridNative`
 // re-anchor fix changed that node's OWN routing classification —
 // not-sliceable to sliceable — and this ratchet regenerated with ZERO drift,
-// because it had never classified a single `RangeWindowNative` plan to begin
+// because it had never classified a single `RangeWindowGridNative` plan to begin
 // with (a 590-fixture census found exactly 0 occurrences). A native-routing
 // regression is invisible to a baseline that never records a native decision;
 // classifying under both tables puts the native rows beside the fan-out ones
@@ -192,7 +192,7 @@ func decisionKey(id, lowering string) string {
 // answering true. Built FROM the registry, not hand-copied, so a new
 // AutoSelect ts_grid feature fails this helper loudly — via the default case
 // below — instead of silently classifying only under the stale table, which
-// is exactly the blind spot #2120 reported (RangeWindowNative going from
+// is exactly the blind spot #2120 reported (RangeWindowGridNative going from
 // not-sliceable to sliceable when #2117 shipped moved the ratchet's own
 // classification with zero recorded drift).
 func nativeLowerers(t *testing.T) promql.RangeLowerers {

@@ -225,7 +225,7 @@ func TestAggregate_Equal_Positive(t *testing.T) {
 			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "Job"}},
 			GroupByAliases: []string{"job"},
 			AggFuncs: []chplan.AggFunc{
-				{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"},
+				{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "Value"},
 			},
 		}
 	}
@@ -282,11 +282,11 @@ func TestAggregate_Equal_Negative_AggFuncs(t *testing.T) {
 	t.Parallel()
 	a := &chplan.Aggregate{
 		Input:    &chplan.Scan{Table: "t"},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "V"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "V"}}}},
 	}
 	b := &chplan.Aggregate{
 		Input:    &chplan.Scan{Table: "t"},
-		AggFuncs: []chplan.AggFunc{{Name: "avg", Args: []chplan.Expr{&chplan.ColumnRef{Name: "V"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnAvg, Args: []chplan.Expr{&chplan.ColumnRef{Name: "V"}}}},
 	}
 	if a.Equal(b) {
 		t.Errorf("different AggFunc name should not be Equal")
@@ -305,13 +305,13 @@ func TestAggregate_Equal_Negative_Input(t *testing.T) {
 func TestAggFunc_Equal_Positive(t *testing.T) {
 	t.Parallel()
 	a := chplan.AggFunc{
-		Name:   "quantile",
+		Fn:     chplan.FnQuantile,
 		Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
 		Args:   []chplan.Expr{&chplan.ColumnRef{Name: "V"}},
 		Alias:  "Value",
 	}
 	b := chplan.AggFunc{
-		Name:   "quantile",
+		Fn:     chplan.FnQuantile,
 		Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
 		Args:   []chplan.Expr{&chplan.ColumnRef{Name: "V"}},
 		Alias:  "Value",
@@ -323,8 +323,8 @@ func TestAggFunc_Equal_Positive(t *testing.T) {
 
 func TestAggFunc_Equal_Negative_Name(t *testing.T) {
 	t.Parallel()
-	a := chplan.AggFunc{Name: "sum"}
-	b := chplan.AggFunc{Name: "avg"}
+	a := chplan.AggFunc{Fn: chplan.FnSum}
+	b := chplan.AggFunc{Fn: chplan.FnAvg}
 	if a.Equal(b) {
 		t.Errorf("different Name should not be Equal")
 	}
@@ -332,8 +332,8 @@ func TestAggFunc_Equal_Negative_Name(t *testing.T) {
 
 func TestAggFunc_Equal_Negative_Alias(t *testing.T) {
 	t.Parallel()
-	a := chplan.AggFunc{Name: "sum", Alias: "x"}
-	b := chplan.AggFunc{Name: "sum", Alias: "y"}
+	a := chplan.AggFunc{Fn: chplan.FnSum, Alias: "x"}
+	b := chplan.AggFunc{Fn: chplan.FnSum, Alias: "y"}
 	if a.Equal(b) {
 		t.Errorf("different Alias should not be Equal")
 	}
@@ -341,8 +341,8 @@ func TestAggFunc_Equal_Negative_Alias(t *testing.T) {
 
 func TestAggFunc_Equal_Negative_ParamsLen(t *testing.T) {
 	t.Parallel()
-	a := chplan.AggFunc{Name: "quantile"}
-	b := chplan.AggFunc{Name: "quantile", Params: []chplan.Expr{&chplan.LitFloat{V: 0.5}}}
+	a := chplan.AggFunc{Fn: chplan.FnQuantile}
+	b := chplan.AggFunc{Fn: chplan.FnQuantile, Params: []chplan.Expr{&chplan.LitFloat{V: 0.5}}}
 	if a.Equal(b) {
 		t.Errorf("different Params length should not be Equal")
 	}
@@ -350,8 +350,8 @@ func TestAggFunc_Equal_Negative_ParamsLen(t *testing.T) {
 
 func TestAggFunc_Equal_Negative_ParamsValue(t *testing.T) {
 	t.Parallel()
-	a := chplan.AggFunc{Name: "quantile", Params: []chplan.Expr{&chplan.LitFloat{V: 0.5}}}
-	b := chplan.AggFunc{Name: "quantile", Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}}}
+	a := chplan.AggFunc{Fn: chplan.FnQuantile, Params: []chplan.Expr{&chplan.LitFloat{V: 0.5}}}
+	b := chplan.AggFunc{Fn: chplan.FnQuantile, Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}}}
 	if a.Equal(b) {
 		t.Errorf("different Params value should not be Equal")
 	}
@@ -359,8 +359,8 @@ func TestAggFunc_Equal_Negative_ParamsValue(t *testing.T) {
 
 func TestAggFunc_Equal_Negative_ArgsValue(t *testing.T) {
 	t.Parallel()
-	a := chplan.AggFunc{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}
-	b := chplan.AggFunc{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Y"}}}
+	a := chplan.AggFunc{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "X"}}}
+	b := chplan.AggFunc{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Y"}}}
 	if a.Equal(b) {
 		t.Errorf("different Args value should not be Equal")
 	}
@@ -1323,8 +1323,8 @@ func TestBinary_Equal_Positive(t *testing.T) {
 
 func TestFuncCall_Equal_Positive(t *testing.T) {
 	t.Parallel()
-	a := &chplan.FuncCall{Name: "round", Args: []chplan.Expr{&chplan.LitFloat{V: 1.5}}}
-	b := &chplan.FuncCall{Name: "round", Args: []chplan.Expr{&chplan.LitFloat{V: 1.5}}}
+	a := &chplan.FuncCall{Fn: chplan.FnRound, Args: []chplan.Expr{&chplan.LitFloat{V: 1.5}}}
+	b := &chplan.FuncCall{Fn: chplan.FnRound, Args: []chplan.Expr{&chplan.LitFloat{V: 1.5}}}
 	if !a.Equal(b) {
 		t.Fatalf("identical FuncCall should be Equal")
 	}
@@ -1602,7 +1602,7 @@ func TestAggregate_Equal_Positive_WithParameterisedAggFunc(t *testing.T) {
 			Input: &chplan.Scan{Table: "t"},
 			AggFuncs: []chplan.AggFunc{
 				{
-					Name:   "quantile",
+					Fn:     chplan.FnQuantile,
 					Params: []chplan.Expr{&chplan.LitFloat{V: 0.95}},
 					Args:   []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 					Alias:  "Value",

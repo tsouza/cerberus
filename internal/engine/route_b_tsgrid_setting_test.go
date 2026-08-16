@@ -36,7 +36,7 @@ func tsGridRouteBDecision(wrap func() chplan.Node) *solver.Decision {
 
 func tsGridRouteBNativeShard() chplan.Node {
 	return &chplan.Aggregate{
-		Input: &chplan.RangeWindowNative{
+		Input: &chplan.RangeWindowGridNative{
 			Input:           &chplan.Scan{Table: "otel_metrics_sum"},
 			Func:            "rate",
 			Range:           5 * time.Minute,
@@ -46,7 +46,7 @@ func tsGridRouteBNativeShard() chplan.Node {
 			TimestampColumn: "TimeUnix",
 			ValueColumn:     "Value",
 		},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
@@ -63,7 +63,7 @@ func tsGridRouteBFanoutShard() chplan.Node {
 			TimestampColumn: "TimeUnix",
 			ValueColumn:     "Value",
 		},
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
@@ -74,7 +74,7 @@ func tsGridRouteBFanoutShard() chplan.Node {
 // `allow_experimental_time_series_aggregate_functions=1` the server answers code
 // 63 on EVERY shard, so a routed native plan fails outright rather than
 // degrading. Route A stamps it in execContext; route B's dispatch ctx is built
-// somewhere else entirely, and until RangeWindowNative joined the routable spine
+// somewhere else entirely, and until RangeWindowGridNative joined the routable spine
 // family (issue #2117) no route-B dispatch could carry the family, so the two
 // paths were never both required to know the rule.
 //

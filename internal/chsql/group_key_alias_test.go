@@ -33,13 +33,13 @@ func TestEmitAggregate_ShadowingGroupKeyNamesItsAlias(t *testing.T) {
 		Input: &chplan.Scan{Table: "otel_metrics_exponential_histogram"},
 		GroupBy: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapSort",
+				Fn:   chplan.FnMapSort,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			},
 		},
 		GroupByAliases: []string{"Attributes"},
 		AggFuncs: []chplan.AggFunc{{
-			Name: "argMax",
+			Fn: chplan.FnArgMax,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: "Count"},
 				&chplan.ColumnRef{Name: "TimeUnix"},
@@ -73,12 +73,12 @@ func TestEmitAggregate_UnaliasedGroupKeyKeepsItsExpression(t *testing.T) {
 		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
 		GroupBy: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "mapSort",
+				Fn:   chplan.FnMapSort,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			},
 		},
 		AggFuncs: []chplan.AggFunc{{
-			Name:  "sum",
+			Fn:    chplan.FnSum,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "Value"}},
 			Alias: "Value",
 		}},

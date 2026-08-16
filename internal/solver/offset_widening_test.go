@@ -37,9 +37,9 @@ func stampOffset(n chplan.Node, off time.Duration) bool {
 		v.Offset = off
 	case *chplan.RangeLWR:
 		v.Offset = off
-	case *chplan.RangeWindowNative:
+	case *chplan.RangeWindowGridNative:
 		v.Offset = off
-	case *chplan.RangeWindowResample:
+	case *chplan.RangeWindowStaleResample:
 		v.Offset = off
 	case *chplan.RangeBucketFanout:
 		v.Offset = off
@@ -287,9 +287,9 @@ func offsetWalkCases() []offsetWalkCase {
 			// the thing under test — it is what would decide the predicted
 			// bounds the day the node is made re-anchorable, and the whole point
 			// of closing the class is that the fix lands before that, not after.
-			kind: "RangeWindowNative",
+			kind: "RangeWindowGridNative",
 			plan: func(innerStart time.Time) chplan.Node {
-				return &chplan.RangeWindowNative{
+				return &chplan.RangeWindowGridNative{
 					Input:           nestedProbeWindow(innerStart),
 					Func:            "rate",
 					Range:           geomNestedRange,

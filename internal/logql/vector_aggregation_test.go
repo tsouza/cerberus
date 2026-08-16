@@ -268,7 +268,7 @@ func TestLowerVectorAggregationByTopLevelColumn(t *testing.T) {
 // FuncCall.
 func funcName(expr chplan.Expr) string {
 	if fc, ok := expr.(*chplan.FuncCall); ok {
-		return fc.Name
+		return string(fc.Fn)
 	}
 	return ""
 }

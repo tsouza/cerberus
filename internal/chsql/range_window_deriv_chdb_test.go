@@ -1,13 +1,13 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental
-// timeSeriesDerivToGrid lowering (chplan.RangeWindowNative, Func="deriv").
+// timeSeriesDerivToGrid lowering (chplan.RangeWindowGridNative, Func="deriv").
 //
 // The test lowers the SAME `sum by (host) (deriv(load_state[5m]))`
 // query_range expression TWICE against the SAME seed — once with the native
 // deriv strategy OFF (the least-squares linear-regression slope fan-out,
 // RangeWindow) and once with it ON (the native timeSeriesDerivToGrid,
-// RangeWindowNative) — runs BOTH on the same ephemeral chDB session, and
+// RangeWindowGridNative) — runs BOTH on the same ephemeral chDB session, and
 // compares the per-(series, anchor) slope values.
 //
 // Why this is the parity proof. The fan-out's per-window slope is the
@@ -116,7 +116,7 @@ func TestNativeTSGridDeriv_DualEmitParity(t *testing.T) {
 	native := runDerivEmit(t, db, true, false)
 
 	// Optimizer-narrowed native scan must be BIT-IDENTICAL to the wide native
-	// scan (ProjectionPushdown narrows the RangeWindowNative inner Scan to the
+	// scan (ProjectionPushdown narrows the RangeWindowGridNative inner Scan to the
 	// exact {Attributes, TimeUnix, Value} the emit reads — it must change neither
 	// the row set nor a single slope value at full float64 precision).
 	nativeOpt := runDerivEmit(t, db, true, true)

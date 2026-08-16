@@ -444,11 +444,8 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 		for i, a := range v.Args {
 			newArgs[i] = rewriteAnchorToTimeUnix(a, s)
 		}
-		// v's identity may be carried by either Fn or Name (dual-mode,
-		// see FuncCall's doc comment) depending on whether the node's
-		// construction site has migrated to Fn yet — copy both through
-		// unconditionally rather than guessing which one is live.
-		return &chplan.FuncCall{Fn: v.Fn, Name: v.Name, Args: newArgs}
+		// Preserve the sealed function symbol while rebuilding its arguments.
+		return &chplan.FuncCall{Fn: v.Fn, Args: newArgs}
 	case *chplan.Binary:
 		return &chplan.Binary{
 			Op:    v.Op,

@@ -5,5 +5,5 @@ SELECT * FROM (SELECT `Attributes`, toFloat64(count(?)) AS `Value` FROM (SELECT 
 [1] int64 = 0
 -- chplan --
 Filter predicate=(Value > 0)
-  Aggregate groupBy=[Attributes] funcs=[count(1) AS Value]
+  Aggregate groupBy=[Attributes] funcs=[FnCount(1) AS Value]
     Scan(otel_metrics_gauge)

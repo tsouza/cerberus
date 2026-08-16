@@ -16,7 +16,7 @@ import (
 // publishes. Which columns those are is a property of the input's row shape,
 // and the shape a range-mode `rate()` carries depends on which lowering
 // strategy is wired: the arrayJoin fan-out builds a chplan.RangeWindow, the
-// ts_grid_range strategy builds a chplan.RangeWindowNative with the IDENTICAL
+// ts_grid_range strategy builds a chplan.RangeWindowGridNative with the IDENTICAL
 // row shape.
 //
 // Both forwarders used to classify by asserting the fan-out node kind, which
@@ -33,7 +33,7 @@ import (
 // referencing one and forwards the anchor under the timestamp column's name,
 // so it emits valid SQL and returns correct points. What it loses is
 // substitutability — the two strategies publish different columns for one row
-// shape, which is exactly the property chplan.RangeWindowNative's doc comment
+// shape, which is exactly the property chplan.RangeWindowGridNative's doc comment
 // claims — and that divergence is what turns the next consumer to read
 // chplan.RangeWindowAnchorColumn off a plan root into the same 502.
 //
@@ -177,7 +177,7 @@ func assertGridWindowColumns(t *testing.T, list, strategy string) {
 // TestNativeRowShapeForwardsGridColumns pins the emitted column set of a
 // single-column rewrite over a range-mode rate() on the ts_grid_range path.
 //
-// The rewrite sits on a chplan.RangeWindowNative, whose scope publishes
+// The rewrite sits on a chplan.RangeWindowGridNative, whose scope publishes
 // (Attributes, anchor_ts, TimeUnix, Value) and NO MetricName. Naming the
 // missing column is the 502; dropping either timestamp column empties the
 // matrix response.

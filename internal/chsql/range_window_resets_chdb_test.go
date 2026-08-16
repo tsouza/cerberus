@@ -1,13 +1,13 @@
 //go:build chdb
 
 // chDB-backed dual-emit parity pin for the experimental timeSeriesResetsToGrid
-// lowering (chplan.RangeWindowNative, Func="resets").
+// lowering (chplan.RangeWindowGridNative, Func="resets").
 //
 // The test lowers the SAME `sum by (job) (resets(http_requests_total[5m]))`
 // query_range expression TWICE against the SAME seed — once with the native
 // resets strategy OFF (the arrayPopBack/arrayPopFront `c < p` count fan-out,
 // RangeWindow) and once with it ON (the native timeSeriesResetsToGrid,
-// RangeWindowNative) — runs BOTH on the same ephemeral chDB session, and
+// RangeWindowGridNative) — runs BOTH on the same ephemeral chDB session, and
 // compares the per-(series, anchor) reset-count values. Counts are exact
 // integers in float64, so the assertion is BIT-IDENTICAL.
 //

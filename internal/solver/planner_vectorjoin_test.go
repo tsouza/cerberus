@@ -82,7 +82,7 @@ func instantScalarInteriorJoinPlan() chplan.Node {
 	instantArm := func() chplan.Node {
 		return &chplan.Aggregate{
 			Input:    leafScan(),
-			AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+			AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 		}
 	}
 	join := &chplan.VectorJoin{
@@ -111,7 +111,7 @@ func instantScalarInteriorJoinPlan() chplan.Node {
 	}
 	return &chplan.Aggregate{
 		Input:    rw,
-		AggFuncs: []chplan.AggFunc{{Name: "sum", Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}},
 	}
 }
 
