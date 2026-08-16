@@ -55,13 +55,13 @@ var ErrReanchorGridMismatch = errors.New("chplan: windowed node bounds do not ma
 //     the predicted grid (e.g. a top-level range-mode `rate(m[5m])`).
 //
 // Any other shape — an @-pinned anchor whose End differs from the predicted
-// End, or a future route-A fix that pins End != ctx.end — returns
-// ErrReanchorGridMismatch so the caller aborts to route A rather than emit
-// a shard plan that silently disagrees with the @ semantics. This makes the
-// copy safe both before and after the known lowerRangeFn @-clobber bug is
-// fixed: today's clobbered plans land exactly on the predicted grid (they
-// pass, and route-A-as-oracle holds), and once the clobber is fixed an
-// @-pinned node's End no longer matches the predicted grid and it routes A.
+// End — returns ErrReanchorGridMismatch so the caller aborts to route A
+// rather than emit a shard plan that silently disagrees with the @
+// semantics. Every range-vector lowering keeps an @-pinned window in
+// Step==0 instant shape (broadcasting the single pinned value across the
+// step grid via rangeGridShapeFor), so this guard is the last line of
+// defense against any other shape that reaches ReanchorRange with bounds
+// that do not match the predicted grid.
 //
 // Spine shape mirrors widenSubquerySpine exactly so the two stay
 // equivalent on post-optimizer plans (pinned by the equivalence test in

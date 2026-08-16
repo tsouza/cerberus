@@ -83,10 +83,12 @@ and which layer covers the residue. Three postures are worth knowing:
 - **Release gates** — `compose-smoke`, `dashboard` (k3d + Grafana + Playwright), and `profile` —
   short-circuit to a green no-op on an ordinary PR and do their real work on the merge commit. They
   are named in `release.yml`'s `RELEASE_REQUIRED_CHECKS`, so nothing publishes until each posts green
-  on the commit being shipped. `compose-smoke` narrows that short-circuit: it is the only lane that
-  runs against a real ClickHouse server rather than chDB, so a PR touching `internal/chsql`,
-  `internal/api`, `internal/chclient`, or `cmd/cerberus` boots the stack on the PR itself. The scope
-  rule lives in `.github/scripts/compose-smoke-scope.mjs`.
+  on the commit being shipped. `compose-smoke` is the only lane that runs against a real ClickHouse
+  server rather than chDB, but it does not scope to a diff's touched paths: an ordinary PR omits it
+  entirely (the required `quickstart` context covers the published-startup / readiness / Grafana-root
+  contract with one stack instead), and it runs the full browser-depth sweep only on `release/*` PRs,
+  `push`, and `schedule` — plus a `workflow_dispatch` that explicitly requests regenerating the
+  Compose crawl inventory. The event policy lives in `.github/scripts/compose-smoke-scope.mjs`.
 - **Merge-queue posture.** Every workflow owning a required context also declares `merge_group:`, so
   the same check runs report under byte-identical names on the projected trunk, and a queued entry is
   held to the pull-request posture rather than the push posture — same short-circuits, same
@@ -137,9 +139,9 @@ The protection git offers is path-based, not agent-based. The same branch cannot
 two worktrees, and each worktree has its own `HEAD` ref, but none of that helps when git is run from
 the wrong path. Every checkout of this repository shares one object store while sitting on a
 different branch, so a `git commit` issued from another checkout stacks onto whichever branch that
-checkout happens to have out — somebody else's PR. Three post-mortems (issues #207, #209, and #210)
-report exactly that shape, and the investigation under task #213 traced every one of them to an agent
-using another checkout's path because a briefing had pasted it in as "the repo".
+checkout happens to have out — somebody else's PR. Past post-mortems report exactly that shape, in
+every case traced to an agent using another checkout's path because a briefing had pasted it in as
+"the repo".
 
 ### Recovery when contamination is suspected
 
@@ -157,8 +159,8 @@ using another checkout's path because a briefing had pasted it in as "the repo".
 6. Committed bleed-through: `git cherry-pick <sha>` from inside the correct worktree, then
    `git revert <sha>` and push from the wrong one. Never `git reset --hard` a shared branch — that
    rewrites history other agents may have pushed.
-7. Record the contamination SHAs, file paths, and worktree paths on task #213 so the pattern does not
-   repeat silently.
+7. Record the contamination SHAs, file paths, and worktree paths on a GitHub Issue so the pattern
+   does not repeat silently.
 
 ## The checked-in Claude Code harness
 
@@ -197,11 +199,12 @@ targeted local run returns in seconds.
 
 Narrowing means the failing unit and nothing around it:
 
-| Red check                                                         | Local reproduction                                       |
-| ----------------------------------------------------------------- | -------------------------------------------------------- |
-| `check-test`                                                      | `go test -run '^TestName$/^subtest$' ./internal/<pkg>/`  |
-| `forbid-skip`, `forbid-deferral`, `forbid-sql-raw`, `config-docs` | `node .github/scripts/<gate>.mjs` from the worktree root |
-| `check-build`                                                     | `go build ./<pkg>/` for the package named in the log     |
+| Red check                                                         | Local reproduction                                                                                       |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `check-test`                                                      | `go test -run '^TestName$/^subtest$' ./internal/<pkg>/`                                                  |
+| `forbid-skip`, `forbid-deferral`, `forbid-sql-raw`                | `node .github/scripts/<gate>.mjs` from the worktree root                                                 |
+| `config-docs`                                                     | `just gen-config-docs` (`go run ./cmd/cerberus config-docs -out docs/configuration.md`), then `git diff` |
+| `check-build`                                                     | `go build ./<pkg>/` for the package named in the log                                                     |
 
 Where a recipe exists, invoke the recipe rather than the underlying command: the recipe carries the
 build tags, the race flag and the timeouts, and a direct `go test` inherits Go's own ten-minute

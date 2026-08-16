@@ -43,8 +43,10 @@ the portable SQL path. What it currently exploits:
   `range_window_predict_linear_chdb_test.go`): the substrate is ClickHouse 26.5,
   above the 25.9 floor, so it ships the aggregates and the native half genuinely
   fires in the `chdb` lane.
-  - **Known limitation (why the native regression path stays experimental,
-    default-off behind `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`):** the aggregate
+  - **Known limitation (why the native regression path stays experimental
+    maturity, auto-enabled only on a capable server — ClickHouse >= 25.9 and
+    the server permits `allow_experimental_time_series_aggregate_functions`):**
+    the aggregate
     accepts only a `DateTime`/`DateTime64` timestamp (it rejects `Float64` /
     `Decimal`), so its single ts argument drives both the regression x-axis *and*
     the window-membership bucketing — there is no way to keep a whole-second

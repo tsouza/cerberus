@@ -185,7 +185,7 @@ every PR) to *broad* (corpus-wide, nightly).
    read-side harness was blind to.
 3. **Corpus-wide fan-out profiler** — `test/perf/profile`, the required
    `profile` job: it reports on every PR, and does the real profiling on
-   push-to-main / nightly / dispatch / release PRs. Profiles all 734 executable
+   push-to-main / nightly / dispatch / release PRs. Profiles all 1,019 executable
    fixtures via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
    by fan factor, and surfaces the worst as a job step-summary. The wide net
    for a fan-out in a construct nobody thought to write a guard for.

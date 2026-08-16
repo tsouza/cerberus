@@ -43,10 +43,12 @@ const (
 // shared shape every such lowering caps its Input with, so all of them
 // publish one output contract.
 //
-// internal/promql builds it from two lowerings today — a bare selector
-// (histogram_native_bare.go) and `sum [by/without] (<selector>)`
-// (histogram_native_sum.go). internal/chclient.Sample.Histogram is the
-// decode-side landing spot for the columns it publishes, and
+// internal/promql builds it from three lowerings today — a bare selector
+// (histogram_native_bare.go), `sum [by/without] (<selector>)`
+// (histogram_native_sum.go), and the histogram-valued range functions —
+// rate/increase/delta/irate/idelta — over a native histogram
+// (histogram_native_range_fn.go). internal/chclient.Sample.Histogram
+// is the decode-side landing spot for the columns it publishes, and
 // internal/api/prom's `histogram` / `histograms` wire keys the HTTP-side
 // one.
 //

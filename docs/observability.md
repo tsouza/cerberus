@@ -131,7 +131,7 @@ One related opt-in knob is a boolean rather than a table-name override:
 | `CERBERUS_SCHEMA_TRACES_TS_LOOKUP` | `false` | When truthy, the Tempo trace-by-ID path window-prunes the spans scan through the OTel-CH `<spans>_trace_id_ts` lookup MV. Enable only after confirming that MV is populated; the lookup-table name derives from the (possibly overridden) spans table as `<spans>_trace_id_ts`. |
 
 The active ClickHouse **database** is set by `CERBERUS_CH_DATABASE`
-(default `otel`) — that single knob covers both the connection's
+(default `default`) — that single knob covers both the connection's
 default schema and the database the auto-create DDL targets, so no
 separate `CERBERUS_SCHEMA_DATABASE` is required.
 

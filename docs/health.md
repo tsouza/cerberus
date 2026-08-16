@@ -215,18 +215,21 @@ readinessProbe:
     port: http
   initialDelaySeconds: 2
   periodSeconds: 3
-  timeoutSeconds: 2
+  timeoutSeconds: 5
+  failureThreshold: 5
 livenessProbe:
   httpGet:
     path: /healthz
     port: http
   initialDelaySeconds: 10
   periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
 ```
 
 ### Recommended defaults
 
-- **Readiness** — `periodSeconds: 3`, `timeoutSeconds: 2`. The TTL cache
+- **Readiness** — `periodSeconds: 3`, `timeoutSeconds: 5`. The TTL cache
   bounds the actual CH ping rate to ~1 per 2 seconds regardless of
   probe frequency.
 - **Liveness** — `periodSeconds: 10`. Liveness probes are cheap (no CH

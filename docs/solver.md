@@ -54,9 +54,9 @@ The signals, each gathered in the one pass:
    shard that re-gridded one and shared another verbatim would compose the
    shared arm's full-grid answer `K` times over.
 
-   The three re-anchorable kinds are exactly the kinds the slicer's `unpinSpine`
+   The three re-anchorable kinds are exactly the kinds the slicer's `unpinSpineCOW`
    zeroes and exactly the kinds `carrierGeometryOf` marks re-anchorable. A kind
-   that re-anchoring learns but `unpinSpine` does not stays pinned at the full
+   that re-anchoring learns but `unpinSpineCOW` does not stays pinned at the full
    request grid, so every slice aborts with a grid mismatch and the plan falls
    back to route A while still classifying as routable.
 
@@ -234,11 +234,11 @@ emptied. `D` is the cumulative spine lookback recovered by walking the spine.
 **Re-anchoring.** The plan that reaches the slicer is pinned at the full
 request grid (the grid-prediction guard already verified it sits exactly
 there). To re-grid each slice onto a sub-window, the slicer first builds one
-spine-unpinned, copy-on-write view (`unpinSpine`): the windowed-spine bounds
+spine-unpinned, copy-on-write view (`unpinSpineCOW`): the windowed-spine bounds
 (`RangeWindow` / `RangeWindowGridNative` / `RangeLWR` `Start`, `End`, and the matrix
 `OuterRange`) are zeroed. This is safe because signal 5 already proved every spine node sits on
 the predicted grid, so the zeroed information is exactly what the re-anchor
-recomputes. `unpinSpine` clones ONLY the spine-path nodes it zeroes (and their
+recomputes. `unpinSpineCOW` clones ONLY the spine-path nodes it zeroes (and their
 ancestors back to the root, the `O(spine-depth)` chain) and SHARES every
 immutable off-spine subtree -- with a descend-and-clone guard that, on an
 off-spine subtree which itself carries a windowed node needing zeroing (e.g. a

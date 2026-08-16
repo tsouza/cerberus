@@ -37,9 +37,9 @@ package chplan
 //   - GroupBy + GroupByAliases match the wrapping Aggregate / Project
 //     contract used elsewhere in the metrics pipeline (PromQL aggregations
 //     drop __name__; the Sample wrapping is the caller's responsibility).
-//   - PRG ships the classic-histogram path; PR H adds the
-//     exponential-histogram variant (otel_metrics_exponential_histogram) as a
-//     sibling node so dispatch stays one switch in lowerCall.
+//   - This node handles the classic-histogram path; the exponential-histogram
+//     variant (otel_metrics_exponential_histogram) is HistogramQuantileNative,
+//     a sibling node, so dispatch stays one switch in lowerCall.
 //
 // The chsql emitter renders the interpolation as a CH expression chain
 // over arrayCumSum / arrayFirstIndex with the standard edge cases

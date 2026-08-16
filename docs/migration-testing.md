@@ -956,6 +956,11 @@ parsing Gherkin itself:
   `verify`'s own notice reports enumerated and attested coverage as two
   different numbers so the caveat lives in the gate's output rather than in
   prose beside it.
+- `MODE=rollup` is the lane's final verdict, folding the tier jobs' own
+  results rather than re-deriving one from logs. Every tier `emit` selected
+  must come back `success` — `skipped` included counts as a failure — and a
+  tier that ran without being selected is rejected too, so the fold cannot
+  silently pass a cancelled or unexpectedly-run tier.
 
 The `verify` mode and a `migration-e2e.test.mjs` unit guard both run on the
 required `lint` job. `verify` is pure file walking, so a story/scenario drift
@@ -976,7 +981,7 @@ on:
     - cron: '37 4 * * *'      # nightly, offset from e2e and the compat lanes
   workflow_dispatch:
     inputs:
-      tier:  { type: choice, options: [all, tier0], default: all }   # each tier's option lands with its job
+      tier:  { type: choice, options: [all, tier0, tier1, tier2], default: all }   # each tier's option lands with its job
       story: { type: string, required: false }                        # a single MIG id, e.g. MIG-04
 
 permissions:
@@ -985,9 +990,9 @@ permissions:
 # NOTE: no `pull_request:` trigger — so it is never a branch-protection check.
 
 jobs:
-  migration-setup:                     # enumerate + coverage ratchet + emit matrix
+  migration-setup:                     # enumerate + coverage ratchet + emit the tier list
     runs-on: ubuntu-latest
-    outputs: { matrix: ${{ steps.emit.outputs.matrix }} }
+    outputs: { tiers: ${{ steps.emit.outputs.tiers }} }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -998,39 +1003,36 @@ jobs:
         run: node .github/scripts/migration-e2e.mjs
         env: { MODE: emit, SCENARIOS_JSON: build/migration-scenarios.json, TIER: ${{ inputs.tier || 'all' }} }
 
-  migration-tier0:                     # offline — fast, no Docker
+  migration-tier0:                     # offline — fast, no Docker; one fixed job, not matrix-driven
     needs: migration-setup
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier0')
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeoutMinutes }}    # the ceiling rides on the entry
-    strategy: { fail-fast: false, matrix: ${{ fromJSON(needs.migration-setup.outputs.matrix) }} }
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-      - run: go build -o build/cerberus ./cmd/cerberus
+      - run: node .github/scripts/migration-artifact.mjs   # resolve the CLI under test
       - run: node .github/scripts/migration-e2e.mjs
-        env: { MODE: run, TIER: ${{ matrix.tier }}, STORY: ${{ inputs.story }},
-               CERBERUS_BIN: ${{ github.workspace }}/build/cerberus }
+        env: { MODE: run, SCENARIOS_JSON: build/migration-scenarios.json, TIER: tier0, STORY: ${{ inputs.story }} }
 
-  migration-tier1:                     # dual-backend — matrix by archetype
+  migration-tier1:                     # dual-backend — one fixed job, seeds every @tier1 archetype
     needs: migration-setup
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier1')
     runs-on: ubuntu-latest
-    strategy: { fail-fast: false, matrix: ${{ fromJSON(needs.migration-setup.outputs.matrix) }} }
-    timeout-minutes: 60
-    concurrency: { group: migration-t1-${{ github.ref }}-${{ matrix.archetype }}, cancel-in-progress: false }
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: jlumbroso/free-disk-space@…            # same infra-flake fix as e2e.yml
-      # docker hub login for a higher pull rate limit — mirrors e2e.yml
-      - uses: ./.github/actions/setup-buildx      # retried buildkit bootstrap
-      - run: docker compose -f tiers/tier1-dual/docker-compose.dual.yml up --wait --wait-timeout 300
-      # seed the dual-write window; wait for the overlap to fill
-      - run: node .github/scripts/migration-e2e.mjs   # MODE=run TIER=tier1 ARCHETYPE=${{ matrix.archetype }}
+      # GHCR + Docker Hub login, then resolve the CLI/image under test (migration-artifact.mjs)
+      - run: just migration-tier1-up
+      - run: just migration-tier1-seed
+      - run: node .github/scripts/migration-e2e.mjs   # MODE=run TIER=tier1
       # collect artifacts on failure: corpus/explain/classify/rulegraph/verify/gate JSON + logs
       - name: teardown (always)
-        run: docker compose -f tiers/tier1-dual/docker-compose.dual.yml down -v --remove-orphans
+        run: just migration-tier1-down
 
-  migration-tier2:                     # ruler tier — nightly/dispatch only
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  migration-tier2:                     # ruler tier
+    if: contains(fromJSON(needs.migration-setup.outputs.tiers), 'tier2')
     needs: [migration-setup, migration-tier1]        # firing parity requires query parity green first
     # extends tier1 compose with shadow ruler + dead-end alertmanager; runs MIG-09/13/18/19/24
 
@@ -1039,24 +1041,22 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # Per-need `!= success`, never `contains(needs.*.result, 'failure')`:
-      # a matrix rolls up to `cancelled` rather than `failure` when a child
-      # is cancelled, so the `contains` form lets a cancelled tier pass the
-      # fold silently. A tier the event deliberately did not schedule reports
-      # `skipped` and is short-circuited by name, the shape e2e.yml's
-      # compose-smoke aggregator documents.
-      - env: { SETUP: ${{ needs.migration-setup.result }}, TIER0: ${{ needs.migration-tier0.result }},
-               TIER1: ${{ needs.migration-tier1.result }}, TIER2: ${{ needs.migration-tier2.result }} }
-        run: |
-          if [ "$TIER2" = "skipped" ]; then TIER2=success; fi
-          for r in "$SETUP" "$TIER0" "$TIER1" "$TIER2"; do
-            [ "$r" = "success" ] || { echo "::error::a migration lane job did not succeed"; exit 1; }
-          done
+      - run: node .github/scripts/migration-e2e.mjs
+        env: { MODE: rollup, SETUP_RESULT: ${{ needs.migration-setup.result }},
+               EXPECTED_TIERS: ${{ needs.migration-setup.outputs.tiers }},
+               RESULT_TIER0: ${{ needs.migration-tier0.result }}, RESULT_TIER1: ${{ needs.migration-tier1.result }},
+               RESULT_TIER2: ${{ needs.migration-tier2.result }} }
+        # `MODE=rollup` holds every tier `emit` SELECTED to `success` — `skipped`
+        # included counts as a failure — and separately rejects a tier that ran
+        # without being selected, so a cancelled or unexpectedly-run tier cannot
+        # pass the fold silently.
 ```
 
-Push-to-main runs the tiers that need no cluster; the heavy Tier-2 ruler tier
-runs on nightly `schedule` + `workflow_dispatch` only. A tier the event
-deliberately did not schedule reports `skipped` and is passed through **by
+Tier selection is driven by the `tier` dispatch input (default `all`, every
+tier that has scenarios), not by which event triggered the run — a
+push-to-main, the nightly `schedule` and a `workflow_dispatch` all run every
+tier by default, including the heavy Tier-2 ruler tier. A tier a dispatch
+deliberately narrowed away reports `skipped` and is passed through **by
 name** in the fold, so every tier that *did* run is still held to `success` —
 a cancelled matrix must not slip through as a non-failure. `fail-fast: false`
 and `cancel-in-progress: false` mirror the existing e2e lanes (a half-killed
