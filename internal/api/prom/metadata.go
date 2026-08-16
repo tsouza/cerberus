@@ -1284,11 +1284,22 @@ func (h *Handler) catalogMatcherSQL(
 // metadata surface and the query path answer with exactly the same set.
 // Both families are pinned, in both directions, by
 // internal/api/prom/handler_chdb_series_storage_spelling_test.go.
-func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.Metrics) []string {
+func expandSeriesMatchers(
+	parser promparser.Parser,
+	matchers []string,
+	s schema.Metrics,
+	histogramBases map[string]struct{},
+) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, len(matchers))
 	for _, m := range matchers {
-		for _, variant := range expandBareHistogramMatcher(parser, m, s) {
+		variants := []string{m}
+		if base, ok := bareHistogramBaseName(parser, m); ok {
+			if _, isHistogram := histogramBases[base]; isHistogram {
+				variants = expandBareHistogramMatcher(parser, m, s)
+			}
+		}
+		for _, variant := range variants {
 			if _, dup := seen[variant]; dup {
 				continue
 			}
@@ -1301,19 +1312,21 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.
 
 // expandMetadataMatchers is the single matcher fan-out every matched metadata
 // surface (/series, /labels, /label/<name>/values) runs. It layers the
-// name-shape expansion that needs no data (the classic-histogram companions,
-// see [expandSeriesMatchers]) with the one that
-// does: a `__name__` matcher that is NOT pinned to an equality — a regex or a
+// catalogue-gated classic-histogram companion expansion (see
+// [expandSeriesMatchers]) with unpinned-name resolution: a `__name__` matcher
+// that is NOT pinned to an equality — a regex or a
 // negated regex — cannot be resolved against the stored MetricName column,
 // because the histogram-derived names it speaks about exist only as synthetic
 // companions of a stored base name (see regex_name_histogram.go).
 //
-// For those selectors the base names present in the window are enumerated once
-// — [Handler.histogramBaseNames], the same enumeration the `__name__` catalog
-// answers from, so both surfaces agree on which families exist — and each
-// synthetic name the matcher accepts is appended as an equality-pinned variant.
-// Selectors whose name is already pinned skip the enumeration entirely, so the
-// common metric-picker shapes issue no extra query.
+// The base names present in the window are enumerated once whenever resolution
+// needs them — for an unpinned selector, or for a bare equality-pinned name that
+// might be a classic-histogram base. This is the same enumeration the `__name__`
+// catalog answers from, so both surfaces agree on which families exist. A bare
+// pinned name expands to its synthetic companions only when that set contains
+// the base; ordinary gauges and counters keep one matcher variant instead of
+// paying for the histogram bucket/count/sum arms. Already-suffixed equality
+// matchers need no enumeration because their table routing is explicit.
 //
 // Only the caller's own matchers are classified, never the expanded variants:
 // the two expansions above fire exclusively on equality-pinned names, so a
@@ -1325,27 +1338,39 @@ func expandSeriesMatchers(parser promparser.Parser, matchers []string, s schema.
 func (h *Handler) expandMetadataMatchers(
 	ctx context.Context, matchers []string, start, end time.Time, nowAnchored bool,
 ) ([]string, error) {
-	variants := expandSeriesMatchers(h.parser, matchers, h.Schema)
-
 	type unpinned struct {
 		nameMatchers []*labels.Matcher
 		other        []*labels.Matcher
 	}
 	var needResolution []unpinned
+	needsHistogramBases := false
 	for _, matcher := range matchers {
+		if _, ok := bareHistogramBaseName(h.parser, matcher); ok {
+			needsHistogramBases = true
+		}
 		nameMatchers, other, ok := unpinnedMetricNameMatchers(h.parser, matcher)
 		if !ok {
 			continue
 		}
 		needResolution = append(needResolution, unpinned{nameMatchers: nameMatchers, other: other})
 	}
+
+	var bases []string
+	if needsHistogramBases || len(needResolution) > 0 {
+		var err error
+		bases, err = h.histogramBaseNames(ctx, start, end, nowAnchored)
+		if err != nil {
+			return nil, err
+		}
+	}
+	histogramBases := make(map[string]struct{}, len(bases))
+	for _, base := range bases {
+		histogramBases[base] = struct{}{}
+	}
+	variants := expandSeriesMatchers(h.parser, matchers, h.Schema, histogramBases)
+
 	if len(needResolution) == 0 {
 		return variants, nil
-	}
-
-	bases, err := h.histogramBaseNames(ctx, start, end, nowAnchored)
-	if err != nil {
-		return nil, err
 	}
 	if len(bases) == 0 {
 		return variants, nil

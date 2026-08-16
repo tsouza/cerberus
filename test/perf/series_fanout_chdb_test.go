@@ -26,9 +26,10 @@
 // with a rendered-size guard keeping every query under CH's max_query_size).
 // This harness drives the real in-process Prom handler against a chDB
 // session via a round-trip-counting Querier decorator and now asserts the
-// post-fan-in invariant: a typical histogram-shaped request issues EXACTLY
-// ONE round-trip. It also runs the equivalent single combined query
-// directly to size the wall-clock win the fan-in delivers.
+// post-fan-in invariant: a typical histogram-shaped request issues exactly
+// one bounded histogram-catalog lookup and exactly one metrics query. It also
+// runs the equivalent single combined metrics query directly to size the
+// wall-clock win the fan-in delivers.
 package perf
 
 import (
@@ -38,6 +39,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -231,6 +233,23 @@ func TestSeriesFanout_ChDB(t *testing.T) {
 	t.Logf("end-to-end handler wall:     %v", totalWall.Round(time.Microsecond))
 	t.Logf("mean per-trip:               %v", (chSum / time.Duration(max1(n))).Round(time.Microsecond))
 
+	// --- ASSERTION: fan-in shipped — one catalog probe + one metrics query ---
+	//
+	// Pinned-name routing first asks the bounded histogram catalog whether the
+	// name is a real histogram base, then uses that answer to choose the arm
+	// family. The lookup is intentionally separate from the sample query; the
+	// fan-in invariant is that every selected sample arm still collapses into
+	// ONE combined Query call below the K=128 cap. Checking the method sequence
+	// keeps a second sample query from hiding behind the expected catalog cost.
+	wantMethods := []string{"QueryStrings", "Query"}
+	if !slices.Equal(methods, wantMethods) {
+		t.Fatalf("/series fan-in regression: ClickHouse method sequence = %v, want %v. "+
+			"A pinned histogram-shaped matcher must issue one bounded histogram-catalog "+
+			"lookup followed by one combined metrics query; extra Query calls mean the "+
+			"sample-arm fan-out regressed.", methods, wantMethods)
+	}
+	metricsQueryWall := perOp[1]
+
 	// --- Projected batched cost: one OR-joined combined query ---------
 	//
 	// Model the task #71 refactor: instead of N sequential instant queries,
@@ -276,30 +295,12 @@ SELECT DISTINCT MetricName, Attributes FROM (
 	}
 
 	t.Logf("--- projected batched (single combined query) ---")
-	t.Logf("combined-query round-trips:  1  (was %d)", n)
+	t.Logf("combined-query round-trips:  1  (handler metrics queries: 1)")
 	t.Logf("combined-query best wall:    %v", best.Round(time.Microsecond))
-	if chSum > 0 {
-		t.Logf("CH-time delta:               %v (fan-out)  ->  %v (combined)  =  %.1fx",
-			chSum.Round(time.Microsecond), best.Round(time.Microsecond),
-			float64(chSum)/float64(best))
-	}
-
-	// --- ASSERTION: fan-in shipped — typical request is ONE round-trip ---
-	//
-	// The /series fan-in batching (task #71) landed on main: the
-	// nested matcher fan-out now collapses into ONE combined UNION-ALL
-	// query (chunked to ⌈N/K⌉ only past the K=128 arm cap). The matcher
-	// above (`{__name__="http_server_request_duration"}`) fans out to its
-	// H (classic-histogram companion) variants — far below the cap — so the batched handler issues EXACTLY ONE CH
-	// round-trip. This is the deterministic post-fan-in guard: a regression
-	// that re-introduced the per-variant loop (or otherwise un-batched the
-	// fan-out) would inflate n back above 1 and trip here.
-	if n != 1 {
-		t.Fatalf("/series fan-in regression: a typical histogram-shaped match[] request "+
-			"issued %d ClickHouse round-trips, want exactly 1. The fan-in batching (task "+
-			"#71) collapses the variant fan-out into one combined UNION-ALL query for "+
-			"any request below the K=128 arm cap; an n>1 here means the per-variant loop "+
-			"regressed or the combined query was split when it should not have been.", n)
+	if metricsQueryWall > 0 {
+		t.Logf("metrics-query CH-time delta: %v (handler)  ->  %v (direct)  =  %.1fx",
+			metricsQueryWall.Round(time.Microsecond), best.Round(time.Microsecond),
+			float64(metricsQueryWall)/float64(best))
 	}
 }
 

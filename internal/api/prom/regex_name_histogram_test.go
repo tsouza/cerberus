@@ -242,18 +242,17 @@ func (q *recordingQuerier) QueryExemplars(context.Context, string, ...any) ([]ch
 	return nil, nil
 }
 
-// TestExpandMetadataMatchers_PinnedNameIssuesNoEnumeration pins the cost of the
-// common case: a selector whose `__name__` is already pinned to an equality
-// needs no name set, so the metadata path must not issue the base-name
-// enumeration at all.
-func TestExpandMetadataMatchers_PinnedNameIssuesNoEnumeration(t *testing.T) {
+// TestExpandMetadataMatchers_PinnedCompanionIssuesNoEnumeration pins the
+// explicit-suffix fast path: a `_total` selector cannot denote a bare classic
+// histogram base, so its table routing needs no histogram-name catalogue.
+func TestExpandMetadataMatchers_PinnedCompanionIssuesNoEnumeration(t *testing.T) {
 	t.Parallel()
 
 	q := &recordingQuerier{strings: []string{"synth_latency_seconds"}}
 	h := New(q, schema.DefaultOTelMetrics(), nil)
 	start, end := metadataTestWindow()
 
-	if _, err := h.expandMetadataMatchers(context.Background(), []string{`{__name__="up"}`}, start, end, false); err != nil {
+	if _, err := h.expandMetadataMatchers(context.Background(), []string{`{__name__="requests_total"}`}, start, end, false); err != nil {
 		t.Fatalf("expandMetadataMatchers: %v", err)
 	}
 	if len(q.sql) != 0 {

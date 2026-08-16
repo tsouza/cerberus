@@ -295,7 +295,10 @@ func TestLabelValues_MatchSelector_UpstreamError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/api/v1/label/job/values?" +
-		"match%5B%5D=up")
+		// The explicit counter suffix bypasses bare-histogram classification,
+		// so the injected error still comes from the matched-value query this
+		// regression is intended to cover.
+		"match%5B%5D=requests_total")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
