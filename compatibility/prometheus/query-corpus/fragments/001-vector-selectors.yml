@@ -1,0 +1,47 @@
+
+  # Vector selectors.
+  # TODO(upstream): Add tests for staleness support.
+  - query: 'demo_memory_usage_bytes'
+  - query: '{__name__="demo_memory_usage_bytes"}'
+  - query: 'demo_memory_usage_bytes{type="free"}'
+  - query: 'demo_memory_usage_bytes{type!="free"}'
+  - query: 'demo_memory_usage_bytes{instance=~"demo.promlabs.com:.*"}'
+  - query: 'demo_memory_usage_bytes{instance=~"host"}'
+  - query: 'demo_memory_usage_bytes{job=~"dem"}'
+    # Cerberus-owned (see file header edit 3 / issue #1741): "dem" is a
+    # strict prefix of the seeded job="demo", never the whole string, so
+    # this must answer empty on both backends. A substring-search
+    # lowering of `=~` would wrongly match every demo series.
+  - query: 'demo_memory_usage_bytes{instance!~".*:10000"}'
+  - query: 'demo_memory_usage_bytes{type="free", instance!="demo.promlabs.com:10000"}'
+  - query: '{type="free", instance!="demo.promlabs.com:10000"}'
+  - query: '{__name__=~".*"}'
+    should_fail: true
+    # Regex-only `__name__` matchers carry no literal name for cerberus's
+    # table heuristic, so the scan must fan across the gauge AND sum
+    # tables. `demo_cpu_usage_seconds_total` is seeded into
+    # `otel_metrics_sum`: before the fan-out cerberus scanned only the
+    # gauge table and returned empty while reference Prometheus returned
+    # the 9 cpu series. The negated form must likewise exclude matching
+    # series from BOTH tables, not just the gauge arm.
+  - query: '{__name__=~"demo_cpu_usage_seconds.*"}'
+  - query: '{__name__=~"demo_memory_usage_byte.+"}'
+    # demo_delta_requests_total is also excluded here (issue #1628): it is a
+    # DELTA-temporality counter whose CH-stored raw value and reference-Prom
+    # mirrored value are DELIBERATELY different representations (see the
+    # comment on the rate()/increase() cases below and on
+    # prom_remote.go's accumulateToCumulative) — cerberus answers this bare
+    # selector with the raw per-step delta, while the reference answers it
+    # with prom_remote.go's synthesized cumulative running sum, so the two
+    # sides diverge by construction and a bare-selector comparison here would
+    # pin a difference the fixture intends, not a bug. The rate()/increase()
+    # cases below are where this family's cross-backend comparison is
+    # meaningful.
+  - query: '{job="demo", __name__!~"demo_cpu_usage_seconds.*|demo_delta_requests_total"}'
+  - query: "nonexistent_metric_name"
+  - query: 'demo_memory_usage_bytes offset {{.offset}}'
+    variant_args: ['offset']
+  - query: 'demo_memory_usage_bytes offset -{{.offset}}'
+    variant_args: ['offset']
+  # Test staleness handling.
+  - query: demo_intermittent_metric

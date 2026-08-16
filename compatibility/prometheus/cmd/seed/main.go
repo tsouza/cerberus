@@ -538,7 +538,7 @@ var fixtureInserts = []namedStmt{
 	},
 	// demo_num_cpus: 3 instances, gauge. Value = 4 cores per instance, constant.
 	//
-	// Originally absent from the seed (see the cerberus-test-queries.yml header
+	// Originally absent from the seed (see query-corpus/header.yml
 	// for the removal rationale); restored to cover the 28 query mentions in
 	// the test file plus the 3 `should_fail: true` label_replace / label_join
 	// entries that the header documented as gated on this metric returning

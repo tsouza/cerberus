@@ -1,0 +1,33 @@
+
+  # Aggregation operators.
+  - query: '{{.simpleAggrOp}}(demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}}(nonexistent_metric_name)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} by() (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} by(instance) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} by(instance, type) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} by(nonexistent) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} without() (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} without(instance) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} without(instance, type) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.simpleAggrOp}} without(nonexistent) (demo_memory_usage_bytes)'
+    variant_args: ['simpleAggrOp']
+  - query: '{{.topBottomOp}} (3, demo_memory_usage_bytes)'
+    variant_args: ['topBottomOp']
+  - query: '{{.topBottomOp}} by(instance) (2, demo_memory_usage_bytes)'
+    variant_args: ['topBottomOp']
+  - query: '{{.topBottomOp}} without(instance) (2, demo_memory_usage_bytes)'
+    variant_args: ['topBottomOp']
+  - query: '{{.topBottomOp}} without() (2, demo_memory_usage_bytes)'
+    variant_args: ['topBottomOp']
+  - query: 'quantile({{.quantile}}, demo_memory_usage_bytes)'
+    variant_args: ['quantile']
+  - query: 'avg(max by(type) (demo_memory_usage_bytes))'

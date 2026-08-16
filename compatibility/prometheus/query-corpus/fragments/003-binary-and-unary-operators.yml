@@ -1,0 +1,132 @@
+
+  # Binary operators.
+  - query: '1 * 2 + 4 / 6 - 10 % 2 ^ 2'
+  - query: 'demo_num_cpus + (1 {{.compBinOp}} bool 2)'
+    variant_args: ['compBinOp']
+  - query: 'demo_memory_usage_bytes {{.binOp}} 1.2345'
+    variant_args: ['binOp']
+  - query: 'demo_memory_usage_bytes {{.compBinOp}} bool 1.2345'
+    variant_args: ['compBinOp']
+  - query: '1.2345 {{.compBinOp}} bool demo_memory_usage_bytes'
+    variant_args: ['compBinOp']
+  - query: '0.12345 {{.binOp}} demo_memory_usage_bytes'
+    variant_args: ['binOp']
+  - query: '(1 * 2 + 4 / 6 - (10%7)^2) {{.binOp}} demo_memory_usage_bytes'
+    variant_args: ['binOp']
+  - query: 'demo_memory_usage_bytes {{.binOp}} (1 * 2 + 4 / 6 - 10)'
+    variant_args: ['binOp']
+    # Check that vector-scalar binops set output timestamps correctly.
+  - query: 'timestamp(demo_memory_usage_bytes * 1)'
+    # Check that unary minus sets timestamps correctly.
+    # TODO(upstream): Check this more systematically for every node type?
+  - query: 'timestamp(-demo_memory_usage_bytes)'
+  - query: 'demo_memory_usage_bytes {{.binOp}} on(instance, job, type) demo_memory_usage_bytes'
+    variant_args: ['binOp']
+  - query: 'sum by(instance, type) (demo_memory_usage_bytes) {{.binOp}} on(instance, type) group_left(job) demo_memory_usage_bytes'
+    variant_args: ['binOp']
+  - query: 'demo_memory_usage_bytes {{.compBinOp}} bool on(instance, job, type) demo_memory_usage_bytes'
+    variant_args: ['compBinOp']
+    # Check that __name__ is always dropped, even if it's part of the matching labels.
+  - query: 'demo_memory_usage_bytes / on(instance, job, type, __name__) demo_memory_usage_bytes'
+  - query: 'sum without(job) (demo_memory_usage_bytes) / on(instance, type) demo_memory_usage_bytes'
+  - query: 'sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left demo_memory_usage_bytes'
+  - query: 'sum without(job) (demo_memory_usage_bytes) / on(instance, type) group_left(job) demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes / on(instance, job) group_left demo_num_cpus'
+  - query: 'demo_memory_usage_bytes / on(instance, type, job, non_existent) demo_memory_usage_bytes'
+  # One-to-one arithmetic with on(SUBSET): Prometheus reduces the output
+  # label set to exactly the on() labels, dropping every non-matching
+  # label (here `job`). demo_num_cpus is one series per instance, so
+  # on(instance) is a valid one-to-one match -- unlike
+  # demo_memory_usage_bytes, which has multiple `type` series per instance
+  # and would be a many-to-many match on `instance` alone (Prometheus
+  # rejects that with "matching labels must be unique on one side").
+  # Cerberus previously retained the full LHS label set; this case pins the
+  # reduction against real Prometheus.
+  - query: 'demo_num_cpus {{.arithBinOp}} on(instance) demo_num_cpus'
+    variant_args: ['arithBinOp']
+  # One-to-one arithmetic with ignoring(SET): the output drops exactly
+  # the ignored labels (and __name__), keeping the rest. Here `job` is
+  # dropped, `instance` and `type` survive.
+  - query: 'demo_memory_usage_bytes {{.arithBinOp}} ignoring(job) demo_memory_usage_bytes'
+    variant_args: ['arithBinOp']
+  # bool-comparison with on(SUBSET): a transformation, so the output is
+  # likewise reduced to the on() labels. (demo_num_cpus for the same
+  # one-to-one-on-instance reason as above.)
+  - query: 'demo_num_cpus {{.compBinOp}} bool on(instance) demo_num_cpus'
+    variant_args: ['compBinOp']
+  # TODO(upstream): Add non-explicit many-to-one / one-to-many that errors.
+  # TODO(upstream): Add many-to-many match that errors.
+
+  # Set operators. Prometheus evaluates these once per evaluation
+  # timestamp, so an arm only affects the other arm at the timestamps it
+  # actually produced a sample for. demo_sparse_memory_bytes carries the
+  # same label signature as demo_memory_usage_bytes but stops a quarter
+  # of the way into the window, so over a range query the two arms
+  # overlap early and diverge later. Matching on the label signature
+  # alone would make `or` lose the late steps, `and` invent them, and
+  # `unless` drop the whole series -- differences a range query exposes
+  # and an instant query at a single timestamp cannot.
+  - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes or demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes and demo_sparse_memory_bytes'
+  - query: 'demo_sparse_memory_bytes and demo_memory_usage_bytes'
+  - query: 'demo_memory_usage_bytes unless demo_sparse_memory_bytes'
+  - query: 'demo_sparse_memory_bytes unless demo_memory_usage_bytes'
+  # Explicit matchers restrict the signature the per-timestamp key is
+  # built from: on(SUBSET) keys on just those labels, ignoring(SET)
+  # keys on everything else.
+  - query: 'demo_memory_usage_bytes and on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes unless on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes or on(instance, job, type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes and ignoring(type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes unless ignoring(type) demo_sparse_memory_bytes'
+  - query: 'demo_memory_usage_bytes or ignoring(type) demo_sparse_memory_bytes'
+  # A set operator over range-vector arms, so both sides are derived
+  # shapes rather than bare selectors.
+  - query: 'rate(demo_cpu_usage_seconds_total[{{.range}}]) or rate(demo_http_requests_total[{{.range}}])'
+    variant_args: ['range']
+  # Chained set operators linearise into one n-ary node; the per-
+  # timestamp key has to survive that rewrite.
+  - query: 'demo_sparse_memory_bytes or demo_memory_usage_bytes or demo_disk_usage_bytes'
+
+  # demo_delta_requests_total is a DELTA-temporality (AggregationTemporality
+  # = 1) counter (issue #1628): each stored ClickHouse row is the increase
+  # since the PREVIOUS row only, not a running total. The seeder mirrors it
+  # to the reference Prometheus as the EQUIVALENT CUMULATIVE running sum
+  # (prom_remote.go's accumulateToCumulative), so a matching cerberus /
+  # Prometheus answer here proves the runtime DELTA-vs-CUMULATIVE branch —
+  # not just that both sides return SOME number.
+  - query: 'rate(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'increase(demo_delta_requests_total[{{.range}}])'
+    variant_args: ['range']
+  - query: 'sum by(instance) (rate(demo_delta_requests_total[5m]))'
+
+  # NaN/Inf/-Inf support.
+  - query: 'demo_num_cpus * Inf'
+  - query: 'demo_num_cpus * -Inf'
+  - query: 'demo_num_cpus * NaN'
+
+  # Unary expressions.
+  - query: 'demo_memory_usage_bytes + -(1)'
+  - query: '-demo_memory_usage_bytes'
+    # Check precedence.
+  - query: -1 ^ 2
+
+  # Binops involving non-const scalars.
+  - query: '1 {{.arithBinOp}} time()'
+    variant_args: ['arithBinOp']
+  - query: 'time() {{.arithBinOp}} 1'
+    variant_args: ['arithBinOp']
+  - query: 'time() {{.compBinOp}} bool 1'
+    variant_args: ['compBinOp']
+  - query: '1 {{.compBinOp}} bool time()'
+    variant_args: ['compBinOp']
+  - query: 'time() {{.arithBinOp}} time()'
+    variant_args: ['arithBinOp']
+  - query: 'time() {{.compBinOp}} bool time()'
+    variant_args: ['compBinOp']
+  - query: 'time() {{.binOp}} demo_memory_usage_bytes'
+    variant_args: ['binOp']
+  - query: 'demo_memory_usage_bytes {{.binOp}} time()'
+    variant_args: ['binOp']

@@ -41,10 +41,11 @@
 #                     compatibility/prometheus/compat-cases.json). The
 #                     per-case (identity, agreed) roster the parity
 #                     ratchet gates on — see compatibility/internal/score.
-#   TESTER_QUERIES    queries yaml (default: compatibility/prometheus/cerberus-test-queries.yml,
-#                     a curated copy of upstream/promql/promql-test-queries.yml
-#                     with corpus-incompatible should_fail entries removed —
-#                     see the file header for the policy)
+#   TESTER_QUERIES    queries yaml override (default: the deterministic assembly
+#                     of compatibility/prometheus/query-corpus, a curated copy
+#                     of upstream/promql/promql-test-queries.yml with corpus-
+#                     incompatible should_fail entries removed — see
+#                     query-corpus/header.yml for the policy)
 #   TESTER_END_TIME   compatibility end timestamp (default: 2026-05-11T01:00:00Z)
 #   TESTER_RANGE      range in seconds (default: 3600 = 1h, matches seed window)
 #   CH_IMAGE          docker-compose.yml's clickhouse service image tag
@@ -120,9 +121,44 @@ OUTPUT=${TESTER_OUTPUT:-"$ROOT_DIR/report.json"}
 # reports/) would have required the workflow change up-front.
 SCORE=${TESTER_SCORE:-"$ROOT_DIR/compat-score.json"}
 CASES=${TESTER_CASES:-"$ROOT_DIR/compat-cases.json"}
-QUERIES=${TESTER_QUERIES:-"$ROOT_DIR/cerberus-test-queries.yml"}
+QUERIES=${TESTER_QUERIES:-}
 END_TIME=${TESTER_END_TIME:-"2026-05-11T01:00:00Z"}
 RANGE=${TESTER_RANGE:-3600}
+
+# Materialise the time-window overlay and, unless an explicit override was
+# supplied, the fragmented query corpus. Do this before any compose work so a
+# malformed or incomplete corpus fails without spending a stack startup.
+OVERLAY=$(mktemp -t cerberus-compat-overlay.XXXXXX.yml)
+SCORER_BIN=$(mktemp -t cerberus-prom-scorer.XXXXXX)
+ASSEMBLED_QUERIES=
+
+# Consolidated cleanup: remove the overlay + scorer binary AND tear
+# down the compose stack on every exit path (success, tester failure,
+# set -e abort, manual SIGINT). Without this, a non-zero tester exit
+# propagated by `set -e` would leak the stack across re-runs — local
+# repros, in particular, would inherit dirty CH state and confuse
+# subsequent debugging.
+cleanup() {
+    rc=$?
+    rm -f "$OVERLAY" "$SCORER_BIN"
+    if [ -n "$ASSEMBLED_QUERIES" ]; then
+        rm -f "$ASSEMBLED_QUERIES"
+    fi
+    if [ -z "${COMPOSE_KEEP:-}" ]; then
+        echo "==> tearing down (set COMPOSE_KEEP=1 to leave running)"
+        docker compose down -v || true
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
+if [ -z "$QUERIES" ]; then
+    ASSEMBLED_QUERIES=$(mktemp -t cerberus-prom-queries.XXXXXX.yml)
+    echo "==> assembling PromQL compatibility query fragments"
+    (cd "$REPO_ROOT" && go run ./compatibility/prometheus/cmd/assemble-queries \
+        -source "$ROOT_DIR/query-corpus" -output "$ASSEMBLED_QUERIES")
+    QUERIES=$ASSEMBLED_QUERIES
+fi
 
 # The images compose FETCHES (ClickHouse, reference Prometheus) are acquired
 # here rather than by `up`. Compose's own pull path does not carry the
@@ -187,26 +223,6 @@ TESTER_BIN="$ROOT_DIR/upstream/promql/cmd/promql-compliance-tester/promql-compli
 # clean — that file declares stable wiring (URLs + tweaks); the
 # overlay carries CI-volatile values (END_TIME / RANGE) which are
 # expected to differ per local invocation and per CI dispatch.
-OVERLAY=$(mktemp -t cerberus-compat-overlay.XXXXXX.yml)
-SCORER_BIN=$(mktemp -t cerberus-prom-scorer.XXXXXX)
-
-# Consolidated cleanup: remove the overlay + scorer binary AND tear
-# down the compose stack on every exit path (success, tester failure,
-# set -e abort, manual SIGINT). Without this, a non-zero tester exit
-# propagated by `set -e` would leak the stack across re-runs — local
-# repros, in particular, would inherit dirty CH state and confuse
-# subsequent debugging.
-cleanup() {
-    rc=$?
-    rm -f "$OVERLAY" "$SCORER_BIN"
-    if [ -z "${COMPOSE_KEEP:-}" ]; then
-        echo "==> tearing down (set COMPOSE_KEEP=1 to leave running)"
-        docker compose down -v || true
-    fi
-    exit "$rc"
-}
-trap cleanup EXIT
-
 cat > "$OVERLAY" <<EOF
 query_time_parameters:
   end_time: '${END_TIME}'
