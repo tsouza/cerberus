@@ -1,0 +1,205 @@
+name: update-golden
+
+# Manual golden regeneration for an existing same-repository branch. Generation
+# fans out by requested shard with read-only credentials. Matrix legs upload
+# shard-owned patches; one trusted publisher validates and pushes them together,
+# avoiding both concurrent non-fast-forward pushes and line-merging generated
+# artifacts. RELEASE_PAT is required because GitHub suppresses workflow triggers
+# for pushes made with the default GITHUB_TOKEN.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Space/comma-separated update-golden shards, or all
+        required: true
+        type: string
+      branch:
+        description: Existing same-repository branch to regenerate and push
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-golden-${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: update-golden contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --test .github/scripts/manual-golden-update.test.mjs
+
+  plan:
+    name: plan golden shards
+    if: github.event_name == 'workflow_dispatch'
+    needs: contract
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+      target_sha: ${{ steps.plan.outputs.target_sha }}
+    steps:
+      - name: Checkout trusted workflow controller
+        uses: actions/checkout@v7
+        with:
+          path: control
+
+      - name: Checkout target branch
+        uses: actions/checkout@v7
+        with:
+          ref: refs/heads/${{ inputs.branch }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: target
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: target/go.mod
+          cache: true
+          cache-dependency-path: target/go.sum
+
+      - name: Validate dispatch and build matrix
+        id: plan
+        env:
+          MODE: plan
+          TARGET_ROOT: target
+          BRANCH: ${{ inputs.branch }}
+          SHARDS_INPUT: ${{ inputs.shards }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WORKFLOW_REF: ${{ github.ref }}
+          PUSH_TOKEN_SET: ${{ secrets.RELEASE_PAT != '' }}
+        run: node control/.github/scripts/manual-golden-update.mjs
+
+      - name: Verify requested shards cover the target branch diff
+        working-directory: target
+        env:
+          GOLDEN_SHARDS: ${{ steps.plan.outputs.shards }}
+          GOLDEN_UPDATE_BASE_REF: refs/remotes/origin/${{ github.event.repository.default_branch }}
+          GOLDEN_UPDATE_CHECK_ONLY: '1'
+        run: node ../control/.github/scripts/golden-update.mjs
+
+  regenerate:
+    name: regenerate (${{ matrix.shard }})
+    if: github.event_name == 'workflow_dispatch'
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Checkout trusted workflow controller
+        uses: actions/checkout@v7
+        with:
+          path: control
+
+      - name: Checkout target commit without write credentials
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+          persist-credentials: false
+          path: target
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: target/go.mod
+          cache: true
+          cache-dependency-path: target/go.sum
+
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
+        with:
+          tool: just
+
+      - name: Cache libchdb.so
+        if: matrix.needs_chdb
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        if: matrix.needs_chdb
+        working-directory: target
+        run: just chdb-install
+
+      - name: Regenerate shard with predecessor context
+        working-directory: target
+        env:
+          GOLDEN_UPDATE_BASE_REF: HEAD
+        run: just update-golden ${{ matrix.command_shards }}
+
+      - name: Package only this shard's generated paths
+        env:
+          MODE: package
+          TARGET_ROOT: target
+          SHARD: ${{ matrix.shard }}
+          ALLOWED_SHARDS: ${{ matrix.allowed_shards }}
+          OUTPUT_PATH: patches/${{ matrix.shard }}.patch
+        run: node control/.github/scripts/manual-golden-update.mjs
+
+      - name: Upload shard patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: golden-patch-${{ matrix.shard }}
+          path: patches/${{ matrix.shard }}.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish golden updates
+    if: github.event_name == 'workflow_dispatch'
+    needs: [plan, regenerate]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout trusted workflow controller
+        uses: actions/checkout@v7
+        with:
+          path: control
+
+      - name: Checkout unchanged target with trigger-capable credentials
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+          token: ${{ secrets.RELEASE_PAT }}
+          path: target
+
+      - name: Download shard patches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} --pattern 'golden-patch-*' --dir patches
+
+      - name: Validate, commit, and push once
+        id: publish
+        env:
+          MODE: apply-push
+          TARGET_ROOT: target
+          PATCH_ROOT: patches
+          BRANCH: ${{ inputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SHARDS_INPUT: ${{ needs.plan.outputs.shards }}
+          TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
+        run: node control/.github/scripts/manual-golden-update.mjs
+
+      - name: Summary
+        env:
+          CHANGED: ${{ steps.publish.outputs.changed }}
+          NEW_SHA: ${{ steps.publish.outputs.new_sha }}
+          TARGET_BRANCH: ${{ inputs.branch }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+        run: |
+          {
+            echo '### Golden update'
+            echo
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- Shards: \`$SHARDS\`"
+            echo "- Changed: \`$CHANGED\`"
+            echo "- Result: \`$NEW_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
