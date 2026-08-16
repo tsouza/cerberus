@@ -29,7 +29,7 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#d112d97a",
       "message": "promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "defensive fallback: expHistogramScalarBinop only ever names histSide after isExpHistogramValuedShape confirmed it matches bareExpHistogramSelector, sumOrAvgOverExpHistogram or rateOverExpHistogram, so this switch's three arms are exhaustive for every histSide lowerRoot passes in. It guards against the recognizer and this switch drifting apart if a fourth shape is ever added to one without the other.",
+      "rationale": "defensive fallback: expHistogramScalarBinop and expHistogramDroppingScalarBinop only ever name histSide after isExpHistogramValuedShape confirmed it matches bareExpHistogramSelector, sumOrAvgOverExpHistogram or rateOverExpHistogram, so this switch's three arms are exhaustive for every histSide lowerRoot passes in. It guards against the recognizers and this switch drifting apart if a fourth shape is ever added to one without the others.",
       "evidence": {
         "guard": [
           "default of switch over [case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }(); default]",
@@ -41,6 +41,7 @@
         ],
         "cited": [
           "bareExpHistogramSelector",
+          "expHistogramDroppingScalarBinop",
           "expHistogramScalarBinop",
           "isExpHistogramValuedShape",
           "lowerRoot",

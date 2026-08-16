@@ -9,10 +9,10 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// histogram_native_scalar_binop.go answers `<exp-hist shape> (*|/)
-// <scalar>` and its commutative `<scalar> * <exp-hist shape>` sibling
-// over a native (OTel exponential) histogram — cerberus issue #2087,
-// spun out of #1772 while implementing avg().
+// histogram_native_scalar_binop.go answers every scalar binary operation
+// over a native (OTel exponential) histogram shape. `*` and histogram-left
+// `/` scale the histogram (#2087); incompatible operations drop the sample
+// and produce an empty result (#2189), matching reference Prometheus.
 //
 // Reference Prometheus answers scalar `*` / `/` over a native-histogram
 // sample histogram-valued (promql/engine.go's `vectorElemBinop`):
@@ -30,12 +30,12 @@ import (
 // group's member count" to "scale by an arbitrary PromQL scalar and
 // operator" — see that function's doc for why it is factored this way.
 //
-// Only `*` / `/` are answered here. In the same reference switch, `+` /
-// `-` / `^` / `%` and the comparison family return
-// NewIncompatibleTypesInBinOpInfo and drop the sample rather than
-// answering a value — so `latency_exp_hist + 1` stays rejected exactly
-// as it was before this file, and admitting it would answer where
-// reference answers an empty result with an info annotation instead.
+// In the same reference switch, `+` / `-` / `^` / `%`, the comparison
+// family and `atan2` return NewIncompatibleTypesInBinOpInfo and drop the
+// sample rather than answering a value. Scalar-left `/` is incompatible
+// for the same reason. [expHistogramDroppingScalarBinop] recognises those
+// shapes and [lowerExpHistogramScalarBinop]'s drop path preserves their
+// own lowering errors before applying a constant-false filter.
 //
 // This shape composes with the three shipped histogram-VALUED
 // lowerings — bare selector (histogram_native_bare.go), sum()/avg()
@@ -91,6 +91,43 @@ func expHistogramScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 	return nil, "", nil, false
 }
 
+// expHistogramDroppingScalarBinop recognises the scalar/histogram operand
+// pairs for which reference Prometheus emits an incompatible-types info
+// annotation and drops the histogram sample. The scalar may sit on either
+// side; division is included only when the scalar is on the left because
+// histogram/scalar division is the supported scaling shape above.
+func expHistogramDroppingScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide parser.Expr, ok bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, false
+	}
+	b, isBin := unwrapBinaryExpr(expr)
+	if !isBin {
+		return nil, false
+	}
+	if _, isScalar := tryScalarLiteral(b.LHS); isScalar &&
+		isExpHistogramValuedShape(b.RHS, s, ctx) && expHistogramScalarOpDropsSample(b.Op, false) {
+		return b.RHS, true
+	}
+	if _, isScalar := tryScalarLiteral(b.RHS); isScalar &&
+		isExpHistogramValuedShape(b.LHS, s, ctx) && expHistogramScalarOpDropsSample(b.Op, true) {
+		return b.LHS, true
+	}
+	return nil, false
+}
+
+func expHistogramScalarOpDropsSample(op parser.ItemType, histogramOnLeft bool) bool {
+	switch op {
+	case parser.ADD, parser.SUB, parser.POW, parser.MOD,
+		parser.EQLC, parser.NEQ, parser.GTR, parser.LSS, parser.GTE, parser.LTE,
+		parser.ATAN2:
+		return true
+	case parser.DIV:
+		return !histogramOnLeft
+	default:
+		return false
+	}
+}
+
 // unwrapBinaryExpr peels the transparent ParenExpr / StepInvariantExpr
 // wrappers the parser can put between the root and a binary expression —
 // `(latency_exp_hist * 2)` — and reports the BinaryExpr underneath.
@@ -127,11 +164,12 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	return false
 }
 
-// lowerExpHistogramScalarBinop lowers the shape
-// [expHistogramScalarBinop] recognised: it defers entirely to the
-// histogram side's own shipped lowering — unmodified, so a query without
-// the scalar wrapper still lowers byte-for-byte the same way — then
-// rewrites the capping HistogramProjection to scale it.
+// lowerExpHistogramScalarBinop lowers the shape either scalar-binop
+// recognizer accepted. It defers entirely to the histogram side's own
+// shipped lowering — unmodified, so a query without the scalar wrapper
+// still lowers byte-for-byte the same way. drop selects reference's
+// keep=false incompatible-types result; otherwise the capping
+// HistogramProjection is rewritten to scale it.
 //
 // extraPassthrough only differs from empty for the bare-selector range
 // shapes, which read the step-grid anchor off the row. sum()/avg() and
@@ -139,7 +177,7 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // stepGridAnchorColumn in their own Input's output when it applies —
 // [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
 // themselves — so neither needs it repeated here.
-func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx, drop bool) (chplan.Node, error) {
 	var (
 		node  chplan.Node
 		err   error
@@ -158,9 +196,9 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 		} else if shape, ok := rateOverExpHistogram(histSide, s, ctx); ok {
 			node, err = lowerExpHistogramRate(shape, s, ctx)
 		} else {
-			// Unreachable: expHistogramScalarBinop only names histSide
-			// after isExpHistogramValuedShape confirmed it matches one
-			// of these three recognizers.
+			// Unreachable: both scalar-binop recognizers only name histSide
+			// after isExpHistogramValuedShape confirmed it matches one of
+			// these three recognizers.
 			return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v", histSide)
 		}
 	}
@@ -170,6 +208,12 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	hp, ok := node.(*chplan.HistogramProjection)
 	if !ok {
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T", node)
+	}
+	if drop {
+		// Reference returns keep=false plus an incompatible-types info
+		// annotation. Cerberus has no info-annotation wire channel, but
+		// matches the accepted empty result.
+		return &chplan.Filter{Input: hp, Predicate: &chplan.LitBool{V: false}}, nil
 	}
 	return scaleHistogramProjection(hp, op, scale, s, extra...), nil
 }
