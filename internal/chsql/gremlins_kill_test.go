@@ -3684,10 +3684,8 @@ func TestEffectiveRecursionDepth(t *testing.T) {
 // TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth covers + kills
 // the MaxDepth boundary in buildStructuralInverseClosure (the INVERSE
 // closure built for the union recursive arm). The union op (`&>>`)
-// builds both the forward and inverse closures, so the bound must
-// appear TWICE: MaxDepth>0 → two `c._depth < N`; MaxDepth=0 → two
-// `c._depth < <default>` (both closures bounded by the #78 safety cap,
-// never unbounded).
+// builds the forward and inverse relation closures plus a rootedness closure
+// at each of the two L use sites, so the bound must appear FOUR times.
 func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 	t.Parallel()
 	t.Run("union MaxDepth=2 → both closures capped at 2", func(t *testing.T) {
@@ -3696,8 +3694,8 @@ func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Emit: %v", err)
 		}
-		if got := strings.Count(sql, "c._depth < 2"); got != 2 {
-			t.Errorf("union recursive MaxDepth=2 must cap BOTH the forward and inverse closures (2 occurrences), got %d.\nSQL: %s", got, sql)
+		if got := strings.Count(sql, "c._depth < 2"); got != 4 {
+			t.Errorf("union recursive MaxDepth=2 must cap both relation and both rootedness closures (4 occurrences), got %d.\nSQL: %s", got, sql)
 		}
 	})
 	t.Run("union MaxDepth=0 → both closures at default cap", func(t *testing.T) {
@@ -3707,8 +3705,8 @@ func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		want := "c._depth < " + strconv.Itoa(defaultStructuralRecursionDepth)
-		if got := strings.Count(sql, want); got != 2 {
-			t.Errorf("union recursive MaxDepth=0 must bound BOTH closures with the default cap %q (2 occurrences), got %d.\nSQL: %s", want, got, sql)
+		if got := strings.Count(sql, want); got != 4 {
+			t.Errorf("union recursive MaxDepth=0 must bound both relation and both rootedness closures with the default cap %q (4 occurrences), got %d.\nSQL: %s", want, got, sql)
 		}
 		if strings.Contains(sql, "c._depth < 0") {
 			t.Errorf("union recursive MaxDepth=0 must NOT emit a zero (always-false) cap.\nSQL: %s", sql)

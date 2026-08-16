@@ -82,8 +82,8 @@ func TestEmitStructuralRecursive_AnchorExcluded(t *testing.T) {
 }
 
 // TestEmitStructuralRecursive_PreservesLeftArgs confirms the recursive
-// emitter still threads the L subquery's positional `?` args at the
-// seed position (rather than swallowing them).
+// emitter still threads the L subquery's positional `?` args through both
+// the cheap rooted trace scope and the seed position.
 func TestEmitStructuralRecursive_PreservesLeftArgs(t *testing.T) {
 	t.Parallel()
 
@@ -106,15 +106,16 @@ func TestEmitStructuralRecursive_PreservesLeftArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	// The L subquery's `?` arg appears exactly once — at the seed position
-	// (FROM (<L>) AS _seed). The recursive step no longer re-embeds the
+	// The L predicate is rendered once in the rooted closure's cheap TraceId
+	// scope and once in the actual seed operand. The recursive step does not
+	// re-embed the
 	// seed-trace-id IN subquery (the step JOIN ON `t.TraceId = c.TraceId`
 	// already confines `t` to the seed's traces), so the arg is not
 	// duplicated. The bare `{}` right side is not a cheap selective leaf, so
 	// no candidate-prefilter subquery re-renders L either. Nothing may be
 	// swallowed.
-	if len(args) != 1 || args[0] != "GET /home" {
-		t.Errorf("args = %v, want [GET /home]", args)
+	if len(args) != 2 || args[0] != "GET /home" || args[1] != "GET /home" {
+		t.Errorf("args = %v, want [GET /home GET /home]", args)
 	}
 }
 

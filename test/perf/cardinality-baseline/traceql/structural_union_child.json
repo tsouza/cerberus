@@ -1,11 +1,11 @@
 {
   "fixture": "traceql/structural_union_child",
-  "fan_factor": 0.5,
+  "fan_factor": null,
   "scan_rows": 4,
   "peak_intermediate": 2,
   "has_cross_join": false,
   "has_array_join": false,
-  "has_recursive_cte": false,
-  "max_recursion_depth": 0,
-  "uncountable_levels": 0
+  "has_recursive_cte": true,
+  "max_recursion_depth": 2,
+  "uncountable_levels": 1
 }

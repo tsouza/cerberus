@@ -159,6 +159,10 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 	if err != nil {
 		return err
 	}
+	leftSub, err = e.rootedStructuralLeftSub(j, leftSub)
+	if err != nil {
+		return err
+	}
 	rightSub, err := e.subqueryFrag(j.Right)
 	if err != nil {
 		return err
@@ -242,21 +246,16 @@ func (e *emitter) emitStructuralDirectJoin(j *chplan.StructuralJoin) error {
 //     rows with no L group at all (LEFT JOIN defaults: _l_cnt = 0,
 //     _l_span_ids = []).
 //
-// Every flavour reads the L side through siblingParentPresentLeftSub,
-// which drops L spans whose shared parent is not in the data — see that
-// helper for why sharing a ParentSpanId is not on its own a sibling
-// relation. Gating L alone is enough for all three shapes: the join
-// keys R to L on ParentSpanId equality, so a surviving pair shares one
-// parent value and is admitted or rejected together, and the negated
-// form's L aggregate reads the same gated relation (an L span whose
-// parent is absent stops contributing a sibling, so its R counterpart
-// correctly survives the negation).
+// Every flavour reads the L side through rootedStructuralLeftSub. Gating L
+// alone is enough: the join keys R to L on ParentSpanId equality, so a
+// surviving pair shares one rooted parent, while the negated form's L
+// aggregate reads the same gated relation and lets an unrooted R survive.
 func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 	leftSub, err := e.subqueryFrag(j.Left)
 	if err != nil {
 		return err
 	}
-	leftSub, err = e.siblingParentPresentLeftSub(j, leftSub)
+	leftSub, err = e.rootedStructuralLeftSub(j, leftSub)
 	if err != nil {
 		return err
 	}
@@ -334,57 +333,30 @@ func (e *emitter) emitStructuralSiblingJoin(j *chplan.StructuralJoin) error {
 	}
 }
 
-// siblingLeftAlias is the derived-table alias the sibling parent-presence
-// gate wraps the L subquery under. It is distinct from the `_l` the
-// negated flavour's aggregate uses so the two nest without shadowing.
-const siblingLeftAlias = "_sib_l"
-
-// siblingParentPresentLeftSub wraps a sibling relation's L subquery in the
-// filter that keeps `~` from inventing a parent:
+// rootedStructuralLeftSub gates a structural relation's L operand to spans
+// Tempo's ingest-time nested-set walk can reach from a real root. The OTel-CH
+// schema stores only adjacency, so the emitter reconstructs that reachability
+// with a bounded downward closure:
 //
-//	SELECT * FROM (<L>) AS _sib_l
-//	 WHERE `ParentSpanId` = ''
-//	    OR (`TraceId`, `ParentSpanId`) IN (
-//	         SELECT `TraceId`, `SpanId` FROM `otel_traces`
-//	          WHERE `TraceId` IN (<trace scope>) [AND <window>] [AND <phase B>])
+//	WITH RECURSIVE rooted AS (
+//	  SELECT ids FROM spans WHERE ParentSpanId = '' AND TraceId IN (<L scope>)
+//	  UNION ALL
+//	  SELECT child.ids FROM spans child JOIN rooted parent ON child.parent = parent.id
+//	)
+//	SELECT * FROM (<L>) WHERE (TraceId, SpanId) IN (SELECT TraceId, SpanId FROM rooted)
 //
-// Why: sharing a ParentSpanId VALUE is not the sibling relation. Upstream
-// answers `~` from the nested-set numbering, whose rule is
-// `a.nestedSetParent == b.nestedSetParent && a.nestedSetParent != 0 &&
-// b.nestedSetParent != 0` (vparquet4/block_traceql.go's SiblingOf), and
-// numbering starts only at spans whose ParentSpanID is EMPTY. A span
-// naming a parent no row carries is never reached by that walk, so it
-// keeps nestedSetParent = 0 — "missing data, never a match". Cerberus
-// joined on the raw column and made two such spans siblings, returning
-// spans reference returns none of (issue #1990).
-//
-// The empty-ParentSpanId disjunct is load-bearing, not a convenience: a
-// root's nestedSetParent is the -1 sentinel, not 0, so upstream DOES call
-// two roots of one trace siblings. A presence test alone would drop that
-// pair, because no row ever carries an empty SpanId — trading one
-// divergence for another.
-//
-// The parent probe reads only (TraceId, SpanId) and is bounded three
-// ways: `TraceId IN (<traceScopeFrag(L)>)` — the same cheap plan-derived
-// superset the nested-set numbering scopes its walk with, which is also
-// the form-b resource bound this FROM is admitted under — plus the
-// request window when the node was window-stamped, plus the two-phase
-// top-N trace-id set when phase B set one. On the unwindowed spec /
-// direct-join paths the last two are absent and the probe is scoped by
-// the trace set alone.
-func (e *emitter) siblingParentPresentLeftSub(j *chplan.StructuralJoin, leftSub Frag) (Frag, error) {
+// traceScopeFrag derives a cheap superset without rendering L again, so the
+// expensive operand remains single-evaluation. Gating L is sufficient for
+// every structural flavour: a positive relation edge carries rootedness to
+// its partner, while an unrooted L contributes no match to a negated relation.
+// The physical root/step scans inherit the structural node's request window
+// and phase-B trace restriction, and recursion shares the package depth cap.
+func (e *emitter) rootedStructuralLeftSub(j *chplan.StructuralJoin, leftSub Frag) (Frag, error) {
 	table := findScanTable(j.Left)
 	if table == "" {
-		return nil, fmt.Errorf("%w: sibling StructuralJoin needs a Scan in L subtree", ErrUnsupported)
+		return nil, fmt.Errorf("%w: StructuralJoin needs a Scan in L subtree for rootedness", ErrUnsupported)
 	}
-	// The probe scans the spans table directly, so put it under the
-	// resource-bound invariant even when the caller did not thread
-	// WithSpansTable onto the emit context — same reason the recursive
-	// closure sets this.
 	e.spansTable = table
-	// Fail closed on the production search path: a window-stamped node whose
-	// window never reached emit would leave the probe reading full retention
-	// behind an inert TraceId membership.
 	if err := requireSpansScanWindow(e.ctxSpansTable, table, j.TimestampColumn, j.WindowStartNano, j.WindowEndNano); err != nil {
 		return nil, err
 	}
@@ -393,36 +365,64 @@ func (e *emitter) siblingParentPresentLeftSub(j *chplan.StructuralJoin, leftSub 
 	if err != nil {
 		return nil, err
 	}
-	traceIn := InSubquery(Col(j.TraceIDColumn), scope)
-	probeFrom, err := e.fromSpansScan(table, traceIDSetBound(traceIn))
+	anchorTraceIn := InSubquery(Col(j.TraceIDColumn), scope)
+	anchorFrom, err := e.fromSpansScan(table, traceIDSetBound(anchorTraceIn))
 	if err != nil {
 		return nil, err
 	}
-	probeConds := []Frag{traceIn}
-	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
-	probeConds = appendNonNilFrags(probeConds, winLo, winHi)
-	if len(j.TraceIDRestriction) > 0 {
-		probeConds = append(probeConds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
-	}
-	probe := NewQuery().
-		Select(Col(j.TraceIDColumn), Col(j.SpanIDColumn)).
-		From(probeFrom).
-		Where(probeConds...)
-
-	// Parenthesised: Or adds no parens of its own, and this is the whole
-	// predicate of a WHERE slot that renders its conjuncts AND-joined, so
-	// a second conjunct added later would otherwise bind to the right
-	// disjunct instead of the disjunction.
-	gate := Paren(Or(
+	anchorConds := []Frag{
 		Eq(Col(j.ParentSpanIDColumn), InlineLit(rootParentSpanID)),
-		InSubquery(
-			Tuple(Col(j.TraceIDColumn), Col(j.ParentSpanIDColumn)),
-			Subquery(probe),
-		),
-	))
+		anchorTraceIn,
+	}
+	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
+	anchorConds = appendNonNilFrags(anchorConds, winLo, winHi)
+	if len(j.TraceIDRestriction) > 0 {
+		anchorConds = append(anchorConds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
+	}
+	cteName := "_struct_rooted_" + strconv.Itoa(e.nextCTESeq())
+	anchor := NewQuery().
+		Select(
+			Distinct(Col(j.TraceIDColumn)),
+			Col(j.SpanIDColumn),
+			Col(j.ParentSpanIDColumn),
+			verbatim("0 AS _depth"),
+		).
+		From(anchorFrom).
+		Where(anchorConds...)
+
+	stepFrom, err := e.fromSpansScan(table, memoryStreamingBound())
+	if err != nil {
+		return nil, err
+	}
+	step := NewQuery().
+		Select(
+			Distinct(qualColFrag("t", j.TraceIDColumn)),
+			qualColFrag("t", j.SpanIDColumn),
+			qualColFrag("t", j.ParentSpanIDColumn),
+			verbatim("c._depth + 1"),
+		).
+		From(aliasedFrag(stepFrom, "t")).
+		Join(
+			InnerJoin,
+			aliasedFrag(verbatim(cteName), "c"),
+			And(
+				spanIDPairFrag("t", j.TraceIDColumn, "c", j.TraceIDColumn),
+				spanIDPairFrag("t", j.ParentSpanIDColumn, "c", j.SpanIDColumn),
+			),
+		).
+		Where(structuralStepWhere(j)...)
+
+	rooted := NewQuery().
+		WithRecursive(cteName, anchor, step).
+		Select(Distinct(Col(j.TraceIDColumn)), Col(j.SpanIDColumn)).
+		From(verbatim(cteName))
+	gate := InSubquery(
+		Tuple(Col(j.TraceIDColumn), Col(j.SpanIDColumn)),
+		Subquery(rooted),
+	)
 	return NewQuery().
 		Select(Star()).
-		From(aliasedFrag(leftSub, siblingLeftAlias)).
+		From(aliasedFrag(leftSub, "_rooted_l")).
 		Where(gate).
 		Frag(), nil
 }
@@ -689,6 +689,10 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 	}
 
 	leftSub, err := e.subqueryFrag(j.Left)
+	if err != nil {
+		return err
+	}
+	leftSub, err = e.rootedStructuralLeftSub(j, leftSub)
 	if err != nil {
 		return err
 	}
