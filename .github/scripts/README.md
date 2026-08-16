@@ -222,6 +222,17 @@ contract failure.
 
 ## Modules
 
+- **`main-coalescing.mjs`** — `ci.yml` plus the enrolled deep-test workflows.
+  Models the only replaceable event/ref pairs (main push and main schedule),
+  binds their exact workflow-level concurrency expressions to the lane
+  registry, and requires every other pair to use a unique run-id group. The
+  exhaustive E2E and published quickstart workflows are explicit negative
+  controls; quickstart additionally requires unique non-PR groups so every main
+  push completes. Nested job groups must be run-bound and non-cancelling.
+  - Env: `CI_LANE_REGISTRY` (optional; default `.github/ci-lanes.json`).
+  - Exit: `0` only when enrollment, registry posture, exclusions, and workflow
+    expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the
+    event/ref decision table and structural negative controls.
 - **`agpl-clean.mjs`** — `ci.yml`, the `agpl-clean` job. The provably-clean-build
   licence gate: runs `go list -deps ./cmd/cerberus` and reports any AGPLv3
   package the Apache-2.0 binary links (`github.com/grafana/loki/*`, or
@@ -935,10 +946,13 @@ contract failure.
   posts green on every PR while contributing nothing to the merge decision — and
   nothing else in the tree can tell. Pure exported `parseBlockScalar` /
   `parseCheckLists` / `parsePinnedContexts` / `protectionDrift` / `laneDrift` /
-  `pinnedProtectionDrift` plus a `--self-test` the job runs first.
-  - Env: `GITHUB_TOKEN` (must be repo-ADMIN — branch protection is unreadable
-    with the default workflow token at any `permissions:` level, so the workflow
-    passes `RELEASE_PAT`), `GITHUB_REPOSITORY`, `GITHUB_API_URL` (default
+  `pinnedProtectionDrift` / `readBranchProtection` plus a `--self-test` the job
+  runs first. The self-test rejects missing credentials, HTTP 403, empty, and
+  malformed protection data rather than treating any as a clean empty set.
+  - Env: `GITHUB_TOKEN` (least-privilege commit/check/status reads),
+    `BRANCH_PROTECTION_TOKEN` (dedicated repository-administration read
+    credential, confined to the protection request), `GITHUB_REPOSITORY`,
+    `GITHUB_API_URL` (default
     `https://api.github.com`), `DRIFT_BRANCH` (default `main`), `DRIFT_HISTORY`
     (default 20 commits), `RELEASE_WORKFLOW` (default
     `.github/workflows/release.yml`), `PROTECTION_PIN_FILE` (default

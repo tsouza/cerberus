@@ -49,8 +49,10 @@ permissions:
   packages: read
 
 concurrency:
-  group: strict-scan-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A newer deep run may replace only push/schedule work on main. PR, queue,
+  # dispatch, and maintenance evidence is unique and never cancelled.
+  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
 
 jobs:
   # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the

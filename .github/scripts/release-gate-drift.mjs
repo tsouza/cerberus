@@ -39,9 +39,12 @@
 // because a silently-empty set makes BOTH checks vacuously green.
 //
 // Env:
-//   GITHUB_TOKEN       REQUIRED. Reading branch protection needs a token with
-//                      repo-admin rights — the default `GITHUB_TOKEN` does NOT
-//                      qualify, so the workflow passes `RELEASE_PAT`.
+//   GITHUB_TOKEN       REQUIRED. Least-privilege workflow token used for
+//                      commits, check-runs, and commit statuses.
+//   BRANCH_PROTECTION_TOKEN
+//                      REQUIRED. Dedicated credential with repository
+//                      administration:read, used only for the live protection
+//                      request. Missing/denied/malformed data fails closed.
 //   GITHUB_REPOSITORY  owner/repo (runner-provided).
 //   GITHUB_API_URL     API base (default https://api.github.com).
 //   DRIFT_BRANCH       Branch whose protection is compared (default `main`).
@@ -216,12 +219,60 @@ export function laneDrift({ required, observed }) {
     );
 }
 
-async function apiJson(url, headers, what) {
-  const res = await fetch(url, { headers });
+export async function apiJson(url, headers, what, fetchImpl = globalThis.fetch) {
+  const res = await fetchImpl(url, { headers });
   if (!res.ok) {
     throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
   }
   return res.json();
+}
+
+function tokenHeaders(token) {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${token}`,
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+export function protectionContexts(protection, branch = 'main') {
+  const contexts = protection?.required_status_checks?.contexts;
+  if (!Array.isArray(contexts)) {
+    throw new Error(
+      `branch protection on ${branch} returned malformed required-status-check data`,
+    );
+  }
+  if (
+    contexts.length === 0 ||
+    contexts.some((context) => typeof context !== 'string' || context.trim() === '')
+  ) {
+    throw new Error(
+      `branch protection on ${branch} reports invalid or zero required contexts — either protection was ` +
+        `removed or the credential cannot see it; both make this check vacuous`,
+    );
+  }
+  return contexts;
+}
+
+export async function readBranchProtection({
+  apiBase,
+  repo,
+  branch,
+  token,
+  fetchImpl = globalThis.fetch,
+}) {
+  if (!token) {
+    throw new Error(
+      'BRANCH_PROTECTION_TOKEN is unset — the live required-context comparison cannot run',
+    );
+  }
+  const protection = await apiJson(
+    `${apiBase}/repos/${repo}/branches/${encodeURIComponent(branch)}/protection`,
+    tokenHeaders(token),
+    'read branch protection',
+    fetchImpl,
+  );
+  return protectionContexts(protection, branch);
 }
 
 async function main() {
@@ -231,32 +282,26 @@ async function main() {
   const history = Number(process.env.DRIFT_HISTORY || defaultHistoryCommits);
   const repo = process.env.GITHUB_REPOSITORY;
   const token = process.env.GITHUB_TOKEN;
+  const protectionToken = process.env.BRANCH_PROTECTION_TOKEN;
   const apiBase = process.env.GITHUB_API_URL || 'https://api.github.com';
 
   if (!repo) throw new Error('GITHUB_REPOSITORY is unset');
-  if (!token) throw new Error('GITHUB_TOKEN is unset — reading branch protection needs a repo-admin token');
+  if (!token) {
+    throw new Error(
+      'GITHUB_TOKEN is unset — commit/check/status evidence cannot be read',
+    );
+  }
 
   const { required, informational } = parseCheckLists(readFileSync(workflowPath, 'utf8'));
   const pinned = parsePinnedContexts(readFileSync(pinPath, 'utf8'));
 
-  const headers = {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-
-  const protection = await apiJson(
-    `${apiBase}/repos/${repo}/branches/${encodeURIComponent(branch)}/protection`,
-    headers,
-    'read branch protection',
-  );
-  const liveContexts = protection?.required_status_checks?.contexts ?? [];
-  if (liveContexts.length === 0) {
-    throw new Error(
-      `branch protection on ${branch} reports zero required contexts — either protection was ` +
-        `removed or the token cannot see it; both make this check vacuous`,
-    );
-  }
+  const headers = tokenHeaders(token);
+  const liveContexts = await readBranchProtection({
+    apiBase,
+    repo,
+    branch,
+    token: protectionToken,
+  });
 
   const commits = await apiJson(
     `${apiBase}/repos/${repo}/commits?sha=${encodeURIComponent(branch)}&per_page=${Math.min(history, maxPerPage)}`,
@@ -310,7 +355,7 @@ async function main() {
   );
 }
 
-function selfTest() {
+async function selfTest() {
   const yaml = [
     '        env:',
     '          RELEASE_REQUIRED_CHECKS: |',
@@ -402,11 +447,96 @@ function selfTest() {
   assert.throws(() => parsePinnedContexts('var other = []string{"check"}'), /slice literal not found/);
   assert.throws(() => parsePinnedContexts('var branchProtectionContexts = []string{}'), /parsed as empty/);
 
+  // Authorization and payload failures must never degrade into an empty, green
+  // comparison. The dedicated credential is also proven to be the one placed
+  // on the protection request rather than the ordinary workflow token.
+  await assert.rejects(
+    () =>
+      readBranchProtection({
+        apiBase: 'https://api.invalid',
+        repo: 'example/project',
+        branch: 'main',
+        token: '',
+        fetchImpl: async () => {
+          throw new Error('network should not be reached without a credential');
+        },
+      }),
+    /BRANCH_PROTECTION_TOKEN is unset/,
+  );
+
+  await assert.rejects(
+    () =>
+      readBranchProtection({
+        apiBase: 'https://api.invalid',
+        repo: 'example/project',
+        branch: 'main',
+        token: 'protection-read-token',
+        fetchImpl: async () => ({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+        }),
+      }),
+    /read branch protection: HTTP 403 Forbidden/,
+  );
+
+  for (const payload of [
+    {},
+    { required_status_checks: {} },
+    { required_status_checks: { contexts: null } },
+    { required_status_checks: { contexts: [] } },
+    { required_status_checks: { contexts: ['check', ''] } },
+    { required_status_checks: { contexts: ['check', 7] } },
+  ]) {
+    await assert.rejects(
+      () =>
+        readBranchProtection({
+          apiBase: 'https://api.invalid',
+          repo: 'example/project',
+          branch: 'main',
+          token: 'protection-read-token',
+          fetchImpl: async (_url, options) => {
+            assert.equal(
+              options.headers.Authorization,
+              'Bearer protection-read-token',
+            );
+            return { ok: true, json: async () => payload };
+          },
+        }),
+      /malformed|required contexts/,
+    );
+  }
+
+  assert.deepEqual(
+    await readBranchProtection({
+      apiBase: 'https://api.invalid',
+      repo: 'example/project',
+      branch: 'main',
+      token: 'protection-read-token',
+      fetchImpl: async (_url, options) => {
+        assert.equal(
+          options.headers.Authorization,
+          'Bearer protection-read-token',
+        );
+        return {
+          ok: true,
+          json: async () => ({
+            required_status_checks: { contexts: ['check', 'quickstart'] },
+          }),
+        };
+      },
+    }),
+    ['check', 'quickstart'],
+  );
+
   log('release-gate-drift self-test: OK');
 }
 
 if (process.argv.includes('--self-test')) {
-  selfTest();
+  selfTest().catch((e) => {
+    error(String(e?.message ?? e), { title: 'release gate drift self-test' });
+    process.exit(1);
+  });
 } else {
   main().catch((e) => {
     error(String(e?.message ?? e), { title: 'release gate drift' });

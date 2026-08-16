@@ -49,10 +49,10 @@ permissions:
   security-events: write
 
 concurrency:
-  group: codeql-${{ github.ref }}
-  # Never cancel on merge_group: a cancelled check-run is treated as failed
-  # by GitHub, which would dequeue the PR. Safe on pull_request and push.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A newer deep run may replace only push/schedule work on main. In particular,
+  # PR and merge-group evidence is unique and can never be cancelled here.
+  group: ${{ github.workflow }}-${{ ((github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') && 'latest-main' || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
 
 jobs:
   analyze:

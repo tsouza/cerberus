@@ -438,9 +438,9 @@ func TestEOLRetireUsesTheTokenThatBypassesTheReleaseRuleset(t *testing.T) {
 //
 //   - the live comparison step dropped, leaving only `--self-test`: the weekly
 //     run goes green every week while comparing nothing;
-//   - RELEASE_PAT swapped for the default GITHUB_TOKEN: branch protection is
-//     unreadable to github-actions[bot] at any `permissions:` level, so the job
-//     reds every week until someone deletes it as noise;
+//   - the dedicated administration-read credential swapped for the default
+//     workflow token: branch protection is unreadable at any `permissions:`
+//     level, so the job reds every week until someone deletes it as noise;
 //   - the schedule removed: the detector survives as a manual-dispatch button
 //     nobody presses.
 func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
@@ -474,10 +474,15 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 			driftWorkflowPath, driftScript, selfTestFlag)
 	}
 
-	if !strings.Contains(body, "secrets.RELEASE_PAT") {
-		t.Fatalf("%s no longer passes secrets.RELEASE_PAT. Reading a branch's protection settings "+
-			"needs repo-admin rights, which the default GITHUB_TOKEN lacks at every permissions: "+
-			"level, so the live comparison cannot run at all", driftWorkflowPath)
+	if !strings.Contains(body, "BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}") {
+		t.Fatalf("%s no longer passes the dedicated branch-protection read credential. The default "+
+			"workflow token cannot receive repository-administration permission, so the live "+
+			"comparison would fail every scheduled run", driftWorkflowPath)
+	}
+	if !strings.Contains(body, "GITHUB_TOKEN: ${{ github.token }}") {
+		t.Fatalf("%s does not keep ordinary commit/check/status reads on the least-privilege workflow "+
+			"token; the administration-read credential must be confined to the protection request",
+			driftWorkflowPath)
 	}
 
 	// The pure half has to stay on a PR lane, for the same reason

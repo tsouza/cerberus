@@ -761,6 +761,15 @@ jobs:
       - name: Assert the quickstart canary fails closed
         run: node --test .github/scripts/quickstart-canary.test.mjs
 
+      # Concurrency is evaluated before jobs start, so executable policy tests
+      # and a structural scan bind every enrolled workflow to the same narrow
+      # main-push/schedule rule and keep quickstart as a negative control.
+      - name: Assert latest-main cancellation policy negative controls
+        run: node --test .github/scripts/main-coalescing.test.mjs
+
+      - name: Assert deep-test coalescing enrollment
+        run: node .github/scripts/main-coalescing.mjs
+
       # The compose pre-pull's model→image decision. A service compose BUILDS
       # must never be handed to `docker pull`: its ref exists in no registry, so
       # the pre-pull burns every retry on a manifest that cannot resolve and

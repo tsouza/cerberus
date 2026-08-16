@@ -237,6 +237,11 @@ func TestQuickstartCanaryRunsOnTheProjectedCommit(t *testing.T) {
 		t.Errorf("%s cancel-in-progress is %q, want %q so merge-group evidence is never cancelled",
 			quickstartWorkflowPath, got, want)
 	}
+	if got, want := doc.Concurrency.Group,
+		"quickstart-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}"; got != want {
+		t.Errorf("%s concurrency group is %q, want %q so every non-PR run is unique and no main push can replace a pending quickstart",
+			quickstartWorkflowPath, got, want)
+	}
 
 	for _, jobID := range []string{"select", "run", "quickstart"} {
 		job, ok := doc.Jobs[jobID]
