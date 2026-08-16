@@ -570,6 +570,10 @@ jobs:
       # shape locally (issue #1938).
       - name: Self-test the forbid-skip CLI
         run: node --test .github/scripts/forbid-skip.test.mjs
+      - name: Validate the CI lane registry contract
+        run: |
+          node --test .github/scripts/ci-lane-contract.test.mjs
+          MODE=registry node .github/scripts/ci-lane-contract.mjs
       - name: Reject t.Skip in test files
         run: node .github/scripts/forbid-skip.mjs
         env:
