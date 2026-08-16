@@ -185,7 +185,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 
 	// argMinIf(SpanName, Timestamp, rootCond) AS RootSpanName.
 	aggSpanName := chplan.AggFunc{
-		Name: "argMinIf",
+		Fn: chplan.FnArgMinIf,
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.SpanNameColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -195,7 +195,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	}
 	// argMinIf(ResourceAttributes['service.name'], Timestamp, rootCond) AS RootSvc.
 	aggSvc := chplan.AggFunc{
-		Name: "argMinIf",
+		Fn: chplan.FnArgMinIf,
 		Args: []chplan.Expr{
 			&chplan.MapAccess{
 				Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},
@@ -212,10 +212,10 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// plain integer (DateTime64 lacks a typed interval subtraction
 	// in the chplan IR).
 	aggTraceStart := chplan.AggFunc{
-		Name: "min",
+		Fn: chplan.FnMin,
 		Args: []chplan.Expr{
 			&chplan.FuncCall{
-				Name: "toUnixTimestamp64Nano",
+				Fn:   chplan.FnToUnixNanos,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 			},
 		},
@@ -226,16 +226,16 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// keeps the sum Int64 so subtracting TraceStartNs (Int64) yields
 	// a signed integer CH doesn't refuse to subtract.
 	aggTraceEnd := chplan.AggFunc{
-		Name: "max",
+		Fn: chplan.FnMax,
 		Args: []chplan.Expr{
 			&chplan.Binary{
 				Op: chplan.OpAdd,
 				Left: &chplan.FuncCall{
-					Name: "toUnixTimestamp64Nano",
+					Fn:   chplan.FnToUnixNanos,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
 				},
 				Right: &chplan.FuncCall{
-					Name: "toInt64",
+					Fn:   chplan.FnToInt64,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}},
 				},
 			},
@@ -256,7 +256,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	// produced by the Aggregate by bare name works because Aggregate
 	// emits `<expr> AS <alias>` + `<func> AS <alias>` in the SELECT
 	// list.
-	attrsMap := &chplan.FuncCall{Name: "map", Args: []chplan.Expr{
+	attrsMap := &chplan.FuncCall{Fn: chplan.FnMap, Args: []chplan.Expr{
 		&chplan.LitString{V: searchKeyTraceID},
 		stripLeadingHexZeros("TraceId"),
 		&chplan.LitString{V: "service.name"},
@@ -273,7 +273,7 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 			{Expr: &chplan.ColumnRef{Name: "RootSpanName"}, Alias: "MetricName"},
 			{Expr: attrsMap, Alias: "Attributes"},
 			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
-			{Expr: &chplan.FuncCall{Name: "toFloat64", Args: []chplan.Expr{traceDurationNs}}, Alias: "Value"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{traceDurationNs}}, Alias: "Value"},
 		},
 	}
 }

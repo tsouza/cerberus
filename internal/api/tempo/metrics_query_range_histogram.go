@@ -63,7 +63,7 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 			args,
 			&chplan.LitString{V: labelNames[i]},
 			&chplan.FuncCall{
-				Name: "toString",
+				Fn:   chplan.FnToString,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAliases[i]}},
 			},
 		)
@@ -72,7 +72,7 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 		args,
 		&chplan.LitString{V: tempoQuantileBucketLabel},
 		&chplan.FuncCall{
-			Name: "toString",
+			Fn:   chplan.FnToString,
 			Args: []chplan.Expr{&chplan.ColumnRef{Name: m.BucketAlias}},
 		},
 	)
@@ -81,7 +81,7 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 		Input: rw,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: &chplan.FuncCall{Name: "map", Args: args}, Alias: "Attributes"},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnMap, Args: args}, Alias: "Attributes"},
 			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "TimeUnix"},
 			{Expr: &chplan.ColumnRef{Name: m.ValueAlias}, Alias: "Value"},
 		},

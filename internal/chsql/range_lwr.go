@@ -142,7 +142,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	collapse.Select(Col("anchor_ts"))
 	collapse.Select(RawAs(
 		aggFuncFrag(chplan.AggFunc{
-			Name: "argMax",
+			Fn: chplan.FnArgMax,
 			Args: []chplan.Expr{
 				&chplan.ColumnRef{Name: r.ValueCol},
 				&chplan.ColumnRef{Name: r.TimestampCol},
@@ -162,7 +162,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	if r.SampleTimestamp {
 		collapse.Select(RawAs(
 			aggFuncFrag(chplan.AggFunc{
-				Name: "max",
+				Fn:   chplan.FnMax,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: r.TimestampCol}},
 			}),
 			chplan.RangeLWRSampleTimestampColumn,

@@ -364,7 +364,7 @@ func windowRootLookupTraceIDSeed(root chplan.Node, traceIDCol string, seed chpla
 func tsBoundExprs(tsCol string, startNano, endNano int64) (lo, hi chplan.Expr) {
 	fromNano := func(nano int64) chplan.Expr {
 		return &chplan.FuncCall{
-			Name: "fromUnixTimestamp64Nano",
+			Fn:   chplan.FnFromUnixNanos,
 			Args: []chplan.Expr{&chplan.LitInt{V: nano}},
 		}
 	}
@@ -570,7 +570,7 @@ func compareCountValueFrag() Frag {
 	return Call(
 		"toFloat64",
 		func(b *Builder) {
-			_ = b.Expr(&chplan.FuncCall{Name: "count", Args: []chplan.Expr{&chplan.LitInt{V: 1}}})
+			_ = b.Expr(&chplan.FuncCall{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.LitInt{V: 1}}})
 		},
 	)
 }

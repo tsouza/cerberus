@@ -64,10 +64,10 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 		// Inner SELECT: project the `quantiles(p1, p2, ...)(Attr)`
 		// Array(Float64) under an internal alias; the outer SELECT
 		// fans it out via arrayJoin + tupleElement.
-		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: ""}
+		af := chplan.AggFunc{Fn: name, Params: params, Args: args, Alias: ""}
 		sb.Select(RawAs(aggFuncFrag(af), "qs_array"))
 	} else {
-		af := chplan.AggFunc{Name: name, Params: params, Args: args, Alias: m.ValueAlias}
+		af := chplan.AggFunc{Fn: name, Params: params, Args: args, Alias: m.ValueAlias}
 		sb.Select(aggFuncFrag(af))
 	}
 	// An empty GroupBy appends no keys (GroupBy is a no-op on an empty
@@ -114,34 +114,34 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 // happens in the wrapping emitter (emitMetricsAggregate /
 // emitRangeWindowMetrics), not here.
 func metricsAggregateCH(m *chplan.MetricsAggregate) (
-	name string,
+	fn chplan.Fn,
 	params []chplan.Expr,
 	args []chplan.Expr,
 	err error,
 ) {
 	switch m.Op {
 	case chplan.MetricsOpRate, chplan.MetricsOpCountOverTime:
-		return "count", nil, []chplan.Expr{&chplan.LitInt{V: 1}}, nil
+		return chplan.FnCount, nil, []chplan.Expr{&chplan.LitInt{V: 1}}, nil
 	case chplan.MetricsOpSumOverTime:
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
 		}
-		return "sum", nil, []chplan.Expr{m.Attr}, nil
+		return chplan.FnSum, nil, []chplan.Expr{m.Attr}, nil
 	case chplan.MetricsOpAvgOverTime:
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
 		}
-		return "avg", nil, []chplan.Expr{m.Attr}, nil
+		return chplan.FnAvg, nil, []chplan.Expr{m.Attr}, nil
 	case chplan.MetricsOpMinOverTime:
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
 		}
-		return "min", nil, []chplan.Expr{m.Attr}, nil
+		return chplan.FnMin, nil, []chplan.Expr{m.Attr}, nil
 	case chplan.MetricsOpMaxOverTime:
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
 		}
-		return "max", nil, []chplan.Expr{m.Attr}, nil
+		return chplan.FnMax, nil, []chplan.Expr{m.Attr}, nil
 	case chplan.MetricsOpQuantileOverTime:
 		if m.Attr == nil {
 			return "", nil, nil, fmt.Errorf("%w: %s requires Attr", ErrUnsupported, m.Op)
@@ -150,7 +150,7 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 			return "", nil, nil, fmt.Errorf("%w: MetricsAggregate quantile requires at least 1 quantile", ErrUnsupported)
 		}
 		if len(m.Quantiles) == 1 {
-			return "quantile", []chplan.Expr{&chplan.LitFloat{V: m.Quantiles[0]}}, []chplan.Expr{m.Attr}, nil
+			return chplan.FnQuantile, []chplan.Expr{&chplan.LitFloat{V: m.Quantiles[0]}}, []chplan.Expr{m.Attr}, nil
 		}
 		// Multi-phi: emit `quantiles(p1, p2, ...)(Attr)` which returns
 		// an Array(Float64) of size N. The wrapping emitter (bare or
@@ -160,7 +160,7 @@ func metricsAggregateCH(m *chplan.MetricsAggregate) (
 		for i, q := range m.Quantiles {
 			ps[i] = &chplan.LitFloat{V: q}
 		}
-		return "quantiles", ps, []chplan.Expr{m.Attr}, nil
+		return chplan.FnQuantiles, ps, []chplan.Expr{m.Attr}, nil
 	}
 	return "", nil, nil, fmt.Errorf("%w: MetricsAggregate op %s", ErrUnsupported, m.Op)
 }
@@ -999,7 +999,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	if m.Op == chplan.MetricsOpQuantileOverTime {
 		return e.emitRangeWindowMetricsQuantileBuckets(r, m)
 	}
-	chName, params, args, err := metricsAggregateCH(m)
+	fn, params, args, err := metricsAggregateCH(m)
 	if err != nil {
 		return err
 	}
@@ -1125,7 +1125,7 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	if zeroFill {
 		outerSb.Select(As(metricsSumWeightReducerFrag(m.Op, rangeSeconds), m.ValueAlias))
 	} else {
-		outerSb.Select(As(metricsReducerFrag(m.Op, chName, params, args, rangeSeconds), m.ValueAlias))
+		outerSb.Select(As(metricsReducerFrag(m.Op, fn, params, args, rangeSeconds), m.ValueAlias))
 	}
 
 	// GROUP BY group aliases + anchor_ts.
@@ -2114,28 +2114,19 @@ func windowValsFrag() Frag {
 // UInt64 to *float64 is unsupported`. The rate case keeps the cast as
 // well even though `count() / N` already promotes to Float64 in CH —
 // the uniform wrap is cheaper to reason about than a per-op exception.
-func metricsReducerFrag(op chplan.MetricsOp, chName string, params, args []chplan.Expr, rangeSeconds float64) Frag {
+func metricsReducerFrag(op chplan.MetricsOp, fn chplan.Fn, params, args []chplan.Expr, rangeSeconds float64) Frag {
 	// Translate Attr operand to a metric_arg reference (the alias the
 	// inner SELECT projects under) for *_over_time cases.
-	argFrags := make([]func(b *Builder), 0, len(args))
-	for range args {
-		argFrags = append(argFrags, func(b *Builder) { b.Ident("metric_arg") })
+	aggArgs := make([]chplan.Expr, len(args))
+	for i := range args {
+		aggArgs[i] = &chplan.ColumnRef{Name: "metric_arg"}
 	}
 	if op == chplan.MetricsOpRate || op == chplan.MetricsOpCountOverTime {
 		// args is [LitInt{1}] — pass through verbatim so we emit count(?).
-		argFrags = argFrags[:0]
-		for _, a := range args {
-			expr := a
-			argFrags = append(argFrags, func(b *Builder) { _ = b.Expr(expr) })
-		}
-	}
-	paramFrags := make([]func(b *Builder), 0, len(params))
-	for _, p := range params {
-		expr := p
-		paramFrags = append(paramFrags, func(b *Builder) { _ = b.Expr(expr) })
+		aggArgs = args
 	}
 
-	agg := Call("toFloat64", func(b *Builder) { b.ParamAgg(chName, paramFrags, argFrags) })
+	agg := Call("toFloat64", aggFuncFrag(chplan.AggFunc{Fn: fn, Params: params, Args: aggArgs}))
 	switch op {
 	case chplan.MetricsOpRate:
 		return Div(agg, InlineLit(rangeSeconds))

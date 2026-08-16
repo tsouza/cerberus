@@ -489,7 +489,7 @@ func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.
 				args,
 				&chplan.LitString{V: labelNames[i]},
 				&chplan.FuncCall{
-					Name: "toString",
+					Fn:   chplan.FnToString,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAliases[i]}},
 				},
 			)
@@ -498,11 +498,11 @@ func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.
 			args,
 			&chplan.LitString{V: tempoQuantileBucketLabel},
 			&chplan.FuncCall{
-				Name: "toString",
+				Fn:   chplan.FnToString,
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: tempoQuantileBucketLabel}},
 			},
 		)
-		attrs = &chplan.FuncCall{Name: "map", Args: args}
+		attrs = &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	case len(m.GroupBy) == 0:
 		// Ungrouped non-quantile: emit Tempo's UngroupedAggregator-style
 		// `{__name__="<op>"}` label so the response series is keyed by
@@ -511,7 +511,7 @@ func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.
 		// count_over_time / avg_over_time / ...), matching the upstream
 		// wire form LabelsFromArgs(labels.MetricName, op.String()).
 		attrs = &chplan.FuncCall{
-			Name: "map",
+			Fn: chplan.FnMap,
 			Args: []chplan.Expr{
 				&chplan.LitString{V: tempoMetricNameLabel},
 				&chplan.LitString{V: m.Op.String()},
@@ -524,12 +524,12 @@ func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.
 				args,
 				&chplan.LitString{V: labelNames[i]},
 				&chplan.FuncCall{
-					Name: "toString",
+					Fn:   chplan.FnToString,
 					Args: []chplan.Expr{&chplan.ColumnRef{Name: attrAliases[i]}},
 				},
 			)
 		}
-		attrs = &chplan.FuncCall{Name: "map", Args: args}
+		attrs = &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	}
 
 	return &chplan.Project{

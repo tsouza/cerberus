@@ -922,6 +922,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnMax:                             "FnMax",
 	chplan.FnMin:                             "FnMin",
 	chplan.FnQuantile:                        "FnQuantile",
+	chplan.FnQuantiles:                       "FnQuantiles",
 	chplan.FnStddevPop:                       "FnStddevPop",
 	chplan.FnSum:                             "FnSum",
 	chplan.FnUniqExact:                       "FnUniqExact",
