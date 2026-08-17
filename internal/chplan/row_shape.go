@@ -97,11 +97,19 @@ const (
 	// Three lowerings build this node today (internal/promql's
 	// histogram_native_bare.go, histogram_native_sum.go and
 	// histogram_native_range_fn.go). Generic forwarders still cannot
-	// consume it. Histogram-aware label transforms and scalar arithmetic
-	// intercept it before those forwarders, while float-only functions drop
-	// every histogram sample and re-project an empty canonical float shape.
-	// Every other wrapping shape remains behind expHistogramSelectorRouting
-	// until it grows its own histogram-aware lowering (issue #2296).
+	// consume it directly, and issue #2296 asked whether every wrapping
+	// shape PromQL can put around a histogram-valued result reaches one of
+	// them anyway. It does not: histogram-aware label transforms
+	// (label_replace / label_join) and scalar/histogram or
+	// histogram/histogram arithmetic recognise their operand directly,
+	// composing `sum`/`avg` over an ALREADY histogram-valued result (for
+	// example `sum(rate(m_exp_hist[5m]))`) is recognised recursively by
+	// internal/promql's mergeableExpHistogramAggregate before it would ever
+	// reach a forwarder, and float-only functions drop every histogram
+	// sample and re-project an empty canonical float shape (#2245 closed
+	// #2296 on that basis). Every remaining wrapping shape stays behind
+	// expHistogramSelectorRouting until it grows its own histogram-aware
+	// lowering or an extension to that recognizer set.
 	HistogramRowShape
 )
 
