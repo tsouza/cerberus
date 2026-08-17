@@ -16,7 +16,7 @@ const strictScanSourcePath = "../spec/strictscan_integration_test.go"
 // strictScanImageVar is the Justfile variable the strict-scan recipe pre-pulls.
 const strictScanImageVar = "CH_STRICT_SCAN_IMAGE"
 
-// TestStrictScanImageClearsChoptFloors is the ratchet that keeps the strict-scan
+// TestStrictScanImageClearsChoptFloors (#1411) is the ratchet that keeps the strict-scan
 // lane able to EXECUTE every shape the emitter can produce.
 //
 // The lane runs the spec corpus's emitted SQL against a real ClickHouse. When

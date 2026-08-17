@@ -28,7 +28,7 @@ const (
 // argument outright.
 const gremlinsForkTagPrefix = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max"
 
-// TestMutationLaneCapsPerMutantTimeout pins the one bound that keeps the
+// TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
 //
 // gremlins derives a mutant's test timeout as `timeout-coefficient x the

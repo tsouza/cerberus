@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The migration lane's `story` dispatch input narrows a manual run to ONE MIG
+// This pins #1328. The migration lane's `story` dispatch input narrows a manual run to ONE MIG
 // id, so an operator debugging a single story does not pay for the full
 // three-tier substrate. The narrowing is per-tier: each tier job's
 // scenario-executing step forwards STORY, and migration-e2e.mjs turns it into

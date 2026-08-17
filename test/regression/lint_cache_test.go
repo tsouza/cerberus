@@ -18,7 +18,7 @@ const golangciActionMarker = "golangci/golangci-lint-action@"
 // skipCacheInput is the input that makes the lane analyse cold.
 const skipCacheInput = "skip-cache: true"
 
-// TestLintLaneAnalysesCold pins the `lint` job to a cache-independent run.
+// TestLintLaneAnalysesCold (#1363) pins the `lint` job to a cache-independent run.
 //
 // golangci-lint-action stores its analysis cache as a GitHub Actions cache
 // entry, and those entries are immutable: a key is written once and every

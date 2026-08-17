@@ -10,8 +10,9 @@ import (
 	"testing"
 )
 
-// The cerberus self-observability dashboard exists in three places, and every
-// one of them is hand-maintained:
+// This pins the drift #2042 surfaced when the error-rate panel landed in one
+// copy but not the others. The cerberus self-observability dashboard exists
+// in three places, and every one of them is hand-maintained:
 //
 //   - test/e2e/grafana/dashboards/cerberus.json — the k3d editable copy.
 //   - test/e2e/k3s/grafana-dashboards.yaml — the k3d DEPLOYED copy, the same

@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// The GHCR mirror (.github/scripts/lib/mirror.mjs) holds cerberus's own copy of
+// This pins #1579. The GHCR mirror (.github/scripts/lib/mirror.mjs) holds cerberus's own copy of
 // every upstream image its CI pulls, and `pullImageWithRetry` reaches for that
 // copy before Docker Hub. The packages are PRIVATE — publishing them would put
 // other projects' images under this org's name for anyone to pull — so a job

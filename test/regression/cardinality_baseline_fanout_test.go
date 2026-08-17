@@ -11,6 +11,10 @@ import (
 	"testing"
 )
 
+// This pins the sharded regeneration contract added in #2123, which fanned the
+// cardinality baseline write out across CI legs so it stopped timing out as a
+// single-leg run.
+//
 // cardinalityUpdateModule is the runner behind `just update-cardinality-baseline`.
 const cardinalityUpdateModule = ".github/scripts/cardinality-baseline-update.mjs"
 

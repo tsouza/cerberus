@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// Shared fixture-path helpers, split out of the single parity contract test
+// in #2194 so each of the resulting ratchets (coverage, enrolment, sections,
+// vocabulary) can be read and fail independently.
+
 func repoRootForParity(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()

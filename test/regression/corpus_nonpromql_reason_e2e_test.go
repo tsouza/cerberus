@@ -95,7 +95,8 @@ func e2eTracedContext(ctx context.Context) context.Context {
 // TestCorpusNonPromQLReasonReachesPersistedRow drives a REAL non-PromQL query
 // (TraceQL) through the real engine into a real optcorpus.Reconciler and asserts
 // the persisted Row carries decision_reason="non-promql" with no route and no
-// solver geometry.
+// solver geometry. It pins the gap #1421 closed: recording non-PromQL dispatch
+// reasons.
 //
 // It exists because the two unit layers each proved half of this and the whole
 // was still broken. internal/engine's solver-wiring test proved the dispatch

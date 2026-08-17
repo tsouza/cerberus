@@ -11,6 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// This pins #2246, which required the published quickstart canary.
+
 const (
 	quickstartWorkflowPath = "../../.github/workflows/quickstart.yml"
 	quickstartScriptPath   = "../../.github/scripts/quickstart-canary.mjs"
