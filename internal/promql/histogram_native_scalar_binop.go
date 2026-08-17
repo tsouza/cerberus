@@ -192,6 +192,15 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if _, _, _, vm, ok := expHistogramHistogramBinop(expr, s, ctx); ok && isDefaultMatching(vm) {
 		return true
 	}
+	// `<exp-hist shape> (and|or|unless) <exp-hist shape>` (cerberus issue
+	// #2324) — see histogram_native_set_op.go. Unlike the +/- merge
+	// above, on()/ignoring() need no default-matching gate here: a set
+	// op's match key is built from Attributes/Timestamp alone, never
+	// Value, so the join/union machinery is unaffected by which matching
+	// mode is in play.
+	if _, ok := expHistogramSetOp(expr, s, ctx); ok {
+		return true
+	}
 	return false
 }
 

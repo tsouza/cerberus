@@ -211,6 +211,14 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // histogram/histogram sibling of that same drop path (cerberus issue
 // #2277) — it never shadows [expHistogramHistogramBinop]'s own +/- merge
 // above since the two recognisers key off disjoint operator sets.
+// `and`/`or`/`unless` between two histogram-valued shapes (cerberus
+// issue #2324) are recognised by [expHistogramSetOp], registered inside
+// [lowerExpHistogramValuedShape] itself (histogram_native_set_op.go)
+// rather than as its own direct dispatch here — unlike the drop path,
+// its result composes: registering it there lets a set op nest under a
+// further `sum`/`avg` ([mergeableExpHistogramAggregate]'s recursion) or
+// chain with another set op (`a or b or c`) the same way
+// [expHistogramHistogramBinop] already does for `+`/`-`.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an

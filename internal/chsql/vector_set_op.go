@@ -292,15 +292,43 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 		timeFrag = Col(s.TimestampColumn)
 	}
 
+	cols := []Frag{
+		metricNameFrag,
+		Col(s.AttributesColumn),
+		timeFrag,
+		Col(s.ValueColumn),
+	}
+	if s.Histogram {
+		cols = append(cols, vectorSetOpHistogramCols()...)
+	}
 	inner := NewQuery().
-		Select(
-			metricNameFrag,
-			Col(s.AttributesColumn),
-			timeFrag,
-			Col(s.ValueColumn),
-		).
+		Select(cols...).
 		From(armFrag)
 	return inner.Frag()
+}
+
+// vectorSetOpHistogramCols returns the nine chplan.Histogram*Column
+// references a histogram-shaped set op (VectorSetOp.Histogram /
+// NaryVectorSetOp.Histogram) appends after the canonical quartet. Every
+// arm feeding such a set op is, by construction, a
+// [chplan.HistogramProjection] (see internal/promql's
+// lowerExpHistogramSetOp), whose own emitter always aliases its nine
+// structural outputs to these FIXED names — see
+// internal/chsql/histogram_projection.go — regardless of the physical
+// schema column names the underlying scan used. Referencing the fixed
+// aliases here therefore needs no schema plumbing of its own.
+func vectorSetOpHistogramCols() []Frag {
+	return []Frag{
+		Col(chplan.HistogramCountColumn),
+		Col(chplan.HistogramSumColumn),
+		Col(chplan.HistogramScaleColumn),
+		Col(chplan.HistogramZeroThresholdColumn),
+		Col(chplan.HistogramZeroCountColumn),
+		Col(chplan.HistogramPositiveOffsetColumn),
+		Col(chplan.HistogramPositiveBucketCountsColumn),
+		Col(chplan.HistogramNegativeOffsetColumn),
+		Col(chplan.HistogramNegativeBucketCountsColumn),
+	}
 }
 
 // vectorSetOpSideArmFrag wraps an already-canonicalised arm Frag in a
@@ -417,12 +445,16 @@ func vectorSetOpSampleColumns(s *chplan.VectorSetOp) chplan.SampleColumns {
 // 4-slot shape every other PromQL emit site pins (vector_join, project,
 // range_window, …).
 func vectorSetOpOutputCols(s *chplan.VectorSetOp) []Frag {
-	return []Frag{
+	cols := []Frag{
 		Col(s.MetricNameColumn),
 		Col(s.AttributesColumn),
 		Col(s.TimestampColumn),
 		Col(s.ValueColumn),
 	}
+	if s.Histogram {
+		cols = append(cols, vectorSetOpHistogramCols()...)
+	}
+	return cols
 }
 
 func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {

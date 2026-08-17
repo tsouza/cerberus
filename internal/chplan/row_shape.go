@@ -110,6 +110,17 @@ const (
 	// #2296 on that basis). Every remaining wrapping shape stays behind
 	// expHistogramSelectorRouting until it grows its own histogram-aware
 	// lowering or an extension to that recognizer set.
+	//
+	// [VectorSetOp] / [NaryVectorSetOp] also answer this shape when their
+	// own Histogram field is set — internal/promql's
+	// lowerExpHistogramSetOp builds one from two HistogramProjection
+	// operands for `and`/`or`/`unless` (cerberus issue #2324). Unlike the
+	// three lowerings above, neither node IS a HistogramProjection; the
+	// chsql emitter widens their projection to the same nine-column
+	// output because both arms publish it under the fixed
+	// Histogram*Column aliases regardless. [RowShapeOf] reports the
+	// SHAPE a node's own SELECT publishes, not which Go type built it, so
+	// this is still the correct answer here.
 	HistogramRowShape
 )
 
@@ -158,6 +169,14 @@ func RowShapeOf(n Node) RowShape {
 		return GridWindowRowShape
 	case *HistogramProjection:
 		return HistogramRowShape
+	case *VectorSetOp:
+		if v.Histogram {
+			return HistogramRowShape
+		}
+	case *NaryVectorSetOp:
+		if v.Histogram {
+			return HistogramRowShape
+		}
 	case *RangeWindowStaleResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter
