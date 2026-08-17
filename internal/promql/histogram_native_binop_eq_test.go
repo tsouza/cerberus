@@ -85,13 +85,14 @@ func TestLower_ExpHistogram_HistogramCompareBinopIsHistogramValued(t *testing.T)
 	}
 }
 
-// TestLower_ExpHistogram_HistogramCompareBinopRejectsGroupLeftRight pins
-// that group_left()/group_right() (many-to-one broadcast) are explicitly
-// rejected for `==`/`!=` between two histograms too — the same
-// carved-out remainder #2273 tracks for `+`/`-`. on()/ignoring()
-// one-to-one matching is answered — see
-// [TestLower_ExpHistogram_HistogramCompareBinopSupportsOnIgnoringMatching].
-func TestLower_ExpHistogram_HistogramCompareBinopRejectsGroupLeftRight(t *testing.T) {
+// TestLower_ExpHistogram_HistogramCompareBinopSupportsGroupLeftRight pins
+// that group_left()/group_right() (many-to-one broadcast) lowers
+// successfully for `==`/`!=` between two histograms too — cerberus issue
+// #2328, the same gap [TestLower_ExpHistogram_HistogramBinopSupportsGroupLeftRight]
+// pins for `+`/`-`. The bool-modifier variant answers a FLOAT-valued
+// result (see [expHistogramHistogramCompareBoolBinop]'s doc), so it's
+// asserted separately from the non-bool structural-filter cases.
+func TestLower_ExpHistogram_HistogramCompareBinopSupportsGroupLeftRight(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -101,7 +102,6 @@ func TestLower_ExpHistogram_HistogramCompareBinopRejectsGroupLeftRight(t *testin
 	queries := []string{
 		`latency_exp_hist != on(service) group_left() other_exp_hist`,
 		`latency_exp_hist != on(service) group_right() other_exp_hist`,
-		`latency_exp_hist == bool on(service) group_left() other_exp_hist`,
 	}
 
 	for _, query := range queries {
@@ -111,12 +111,45 @@ func TestLower_ExpHistogram_HistogramCompareBinopRejectsGroupLeftRight(t *testin
 			if err != nil {
 				t.Fatalf("ParseExpr(%q): %v", query, err)
 			}
-			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-			if err == nil {
-				t.Fatalf("lower(%q): expected an error, got none", query)
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", query, err)
 			}
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", query, plan)
+			}
+			findHistogramVectorJoin(t, hp)
 		})
 	}
+}
+
+// TestLower_ExpHistogram_HistogramCompareBoolBinopSupportsGroupLeftRight
+// pins the bool-modifier variant of the same gap: `== bool` between two
+// histograms under group_left()/group_right() lowers to a FLOAT-valued
+// plan (not *chplan.HistogramProjection — see
+// [expHistogramHistogramCompareBoolBinop]'s doc) whose tree still
+// contains the chplan.HistogramVectorJoin broadcast.
+func TestLower_ExpHistogram_HistogramCompareBoolBinopSupportsGroupLeftRight(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	query := `latency_exp_hist == bool on(service) group_left() other_exp_hist`
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("lower(%q): unexpected error: %v", query, err)
+	}
+	if _, ok := plan.(*chplan.HistogramProjection); ok {
+		t.Fatalf("lower(%q): plan root is *chplan.HistogramProjection, want a FLOAT-valued shape (bool modifier)", query)
+	}
+	findHistogramVectorJoin(t, plan)
 }
 
 // TestLower_ExpHistogram_HistogramCompareBinopSupportsOnIgnoringMatching

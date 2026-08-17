@@ -38,6 +38,11 @@ var derivedShapeVerdicts = map[string]bool{
 	"MetricsHistogramOverTime": true,
 	"RangeWindow":              true,
 	"RangeWindowGridNative":    true,
+	// HistogramVectorJoin's own SELECT exposes `_hq_L_*`/`_hq_R_*`
+	// aliases — no bare MetricName column, unlike HistogramProjection
+	// below (which still names a real MetricName output, placeholder
+	// value or not).
+	"HistogramVectorJoin": true,
 
 	// Everything else keeps the canonical columns in scope (or is
 	// re-canonicalised by its own emit, as a nested VectorSetOp is).

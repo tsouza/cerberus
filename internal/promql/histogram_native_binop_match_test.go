@@ -9,35 +9,6 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestIsSupportedHistogramMatchCardinality pins the cardinality gate
-// [applyVectorMatchToHistogramOperand]'s callers rely on: one-to-one
-// (nil vm, or vm.Card explicitly CardOneToOne — covering both default
-// and on()/ignoring() matching) is supported; group_left()/group_right()
-// (CardManyToOne / CardOneToMany) is not.
-func TestIsSupportedHistogramMatchCardinality(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name string
-		vm   *parser.VectorMatching
-		want bool
-	}{
-		{name: "nil (default matching)", vm: nil, want: true},
-		{name: "one-to-one, no modifier", vm: &parser.VectorMatching{Card: parser.CardOneToOne}, want: true},
-		{name: "one-to-one with on()", vm: &parser.VectorMatching{Card: parser.CardOneToOne, On: true, MatchingLabels: []string{"job"}}, want: true},
-		{name: "many-to-one (group_left)", vm: &parser.VectorMatching{Card: parser.CardManyToOne}, want: false},
-		{name: "one-to-many (group_right)", vm: &parser.VectorMatching{Card: parser.CardOneToMany}, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := isSupportedHistogramMatchCardinality(tc.vm); got != tc.want {
-				t.Fatalf("isSupportedHistogramMatchCardinality(%#v) = %v, want %v", tc.vm, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestApplyVectorMatchToHistogramOperand_DefaultMatchingIsNoop pins that
 // default matching (isDefaultMatching(vm) == true) returns hp UNCHANGED
 // — no extra Aggregate stage, since hp already carries one row per

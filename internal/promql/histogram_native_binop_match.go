@@ -12,8 +12,10 @@ import (
 // histogram_native_binop_eq.go's `==`/`!=` structural-equality filter —
 // from default (full label set) vector matching to on()/ignoring()
 // matching (cerberus issue #2273, gap 1). `group_left()`/`group_right()`
-// (many-to-one broadcast) stay unsupported: see
-// [isSupportedHistogramMatchCardinality].
+// (many-to-one broadcast) needs a materially different join shape — a
+// real INNER JOIN rather than this file's reduced-key regroup — and is
+// answered separately by [chplan.HistogramVectorJoin] / this package's
+// histogram_native_binop_card.go (cerberus issue #2328).
 //
 // Both callers already collapse each operand to one row per FULL
 // Attributes key ([lowerExpHistogramValuedOperand]'s
@@ -44,21 +46,6 @@ import (
 // ([isDefaultMatching]): each operand's own HistogramProjection already
 // groups by the full Attributes map, so re-grouping by that same key
 // would only add a redundant Aggregate stage.
-
-// isSupportedHistogramMatchCardinality reports whether vm's cardinality
-// is a histogram-binop merge/compare can honour today: one-to-one,
-// covering both default matching (vm == nil) and any on()/ignoring()
-// modifier ([applyVectorMatchToHistogramOperand] handles those via a
-// reduced-key regroup). `group_left()`/`group_right()` — cerberus issue
-// #2273's carved-out remainder — set vm.Card to CardManyToOne /
-// CardOneToMany and are rejected by callers of this function; the
-// many-to-one broadcast that cardinality implies needs a materially
-// different shape (one side keeps per-series granularity and gets the
-// other side's histogram broadcast onto every matching row) that neither
-// the `+`/`-` merge nor the `==`/`!=` compare implements.
-func isSupportedHistogramMatchCardinality(vm *parser.VectorMatching) bool {
-	return vm == nil || vm.Card == parser.CardOneToOne
-}
 
 // histogramMatchKeyAggExpr translates vm's on()/ignoring() modifier into
 // the *parser.AggregateExpr shape [histogramAggGroupBy] already knows how

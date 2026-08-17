@@ -36,10 +36,11 @@ import (
 // between two histograms ARE answered by reference with a KEPT result (a
 // structural-equality filter, not a drop and not a merge), need
 // different mechanics than either path in this file, and are tracked
-// separately (#2273) — along with group_left()/group_right() support
-// for `+`/`-` (see this file's rejection error below;
-// on()/ignoring() are supported via
-// [applyVectorMatchToHistogramOperand], histogram_native_binop_match.go).
+// separately (#2273). on()/ignoring() matching for `+`/`-` is supported
+// via [applyVectorMatchToHistogramOperand] (histogram_native_binop_match.go);
+// group_left()/group_right() is supported via
+// [mergeTwoHistogramProjectionsCard] (histogram_native_binop_card.go,
+// #2328).
 //
 // The bucket RECONCILIATION (which absolute index each operand's own
 // buckets land on at the merged, coarser Scale) is the same integer
@@ -108,8 +109,8 @@ import (
 // key" invariant this file's own merge depends on, with its own runtime
 // many-to-many guard, before either operand ever reaches
 // [mergeTwoHistogramProjections]. group_left()/group_right() (many-to-one
-// broadcast) remain unsupported — see
-// [isSupportedHistogramMatchCardinality].
+// broadcast) routes to a different shape entirely — see
+// [mergeTwoHistogramProjectionsCard] (histogram_native_binop_card.go).
 func expHistogramHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, sub bool, vm *parser.VectorMatching, ok bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, false, nil, false
@@ -128,13 +129,14 @@ func expHistogramHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx
 // [expHistogramHistogramBinop] recognised. Both operands defer to their
 // own existing histogram-valued lowering unchanged — this function only
 // adds the join + merge on top.
+//
+// group_left()/group_right() (vm.Card != CardOneToOne) routes through
+// [mergeTwoHistogramProjectionsCard] (histogram_native_binop_card.go),
+// which broadcasts via a real [chplan.HistogramVectorJoin] instead of the
+// one-to-one path's on()/ignoring()-only [applyVectorMatchToHistogramOperand]
+// pre-reduction — see that node's doc for why the two cardinalities need
+// different join shapes (cerberus issue #2328).
 func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if !isSupportedHistogramMatchCardinality(vm) {
-		return nil, fmt.Errorf(
-			"promql: group_left()/group_right() matching is not yet supported for binary arithmetic between " +
-				"two exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
-		)
-	}
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
 	if err != nil {
 		return nil, err
@@ -143,8 +145,6 @@ func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm 
 	if err != nil {
 		return nil, err
 	}
-	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
-	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
 	if sub {
 		// `h1 - h2` is FloatHistogram.Sub, which reference documents as
 		// Add with the second operand's counts negated first — reuse the
@@ -154,6 +154,11 @@ func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm 
 		// then fold through the same merge as `+`.
 		hpR = scaleHistogramProjection(hpR, chplan.OpMul, &chplan.LitFloat{V: -1}, s)
 	}
+	if vm != nil && vm.Card != parser.CardOneToOne {
+		return mergeTwoHistogramProjectionsCard(hpL, hpR, vm, s, ctx), nil
+	}
+	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
+	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
 	return mergeTwoHistogramProjections(hpL, hpR, s, ctx), nil
 }
 
@@ -185,8 +190,8 @@ func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowe
 // whether the matched pair set came from DEFAULT one-to-one matching or
 // an explicit on()/ignoring()/group_left()/group_right() clause — there
 // is no observable difference between them left to validate, unlike
-// +/-'s explicit "not yet supported" rejection for anything but default
-// matching.
+// +/-'s two genuinely different join shapes (one-to-one vs.
+// group_left()/group_right()) for anything but this always-empty family.
 //
 // EQLC/NEQ are excluded: reference answers those with a KEPT result (a
 // structural-equality filter), not a drop — different mechanics, tracked

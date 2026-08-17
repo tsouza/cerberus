@@ -2,21 +2,6 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramHistogramBinop#cbed3d45",
-      "message": "promql: group_left()/group_right() matching is not yet supported for binary arithmetic between two exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
-      "class": "rejection",
-      "trigger_query": "demo_latency_exp_hist + on(job) group_left() demo_latency_exp_hist",
-      "evidence": {
-        "guard": [
-          "if !isSupportedHistogramMatchCardinality(vm)"
-        ],
-        "callers": [
-          "lowerExpHistogramValuedShape"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#2fa7ca70",
       "message": "promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v",
       "class": "internal",
