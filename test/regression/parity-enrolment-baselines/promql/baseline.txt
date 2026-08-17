@@ -169,6 +169,8 @@ exp_histogram_scalar_mul_bare.txtar
 exp_histogram_scalar_mul_rate.txtar
 exp_histogram_set_op_and.txtar
 exp_histogram_set_op_or.txtar
+exp_histogram_set_op_or_mixed_float_left.txtar
+exp_histogram_set_op_or_mixed_histogram_left.txtar
 exp_histogram_set_op_unless.txtar
 exp_histogram_sum.txtar
 exp_histogram_sum_by.txtar
