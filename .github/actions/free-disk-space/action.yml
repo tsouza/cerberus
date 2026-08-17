@@ -1,0 +1,33 @@
+name: Free disk space
+description: >
+  Reclaim unused runner disk space, logging free space before and after so
+  an exhaustion shows up in the step output rather than surfacing only as a
+  mid-job "no space left on device" abort.
+
+# Why a composite action: every Docker/ClickHouse-heavy job needs the same
+# reclaim before its stack boots (build layers plus a running ClickHouse
+# exhaust bone-stock ubuntu-latest's ~14 GB free root fs). docker-images,
+# large-packages and tool-cache are all `false` at every call site - the
+# stacks these jobs bring up need Docker's prebaked images, and reclaiming
+# the smaller large-packages/tool-cache categories was never worth their
+# extra time - so those knobs are fixed here rather than exposed as inputs.
+# Pinned to a commit SHA: the action only ships @main, and the repo rule is
+# to pin CI dependencies explicitly rather than track a moving default.
+
+runs:
+  using: composite
+  steps:
+    - name: Disk free (before reclaim)
+      shell: bash
+      run: df -h
+
+    - name: Free disk space
+      uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+      with:
+        docker-images: false
+        large-packages: false
+        tool-cache: false
+
+    - name: Disk free (after reclaim)
+      shell: bash
+      run: df -h
