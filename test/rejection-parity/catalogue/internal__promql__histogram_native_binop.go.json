@@ -4,9 +4,8 @@
       "head": "promql",
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramHistogramBinop#f9a375de",
       "message": "promql: on()/ignoring()/group_left()/group_right() matching is not yet supported for binary arithmetic between two exponential histogram selectors; only default (full label set) matching is supported",
-      "class": "divergence",
+      "class": "rejection",
       "trigger_query": "demo_latency_exp_hist + on(job) demo_latency_exp_hist",
-      "tracking_issue": 2273,
       "evidence": {
         "guard": [
           "if !isDefaultMatching(vm)"
@@ -14,8 +13,7 @@
         "callers": [
           "lowerExpHistogramValuedShape"
         ]
-      },
-      "since": "2026-08-17"
+      }
     },
     {
       "head": "promql",
