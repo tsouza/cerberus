@@ -18,7 +18,7 @@
 // here directly.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -67,14 +67,50 @@ function scanWith(file, edit) {
   return scan({ root: repoRoot, workflowDir: dir });
 }
 
+// scanWithAction — the real tree, with ONE composite action's action.yml
+// doctored and every workflow file left untouched.
+//
+// The registry-login pair used to be duplicated inline at every call site, so
+// doctoring the CALLING workflow's copy was doctoring the thing under test.
+// Since #2304 it lives once in .github/actions/registry-login, resolved into
+// every caller by `step()`'s own `uses: ./` handling (proved separately by
+// "a composite action contributes its own steps"). A negative control that
+// still edited the calling workflow's text would prove nothing — the text it
+// is looking for no longer exists there — so this doctors the action file
+// the resolver actually reads, and leaves a real, untouched copy of the
+// calling workflow to resolve `uses:` into it.
+//
+// root mirrors just the pieces the resolver reads (Justfile, .github/scripts,
+// .github/actions), with the target action doctored; workflowDir is a temp
+// copy of the ONE untouched calling workflow, matching scanWith's shape of
+// scanning a single file rather than the whole tree.
+function scanWithAction(actionRelPath, workflowFile, edit) {
+  const root = mkdtempSync(join(tmpdir(), 'image-auth-gate-root-'));
+  cpSync(join(repoRoot, 'Justfile'), join(root, 'Justfile'));
+  cpSync(join(repoRoot, '.github/scripts'), join(root, '.github/scripts'), { recursive: true });
+  cpSync(join(repoRoot, '.github/actions'), join(root, '.github/actions'), { recursive: true });
+
+  const original = readFileSync(join(root, actionRelPath), 'utf8');
+  const doctored = edit(original);
+  assert.notEqual(doctored, original, 'the negative control did not change the action text');
+  writeFileSync(join(root, actionRelPath), doctored);
+
+  const wfDir = mkdtempSync(join(tmpdir(), 'image-auth-gate-wf-'));
+  writeFileSync(join(wfDir, workflowFile), readFileSync(join(workflows, workflowFile), 'utf8'));
+
+  return scan({ root, workflowDir: wfDir });
+}
+
 // Removes EVERY `- name: <title>` step, each up to the next step at its own
 // indentation. Deleting the login is the regression this gate exists to catch,
 // so it is also the way to prove the gate catches it.
 //
-// Every occurrence, not the first: `Log in to Docker Hub` is the title of a step
-// in six jobs of e2e.yml, so removing one match doctors whichever job happens to
-// come first in the file — which is not the job under test, and leaves the
-// control asserting that an untouched job is still clean.
+// Every occurrence, not the first: before #2304 `Log in to Docker Hub` was the
+// title of a step in six jobs of e2e.yml, so removing one match doctored
+// whichever job happened to come first in the file rather than the job under
+// test. Now that the pair lives once in the registry-login composite action,
+// "every occurrence" is exactly one — but the loop stays generic rather than
+// assuming that, so it still holds if a step title is ever repeated again.
 function withoutStep(title) {
   return (text) => {
     const lines = text.split('\n');
@@ -207,8 +243,10 @@ test('a composite action contributes its own steps', () => {
 // Negative controls — each rule, proved against the real workflow text.
 // ---------------------------------------------------------------------------
 
+const registryLoginAction = '.github/actions/registry-login/action.yml';
+
 test('R1 fires when an acquiring job has no login at all', () => {
-  const results = scanWith('e2e.yml', (text) =>
+  const results = scanWithAction(registryLoginAction, 'e2e.yml', (text) =>
     withoutStep('Log in to the image mirror (GHCR)')(withoutStep('Log in to Docker Hub')(text)),
   );
   const violations = violationsFor(specimenJob, findingsFor(specimenJob, results));
@@ -217,7 +255,7 @@ test('R1 fires when an acquiring job has no login at all', () => {
 });
 
 test('R2 fires when an acquiring job has no Docker Hub login', () => {
-  const results = scanWith('e2e.yml', withoutStep('Log in to Docker Hub'));
+  const results = scanWithAction(registryLoginAction, 'e2e.yml', withoutStep('Log in to Docker Hub'));
   const violations = violationsFor(specimenJob, findingsFor(specimenJob, results));
   assert.equal(violations.length, 1);
   assert.match(violations[0], /clickhouse\/clickhouse-server:[\d.]+/);
@@ -225,7 +263,7 @@ test('R2 fires when an acquiring job has no Docker Hub login', () => {
 });
 
 test('R3 fires when a job pulling through the mirror has no ghcr.io login', () => {
-  const results = scanWith('e2e.yml', withoutStep('Log in to the image mirror (GHCR)'));
+  const results = scanWithAction(registryLoginAction, 'e2e.yml', withoutStep('Log in to the image mirror (GHCR)'));
   const violations = violationsFor(specimenJob, findingsFor(specimenJob, results));
   assert.equal(violations.length, 1);
   assert.match(violations[0], /no ghcr\.io login/);
@@ -242,10 +280,14 @@ test('R3 fires when a job pulling through the mirror has no ghcr.io login', () =
 // what makes the order a separate rule rather than a stylistic one.
 // ---------------------------------------------------------------------------
 
-// swapLoginOrder — put the Docker Hub login back ahead of the mirror login, the
-// pre-#1933 shape, by moving the mirror step to just after the Hub step. Only
-// the pair in the specimen job is touched, so the rest of the file stays clean.
-function swapLoginOrder(text) {
+// swapActionLoginOrder — put the Docker Hub login back ahead of the ghcr.io
+// login, the pre-#1933 shape, by moving the mirror step to just after the Hub
+// step. Before #2304 this had to search out ONE job's own copy of the pair
+// among e2e.yml's several duplicates; the registry-login composite action now
+// holds the pair exactly once, so there is no per-job scoping left to do —
+// swapping its one copy swaps the order for every caller at once, and the
+// specimen job is enough to observe that.
+function swapActionLoginOrder(text) {
   const lines = text.split('\n');
   const stepAt = (title, from) => {
     const i = lines.findIndex((l, n) => n >= from && l.trim() === `- name: ${title}`);
@@ -260,10 +302,7 @@ function swapLoginOrder(text) {
     while (end - 1 > i && lines[end - 1].trim() === '') end--;
     return [i, end];
   };
-  // The specimen's own pair: find the mirror login that precedes its Hub login.
-  const bench = lines.findIndex((l) => l.trim() === 'startup-bench:');
-  assert.notEqual(bench, -1, 'startup-bench did not appear in e2e.yml');
-  const [mTop, mEnd] = stepAt('Log in to the image mirror (GHCR)', bench);
+  const [mTop, mEnd] = stepAt('Log in to the image mirror (GHCR)', 0);
   const [hTop, hEnd] = stepAt('Log in to Docker Hub', mEnd);
   const mirror = lines.slice(mTop, mEnd);
   const hub = lines.slice(hTop, hEnd);
@@ -271,7 +310,7 @@ function swapLoginOrder(text) {
 }
 
 test('R5 fires when the Docker Hub login runs before the ghcr.io one', () => {
-  const results = scanWith('e2e.yml', swapLoginOrder);
+  const results = scanWithAction(registryLoginAction, 'e2e.yml', swapActionLoginOrder);
   const findings = findingsFor(specimenJob, results);
   const violations = violationsFor(specimenJob, findings);
   assert.ok(
@@ -311,9 +350,10 @@ test('R6 fires when a job that writes to a registry loses its opt-out', () => {
 });
 
 test('R6 fires when a consuming job opts itself out of mirror-only mode', () => {
-  // The e2e specimen: adding the opt-out to its Docker Hub login is the exact
-  // one-line edit that would quietly undo this change for that lane.
-  const results = scanWith('e2e.yml', (text) =>
+  // The registry-login composite's own Docker Hub step: adding the opt-out
+  // there is the exact one-line edit that would quietly undo this change for
+  // every consuming caller of the composite, e2e.yml's specimen included.
+  const results = scanWithAction(registryLoginAction, 'e2e.yml', (text) =>
     text.replace(/(\n(\s+)USERNAME: tsouza\n)/, `$1$2ON_TRANSPORT_FAULT: fail\n`),
   );
   const violations = results.flatMap((r) => violationsFor(r.id, r.findings));
