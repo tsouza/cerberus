@@ -37,9 +37,10 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //
 // Two links of a chain are mergeable only when they agree on the
 // operator, the match modifier (default / on / ignoring), step
-// alignment, and every canonical Sample column name. A chain whose
-// links disagree on any of these isn't a single associative chain and
-// is left untouched.
+// alignment, the histogram-shaped-arm flag (VectorSetOp.Histogram — see
+// its doc comment), and every canonical Sample column name. A chain
+// whose links disagree on any of these isn't a single associative chain
+// and is left untouched.
 type FlattenVectorSetOp struct{}
 
 func (FlattenVectorSetOp) Name() string { return "flatten-vector-set-op" }
@@ -65,6 +66,7 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 		Op:               binary.Op,
 		Match:            binary.Match,
 		StepAligned:      binary.StepAligned,
+		Histogram:        binary.Histogram,
 		MetricNameColumn: binary.MetricNameColumn,
 		AttributesColumn: binary.AttributesColumn,
 		TimestampColumn:  binary.TimestampColumn,
@@ -80,14 +82,14 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 func flattenLeftArms(binary *chplan.VectorSetOp) (arms []chplan.Node) {
 	switch left := binary.Left.(type) {
 	case *chplan.VectorSetOp:
-		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
+		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned, left.Histogram,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
 			return []chplan.Node{binary.Left}
 		}
 		return append(flattenLeftArms(left), left.Right)
 	case *chplan.NaryVectorSetOp:
-		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
+		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned, left.Histogram,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
 			return []chplan.Node{binary.Left}
@@ -120,11 +122,13 @@ func sameVectorSetOpShape(
 	op chplan.VectorSetOpKind,
 	match chplan.VectorMatch,
 	stepAligned bool,
+	histogram bool,
 	metricName, attributes, timestamp, value string,
 ) bool {
 	return root.Op == op &&
 		root.Match.Equal(match) &&
 		root.StepAligned == stepAligned &&
+		root.Histogram == histogram &&
 		root.MetricNameColumn == metricName &&
 		root.AttributesColumn == attributes &&
 		root.TimestampColumn == timestamp &&

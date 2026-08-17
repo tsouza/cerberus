@@ -1,0 +1,33 @@
+-- query.promql --
+http_server_duration_exp_hist or http_client_duration_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `or` between two DIFFERENT exp-histogram metrics (cerberus issue
+-- #2324): every LHS row, plus every RHS row whose label signature is
+-- ABSENT from the LHS. `shared` exists on both sides — the LHS row wins
+-- verbatim (its own Count/Sum/buckets), the RHS's `shared` row is
+-- dropped rather than merged. `server_only` (LHS-only) and
+-- `client_only` (RHS-only) both survive unchanged.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'server_only'), toDateTime64('2026-01-01 00:00:00', 9), 4, 10.0, 0, 0, 0, [7],        0, []),
+    ('http_client_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 9, 99.0, 0, 0, 0, [5, 10],     0, []),
+    ('http_client_duration_exp_hist', map('series', 'client_only'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0,  0, 0, 0, [9],         0, []);
+-- expected_rows --
+[]

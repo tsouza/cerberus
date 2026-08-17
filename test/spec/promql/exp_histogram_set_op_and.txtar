@@ -1,0 +1,41 @@
+-- query.promql --
+http_server_duration_exp_hist and http_client_duration_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `and` between two DIFFERENT exp-histogram metrics (cerberus issue
+-- #2324). Reference Prometheus's vector set operators match purely on
+-- labels and never inspect whether a matched sample is a native
+-- histogram — `and` keeps LHS rows whose label signature also has a row
+-- on the RHS, forwarding the LHS row's OWN values VERBATIM (no bucket
+-- reconciliation, unlike `+`/`-`):
+--
+--   `shared`: present on both sides — the OUTPUT is the LHS row's own
+--   Count/Sum/buckets ([1,2,3] at Scale=0) UNCHANGED, not any merge of
+--   the two sides' distributions.
+--
+-- `server_only` exists on the LHS only and drops (no matching RHS
+-- signature); `client_only` exists on the RHS only and is never a
+-- candidate output row for `and` (only LHS rows can survive).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'server_only'), toDateTime64('2026-01-01 00:00:00', 9), 4, 10.0, 0, 0, 0, [7],        0, []),
+    ('http_client_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 9, 99.0, 0, 0, 0, [5, 10],     0, []),
+    ('http_client_duration_exp_hist', map('series', 'client_only'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0,  0, 0, 0, [9],         0, []);
+-- expected_rows --
+[]

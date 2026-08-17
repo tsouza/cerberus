@@ -53,6 +53,14 @@ type NaryVectorSetOp struct {
 	// VectorJoin.StepAligned.
 	StepAligned bool
 
+	// Histogram marks a chain whose arms are all a [HistogramProjection]
+	// — the flatten rule only ever absorbs a chain of same-shaped binary
+	// [VectorSetOp] links (see FlattenVectorSetOp.sameVectorSetOpShape),
+	// so every arm agrees on this flag by construction. Mirrors
+	// [VectorSetOp.Histogram] — see its doc comment for why the emitted
+	// projection widens instead of forwarding ValueColumn's placeholder.
+	Histogram bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -79,7 +87,7 @@ func (s *NaryVectorSetOp) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned {
+	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned || s.Histogram != o.Histogram {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||

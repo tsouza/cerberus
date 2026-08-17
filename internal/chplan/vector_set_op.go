@@ -49,6 +49,23 @@ type VectorSetOp struct {
 	// an arm-local timestamp. Mirrors VectorJoin.StepAligned.
 	StepAligned bool
 
+	// Histogram marks a set op whose Left AND Right are both a
+	// [HistogramProjection] — the shape internal/promql's
+	// lowerExpHistogramSetOp builds for `and`/`or`/`unless` between two
+	// exponential-histogram-valued operands (cerberus issue #2324).
+	// Reference Prometheus's set operators never inspect a matched
+	// sample's value, only its label set, so the join/union machinery
+	// below is identical to the float case — this flag only widens the
+	// emitted projection to carry the nine
+	// [HistogramCountColumn]…[HistogramNegativeBucketCountsColumn]
+	// outputs alongside the canonical quartet, instead of forwarding
+	// ValueColumn's meaningless placeholder and silently dropping the
+	// histogram. Both arms publish those nine columns under their FIXED
+	// alias names regardless of the schema's physical column names (see
+	// HistogramProjection's own emitter), so no additional column-name
+	// plumbing is needed here.
+	Histogram bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -64,7 +81,7 @@ func (s *VectorSetOp) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned {
+	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned || s.Histogram != o.Histogram {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||

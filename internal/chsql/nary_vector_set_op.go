@@ -173,12 +173,16 @@ func naryVectorSetOpSideArmFrag(s *chplan.NaryVectorSetOp, armFrag Frag, side in
 // emitter's vectorSetOpOutputCols shape so the round-trip runner can
 // recognise the Map column.
 func naryVectorSetOpOutputCols(s *chplan.NaryVectorSetOp) []Frag {
-	return []Frag{
+	cols := []Frag{
 		Col(s.MetricNameColumn),
 		Col(s.AttributesColumn),
 		Col(s.TimestampColumn),
 		Col(s.ValueColumn),
 	}
+	if s.Histogram {
+		cols = append(cols, vectorSetOpHistogramCols()...)
+	}
+	return cols
 }
 
 // naryVectorSetOpCanonicalArmFrag canonicalises one arm to the 4-column
@@ -193,6 +197,7 @@ func naryVectorSetOpCanonicalArmFrag(s *chplan.NaryVectorSetOp, arm chplan.Node,
 		Op:               s.Op,
 		Match:            s.Match,
 		StepAligned:      s.StepAligned,
+		Histogram:        s.Histogram,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
