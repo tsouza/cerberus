@@ -23,6 +23,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// This pins #2242, which hardened test-fence enrollment semantics.
+
 const (
 	taggedEntrypointDirect = "direct"
 	taggedEntrypointRecipe = "recipe"

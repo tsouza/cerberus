@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// `forbid-deferral` reads three surfaces, and one of them — the pull request
-// DESCRIPTION — is not part of the git history at all. That makes its trigger
-// list load-bearing in a way no other gate's is.
+// This pins #1560. `forbid-deferral` reads three surfaces, and one of them —
+// the pull request DESCRIPTION — is not part of the git history at all. That
+// makes its trigger list load-bearing in a way no other gate's is.
 //
 // GitHub's default `pull_request:` trigger is opened + synchronize + reopened.
 // `edited`, which is the event a description change raises, is NOT in it. The

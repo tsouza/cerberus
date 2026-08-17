@@ -1,4 +1,4 @@
-// Cross-transport parity for the Tempo head. The same query, driven
+// This pins #1581. Cross-transport parity for the Tempo head. The same query, driven
 // against the same stub ClickHouse client, must produce the same
 // ANSWER over HTTP and over the gRPC StreamingQuerier — both the
 // error classification and the search-metrics accounting.

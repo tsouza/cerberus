@@ -17,6 +17,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// This pins #1322, which closed three gaps that let a release ship
+// unverified.
+//
 // On the MAINTENANCE publish path (`release/*.x`) there is no pull request, so
 // there is no branch protection either: release.yml's preflight is the ONLY
 // gate between a push and a published artifact. That makes two silent failure

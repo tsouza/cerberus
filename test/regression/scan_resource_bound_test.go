@@ -8,7 +8,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
-// This meta-test pins the spans-scan resource-bound invariant at the chplan
+// This pins #1154 (the traces-drilldown OOM). This meta-test pins the spans-scan resource-bound invariant at the chplan
 // level: chplan.RequireSpansScansBounded must reject a bare (unbounded) spans
 // Scan and accept the three legitimate partition-bounded leaf shapes. It is a
 // static plan-walk pin — no SQL emission, no chDB — so a regression that

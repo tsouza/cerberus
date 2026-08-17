@@ -11,6 +11,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// This pins the shadow test-fence registry contract added in #2233: the
+// registry below is the schema every CI lane entry must satisfy, so a lane
+// that drifts from its own declared shape is caught here rather than by a
+// silent gap in enforcement.
+
 const ciLaneRegistryPath = "../../.github/ci-lanes.json"
 
 type ciLaneRegistry struct {

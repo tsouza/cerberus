@@ -1,6 +1,6 @@
 package regression
 
-// Pins the Tier-0 migration scenarios to a required pull-request lane.
+// Pins the Tier-0 migration scenarios to a required pull-request lane (#1364).
 //
 // The Tier-0 slice asserts, byte for byte, that `cerberus migrate` still
 // emits the committed explain goldens under

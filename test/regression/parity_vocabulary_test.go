@@ -7,7 +7,7 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
-// TestParityVocabulariesAreClosed asserts the accepted values are a closed
+// TestParityVocabulariesAreClosed (split out of the parity contract in #2194) asserts the accepted values are a closed
 // set with no empty members — the property LoadParity's rejection path
 // depends on.
 func TestParityVocabulariesAreClosed(t *testing.T) {

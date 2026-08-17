@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// `.claude/hooks/guard-git.mjs` is a PreToolUse hook that refuses a `git
+// This pins #1853. `.claude/hooks/guard-git.mjs` is a PreToolUse hook that refuses a `git
 // commit` / `git push` aimed at `main`, and refuses either while lefthook's
 // git hooks are missing. Its whole value is that it fires on the commands an
 // agent actually types, and its whole cost is that a false positive blocks
