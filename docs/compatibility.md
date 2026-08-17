@@ -14,19 +14,24 @@ conformance suite to draw on, so its corpus is author-written and its
 numerical confidence is honestly lower (see
 [Per-head confidence](#per-head-confidence) below).
 
-> **What gates vs. what scores.** All three `compatibility/<head>` checks
-> run on every PR and are required. The *harness* is report-only on
-> per-case parity drift by design
+> **What gates vs. what scores.** All four `compatibility/<head>` checks
+> (the three per-language legs plus `compatibility/prometheus-forced-route`)
+> are **release-gate** lanes, not PR-blocking ones (#2230): they short-circuit
+> to a fast no-op on an ordinary PR or merge-group entry, and run for real on
+> push to `main`, on schedule/dispatch, and on a `release/*` head-branch PR —
+> where `release.yml`'s preflight requires each to post a green check-run
+> before anything publishes. The *harness* is report-only on per-case parity
+> drift by design
 > ([#503](https://github.com/tsouza/cerberus/pull/503)) — drift is
 > captured in the report + the live badge score, not in the harness exit
-> code — but the required check also runs a **parity-regression ratchet**
+> code — but the release-gate run also runs a **parity-regression ratchet**
 > that fails the job if any case moves against the committed per-head
 > roster. So the badges are a continuously re-measured conformance score,
-> *and* every individual case is a merge gate: the ratchet names the cases
+> *and* every individual case is a release gate: the ratchet names the cases
 > that must pass, so a regression cannot be offset by an unrelated win. The
 > `compatibility/prometheus-forced-route` lane additionally hard-fails on
-> *any* numeric parity diff (`FAIL_ON_DIFF=1`) and is itself a required
-> check. See [CI integration](#ci-integration).
+> *any* numeric parity diff (`FAIL_ON_DIFF=1`) under the same release-gate
+> posture. See [CI integration](#ci-integration).
 
 | Harness | Location                    | Reference backend                  | Corpus source                                                                                |
 | ------- | --------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -80,7 +85,7 @@ branch as shields.io badge JSON; the README shows them live. On
   has no coverage for at all.
 - **Reference**: a real Loki container on `:23100`, seeded from the same
   in-memory fixture as cerberus.
-- **Today**: shipped and running as the required `compatibility/loki` PR
+- **Today**: shipped and running as the release-gate `compatibility/loki`
   check; no allow-list exists. Solid confidence — a real backend on a
   real corpus — but Grafana's `bench` set is a benchmark corpus, not a
   standardised conformance suite like PromQL's. Parity drift is
@@ -99,9 +104,9 @@ branch as shields.io badge JSON; the README shows them live. On
 - **Today**: shipped and running. `/api/search`, `/api/traces/<id>`, the
   four tag / tag-values endpoints (V1 + V2), and the metrics endpoints
   (`/api/metrics/query_range` + `/api/metrics/query`) all run under the
-  required `compatibility/tempo` PR check; no allow-list exists. Parity
+  release-gate `compatibility/tempo` check; no allow-list exists. Parity
   drift is report-only, like the other two heads.
-- **Two transport arms, one required check**: `diff` drives the corpus
+- **Two transport arms, one release-gate check**: `diff` drives the corpus
   over HTTP; `diff-grpc` (#1453) drives the SAME corpus over cerberus's
   and reference Tempo's `tempopb.StreamingQuerier` gRPC/h2c service —
   the transport Grafana's Tempo datasource actually opens when
@@ -352,11 +357,12 @@ real bug rather than a silent wrong-rejection:
 `.github/workflows/compatibility.yml` runs all three harnesses:
 
 - on **every PR** — deliberately no `paths:` filter, so the three head checks
-  always appear in the required-status-checks rollup; the only short-circuit
-  is a docs-only `changes` filter that skips the harness jobs when a PR
-  touches only docs;
+  always appear in the status-check rollup, but each job short-circuits to a
+  fast no-op unless the PR is a `release/*` head branch (`changes`'
+  `run_heavy` output) — an ordinary PR reports green in seconds without
+  booting any reference backend;
 - on **push to `main`** (and to `release/*.x`, so a maintenance-line hotfix
-  also gets green compatibility checks);
+  also gets a real compatibility run), where the job runs for real;
 - **nightly**, offset across the three heads to spread runner load:
   prometheus at 04:11 UTC, tempo at 04:23 UTC, loki at 04:37 UTC;
 - on **manual `workflow_dispatch`**.
@@ -365,25 +371,33 @@ Each harness job uploads its report as a workflow artifact (30-day
 retention). On push-to-main, the per-head pass-rate is appended to the
 orphan `compat-scores` branch so the README badges refresh.
 
-**Required: scored, plus a regression ratchet.** All three
-`compatibility/<head>` checks are required status checks on `main`. The
-*harness* step itself is report-only on parity — per
+**Release-gated: scored, plus a regression ratchet.** All four
+`compatibility/<head>` checks (the three per-language legs plus
+`compatibility/prometheus-forced-route`) are **release-gate** lanes (#2230,
+the merge/release two-tier test fence), not required PR status checks —
+`gh api repos/tsouza/cerberus/branches/main/protection --jq
+'.required_status_checks.contexts[]'` does not list any of them. Instead,
+`release.yml`'s `RELEASE_REQUIRED_CHECKS` names each one and its preflight
+blocks a publish until every one has posted a green check-run on the commit
+being shipped: the gate moved from the PR to the release, it did not
+disappear. On a real (non-short-circuited) run, the *harness* step itself is
+still report-only on parity — per
 [#503](https://github.com/tsouza/cerberus/pull/503) it captures per-case
 numeric drift in `report.json` + the badge and exits 0, failing only on
-**infrastructure** errors (compose-up, seed, build, unparseable report).
-The required job does not pass on a parity regression, though: a
-**parity-regression ratchet** step (next section) runs after the harness
-and fails the job when any case moves against the committed per-head
-roster. So the required check gates **both** infrastructure breakage
-**and** every individual parity case, while keeping the harness's own
-exit code reserved for infrastructure — which is what #503 was
-protecting.
+**infrastructure** errors (compose-up, seed, build, unparseable report). The
+job does not pass on a parity regression, though: a **parity-regression
+ratchet** step (next section) runs after the harness and fails the job when
+any case moves against the committed per-head roster. So a real run gates
+**both** infrastructure breakage **and** every individual parity case, while
+keeping the harness's own exit code reserved for infrastructure — which is
+what #503 was protecting.
 
 The `compatibility/prometheus-forced-route` lane additionally
 **hard-fails on any parity diff** (`FAIL_ON_DIFF=1` in
 `run-prometheus-compatibility.sh`) as the corpus-wide proof that the sharded solver
-route is byte-identical to reference Prometheus; it is a required check, so
-every non-docs-only PR is gated on the full forced-route corpus run.
+route is byte-identical to reference Prometheus; under the same release-gate
+posture, every push / schedule / dispatch / `release/*` PR run is gated on
+the full forced-route corpus.
 
 ### Parity-regression ratchet (the gate)
 
@@ -398,7 +412,7 @@ The **parity-regression ratchet** closes that hole and makes
 "compatibility is the source of truth" a real gate. After each harness
 runs, `.github/scripts/compat-ratchet.mjs` reads the run's
 `compat-cases.json` and the committed roster in
-`compatibility/parity-baseline/`, and **fails the required job on any
+`compatibility/parity-baseline/`, and **fails the job on any
 case that moved**. It gates on case *identity*, not on a count, because a
 count cannot tell a swap from a steady state: one case regressing while a
 different one starts passing leaves `passed`/`total` untouched, so an
