@@ -219,6 +219,16 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // further `sum`/`avg` ([mergeableExpHistogramAggregate]'s recursion) or
 // chain with another set op (`a or b or c`) the same way
 // [expHistogramHistogramBinop] already does for `+`/`-`.
+// [expHistogramDroppingVectorBinop] is the THIRD leg of the same drop
+// family (cerberus issue #2331): a float-VECTOR operand (as opposed to
+// [expHistogramDroppingScalarBinop]'s compile-time scalar LITERAL)
+// combined, vector-vector, with a histogram-valued operand via an
+// arithmetic or comparison op reference doesn't answer with a value.
+// It is disjoint from both siblings by construction — excluded from
+// [expHistogramDroppingScalarBinop]'s shape because neither operand is a
+// scalar literal, and from [expHistogramDroppingHistogramBinop]'s
+// because at most one operand is histogram-valued — so ordering it last
+// cannot shadow either.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -268,6 +278,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
+	}
+	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
+		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
 	}
 	return lower(expr, s, ctx)
 }
