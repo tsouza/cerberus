@@ -2193,27 +2193,9 @@ func lowerSubqueryOverCountValues(
 	// branches), followed by the synthetic value-as-label key and the
 	// per-anchor key so the count reducer fires once per (partition,
 	// distinct value, anchor).
-	var (
-		groupBy []chplan.Expr
-		aliases []string
-	)
-	switch {
-	case agg.Without && len(agg.Grouping) == 0:
-		groupBy = []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}
-		aliases = []string{"gkey_0"}
-	case agg.Without:
-		groupBy = []chplan.Expr{&chplan.MapWithoutKeys{
-			Map:  &chplan.ColumnRef{Name: s.AttributesColumn},
-			Keys: append([]string(nil), agg.Grouping...),
-		}}
-		aliases = []string{"gkey_0"}
-	default:
-		groupBy = make([]chplan.Expr, 0, len(agg.Grouping))
-		aliases = make([]string, 0, len(agg.Grouping))
-		for i, lbl := range agg.Grouping {
-			groupBy = append(groupBy, attributeLookup(s.AttributesColumn, lbl))
-			aliases = append(aliases, fmt.Sprintf("gkey_%d", i))
-		}
+	groupBy, aliases, err := subqueryAggregateGroupBy(agg, s)
+	if err != nil {
+		return nil, err
 	}
 	groupBy = append(groupBy, &chplan.FuncCall{
 		Fn:   chplan.FnToString,
