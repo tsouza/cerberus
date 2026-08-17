@@ -321,63 +321,9 @@ func histogramBinopMergedBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, m
 // [promHistogramKahanSum] to [plainArraySum] — matching reference's own
 // split between `KahanAdd`'s compensated `kahanReduceResolution` and
 // `Add`/`Sub`'s plain `reduceResolution` (see this file's header doc).
-// The index-matching picker (which stored position lands on target
-// bucket `mergedStart+t`) is otherwise byte-for-byte the same
-// expression, bound by the same lambda parameter names
-// ([expHistogramRowContribsExpr]'s outer arrayMap binds
-// paramExpRowScale / paramExpRowOffset / paramExpRowBuckets) so this
-// drops into that shared wrapper unchanged.
+// The index-matching picker itself is shared verbatim via
+// [expHistogramBucketPositionPickerExpr] — only the fold wrapping it
+// differs between the two callers.
 func histogramBinopBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
-	return plainArraySum(
-		&chplan.FuncCall{
-			Fn: chplan.FnArrayMap,
-			Args: []chplan.Expr{
-				&chplan.Lambda{
-					Params: []string{paramExpBucketPos},
-					Body: &chplan.FuncCall{
-						Fn: chplan.FnIf,
-						Args: []chplan.Expr{
-							&chplan.Binary{
-								Op: chplan.OpEq,
-								Left: &chplan.FuncCall{
-									Fn: chplan.FnBitShiftRight,
-									Args: []chplan.Expr{
-										&chplan.Binary{
-											Op:   chplan.OpAdd,
-											Left: &chplan.BareIdent{Name: paramExpRowOffset},
-											Right: &chplan.Binary{
-												Op:    chplan.OpSub,
-												Left:  &chplan.BareIdent{Name: paramExpBucketPos},
-												Right: &chplan.LitInt{V: 1},
-											},
-										},
-										&chplan.Binary{
-											Op:    chplan.OpSub,
-											Left:  &chplan.BareIdent{Name: paramExpRowScale},
-											Right: mergedScale,
-										},
-									},
-								},
-								// target absolute index = mergedStart + t (t is 0-based).
-								Right: &chplan.Binary{
-									Op:    chplan.OpAdd,
-									Left:  mergedStart,
-									Right: &chplan.BareIdent{Name: paramT},
-								},
-							},
-							&chplan.Subscript{
-								Container: &chplan.BareIdent{Name: paramExpRowBuckets},
-								Key:       &chplan.BareIdent{Name: paramExpBucketPos},
-							},
-							&chplan.LitInt{V: 0},
-						},
-					},
-				},
-				&chplan.FuncCall{
-					Fn:   chplan.FnArrayEnumerate,
-					Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
-				},
-			},
-		},
-	)
+	return plainArraySum(expHistogramBucketPositionPickerExpr(mergedScale, mergedStart, paramT))
 }

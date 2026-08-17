@@ -2377,60 +2377,76 @@ func expHistogramMergeSeriesOrderKeyExpr(s schema.Metrics) chplan.Expr {
 // position lands where, and a second transcription of this shift is
 // exactly where they would stop agreeing.
 func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
-	// For one (s, off, arr) tuple and target absolute index T,
 	// KahanSum(arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))).
-	return promHistogramKahanSum(
-		&chplan.FuncCall{
-			Fn: chplan.FnArrayMap,
-			Args: []chplan.Expr{
-				&chplan.Lambda{
-					Params: []string{paramExpBucketPos},
-					Body: &chplan.FuncCall{
-						Fn: chplan.FnIf,
-						Args: []chplan.Expr{
-							&chplan.Binary{
-								Op: chplan.OpEq,
-								Left: &chplan.FuncCall{
-									Fn: chplan.FnBitShiftRight,
-									Args: []chplan.Expr{
-										&chplan.Binary{
-											Op:   chplan.OpAdd,
-											Left: &chplan.BareIdent{Name: paramExpRowOffset},
-											Right: &chplan.Binary{
-												Op:    chplan.OpSub,
-												Left:  &chplan.BareIdent{Name: paramExpBucketPos},
-												Right: &chplan.LitInt{V: 1},
-											},
-										},
-										&chplan.Binary{
+	return promHistogramKahanSum(expHistogramBucketPositionPickerExpr(mergedScale, mergedStart, paramT))
+}
+
+// expHistogramBucketPositionPickerExpr builds the within-row bucket-position
+// picker shared by [expHistogramBucketRowContribExpr] (the cross-series
+// Kahan-compensated merge) and [histogramBinopBucketRowContribExpr] (the
+// two-operand plain-arithmetic binop, internal/promql/histogram_native_binop.go)
+// — for one (s, off, arr) tuple and target absolute index T:
+//
+//	arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))
+//
+// The two callers differ ONLY in which fold reduces this array afterward
+// (Kahan-compensated vs plain), matching reference Prometheus's own split
+// between FloatHistogram.KahanAdd's compensated `kahanReduceResolution` and
+// Add/Sub's plain `reduceResolution` — see histogram_native_binop.go's
+// header doc. The picker itself has no fold-order sensitivity of its own
+// (each element is independent), so sharing it cannot let the two callers'
+// bucket-index math drift apart.
+func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
+	return &chplan.FuncCall{
+		Fn: chplan.FnArrayMap,
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{paramExpBucketPos},
+				Body: &chplan.FuncCall{
+					Fn: chplan.FnIf,
+					Args: []chplan.Expr{
+						&chplan.Binary{
+							Op: chplan.OpEq,
+							Left: &chplan.FuncCall{
+								Fn: chplan.FnBitShiftRight,
+								Args: []chplan.Expr{
+									&chplan.Binary{
+										Op:   chplan.OpAdd,
+										Left: &chplan.BareIdent{Name: paramExpRowOffset},
+										Right: &chplan.Binary{
 											Op:    chplan.OpSub,
-											Left:  &chplan.BareIdent{Name: paramExpRowScale},
-											Right: mergedScale,
+											Left:  &chplan.BareIdent{Name: paramExpBucketPos},
+											Right: &chplan.LitInt{V: 1},
 										},
 									},
-								},
-								// target absolute index = mergedStart + t (t is 0-based).
-								Right: &chplan.Binary{
-									Op:    chplan.OpAdd,
-									Left:  mergedStart,
-									Right: &chplan.BareIdent{Name: paramT},
+									&chplan.Binary{
+										Op:    chplan.OpSub,
+										Left:  &chplan.BareIdent{Name: paramExpRowScale},
+										Right: mergedScale,
+									},
 								},
 							},
-							&chplan.Subscript{
-								Container: &chplan.BareIdent{Name: paramExpRowBuckets},
-								Key:       &chplan.BareIdent{Name: paramExpBucketPos},
+							// target absolute index = mergedStart + t (t is 0-based).
+							Right: &chplan.Binary{
+								Op:    chplan.OpAdd,
+								Left:  mergedStart,
+								Right: &chplan.BareIdent{Name: paramT},
 							},
-							&chplan.LitInt{V: 0},
 						},
+						&chplan.Subscript{
+							Container: &chplan.BareIdent{Name: paramExpRowBuckets},
+							Key:       &chplan.BareIdent{Name: paramExpBucketPos},
+						},
+						&chplan.LitInt{V: 0},
 					},
 				},
-				&chplan.FuncCall{
-					Fn:   chplan.FnArrayEnumerate,
-					Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
-				},
+			},
+			&chplan.FuncCall{
+				Fn:   chplan.FnArrayEnumerate,
+				Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
 			},
 		},
-	)
+	}
 }
 
 // expHistogramRowContribsExpr renders the PER-ROW contributions at one
