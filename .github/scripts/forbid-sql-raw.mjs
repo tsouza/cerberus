@@ -59,11 +59,28 @@ const KNOWN_GOOD = new Set([
 const RAW_WRITE_PATTERN = /strings\.Builder|\.writeSQL\s*\(|\.sb\.Write|\bwriteSQL\s*\(/;
 
 // Scan all non-test, non-builder chsql Go files.
+//
+// `:(glob)` is required, not decorative: without it (or a global
+// core.globPathspecs=true), a bare `**` is matched as a plain fnmatch
+// wildcard rather than "any number of directories including zero", which
+// needs a literal `/` right where the pattern has one — so it silently
+// matches ZERO files for any path with no subdirectory below the prefix.
+// internal/chsql has no subpackages, so this scan was passing vacuously
+// (0 files scanned, 0 violations found, exit 0) until this fix. See
+// forbid-verbatim-concat.mjs's identical comment and #2321 for the
+// discovery, and the zero-file guard below for how this class of bug is
+// now prevented from recurring silently.
 const files = lsFiles([
-  'internal/chsql/**/*.go',
-  ':!:internal/chsql/builder.go',    // allowed by design — Frag constructors
-  ':!:internal/chsql/**/*_test.go',  // test files are out of scope
+  ':(glob)internal/chsql/**/*.go',
+  ':!:internal/chsql/builder.go',            // allowed by design — Frag constructors
+  ':(exclude,glob)internal/chsql/**/*_test.go', // test files are out of scope
 ]);
+
+if (files.length === 0) {
+  error('forbid-sql-raw: pathspec matched zero files — the scan pathspec is broken, not the tree.');
+  process.exit(1);
+}
+log(`forbid-sql-raw: scanning ${files.length} file(s).`);
 
 let violations = 0;
 
