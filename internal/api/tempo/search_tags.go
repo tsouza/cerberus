@@ -178,17 +178,23 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 		return
 	}
 
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
 	// The optional `?q=` narrowing filter, which only the V2 route takes —
 	// tagQueryFilter discards it on V1. It is read after `scope` so a
 	// request that gets both wrong still reports the scope first, matching
 	// upstream's parameter order.
-	filter, err := h.tagQueryFilter(r.Context(), route, r.URL.Query().Get("q"), start, end)
+	filter, err := h.tagQueryFilter(ctx, route, r.URL.Query().Get("q"), start, end)
 	if err != nil {
 		writeError(w, tagsErrStatus(err), "", "", err)
 		return
 	}
 
-	scopes, err := h.collectAttributeTagScopes(r.Context(), scope, filter, start, end)
+	scopes, err := h.collectAttributeTagScopes(ctx, scope, filter, start, end)
 	if err != nil {
 		writeError(w, tagsErrStatus(err), "", "", err)
 		return
