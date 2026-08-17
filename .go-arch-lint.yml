@@ -370,6 +370,14 @@ deps:
       - chplan
       - promrules
 
+  # migrateinventory probes a live source's runtime cardinality (TSDB head
+  # stats, per-selector Loki index stats). It reuses migrate's errWriter for
+  # the same Fprintf-error-collapsing text-report sink the other migration
+  # blocks share; it opens no chplan or CH connection of its own.
+  migrateinventory:
+    mayDependOn:
+      - migrate
+
   # migrateverify is the online parity gate. It reads the migrate corpus format
   # (Corpus / CorpusQuery / Lang*) and routes each entry to a head lane, which
   # needs the two in-house leaf parsers to tell a metric query from a log-stream

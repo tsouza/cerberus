@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The release pipeline's shape is the only thing standing between a merge and a
+// This pins #1296. The release pipeline's shape is the only thing standing between a merge and a
 // public artifact, and none of it is exercised by a PR: release.yml has no
 // `pull_request:` trigger, so every edit to it is unverified until a release is
 // actually cut. The pins below are pure file reads over the workflows and

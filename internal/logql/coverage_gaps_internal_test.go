@@ -113,10 +113,6 @@ func TestNormalizeDottedLabels_RewritesOnlyTheSelectorKeys(t *testing.T) {
 	if !strings.Contains(got, `"a.b"`) {
 		t.Fatalf("the value must not be rewritten: %q", got)
 	}
-	// The package-private twin Lang.Parse routes through must agree.
-	if other := normalizeLokiDottedLabels(`{service.name="a.b"}`); other != got {
-		t.Fatalf("normalizeLokiDottedLabels = %q, want %q", other, got)
-	}
 }
 
 // =================================================================

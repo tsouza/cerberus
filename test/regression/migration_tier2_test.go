@@ -5,7 +5,8 @@ import (
 	"testing"
 )
 
-// Tier-2's own published-port band, and the pins that keep it honest.
+// Tier-2's own published-port band, and the pins that keep it honest (#2068,
+// which diffed MIG-18/MIG-19 against a real incumbent ruler).
 //
 // Tier-1 has had TestMigrationTier1PortBand since it was written; Tier-2 had
 // none, so its ports were governed only by a comment in the compose file. That

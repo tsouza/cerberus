@@ -13,7 +13,7 @@ import (
 // TestChartEnvKeysAreReachableFromAConfigFile pins the promise a nested
 // cerberus.yaml makes: it is written in the same shape as the chart's
 // values.yaml, so an operator who has configured cerberus in Kubernetes has
-// configured it on a VM too.
+// configured it on a VM too (#1316, which introduced the nested shape).
 //
 // The chart's `cerberus.nonSecretEnv` helper is the only place the typed values
 // blocks are lowered to CERBERUS_* variables, which makes it the authority on

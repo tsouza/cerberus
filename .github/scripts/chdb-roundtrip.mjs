@@ -47,8 +47,8 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { spawn } from 'node:child_process';
 import { error, notice, log, group } from './lib/gh.mjs';
+import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /**
  * How many PROCESSES each head's leg fans out to.
@@ -160,35 +160,6 @@ export function warmupCommand({ ql, tags, go = 'go' }) {
   };
 }
 
-/**
- * Runs one leg to completion, buffering its output.
- *
- * Buffered rather than inherited because concurrent legs interleave line by
- * line otherwise, and a `go test` failure is a multi-line block (the fixture
- * name, the got/want diff, or a goroutine dump) that is unreadable once two
- * legs shuffle into each other. Every leg's buffer is printed whole, in leg
- * order, after the run — including the `-timeout` panic dump, which arrives in
- * the buffer because the bound above always fires before the job cap.
- */
-function runLeg(leg) {
-  return new Promise((resolve) => {
-    const [cmd, ...args] = leg.argv;
-    const child = spawn(cmd, args, {
-      env: { ...process.env, ...leg.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    child.stdout.on('data', (d) => {
-      out += d;
-    });
-    child.stderr.on('data', (d) => {
-      out += d;
-    });
-    child.on('error', (err) => resolve({ leg, code: 1, out: `${out}\nspawn ${cmd}: ${err.message}` }));
-    child.on('close', (code) => resolve({ leg, code: code ?? 1, out }));
-  });
-}
-
 async function main() {
   const ql = process.env.QL ?? '';
   const tags = process.env.TAGS ?? '';
@@ -209,7 +180,7 @@ async function main() {
 
   const warmup = warmupCommand({ ql, tags, go });
   if (warmup) {
-    const built = await runLeg(warmup);
+    const built = await runLegBuffered(warmup);
     if (built.code !== 0) {
       group(`${warmup.name} (exit ${built.code})`, () => log(built.out.trimEnd()));
       error(`roundtrip ${ql}: the leg binaries did not build`);
@@ -217,7 +188,7 @@ async function main() {
     }
   }
 
-  const results = await Promise.all(legs.map(runLeg));
+  const results = await Promise.all(legs.map(runLegBuffered));
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
 
   for (const r of results) {

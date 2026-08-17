@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-// A build's `FROM` is the one image acquisition the GHCR mirror could not reach.
+// A build's `FROM` is the one image acquisition the GHCR mirror could not reach
+// (#1605).
 //
 // `pullImageWithRetry` serves a mirrored copy by pulling it and re-tagging it to
 // the upstream name in the HOST daemon. That covers a compose `image:` key and a

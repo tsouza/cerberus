@@ -1075,7 +1075,7 @@ func inStringLiteralsFrag(col Frag, ids []string) Frag {
 // of erroring with CH code 306 (TOO_DEEP_RECURSION).
 func structuralDepthBoundFrag(maxDepth int) Frag {
 	bound := effectiveRecursionDepth(maxDepth)
-	return verbatim("c._depth < " + strconv.Itoa(bound))
+	return Lt(verbatim("c._depth"), InlineLit(bound))
 }
 
 // findScanTable walks a plan subtree looking for the first chplan.Scan

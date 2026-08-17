@@ -299,6 +299,25 @@ func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error
 	}
 }
 
+// stripSelectorModifierForRangeVector returns a copy of vs with its `@` /
+// `offset` modifiers cleared and a copy of ctx with inRangeVector set. Every
+// range-vector-consuming lowering path (rate / *_over_time, subqueries, the
+// RangeWindow wrappers) applies this same prep before recursing into
+// lowerVectorSelector: the caller's own window bound owns the selector's
+// timing instead of a duplicate modifier-derived predicate, and
+// inRangeVector suppresses the bare-selector LWR wrap so every in-window
+// sample survives.
+func stripSelectorModifierForRangeVector(vs *parser.VectorSelector, ctx lowerCtx) (parser.VectorSelector, lowerCtx) {
+	vsNoMod := *vs
+	vsNoMod.Timestamp = nil
+	vsNoMod.OriginalOffset = 0
+	vsNoMod.Offset = 0
+	vsNoMod.StartOrEnd = 0
+	rangeCtx := ctx
+	rangeCtx.inRangeVector = true
+	return vsNoMod, rangeCtx
+}
+
 // lowerMatrixSelector handles a TOP-LEVEL range-vector selector —
 // `up[5m]` sent to /api/v1/query. Reference Prometheus answers these
 // with resultType "matrix": every RAW sample in `(eval − range, eval]`
@@ -329,13 +348,7 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 	// Strip the modifier — the window bound below carries the anchor;
 	// inRangeVector suppresses the LWR wrap so every in-window sample
 	// survives.
-	vsNoMod := *vs
-	vsNoMod.Timestamp = nil
-	vsNoMod.OriginalOffset = 0
-	vsNoMod.Offset = 0
-	vsNoMod.StartOrEnd = 0
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
+	vsNoMod, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
 	inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -363,22 +376,6 @@ func lowerMatrixSelector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerC
 	}, nil
 }
 
-// lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
-// `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
-// instant evaluation reflects the requested shifted time.
-//
-// When ctx.inRangeVector is false (the default — top-level selector,
-// under aggregations, or inside instant arithmetic) cerberus also
-// applies PromQL's Latest-With-Respect-to-T (LWR) rule: filter the
-// scan to samples with `Timestamp <= anchor` AND
-// `anchor - Timestamp < 5m` (Prom's default staleness window), then
-// collapse to one row per series via `argMax(Value, TimeUnix)` /
-// `max(TimeUnix)` grouped by `(MetricName, Attributes)`. That's the
-// per-series-latest-within-lookback contract any downstream aggregation
-// must aggregate over. Range-vector consumers (rate / *_over_time /
-// subqueries) bypass the LWR wrap by setting `inRangeVector` before
-// recursing — the RangeWindow node owns the in-window aggregation
-// itself.
 // lowerHistogramSelectorInput builds the selector's input subtree for the
 // classic-histogram companion (`_count` / `_sum`) and `_bucket` fan-out
 // paths, returning the (possibly wrapped) input node, the residual
@@ -610,6 +607,22 @@ func resolveSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, d
 	return route, nil
 }
 
+// lowerVectorSelector turns `metric{label="val"}` into Scan + Filter.
+// `@` and `offset` modifiers add a `Timestamp <= anchor` predicate so the
+// instant evaluation reflects the requested shifted time.
+//
+// When ctx.inRangeVector is false (the default — top-level selector,
+// under aggregations, or inside instant arithmetic) cerberus also
+// applies PromQL's Latest-With-Respect-to-T (LWR) rule: filter the
+// scan to samples with `Timestamp <= anchor` AND
+// `anchor - Timestamp < 5m` (Prom's default staleness window), then
+// collapse to one row per series via `argMax(Value, TimeUnix)` /
+// `max(TimeUnix)` grouped by `(MetricName, Attributes)`. That's the
+// per-series-latest-within-lookback contract any downstream aggregation
+// must aggregate over. Range-vector consumers (rate / *_over_time /
+// subqueries) bypass the LWR wrap by setting `inRangeVector` before
+// recursing — the RangeWindow node owns the in-window aggregation
+// itself.
 func lowerVectorSelector(v *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(v.LabelMatchers)
 	if hasUnpinnedMetricNameMatcher(v.LabelMatchers) && s.HistogramTable != "" {
@@ -2275,13 +2288,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// Build the inner Scan/Filter without the modifier-derived bound here.
 	// The inRangeVector flag also suppresses the bare-selector LWR wrap so
 	// every in-window sample reaches the RangeWindow node.
-	vsNoModifier := *vs
-	vsNoModifier.Timestamp = nil
-	vsNoModifier.OriginalOffset = 0
-	vsNoModifier.Offset = 0
-	vsNoModifier.StartOrEnd = 0
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
+	vsNoModifier, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
 	// rate() / increase() / irate() apply Prometheus's counter-reset rule,
 	// which assumes CUMULATIVE storage — reading a DELTA-temporality counter
 	// the same way silently inflates every window (see issue #1628). Decide

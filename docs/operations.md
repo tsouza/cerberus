@@ -1387,22 +1387,26 @@ selection between them:
   `config-docs`, `pr-body`, `link-check`, `forbid-skip` (which subsumes the
   soft-assert / escape-hatch / feature-discipline / should-skip scans),
   `forbid-deferral`, `forbid-sql-raw` and `forbid-chplan-fn-literal` (both
-  steps of `forbid-skip`), `quickstart`, `compose-smoke`, `dashboard`,
-  `probe`, `chart-validate`, `coverage`, `property`, and `strict-scan`. It is
-  small and fast by construction: build/correctness basics, the discipline
-  scans, and the substrate smoke lanes (`compose-smoke` / `dashboard`, which
-  short-circuit to a green no-op on an ordinary PR and do their real
-  Compose/k3d work on a release PR or a main push).
+  steps of `forbid-skip`), `quickstart`, `probe`, `chart-validate`,
+  `coverage`, `property`, and `strict-scan`. It is small and fast by
+  construction: build/correctness basics and the discipline scans, with the
+  substrate smoke lanes and every other cost-dominating lane deferred to the
+  release gate below.
 - **Release gate** — the full matrix: every merge-gate check plus the
   cost-dominating lanes an ordinary PR does not need to wait on —
   `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
   `chdb-build` lanes, `gremlins` mutation testing, all six `compatibility/*`
-  differential heads, and `migration-e2e`. Each of those lanes still triggers
-  on every `pull_request` (so its check-run stays visible for author
-  feedback), but short-circuits to a fast no-op unless the event is a push to
-  `main` / a maintenance `release/*.x` branch, a schedule, a manual dispatch,
-  or a pull request whose head branch starts with `release/` — the exact
-  `RUN_HEAVY` pattern `coverage.yml` and `property.yml` originated. A release
+  differential heads, `migration-e2e`, and the substrate smoke lanes
+  `compose-smoke` / `dashboard` (never a branch-protection required context
+  on `main` — `release.yml`'s preflight is their only reader; see
+  `e2e.yml`'s header). Each of those lanes still triggers on every
+  `pull_request` (so its check-run stays visible for author feedback), but
+  short-circuits to a fast no-op unless the event is a push to `main` / a
+  maintenance `release/*.x` branch, a schedule, a manual dispatch, or a pull
+  request whose head branch starts with `release/` — the exact `RUN_HEAVY`
+  pattern `coverage.yml` and `property.yml` originated (`compose-smoke` /
+  `dashboard` short-circuit on the same ordinary-PR / release-PR split,
+  documented in `e2e.yml` rather than through `RUN_HEAVY` itself). A release
   PR's head branch always matches, so its green status reflects the complete
   matrix; an ordinary PR pays only the merge gate's cost. `mutation` keeps its
   own diff-scoped selection (run only the phases whose package the PR
@@ -1499,7 +1503,7 @@ or a stable backport never drags any of the three backwards.
 #### De-gated lanes on the publish path
 
 The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except the three below, which are listed in
+branch-protection context except the two below, which are listed in
 `RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
 verdict does not hold a publish. Each one is a deliberate trade, so each one
 carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`

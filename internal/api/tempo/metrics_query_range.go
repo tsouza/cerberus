@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/api/format"
+	"github.com/tsouza/cerberus/internal/api/httperr"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -317,7 +318,7 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeEngineHeaders(w, router.Headers)
+	httperr.WriteEngineHeaders(w, router.Headers)
 	writeJSON(w, http.StatusOK, MetricsQueryRangeResponse{
 		Series: router.Series,
 	})

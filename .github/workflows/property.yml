@@ -88,7 +88,11 @@ jobs:
   property:
     name: property (PromQL + LogQL + TraceQL, rapid N=500)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must stay comfortably above HISTOGRAM_TIMEOUT_MINUTES in
+    # property-fanout.mjs (the slowest leg the job waits on) plus setup —
+    # see that constant's comment for the real measured per-check cost this
+    # is derived from, and why 30 was too tight in practice.
+    timeout-minutes: 40
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
     # a release PR (head branch release/*). On a regular PR every heavy step is
     # skipped and the job reports green without work — so `property …` can be a

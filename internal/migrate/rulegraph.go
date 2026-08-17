@@ -480,58 +480,58 @@ func splitLokiRuleGroups(file string, rg promrules.RuleGroups) (recorded []Recor
 // consumed recorded series with their consumer edges (what MUST keep being
 // materialized), then the skipped inputs with their reasons.
 func (g RuleGraph) Write(w io.Writer) error {
-	bw := &errWriter{w: w}
-	bw.printf("# cerberus migrate rulegraph\n")
-	bw.printf("#\n")
-	bw.printf("# cerberus has NO ruler: a recording rule's OUTPUT series is not produced\n")
-	bw.printf("# by cerberus. Every recorded series a dashboard panel or alert still reads\n")
-	bw.printf("# MUST be materialized elsewhere post-cutover, or the panel goes silently\n")
-	bw.printf("# blank. This graph links each recorded series to the queries that consume it.\n")
-	bw.printf("#\n")
-	bw.printf("# HONESTY: this is a NAME-LEVEL dependency approximation — a consumer links to\n")
-	bw.printf("# a recorded series when it references that series' metric NAME. Label matchers\n")
-	bw.printf("# and value equality are not analysed; rule-to-rule chains ARE (a recording\n")
-	bw.printf("# rule's own expr is scanned as a consumer). Unparseable consumer\n")
-	bw.printf("# exprs — and consumers whose __name__ set can't be statically reduced (a regex or\n")
-	bw.printf("# negated __name__ matcher, or no name constraint) — are counted as skips below\n")
-	bw.printf("# (never under-linked to nothing), so the over-link direction stays honest.\n")
-	bw.printf("#\n")
-	bw.printf("# %d recorded series: %d consumed, %d orphan; %d consumers; %d skipped\n\n",
+	bw := NewErrWriter(w)
+	bw.Printf("# cerberus migrate rulegraph\n")
+	bw.Printf("#\n")
+	bw.Printf("# cerberus has NO ruler: a recording rule's OUTPUT series is not produced\n")
+	bw.Printf("# by cerberus. Every recorded series a dashboard panel or alert still reads\n")
+	bw.Printf("# MUST be materialized elsewhere post-cutover, or the panel goes silently\n")
+	bw.Printf("# blank. This graph links each recorded series to the queries that consume it.\n")
+	bw.Printf("#\n")
+	bw.Printf("# HONESTY: this is a NAME-LEVEL dependency approximation — a consumer links to\n")
+	bw.Printf("# a recorded series when it references that series' metric NAME. Label matchers\n")
+	bw.Printf("# and value equality are not analysed; rule-to-rule chains ARE (a recording\n")
+	bw.Printf("# rule's own expr is scanned as a consumer). Unparseable consumer\n")
+	bw.Printf("# exprs — and consumers whose __name__ set can't be statically reduced (a regex or\n")
+	bw.Printf("# negated __name__ matcher, or no name constraint) — are counted as skips below\n")
+	bw.Printf("# (never under-linked to nothing), so the over-link direction stays honest.\n")
+	bw.Printf("#\n")
+	bw.Printf("# %d recorded series: %d consumed, %d orphan; %d consumers; %d skipped\n\n",
 		g.Counts.Recorded, g.Counts.Consumed, g.Counts.Orphan, g.Counts.Consumers, g.Counts.Skipped)
 
-	bw.printf("== orphan recorded series (%d) — nothing scanned reads these\n", g.Counts.Orphan)
+	bw.Printf("== orphan recorded series (%d) — nothing scanned reads these\n", g.Counts.Orphan)
 	for _, n := range g.Recorded {
 		if n.Status != StatusOrphan {
 			continue
 		}
-		bw.printf("   %s (%s)\n", n.Name, n.Source)
+		bw.Printf("   %s (%s)\n", n.Name, n.Source)
 	}
 
-	bw.printf("\n== consumed recorded series (%d) — MUST keep being materialized\n", g.Counts.Consumed)
+	bw.Printf("\n== consumed recorded series (%d) — MUST keep being materialized\n", g.Counts.Consumed)
 	for _, n := range g.Recorded {
 		if n.Status != StatusConsumed {
 			continue
 		}
-		bw.printf("   %s (%s)\n", n.Name, n.Source)
+		bw.Printf("   %s (%s)\n", n.Name, n.Source)
 		for _, c := range n.Consumers {
-			bw.printf("     <- %s\n", c)
+			bw.Printf("     <- %s\n", c)
 		}
 	}
 
-	bw.printf("\n== consumers referencing recorded series (%d)\n", g.Counts.Consumers)
+	bw.Printf("\n== consumers referencing recorded series (%d)\n", g.Counts.Consumers)
 	for _, c := range g.Consumers {
-		bw.printf("   [%s] %s\n", c.Kind, c.Source)
-		bw.printf("     expr: %s\n", c.Expr)
-		bw.printf("     refs: %s\n", strings.Join(c.References, ", "))
+		bw.Printf("   [%s] %s\n", c.Kind, c.Source)
+		bw.Printf("     expr: %s\n", c.Expr)
+		bw.Printf("     refs: %s\n", strings.Join(c.References, ", "))
 	}
 
 	if len(g.Skipped) > 0 {
-		bw.printf("\n== skipped (%d)\n", len(g.Skipped))
+		bw.Printf("\n== skipped (%d)\n", len(g.Skipped))
 		for _, s := range g.Skipped {
-			bw.printf("   %s: %s\n", s.Source, s.Reason)
+			bw.Printf("   %s: %s\n", s.Source, s.Reason)
 		}
 	}
-	return bw.err
+	return bw.Err
 }
 
 // WriteJSON renders the graph as deterministic, indented JSON with a trailing

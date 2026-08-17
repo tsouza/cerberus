@@ -1,6 +1,7 @@
 package regression
 
-// Pins the Map key-order invariant to a single named function.
+// Pins the Map key-order invariant to a single named function (#1365: the
+// function used to be spelled out at two call sites and drifted).
 //
 // Every series-identity key in the engine depends on the attributes Map
 // being ordered by key: a CH Map compares, groups and hashes POSITIONALLY

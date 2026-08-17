@@ -411,6 +411,76 @@ func TestLRUEvictsLeastRecentlyTouchedFirst(t *testing.T) {
 	}
 }
 
+// TestLRUTouchesOnCorroborationBumpAndStaleRevalidation pins that the two
+// non-creation route-A resource-failure transitions inside
+// observeRouteAResourceFailureLocked — bumping corroboration on a live
+// Unknown entry, and refreshing a stale PreferB entry on re-validation —
+// both count as a touch for LRU purposes, matching the "least-recently-
+// touched" eviction policy documented at memoMaxEntries. Each subtest fills
+// the memo to exactly capacity, re-touches `first` via the transition under
+// test, then adds ONE more distinct key to force a single eviction: if the
+// transition touched the LRU, `first` moved off the front and something
+// else is evicted instead; if it did not, `first` is still the
+// least-recently-touched entry and is evicted.
+func TestLRUTouchesOnCorroborationBumpAndStaleRevalidation(t *testing.T) {
+	t.Run("Unknown corroboration bump", func(t *testing.T) {
+		m, _ := newTestMemo()
+
+		first := testKey("oldest")
+		m.Observe(first, RouteA, OutcomeResourceFailure) // creates Unknown, corroboration=1
+
+		// Fill up to (but not past) capacity with distinct keys, all touched
+		// AFTER `first`'s creation.
+		fillDistinctPreferB(m, memoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+
+		// Re-touch `first` via a second route-A failure (bumps corroboration,
+		// capped at minCorroboratingFailures) — now the MOST recently
+		// touched entry, if the transition touches the LRU at all.
+		m.Observe(first, RouteA, OutcomeResourceFailure)
+
+		// One more distinct key pushes past capacity, forcing exactly one
+		// eviction from the front.
+		m.Observe(testKey("overflow"), RouteB, OutcomeSuccess)
+
+		m.mu.Lock()
+		_, stillPresent := m.entries[first]
+		m.mu.Unlock()
+		if !stillPresent {
+			t.Fatalf("expected the corroboration-bumped key to have been touched (MRU), not evicted first")
+		}
+	})
+
+	t.Run("stale PreferB re-validation", func(t *testing.T) {
+		m, clk := newTestMemo()
+
+		first := testKey("oldest")
+		m.Observe(first, RouteA, OutcomeResourceFailure)
+		m.Observe(first, RouteA, OutcomeResourceFailure)
+		release, _ := m.BeginProbe(first)
+		m.Observe(first, RouteB, OutcomeSuccess)
+		release()
+
+		fillDistinctPreferB(m, memoMaxEntries-1, func(i int) Key { return Key{RootKind: testKeyName(i)} })
+
+		clk.advance(memoEntryTTL/reValidationFraction + time.Second)
+		if state, stale := m.Lookup(first); state != PreferB || !stale {
+			t.Fatalf("expected stale PreferB at the midpoint, got (%v, %v)", state, stale)
+		}
+
+		// The stale re-validation failure refreshes createdAt AND must touch
+		// the LRU, before one more distinct key forces a single eviction.
+		m.Observe(first, RouteA, OutcomeResourceFailure)
+		m.Observe(testKey("overflow"), RouteB, OutcomeSuccess)
+
+		m.mu.Lock()
+		_, stillPresent := m.entries[first]
+		m.mu.Unlock()
+		if !stillPresent {
+			t.Fatalf("expected the re-validated key to have been touched (MRU), not evicted first")
+		}
+	})
+}
+
 func testKeyName(i int) string {
 	// Deterministic, distinct closed-vocabulary-shaped tag per iteration —
 	// not a real node-kind string, just a unique bucket for the test.

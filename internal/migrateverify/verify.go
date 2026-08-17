@@ -43,6 +43,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/tsouza/cerberus/internal/migrate"
 )
 
 // DefaultTolerance is the absolute epsilon two sample values may differ by and
@@ -1087,7 +1089,7 @@ func (r Report) WriteTextGuided(w io.Writer, g TextGuidance) error {
 // its candidate-cause attribution), the out-of-scope accounting, the roll-up
 // counts, and — on failure — a "Report this to cerberus" bug-report section.
 func (r Report) writeText(w io.Writer, g *TextGuidance) error {
-	bw := &errWriter{w: w}
+	bw := migrate.NewErrWriter(w)
 
 	// R1: lead with a prominent, unmistakable verdict line.
 	if r.Failed() {
@@ -1096,60 +1098,60 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 		// with no visible cause. The no-evidence reasons follow it for the same
 		// reason — a run that failed because a lane compared nothing must say so on
 		// the load-bearing line, not only in the table below it.
-		bw.printf("VERIFICATION FAILED — %d diverged, %d errored, %d unjudged (unconfigured lane), %d matched (of %d replayed)\n",
+		bw.Printf("VERIFICATION FAILED — %d diverged, %d errored, %d unjudged (unconfigured lane), %d matched (of %d replayed)\n",
 			r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured, r.Summary.Match, r.Summary.Total)
 		for _, reason := range r.noEvidenceReasons() {
-			bw.printf("                     %s\n", reason)
+			bw.Printf("                     %s\n", reason)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	} else if r.Summary.Unsupported > 0 {
 		// Unsupported queries pass the gate but are NOT matches; the banner must
 		// not equate Total with matched or it overstates what agreed.
-		bw.printf("VERIFICATION PASSED — %d matched, %d unsupported, 0 diverged (of %d)\n\n",
+		bw.Printf("VERIFICATION PASSED — %d matched, %d unsupported, 0 diverged (of %d)\n\n",
 			r.Summary.Match, r.Summary.Unsupported, r.Summary.Total)
 	} else {
-		bw.printf("VERIFICATION PASSED — all %d queries matched\n\n", r.Summary.Total)
+		bw.Printf("VERIFICATION PASSED — all %d queries matched\n\n", r.Summary.Total)
 	}
 
-	bw.printf("# cerberus migrate verify\n")
-	bw.printf("#\n")
+	bw.Printf("# cerberus migrate verify\n")
+	bw.Printf("#\n")
 	if r.hasNonMatrixFamily() {
 		// A run that judged more than one result shape describes itself in the
 		// vocabulary that covers all of them: "series" is the matrix lane's unit,
 		// and a header that says it while a log-stream lane ran would name the
 		// wrong evidence.
-		bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
-		bw.printf("# and cerberus over one window, results diffed by the comparator its result\n")
-		bw.printf("# shape selects. A divergence is never allow-listed — the gate fails if any\n")
-		bw.printf("# query diverges or errors, if a head's replayable queries had no backend pair\n")
-		bw.printf("# to judge them, if nothing was replayable at all, or if any family compared\n")
-		bw.printf("# nothing.\n")
+		bw.Printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
+		bw.Printf("# and cerberus over one window, results diffed by the comparator its result\n")
+		bw.Printf("# shape selects. A divergence is never allow-listed — the gate fails if any\n")
+		bw.Printf("# query diverges or errors, if a head's replayable queries had no backend pair\n")
+		bw.Printf("# to judge them, if nothing was replayable at all, or if any family compared\n")
+		bw.Printf("# nothing.\n")
 	} else {
-		bw.printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
-		bw.printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
-		bw.printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
-		bw.printf("# or errors, if a head's replayable queries had no backend pair to judge them,\n")
-		bw.printf("# if nothing was replayable at all, or if any lane diffed zero series.\n")
+		bw.Printf("# Parity gate: each corpus query replayed against its head's reference backend\n")
+		bw.Printf("# and cerberus over one query_range window, results diffed series-by-series.\n")
+		bw.Printf("# A divergence is never allow-listed — the gate fails if any query diverges\n")
+		bw.Printf("# or errors, if a head's replayable queries had no backend pair to judge them,\n")
+		bw.Printf("# if nothing was replayable at all, or if any lane diffed zero series.\n")
 	}
-	bw.printf("#\n")
-	bw.printf("# Note: %s\n", ExperimentalNote)
-	bw.printf("#\n")
+	bw.Printf("#\n")
+	bw.Printf("# Note: %s\n", ExperimentalNote)
+	bw.Printf("#\n")
 	// Surface the tolerance the matches were judged at: a loosened tolerance
 	// silently weakens every "match", so the operator must see how strict the
 	// comparison actually was.
-	bw.printf("# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)\n", formatValue(r.Params.Tolerance))
-	bw.printf("#\n")
-	bw.printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d unconfigured, +%d out of scope, +%d harvest-skipped)\n",
+	bw.Printf("# Match tolerance: %s (absolute; relative granularity also applied at large magnitudes)\n", formatValue(r.Params.Tolerance))
+	bw.Printf("#\n")
+	bw.Printf("# %d queries: %d match, %d diverge, %d unsupported, %d error (+%d unconfigured, +%d out of scope, +%d harvest-skipped)\n",
 		r.Summary.Total, r.Summary.Match, r.Summary.Diverge, r.Summary.Unsupported, r.Summary.Error,
 		r.Summary.Unconfigured, r.Summary.OutOfScope, r.Summary.HarvestSkipped)
 	if r.Summary.Undecidable > 0 {
 		// Undecidable is NOT folded into the match count: both backends answered
 		// and nothing disagreed, but a named limitation stopped short of a parity
 		// claim, and a reader who sees only "match" would take the stronger claim.
-		bw.printf("# %d undecidable — a named, counted limitation prevented a parity claim; see \"not judged\" below\n",
+		bw.Printf("# %d undecidable — a named, counted limitation prevented a parity claim; see \"not judged\" below\n",
 			r.Summary.Undecidable)
 	}
-	bw.printf("\n")
+	bw.Printf("\n")
 
 	r.writeHeadTable(bw)
 
@@ -1157,30 +1159,30 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 		if res.Verdict == VerdictMatch {
 			continue
 		}
-		bw.printf("== [%s] %s %s\n", res.Verdict, res.Head, res.Source)
-		bw.printf("   expr:   %s\n", res.Expr)
+		bw.Printf("== [%s] %s %s\n", res.Verdict, res.Head, res.Source)
+		bw.Printf("   expr:   %s\n", res.Expr)
 		if res.Detail != "" {
-			bw.printf("   detail: %s\n", res.Detail)
+			bw.Printf("   detail: %s\n", res.Detail)
 		}
 		if res.FirstDiff != nil {
 			writeFirstDiff(bw, res.FirstDiff)
 		}
 		for _, a := range res.Attribution {
-			bw.printf("   candidate-cause [%s]: %s\n", a.Category, a.Note)
+			bw.Printf("   candidate-cause [%s]: %s\n", a.Category, a.Note)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	// Unconfigured prints BEFORE out-of-scope because it blocks: an operator
 	// scanning a failing report must reach the lane they forgot to configure
 	// before the non-blocking accounting.
 	if len(r.Unconfigured) > 0 {
-		bw.printf("== unconfigured (%d) — replayable queries whose head lane had no backend pair; the gate did not judge them\n", len(r.Unconfigured))
+		bw.Printf("== unconfigured (%d) — replayable queries whose head lane had no backend pair; the gate did not judge them\n", len(r.Unconfigured))
 		for _, e := range r.Unconfigured {
-			bw.printf("   %s  %s\n", e.Head, e.Source)
-			bw.printf("        %s\n", e.Reason)
+			bw.Printf("   %s  %s\n", e.Head, e.Source)
+			bw.Printf("        %s\n", e.Reason)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	// What the run could not judge, with the count each statement covers. It sits
@@ -1188,57 +1190,57 @@ func (r Report) writeText(w io.Writer, g *TextGuidance) error {
 	// thing a reader cannot infer from the verdict counts, because a dimension
 	// nobody compared leaves no trace in them.
 	if r.Summary.Undecidable > 0 || len(r.Summary.Limitations) > 0 {
-		bw.printf("== not judged — dimensions no comparator could judge, and how much each covers\n")
+		bw.Printf("== not judged — dimensions no comparator could judge, and how much each covers\n")
 		if r.Summary.Undecidable > 0 {
-			bw.printf("   %d quer%s reached no parity claim at all\n",
+			bw.Printf("   %d quer%s reached no parity claim at all\n",
 				r.Summary.Undecidable, pluralQueries(r.Summary.Undecidable))
 		}
 		for _, l := range r.Summary.Limitations {
-			bw.printf("   [%s] %d: %s\n", l.Code, l.Count, l.Detail)
+			bw.Printf("   [%s] %d: %s\n", l.Code, l.Count, l.Detail)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	if len(r.OutOfScope) > 0 {
-		bw.printf("== out of scope (%d) — no parity is definable for these queries\n", len(r.OutOfScope))
+		bw.Printf("== out of scope (%d) — no parity is definable for these queries\n", len(r.OutOfScope))
 		for _, e := range r.OutOfScope {
-			bw.printf("   %s %s %s: %s\n", outOfScopeLane(e), e.Kind, e.Source, e.Reason)
+			bw.Printf("   %s %s %s: %s\n", outOfScopeLane(e), e.Kind, e.Source, e.Reason)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	if len(r.HarvestSkipped) > 0 {
-		bw.printf("== harvest-skipped (%d) — never became a replayable query, not checked\n", len(r.HarvestSkipped))
+		bw.Printf("== harvest-skipped (%d) — never became a replayable query, not checked\n", len(r.HarvestSkipped))
 		for _, e := range r.HarvestSkipped {
-			bw.printf("   %s: %s\n", e.Source, e.Reason)
+			bw.Printf("   %s: %s\n", e.Source, e.Reason)
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	if r.Failed() {
-		bw.printf("FAIL: %d diverge, %d error, %d unconfigured\n", r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured)
+		bw.Printf("FAIL: %d diverge, %d error, %d unconfigured\n", r.Summary.Diverge, r.Summary.Error, r.Summary.Unconfigured)
 		for _, reason := range r.noEvidenceReasons() {
-			bw.printf("FAIL: %s\n", reason)
+			bw.Printf("FAIL: %s\n", reason)
 		}
 		r.writeBugReport(bw, g)
 	} else {
 		if r.hasNonMatrixFamily() {
-			bw.printf("PASS: %d match, %d undecidable, %d unsupported, %d comparison units compared (no divergence)\n",
+			bw.Printf("PASS: %d match, %d undecidable, %d unsupported, %d comparison units compared (no divergence)\n",
 				r.Summary.Match, r.Summary.Undecidable, r.Summary.Unsupported, r.Summary.ComparedUnits)
 		} else {
-			bw.printf("PASS: %d match, %d unsupported, %d series compared (no divergence)\n",
+			bw.Printf("PASS: %d match, %d unsupported, %d series compared (no divergence)\n",
 				r.Summary.Match, r.Summary.Unsupported, r.Summary.ComparedSeries)
 		}
 		for _, h := range r.IdleLanes() {
-			bw.printf("NOTE: head %s was configured but had no replayable query (%d out of scope); "+
+			bw.Printf("NOTE: head %s was configured but had no replayable query (%d out of scope); "+
 				"this lane was not judged\n", h.Head, h.Summary.OutOfScope)
 		}
 		for _, f := range r.IdleDerivedFamilies() {
-			bw.printf("NOTE: head %s ran trace-search but never derived a %s probe (no trace-search result "+
+			bw.Printf("NOTE: head %s ran trace-search but never derived a %s probe (no trace-search result "+
 				"gave it a trace both backends have); that shape was not judged this run\n", f.Head, f.Kind)
 		}
 	}
-	return bw.err
+	return bw.Err
 }
 
 // noEvidenceReasons renders the blocking causes that are an ABSENCE rather than a
@@ -1292,19 +1294,19 @@ func (r Report) hasNonMatrixFamily() bool {
 // routing it through formatValue's float rendering would print a present-day
 // nanosecond epoch as "1.78e+18" and lose the entry it points at. A trace-search
 // anchor is a trace, optionally a span within it, and the field that differed.
-func writeFirstDiff(bw *errWriter, fd *FirstDiff) {
+func writeFirstDiff(bw *migrate.ErrWriter, fd *FirstDiff) {
 	switch fd.Kind {
 	case KindLogStream:
-		bw.printf("   first-diff: stream=%s ts=%sns ref=%s cerberus=%s (%s)\n",
+		bw.Printf("   first-diff: stream=%s ts=%sns ref=%s cerberus=%s (%s)\n",
 			fd.Stream, fd.TimestampNano, fd.RefValue, fd.CerberusValue, fd.Reason)
 	case KindTraceSearch, KindTraceByID:
-		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+		bw.Printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
 			traceDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
 	case KindTagDiscovery:
-		bw.printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
+		bw.Printf("   first-diff: %s ref=%s cerberus=%s (%s)\n",
 			tagDiffAnchor(fd), fd.RefValue, fd.CerberusValue, fd.Reason)
 	default:
-		bw.printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
+		bw.Printf("   first-diff: series=%s ts=%s ref=%s cerberus=%s (%s)\n",
 			fd.Series, formatValue(fd.Timestamp), fd.RefValue, fd.CerberusValue, fd.Reason)
 	}
 }
@@ -1349,27 +1351,27 @@ func tagDiffAnchor(fd *FirstDiff) string {
 // that left anything undecidable, moves its evidence to one indented row per
 // family — the head line alone would sum two shapes into one number, which is the
 // masking the split exists to prevent.
-func (r Report) writeHeadTable(bw *errWriter) {
+func (r Report) writeHeadTable(bw *migrate.ErrWriter) {
 	if len(r.Heads) == 0 {
 		return
 	}
-	bw.printf("# per-head lanes:\n")
+	bw.Printf("# per-head lanes:\n")
 	for _, h := range r.Heads {
 		s := h.Summary
 		if len(h.Families) > 1 || s.Undecidable > 0 {
-			bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d out of scope\n",
+			bw.Printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d out of scope\n",
 				h.Head, headLaneState(h), s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured, s.OutOfScope)
 			for _, f := range h.Families {
-				bw.printf("#          %-14s %d replayed: %d match, %d diverge, %d undecidable, %d unsupported, %d error; %d %s compared\n",
+				bw.Printf("#          %-14s %d replayed: %d match, %d diverge, %d undecidable, %d unsupported, %d error; %d %s compared\n",
 					f.Kind, f.Total, f.Match, f.Diverge, f.Undecidable, f.Unsupported, f.Error, f.Compared, f.Unit)
 			}
 			continue
 		}
-		bw.printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d %s compared, %d out of scope\n",
+		bw.Printf("#   %-6s %-14s %d replayed: %d match, %d diverge, %d unsupported, %d error, %d unconfigured; %d %s compared, %d out of scope\n",
 			h.Head, headLaneState(h), s.Total, s.Match, s.Diverge, s.Unsupported, s.Error, s.Unconfigured,
 			s.ComparedUnits, headLaneUnit(h), s.OutOfScope)
 	}
-	bw.printf("\n")
+	bw.Printf("\n")
 }
 
 // headLaneUnit names the unit a single-family head's evidence is counted in. A
@@ -1406,34 +1408,19 @@ func outOfScopeLane(e OutOfScopeEntry) string {
 // failing run: it frames a divergence as a possible cerberus bug, points at the
 // issues tracker, prints the exact copy-pasteable command to regenerate the
 // diagnostic (when the CLI supplied it), and asks the operator to attach the JSON.
-func (r Report) writeBugReport(bw *errWriter, g *TextGuidance) {
-	bw.printf("\n")
-	bw.printf("== Report this to cerberus\n")
-	bw.printf("   A divergence may indicate a cerberus bug. If the candidate causes above\n")
-	bw.printf("   (especially experimental-CH-feature deviations) are ruled out, please\n")
-	bw.printf("   open an issue so it can be fixed at the source:\n")
-	bw.printf("     %s\n", IssuesURL)
+func (r Report) writeBugReport(bw *migrate.ErrWriter, g *TextGuidance) {
+	bw.Printf("\n")
+	bw.Printf("== Report this to cerberus\n")
+	bw.Printf("   A divergence may indicate a cerberus bug. If the candidate causes above\n")
+	bw.Printf("   (especially experimental-CH-feature deviations) are ruled out, please\n")
+	bw.Printf("   open an issue so it can be fixed at the source:\n")
+	bw.Printf("     %s\n", IssuesURL)
 	if g != nil && g.ReproCommand != "" {
-		bw.printf("   Regenerate the full JSON diagnostic with this exact command:\n")
-		bw.printf("     %s\n", g.ReproCommand)
-		bw.printf("   Then attach the resulting verify-report.json to the issue.\n")
+		bw.Printf("   Regenerate the full JSON diagnostic with this exact command:\n")
+		bw.Printf("     %s\n", g.ReproCommand)
+		bw.Printf("   Then attach the resulting verify-report.json to the issue.\n")
 	} else {
-		bw.printf("   Re-run with --report verify-report.json to capture the full JSON\n")
-		bw.printf("   diagnostic, and attach it to the issue.\n")
+		bw.Printf("   Re-run with --report verify-report.json to capture the full JSON\n")
+		bw.Printf("   diagnostic, and attach it to the issue.\n")
 	}
-}
-
-// errWriter collapses the repeated Fprintf error checks into a single
-// short-circuiting sink: once a write fails, later printf calls are no-ops and
-// the first error is returned.
-type errWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errWriter) printf(format string, args ...any) {
-	if e.err != nil {
-		return
-	}
-	_, e.err = fmt.Fprintf(e.w, format, args...)
 }

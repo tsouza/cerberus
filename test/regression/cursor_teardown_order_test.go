@@ -16,7 +16,8 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// Layer 10 — cursor-teardown ordering and bounding at the HTTP seam.
+// Layer 10 — cursor-teardown ordering and bounding at the HTTP seam (#1347,
+// which fixed pooled ClickHouse connections leaking on cursor teardown).
 //
 // clickhouse-go releases a pooled connection only when a query reaches its
 // terminal state with the query context STILL LIVE. Close on an already-

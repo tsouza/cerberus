@@ -22,7 +22,7 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// Layer 11 — goroutine-leak detector tests. Each test opens a real
+// Layer 11 — goroutine-leak detector tests (#253). Each test opens a real
 // httptest.Server, drives N requests through one handler entrypoint,
 // closes the server, and asserts goleak.VerifyNone(t) finds no leaked
 // goroutines.

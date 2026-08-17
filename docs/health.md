@@ -313,8 +313,8 @@ is the transient absent-schema case above). Set
   scopes the `/readyz` head report to `CERBERUS_ENABLED_HEADS`).
 - ClickHouse ping: `internal/chclient/client.go` — `(*Client).Ping`.
 - Breaker phase: `internal/chclient/client.go` — `(*Client).PeekBreakerState`
-  for the connection-level view, `(*Client).HeadBreakerStates` for the
-  per-head report `/readyz` renders.
+  for the connection-level view; `internal/chclient/circuit_error.go` —
+  `(*Client).HeadBreakerStates` for the per-head report `/readyz` renders.
 - Capability re-probe behind the live `/info` optimization fields:
   `cmd/cerberus/chopt_reprobe.go`.
 - Startup benchmark: `test/e2e/startup_bench_test.go`.

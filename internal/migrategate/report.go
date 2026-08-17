@@ -4,36 +4,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/tsouza/cerberus/internal/migrate"
 )
 
 // Write renders the decision as a scannable go/no-go checklist: one line per
 // stage with its verdict and whether it blocks, each stage's reasons indented
 // beneath it, then the overall PASS/FAIL verdict last.
 func (d Decision) Write(w io.Writer) error {
-	bw := &errWriter{w: w}
-	bw.printf("# cerberus migrate gate\n")
-	bw.printf("#\n")
-	bw.printf("# Folds the migration artifacts into one cutover go/no-go decision.\n")
-	bw.printf("# A blocking stage (FAIL, or a missing REQUIRED artifact) fails the gate;\n")
-	bw.printf("# a WARN is surfaced but does not block. Exit 0 only on overall PASS.\n")
-	bw.printf("#\n")
+	bw := migrate.NewErrWriter(w)
+	bw.Printf("# cerberus migrate gate\n")
+	bw.Printf("#\n")
+	bw.Printf("# Folds the migration artifacts into one cutover go/no-go decision.\n")
+	bw.Printf("# A blocking stage (FAIL, or a missing REQUIRED artifact) fails the gate;\n")
+	bw.Printf("# a WARN is surfaced but does not block. Exit 0 only on overall PASS.\n")
+	bw.Printf("#\n")
 
 	for _, s := range d.Stages {
 		if s.Blocking {
-			bw.printf("  %-9s %-7s BLOCKING\n", s.Stage, s.Verdict)
+			bw.Printf("  %-9s %-7s BLOCKING\n", s.Stage, s.Verdict)
 		} else {
-			bw.printf("  %-9s %s\n", s.Stage, s.Verdict)
+			bw.Printf("  %-9s %s\n", s.Stage, s.Verdict)
 		}
 		for _, r := range s.Reasons {
-			bw.printf("      %s\n", r)
+			bw.Printf("      %s\n", r)
 		}
 	}
 
 	if len(d.Missing) > 0 {
-		bw.printf("\n# missing artifacts: %v\n", d.Missing)
+		bw.Printf("\n# missing artifacts: %v\n", d.Missing)
 	}
-	bw.printf("\nOVERALL: %s\n", d.Overall)
-	return bw.err
+	bw.Printf("\nOVERALL: %s\n", d.Overall)
+	return bw.Err
 }
 
 // WriteJSON renders the decision as deterministic, indented JSON with a
@@ -59,19 +61,4 @@ func (d Decision) WriteJSON(w io.Writer) error {
 		return fmt.Errorf("migrategate: write decision: %w", err)
 	}
 	return nil
-}
-
-// errWriter collapses the repeated Fprintf error checks in Write into a single
-// short-circuiting sink: once a write fails, later printf calls are no-ops and
-// the first error is returned.
-type errWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errWriter) printf(format string, args ...any) {
-	if e.err != nil {
-		return
-	}
-	_, e.err = fmt.Fprintf(e.w, format, args...)
 }

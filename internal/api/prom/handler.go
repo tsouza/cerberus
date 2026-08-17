@@ -386,7 +386,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeEngineHeaders(w, hdr)
+	httperr.WriteEngineHeaders(w, hdr)
 	if expr.Type() == promparser.ValueTypeMatrix {
 		// Top-level range-vector / subquery expression: resultType
 		// "matrix" with every returned sample at its own timestamp,
@@ -650,7 +650,7 @@ func (h *Handler) respondRangeMatrix(w http.ResponseWriter, hdr map[string]strin
 	if h.onRangeDrain != nil {
 		h.onRangeDrain(cursor.Inspected())
 	}
-	writeEngineHeaders(w, hdr)
+	httperr.WriteEngineHeaders(w, hdr)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   &QueryData{ResultType: "matrix", Result: result},
@@ -907,23 +907,6 @@ func (h *Handler) executeInstant(ctx context.Context, query string, start, end t
 		h.onInstantDrain(res.Inspected)
 	}
 	return res.Samples, res.Headers, nil
-}
-
-// writeEngineHeaders stamps the X-Cerberus-* response headers populated
-// by engine.Engine.Query / QueryCursor onto w before the response body
-// fires. Safe to call with a nil / empty map (no-op).
-//
-// The middleware-driven X-Cerberus-CH-Millis stamp still runs after the
-// handler returns (see middleware.go); when the engine populated
-// res.Headers[X-Cerberus-CH-Millis] we Set the same key here first and
-// the middleware's later Set is a no-op overwrite with the equivalent
-// value (engine CH timing is also written into the per-request counter
-// in executeInstant). The middleware path stays as a safety net for
-// error responses where the engine never produced a Result.
-func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
-	for k, v := range hdr {
-		w.Header().Set(k, v)
-	}
 }
 
 // promMaxSamplesMessage is upstream Prometheus's exact wire message for

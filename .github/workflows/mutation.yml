@@ -137,6 +137,19 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A non-empty matrix.diff_ref (below) makes gremlins run its own
+          # `git diff DIFF_REF` internally to scope mutants to changed lines
+          # — the exact hazard the `select` job's own checkout comment
+          # already documents for the identical operation: "a shallow clone
+          # cannot resolve" a merge-base diff. This job's checkout was never
+          # given the same fetch-depth: 0, so gremlins failed outright with
+          # `fatal: bad object <sha>` on every phase whose diff_ref pointed
+          # at a commit this shallow (depth-1) clone never fetched (observed
+          # on PRs #2282-#2284, all opened against the same recent main tip;
+          # #2286+ passed only because later phases happened not to need the
+          # diff path, not because the checkout was sufficient).
+          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'

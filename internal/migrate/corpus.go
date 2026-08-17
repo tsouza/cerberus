@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -116,7 +117,9 @@ func (s CorpusFileSource) Harvest(_ context.Context) ([]HarvestedQuery, []Skippe
 		return nil, nil, fmt.Errorf("migrate: read corpus %q: %w", s.Path, err)
 	}
 	var c Corpus
-	if err := json.Unmarshal(data, &c); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
 		return nil, nil, fmt.Errorf("migrate: parse corpus %q: %w", s.Path, err)
 	}
 	if c.Version != CorpusVersion {

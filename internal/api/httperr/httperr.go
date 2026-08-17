@@ -105,6 +105,27 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 	_, _ = w.Write(buf.Bytes())
 }
 
+// WriteEngineHeaders stamps the X-Cerberus-* response headers populated by
+// engine.Engine.Query / QueryCursor / QueryPlan onto w before the response
+// body fires. Safe to call with a nil / empty map (no-op).
+//
+// Each handler calls this once per successful query — the engine populates
+// the canonical bag (Strategy / Plan-Nodes / CH-Millis) so adding a new
+// engine-level header (e.g. SQL-Length) requires no per-handler change.
+//
+// Prom-specific note: the middleware-driven X-Cerberus-CH-Millis stamp
+// still runs after the handler returns (see prom/middleware.go); when the
+// engine populated hdr[X-Cerberus-CH-Millis] this Set happens first and the
+// middleware's later Set is a no-op overwrite with the equivalent value
+// (engine CH timing is also written into the per-request counter in
+// executeInstant). The middleware path stays as a safety net for error
+// responses where the engine never produced a Result.
+func WriteEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
+	for k, v := range hdr {
+		w.Header().Set(k, v)
+	}
+}
+
 // writeMarshalFailure reports an unmarshalable response body as a 500. It
 // is reached only when [WriteJSON]'s caller handed over a value the JSON
 // encoder rejects, so the status the caller asked for is discarded: that

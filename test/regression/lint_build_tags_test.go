@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// golangci-lint analyses ONE build configuration per invocation. That single
+// This pins #1613. golangci-lint analyses ONE build configuration per invocation. That single
 // fact is why a lint gate can report green over a tree it never read: a run
 // that sets no tags cannot see a `//go:build chdb` file, and `./...` reports
 // clean over what is left. The green then reads as "the tree is clean" when it

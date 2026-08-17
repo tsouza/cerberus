@@ -537,7 +537,7 @@ const (
 
 	// argMinIf(arg, val, cond) aggregate — argMin over only the rows where cond is
 	// true; CH's `-If` combinator applied to argMin, spelled as one literal name
-	// pending the structural Combinators split (issue #2060 PR 3).
+	// pending the structural Combinators split (issue #2280).
 	FnArgMinIf Fn = "argMinIf"
 
 	// avg(x) aggregate — the arithmetic mean of non-NULL x in the group.

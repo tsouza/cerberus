@@ -16,7 +16,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Docker Compose scopes containers, networks and volumes by PROJECT name, and
+// This pins #1390: Docker Compose scopes containers, networks and volumes by
+// PROJECT name, and
 // two stacks that resolve the same project name are one stack as far as the
 // daemon is concerned: `up` adopts the other's containers, `down -v
 // --remove-orphans` destroys them. Nothing about that is loud — the second

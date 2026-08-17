@@ -294,58 +294,68 @@ func BuildReport(ctx context.Context, src CorpusSource, ex Explainer) (Report, e
 // honesty note that cardinality is unknown offline, then one block per query,
 // then the skipped entries with their reasons.
 func (r Report) Write(w io.Writer) error {
-	bw := &errWriter{w: w}
-	bw.printf("# cerberus migrate explain\n")
-	bw.printf("#\n")
-	bw.printf("# Offline preview: the exact ClickHouse SQL cerberus will run for each\n")
-	bw.printf("# PromQL query, the physical tables it touches, and conservative IR risk\n")
-	bw.printf("# flags. Row COUNT / cardinality is NOT knowable offline (it depends on\n")
-	bw.printf("# data this tool never reads) — it is deliberately not estimated here.\n")
-	bw.printf("#\n")
-	bw.printf("# %d queries, %d skipped\n\n", len(r.Queries), len(r.Skipped))
+	bw := NewErrWriter(w)
+	bw.Printf("# cerberus migrate explain\n")
+	bw.Printf("#\n")
+	bw.Printf("# Offline preview: the exact ClickHouse SQL cerberus will run for each\n")
+	bw.Printf("# PromQL query, the physical tables it touches, and conservative IR risk\n")
+	bw.Printf("# flags. Row COUNT / cardinality is NOT knowable offline (it depends on\n")
+	bw.Printf("# data this tool never reads) — it is deliberately not estimated here.\n")
+	bw.Printf("#\n")
+	bw.Printf("# %d queries, %d skipped\n\n", len(r.Queries), len(r.Skipped))
 
 	for _, q := range r.Queries {
-		bw.printf("== [%s] %s\n", q.Query.Kind, q.Query.Source)
-		bw.printf("   expr:  %s\n", q.Query.Expr)
+		bw.Printf("== [%s] %s\n", q.Query.Kind, q.Query.Source)
+		bw.Printf("   expr:  %s\n", q.Query.Expr)
 		if q.Unsupported != "" {
-			bw.printf("   UNSUPPORTED: %s\n", q.Unsupported)
-			bw.printf("\n")
+			bw.Printf("   UNSUPPORTED: %s\n", q.Unsupported)
+			bw.Printf("\n")
 			continue
 		}
-		bw.printf("   sql:   %s\n", q.SQL)
+		bw.Printf("   sql:   %s\n", q.SQL)
 		if len(q.Tables) > 0 {
-			bw.printf("   tables: %s\n", strings.Join(q.Tables, ", "))
+			bw.Printf("   tables: %s\n", strings.Join(q.Tables, ", "))
 		}
 		if len(q.Risks) > 0 {
 			for _, risk := range q.Risks {
-				bw.printf("   risk:  %s\n", risk)
+				bw.Printf("   risk:  %s\n", risk)
 			}
 		} else {
-			bw.printf("   risk:  none flagged offline (cardinality unknown)\n")
+			bw.Printf("   risk:  none flagged offline (cardinality unknown)\n")
 		}
-		bw.printf("\n")
+		bw.Printf("\n")
 	}
 
 	if len(r.Skipped) > 0 {
-		bw.printf("== skipped (%d)\n", len(r.Skipped))
+		bw.Printf("== skipped (%d)\n", len(r.Skipped))
 		for _, s := range r.Skipped {
-			bw.printf("   %s: %s\n", s.Source, s.Reason)
+			bw.Printf("   %s: %s\n", s.Source, s.Reason)
 		}
 	}
-	return bw.err
+	return bw.Err
 }
 
-// errWriter collapses the repeated Fprintf error checks in Write into a single
-// short-circuiting sink: once a write fails, later printf calls are no-ops and
-// the first error is returned.
-type errWriter struct {
+// ErrWriter collapses the repeated Fprintf error checks in every migration
+// block's text-report Write method into a single short-circuiting sink: once a
+// write fails, later Printf calls are no-ops and the first error is returned.
+// It is exported so migrate, migrategate, migrateinventory and migrateverify —
+// the four Layer-14 blocks that each render a scannable text report — share
+// one definition instead of hand-copying it.
+type ErrWriter struct {
 	w   io.Writer
-	err error
+	Err error
 }
 
-func (e *errWriter) printf(format string, args ...any) {
-	if e.err != nil {
+// NewErrWriter wraps w in an ErrWriter ready for a sequence of Printf calls.
+func NewErrWriter(w io.Writer) *ErrWriter {
+	return &ErrWriter{w: w}
+}
+
+// Printf is a no-op once a prior write has failed; otherwise it writes format
+// against args and records any error as Err.
+func (e *ErrWriter) Printf(format string, args ...any) {
+	if e.Err != nil {
 		return
 	}
-	_, e.err = fmt.Fprintf(e.w, format, args...)
+	_, e.Err = fmt.Fprintf(e.w, format, args...)
 }

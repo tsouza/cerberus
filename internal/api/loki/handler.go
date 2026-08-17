@@ -346,7 +346,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeEngineHeaders(w, res.Headers)
+	httperr.WriteEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   data,
@@ -432,7 +432,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeEngineHeaders(w, res.Headers)
+	httperr.WriteEngineHeaders(w, res.Headers)
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   data,
@@ -462,20 +462,6 @@ func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
 // lowering.
 func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration) *logql.Lang {
 	return &logql.Lang{Schema: h.Schema, Start: start, End: end, Step: step}
-}
-
-// writeEngineHeaders stamps the X-Cerberus-* response headers populated
-// by engine.Engine.Query / QueryPlan onto w before the response body
-// fires. Safe to call with a nil / empty map (no-op).
-//
-// Each handler calls this once per successful query — the engine
-// populates the canonical bag (Strategy / Plan-Nodes / CH-Millis) so
-// adding a new engine-level header (e.g. SQL-Length) requires no
-// per-handler change.
-func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
-	for k, v := range hdr {
-		w.Header().Set(k, v)
-	}
 }
 
 // classifyEngineErr maps the error chains engine.Engine returns onto
