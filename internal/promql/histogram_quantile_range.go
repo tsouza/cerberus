@@ -708,8 +708,9 @@ func buildHistogramNativeRangeTreeMerge(
 
 	// Reshape: fold per-row arrays into a single merged distribution.
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
+	// Routed through expHistogramMergeSortStage first — see its doc.
 	rebuilt := &chplan.Project{
-		Input: agg,
+		Input: expHistogramMergeSortStage(agg),
 		Projections: append(
 			[]chplan.Projection{
 				{Expr: anchorRef, Alias: stepGridAnchorColumn},
