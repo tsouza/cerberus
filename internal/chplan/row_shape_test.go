@@ -40,6 +40,7 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"HistogramQuantileNative":  chplan.SampleRowShape,
 	"HistogramProjection":      chplan.HistogramRowShape,
 	"HistogramVectorJoin":      chplan.SampleRowShape,
+	"HistogramFloatVectorJoin": chplan.SampleRowShape,
 	"InfoJoin":                 chplan.SampleRowShape,
 	"Limit":                    chplan.SampleRowShape,
 	"MetricsAggregate":         chplan.SampleRowShape,

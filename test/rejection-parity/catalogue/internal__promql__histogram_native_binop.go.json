@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#2fa7ca70",
       "message": "promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "all five callers (lowerExpHistogramHistogramBinop for +/-, lowerExpHistogramHistogramCompareBinop for ==/!=, lowerExpHistogramHistogramCompareBoolBinop for == bool/!= bool, lowerExpHistogramDroppingHistogramBinop for the histogram/histogram incompatible-type drop family, and lowerExpHistogramDroppingVectorBinop for the float-vector/histogram incompatible-type drop family, cerberus issue #2331) admit only isExpHistogramValuedShape operands — the first four on both sides, the fifth only on the single operand expHistogramDroppingVectorBinop already verified isExpHistogramValuedShape against before returning it as histSide — whose lowerExpHistogramValuedShape producer never returns matched=false for a shape that recogniser already accepted",
+      "rationale": "all six callers (lowerExpHistogramHistogramBinop for +/-, lowerExpHistogramHistogramCompareBinop for ==/!=, lowerExpHistogramHistogramCompareBoolBinop for == bool/!= bool, lowerExpHistogramDroppingHistogramBinop for the histogram/histogram incompatible-type drop family, lowerExpHistogramDroppingVectorBinop for the float-vector/histogram incompatible-type drop family (cerberus issue #2331), and lowerExpHistogramFloatVectorScalingBinop for the MUL / histogram-left-DIV float-vector scaling shape (cerberus issue #2339)) admit only isExpHistogramValuedShape operands — the first four on both sides, the last two only on the single operand each recogniser already verified isExpHistogramValuedShape against before returning it as histSide — whose lowerExpHistogramValuedShape producer never returns matched=false for a shape that recogniser already accepted",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -14,15 +14,16 @@
         "callers": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramDroppingVectorBinop",
+          "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop"
         ],
         "cited": [
-          "expHistogramDroppingVectorBinop",
           "isExpHistogramValuedShape",
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramDroppingVectorBinop",
+          "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop",
@@ -35,7 +36,7 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#f7926a05",
       "message": "promql: internal invariant violated: exp-histogram binop operand lowering did not cap with *chplan.HistogramProjection, got %T",
       "class": "internal",
-      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop, and now all five of lowerExpHistogramHistogramBinop, lowerExpHistogramHistogramCompareBinop, lowerExpHistogramHistogramCompareBoolBinop, lowerExpHistogramDroppingHistogramBinop, and lowerExpHistogramDroppingVectorBinop (cerberus issue #2331), already rely on",
+      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop, and now all six of lowerExpHistogramHistogramBinop, lowerExpHistogramHistogramCompareBinop, lowerExpHistogramHistogramCompareBoolBinop, lowerExpHistogramDroppingHistogramBinop, lowerExpHistogramDroppingVectorBinop (cerberus issue #2331), and lowerExpHistogramFloatVectorScalingBinop (cerberus issue #2339), already rely on",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -45,6 +46,7 @@
         "callers": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramDroppingVectorBinop",
+          "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop"
@@ -52,6 +54,7 @@
         "cited": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramDroppingVectorBinop",
+          "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
           "lowerExpHistogramHistogramCompareBoolBinop",

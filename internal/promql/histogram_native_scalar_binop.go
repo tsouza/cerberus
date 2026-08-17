@@ -231,12 +231,23 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	return scaleHistogramProjection(hp, op, scale, s), nil
 }
 
-// scaleHistogramProjection rewrites hp's Input so the row it publishes
-// is scaled by `scale` under `op` — the same five-field split
+// scaleHistogramProjection wraps hp in a Project that scales it by
+// `scale` under `op` — the same five-field split
 // [expHistogramAvgScaleProjections] applies for avg()'s "divide by the
 // group's member count", generalised to an arbitrary scalar expression
 // and operator (cerberus issue #2087).
-func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
+//
+// hp is typed as a plain chplan.Node (not *chplan.HistogramProjection)
+// so [scaleHistogramFloatVectorProjections] (histogram_native_float_
+// vector_scaling_binop.go, cerberus issue #2339) can feed it a
+// *chplan.HistogramFloatVectorJoin instead: that node's own SELECT
+// publishes the identical column shape a *chplan.HistogramProjection
+// does (MetricName/Attributes/TimeUnix + the nine fixed
+// Histogram*Column fields — see that node's doc) plus one extra Value
+// column carrying a PER-ROW scale factor, so the same Project-based
+// fold below applies unchanged whether `scale` is a compile-time
+// LitFloat or a ColumnRef reading that per-row Value.
+func scaleHistogramProjection(hp chplan.Node, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
 	histSchema := histogramProjectionSchema(s)
 	passthroughCols := []string{
 		s.AttributesColumn,

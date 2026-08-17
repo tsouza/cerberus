@@ -249,6 +249,13 @@ func rewriteBinaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, h
 			cp.Right = r
 			return &cp
 		})
+	case *HistogramFloatVectorJoin:
+		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r Node) Node {
+			cp := *v
+			cp.Left = l
+			cp.Right = r
+			return &cp
+		})
 	case *VectorSetOp:
 		out, changed = rewriteLeftRight(v, v.Left, v.Right, fn, func(l, r Node) Node {
 			cp := *v

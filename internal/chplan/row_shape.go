@@ -215,6 +215,20 @@ func RowShapeOf(n Node) RowShape {
 		// [IsDerivedShape]'s HistogramVectorJoin arm for the same
 		// reasoning from the MetricName side.
 		return SampleRowShape
+	case *HistogramFloatVectorJoin:
+		// Its own SELECT genuinely does publish the canonical
+		// MetricName/Attributes/TimeUnix names plus the nine fixed
+		// Histogram*Column fields — unlike HistogramVectorJoin's
+		// `_hq_L_*`/`_hq_R_*`-prefixed shape above — but ALSO an extra
+		// Value column no HistogramRowShape consumer expects, so
+		// neither fixed shape is an exact fit. SampleRowShape here is
+		// likewise a documentation default rather than a claim about
+		// live columns: no generic forwarder is ever placed directly
+		// over it — the calling lowering (internal/promql's
+		// histogram_native_float_vector_scaling_binop.go) always wraps
+		// it in an explicit-column Project first, exactly as
+		// HistogramVectorJoin's callers do.
+		return SampleRowShape
 	case *RangeWindowStaleResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter

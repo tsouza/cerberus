@@ -50,8 +50,10 @@ func TestLower_ExpHistogram_IncompatibleFloatVectorBinopDropsSamples(t *testing.
 		// Float-vector-on-left DIV of a histogram divisor drops (the
 		// float side is never the numerator of a supported scaling
 		// shape); histogram-left DIV of a float-vector divisor is the
-		// UNSUPPORTED scaling direction and is covered separately by
-		// TestLower_ExpHistogram_FloatVectorScalingShapesStillRejected.
+		// SUPPORTED scaling direction and is covered separately by
+		// TestLower_ExpHistogram_FloatVectorScalingBinopAnswersScaledHistogram
+		// (histogram_native_float_vector_scaling_binop_test.go, cerberus
+		// issue #2339).
 		{name: "float vector divided by histogram", query: `histogram_quantile(0.5, latency_exp_hist) / latency_exp_hist`},
 		{name: "parenthesised", query: `(histogram_quantile(0.5, latency_exp_hist)) + latency_exp_hist`},
 		{name: "rate() plus float vector", query: `rate(latency_exp_hist[5m]) + histogram_quantile(0.5, latency_exp_hist)`},
@@ -97,40 +99,10 @@ func TestLower_ExpHistogram_IncompatibleFloatVectorBinopDropsSamples(t *testing.
 	}
 }
 
-// TestLower_ExpHistogram_FloatVectorScalingShapesStillRejected pins the
-// deliberate boundary this file's header doc explains: MUL (either
-// side) and histogram-left DIV between a histogram-valued operand and a
-// genuine (non-literal) float-VECTOR operand are reference Prometheus's
-// supported histogram-SCALING shapes, but cerberus only implements the
-// scaling machinery for a compile-time scalar LITERAL — so these keep
-// hitting expHistogramSelectorRouting's pre-existing catch-all
-// rejection rather than being answered OR silently mis-dropped. A
-// future issue can widen scaling to a genuine float-vector operand;
-// until then, dropping these would answer empty where reference answers
-// a scaled histogram, which is a worse divergence than a clean
-// rejection.
-func TestLower_ExpHistogram_FloatVectorScalingShapesStillRejected(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
-
-	queries := []string{
-		`histogram_quantile(0.5, latency_exp_hist) * latency_exp_hist`,
-		`latency_exp_hist * histogram_quantile(0.5, latency_exp_hist)`,
-		`latency_exp_hist / histogram_quantile(0.5, latency_exp_hist)`,
-	}
-	for _, q := range queries {
-		t.Run(q, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(q)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", q, err)
-			}
-			if _, err := promql.LowerAt(context.Background(), expr, s, end, end); err == nil {
-				t.Fatalf("LowerAt(%q): expected the pre-existing catch-all rejection, got success", q)
-			}
-		})
-	}
-}
+// The float-vector MUL / histogram-left-DIV scaling shapes this file's
+// header doc used to describe as a deliberate, still-rejected boundary
+// are now answered — see
+// TestLower_ExpHistogram_FloatVectorScalingBinopAnswersScaledHistogram
+// and its "still rejected" sibling in
+// histogram_native_float_vector_scaling_binop_test.go (cerberus issue
+// #2339).

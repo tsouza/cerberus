@@ -320,6 +320,8 @@ func (e *emitter) emitNode(n chplan.Node) error {
 		return e.emitVectorJoin(v)
 	case *chplan.HistogramVectorJoin:
 		return e.emitHistogramVectorJoin(v)
+	case *chplan.HistogramFloatVectorJoin:
+		return e.emitHistogramFloatVectorJoin(v)
 	case *chplan.VectorSetOp:
 		return e.emitVectorSetOp(v)
 	case *chplan.NaryVectorSetOp:

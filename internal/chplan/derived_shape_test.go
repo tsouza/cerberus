@@ -46,12 +46,17 @@ var derivedShapeVerdicts = map[string]bool{
 
 	// Everything else keeps the canonical columns in scope (or is
 	// re-canonicalised by its own emit, as a nested VectorSetOp is).
-	"AbsentOverTime":           false,
-	"CrossJoin":                false,
-	"Filter":                   false,
-	"HistogramQuantile":        false,
-	"HistogramQuantileNative":  false,
-	"HistogramProjection":      false,
+	"AbsentOverTime":          false,
+	"CrossJoin":               false,
+	"Filter":                  false,
+	"HistogramQuantile":       false,
+	"HistogramQuantileNative": false,
+	"HistogramProjection":     false,
+	// HistogramFloatVectorJoin's own SELECT names a real bare
+	// MetricName column (from its histogram-valued Left side, byte-
+	// identical to HistogramProjection's own output), unlike
+	// HistogramVectorJoin's `_hq_L_*`/`_hq_R_*`-prefixed shape above.
+	"HistogramFloatVectorJoin": false,
 	"InfoJoin":                 false,
 	"Limit":                    false,
 	"MetricsCompare":           false,

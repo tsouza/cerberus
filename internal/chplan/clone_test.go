@@ -79,6 +79,10 @@ func allNodeKinds() []chplan.Node {
 			Card: chplan.CardManyToOne, Include: []string{"region"},
 			MetricNameColumn: "MetricName", AttributesColumn: "Attributes", TimestampColumn: "TimeUnix",
 		},
+		&chplan.HistogramFloatVectorJoin{
+			Left: leaf, Right: &chplan.Scan{Table: "r"}, Match: chplan.VectorMatch{},
+			MetricNameColumn: "MetricName", AttributesColumn: "Attributes", TimestampColumn: "TimeUnix", ValueColumn: "Value",
+		},
 		&chplan.VectorSetOp{Left: leaf, Right: &chplan.Scan{Table: "r"}, Match: chplan.VectorMatch{Labels: []string{"job"}}, ValueColumn: "Value"},
 		&chplan.NaryVectorSetOp{
 			Arms: []chplan.Node{leaf, &chplan.Scan{Table: "r"}, &chplan.Scan{Table: "s"}},
