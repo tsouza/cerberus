@@ -20,6 +20,17 @@ func TestDeltaPrefixAnchorArrayEmitsAtMostOneConditionalEvent(t *testing.T) {
 	for _, want := range []string{
 		"arrayMap(i -> `query_end` - toIntervalNanosecond(i * 60000000000)",
 		"+ if(`temporality` = 1 AND `sample_ts` <= `query_end` - toIntervalNanosecond(300000000000), 1, 0)",
+		// prefixIndex's upper clamp is numAnchors-1 (5 for numAnchors=6): the
+		// prefix bucket index space is [0, numAnchors), so the greatest valid
+		// prefix-bucket index is one less than numAnchors. Pins both the
+		// binary-minus shape (not numAnchors+1) and the operand order.
+		"least(5, greatest(0,",
+		// prefixIndex subtracts one more from the anchor-grid floor index than
+		// the plain sample-fanout bound does — deltaPrefixAnchorArrayFrag keys
+		// buckets by the anchor whose left edge is at or after ts, one anchor
+		// earlier than the covering-window floor. Pins the trailing `- 1` (not
+		// `+ 1`) that turns the floor index into the prefix-bucket index.
+		"toInt64(60000000000)) < 0) + 1 - 1))",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("DELTA prefix anchor array missing %q\nSQL: %s", want, got)
@@ -74,6 +85,13 @@ func TestExtrapolatedMatrixDeltaPrefixUsesOneScanAndWindowedLevels(t *testing.T)
 		"groupArrayIf((`TimeUnix`, `Value`), `TimeUnix` <= `anchor_ts` - toIntervalNanosecond(300000000000))",
 		"sum(`delta_prefix_step`) OVER (PARTITION BY `Attributes` ORDER BY `anchor_ts`)",
 		"if(temporality = 1, `delta_anchor_levels` + tupleElement(window_pairs[1], 2)",
+		// The inner-scan pushdown widens the covering window by
+		// (numAnchors-1)*stepNS — 10 anchors back at a 1-minute step, i.e.
+		// 600000000000ns — before subtracting the range, so a DELTA prefix
+		// bucket anchored at the earliest grid point still has its preceding
+		// observation in view. Pins numAnchors-1 (not +1) and `*` (not `/`)
+		// against stepNS.
+		"toIntervalNanosecond(600000000000) - toIntervalNanosecond(300000000000))",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("temporality-aware matrix SQL missing %q\nSQL: %s", want, sql)

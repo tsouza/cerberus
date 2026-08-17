@@ -295,6 +295,64 @@ func TestPartitionPrewhere(t *testing.T) {
 		t.Errorf("partitionPrewhere (ordinary integer) pre=%v where=%v, want WHERE-only", pre, where)
 	}
 
+	// A non-equality/inequality comparison on the discriminator column
+	// (e.g. `<`) does not qualify for isNarrowIntegerDiscriminator's
+	// no-WHERE exception: only Eq/Ne are int-discriminator shapes. It
+	// still demotes like any other sole trailing PREWHERE conjunct.
+	discriminatorLess := &chplan.Binary{
+		Op:    chplan.OpLt,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminatorLess}, shape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator column, non-eq/ne op) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != discriminatorLess {
+		t.Errorf("partitionPrewhere (discriminator column, non-eq/ne op) WHERE = %v, want [discriminatorLess]", where)
+	}
+
+	// An equality between the discriminator column and ANOTHER column (no
+	// literal on either side) is not an integer-literal comparison, so it
+	// does not qualify for the no-WHERE exception either — it still
+	// demotes like any other sole trailing PREWHERE conjunct.
+	discriminatorColumnPair := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.ColumnRef{Name: "OtherTemporality"},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminatorColumnPair}, shape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator column vs column) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != discriminatorColumnPair {
+		t.Errorf("partitionPrewhere (discriminator column vs column) WHERE = %v, want [discriminatorColumnPair]", where)
+	}
+
+	// A discriminator column that is ALSO the leading sort key (SortRank 0)
+	// falls outside isNarrowIntegerDiscriminator's non-sort-key requirement
+	// (sortRankFor(...) < 0 is false at rank 0), so it still demotes like
+	// any other sole trailing PREWHERE conjunct — the len(prewhere)==1
+	// leading-sort-key-equality exception doesn't apply here because there
+	// are two PREWHERE conjuncts, not one.
+	sortKeyDiscriminatorShape := TableShape{
+		SortColumns:                 []string{"AggregationTemporality"},
+		WideColumns:                 []string{"Body"},
+		IntegerDiscriminatorColumns: []string{"AggregationTemporality"},
+	}
+	sortKeyDiscriminator := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, sortKeyDiscriminator}, sortKeyDiscriminatorShape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator is leading sort key) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != sortKeyDiscriminator {
+		t.Errorf("partitionPrewhere (discriminator is leading sort key) WHERE = %v, want [sortKeyDiscriminator]", where)
+	}
+
 	// Shape with no wide columns: everything stays in WHERE.
 	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide}, TableShape{SortColumns: []string{"X"}})
 	if len(pre) != 0 || len(where) != 1 {
