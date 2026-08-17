@@ -112,50 +112,50 @@ func Classify(rep Report) Classification {
 // same numbers as Prometheus — then the per-bucket counts, then one block per
 // bucket, then the skipped entries with their reasons.
 func (c Classification) Write(w io.Writer) error {
-	bw := &errWriter{w: w}
-	bw.printf("# cerberus migrate classify\n")
-	bw.printf("#\n")
-	bw.printf("# Buckets each corpus query by how cleanly it maps onto cerberus's PromQL\n")
-	bw.printf("# support, using the exact offline explain pipeline (parse -> lower -> emit):\n")
-	bw.printf("#   supported   — parses, lowers, and EMITS ClickHouse SQL (PromQL-pure / rewritable)\n")
-	bw.printf("#   unsupported — the offline pipeline rejected it (no-equivalent; construct named)\n")
-	bw.printf("#   risky       — a SUPPORTED query that also carries an offline fan-out risk flag\n")
-	bw.printf("#\n")
-	bw.printf("# HONESTY: \"supported\" means the query TRANSLATES to SQL, NOT that cerberus\n")
-	bw.printf("# returns the same numbers as Prometheus — only `cerberus migrate verify` proves parity.\n")
-	bw.printf("#\n")
-	bw.printf("# %d queries: %d supported (%d risky), %d unsupported; %d skipped\n\n",
+	bw := NewErrWriter(w)
+	bw.Printf("# cerberus migrate classify\n")
+	bw.Printf("#\n")
+	bw.Printf("# Buckets each corpus query by how cleanly it maps onto cerberus's PromQL\n")
+	bw.Printf("# support, using the exact offline explain pipeline (parse -> lower -> emit):\n")
+	bw.Printf("#   supported   — parses, lowers, and EMITS ClickHouse SQL (PromQL-pure / rewritable)\n")
+	bw.Printf("#   unsupported — the offline pipeline rejected it (no-equivalent; construct named)\n")
+	bw.Printf("#   risky       — a SUPPORTED query that also carries an offline fan-out risk flag\n")
+	bw.Printf("#\n")
+	bw.Printf("# HONESTY: \"supported\" means the query TRANSLATES to SQL, NOT that cerberus\n")
+	bw.Printf("# returns the same numbers as Prometheus — only `cerberus migrate verify` proves parity.\n")
+	bw.Printf("#\n")
+	bw.Printf("# %d queries: %d supported (%d risky), %d unsupported; %d skipped\n\n",
 		c.Counts.Total, c.Counts.Supported, c.Counts.Risky, c.Counts.Unsupported, len(c.Skipped))
 
-	bw.printf("== supported (%d)\n", c.Counts.Supported)
+	bw.Printf("== supported (%d)\n", c.Counts.Supported)
 	for _, q := range c.Queries {
 		if q.Bucket != BucketSupported {
 			continue
 		}
-		bw.printf("   [%s] %s\n", q.Kind, q.Source)
-		bw.printf("     expr: %s\n", q.Expr)
+		bw.Printf("   [%s] %s\n", q.Kind, q.Source)
+		bw.Printf("     expr: %s\n", q.Expr)
 		for _, risk := range q.Risks {
-			bw.printf("     RISKY: %s\n", risk)
+			bw.Printf("     RISKY: %s\n", risk)
 		}
 	}
 
-	bw.printf("\n== unsupported (%d)\n", c.Counts.Unsupported)
+	bw.Printf("\n== unsupported (%d)\n", c.Counts.Unsupported)
 	for _, q := range c.Queries {
 		if q.Bucket != BucketUnsupported {
 			continue
 		}
-		bw.printf("   [%s] %s\n", q.Kind, q.Source)
-		bw.printf("     expr:      %s\n", q.Expr)
-		bw.printf("     construct: %s\n", q.Construct)
+		bw.Printf("   [%s] %s\n", q.Kind, q.Source)
+		bw.Printf("     expr:      %s\n", q.Expr)
+		bw.Printf("     construct: %s\n", q.Construct)
 	}
 
 	if len(c.Skipped) > 0 {
-		bw.printf("\n== skipped (%d)\n", len(c.Skipped))
+		bw.Printf("\n== skipped (%d)\n", len(c.Skipped))
 		for _, s := range c.Skipped {
-			bw.printf("   %s: %s\n", s.Source, s.Reason)
+			bw.Printf("   %s: %s\n", s.Source, s.Reason)
 		}
 	}
-	return bw.err
+	return bw.Err
 }
 
 // WriteJSON renders the classification as deterministic, indented JSON with a

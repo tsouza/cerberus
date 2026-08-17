@@ -188,25 +188,8 @@ func (c *LokiClient) fetchIndexStats(ctx context.Context, selector, startParam, 
 }
 
 // getOK issues GET {base}{path} and returns the body only on HTTP 200,
-// mirroring the Prometheus Client's capped-read, non-200-is-error discipline.
+// mirroring the Prometheus Client's capped-read, non-200-is-error discipline
+// (both share the httpGetOK helper in inventory.go).
 func (c *LokiClient) getOK(ctx context.Context, path string) ([]byte, error) {
-	reqURL := c.BaseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request %s: %w", path, err)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := readCappedBody(resp.Body, maxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("read %s body: %w", path, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
-	}
-	return body, nil
+	return httpGetOK(ctx, c.HTTP, c.BaseURL, path)
 }
