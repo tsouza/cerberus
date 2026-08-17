@@ -1690,7 +1690,7 @@
       "layers": ["4", "6a", "6b", "6c"],
       "oracle_class": "property",
       "recipes": ["property"],
-      "command": "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=500",
+      "command": "node .github/scripts/property-fanout.mjs (go test -tags chdb,agpl_oracle,chdb_agpl_oracle -rapid.checks=500, two-process fan-out)",
       "build_tags": ["agpl_oracle", "chdb", "chdb_agpl_oracle"],
       "package_globs": [
         "internal/logql/**",
