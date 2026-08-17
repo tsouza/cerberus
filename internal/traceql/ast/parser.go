@@ -538,7 +538,7 @@ func makeFieldUnary(op Operator, e FieldExpression) FieldExpression {
 	if s, ok := e.(Static); ok {
 		switch op {
 		case OpSub:
-			if neg, ok := negateStatic(s); ok {
+			if neg, ok := NegateStatic(s); ok {
 				return neg
 			}
 		case OpNot:
@@ -550,7 +550,12 @@ func makeFieldUnary(op Operator, e FieldExpression) FieldExpression {
 	return UnaryOperation{Op: op, Expression: e}
 }
 
-func negateStatic(s Static) (Static, bool) {
+// NegateStatic returns the arithmetic negation of an int/float/duration
+// literal, mirroring how the parser folds a unary minus over a constant
+// operand. Any other Static type cannot be negated. Exported so the
+// lowering package (which already imports ast) can reuse it instead of
+// reimplementing the same Int/Float/Duration switch.
+func NegateStatic(s Static) (Static, bool) {
 	switch s.Type {
 	case TypeInt:
 		if i, ok := s.Int(); ok {
