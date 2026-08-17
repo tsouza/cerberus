@@ -89,7 +89,12 @@ func lowerSubqueryOverUnary(
 		return subqueryAnchorShape(inner, s), nil
 	}
 
-	rangeCtx := ctx
+	// Mirrors lowerSubqueryOverBinary's synthetic-operand offset shift (PR
+	// #1418): a subquery offset must shift a synthetic source's (e.g.
+	// time()) own evaluation grid along with its window, or it evaluates at
+	// the outer grid while the enclosing RangeWindow reads the shifted
+	// subquery grid.
+	rangeCtx := subqueryOffsetCtx(sub, ctx)
 	rangeCtx.inRangeVector = true
 	inner, err := lowerUnary(u, s, rangeCtx)
 	if err != nil {
@@ -374,13 +379,7 @@ func lowerSubqueryOverCall(
 	// Strip the inner VS modifier — the subquery's own modifier shadows it.
 	// inRangeVector also suppresses the bare-selector LWR wrap so every
 	// in-window sample reaches the surrounding RangeWindow.
-	vsNoModifier := *vs
-	vsNoModifier.Timestamp = nil
-	vsNoModifier.OriginalOffset = 0
-	vsNoModifier.Offset = 0
-	vsNoModifier.StartOrEnd = 0
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
+	vsNoModifier, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
 	// A subquery's inner counter function reads the SAME stored samples the
 	// un-nested call does, so it owes the same DELTA-vs-CUMULATIVE runtime
 	// branch: `max_over_time(rate(m[5m])[1h:1m])` over a DELTA-temporality
@@ -616,13 +615,7 @@ func lowerSubqueryOverVectorSelector(
 	s schema.Metrics,
 	ctx lowerCtx,
 ) (chplan.Node, error) {
-	vsNoModifier := *vs
-	vsNoModifier.Timestamp = nil
-	vsNoModifier.OriginalOffset = 0
-	vsNoModifier.Offset = 0
-	vsNoModifier.StartOrEnd = 0
-	rangeCtx := ctx
-	rangeCtx.inRangeVector = true
+	vsNoModifier, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
 	inner, err := lowerVectorSelector(&vsNoModifier, s, rangeCtx)
 	if err != nil {
 		return nil, err
@@ -1572,13 +1565,7 @@ func lowerSubqueryOverAbsent(
 
 	if len(call.Args) == 1 {
 		if vs, ok := unwrapParens(call.Args[0]).(*parser.VectorSelector); ok {
-			vsNoMod := *vs
-			vsNoMod.Timestamp = nil
-			vsNoMod.OriginalOffset = 0
-			vsNoMod.Offset = 0
-			vsNoMod.StartOrEnd = 0
-			rangeCtx := ctx
-			rangeCtx.inRangeVector = true
+			vsNoMod, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
 			inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
 			if err != nil {
 				return nil, err
