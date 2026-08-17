@@ -134,6 +134,10 @@ exp_histogram_avg_by.txtar
 exp_histogram_avg_over_time.txtar
 exp_histogram_bare_selector.txtar
 exp_histogram_bare_selector_range.txtar
+exp_histogram_binop_add.txtar
+exp_histogram_binop_add_downscale_fold.txtar
+exp_histogram_binop_add_range.txtar
+exp_histogram_binop_sub.txtar
 exp_histogram_changes.txtar
 exp_histogram_count.txtar
 exp_histogram_count_by.txtar
