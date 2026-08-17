@@ -81,6 +81,60 @@ func TestFnResolutions_NoOrphanEntry(t *testing.T) {
 	}
 }
 
+// TestCombinatorSuffixes_CoversEveryDeclaredAggCombinator and
+// TestCombinatorSuffixes_NoOrphanEntry are combinatorSuffixes' own pair of
+// the same ratchet TestFnResolutions_CoversEveryDeclaredFn /
+// TestFnResolutions_NoOrphanEntry run for fnResolutions (issue #2280's
+// structural Combinators split): internal/chplan/aggregate.go's
+// AggCombinator vocabulary and chsql's combinatorSuffixes resolution table
+// must name the exact same set of combinators.
+
+// TestCombinatorSuffixes_CoversEveryDeclaredAggCombinator fails when
+// internal/chplan declares an AggCombinator constant combinatorSuffixes
+// does not resolve.
+func TestCombinatorSuffixes_CoversEveryDeclaredAggCombinator(t *testing.T) {
+	t.Parallel()
+
+	declared := declaredAggCombinatorValues(t)
+	if len(declared) == 0 {
+		t.Fatal("scanned internal/chplan for `AggCombinator = \"...\"` const declarations and found " +
+			"none — the scan lost its grip on the source shape, so this ratchet is vacuous")
+	}
+
+	for name, value := range declared {
+		if _, ok := combinatorSuffixes[chplan.AggCombinator(value)]; !ok {
+			t.Errorf("chplan.%s (%q) has no entry in chsql.combinatorSuffixes (fnresolution.go) — "+
+				"add one, or the emitter falls through to a runtime ClickHouse error instead "+
+				"of a compile/test failure", name, value)
+		}
+	}
+}
+
+// TestCombinatorSuffixes_NoOrphanEntry fails when combinatorSuffixes
+// carries an entry naming an AggCombinator value chplan no longer
+// declares.
+func TestCombinatorSuffixes_NoOrphanEntry(t *testing.T) {
+	t.Parallel()
+
+	declared := declaredAggCombinatorValues(t)
+	if len(declared) == 0 {
+		t.Fatal("scanned internal/chplan for `AggCombinator = \"...\"` const declarations and found " +
+			"none — the scan lost its grip on the source shape, so this ratchet is vacuous")
+	}
+
+	declaredValues := make(map[string]bool, len(declared))
+	for _, value := range declared {
+		declaredValues[value] = true
+	}
+
+	for c := range combinatorSuffixes {
+		if !declaredValues[string(c)] {
+			t.Errorf("chsql.combinatorSuffixes has an entry for %q, which internal/chplan no "+
+				"longer declares as an AggCombinator constant — drop it", string(c))
+		}
+	}
+}
+
 // declaredFnValues scans every non-test .go file in internal/chplan for
 // `const` declarations typed Fn, returning symbol name -> underlying
 // string value (e.g. "FnArrayMap" -> "arrayMap").
@@ -93,6 +147,21 @@ func TestFnResolutions_NoOrphanEntry(t *testing.T) {
 // so an Fn constant spelled by reference is still counted as declared
 // instead of silently vanishing from this ratchet.
 func declaredFnValues(t *testing.T) map[string]string {
+	t.Helper()
+	return declaredTypedConstValues(t, "Fn")
+}
+
+// declaredAggCombinatorValues is declaredFnValues' sibling for the
+// AggCombinator vocabulary (internal/chplan/aggregate.go).
+func declaredAggCombinatorValues(t *testing.T) map[string]string {
+	t.Helper()
+	return declaredTypedConstValues(t, "AggCombinator")
+}
+
+// declaredTypedConstValues scans every non-test .go file in
+// internal/chplan for top-level `const` declarations typed typeName,
+// returning symbol name -> underlying string value.
+func declaredTypedConstValues(t *testing.T, typeName string) map[string]string {
 	t.Helper()
 
 	const chplanDir = "../chplan"
@@ -122,7 +191,7 @@ func declaredFnValues(t *testing.T) map[string]string {
 
 	out := map[string]string{}
 	for _, f := range files {
-		collectFnConsts(f, literals, out)
+		collectTypedConsts(f, literals, typeName, out)
 	}
 	return out
 }
@@ -159,13 +228,13 @@ func collectStringLiteralConsts(f *ast.File, out map[string]string) {
 	}
 }
 
-// collectFnConsts walks f's top-level const blocks, recording every spec
-// typed Fn. Go lets a const spec omit Type/Values to inherit the previous
-// spec's (the iota idiom); this codebase's Fn block states both
-// explicitly on every line, but the scan tracks the last seen Type/Values
-// anyway so it degrades safely rather than silently under-counting if
-// that style ever changes.
-func collectFnConsts(f *ast.File, literals, out map[string]string) {
+// collectTypedConsts walks f's top-level const blocks, recording every
+// spec typed typeName. Go lets a const spec omit Type/Values to inherit
+// the previous spec's (the iota idiom); this codebase's Fn/AggCombinator
+// blocks state both explicitly on every line, but the scan tracks the
+// last seen Type/Values anyway so it degrades safely rather than
+// silently under-counting if that style ever changes.
+func collectTypedConsts(f *ast.File, literals map[string]string, typeName string, out map[string]string) {
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.CONST {
@@ -185,7 +254,7 @@ func collectFnConsts(f *ast.File, literals, out map[string]string) {
 				lastValues = vs.Values
 			}
 			ident, ok := lastType.(*ast.Ident)
-			if !ok || ident.Name != "Fn" {
+			if !ok || ident.Name != typeName {
 				continue
 			}
 			for i, n := range vs.Names {

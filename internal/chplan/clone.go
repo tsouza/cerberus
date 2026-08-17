@@ -446,12 +446,22 @@ func cloneAggFuncs(in []AggFunc) []AggFunc {
 	out := make([]AggFunc, len(in))
 	for i := range in {
 		out[i] = AggFunc{
-			Fn:     in[i].Fn,
-			Params: cloneExprs(in[i].Params),
-			Args:   cloneExprs(in[i].Args),
-			Alias:  in[i].Alias,
+			Fn:          in[i].Fn,
+			Combinators: cloneAggCombinators(in[i].Combinators),
+			Params:      cloneExprs(in[i].Params),
+			Args:        cloneExprs(in[i].Args),
+			Alias:       in[i].Alias,
 		}
 	}
+	return out
+}
+
+func cloneAggCombinators(in []AggCombinator) []AggCombinator {
+	if in == nil {
+		return nil
+	}
+	out := make([]AggCombinator, len(in))
+	copy(out, in)
 	return out
 }
 

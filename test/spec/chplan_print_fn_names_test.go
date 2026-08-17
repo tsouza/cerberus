@@ -65,6 +65,57 @@ func TestFnGoNames_NoOrphanEntry(t *testing.T) {
 	}
 }
 
+// TestCombinatorGoNames_CoversEveryDeclaredAggCombinator and
+// TestCombinatorGoNames_NoOrphanEntry are combinatorGoNames' own pair of
+// the same ratchet TestFnGoNames_CoversEveryDeclaredFn /
+// TestFnGoNames_NoOrphanEntry run for fnGoNames (issue #2280's structural
+// Combinators split). Unlike fnGoNames — whose stored value is always the
+// declaring identifier's own name, checked for equality —
+// combinatorGoNames stores the SUFFIX printAggFunc appends (CombIf ->
+// "If", not "CombIf"), so only PRESENCE is checked here, not the value.
+func TestCombinatorGoNames_CoversEveryDeclaredAggCombinator(t *testing.T) {
+	t.Parallel()
+
+	declared := declaredAggCombinatorNames(t)
+	if len(declared) == 0 {
+		t.Fatal("scanned internal/chplan for `AggCombinator = \"...\"` const declarations and found " +
+			"none — the scan lost its grip on the source shape, so this ratchet is vacuous")
+	}
+
+	for name, value := range declared {
+		if _, ok := combinatorGoNames[chplan.AggCombinator(value)]; !ok {
+			t.Errorf("chplan.%s (%q) has no entry in combinatorGoNames (chplan_print.go) — "+
+				"add one, or an IR snapshot involving it silently falls back to the raw "+
+				"CH suffix instead of the printer's own choice", name, value)
+		}
+	}
+}
+
+// TestCombinatorGoNames_NoOrphanEntry fails when combinatorGoNames
+// carries an entry naming an AggCombinator value chplan no longer
+// declares.
+func TestCombinatorGoNames_NoOrphanEntry(t *testing.T) {
+	t.Parallel()
+
+	declared := declaredAggCombinatorNames(t)
+	if len(declared) == 0 {
+		t.Fatal("scanned internal/chplan for `AggCombinator = \"...\"` const declarations and found " +
+			"none — the scan lost its grip on the source shape, so this ratchet is vacuous")
+	}
+
+	declaredValues := make(map[string]bool, len(declared))
+	for _, value := range declared {
+		declaredValues[value] = true
+	}
+
+	for c := range combinatorGoNames {
+		if !declaredValues[string(c)] {
+			t.Errorf("combinatorGoNames has an entry for %q, which internal/chplan no longer "+
+				"declares as an AggCombinator constant — drop it", string(c))
+		}
+	}
+}
+
 // declaredFnNames scans every non-test .go file in internal/chplan for
 // `const` declarations typed Fn, returning symbol name -> underlying
 // string value (e.g. "FnArrayMap" -> "arrayMap"). Mirrors
@@ -72,6 +123,21 @@ func TestFnGoNames_NoOrphanEntry(t *testing.T) {
 // duplicated here rather than shared because that helper lives in a
 // _test.go file and is not importable from this package.
 func declaredFnNames(t *testing.T) map[string]string {
+	t.Helper()
+	return declaredTypedConstNamesForFnNames(t, "Fn")
+}
+
+// declaredAggCombinatorNames is declaredFnNames' sibling for the
+// AggCombinator vocabulary (internal/chplan/aggregate.go).
+func declaredAggCombinatorNames(t *testing.T) map[string]string {
+	t.Helper()
+	return declaredTypedConstNamesForFnNames(t, "AggCombinator")
+}
+
+// declaredTypedConstNamesForFnNames scans every non-test .go file in
+// internal/chplan for top-level `const` declarations typed typeName,
+// returning symbol name -> underlying string value.
+func declaredTypedConstNamesForFnNames(t *testing.T, typeName string) map[string]string {
 	t.Helper()
 
 	chplanDir := filepath.Join("..", "..", "internal", "chplan")
@@ -101,7 +167,7 @@ func declaredFnNames(t *testing.T) map[string]string {
 
 	out := map[string]string{}
 	for _, f := range files {
-		collectFnConstsForFnNames(f, literals, out)
+		collectTypedConstsForFnNames(f, literals, typeName, out)
 	}
 	return out
 }
@@ -135,7 +201,7 @@ func collectStringLiteralConstsForFnNames(f *ast.File, out map[string]string) {
 	}
 }
 
-func collectFnConstsForFnNames(f *ast.File, literals, out map[string]string) {
+func collectTypedConstsForFnNames(f *ast.File, literals map[string]string, typeName string, out map[string]string) {
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.CONST {
@@ -155,7 +221,7 @@ func collectFnConstsForFnNames(f *ast.File, literals, out map[string]string) {
 				lastValues = vs.Values
 			}
 			ident, ok := lastType.(*ast.Ident)
-			if !ok || ident.Name != "Fn" {
+			if !ok || ident.Name != typeName {
 				continue
 			}
 			for i, n := range vs.Names {

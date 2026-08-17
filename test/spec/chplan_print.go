@@ -729,6 +729,9 @@ func printAggFunc(a chplan.AggFunc) string {
 		args[i] = printExpr(x)
 	}
 	name := fnDisplayName(a.Fn)
+	for _, c := range a.Combinators {
+		name += combinatorDisplayName(c)
+	}
 	var head string
 	if len(a.Params) > 0 {
 		ps := make([]string, len(a.Params))
@@ -756,6 +759,36 @@ func fnDisplayName(fn chplan.Fn) string {
 	// to the raw value so the dump still shows something instead of
 	// silently dropping the function name.
 	return string(fn)
+}
+
+// combinatorDisplayName renders a sealed AggFunc combinator suffix for
+// readable IR snapshots — printAggFunc appends it directly onto the base
+// Fn's own Go-symbol display name (fnDisplayName), so
+// `AggFunc{Fn: FnArgMin, Combinators: []AggCombinator{CombIf}}` prints as
+// `FnArgMinIf(...)`, byte-identical to the single combined Fn symbol this
+// shape rendered as before the structural Combinators split (#2280) — the
+// IR snapshot corpus documents PLAN SHAPE, not this representation
+// change, so it must stay unchanged.
+func combinatorDisplayName(c chplan.AggCombinator) string {
+	if suffix, ok := combinatorGoNames[c]; ok {
+		return suffix
+	}
+	// No entry means combinatorGoNames has fallen behind
+	// aggregate.go's AggCombinator const block —
+	// TestCombinatorGoNames_CoversEveryDeclaredAggCombinator catches
+	// that; fall back to the raw value so the dump still shows
+	// something instead of silently dropping the suffix.
+	return string(c)
+}
+
+// combinatorGoNames maps every chplan.AggCombinator constant
+// (internal/chplan/aggregate.go) to the suffix printAggFunc appends to
+// the base Fn's display name — a display-only mirror of chsql's
+// combinatorSuffixes (internal/chsql/fnresolution.go), ratcheted by
+// TestCombinatorGoNames_CoversEveryDeclaredAggCombinator the same way
+// fnGoNames is ratcheted against fn.go's const block.
+var combinatorGoNames = map[chplan.AggCombinator]string{
+	chplan.CombIf: "If",
 }
 
 // fnGoNames maps every chplan.Fn constant (internal/chplan/fn.go) to its
@@ -909,7 +942,6 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnAny:                             "FnAny",
 	chplan.FnArgMax:                          "FnArgMax",
 	chplan.FnArgMin:                          "FnArgMin",
-	chplan.FnArgMinIf:                        "FnArgMinIf",
 	chplan.FnAvg:                             "FnAvg",
 	chplan.FnCount:                           "FnCount",
 	chplan.FnCountEqual:                      "FnCountEqual",
