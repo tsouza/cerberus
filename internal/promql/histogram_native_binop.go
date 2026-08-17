@@ -32,16 +32,44 @@ import (
 // separately, along with on()/ignoring()/group_left()/group_right()
 // support for `+`/`-` (see this file's rejection error below).
 //
-// The merge itself is NOT new arithmetic: it is the exact scale-fold +
-// offset-align + zero-pad reconciliation [expHistogramMergeAggs] /
-// [expHistogramMergeProjections] already implement for the cross-SERIES
+// The bucket RECONCILIATION (which absolute index each operand's own
+// buckets land on at the merged, coarser Scale) is the same integer
+// index-alignment math [expHistogramMergeBucketsBoundsExpr] /
+// [expHistogramMergeOffsetExpr] already implement for the cross-SERIES
 // sum() merge (histogram_native_sum.go) and the histogram_quantile()
-// cross-series fold (histogram_quantile_native_window.go) — both exist
-// because Prometheus's own aggregation walks a group calling
-// FloatHistogram.Add on each member, definitionally the same operation
-// as this file's two-operand case. Reusing it here means a binary op
-// between two histograms and `sum()` over two histogram samples can
-// never drift apart in their arithmetic.
+// cross-series fold (histogram_quantile_native_window.go), reused here
+// unchanged — it is purely structural (bitShiftRight / arrayMin /
+// arrayMax over Scale and Offset), independent of how the VALUES at
+// each resolved index get folded, so sharing it cannot let a binary op
+// between two histograms and `sum()` drift apart on WHERE a bucket ends
+// up.
+//
+// The VALUE fold is deliberately NOT shared with that merge. sum() /
+// avg() / histogram_quantile() answer a cross-SERIES GROUP, and
+// reference Prometheus's own aggregation evaluator folds that group
+// with FloatHistogram.KahanAdd — a Neumaier-compensated recurrence
+// (promql/engine.go's `sum`/`avg` aggregation path calls
+// `group.histogramValue.KahanAdd(h, group.histogramKahanC)`) — which is why
+// [expHistogramMergeBucketsExpr] / [promHistogramKahanSum] exist and why
+// [histogram_quantile.go]'s own within-row downscale fold routes through
+// that same compensated recurrence: upstream's KahanAdd downscales via
+// `kahanReduceResolution`, itself compensated.
+//
+// The V-V binary operator this file answers is a DIFFERENT reference
+// method: `vectorElemBinop`'s `hlhs != nil && hrhs != nil` case calls
+// the PLAIN `hlhs.Copy().Add(hrhs)` / `.Sub(hrhs)` — model/histogram/
+// float_histogram.go's `Add`/`Sub` do `h.Sum += other.Sum`,
+// `targetBuckets[i] += originBuckets[...]` with NO compensation
+// anywhere, including their OWN within-row downscale fold
+// (`mustReduceResolution` → `reduceResolution`, a plain `+=` loop —
+// contrast `KahanAdd`'s `kahanReduceResolution`). Reusing the Kahan
+// merge here would silently diverge from reference at the ULP level
+// for any two-histogram `+`/`-` whose Count/Sum/bucket values do not
+// happen to add up exactly in float64 (which plain integer/round test
+// fixtures cannot surface, since Kahan compensation is a no-op exactly
+// when there is no rounding error to correct). The two-operand fold
+// below ([histogramBinopMergeProjections]) is therefore a SEPARATE,
+// plain implementation — see its doc for the specific functions.
 //
 // Lowering shape (instant mode):
 //
@@ -50,7 +78,7 @@ import (
 //	           Scale / ZeroCount / ZeroThreshold / {Pos,Neg}{Offset,BucketCounts},
 //	           Count, Sum]
 //	    Aggregate groupBy=[Attributes] having=count()=2
-//	              funcs=<histogramCountSumMergeAggs>
+//	              funcs=<histogramBinopMergeAggs>
 //	      UnionAll
 //	        <lhs HistogramProjection>
 //	        <rhs HistogramProjection, negated for `-`>
@@ -159,12 +187,12 @@ func mergeTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, s schema
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{hpL, hpR}},
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
-		AggFuncs:           histogramCountSumMergeAggs(histSchema),
+		AggFuncs:           histogramBinopMergeAggs(histSchema),
 		Having:             histogramBinopBothSidesMatchedGuard(),
 		DropEmptyOnNoGroup: true,
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
-	projs = append(projs, histogramCountSumMergeProjections(histSchema)...)
+	projs = append(projs, histogramBinopMergeProjections(histSchema)...)
 	reshaped := &chplan.Project{Input: merged, Projections: projs}
 
 	tsExpr := chplan.Expr(chplan.NowNano())
@@ -183,4 +211,173 @@ func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 		Left:  &chplan.FuncCall{Fn: chplan.FnCount},
 		Right: &chplan.LitInt{V: 2},
 	}
+}
+
+// histogramBinopMergeAggs collects the group's Count / Sum arrays plus
+// the same Scale (min) / ZeroCount / ZeroThreshold (max) / signed-bucket
+// (Offset + BucketCounts, both keyed by Scale) groupArrays
+// [expHistogramMergeAggs] collects for the cross-series merge — the
+// COLLECTION shape is identical (groupArray has no notion of
+// compensation; only the FOLD below does), and [histogramBinopMergeAggs]
+// / [histogramBinopMergeProjections]'s Having guard guarantees each
+// array holds exactly the two matched operands' own values.
+func histogramBinopMergeAggs(s schema.Metrics) []chplan.AggFunc {
+	return append([]chplan.AggFunc{
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
+	}, expHistogramMergeAggs(s)...)
+}
+
+// histogramBinopMergeProjections folds the two-element groupArrays
+// [histogramBinopMergeAggs] collected into the merged histogram row,
+// using PLAIN (uncompensated) arithmetic throughout — matching
+// reference Prometheus's `Add` / `Sub` (see this file's header doc for
+// why the Kahan-compensated [expHistogramMergeProjections] the
+// cross-series merge uses is the WRONG fold here). Scale / ZeroThreshold
+// / both Offsets are structural (bitShiftRight / min / max index
+// arithmetic, no float-summation policy involved) and are reused from
+// [expHistogramMergeOffsetExpr] unchanged; only the fields that fold
+// floats — Count, Sum, ZeroCount and both bucket ladders — get the
+// plain implementation.
+func histogramBinopMergeProjections(s schema.Metrics) []chplan.Projection {
+	projs := []chplan.Projection{
+		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
+		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeSumsArrayAlias}), Alias: s.SumColumn},
+		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
+		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeZeroCountsArrayAlias}), Alias: s.ZeroCountColumn},
+	}
+	if s.ZeroThresholdColumn != "" {
+		projs = append(projs, chplan.Projection{
+			Expr:  &chplan.ColumnRef{Name: s.ZeroThresholdColumn},
+			Alias: s.ZeroThresholdColumn,
+		})
+	}
+	return append(projs, []chplan.Projection{
+		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
+		{Expr: histogramBinopMergedBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
+		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
+		{Expr: histogramBinopMergedBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
+	}...)
+}
+
+// plainArraySum renders CH's `arraySum(<values>)` — a single plain
+// accumulation with no Kahan/Neumaier compensation. Over the exactly
+// two-element arrays [histogramBinopMergeAggs] collects (guaranteed by
+// [histogramBinopBothSidesMatchedGuard]'s `count() = 2` Having), this
+// computes exactly one floating-point addition — bit-identical to
+// reference's plain `h.Sum += other.Sum` — regardless of which order
+// groupArray happened to collect the two rows in, since IEEE754
+// addition of exactly two operands is commutative (unlike Kahan-
+// Neumaier compensated summation, which is NOT bit-identical to a plain
+// add even for two terms — see this file's header doc).
+func plainArraySum(values chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}}
+}
+
+// histogramBinopMergedBucketsExpr renders the merged PositiveBucketCounts
+// (or NegativeBucketCounts) for the binop's two-element groupArrays,
+// mirroring [expHistogramMergeBucketsExpr]'s structure (same bounds via
+// [expHistogramMergeBucketsBoundsExpr], same per-row index-matching
+// picker via [expHistogramRowContribsExpr]) but folding with
+// [plainArraySum] via [histogramBinopBucketRowContribExpr] instead of
+// the Kahan-compensated arrayReduce('sumKahan', ...) — see this file's
+// header doc for why. There is no series-order sort here (contrast
+// [expHistogramMergeBucketsExpr]'s [expHistogramSortRowsByKeyExpr] calls,
+// needed only because Kahan-Neumaier summation is order-sensitive even
+// once the same set of terms is fixed): a plain add of exactly two
+// terms is order-invariant, so which of the two groupArray positions is
+// the caller's LHS or RHS never affects the result.
+func histogramBinopMergedBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
+	mergedScale := &chplan.ColumnRef{Name: mergedScaleAlias}
+	scalesArr := &chplan.ColumnRef{Name: scalesArrAlias}
+	offArr := &chplan.ColumnRef{Name: offArrAlias}
+	bucArr := &chplan.ColumnRef{Name: bucArrAlias}
+
+	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
+
+	const paramT = "t"
+	rowContribs := expHistogramRowContribsExpr(
+		scalesArr, offArr, bucArr,
+		histogramBinopBucketRowContribExpr(mergedScale, mergedStart, paramT),
+	)
+	rowsSum := plainArraySum(rowContribs)
+
+	return &chplan.FuncCall{
+		Fn: chplan.FnArrayMap,
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{paramT}, Body: rowsSum},
+			&chplan.FuncCall{
+				Fn: chplan.FnRange,
+				Args: []chplan.Expr{
+					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+				},
+			},
+		},
+	}
+}
+
+// histogramBinopBucketRowContribExpr is [expHistogramBucketRowContribExpr]
+// with its within-row downscale fold changed from the Kahan-compensated
+// [promHistogramKahanSum] to [plainArraySum] — matching reference's own
+// split between `KahanAdd`'s compensated `kahanReduceResolution` and
+// `Add`/`Sub`'s plain `reduceResolution` (see this file's header doc).
+// The index-matching picker (which stored position lands on target
+// bucket `mergedStart+t`) is otherwise byte-for-byte the same
+// expression, bound by the same lambda parameter names
+// ([expHistogramRowContribsExpr]'s outer arrayMap binds
+// paramExpRowScale / paramExpRowOffset / paramExpRowBuckets) so this
+// drops into that shared wrapper unchanged.
+func histogramBinopBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
+	return plainArraySum(
+		&chplan.FuncCall{
+			Fn: chplan.FnArrayMap,
+			Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramExpBucketPos},
+					Body: &chplan.FuncCall{
+						Fn: chplan.FnIf,
+						Args: []chplan.Expr{
+							&chplan.Binary{
+								Op: chplan.OpEq,
+								Left: &chplan.FuncCall{
+									Fn: chplan.FnBitShiftRight,
+									Args: []chplan.Expr{
+										&chplan.Binary{
+											Op:   chplan.OpAdd,
+											Left: &chplan.BareIdent{Name: paramExpRowOffset},
+											Right: &chplan.Binary{
+												Op:    chplan.OpSub,
+												Left:  &chplan.BareIdent{Name: paramExpBucketPos},
+												Right: &chplan.LitInt{V: 1},
+											},
+										},
+										&chplan.Binary{
+											Op:    chplan.OpSub,
+											Left:  &chplan.BareIdent{Name: paramExpRowScale},
+											Right: mergedScale,
+										},
+									},
+								},
+								// target absolute index = mergedStart + t (t is 0-based).
+								Right: &chplan.Binary{
+									Op:    chplan.OpAdd,
+									Left:  mergedStart,
+									Right: &chplan.BareIdent{Name: paramT},
+								},
+							},
+							&chplan.Subscript{
+								Container: &chplan.BareIdent{Name: paramExpRowBuckets},
+								Key:       &chplan.BareIdent{Name: paramExpBucketPos},
+							},
+							&chplan.LitInt{V: 0},
+						},
+					},
+				},
+				&chplan.FuncCall{
+					Fn:   chplan.FnArrayEnumerate,
+					Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
+				},
+			},
+		},
+	)
 }

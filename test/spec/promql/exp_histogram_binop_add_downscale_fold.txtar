@@ -1,0 +1,51 @@
+-- query.promql --
+http_server_duration_exp_hist + http_client_duration_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Pins that the binary-op merge's within-row downscale fold uses PLAIN
+-- (uncompensated) summation, matching reference Prometheus's `Add`/`Sub`
+-- (model/histogram/float_histogram.go's `Add`/`Sub` -> `reduceResolution`,
+-- a bare `+=` loop) — NOT the Kahan-Neumaier compensated fold cerberus's
+-- cross-series sum()/avg()/histogram_quantile() merge correctly uses for
+-- reference's SEPARATE `KahanAdd` method (see histogram_native_binop.go).
+--
+-- `server` sits at Scale=2 with FOUR buckets [1e16, 1, 1, 1] at offset 0
+-- (absolute indices 0..3). Downscaling to the merged Scale=0 (min(2,0))
+-- folds all four onto ONE target bucket (0>>2 = 1>>2 = 2>>2 = 3>>2 = 0).
+-- `client` is already at Scale=0 with a single bucket [5] at offset 0
+-- (absolute index 0) — the same target.
+--
+-- Naive sequential PLAIN summation in stored order
+-- (1e16, 1, 1, 1, 5) — Prometheus's own `+=` loop order, and the order
+-- this file's histogramBinopBucketRowContribExpr / plainArraySum
+-- reproduce — loses the three `1`s (1e16 has no mantissa room left) but
+-- keeps the final `+5` since by then the running total already lost the
+-- opportunity: 1e16 -> 1e16 -> 1e16 -> 1e16 -> 10000000000000004.
+-- Kahan-Neumaier compensated summation of the SAME five values instead
+-- recovers 10000000000000008 (verified against a hand-rolled reference
+-- implementation) — 4 apart from the plain result, a decisive, non-
+-- coincidental divergence that a change reverting to the Kahan merge
+-- here would immediately fail.
+--
+-- Count 10+5=15, Sum 1.0+2.0=3.0, ZeroCount 0+0=0.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 2, 0, 0, [10000000000000000, 1, 1, 1], 0, []),
+    ('http_client_duration_exp_hist', map('series', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 5,  2.0, 0, 0, 0, [5],                          0, []);
+-- expected_rows --
+[]

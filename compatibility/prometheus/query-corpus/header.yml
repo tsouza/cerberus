@@ -93,6 +93,12 @@
 #     neighbouring array and absent paths, but none of these reducers over a
 #     rate/increase inner, so it cannot exercise either the materialized
 #     direct aggregate or its fused equivalent (#2053).
+# 11. Two cerberus-owned cases cover binary `+`/`-` between two
+#     histogram-valued selectors (#2263), previously rejected outright.
+#     Reference answers these via FloatHistogram's PLAIN (uncompensated)
+#     Add/Sub — a different reference method from the Kahan-compensated
+#     KahanAdd edit 7's `sum()` case exercises — so neither case is
+#     redundant with it.
 #
 # Series schema: the harness seeds a fixture that mirrors PromLabs's demo
 # service labels (`instance` / `job` / `type` / `mode` / `method` / `path`

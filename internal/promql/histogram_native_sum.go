@@ -321,68 +321,38 @@ func histogramProjectionSchema(s schema.Metrics) schema.Metrics {
 	return s
 }
 
-// expHistogramGroupMergeAggs is [histogramCountSumMergeAggs] — the
-// shared scale-fold + offset-align + zero-pad collection plus the Count
-// / Sum arrays, the arithmetic of FloatHistogram.Add — widened by
-// `avg()`'s own group's member count, the divisor it scales the merged
-// distribution by (see [expHistogramGroupSeriesCountAgg]). `sum()` does
-// NOT collect it: it has no use for the column, and adding one to a
-// shipped lowering's emitted SQL would cost a counter per group and
-// churn its goldens for nothing.
+// expHistogramGroupMergeAggs is [expHistogramMergeAggs] — the shared
+// scale-fold + offset-align + zero-pad collection, the arithmetic of
+// FloatHistogram.Add — widened by the two whole-histogram scalars a
+// histogram-VALUED answer must also publish.
+//
+// Count and Sum are collected into arrays and folded with the same
+// compensated recurrence as the buckets: they are the group's total
+// observation count and total observed value, and neither depends on bucket
+// alignment, but Prometheus's FloatHistogram.KahanAdd makes their rounding
+// behavior part of parity.
+// `avg()` additionally collects the group's member count, the divisor it
+// scales the merged distribution by (see
+// [expHistogramGroupSeriesCountAgg]). `sum()` does NOT collect it: it
+// has no use for the column, and adding one to a shipped lowering's
+// emitted SQL would cost a counter per group and churn its goldens for
+// nothing.
 func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []chplan.AggFunc {
-	aggs := histogramCountSumArraysAggs(s)
+	aggs := []chplan.AggFunc{
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
+	}
 	if expHistogramGroupIsAvg(agg) {
-		// Inserted BEFORE the merge aggs, not appended after, to keep the
-		// avg()-shipped fixtures' emitted SQL column order byte-stable —
-		// avg's group-size counter has always sat right after Count/Sum.
 		aggs = append(aggs, expHistogramGroupSeriesCountAgg())
 	}
 	return append(aggs, expHistogramMergeAggs(s)...)
 }
 
-// expHistogramGroupMergeProjections is [histogramCountSumMergeProjections]
-// unchanged — kept as its own name for the sum()/avg() call sites, which
-// widen it further with avg's division (see
-// [expHistogramAvgScaleProjections]).
+// expHistogramGroupMergeProjections is [expHistogramMergeProjections] plus
+// the Count / Sum pass-through, so the reshaped row carries all nine
+// fields [chplan.HistogramProjection] reads by name rather than the
+// seven the quantile kernel needs.
 func expHistogramGroupMergeProjections(s schema.Metrics) []chplan.Projection {
-	return histogramCountSumMergeProjections(s)
-}
-
-// histogramCountSumMergeAggs collects the group's Count and Sum arrays
-// alongside [expHistogramMergeAggs]' scale-fold + offset-align + zero-pad
-// bucket collection, so the projections below can fold all nine
-// histogram fields from one Aggregate. Count and Sum are collected into
-// arrays and folded with the same compensated recurrence as the
-// buckets: they are the group's total observation count and total
-// observed value, and neither depends on bucket alignment, but
-// Prometheus's FloatHistogram.KahanAdd makes their rounding behavior
-// part of parity.
-//
-// Shared by the cross-series sum()/avg() merge above and the two-operand
-// binary-op merge (histogram_native_binop.go, cerberus issue #2263) —
-// both are the same FloatHistogram.Add reconciliation over a group of
-// histogram rows, differing only in how the group's members were
-// gathered (cross-series vs. a two-arm UnionAll).
-func histogramCountSumMergeAggs(s schema.Metrics) []chplan.AggFunc {
-	return append(histogramCountSumArraysAggs(s), expHistogramMergeAggs(s)...)
-}
-
-// histogramCountSumArraysAggs is just the Count / Sum groupArray pair —
-// split out of [histogramCountSumMergeAggs] so [expHistogramGroupMergeAggs]
-// can splice avg()'s series-count agg between it and the merge aggs,
-// preserving the emitted SQL column order avg()'s shipped fixtures pin.
-func histogramCountSumArraysAggs(s schema.Metrics) []chplan.AggFunc {
-	return []chplan.AggFunc{
-		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
-		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
-	}
-}
-
-// histogramCountSumMergeProjections is [expHistogramMergeProjections]
-// plus the Count / Sum fold [histogramCountSumMergeAggs] collected, so
-// the reshaped row carries all nine fields [chplan.HistogramProjection]
-// reads by name rather than the seven the quantile kernel needs.
-func histogramCountSumMergeProjections(s schema.Metrics) []chplan.Projection {
 	return append(
 		[]chplan.Projection{
 			{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
