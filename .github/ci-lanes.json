@@ -1,8 +1,5 @@
 {
   "schema_version": 1,
-  "selection_schema_version": 1,
-  "report_schema_version": 1,
-  "rollout": "shadow",
   "impact_selection": {
     "known_nonimpact_globs": [
       "**/*.md",
@@ -83,11 +80,9 @@
       "release_posture": "advisory",
       "determinism": "seeded",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 15,
       "slo_minutes": 15,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chart.validate",
@@ -124,11 +119,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 12,
-      "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "accountable_owner": "release-engineering"
     },
     {
       "id": "chdb.integration-logql",
@@ -159,11 +152,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.integration-promql",
@@ -194,11 +185,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.integration-traceql",
@@ -229,11 +218,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.perf-guards",
@@ -260,11 +247,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.probe",
@@ -295,11 +280,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 15,
       "slo_minutes": 15,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.roundtrip-logql",
@@ -330,11 +313,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.roundtrip-promql",
@@ -365,11 +346,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.roundtrip-traceql",
@@ -400,11 +379,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "chdb.strict-scan",
@@ -441,11 +418,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "ci.agpl-clean",
@@ -472,11 +447,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 8,
-      "accountable_owner": "security",
-      "report_schema_version": 1
+      "accountable_owner": "security"
     },
     {
       "id": "ci.chaos-sleep",
@@ -509,11 +482,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 8,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "ci.check",
@@ -569,11 +540,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 10,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "ci.forbid-skip",
@@ -600,11 +569,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 12,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "ci.link-check",
@@ -631,11 +598,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 8,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "ci.lint",
@@ -662,11 +627,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 20,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "compatibility.gate",
@@ -693,11 +656,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 10,
       "slo_minutes": 8,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "compatibility.loki",
@@ -732,11 +693,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "compatibility.prometheus",
@@ -771,11 +730,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "compatibility.prometheus-floor",
@@ -810,11 +767,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "compatibility.prometheus-forced-route",
@@ -845,11 +800,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "compatibility.promql-surface",
@@ -880,11 +833,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 15,
       "slo_minutes": 15,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "compatibility.tempo",
@@ -919,11 +870,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "docs.config-drift",
@@ -958,11 +907,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 20,
       "slo_minutes": 10,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "docs.external-links",
@@ -993,11 +940,9 @@
       "release_posture": "post_publish",
       "determinism": "observational",
       "applicability": { "source": false, "artifact": true },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 30,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "e2e.bwc-minio",
@@ -1024,11 +969,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 40,
       "slo_minutes": 40,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.chaos",
@@ -1055,11 +998,9 @@
       "release_posture": "advisory",
       "determinism": "seeded",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 40,
       "slo_minutes": 40,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.compose-crawl",
@@ -1114,11 +1055,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 120,
       "slo_minutes": 20,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.compose-smoke",
@@ -1178,11 +1117,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 120,
       "slo_minutes": 20,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.dashboard",
@@ -1209,11 +1146,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 120,
       "slo_minutes": 120,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.dashboard-crawl",
@@ -1248,11 +1183,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 120,
       "slo_minutes": 120,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.quickstart",
@@ -1302,11 +1235,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 25,
       "slo_minutes": 20,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "e2e.startup-bench",
@@ -1337,11 +1268,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 10,
       "slo_minutes": 10,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "governance.chaos-applicability",
@@ -1368,11 +1297,9 @@
       "release_posture": "advisory",
       "determinism": "observational",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 10,
       "slo_minutes": 10,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "governance.forbid-deferral",
@@ -1403,11 +1330,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 10,
       "slo_minutes": 5,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "governance.pr-body",
@@ -1434,11 +1359,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 5,
       "slo_minutes": 5,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "governance.release-gate-drift",
@@ -1468,11 +1391,9 @@
       "release_posture": "advisory",
       "determinism": "observational",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 10,
       "slo_minutes": 10,
-      "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "accountable_owner": "release-engineering"
     },
     {
       "id": "migration.e2e",
@@ -1514,11 +1435,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": true },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 120,
       "slo_minutes": 120,
-      "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "accountable_owner": "release-engineering"
     },
     {
       "id": "performance.benchmark",
@@ -1557,11 +1476,9 @@
       "release_posture": "advisory",
       "determinism": "observational",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "performance.profile",
@@ -1588,11 +1505,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 30,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "quality.coverage-enrollment",
@@ -1619,11 +1534,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 10,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "quality.coverage-measured",
@@ -1666,11 +1579,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 60,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "quality.mutation",
@@ -1723,11 +1634,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 90,
       "slo_minutes": 20,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "quality.post-merge-drift",
@@ -1758,11 +1667,9 @@
       "release_posture": "advisory",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 45,
       "slo_minutes": 45,
-      "accountable_owner": "quality-platform",
-      "report_schema_version": 1
+      "accountable_owner": "quality-platform"
     },
     {
       "id": "quality.property",
@@ -1798,11 +1705,9 @@
       "release_posture": "required",
       "determinism": "seeded",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 30,
-      "accountable_owner": "query-quality",
-      "report_schema_version": 1
+      "accountable_owner": "query-quality"
     },
     {
       "id": "release.brew-migration",
@@ -1836,11 +1741,9 @@
       "release_posture": "post_publish",
       "determinism": "deterministic",
       "applicability": { "source": false, "artifact": true },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 60,
-      "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "accountable_owner": "release-engineering"
     },
     {
       "id": "release.brew-verify",
@@ -1871,11 +1774,9 @@
       "release_posture": "post_publish",
       "determinism": "deterministic",
       "applicability": { "source": false, "artifact": true },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 60,
       "slo_minutes": 60,
-      "accountable_owner": "release-engineering",
-      "report_schema_version": 1
+      "accountable_owner": "release-engineering"
     },
     {
       "id": "schema.ddl",
@@ -1910,11 +1811,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 25,
       "slo_minutes": 20,
-      "accountable_owner": "system-quality",
-      "report_schema_version": 1
+      "accountable_owner": "system-quality"
     },
     {
       "id": "security.codeql",
@@ -1941,11 +1840,9 @@
       "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
-      "selector": { "unknown_paths": "full", "failure": "full" },
       "timeout_minutes": 30,
       "slo_minutes": 20,
-      "accountable_owner": "security",
-      "report_schema_version": 1
+      "accountable_owner": "security"
     }
   ],
   "non_lane_workflows": [
