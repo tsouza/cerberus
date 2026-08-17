@@ -55,6 +55,51 @@ func TestQuery_HistogramIncompatibleScalarBinopsDropSamples_ChDB(t *testing.T) {
 	}
 }
 
+// TestQuery_HistogramIncompatibleHistogramBinopsDropSamples_ChDB pins the
+// HTTP contract behind issue #2277: a binary op between two native-
+// histogram selectors that isn't `+`/`-` answers HTTP 200 with an empty
+// result vector, matching reference Prometheus's info-annotation drop
+// (NewIncompatibleTypesInBinOpInfo), rather than the hard error cerberus
+// used to answer via expHistogramSelectorRouting.
+func TestQuery_HistogramIncompatibleHistogramBinopsDropSamples_ChDB(t *testing.T) {
+	srv := newHistValuedServer(t)
+
+	queries := []string{
+		`latency_exp_hist * latency_exp_hist`,
+		`latency_exp_hist / latency_exp_hist`,
+		`latency_exp_hist > bool latency_exp_hist`,
+	}
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%s",
+				srv.URL, url.QueryEscape(query), histValuedEvalTime.Format(time.RFC3339))
+			resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
+			if err != nil {
+				t.Fatalf("GET /api/v1/query %q: %v", query, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			var body struct {
+				Status string `json:"status"`
+				Data   struct {
+					ResultType string            `json:"resultType"`
+					Result     []json.RawMessage `json:"result"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response for %q: %v", query, err)
+			}
+			if resp.StatusCode != http.StatusOK || body.Status != "success" {
+				t.Fatalf("query %q returned HTTP %d status %q, want accepted empty result", query, resp.StatusCode, body.Status)
+			}
+			if body.Data.ResultType != "vector" || len(body.Data.Result) != 0 {
+				t.Fatalf("query %q returned resultType=%q with %d samples, want empty vector",
+					query, body.Data.ResultType, len(body.Data.Result))
+			}
+		})
+	}
+}
+
 // Every delta / instant-rate kernel needs two native-histogram samples. A
 // one-sample window is a successful empty vector, not a zero-valued histogram
 // and not an internal error. This executes the per-series sample floor through

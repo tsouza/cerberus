@@ -204,6 +204,10 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // [sumOrAvgOverExpHistogram] and stays rejected. The scaling scalar-binop
 // recognizer intentionally precedes the dropping recognizer so histogram /
 // scalar keeps its value while scalar / histogram drops it.
+// [expHistogramDroppingHistogramBinop] is the histogram/histogram sibling
+// of that same drop path (cerberus issue #2277) — it never shadows
+// [expHistogramHistogramBinop]'s own +/- merge above since the two
+// recognisers key off disjoint operator sets.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -250,6 +254,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if histSide, ok := expHistogramDroppingScalarBinop(expr, s, ctx); ok {
 		return lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
+	}
+	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
+		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
 	}
 	return lower(expr, s, ctx)
 }
