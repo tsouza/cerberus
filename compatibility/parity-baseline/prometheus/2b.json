@@ -8,6 +8,7 @@
     "avg by (instance) (rate(demo_shifting_latency_exp_hist[5m]))",
     "changes(demo_batch_last_success_timestamp_seconds[15s])",
     "clamp_min(demo_memory_usage_bytes, 2)",
+    "demo_latency_exp_hist - demo_latency_exp_hist",
     "demo_memory_usage_bytes - on(instance, job, type) demo_memory_usage_bytes",
     "demo_memory_usage_bytes or demo_sparse_memory_bytes",
     "histogram_avg(demo_latency_exp_hist)",
