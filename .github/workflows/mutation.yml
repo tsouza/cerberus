@@ -45,10 +45,11 @@ name: mutation
 
 on:
   pull_request:
-  # `mutation` is a required context, so the aggregator has to post inside the
-  # queue. The merge group selects legs from its OWN diff (`base_sha..head_sha`,
-  # the union of the batched PRs' diffs) exactly as a PR does — see the
-  # merge_group clause in .github/scripts/lib/scope-gate.mjs.
+  # `mutation` is informational (see the header above), but the aggregator
+  # still posts inside the merge queue for the same early-signal reason it
+  # runs on an ordinary PR. The merge group selects legs from its OWN diff
+  # (`base_sha..head_sha`, the union of the batched PRs' diffs) exactly as a
+  # PR does — see the merge_group clause in .github/scripts/lib/scope-gate.mjs.
   merge_group:
   push:
     branches: [main]
