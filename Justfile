@@ -474,11 +474,43 @@ coverage:
     # is the same fold the merge below does, just applied a step earlier, so
     # the on-disk file and the uploaded artifact stay the size they were.
     @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out | sort; } > cover-folded.out && mv cover-folded.out cover.out
+    # This lane's `go test` used to sweep ./... with no shard env, timed out
+    # at 40m, the same shape as the default-tag lane above. It stopped
+    # fitting that budget once TestCardinalityRatchet's corpus walk
+    # (test/perf, straight-line runtime in test/spec/**'s TXTAR count) grew
+    # past what 40 minutes covers: every push-to-main `coverage` run panicked
+    # with "test timed out after 40m0s", and per the goroutine dump, every
+    # t.Parallel() TestBaselineShards* sibling in the SAME test/perf binary
+    # sat blocked for the whole 40 minutes too, never reaching its own body.
+    # Unlike perf-guards-shard in chdb.yml (which shards the same test across
+    # 8 separate CI matrix legs), this is one job. The sweep below is
+    # otherwise UNCHANGED — same flags, same ./... package list, no `-skip`.
+    # `-skip` is deliberately avoided: test/regression/tagged_test_enrollment_
+    # test.go's static evidence scanner (parseTaggedGoTestArgs) discards a go
+    # test invocation OUTRIGHT the moment it sees `-skip`, since it cannot
+    # certify what was excluded — and this sweep is the SOLE CI evidence for
+    # a long tail of other chdb-tagged packages, so a `-skip` here would
+    # silently drop their enrollment evidence too. Instead the sweep only
+    # gains PERF_SHARD_INDEX=1 / PERF_SHARD_COUNT: TestCardinalityRatchet
+    # still runs here, still asserting, just over 1/PERF_SHARD_COUNT of the
+    # corpus. The other PERF_SHARD_COUNT-1 shards run afterward, concurrently
+    # with each other, in perf-coverage-fanout.mjs — the same process
+    # fan-out technique property-fanout.mjs already established for the
+    # identical failure shape in test/property (see that script's own header
+    # for why t.Parallel() inside one process is not a safe alternative:
+    # chdb-go's shared globalSession). Those extra shards do not need to be
+    # Justfile-visible themselves: TestCardinalityRatchet already has
+    # independent enrollment evidence via the perf-chdb recipe. The shard
+    # count (3) is perf-coverage-fanout.mjs's own RATCHET_FANOUT constant,
+    # restated here because Just recipes cannot import a JS constant;
+    # perf-coverage-fanout.test.mjs pins the two back together.
     @if [ -e /usr/local/lib/libchdb.so ]; then \
         echo "==> chdb-tagged coverage"; \
-        go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
+        COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
+        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
+        TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
         { echo "mode: set"; \
-          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out | sort; \
+          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out cover-chdb-ratchet-*.out | sort; \
         } > cover-folded.out && mv cover-folded.out cover-chdb.out; \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
