@@ -383,6 +383,20 @@ const (
 	colHistogramNegativeBuckets = "HistogramNegativeBucketCounts"
 )
 
+// colSetOpMixedIsHistogram is the per-row discriminator a Mixed
+// VectorSetOr's fourteen-column projection carries (cerberus issue
+// #2330): 1 when the row's Histogram* columns are the real answer, 0
+// when they are the float arm's typed placeholders and Value is the real
+// answer instead. Mirrors internal/chsql/vector_set_op.go's
+// setOpMixedIsHistogramCol literal, duplicated here for the same reason
+// the Histogram*Column names above are — this package cannot import
+// internal/chsql's unexported constant, and locating by name is the
+// established convention. Every row of a Mixed projection carries all
+// nine Histogram* columns (real or placeholder), so [locateHistogramColumns]
+// alone cannot tell a real histogram row from a placeholder one; only this
+// discriminator can.
+const colSetOpMixedIsHistogram = "_setop_is_histogram"
+
 // locateHistogramColumns maps a projection's column names onto the fields
 // of a native-histogram sample, or reports nil when the projection carries
 // no histogram at all — the ordinary case, since most of the corpus

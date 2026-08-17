@@ -78,6 +78,26 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	arms := flattenLeftArms(binary)
 	arms = append(arms, binary.Right)
 
+	// cerberus issue #2325: a mixed `and`/`unless` between a histogram-
+	// valued and a float-valued operand sets VectorSetOp.Histogram from
+	// the FORWARDED (left) arm's shape alone, not from both arms
+	// agreeing (see lowerVectorSetOp's doc comment) — unlike the
+	// homogeneous chains this rule was designed for, where Histogram
+	// means every arm publishes a HistogramProjection. NaryVectorSetOp
+	// carries a single Histogram bool for its whole UNION-ALL
+	// projection (naryVectorSetOpOutputCols), widening every arm's SELECT
+	// uniformly from that one flag — flattening a chain with a
+	// non-uniform arm would ask a float-shaped arm to project columns
+	// its own SELECT never produces, which ClickHouse rejects with code
+	// 47 "Unknown expression identifier". Bail and leave the (already
+	// correct) nested binary VectorSetOp shape in place whenever any arm
+	// disagrees with the flag chosen for the whole chain.
+	for _, arm := range arms {
+		if (chplan.RowShapeOf(arm) == chplan.HistogramRowShape) != binary.Histogram {
+			return n, false
+		}
+	}
+
 	return &chplan.NaryVectorSetOp{
 		Arms:             arms,
 		Op:               binary.Op,
