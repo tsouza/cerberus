@@ -185,7 +185,8 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 
 	// argMinIf(SpanName, Timestamp, rootCond) AS RootSpanName.
 	aggSpanName := chplan.AggFunc{
-		Fn: chplan.FnArgMinIf,
+		Fn:          chplan.FnArgMin,
+		Combinators: []chplan.AggCombinator{chplan.CombIf},
 		Args: []chplan.Expr{
 			&chplan.ColumnRef{Name: s.SpanNameColumn},
 			&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -195,7 +196,8 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	}
 	// argMinIf(ResourceAttributes['service.name'], Timestamp, rootCond) AS RootSvc.
 	aggSvc := chplan.AggFunc{
-		Fn: chplan.FnArgMinIf,
+		Fn:          chplan.FnArgMin,
+		Combinators: []chplan.AggCombinator{chplan.CombIf},
 		Args: []chplan.Expr{
 			&chplan.MapAccess{
 				Map: &chplan.ColumnRef{Name: s.ResourceAttributesColumn},

@@ -252,16 +252,7 @@ jobs:
       # as a scenario failure. Reclaim the unused pre-baked toolchains; KEEP
       # Docker images, the stack needs them. Same shape as compatibility.yml's
       # reclaim, pinned to a commit SHA (the action only ships @main).
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
-        with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v7
         with:
@@ -419,16 +410,7 @@ jobs:
 
       # See the identical block in migration-tier1 — this stack is a strict
       # superset of that one, so the disk pressure is strictly worse.
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
-        with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v7
         with:

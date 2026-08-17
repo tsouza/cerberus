@@ -191,6 +191,12 @@ func mountAPIHeads(
 		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 		tempoHandler.Limiter = limiters.tempo
 		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
+		// Same knob + wiring shape as the prom and loki heads (see
+		// newPromHandler / newLokiHandler above): the Go-side context-deadline
+		// backstop that unblocks a hung handler and releases its admit slot +
+		// pooled connection even if the server-side ClickHouse cap doesn't
+		// fire. See issue #2302.
+		tempoHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		// The per-query sample budget the ENGINE-level bounds read. The cursor
 		// enforces the same ceiling on rows it drains from ClickHouse, but the

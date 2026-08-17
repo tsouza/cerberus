@@ -195,3 +195,114 @@ func TestLower_ExpHistogram_HistogramBinopMergesViaUnionAllAndCountGuard(t *test
 		})
 	}
 }
+
+// TestLower_ExpHistogram_IncompatibleHistogramBinopDropsSamples pins
+// cerberus issue #2277: `<exp-hist shape> OP <exp-hist shape>` for the
+// op family reference Prometheus answers with
+// NewIncompatibleTypesInBinOpInfo when BOTH operands carry a
+// histogram — MUL/DIV/POW/MOD, every comparison except EQLC/NEQ, and
+// ATAN2 — lowers to an empty result (a constant-false Filter over a
+// histogram-shaped HistogramProjection) rather than the hard error
+// cerberus used to answer via expHistogramSelectorRouting. EQLC/NEQ are
+// deliberately excluded from this test — reference answers those with a
+// KEPT structural-equality result, tracked separately by #2273.
+func TestLower_ExpHistogram_IncompatibleHistogramBinopDropsSamples(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	cases := []struct {
+		name  string
+		query string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{name: "multiplication", query: `latency_exp_hist * other_exp_hist`},
+		{name: "division", query: `latency_exp_hist / other_exp_hist`},
+		{name: "power", query: `latency_exp_hist ^ other_exp_hist`},
+		{name: "modulo", query: `latency_exp_hist % other_exp_hist`},
+		{name: "greater", query: `latency_exp_hist > other_exp_hist`},
+		{name: "less", query: `latency_exp_hist < other_exp_hist`},
+		{name: "greater equal", query: `latency_exp_hist >= other_exp_hist`},
+		{name: "less equal", query: `latency_exp_hist <= other_exp_hist`},
+		{name: "bool comparison", query: `latency_exp_hist > bool other_exp_hist`},
+		{name: "atan2", query: `latency_exp_hist atan2 other_exp_hist`},
+		{name: "same metric on both sides", query: `latency_exp_hist * latency_exp_hist`},
+		{name: "parenthesised", query: `(latency_exp_hist) * other_exp_hist`},
+		{name: "sum() times sum()", query: `sum(latency_exp_hist) * sum(other_exp_hist)`},
+		{name: "rate() greater than rate()", query: `rate(latency_exp_hist[5m]) > rate(other_exp_hist[5m])`},
+		{
+			name:  "range query",
+			query: `latency_exp_hist * other_exp_hist`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			lower := tc.lower
+			if lower == nil {
+				lower = func(e parser.Expr) (chplan.Node, error) {
+					return promql.LowerAt(context.Background(), e, s, end, end)
+				}
+			}
+			plan, err := lower(expr)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", tc.query, err)
+			}
+			filter, ok := plan.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want constant-false *chplan.Filter", tc.query, plan)
+			}
+			predicate, ok := filter.Predicate.(*chplan.LitBool)
+			if !ok || predicate.V {
+				t.Fatalf("lower(%q): filter predicate is %#v, want false literal", tc.query, filter.Predicate)
+			}
+			if shape := chplan.RowShapeOf(filter.Input); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): filtered input publishes %s, want histogram", tc.query, shape)
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_HistogramEqualityStillRejected pins that
+// EQLC/NEQ between two histogram-valued shapes still hard-errors (via
+// expHistogramSelectorRouting) rather than silently dropping or
+// answering — reference Prometheus answers these with a KEPT structural-
+// equality result, a different mechanism tracked separately by #2273,
+// so cerberus must not claim either the merge or drop path here.
+func TestLower_ExpHistogram_HistogramEqualityStillRejected(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	queries := []string{
+		`latency_exp_hist == other_exp_hist`,
+		`latency_exp_hist != other_exp_hist`,
+	}
+
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
+			if err == nil {
+				t.Fatalf("lower(%q): expected an error, got none", query)
+			}
+		})
+	}
+}

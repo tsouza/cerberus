@@ -22,16 +22,18 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#2fa7ca70",
       "message": "promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "expHistogramHistogramBinop admits only isExpHistogramValuedShape operands on both sides, whose lowerExpHistogramValuedShape producer never returns matched=false for a shape that recogniser already accepted",
+      "rationale": "expHistogramHistogramBinop and expHistogramDroppingHistogramBinop both admit only isExpHistogramValuedShape operands on both sides, whose lowerExpHistogramValuedShape producer never returns matched=false for a shape either recogniser already accepted",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "if !matched"
         ],
         "callers": [
+          "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop"
         ],
         "cited": [
+          "expHistogramDroppingHistogramBinop",
           "expHistogramHistogramBinop",
           "isExpHistogramValuedShape",
           "lowerExpHistogramValuedShape"
@@ -43,7 +45,7 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#f7926a05",
       "message": "promql: internal invariant violated: exp-histogram binop operand lowering did not cap with *chplan.HistogramProjection, got %T",
       "class": "internal",
-      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop already relies on",
+      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop and this file's lowerExpHistogramHistogramBinop / lowerExpHistogramDroppingHistogramBinop all rely on",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -51,9 +53,12 @@
           "if !ok"
         ],
         "callers": [
+          "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop"
         ],
         "cited": [
+          "lowerExpHistogramDroppingHistogramBinop",
+          "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramScalarBinop",
           "lowerExpHistogramValuedShape"
         ]

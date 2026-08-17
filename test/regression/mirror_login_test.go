@@ -29,6 +29,13 @@ import (
 // and survives the next change of login mechanism.
 var mirrorLoginMarker = regexp.MustCompile(`(?im)^\s*registry:\s*ghcr\.io\s*$`)
 
+// localActionUseRE matches a step delegating to a local composite action:
+// `uses: ./.github/actions/<name>`. The captured group is the action's
+// directory, relative to the repo root, in the same spelling the `uses:`
+// value itself uses — which is what lets it key straight into
+// compositeActionsLoggingIntoMirror below.
+var localActionUseRE = regexp.MustCompile(`(?m)^\s*-?\s*uses:\s*\./(\.github/actions/[A-Za-z0-9_-]+)\s*$`)
+
 // mirrorLoginRemedy is what to add when the gate fires. It names the script
 // rather than an Action because `registry-login.mjs` retries transport faults
 // and refuses to retry a spent quota or a rejected credential.
@@ -129,6 +136,46 @@ func pullingScripts(t *testing.T) map[string]bool {
 	return scripts
 }
 
+// compositeActionsLoggingIntoMirror is the set of local composite-action
+// directories (e.g. ".github/actions/registry-login") whose own action.yml
+// carries the ghcr.io login. #2304 moved the GHCR + Docker Hub login pair out
+// of 14 duplicated inline call sites into .github/actions/registry-login, so a
+// job can now satisfy the mirror-login requirement by delegating to a
+// composite action instead of carrying `REGISTRY: ghcr.io` inline — the login
+// still runs in that job, just not in that job's own YAML text.
+func compositeActionsLoggingIntoMirror(t *testing.T) map[string]bool {
+	t.Helper()
+
+	logging := map[string]bool{}
+	for _, file := range buildScanFiles(t) {
+		base := filepath.Base(file)
+		if base != "action.yml" && base != "action.yaml" {
+			continue
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if mirrorLoginMarker.MatchString(string(src)) {
+			dir := strings.TrimPrefix(filepath.ToSlash(filepath.Dir(file)), "../../")
+			logging[dir] = true
+		}
+	}
+	return logging
+}
+
+// jobDelegatesMirrorLogin reports whether body's job reaches the mirror login
+// through a `uses: ./.github/actions/<name>` step rather than carrying it
+// inline.
+func jobDelegatesMirrorLogin(body string, mirrorActions map[string]bool) bool {
+	for _, m := range localActionUseRE.FindAllStringSubmatch(body, -1) {
+		if mirrorActions[m[1]] {
+			return true
+		}
+	}
+	return false
+}
+
 // TestEveryImageConsumingJobLogsIntoTheMirror pins that a workflow job which
 // acquires an upstream image first authenticates to the registry the mirrored
 // copy lives in. Without the login the job still works — it just works the old
@@ -139,6 +186,7 @@ func TestEveryImageConsumingJobLogsIntoTheMirror(t *testing.T) {
 
 	pulls := pullingRecipes(t)
 	scripts := pullingScripts(t)
+	mirrorActions := compositeActionsLoggingIntoMirror(t)
 
 	consuming := 0
 	for _, file := range buildScanFiles(t) {
@@ -156,7 +204,7 @@ func TestEveryImageConsumingJobLogsIntoTheMirror(t *testing.T) {
 				continue
 			}
 			consuming++
-			if !mirrorLoginMarker.MatchString(body) {
+			if !mirrorLoginMarker.MatchString(body) && !jobDelegatesMirrorLogin(body, mirrorActions) {
 				t.Errorf("%s job %q acquires images (%s) but never logs into ghcr.io, so every pull it makes "+
 					"misses the mirror and falls back to Docker Hub's shared anonymous quota. Add a %s "+
 					"and give the job `packages: read`.",

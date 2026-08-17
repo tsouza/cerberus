@@ -11,7 +11,9 @@ import (
 
 // histogram_native_binop.go lowers binary arithmetic between two
 // histogram-VALUED shapes — `<exp-hist shape> (+|-) <exp-hist shape>` —
-// into a histogram-VALUED result (cerberus issue #2263).
+// into a histogram-VALUED result (cerberus issue #2263), and drops the
+// sample entirely for the incompatible-type op family (cerberus issue
+// #2277).
 //
 // Reference Prometheus answers `+` between two native-histogram samples
 // with FloatHistogram.Add: bucket-wise addition after reconciling the
@@ -21,16 +23,22 @@ import (
 // like Add but subtracts the other histogram" — the identical
 // reconciliation, with the second operand's counts negated first.
 //
-// Every other histogram/histogram binary op (`*`, `/`, `^`, `%`,
-// `atan2`, and every comparison except `==`/`!=`) is rejected by
-// reference Prometheus itself (NewIncompatibleTypesInBinOpInfo);
-// cerberus's existing rejection at expHistogramSelectorRouting
-// (lower.go) already answers those the same way reference does, so this
-// file leaves them alone. `==`/`!=` between two histograms ARE answered
-// by reference (a structural-equality filter, not a merge), but need
-// different mechanics than the bucket-merge below and are tracked
-// separately, along with on()/ignoring()/group_left()/group_right()
-// support for `+`/`-` (see this file's rejection error below).
+// Every other histogram/histogram binary op except `==`/`!=` — `*`, `/`,
+// `^`, `%`, `atan2`, and every comparison but `==`/`!=` — is rejected by
+// reference Prometheus itself (NewIncompatibleTypesInBinOpInfo, the same
+// info-annotation drop [expHistogramDroppingScalarBinop] recognises for
+// the scalar/histogram case): reference answers HTTP 200 with an empty
+// result plus a warning annotation, not a query-aborting error. Cerberus
+// used to hard-error the same shape at expHistogramSelectorRouting
+// (lower.go); [expHistogramDroppingHistogramBinop] /
+// [lowerExpHistogramDroppingHistogramBinop] below intercept it earlier
+// and answer empty instead, matching reference (#2277). `==`/`!=`
+// between two histograms ARE answered by reference with a KEPT result (a
+// structural-equality filter, not a drop and not a merge), need
+// different mechanics than either path in this file, and are tracked
+// separately (#2273) — along with on()/ignoring()/group_left()/
+// group_right() support for `+`/`-` (see this file's rejection error
+// below).
 //
 // The bucket RECONCILIATION (which absolute index each operand's own
 // buckets land on at the merged, coarser Scale) is the same integer
@@ -155,6 +163,76 @@ func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowe
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram binop operand lowering did not cap with *chplan.HistogramProjection, got %T", node)
 	}
 	return hp, nil
+}
+
+// expHistogramDroppingHistogramBinop recognises `<exp-hist shape> OP
+// <exp-hist shape>` for the op family reference Prometheus answers with
+// NewIncompatibleTypesInBinOpInfo when BOTH operands carry a histogram —
+// MUL/DIV/POW/MOD, every comparison except EQLC/NEQ, and ATAN2 (cerberus
+// issue #2277). Unlike [expHistogramHistogramBinop]'s +/- merge, the
+// result is empty regardless of vector matching mode: every matched pair
+// drops (keep=false) for this op family, so an empty output holds
+// whether the matched pair set came from DEFAULT one-to-one matching or
+// an explicit on()/ignoring()/group_left()/group_right() clause — there
+// is no observable difference between them left to validate, unlike
+// +/-'s explicit "not yet supported" rejection for anything but default
+// matching.
+//
+// EQLC/NEQ are excluded: reference answers those with a KEPT result (a
+// structural-equality filter), not a drop — different mechanics, tracked
+// separately by #2273.
+func expHistogramDroppingHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ok bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, nil, false
+	}
+	b, isBin := unwrapBinaryExpr(expr)
+	if !isBin || !expHistogramHistogramBinopDrops(b.Op) {
+		return nil, nil, false
+	}
+	if !isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx) {
+		return nil, nil, false
+	}
+	return b.LHS, b.RHS, true
+}
+
+// expHistogramHistogramBinopDrops reports whether op is one of reference's
+// NewIncompatibleTypesInBinOpInfo shapes when both binop operands carry a
+// histogram — the complement of [expHistogramHistogramBinop]'s ADD/SUB
+// merge and [expHistogramDroppingHistogramBinop]'s excluded EQLC/NEQ.
+func expHistogramHistogramBinopDrops(op parser.ItemType) bool {
+	switch op {
+	case parser.MUL, parser.DIV, parser.POW, parser.MOD,
+		parser.GTR, parser.LSS, parser.GTE, parser.LTE, parser.ATAN2:
+		return true
+	default:
+		return false
+	}
+}
+
+// lowerExpHistogramDroppingHistogramBinop lowers the shape
+// [expHistogramDroppingHistogramBinop] recognised. Both operands are
+// lowered through their own existing histogram-valued recognisers first —
+// unmodified, exactly as [lowerExpHistogramHistogramBinop] does for the
+// merge shape — so a nested lowering error in either operand still
+// surfaces normally rather than being silently swallowed by the drop.
+// Only the LHS's HistogramProjection caps the resulting constant-false
+// Filter; which side is chosen is arbitrary; since every row is filtered
+// out, cerberus never uses the RHS lowering's rows, but the RHS lowering
+// still runs so its own errors are still caught before the drop applies.
+func lowerExpHistogramDroppingHistogramBinop(lhsExpr, rhsExpr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := lowerExpHistogramValuedOperand(rhsExpr, s, ctx); err != nil {
+		return nil, err
+	}
+	// Reference returns keep=false plus an incompatible-types info
+	// annotation. Cerberus has no info-annotation wire channel, but
+	// matches the accepted empty result — the same Filter{Predicate:
+	// LitBool{false}} shape [lowerExpHistogramScalarBinop]'s drop path
+	// uses for the scalar/histogram case.
+	return &chplan.Filter{Input: hpL, Predicate: &chplan.LitBool{V: false}}, nil
 }
 
 // mergeTwoHistogramProjections adds hpL and hpR's distributions,

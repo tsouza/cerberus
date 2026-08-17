@@ -276,7 +276,11 @@ func (h *Handler) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
 	// Parse + lower inline so we can wrap the lowered plan with the
 	// matrix-shape RangeWindow before engine.QueryPlan runs.
 	parseT := telemetry.ObserveStage(telemetry.StageParse, telemetry.QLTraceQL)
