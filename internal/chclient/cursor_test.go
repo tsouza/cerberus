@@ -44,6 +44,13 @@ func (r *fakeRows) Next() bool {
 // mismatching.
 const wantHistogramDest = 4 + histogramColumnCount
 
+// wantMixedDest is the destination count rowsCursor.Next binds when the
+// mixed probe latches true (cerberus issue #2330): wantHistogramDest
+// plus the trailing discriminator. mixedColumns is the production
+// constant, so a drift between the two fails this test file to compile
+// rather than silently mismatching.
+const wantMixedDest = mixedColumns
+
 // scanLeadingThree binds the (String, label map, timestamp) prefix every
 // layout shares, whatever follows it.
 func scanLeadingThree(dest []any, s Sample) {
@@ -149,9 +156,57 @@ func (r *fakeRows) Scan(dest ...any) error {
 		if p, ok := dest[12].(*[]float64); ok {
 			*p = hv.NegativeBucketCounts
 		}
+	case len(dest) == wantMixedDest:
+		scanLeadingThree(dest, s)
+		if p, ok := dest[3].(*float64); ok {
+			*p = s.Value
+		}
+		// A mixed-shaped fixture row is float-valued when Histogram is
+		// nil: the nine trailing Histogram* destinations still get
+		// bound (every row of a real mixed result carries typed
+		// placeholders on the side it isn't, never a gap), just to the
+		// fixture's zero HistogramValue rather than a real one.
+		hv := s.Histogram
+		if hv == nil {
+			hv = &HistogramValue{}
+		}
+		if p, ok := dest[4].(*float64); ok {
+			*p = hv.Count
+		}
+		if p, ok := dest[5].(*float64); ok {
+			*p = hv.Sum
+		}
+		if p, ok := dest[6].(*int32); ok {
+			*p = hv.Scale
+		}
+		if p, ok := dest[7].(*float64); ok {
+			*p = hv.ZeroThreshold
+		}
+		if p, ok := dest[8].(*float64); ok {
+			*p = hv.ZeroCount
+		}
+		if p, ok := dest[9].(*int32); ok {
+			*p = hv.PositiveOffset
+		}
+		if p, ok := dest[10].(*[]float64); ok {
+			*p = hv.PositiveBucketCounts
+		}
+		if p, ok := dest[11].(*int32); ok {
+			*p = hv.NegativeOffset
+		}
+		if p, ok := dest[12].(*[]float64); ok {
+			*p = hv.NegativeBucketCounts
+		}
+		if p, ok := dest[13].(*uint8); ok {
+			if s.Histogram != nil {
+				*p = 1
+			} else {
+				*p = 0
+			}
+		}
 	default:
-		return fmt.Errorf("fakeRows.Scan: want %d, %d or %d destinations, got %d",
-			logRowColumns, sampleColumns, wantHistogramDest, len(dest))
+		return fmt.Errorf("fakeRows.Scan: want %d, %d, %d or %d destinations, got %d",
+			logRowColumns, sampleColumns, wantHistogramDest, wantMixedDest, len(dest))
 	}
 	return nil
 }
@@ -271,6 +326,14 @@ var histogramProjectionColumns = []string{
 	"HistogramNegativeOffset", "HistogramNegativeBucketCounts",
 }
 
+// mixedProjectionColumns is histogramProjectionColumns plus the trailing
+// discriminator a Mixed VectorSetOr's fourteen-column projection carries
+// (cerberus issue #2330).
+var mixedProjectionColumns = append(
+	append([]string{}, histogramProjectionColumns...),
+	"_setop_is_histogram",
+)
+
 // TestRowsCursor_DecodesHistogramColumns pins the decode-side half of
 // issue #1926's shared prerequisite: a result set whose trailing column
 // matches histogramLastColumn is scanned as a 13-destination histogram
@@ -325,6 +388,73 @@ func TestRowsCursor_DecodesHistogramColumns(t *testing.T) {
 	}
 	if cursor.Next() {
 		t.Fatal("Next should return false after the single row")
+	}
+}
+
+// TestRowsCursor_DecodesMixedColumns pins the decode-side half of
+// cerberus issue #2330: a result set whose trailing column matches
+// mixedDiscriminatorColumn scans as a 14-destination mixed row, and the
+// discriminator — NOT the shape of the fixture data — decides whether
+// Sample.Histogram or Sample.Value is the real answer for each row. The
+// two rows below deliberately carry a NON-zero Value on the row whose
+// discriminator marks it histogram-shaped and a NON-zero HistogramValue
+// on the row marked float-shaped, so a cursor that read the wrong
+// column set (or ignored the discriminator and guessed off the data
+// present) would fail this test instead of merely losing coverage.
+func TestRowsCursor_DecodesMixedColumns(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	hv := HistogramValue{
+		Count:                6,
+		Sum:                  42.5,
+		PositiveBucketCounts: []float64{1, 2, 3},
+		NegativeBucketCounts: []float64{},
+	}
+	rows := &fakeRows{
+		columns: mixedProjectionColumns,
+		samples: []Sample{
+			{
+				MetricName: "http_client_duration_exp_hist",
+				Labels:     map[string]string{"service": "web"},
+				Timestamp:  ts,
+				Value:      999, // the meaningless placeholder a histogram row carries
+				Histogram:  &hv,
+			},
+			{
+				MetricName: "",
+				Labels:     map[string]string{"service": "api"},
+				Timestamp:  ts,
+				Value:      0.5, // the real float quantile
+				Histogram:  nil,
+			},
+		},
+	}
+	cursor := &rowsCursor{rows: rows}
+
+	var got []Sample
+	for cursor.Next() {
+		got = append(got, cursor.Sample())
+	}
+	if err := cursor.Err(); err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d samples, want 2", len(got))
+	}
+	if got[0].Histogram == nil {
+		t.Fatalf("row 0: Histogram is nil, want the decoded HistogramValue")
+	}
+	if !reflect.DeepEqual(*got[0].Histogram, hv) {
+		t.Errorf("row 0 Histogram:\n got  %+v\n want %+v", *got[0].Histogram, hv)
+	}
+	if got[1].Histogram != nil {
+		t.Errorf("row 1: Histogram = %+v, want nil — the discriminator marks this row "+
+			"float-shaped even though the fixture's placeholder HistogramValue is present "+
+			"in the underlying columns", got[1].Histogram)
+	}
+	if got[1].Value != 0.5 {
+		t.Errorf("row 1 Value: got %v, want 0.5 — the real float answer", got[1].Value)
 	}
 }
 

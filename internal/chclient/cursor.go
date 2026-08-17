@@ -225,6 +225,19 @@ const (
 	// columnar fast path instead of being re-dispatched to ClickHouse in
 	// full by columnarDecoder.decode's row fallback (issue #1967).
 	shapeSampleHistogram
+	// shapeSampleMixed is shapeSampleHistogram plus ONE further trailing
+	// column: a per-row discriminator (cerberus issue #2330). It latches
+	// for a `VectorSetOr` between a float-valued and a histogram-valued
+	// PromQL operand — chplan.VectorSetOp.Mixed — whose UNION carries
+	// BOTH float and native-histogram samples in the same result set,
+	// unlike shapeSampleHistogram's every-row-is-a-histogram contract.
+	// The discriminator says, per row, which half of the fourteen
+	// columns is real: [Sample.Histogram] is populated only when it's
+	// set, leaving [Sample.Value] as the real answer on every other row
+	// (mirroring the wire format's own `value` / `histogram` mutual
+	// exclusion). See internal/chsql/vector_set_op.go's
+	// emitMixedVectorSetOp for the SQL shape.
+	shapeSampleMixed
 	// shapeLogRow is the Loki log-stream row — (Line, Attributes,
 	// TimeUnix) — which binds THREE destinations and no float at all.
 	// A log line has no numeric value, so the projection emits no Value
@@ -301,6 +314,21 @@ const histogramColumnCount = 9
 // requires changing this literal too.
 const histogramLastColumn = "HistogramNegativeBucketCounts"
 
+// mixedDiscriminatorColumn is the trailing alias a Mixed VectorSetOr's
+// fourteen-column projection carries — internal/chsql/vector_set_op.go's
+// setOpMixedIsHistogramCol — duplicated here by the same by-convention
+// pairing histogramLastColumn already has with chsql's own emitted alias
+// (chclient may not import chsql: see .go-arch-lint.yml). 1 marks a row
+// that came from the histogram-shaped arm (its nine Histogram*Column
+// destinations are real, Value is the [chplan.HistogramProjection]
+// placeholder); 0 marks a row from the float-shaped arm (the mirror
+// image).
+const mixedDiscriminatorColumn = "_setop_is_histogram"
+
+// mixedColumns is the width of the [shapeSampleMixed] projection:
+// [sampleColumns] + [histogramColumnCount] + the trailing discriminator.
+const mixedColumns = sampleColumns + histogramColumnCount + 1
+
 // probeRowShape resolves a result set's positional layout from its column
 // names. cols is driver.Rows.Columns() — the emitter's output aliases, in
 // projection order.
@@ -330,6 +358,8 @@ func probeRowShape(cols []string) rowShape {
 		return shapeLogRowMetadata
 	case len(cols) == sampleColumns+histogramColumnCount && last == histogramLastColumn:
 		return shapeSampleHistogram
+	case len(cols) == mixedColumns && last == mixedDiscriminatorColumn:
+		return shapeSampleMixed
 	}
 	return shapeSample
 }
@@ -384,6 +414,28 @@ func (c *rowsCursor) Next() bool {
 			return false
 		}
 		s.Histogram = &hv
+	case shapeSampleMixed:
+		// Same thirteen destinations as shapeSampleHistogram, plus the
+		// trailing discriminator. The nine Histogram* destinations
+		// always scan (every row of this result set carries all
+		// fourteen columns — emitMixedVectorSetOp's placeholder side
+		// projects typed zero-value stand-ins, never NULL), so decoding
+		// into hv is safe on every row; the discriminator alone decides
+		// whether hv is the real answer or the unread placeholder.
+		var isHistogram uint8
+		if err := c.rows.Scan(
+			&s.MetricName, &labels, &s.Timestamp, &s.Value,
+			&hv.Count, &hv.Sum, &hv.Scale, &hv.ZeroThreshold, &hv.ZeroCount,
+			&hv.PositiveOffset, &hv.PositiveBucketCounts,
+			&hv.NegativeOffset, &hv.NegativeBucketCounts,
+			&isHistogram,
+		); err != nil {
+			c.err = fmt.Errorf("chclient: scan: %w", err)
+			return false
+		}
+		if isHistogram != 0 {
+			s.Histogram = &hv
+		}
 	// The two log-row layouts bind NO numeric destination: a log stream has
 	// no value, so the projection carries no Value column and s.Value stays
 	// zero. The line lands in s.MetricName — the positional row's first,

@@ -23,7 +23,7 @@
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#8deac7ac",
       "message": "promql: internal invariant violated: exp-histogram set-op operand lowering published %s row shape (%T), want %s",
       "class": "internal",
-      "rationale": "internal invariant: expHistogramSetOp only recognises operands isExpHistogramValuedShape already confirmed histogram-valued, so lowerExpHistogramSetOpOperand's own histogram-valued lowering can never publish a non-HistogramRowShape node here",
+      "rationale": "internal invariant: both callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed histogram-valued -- lowerExpHistogramSetOp's own both-arms-histogram expHistogramSetOp recognizer for one, and lowerMixedExpHistogramSetOp's own histOnLeft selection (cerberus issue #2330) for the other -- so lowerExpHistogramSetOpOperand's histogram-valued lowering can never publish a non-HistogramRowShape node here",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -31,12 +31,15 @@
           "if chplan.RowShapeOf(node) != chplan.HistogramRowShape"
         ],
         "callers": [
-          "lowerExpHistogramSetOp"
+          "lowerExpHistogramSetOp",
+          "lowerMixedExpHistogramSetOp"
         ],
         "cited": [
           "expHistogramSetOp",
           "isExpHistogramValuedShape",
-          "lowerExpHistogramSetOpOperand"
+          "lowerExpHistogramSetOp",
+          "lowerExpHistogramSetOpOperand",
+          "lowerMixedExpHistogramSetOp"
         ]
       }
     },
@@ -45,20 +48,23 @@
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#9d51e668",
       "message": "promql: internal invariant violated: exp-histogram set-op operand matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "internal invariant: expHistogramSetOp only recognises operands isExpHistogramValuedShape already confirmed match a known histogram-valued shape, so lowerExpHistogramSetOpOperand's own re-dispatch through lowerExpHistogramValuedShape can never report unmatched here",
+      "rationale": "internal invariant: both callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed match a known histogram-valued shape -- lowerExpHistogramSetOp's own expHistogramSetOp recognizer for one, and lowerMixedExpHistogramSetOp's own histOnLeft selection (cerberus issue #2330) for the other -- so lowerExpHistogramSetOpOperand's own re-dispatch through lowerExpHistogramValuedShape can never report unmatched here",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "if !matched"
         ],
         "callers": [
-          "lowerExpHistogramSetOp"
+          "lowerExpHistogramSetOp",
+          "lowerMixedExpHistogramSetOp"
         ],
         "cited": [
           "expHistogramSetOp",
           "isExpHistogramValuedShape",
+          "lowerExpHistogramSetOp",
           "lowerExpHistogramSetOpOperand",
-          "lowerExpHistogramValuedShape"
+          "lowerExpHistogramValuedShape",
+          "lowerMixedExpHistogramSetOp"
         ]
       }
     }
