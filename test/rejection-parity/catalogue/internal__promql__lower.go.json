@@ -111,7 +111,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) is the newest such caller: it re-enters lower() only for one BinaryExpr operand of an already-parsed vector-vector query, likewise typechecker-constrained to a vector, so it does not widen the set either.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) and lowerMixedExpHistogramSetOp (cerberus issue #2330) are the newest such callers: each re-enters lower() only for one BinaryExpr operand of an already-parsed vector-vector query, likewise typechecker-constrained to a vector, so neither widens the set either.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -135,6 +135,7 @@
           "lowerLimitK",
           "lowerLimitRatio",
           "lowerMetadataCatalog",
+          "lowerMixedExpHistogramSetOp",
           "lowerRoot",
           "lowerRoundToNearest",
           "lowerScalarArg",
@@ -151,6 +152,7 @@
           "lower",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerHistogramQuantileClassicFloat",
+          "lowerMixedExpHistogramSetOp",
           "lowerRoot"
         ]
       }
@@ -300,11 +302,12 @@
       "site": "internal/promql/lower.go:lowerRoot#53e0f9b3",
       "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched",
+      "rationale": "countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard now checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count_values's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim.",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
           "past returning if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok",
+          "past returning if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
           "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
           "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
@@ -320,7 +323,9 @@
         "cited": [
           "countValuesOverExpHistogramValue",
           "isExpHistogramValuedShape",
-          "lowerExpHistogramValuedShape"
+          "lowerExpHistogramValuedShape",
+          "lowerRoot",
+          "mixedExpHistogramSetOp"
         ]
       }
     },
@@ -329,11 +334,12 @@
       "site": "internal/promql/lower.go:lowerRoot#c7dbd629",
       "message": "promql: internal invariant violated: count/group input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "countOrGroupOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched",
+      "rationale": "countOrGroupOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard now checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count/group's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim.",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
           "past returning if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok",
+          "past returning if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
           "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
           "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
@@ -348,7 +354,9 @@
         "cited": [
           "countOrGroupOverExpHistogramValue",
           "isExpHistogramValuedShape",
-          "lowerExpHistogramValuedShape"
+          "lowerExpHistogramValuedShape",
+          "lowerRoot",
+          "mixedExpHistogramSetOp"
         ]
       }
     },
