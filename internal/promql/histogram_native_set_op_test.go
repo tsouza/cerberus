@@ -127,39 +127,6 @@ func TestLower_ExpHistogram_MixedSetOp_AndUnless(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOp_OrRejects pins that `or` — unlike
-// `and`/`unless` — still rejects a mixed float/histogram operand pair,
-// in EITHER order: cerberus issue #2325's own follow-up (#2330) is
-// exactly this gap. `or`'s output unions both sides' rows, which
-// cerberus cannot represent when the two sides disagree on row shape —
-// see lowerVectorSetOp's doc comment in binary.go for why — so the
-// rejection is deliberate and explicit, not a silently wrong plan.
-func TestLower_ExpHistogram_MixedSetOp_OrRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	queries := []string{
-		`histogram_quantile(0.5, latency_exp_hist) or latency_exp_hist`,
-		`latency_exp_hist or histogram_quantile(0.5, latency_exp_hist)`,
-	}
-
-	for _, query := range queries {
-		t.Run(query, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(query)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", query, err)
-			}
-			if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-				t.Fatalf("lower(%q): expected an error, got none", query)
-			}
-		})
-	}
-}
-
 // TestLower_ExpHistogram_SetOpComposes pins that a histogram-valued set
 // op composes like any other histogram-valued shape: it can be an
 // operand of an OUTER set op (a chain, `a or b or c`, parsed left-assoc

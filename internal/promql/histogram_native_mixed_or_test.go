@@ -106,30 +106,3 @@ func TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSideRejects(t *testing.T) 
 		t.Fatalf("lower(%q): expected an error, got none", query)
 	}
 }
-
-// TestLower_ExpHistogram_MixedSetOpOr_AndUnlessStillReject pins that
-// `and` / `unless` between a float-valued and a histogram-valued
-// operand are OUT OF SCOPE for this file (cerberus issue #2325, not yet
-// implemented) — mixedExpHistogramSetOp only recognises `or`, so these
-// still fall through to the pre-existing expHistogramSelectorRouting
-// rejection unchanged.
-func TestLower_ExpHistogram_MixedSetOpOr_AndUnlessStillReject(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	for _, query := range []string{
-		`histogram_quantile(0.5, latency_exp_hist) and latency_exp_hist`,
-		`histogram_quantile(0.5, latency_exp_hist) unless latency_exp_hist`,
-	} {
-		expr, err := p.ParseExpr(query)
-		if err != nil {
-			t.Fatalf("ParseExpr(%q): %v", query, err)
-		}
-		if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-			t.Fatalf("lower(%q): expected an error, got none", query)
-		}
-	}
-}
