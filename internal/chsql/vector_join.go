@@ -174,6 +174,28 @@ func vectorJoinRoles(j *chplan.VectorJoin) (sideRole, sideRole) {
 // and outer SELECT continue to reference `L.Attributes` / `R.Value`
 // naturally.
 func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role sideRole) (Frag, error) {
+	return e.joinSideFrag(j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, n, role)
+}
+
+// joinSideFrag is vectorJoinSideFrag's body, generalised to plain
+// parameters rather than a *chplan.VectorJoin so
+// [chplan.HistogramFloatVectorJoin]'s float-valued side (histogram_
+// float_vector_join.go, cerberus issue #2339) can reuse the identical,
+// already-exercised per-side join logic — the "latest sample" argMax
+// pick, the derived-shape / step-aligned branches, and the roleOne
+// uniqueness guard — rather than re-deriving a second copy that could
+// silently drift from this one. See vectorJoinSideFrag's own former
+// doc (now here) for why the `_join_*`-alias-then-outer-rename dance
+// exists.
+func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol, tsCol, valCol string, stepAligned bool, n chplan.Node, role sideRole) (Frag, error) {
+	j := &chplan.VectorJoin{
+		Match:            match,
+		StepAligned:      stepAligned,
+		MetricNameColumn: metricNameCol,
+		AttributesColumn: attrsCol,
+		TimestampColumn:  tsCol,
+		ValueColumn:      valCol,
+	}
 	sub, err := e.subqueryFrag(n)
 	if err != nil {
 		return nil, err

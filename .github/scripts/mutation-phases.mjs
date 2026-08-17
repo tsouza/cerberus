@@ -75,7 +75,7 @@ export const PHASES = [
     // metrics_compare + prewhere + exemplars + structural_join + late_mat +
     // range_window_grid_native + range_bucket_fanout + emit + vector_set_op + set_op.
     exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -84,10 +84,12 @@ export const PHASES = [
     workers: DEFAULT_WORKERS,
     // builder + emit_node + histogram_over_time + vector_join + range_lwr +
     // histogram_quantile_native + histogram_projection + range_window_stale_resample +
-    // query_exemplars. histogram_vector_join.go is left unexcluded here (rather
-    // than falling to the phase2-other catch-all) because it belongs here: it is
-    // vector_join.go's declared sibling — the same broadcast + Include-overlay
-    // join shape generalized to carry a histogram payload per side — and
+    // query_exemplars. histogram_vector_join.go and histogram_float_vector_join.go
+    // are left unexcluded here (rather than falling to the phase2-other
+    // catch-all) because they belong here: both are vector_join.go's declared
+    // siblings — the same broadcast + Include-overlay join shape generalized to
+    // carry a histogram payload per side (histogram_vector_join.go) or a
+    // per-row float scale factor (histogram_float_vector_join.go) — and
     // vector_join.go is itself only ever claimed by this leg.
     exclude_files:
       '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_grid_native|range_window_variants|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
@@ -104,16 +106,17 @@ export const PHASES = [
     // is why this leg keeps no positive file list to fall out of sync. The two
     // legs above DO enumerate it, so a new file is briefly mutated three times
     // over; TestMutationLegsPartitionEveryScopedFile fails on exactly that.
-    // histogram_projection.go and histogram_vector_join.go are explicitly
-    // enumerated (rather than left to this catch-all) because each belongs to
-    // phase2-builder: histogram_projection.go is histogram_quantile_native.go's
-    // declared sibling (same single-plan-node emitter shape, same
-    // zeroBandOrigin() constant it shares from that file), and
-    // histogram_vector_join.go is vector_join.go's declared sibling (same
-    // broadcast + Include-overlay join shape) — both siblings are themselves
-    // only ever claimed by phase2-builder.
+    // histogram_projection.go, histogram_vector_join.go, and
+    // histogram_float_vector_join.go are explicitly enumerated (rather than
+    // left to this catch-all) because each belongs to phase2-builder:
+    // histogram_projection.go is histogram_quantile_native.go's declared
+    // sibling (same single-plan-node emitter shape, same zeroBandOrigin()
+    // constant it shares from that file), and histogram_vector_join.go /
+    // histogram_float_vector_join.go are vector_join.go's declared siblings
+    // (same broadcast + Include-overlay join shape) — all three siblings are
+    // themselves only ever claimed by phase2-builder.
     exclude_files:
-      '^(builder|emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',

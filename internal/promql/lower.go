@@ -229,6 +229,17 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // scalar literal, and from [expHistogramDroppingHistogramBinop]'s
 // because at most one operand is histogram-valued — so ordering it last
 // cannot shadow either.
+// [expHistogramFloatVectorScalingBinop] is registered ahead of that drop
+// leg (cerberus issue #2339): MUL (either operand order) and
+// histogram-left DIV between a histogram-valued operand and a genuine
+// float-VECTOR operand are reference's supported histogram-SCALING
+// shapes — the row-by-row match a float-vector operand needs before
+// [scaleHistogramProjection]'s per-bucket fold can apply, via
+// [chplan.HistogramFloatVectorJoin]. Registering the scaling recognizer
+// first mirrors [expHistogramScalarBinop]'s own precedence over
+// [expHistogramDroppingScalarBinop] for the literal-scalar case: a
+// scalable shape keeps its value rather than falling into a broader
+// drop recognizer checked later.
 //
 // `or` between a float-valued operand and a histogram-valued operand
 // (cerberus issue #2330) is the exactly-one-side sibling of that shape,
@@ -296,6 +307,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
+	}
+	if histSide, floatSide, op, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
+		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, s, ctx)
 	}
 	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
