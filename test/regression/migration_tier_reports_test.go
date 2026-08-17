@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// This pins #1293, which let tier-2 write the run report its scenarios are
+// attested from.
+//
 // tiersDir holds one package per tier, each standing up its own godog suite.
 const tiersDir = "../../test/e2e/migration/tiers"
 

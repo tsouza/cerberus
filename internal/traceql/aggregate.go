@@ -93,19 +93,17 @@ func lowerAggregate(prev chplan.Node, agg traceql.Aggregate, s schema.Traces) (c
 	if needsNestedSet {
 		prev = annotateNestedSet(prev, s)
 	}
+	// spansetEnvelopeAggFuncs (group_coalesce.go) returns the same
+	// envelope tail group()/coalesce() use, with a count-shaped Value
+	// in slot 0; swap in this aggregate's own valueFunc so the two
+	// AggFunc lists can't drift out of lock-step.
+	envelopeAggFuncs := spansetEnvelopeAggFuncs(s)
+	envelopeAggFuncs[0] = valueFunc
 	return &chplan.Aggregate{
 		Input:          prev,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.TraceIDColumn}},
 		GroupByAliases: []string{aggTraceIDAlias},
-		AggFuncs: []chplan.AggFunc{
-			valueFunc,
-			anyAggFunc(s.SpanNameColumn, aggMetricNameAlias),
-			anyAggFunc(s.ResourceAttributesColumn, aggResourceAttrsAlias),
-			anyAggFunc(s.ParentSpanIDColumn, aggParentSpanIDAlias),
-			minAggFunc(s.TimestampColumn, aggTimeUnixAlias),
-			traceStartNsAggFunc(s.TimestampColumn),
-			traceEndNsAggFunc(s.TimestampColumn, s.DurationColumn),
-		},
+		AggFuncs:       envelopeAggFuncs,
 	}, nil
 }
 

@@ -67,7 +67,7 @@
 //      checkDeadline() reads t.Deadline()) and, when it estimates it is
 //      running short, quietly stops early and still reports "[rapid] OK" —
 //      a PASS with fewer than the requested checks, not a failure (see
-//      assertNoSilentTruncation below). With the roster sharing a share's
+//      findTruncatedRapidRuns below). With the roster sharing a share's
 //      budget, the property sweep alone used 696 of a 720s (12m) deadline,
 //      leaving the roster only 24s — not enough — and the hard `go test`
 //      alarm fired mid-roster. Isolating the roster removes that entirely.
@@ -76,7 +76,7 @@
 //
 // No product code changes and no test is skipped: every property test
 // still runs exactly once, and TestPromQL_Property_NativeHistogram's checks
-// still sum to the full requested depth — assertNoSilentTruncation is the
+// still sum to the full requested depth — findTruncatedRapidRuns is the
 // check that keeps that true rather than merely hoped-for. Without it, a
 // too-tight per-process -timeout (this one included, before it was
 // measured and corrected) degrades coverage silently: `go test` still
@@ -97,8 +97,8 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { spawn } from 'node:child_process';
 import { error, notice, log, group } from './lib/gh.mjs';
+import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /** The randomized native-histogram sweep, fanned out across HISTOGRAM_FANOUT processes. */
 export const HISTOGRAM_SWEEP_TEST = 'TestPromQL_Property_NativeHistogram';
@@ -137,16 +137,23 @@ export const HISTOGRAM_FANOUT = 3;
  * Per-process go test -timeout, in minutes.
  *
  * HISTOGRAM_TIMEOUT_MINUTES covers one sweep share (~500/HISTOGRAM_FANOUT,
- * i.e. ~167 checks). Measured locally: 3 concurrent shares of ~167
- * requested checks each, running alongside the rest leg, needed ~5.0-5.5s
- * PER CHECK under that contention (derived from a 12-minute deadline that
- * was too tight and made rapid self-truncate — see the header) — so the
- * full ~167 checks need roughly 167 * 5.5s ≈ 918s (~15.3 minutes) in the
- * worst observed case. 20 minutes (unchanged from the pre-split single-
- * process ceiling) leaves comfortable headroom over that, and
- * assertNoSilentTruncation below fails the run outright if a share ever
- * needs more than its budget allows rather than accepting a quietly
- * shrunk pass.
+ * i.e. ~167 checks). The original 20-minute budget was derived from a
+ * local measurement of ~5.0-5.5s per check under contention (~15.3 minutes
+ * worst case for 167 checks) and proved too tight in production: CI run
+ * 32009891549 (2026-08-17) measured 3 concurrent shares actually costing
+ * 6.55-7.12s PER CHECK on the real ubuntu-latest runner — 164/167, 166/166
+ * and 167/167 checks completed in 18m07s-19m28s, i.e. within single-digit
+ * minutes, sometimes single-digit PERCENT, of the 20-minute ceiling. One
+ * share (164/167) crossed rapid's own internal deadline margin and
+ * self-truncated, which findTruncatedRapidRuns below correctly turned into
+ * a hard failure rather than a hollow green — but a hard failure on
+ * essentially every push is not an acceptable steady state. 30 minutes,
+ * derived from the observed worst-case rate (167 * 7.12s ≈ 1189s ≈ 19.8
+ * minutes) with ~50% headroom rather than the ~30% the original estimate
+ * assumed, gives the sweep genuine margin against the same run-to-run
+ * variance (which rapid seed hits how many of the 16 expensive shapes)
+ * that the header already documents as expected. property.yml's job-level
+ * timeout-minutes must stay comfortably above this — see that file.
  *
  * ROSTER_TIMEOUT_MINUTES covers only the deterministic shape roster,
  * decoupled from any checks budget; it does not use rapid.Check; even the
@@ -159,7 +166,7 @@ export const HISTOGRAM_FANOUT = 3;
  * 30-90s in the measured run, ~350s total; 10 minutes leaves more than 6x
  * headroom.
  */
-export const HISTOGRAM_TIMEOUT_MINUTES = 20;
+export const HISTOGRAM_TIMEOUT_MINUTES = 30;
 export const ROSTER_TIMEOUT_MINUTES = 5;
 export const REST_TIMEOUT_MINUTES = 10;
 
@@ -221,7 +228,7 @@ export function legCommands({
       `-rapid.shrinktime=${rapidShrinktime}`,
     ],
     // The requested check depth this leg must actually reach —
-    // assertNoSilentTruncation cross-checks the log against this.
+    // findTruncatedRapidRuns cross-checks the log against this.
     expectRapidChecks: share,
   }));
 
@@ -287,34 +294,6 @@ export function findTruncatedRapidRuns(output, expectRapidChecks) {
   return findings;
 }
 
-/**
- * Runs one leg to completion, buffering its output.
- *
- * Buffered rather than inherited because the legs run concurrently and
- * would otherwise interleave line by line — a `go test -v` failure is a
- * multi-line block (the rapid seed, the got/want diff, or a goroutine dump)
- * that is unreadable once several legs shuffle into each other. Each leg's
- * buffer is printed whole, after all finish.
- */
-function runLeg(leg) {
-  return new Promise((resolve) => {
-    const [cmd, ...args] = leg.argv;
-    const child = spawn(cmd, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    child.stdout.on('data', (d) => {
-      out += d;
-    });
-    child.stderr.on('data', (d) => {
-      out += d;
-    });
-    child.on('error', (err) => resolve({ leg, code: 1, out: `${out}\nspawn ${cmd}: ${err.message}` }));
-    child.on('close', (code) => resolve({ leg, code: code ?? 1, out }));
-  });
-}
-
 async function main() {
   const tags = process.env.TAGS ?? '';
   if (tags === '') {
@@ -330,7 +309,7 @@ async function main() {
   );
 
   const started = Date.now();
-  const results = await Promise.all(legs.map(runLeg));
+  const results = await Promise.all(legs.map(runLegBuffered));
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
 
   for (const r of results) {
@@ -358,7 +337,21 @@ async function main() {
       `property: ${failed.length} of ${results.length} leg(s) failed, ` +
         `${truncated.length} silent rapid truncation(s), after ${elapsedSeconds}s`,
     );
-    process.exit(1);
+    // NOT process.exit(1) here: stdout is a pipe under GH Actions (not a
+    // TTY), so process.stdout.write() — every log()/error()/group() call
+    // above, including the per-leg -v dumps, some of them large — can be
+    // asynchronously queued rather than delivered synchronously. exit()
+    // tears the process down immediately, before libuv drains that queue,
+    // so a large enough backlog is silently truncated mid-write with no
+    // trace of why (observed in CI run 32009891549: the log cut off
+    // mid-word inside the LAST leg's dump, and every error() message below
+    // this point — the one explaining what actually failed — was lost,
+    // turning a diagnosable failure into an apparent crash). Setting
+    // exitCode and returning lets Node exit only once every queued write
+    // has flushed, which is what a step whose entire value is its log
+    // needs.
+    process.exitCode = 1;
+    return;
   }
   notice(`property: ${results.length} leg(s) passed with full rapid depth in ${elapsedSeconds}s`);
 }

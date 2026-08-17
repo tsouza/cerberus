@@ -15,7 +15,8 @@ import (
 const exitStatusColumn = "exit_status"
 
 // TestCorpusExitStatusLockstep pins the exit_status token set across the two
-// packages that hold their own copy of it.
+// packages that hold their own copy of it (#1341, which reconciled the enum
+// after the two drifted).
 //
 // optcorpus WRITES the column; routerrules VALIDATES mining rules against a
 // closed domain for it, and deliberately keeps its own copy so it depends on

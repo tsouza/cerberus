@@ -11,6 +11,8 @@ import (
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
+// This pins #1062, the concrete 5-rule ruleset and chDB-parity harness.
+//
 // routerCorpusDir holds every JSONL fixture the routerrules harnesses mine.
 // Path is relative to this test package directory.
 const routerCorpusDir = "../../internal/routerrules/testdata"

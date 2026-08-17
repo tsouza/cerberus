@@ -1,7 +1,8 @@
 package regression
 
 // Pins the two strings.ReplaceAll calls that make telemetry.SanitizeForLog a
-// barrier CodeQL can see.
+// barrier CodeQL can see (#1903, the field inventory whose review surfaced
+// the CodeQL log-injection barrier requirement).
 //
 // Every request-derived value cerberus logs goes through SanitizeForLog, which
 // escapes the whole control-character range and is therefore correct at runtime

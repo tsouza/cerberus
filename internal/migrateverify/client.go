@@ -1,6 +1,7 @@
 package migrateverify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -425,7 +426,9 @@ func LoadCorpus(path string) (Corpus, error) {
 		return Corpus{}, fmt.Errorf("read corpus %q: %w", path, err)
 	}
 	var c migrate.Corpus
-	if err := json.Unmarshal(data, &c); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&c); err != nil {
 		return Corpus{}, fmt.Errorf("decode corpus %q: %w", path, err)
 	}
 	if c.Version != migrate.CorpusVersion {

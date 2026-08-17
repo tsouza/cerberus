@@ -356,7 +356,7 @@ func parseExprTraced(ctx context.Context, query string) (syntax.Expr, error) {
 	// `parse error … unexpected '.'`. The OTel-CH schema stores both
 	// forms on each row, so the underscored matcher targets the same
 	// data the dotted form would.
-	expr, err := ParseExprPermissive(normalizeLokiDottedLabels(query))
+	expr, err := ParseExprPermissive(NormalizeDottedLabels(query))
 	if err != nil {
 		span.RecordError(err)
 		return nil, err

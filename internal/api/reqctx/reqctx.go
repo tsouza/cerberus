@@ -1,9 +1,12 @@
-// Package reqctx hosts the request-context derivation shared across the
-// prom / loki / tempo HTTP handlers. Envelope shaping and error writing
-// stay per-handler (each upstream API has its own wire format); what
-// this package owns is the neutral plumbing every handler runs
-// identically — today, the `?timeout=` budget resolution + context
-// wiring.
+// Package reqctx hosts the request-context derivation shared by the
+// prom and loki HTTP handlers. Envelope shaping and error writing stay
+// per-handler (each upstream API has its own wire format); what this
+// package owns is the neutral plumbing those handlers run identically —
+// today, the `?timeout=` budget resolution + context wiring.
+//
+// Tempo does not call ApplyQueryTimeout: its handlers rely solely on the
+// chclient's static configured QueryTimeout, with no per-request context
+// deadline backstop. See https://github.com/tsouza/cerberus/issues/2302.
 package reqctx
 
 import (

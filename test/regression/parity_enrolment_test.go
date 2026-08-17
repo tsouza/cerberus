@@ -20,7 +20,7 @@ const (
 
 var parityEnrolmentHeads = []string{"promql", "logql", "traceql"}
 
-// TestParityEnrolmentBaseline pins the exact identity of every TXTAR fixture
+// TestParityEnrolmentBaseline (split out of the parity contract in #2194) pins the exact identity of every TXTAR fixture
 // carrying a live-reference parity contract. Counts are insufficient here: a
 // removed oracle case and an unrelated new case in the same head would preserve
 // the count while silently changing the semantic surface.

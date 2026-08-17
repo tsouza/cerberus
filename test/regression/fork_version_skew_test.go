@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestForkVersionSkew pins the correspondence between the upstream version
+// TestForkVersionSkew (#832) pins the correspondence between the upstream version
 // each tsouza/* parser fork is based on (recorded as the `require` line in
 // go.mod that the fork's `replace` substitutes for) and the reference
 // backend container the matching compatibility harness diffs cerberus

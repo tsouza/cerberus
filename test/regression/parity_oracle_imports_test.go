@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// This pins #1983, which checked TXTAR fixtures against the real Prometheus
+// engine and made the oracle's independence from cerberus load-bearing.
+//
 // parityOraclePkgs is the pattern covering every reference-engine
 // package whose independence from cerberus is the load-bearing property
 // of the whole parity layer.

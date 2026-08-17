@@ -7,7 +7,7 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
-// TestPromQLParityCoverageIsComplete closes the PromQL corpus: every fixture
+// TestPromQLParityCoverageIsComplete (#2187) closes the PromQL corpus: every fixture
 // carries either a real parity enrolment or a reviewed, closed-vocabulary
 // exemption, never neither and never both.
 func TestPromQLParityCoverageIsComplete(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"github.com/tsouza/cerberus/test/spec"
 )
 
-// TestParitySectionsParse asserts every fixture carrying a `parity:`
+// TestParitySectionsParse (split out of the parity contract in #2194) asserts every fixture carrying a `parity:`
 // section has a WELL-FORMED one.
 //
 // LoadParity deliberately errors rather than skipping on a malformed body,

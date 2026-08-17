@@ -1973,10 +1973,12 @@ what actually runs.
     so asserts instead of rewriting), a missing closing step, and the leg count
     drifting from the count `test/perf/profile/shard_test.go` asserts the
     partition's cover and balance at.
-  - `lib/spawn-tagged.mjs` holds the one child-process runner both this and
-    `golden-update.mjs` fan out with: line-tagged output so concurrent legs stay
-    readable, and every leg allowed to finish before the group's verdict, so one
-    invocation surfaces every failure rather than just the first.
+  - `lib/spawn-tagged.mjs` holds the child-process runners this and
+    `golden-update.mjs` fan out with (line-tagged, streamed output; every leg
+    allowed to finish before the group's verdict), plus `runLegBuffered`, the
+    buffer-then-print-whole runner `perf-coverage-fanout.mjs`,
+    `property-fanout.mjs` and `chdb-roundtrip.mjs` share for legs whose
+    failures are multi-line blocks that streaming would interleave.
 
 ## Notes
 

@@ -11,6 +11,9 @@ import (
 	"testing"
 )
 
+// This pins #1295: reclaiming uncovered files and pinning the mutation-leg
+// partition.
+
 // repoRoot locates the module root from this package's directory.
 const repoRoot = "../.."
 

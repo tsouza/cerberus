@@ -64,6 +64,36 @@ test('the shipped PHASES table is sound against this tree', () => {
   );
 });
 
+// A non-empty matrix.diff_ref makes the `mutate` job's own `gremlins
+// unleash` step run `git diff DIFF_REF` internally (mutation-run.mjs's
+// header: "A non-empty DIFF_REF first invokes gremlins' native merge-base
+// line filter"), which needs that ref's object actually fetched. A shallow
+// (depth-1) checkout only has the job's own head commit, so any diff_ref
+// pointing anywhere else fails with `fatal: bad object <sha>` — observed
+// on PRs #2282-#2284, all opened against the same recent main tip, and
+// silent on later PRs only because their diff_ref happened to come back
+// empty (no changed-line scoping needed), not because the checkout was
+// sufficient. Pins the `mutate` job's checkout to the same fetch-depth: 0
+// the `select` job right above it already carries, and for the identical
+// documented reason.
+test("the mutate job's checkout can resolve any diff_ref gremlins might diff against", () => {
+  const workflow = readFileSync('.github/workflows/mutation.yml', 'utf8');
+  const mutateStart = workflow.indexOf('\n  mutate:');
+  assert.ok(mutateStart >= 0, 'mutation.yml: missing mutate job');
+  const nextJob = workflow.indexOf('\n  mutation:', mutateStart);
+  const mutateJob = workflow.slice(mutateStart, nextJob >= 0 ? nextJob : undefined);
+  const checkoutIndex = mutateJob.indexOf('actions/checkout@');
+  assert.ok(checkoutIndex >= 0, 'mutate job: no actions/checkout step');
+  const nextStepIndex = mutateJob.indexOf('\n      - uses:', checkoutIndex);
+  const checkoutStep = mutateJob.slice(checkoutIndex, nextStepIndex >= 0 ? nextStepIndex : undefined);
+  assert.match(
+    checkoutStep,
+    /fetch-depth:\s*0/,
+    'mutate job: checkout needs fetch-depth: 0 — gremlins diffs matrix.diff_ref internally and a ' +
+      'shallow clone cannot resolve an arbitrary ref',
+  );
+});
+
 test('the registry-owned universe survives deletion of a complete phase', () => {
   const withoutChplan = PHASES.filter((phase) => phase.phase !== 'phase1');
   const problems = ownershipViolations({

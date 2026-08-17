@@ -7,7 +7,7 @@ package chplan
 //
 // Fn is the sealed function symbol. A combinator-suffixed spelling
 // (`argMinIf`) is, for now, its own Fn symbol rather than a
-// structural combinator; the structural split is #2060 PR 3's job, not
+// structural combinator; the structural split is #2280's job, not
 // this one's.
 type AggFunc struct {
 	Fn Fn

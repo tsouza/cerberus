@@ -13,7 +13,8 @@ import (
 )
 
 // Layer 8 — the ClickHouse connection age-eviction default against the chaos
-// lane's recovery deadline.
+// lane's recovery deadline (#1347, which added the eviction and its release-
+// on-cursor-teardown fix).
 //
 // ConnMaxLifetime is the backstop that bounds recovery after a ClickHouse pod
 // is force-killed: the pod's socket can stay ESTABLISHED with no FIN/RST, the

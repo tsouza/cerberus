@@ -13,10 +13,3 @@ import syntax "github.com/tsouza/cerberus/internal/logql/lsyntax"
 func NormalizeDottedLabels(q string) string {
 	return syntax.NormalizeDottedLabels(q)
 }
-
-// normalizeLokiDottedLabels is the package-private form Lang.Parse
-// routes through, for symmetry with the PromQL head's own
-// dotted-name normaliser.
-func normalizeLokiDottedLabels(q string) string {
-	return syntax.NormalizeDottedLabels(q)
-}

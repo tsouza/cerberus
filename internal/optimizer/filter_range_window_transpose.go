@@ -44,8 +44,14 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //   - Empty `GroupBy` — no per-series identity is passthrough.
 //   - `GroupBy[i]` that is not a bare `ColumnRef` (e.g. a function
 //     call or arithmetic) — could be substituted into the predicate,
-//     but that's a more involved rewrite (mirrors the
-//     `FilterAggregateTranspose` policy).
+//     but that's a more involved rewrite. Unlike `FilterAggregateTranspose`,
+//     which skips only the offending entry and keeps the remaining bare
+//     keys passthrough-safe, this rule declines the rewrite entirely for
+//     the whole `GroupBy` when any single entry is non-bare (see
+//     `seriesIdentifyingColumns` below) — deliberately more conservative,
+//     since a RangeWindow's grid/value columns make substituting the
+//     computed key back into the predicate a riskier rewrite than for a
+//     plain Aggregate.
 //   - `ColumnRef` with a non-empty `Qualifier` in the predicate.
 //   - Mixed predicates (one safe AND one unsafe sub-clause): we keep
 //     the *entire* Filter above the RangeWindow. Splitting an AND

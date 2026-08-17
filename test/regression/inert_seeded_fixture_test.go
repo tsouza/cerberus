@@ -30,7 +30,7 @@ const (
 	floorValidatedKey = "validated:"
 )
 
-// TestNoInertSeededFixtures fails when a TXTAR fixture carries a
+// TestNoInertSeededFixtures (#1411) fails when a TXTAR fixture carries a
 // non-empty `-- seed --` but cannot execute, without declaring why.
 //
 // The class it pins: a seeded fixture with no `-- expected_rows --`

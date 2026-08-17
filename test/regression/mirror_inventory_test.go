@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The GHCR mirror only helps for images it actually holds. `mirroredRef`
+// This pins #1579. The GHCR mirror only helps for images it actually holds. `mirroredRef`
 // returns null for anything outside `mirroredImages`, and `pullImageWithRetry`
 // then falls straight through to Docker Hub — quietly, because a fallback is
 // the correct behaviour for an image nobody has mirrored yet.

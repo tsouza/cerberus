@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// Layer 8 — startup ordering of the OTel MeterProvider install.
+// Layer 8 — startup ordering of the OTel MeterProvider install (#1347, whose
+// cursor-teardown fix is what surfaced the seeded-counter ordering hazard).
 //
 // OTel's package-global MeterProvider is a DELEGATING shim. Instruments minted
 // off it before the real provider is installed forward to the SDK once

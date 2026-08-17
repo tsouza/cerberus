@@ -46,9 +46,9 @@ the script directly) and as a step inside the `forbid-skip` CI job. The
 lefthook `forbid-skip-self-test` command runs the same script on
 pre-push.
 
-Rows 1–5 of the summary table below are carried by all three copies.
-Rows 6–8 are carried by CI **and** lefthook; only the self-test's
-coverage differs:
+Rows 1–4 and 7–8 of the summary table below are carried by all three
+copies. Rows 5 and 6 are carried by CI **and** lefthook only —
+`scripts/test-forbid-skip.sh` has no case for either:
 
 | Row(s) | CI step (`CHECK=`)                                                            | lefthook `pre-push` command   | `scripts/test-forbid-skip.sh` |
 | ------ | ----------------------------------------------------------------------------- | ----------------------------- | ----------------------------- |
@@ -58,12 +58,12 @@ coverage differs:
 | 6      | Reject test escape-hatch patterns (`escape-hatch`)                            | `forbid-escape-hatch`         | no                            |
 | 7–8    | Reject scenario-suppressing tags and godog skip routes (`feature-discipline`) | `forbid-feature-discipline`   | yes                           |
 
-Row 6 rejects every non-empty `should_skip:` block in
+Row 5 rejects every non-empty `should_skip:` block in
 `compatibility/**/*.{yml,yaml}` outright. lefthook's
-`forbid-escape-hatch` command carries rows 6 and 7 together: the row-7
-ERE over `*.{ts,tsx,go}` plus the row-6 `perl -0777` slurp over the
+`forbid-escape-hatch` command carries rows 5 and 6 together: the row-6
+ERE over `*.{ts,tsx,go}` plus the row-5 `perl -0777` slurp over the
 compatibility YAML, which the CI job splits across two `CHECK` arms.
-Rows 6 and 7 have no `scripts/test-forbid-skip.sh` case, so their
+Rows 5 and 6 have no `scripts/test-forbid-skip.sh` case, so their
 regexes are pinned by the CI and lefthook copies alone.
 
 ## Patterns vs CHECK categories — the count that the gate pins
@@ -126,7 +126,7 @@ shape.
 | 7 | Reject scenario-suppressing Gherkin tags (`@wip` / `@skip` / `@ignore` / `@manual` / `@todo` / `@pending`) | `*.feature`                  | #1268 |
 | 8 | Reject godog skip / pending routes (`godog.ErrSkip`, `godog.ErrPending`, `.Skip` / `.Skipf` / `.SkipNow`)  | `test/e2e/migration/**/*.go` | #1268 |
 
-Row 6 rejects any non-empty `should_skip:` block outright (see
+Row 5 rejects any non-empty `should_skip:` block outright (see
 `.github/workflows/ci.yml` `forbid-skip` job step "Reject should_skip
 overlay entries"). The only accepted form is `should_skip: []`; any
 element under the key fails CI.
