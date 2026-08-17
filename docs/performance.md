@@ -178,19 +178,21 @@ every PR) to *broad* (corpus-wide, nightly).
    `WITH RECURSIVE`, a correlated subquery — on the lowered plan *and* emitted
    SQL of **every** corpus fixture. Cheap, pre-execution, no chDB needed.
 2. **Per-construct scaling harness** — `test/perf/scaling`, in the
-   required `perf-guards` chDB job (runs on every PR). For a known-hot
+   release-gate `perf-guards` chDB job (a green no-op on an ordinary PR; runs
+   for real on push-to-main / nightly / dispatch / a `release/*` PR). For a known-hot
    construct it sweeps a parameter (step count, chain depth, recursion depth)
    and asserts wall-time stays **sub-linear** in it *and* peak intermediate
    cardinality stays **bounded**. This is the compute-fan-out axis the original
    read-side harness was blind to.
-3. **Corpus-wide fan-out profiler** — `test/perf/profile`, the required
-   `profile` job: it reports on every PR, and does the real profiling on
-   push-to-main / nightly / dispatch / release PRs. Profiles all 1,019 executable
-   fixtures via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
+3. **Corpus-wide fan-out profiler** — `test/perf/profile`, the release-gate
+   `profile` job: it posts a green no-op check on every ordinary PR, and does the
+   real profiling on push-to-main / nightly / dispatch / release PRs. Profiles all
+   1,023 executable fixtures via in-process chDB `EXPLAIN` + per-subquery `count()`, ranks them
    by fan factor, and surfaces the worst as a job step-summary. The wide net
    for a fan-out in a construct nobody thought to write a guard for.
 4. **Cardinality ratchet** — `test/perf/cardinality_ratchet_test.go`, in the
-   required `perf-guards` chDB job (runs on every PR). Pins every
+   release-gate `perf-guards` chDB job (a green no-op on an ordinary PR; runs
+   for real on push-to-main / nightly / dispatch / a `release/*` PR). Pins every
    fixture's fan factor + structural flags + recursion depth in
    `test/perf/cardinality-baseline/<head>/<name>.json` — one shard per
    fixture — and fails the run on an **upward**
@@ -201,9 +203,11 @@ every PR) to *broad* (corpus-wide, nightly).
    the diff as a built-in cost review.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
-scaling harness and cardinality ratchet run on every PR through the required
-`perf-guards` chDB lane; the profiler is the nightly wide net for the unknown
-shapes.
+scaling harness and cardinality ratchet are release-gate checks that no-op on
+an ordinary PR and run for real through the `perf-guards` chDB lane on
+push-to-main / nightly / dispatch / a `release/*` PR; the profiler is the same
+release-gate posture through the `profile` job, with the nightly run as its
+wide net for the unknown shapes.
 
 **The ratchet is sharded across runner processes.** It profiles every executable
 fixture one at a time, so its runtime is a straight line in corpus size — and
@@ -266,8 +270,8 @@ place. `chplan.ReanchorRange` shares the immutable off-spine subtree across the
 `K` shards instead of `CloneNode`-ing it K+1 times; the wall-clock measurement
 lives in the weekly informational `perf-benchmark` lane
 (`internal/solver.BenchmarkSlice`, which never gates), so the gating guard is a
-deterministic allocation pin -- `TestSliceAllocs_ChDB` in the required
-`perf-guards` chDB job. It asserts `slice()`'s allocs/op stays under a pinned
+deterministic allocation pin -- `TestSliceAllocs_ChDB` in the release-gate
+`perf-guards` chDB job (a no-op on an ordinary PR). It asserts `slice()`'s allocs/op stays under a pinned
 ceiling at K=4 and K=16, so a revert of the COW sharing back to a per-shard `CloneNode` re-inflates
 the allocation count past the bound and turns the `perf-guards` lane red rather
 than silently regressing.
