@@ -177,6 +177,19 @@ func RowShapeOf(n Node) RowShape {
 		if v.Histogram {
 			return HistogramRowShape
 		}
+	case *HistogramVectorJoin:
+		// Its own SELECT exposes `_hq_L_*`/`_hq_R_*` aliases, not the
+		// canonical four names at all — no generic forwarder is ever
+		// placed directly over it (internal/promql's
+		// histogram_native_binop_card.go always wraps it in an
+		// explicit-column Project first), so SampleRowShape here is a
+		// documentation default rather than a claim about live columns.
+		// A hypothetical future direct consumer referencing `Value` or
+		// `MetricName` against it fails loudly with ClickHouse code 47
+		// rather than silently reading the wrong data — see
+		// [IsDerivedShape]'s HistogramVectorJoin arm for the same
+		// reasoning from the MetricName side.
+		return SampleRowShape
 	case *RangeWindowStaleResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter

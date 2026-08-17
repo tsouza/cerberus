@@ -1,0 +1,43 @@
+-- query.promql --
+latency_exp_hist + on(service) group_left(region) baseline_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `+` under `on(service) group_left(region)` — cerberus issue #2328:
+-- the LEFT side (`latency_exp_hist`) is the "many" (two series sharing
+-- service="api", one per pod), the RIGHT side (`baseline_exp_hist`) is
+-- the "one" (a single series per service). Every "many" row gets the
+-- SAME "one" row's histogram broadcast onto it via
+-- [chplan.HistogramVectorJoin], merged the identical way the one-to-one
+-- path does ([histogramBinopMergeProjections], unchanged). `region` is
+-- an explicit group_left(...) Include label, copied from the "one" side
+-- onto each "many" row's output Attributes alongside its own full label
+-- set (service + pod) — the "one" side's own `region` never survives the
+-- match key itself, only via the Include overlay.
+--
+--   pod-1: Count=10+5=15, Sum=1.0+0.5=1.5, buckets [1,2]+[10,20]=[11,22],
+--   Attributes={service:"api", pod:"pod-1", region:"us"}.
+--
+--   pod-2: Count=20+5=25, Sum=2.0+0.5=2.5, buckets [3,4]+[10,20]=[13,24],
+--   Attributes={service:"api", pod:"pod-2", region:"us"}.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-1'), toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 0, 0, 0, [1, 2],   0, []),
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-2'), toDateTime64('2026-01-01 00:00:00', 9), 20, 2.0, 0, 0, 0, [3, 4],   0, []),
+    ('baseline_exp_hist', map('service', 'api', 'region', 'us'), toDateTime64('2026-01-01 00:00:00', 9), 5,  0.5, 0, 0, 0, [10, 20], 0, []);
+-- expected_rows --
+[]

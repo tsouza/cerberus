@@ -1,0 +1,40 @@
+-- query.promql --
+latency_exp_hist != on(service) group_left() baseline_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `!=` under `on(service) group_left()` (bare — no Include labels) —
+-- cerberus issue #2328. `latency_exp_hist` is the "many" (two series
+-- sharing service="api"), `baseline_exp_hist` is the "one", broadcast
+-- onto both. The kept row's value is always the "many" row's OWN
+-- histogram (reference's `hlhs`), unconditional on which side is "many"
+-- — see histogram_native_binop_eq.go's header doc — so `!=` keeps
+-- exactly the pairs whose fields disagree with the broadcast "one" row.
+--
+--   pod-1 publishes a BIT-IDENTICAL payload to baseline — `!=` is false,
+--   the pair is dropped.
+--
+--   pod-2 publishes a DIFFERENT payload — `!=` is true, the pair
+--   survives with pod-2's own MetricName/Attributes/histogram fields
+--   unchanged (bare group_left: no Include labels to overlay).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-1'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 1, 0, [1, 2, 3], 0, []),
+    ('baseline_exp_hist', map('service', 'api'),                 toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 1, 0, [1, 2, 3], 0, []),
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-2'), toDateTime64('2026-01-01 00:00:00', 9), 4, 0.4,  0, 0, 0, [7],       0, []);
+-- expected_rows --
+[]

@@ -1,0 +1,41 @@
+-- query.promql --
+baseline_exp_hist == bool on(service) group_right() latency_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `== bool` under `on(service) group_right()` — the `bool`-modifier
+-- sibling of exp_histogram_binop_ne_group_left.txtar (cerberus issue
+-- #2328), and the group_right cardinality sibling of
+-- exp_histogram_binop_eq_bool_ignoring_matching-style bool compares:
+-- reference overrides the result to a FLOAT 1.0/0.0 per matched pair
+-- REGARDLESS of the comparison's truth value (every pair survives), so
+-- this exercises [compareTwoHistogramProjectionsCard]'s returnBool
+-- branch. `latency_exp_hist` is the "many" (group_right), `baseline_exp_hist`
+-- is the "one", broadcast onto both pods.
+--
+--   pod-1 is BIT-IDENTICAL to baseline — Value=1.0.
+--   pod-2 differs from baseline — Value=0.0.
+--
+-- Both rows drop `__name__` (MetricName="") and keep pod-1/pod-2's own
+-- full Attributes (bare group_right: no Include labels).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-1'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 1, 0, [1, 2, 3], 0, []),
+    ('baseline_exp_hist', map('service', 'api'),                 toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 1, 0, [1, 2, 3], 0, []),
+    ('latency_exp_hist',  map('service', 'api', 'pod', 'pod-2'), toDateTime64('2026-01-01 00:00:00', 9), 4, 0.4,  0, 0, 0, [7],       0, []);
+-- expected_rows --
+[]

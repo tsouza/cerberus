@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -70,8 +68,9 @@ import (
 // on()/ignoring() matching is supported via
 // [applyVectorMatchToHistogramOperand] (histogram_native_binop_match.go),
 // the same mechanism [lowerExpHistogramHistogramBinop] uses for `+`/`-`.
-// group_left()/group_right() (many-to-one broadcast) stay unsupported —
-// see [isSupportedHistogramMatchCardinality].
+// group_left()/group_right() (many-to-one broadcast) is supported via
+// [compareTwoHistogramProjectionsCard] (histogram_native_binop_card.go,
+// cerberus issue #2328).
 //
 // The `bool` modifier is ALSO answered, but by a different function
 // ([expHistogramHistogramCompareBoolBinop] /
@@ -148,13 +147,12 @@ func expHistogramHistogramCompareBinop(expr parser.Expr, s schema.Metrics, ctx l
 // [expHistogramHistogramCompareBinop] recognised. Both operands defer
 // to their own existing histogram-valued lowering unchanged — this
 // function only adds the join + structural-equality filter on top.
+//
+// group_left()/group_right() (vm.Card != CardOneToOne) routes through
+// [compareTwoHistogramProjectionsCard] (histogram_native_binop_card.go),
+// which broadcasts via a real [chplan.HistogramVectorJoin] — cerberus
+// issue #2328.
 func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if !isSupportedHistogramMatchCardinality(vm) {
-		return nil, fmt.Errorf(
-			"promql: group_left()/group_right() matching is not yet supported for == or != between two " +
-				"exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
-		)
-	}
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
 	if err != nil {
 		return nil, err
@@ -162,6 +160,9 @@ func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne boo
 	hpR, err := lowerExpHistogramValuedOperand(rhsExpr, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if vm != nil && vm.Card != parser.CardOneToOne {
+		return compareTwoHistogramProjectionsCard(hpL, hpR, vm, ne, false /* returnBool */, s, ctx), nil
 	}
 	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
 	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
@@ -203,14 +204,10 @@ func expHistogramHistogramCompareBoolBinop(b *parser.BinaryExpr, s schema.Metric
 // [expHistogramHistogramCompareBoolBinop] recognised, reusing
 // [compareTwoHistogramProjections]'s join machinery with returnBool=true
 // — see that function's doc for the Having/output-shape difference the
-// `bool` modifier makes.
+// `bool` modifier makes. group_left()/group_right() routes through
+// [compareTwoHistogramProjectionsCard] the same way the non-bool compare
+// does — cerberus issue #2328.
 func lowerExpHistogramHistogramCompareBoolBinop(lhsExpr, rhsExpr parser.Expr, ne bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if !isSupportedHistogramMatchCardinality(vm) {
-		return nil, fmt.Errorf(
-			"promql: group_left()/group_right() matching is not yet supported for == or != between two " +
-				"exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
-		)
-	}
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
 	if err != nil {
 		return nil, err
@@ -218,6 +215,9 @@ func lowerExpHistogramHistogramCompareBoolBinop(lhsExpr, rhsExpr parser.Expr, ne
 	hpR, err := lowerExpHistogramValuedOperand(rhsExpr, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if vm != nil && vm.Card != parser.CardOneToOne {
+		return compareTwoHistogramProjectionsCard(hpL, hpR, vm, ne, true /* returnBool */, s, ctx), nil
 	}
 	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
 	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)

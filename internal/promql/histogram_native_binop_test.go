@@ -81,36 +81,72 @@ func TestLower_ExpHistogram_HistogramBinopIsHistogramValued(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_HistogramBinopRejectsGroupLeftRight pins that
-// group_left()/group_right() (many-to-one broadcast) are explicitly
-// rejected for now (cerberus issue #2273's carved-out remainder) rather
-// than silently mismatching series. on()/ignoring() one-to-one matching
-// is answered — see [TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching].
-func TestLower_ExpHistogram_HistogramBinopRejectsGroupLeftRight(t *testing.T) {
+// TestLower_ExpHistogram_HistogramBinopSupportsGroupLeftRight pins that
+// group_left()/group_right() (many-to-one broadcast) lowers successfully
+// (cerberus issue #2328) via a real chplan.HistogramVectorJoin, publishing
+// the same histogram-valued contract the one-to-one paths do. See
+// [TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching] for
+// the sibling one-to-one on()/ignoring() case.
+func TestLower_ExpHistogram_HistogramBinopSupportsGroupLeftRight(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	queries := []string{
-		`latency_exp_hist + on(service) group_left() other_exp_hist`,
-		`latency_exp_hist + on(service) group_right() other_exp_hist`,
+	cases := []struct {
+		name  string
+		query string
+		card  chplan.VectorCard
+	}{
+		{name: "group_left", query: `latency_exp_hist + on(service) group_left() other_exp_hist`, card: chplan.CardManyToOne},
+		{name: "group_right", query: `latency_exp_hist + on(service) group_right() other_exp_hist`, card: chplan.CardOneToMany},
+		{name: "group_left with include labels", query: `latency_exp_hist + on(service) group_left(region) other_exp_hist`, card: chplan.CardManyToOne},
 	}
 
-	for _, query := range queries {
-		t.Run(query, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			expr, err := p.ParseExpr(query)
+			expr, err := p.ParseExpr(tc.query)
 			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", query, err)
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
 			}
-			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-			if err == nil {
-				t.Fatalf("lower(%q): expected an error, got none", query)
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want histogram", tc.query, shape)
+			}
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", tc.query, plan)
+			}
+			join := findHistogramVectorJoin(t, hp)
+			if join.Card != tc.card {
+				t.Fatalf("lower(%q): HistogramVectorJoin.Card = %v, want %v", tc.query, join.Card, tc.card)
 			}
 		})
 	}
+}
+
+// findHistogramVectorJoin walks n's Input chain looking for the
+// *chplan.HistogramVectorJoin the group_left()/group_right() card path
+// must build, failing the test if none is found.
+func findHistogramVectorJoin(t *testing.T, n chplan.Node) *chplan.HistogramVectorJoin {
+	t.Helper()
+	for cur := n; cur != nil; {
+		if j, ok := cur.(*chplan.HistogramVectorJoin); ok {
+			return j
+		}
+		children := cur.Children()
+		if len(children) == 0 {
+			break
+		}
+		cur = children[0]
+	}
+	t.Fatalf("no *chplan.HistogramVectorJoin found in plan rooted at %#v", n)
+	return nil
 }
 
 // TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching pins

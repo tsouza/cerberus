@@ -58,7 +58,15 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 		*RangeWindowGridNative,
 		*Aggregate,
 		*MetricsAggregate,
-		*MetricsHistogramOverTime:
+		*MetricsHistogramOverTime,
+		*HistogramVectorJoin:
+		// HistogramVectorJoin's own SELECT exposes `_hq_L_*`/`_hq_R_*`
+		// aliases — no bare `MetricName` column exists in its scope, so
+		// derived (true) is the honest answer, matching the reducing
+		// nodes' own reasoning. Never actually consulted for it: every
+		// caller wraps it in an explicit-column Project before any
+		// canonical-shape consumer sees it (internal/promql's
+		// histogram_native_binop_card.go).
 		return true
 	case *Filter:
 		return IsDerivedShape(v.Input, cols)
