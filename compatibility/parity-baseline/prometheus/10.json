@@ -7,6 +7,7 @@
     "0.12345 * demo_memory_usage_bytes",
     "1 + time()",
     "absent(sum(nonexistent_metric_name))",
+    "demo_latency_exp_hist + demo_latency_exp_hist",
     "demo_memory_usage_bytes atan2 demo_memory_usage_bytes",
     "demo_memory_usage_bytes{job=~\"dem\"}",
     "demo_num_cpus <= bool on(instance) demo_num_cpus",
