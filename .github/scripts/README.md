@@ -146,7 +146,7 @@ caps from `crawlShardTimeoutMinutes(depth)` here, and
 `parseSpecBudgetsFromSource()` lets the guard test read the real spec file so
 the pinned numbers cannot drift away from what the crawl actually asks for.
 
-## CI lane registry and qualification contract
+## CI lane registry
 
 `.github/ci-lanes.json` is the machine-readable inventory of Cerberus's test
 fences. Schema v1 names every logical lane independently of its current
@@ -157,68 +157,55 @@ workflow layout and records:
 - the test layers, oracle, command or `just` recipes, build tags, package
   surface, substrate, and risk domains it covers;
 - its merge, main, and release posture, plus source/artifact applicability;
-- timeout and service-level budgets, its accountable owner, and the report
-  schema it must emit.
+- timeout and service-level budgets, and its accountable owner.
 
 The inventory is total by construction. Every workflow under
 `.github/workflows/` must either own at least one lane or appear in the sorted
-`non_lane_workflows` classification. Merge-impact lanes may be narrowed;
-`non_documentation` lanes run for every non-documentation path and for any
-explicit contract path they own. Main-coalesced lanes remain selected until
-trusted supersession evidence exists.
-Both an unknown changed path and a selector failure mean **select the full
-eligible set**. Schema v1 accepts only
-`rollout: "shadow"`: the registry describes and validates the current system
-without selecting, dispatching, aggregating, or replacing any protected check.
-Activation work is tracked by issue #2230.
+`non_lane_workflows` classification. `impact_selection.known_nonimpact_globs`
+names the paths (docs, `CLAUDE*`, `LICENSE*`, and similar) that a diff can
+touch without ever making a lane relevant; `quickstart-canary.mjs`'s own
+`select` step is the one live consumer, pairing it with the `e2e.quickstart`
+lane's `package_globs` to decide whether a diff can skip the published
+quickstart canary.
 
-`ci-lane-contract.mjs` is the Node-builtins-only validator for the registry and
-for the selection/report protocol tracked by issue #2230. It has two modes:
+`ci-lane-contract.mjs` is the Node-builtins-only schema and cross-reference
+validator for the registry, run as `MODE=registry node
+.github/scripts/ci-lane-contract.mjs` in the `forbid-skip` job (`loadRegistry`
+and `matchesGlob` are also imported directly by `quickstart-canary.mjs`). It
+rejects unknown or missing fields, schema drift, unsorted or duplicate IDs, a
+missing canonical test layer, nonexistent workflow paths or `just` recipes,
+unclassified workflows, prefix-matched protected contexts, unsafe or stale
+package globs, invalid execution rosters or aggregate producers, impossible
+applicability/posture combinations, an SLO above its timeout, a merge SLO
+above 20 minutes, a release-required SLO above 120 minutes, and observational
+lanes marked release-required. It also enforces each query head's oracle
+floor: PromQL Layer 6a, LogQL Layer 6b, and TraceQL Layer 6c must each retain
+source-applicable `execution`, `property`, and `reference` oracle providers
+that run on `main` and are required before a release.
+`GITHUB_STEP_SUMMARY`, when set, receives a short registry summary. Direct
+execution emits a GitHub `::error::` and exits non-zero on any contract
+failure.
 
-- **`MODE=registry`** (the default) reads `CI_LANE_REGISTRY` (default
-  `.github/ci-lanes.json`). It rejects unknown or missing fields, schema drift,
-  unsorted or duplicate IDs, a missing canonical test layer, nonexistent
-  workflow paths or `just` recipes, unclassified workflows, prefix-matched
-  protected contexts, selectors that do not fail over to full coverage,
-  unsafe or stale package globs, invalid execution rosters or aggregate
-  producers, impossible applicability/posture combinations, an SLO above its
-  timeout, a merge SLO above 20 minutes, a release-required SLO above 120
-  minutes, and observational lanes marked release-required.
-- **`MODE=reports`** reads a total selection manifest from
-  `CI_LANE_SELECTION`, every JSON report below `CI_LANE_REPORT_DIR`, and trusted
-  workflow results from `CI_LANE_JOB_RESULTS_JSON`. Every reports invocation
-  must supply `CI_LANE_POSTURE`, `CI_EXPECT_SHA`, `CI_EXPECT_TREE`,
-  `CI_EXPECT_RUN_ID`, and `CI_EXPECT_RUN_ATTEMPT`. Merge qualification also
-  requires `CI_EXPECT_BASE_SHA` and canonical compact
-  `CI_EXPECT_CHANGED_PATHS_JSON`; release qualification requires
-  `CI_EXPECT_CANDIDATE_DIGEST`. These values bind the selection, every report,
-  and every trusted owner job to one source tree and workflow attempt. The mode
-  rejects a missing, duplicate, stale, unexpected, or malformed report; a
-  report from the wrong workflow job; source/tree/run or artifact-digest drift;
-  an invocation that differs from the registry; a selected owner job that was
-  not successful; and any selected execution that did not finish with native
-  evidence showing one or more checks executed, all passed, none failed, and
-  none skipped. Seeded lanes must report their seed.
+`test/regression/ci_lane_registry_test.go`'s `TestCILaneRegistry` binds the
+registry to the workflow graph itself — total job ownership, the exact check
+names GitHub emits, and the dependency edges that keep an aggregate from
+reporting green without its producers — facts `ci-lane-contract.mjs` cannot
+see without parsing Actions YAML; it also cross-checks `protected` and
+`release_posture` against live branch protection and `release.yml`'s
+`RELEASE_REQUIRED_CHECKS`. `mutation-matrix.mjs` separately reads the
+`quality.mutation` lane's `package_globs` to decide whether a change to the
+registry itself must re-run the full mutation matrix.
 
-Selection manifests are deliberately total: every registered lane is either
-`selected` with the registry's exact execution roster or `omitted` with a
-posture-valid reason. Unknown or empty changed-path sets and selector failures
-set the selector conclusion to `fallback_full` and select every merge-impact
-and `non_documentation` lane. Release selections bind artifact-applicable lanes
-to a `sha256:` digest;
-source-tree reports cannot carry one. Report artifacts are not trusted to
-certify their own job status, which is why reports mode cross-checks them
-against the workflow's `needs` results and exact run attempt.
-
-There is deliberately no generic report producer. Each producer added under
-issue #2230 must derive `executed`/`passed`/`failed`/`skipped` from that lane's
-native test output and land with a negative control. Accepting caller-supplied
-counts would make a zero-test success indistinguishable from coverage; reports
-mode therefore fails closed on zero executions, skipped evidence,
-neutral/cancelled jobs, or any missing report.
-`GITHUB_STEP_SUMMARY`, when set, receives a short registry or qualification
-summary. Direct execution emits a GitHub `::error::` and exits non-zero on every
-contract failure.
+An earlier design (issue #2230) additionally planned a selection/report
+qualification protocol — a total per-PR lane selection manifest, per-lane
+JSON evidence reports, and posture-scoped SLOs — meant to replace branch
+protection's fixed required-check set with diff-scoped impact routing. That
+protocol shipped in schema (`rollout: "shadow"`, `MODE=reports`,
+`selector`/`report_schema_version` fields) but was never wired into any
+workflow as an actual selector. #2230 was closed in favor of the simpler
+fixed two-tier merge-gate/release-gate split, and the unused protocol was
+retired (#2261): `ci-lanes.json` and `ci-lane-contract.mjs` now describe only
+what actually runs.
 
 ## Modules
 
