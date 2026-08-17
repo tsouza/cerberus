@@ -101,7 +101,7 @@ const (
 	// intercept it before those forwarders, while float-only functions drop
 	// every histogram sample and re-project an empty canonical float shape.
 	// Every other wrapping shape remains behind expHistogramSelectorRouting
-	// until it grows its own histogram-aware lowering (issue #1967).
+	// until it grows its own histogram-aware lowering (issue #2296).
 	HistogramRowShape
 )
 
