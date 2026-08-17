@@ -223,6 +223,60 @@ func TestFilterRangeWindowTranspose_BlockedByComputedGroupKey(t *testing.T) {
 	}
 }
 
+// TestFilterRangeWindowTranspose_MixedBareAndComputedGroupKey verifies that
+// a GroupBy mixing a bare key (`ServiceName`) with a computed one
+// (`substr(ServiceName, 1)`) still allows the rewrite via the bare subset:
+// the computed entry contributes no passthrough name and is simply
+// skipped, it does not abort the whole passthrough set — matching
+// FilterAggregateTranspose's policy (see bareGroupByColumnNames and
+// #2285). This pins the "skip, don't abort" policy against a case both
+// existing BlockedByComputedGroupKey tests miss — they use a
+// single-entry GroupBy, where "skip down to empty" and "abort the whole
+// set" happen to coincide.
+func TestFilterRangeWindowTranspose_MixedBareAndComputedGroupKey(t *testing.T) {
+	t.Parallel()
+
+	scan := &chplan.Scan{Table: "otel_logs"}
+	pred := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "ServiceName"},
+		Right: &chplan.LitString{V: "api"},
+	}
+	computedKey := &chplan.FuncCall{
+		Fn:   chplan.FnSubstring,
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}, &chplan.LitInt{V: 1}},
+	}
+	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: "ServiceName"}, computedKey}
+	input := &chplan.Filter{
+		Input: &chplan.RangeWindow{
+			Input:           scan,
+			Func:            "rate",
+			Range:           5 * time.Minute,
+			TimestampColumn: "Timestamp",
+			ValueColumn:     "BodyBytes",
+			GroupBy:         groupBy,
+		},
+		Predicate: pred,
+	}
+
+	expected := &chplan.RangeWindow{
+		Input: &chplan.Filter{
+			Input:     scan,
+			Predicate: pred,
+		},
+		Func:            "rate",
+		Range:           5 * time.Minute,
+		TimestampColumn: "Timestamp",
+		ValueColumn:     "BodyBytes",
+		GroupBy:         groupBy,
+	}
+
+	out := optimizer.New(optimizer.FilterRangeWindowTranspose()).Run(context.Background(), input)
+	if !out.Equal(expected) {
+		t.Fatalf("FilterRangeWindowTranspose did not fire on mixed bare/computed GroupBy:\n got: %#v\nwant: %#v", out, expected)
+	}
+}
+
 // TestFilterRangeWindowTranspose_NoMatchOnOtherShape leaves Filter(Scan)
 // alone.
 func TestFilterRangeWindowTranspose_NoMatchOnOtherShape(t *testing.T) {

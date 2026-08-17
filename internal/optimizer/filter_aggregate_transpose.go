@@ -39,9 +39,14 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //
 //   - Empty `GroupBy` — nothing is passthrough.
 //   - `GroupBy[i]` that is not a bare `ColumnRef` (e.g. a function
-//     call or arithmetic) — could be substituted into the predicate,
-//     but that's a more involved rewrite.
-//   - `GroupByAliases[i]` that renames the key.
+//     call or arithmetic) — that entry contributes no passthrough name
+//     (see `passthroughGroupKeys`, built on `bareGroupByColumnNames`,
+//     shared with `FilterRangeWindowTranspose`'s
+//     `seriesIdentifyingColumns`): it is skipped, not substituted, and
+//     the rewrite still proceeds using the Aggregate's OTHER bare keys.
+//   - `GroupByAliases[i]` that renames the key — excluded in addition
+//     to the bare/computed check above, since `RangeWindow` has no
+//     alias list to mirror.
 //   - `ColumnRef` with a non-empty Qualifier in the predicate.
 //
 // Built on the `PatternRule` scaffold.
@@ -93,10 +98,14 @@ func transposeFilterAggregate(b Bindings) chplan.Node {
 
 // passthroughGroupKeys returns the set of bare-column group keys whose
 // names survive into the Aggregate's output unchanged, or nil to signal
-// "this Aggregate has no passthrough keys — decline the rewrite". An
-// alias that renames a key removes it from the passthrough set; the
-// emitter would expose the key only under the alias, so the original
-// name doesn't exist in the Aggregate's output anyway.
+// "this Aggregate has no passthrough keys — decline the rewrite". A
+// computed `GroupBy[i]` entry (not a bare `*chplan.ColumnRef`) contributes
+// no name and does NOT disqualify the other, bare keys — see
+// `bareGroupByColumnNames` for why that's sound independent of what else is
+// in the list. An alias that renames a key removes it from the passthrough
+// set on top of that: the emitter would expose the key only under the
+// alias, so the original name doesn't exist in the Aggregate's output
+// anyway.
 func passthroughGroupKeys(a *chplan.Aggregate) map[string]struct{} {
 	if len(a.GroupBy) == 0 {
 		return nil
