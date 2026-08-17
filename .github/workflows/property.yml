@@ -133,25 +133,32 @@ jobs:
         # #1520); `-rapid.checks=500` widens beyond rapid's default of
         # 100; `-rapid.shrinktime=5m` lets the shrinker work on a failing
         # draw before the test gives up.
-        # `-v` surfaces the rapid seed in the workflow log so a failure
-        # is reproducible with `-rapid.seed=<N>`.
         #
-        # Flag ordering matters: rapid's flags (`-rapid.checks`,
-        # `-rapid.shrinktime`) are registered by the rapid library, not
-        # by `go test`. `go test` only recognises them as test-binary
-        # flags when they appear AFTER the package list — otherwise the
-        # toolchain misparses them as build flags, drops the package
-        # path, and falls back to `.` (the module root), which has no
-        # Go files and aborts with `FAIL . [setup failed]`.
-        run: |
-          go test \
-            -tags chdb,agpl_oracle,chdb_agpl_oracle \
-            -count=1 \
-            -v \
-            -timeout=20m \
-            ./test/property/... \
-            -rapid.checks=500 \
-            -rapid.shrinktime=5m
+        # The `go test` invocation lives in property-fanout.mjs, not here,
+        # because it needs a fan-out with a failure-propagation contract —
+        # exactly the "non-trivial step logic" invariant 15 keeps out of
+        # workflow files. test/property is one Go package (one test
+        # binary), and TestPromQL_Property_NativeHistogram now runs
+        # 900-1190s at this depth (#2165 widened its query-shape space from
+        # 3 to 16 legitimate shapes) — too close to its own 20-minute go
+        # test -timeout to trust in isolation, let alone stacked serially
+        # behind the rest of the package's tests in one binary, which is
+        # what pushed the combined run past the timeout on every push since.
+        # The script splits the histogram sweep's -rapid.checks across
+        # several concurrent processes, runs the deterministic histogram
+        # roster in its own process, and runs everything else in a fourth —
+        # which removes the serial stacking without touching product code
+        # or dropping a single test. It also cross-checks every rapid-based
+        # leg's log for a real, measured hazard: pgregory.net/rapid derives
+        # its OWN deadline from a leg's `-timeout` and silently stops early
+        # (still logging "OK") when it estimates it is running short, so a
+        # too-tight per-leg timeout would degrade coverage without ever
+        # turning the job red — see the script's header for the full
+        # account, including why t.Parallel() inside one process is not
+        # safe here either (chdb-go's session-level global).
+        env:
+          TAGS: chdb,agpl_oracle,chdb_agpl_oracle
+        run: node .github/scripts/property-fanout.mjs
 
       - name: Upload rapid failure artifacts
         if: failure()

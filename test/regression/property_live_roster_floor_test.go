@@ -9,12 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
-
-const propertyRapidChecksFloor = 500
 
 type propertyLiveRosterBinding struct {
 	File       string
@@ -481,6 +478,39 @@ func propertyRandomRunnerBindingProblems(want, got []propertyRandomRunnerBinding
 	return problems
 }
 
+// propertyFanoutScript is the composite go-test invocation
+// TestPropertyWorkflowPinsCompositeExecutionAndRapidBudget proves the
+// property job's fan-out step actually executes.
+//
+// The "Run property tests" step no longer embeds `go test ...
+// ./test/property/...` directly in property.yml: TestPromQL_Property_
+// NativeHistogram alone grew too close to (and past) the job's 20-minute
+// go test -timeout after #2165 widened its query-shape space, so a single
+// serial `go test ./test/property/...` line is no longer a shape this
+// job's execution can safely take — it now fans the histogram sweep, the
+// histogram roster, and the rest of the package out across several
+// concurrent processes via this script (see the script's own header for
+// the full account, including why t.Parallel() inside one process is not
+// a safe alternative: chdb-go v1.12.0 keeps a single process-wide
+// globalSession).
+//
+// property-fanout.test.mjs (run under the required `check` lane's `node
+// --test`) is what proves the fanned-out legs still cover the full
+// ./test/property/... surface at the full -rapid.checks=500 depth with no
+// test dropped, narrowed, or duplicated — the equivalent of what this file
+// used to check directly against a single `-rapid.checks=500` flag. The
+// Go-side check below is scoped to the workflow WIRING: that property.yml
+// still invokes this exact script, with the composite build-tag set,
+// rather than silently reverting to a raw (and now unsafe) inline command.
+const propertyFanoutScript = ".github/scripts/property-fanout.mjs"
+
+// propertyFanoutTags is the literal TAGS env value property-fanout.mjs
+// requires (see the script's own "TAGS is required" guard): chdb for the
+// property-test entry points, agpl_oracle for the LogQL from-scratch
+// oracle, and chdb_agpl_oracle for logql_test.go's own single-term build
+// constraint (see property.yml's tag-composition comment and #1520).
+const propertyFanoutTags = "chdb,agpl_oracle,chdb_agpl_oracle"
+
 func TestPropertyWorkflowPinsCompositeExecutionAndRapidBudget(t *testing.T) {
 	workflows := readTaggedWorkflows(t, repoRootForParity(t))
 	workflow, ok := workflows[".github/workflows/property.yml"]
@@ -493,38 +523,79 @@ func TestPropertyWorkflowPinsCompositeExecutionAndRapidBudget(t *testing.T) {
 }
 
 func TestPropertyWorkflowRapidBudgetRejectsHollowCommands(t *testing.T) {
-	valid := "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=500"
-	if problems := propertyWorkflowExecutionProblems(propertyWorkflowWithCommand(valid)); len(problems) > 0 {
-		t.Fatalf("valid property command rejected: %v", problems)
+	valid := "node " + propertyFanoutScript
+	validEnv := map[string]string{"TAGS": propertyFanoutTags}
+	if problems := propertyWorkflowExecutionProblems(propertyWorkflowWithStep(valid, validEnv)); len(problems) > 0 {
+		t.Fatalf("valid property fan-out command rejected: %v", problems)
 	}
 	tests := []struct {
 		name    string
 		command string
+		env     map[string]string
 		want    string
 	}{
-		{name: "missing budget", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/...", want: "want exactly one"},
-		{name: "reduced budget", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=1", want: "want 500"},
-		{name: "budget before package", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle -rapid.checks=500 ./test/property/...", want: "after the package list"},
-		{name: "dynamic budget", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=$RAPID_CHECKS", want: "literal"},
-		{name: "duplicate budget", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=500 -rapid.checks=500", want: "want exactly one"},
-		{name: "incomplete tags", command: "go test -tags chdb ./test/property/... -rapid.checks=500", want: "build tags"},
-		{name: "compile only", command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle -run '^$' ./test/property/... -rapid.checks=500", want: "compile-only"},
+		{
+			name:    "reverted to the old raw go test line",
+			command: "go test -tags chdb,agpl_oracle,chdb_agpl_oracle ./test/property/... -rapid.checks=500",
+			env:     validEnv,
+			want:    "want exactly one",
+		},
+		{
+			name:    "missing TAGS entirely",
+			command: valid,
+			env:     nil,
+			want:    "declares no TAGS env var",
+		},
+		{
+			name:    "TAGS drops a required tag",
+			command: valid,
+			env:     map[string]string{"TAGS": "chdb"},
+			want:    "TAGS = ",
+		},
+		{
+			name:    "TAGS is a dynamic expression rather than the literal set",
+			command: valid,
+			env:     map[string]string{"TAGS": "${{ env.SOMETHING }}"},
+			want:    "TAGS = ",
+		},
+		{
+			name:    "extra argument narrows or redirects the script",
+			command: valid + " --dry-run",
+			env:     validEnv,
+			want:    "want exactly the script path",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			problems := strings.Join(propertyWorkflowExecutionProblems(propertyWorkflowWithCommand(tc.command)), "\n")
+			problems := strings.Join(propertyWorkflowExecutionProblems(propertyWorkflowWithStep(tc.command, tc.env)), "\n")
 			if !strings.Contains(problems, tc.want) {
 				t.Fatalf("command problems = %q, want substring %q", problems, tc.want)
 			}
 		})
 	}
+
+	t.Run("duplicate invocation", func(t *testing.T) {
+		workflow := taggedWorkflow{Jobs: map[string]taggedWorkflowJob{
+			"property": {
+				RunsOn: "ubuntu-latest",
+				Steps: []taggedWorkflowStep{
+					{Run: valid, Env: validEnv},
+					{Run: valid, Env: validEnv},
+				},
+			},
+		}}
+		problems := strings.Join(propertyWorkflowExecutionProblems(workflow), "\n")
+		if !strings.Contains(problems, "want exactly one") {
+			t.Fatalf("command problems = %q, want substring %q", problems, "want exactly one")
+		}
+	})
 }
 
-func propertyWorkflowWithCommand(command string) taggedWorkflow {
+func propertyWorkflowWithStep(command string, env map[string]string) taggedWorkflow {
 	workflow := taggedWorkflow{Jobs: map[string]taggedWorkflowJob{}}
 	workflow.Jobs["property"] = taggedWorkflowJob{
 		RunsOn: "ubuntu-latest",
-		Steps:  []taggedWorkflowStep{{Run: command}},
+		Steps:  []taggedWorkflowStep{{Run: command, Env: env}},
 	}
 	return workflow
 }
@@ -534,7 +605,11 @@ func propertyWorkflowExecutionProblems(workflow taggedWorkflow) []string {
 	if !ok {
 		return []string{`property workflow has no "property" job`}
 	}
-	var candidates []taggedStaticCommand
+	type candidate struct {
+		command taggedStaticCommand
+		stepEnv map[string]string
+	}
+	var candidates []candidate
 	var problems []string
 	for index, step := range job.Steps {
 		commands, err := taggedStaticCommands(step.Run)
@@ -543,110 +618,41 @@ func propertyWorkflowExecutionProblems(workflow taggedWorkflow) []string {
 			continue
 		}
 		for _, command := range commands {
-			if command.Executable != "go" || len(command.Args) == 0 || command.Args[0].Text != "test" {
+			if command.Executable != "node" || len(command.Args) == 0 {
 				continue
 			}
-			for _, argument := range command.Args[1:] {
-				if argument.Text == "./test/property/..." {
-					candidates = append(candidates, command)
-					break
-				}
+			if command.Args[0].Text == propertyFanoutScript {
+				candidates = append(candidates, candidate{command: command, stepEnv: step.Env})
 			}
 		}
 	}
 	if len(candidates) != 1 {
 		problems = append(problems, fmt.Sprintf(
-			"property job has %d go test commands for ./test/property/..., want exactly one",
-			len(candidates),
+			"property job has %d node %s commands, want exactly one",
+			len(candidates), propertyFanoutScript,
 		))
 		return problems
 	}
-	command := candidates[0]
+	found := candidates[0]
+	command := found.command
 	if problem := taggedEvidenceContextProblem(command, command.Env, "", false); problem != "" {
-		problems = append(problems, "property go test command cannot prove execution: "+problem)
+		problems = append(problems, "property fan-out command cannot prove execution: "+problem)
 	}
-	claim, err := parseTaggedGoTestArgs(command.Args[1:])
-	if problem := propertyRapidChecksProblem(command.Args[1:]); problem != "" {
-		problems = append(problems, problem)
+	if command.Args[0].Dynamic {
+		problems = append(problems, "property fan-out script path is dynamic, not a literal path")
 	}
-	if err != nil {
-		problems = append(problems, "property go test command is invalid: "+err.Error())
-		return problems
+	if len(command.Args) != 1 {
+		problems = append(problems, fmt.Sprintf(
+			"property fan-out command has %d argument(s), want exactly the script path",
+			len(command.Args),
+		))
 	}
-	wantTags := map[string]bool{"agpl_oracle": true, "chdb": true, "chdb_agpl_oracle": true}
-	if !boolMapEqual(claim.ExplicitTag, wantTags) {
-		problems = append(problems, fmt.Sprintf("property go test build tags = %v, want exactly %v", sortedBoolKeys(claim.ExplicitTag), sortedBoolKeys(wantTags)))
-	}
-	if !sameNormalizedStrings(claim.Packages, []string{"./test/property/..."}) {
-		problems = append(problems, fmt.Sprintf("property go test packages = %v, want only ./test/property/...", claim.Packages))
-	}
-	if claim.CompileOnly {
-		problems = append(problems, "property go test command is compile-only")
-	}
-	if claim.RunPattern != "" {
-		problems = append(problems, fmt.Sprintf("property go test command narrows execution with -run %q", claim.RunPattern))
+	tags, ok := found.stepEnv["TAGS"]
+	switch {
+	case !ok:
+		problems = append(problems, "property fan-out step declares no TAGS env var")
+	case tags != propertyFanoutTags:
+		problems = append(problems, fmt.Sprintf("property fan-out TAGS = %q, want %q", tags, propertyFanoutTags))
 	}
 	return problems
-}
-
-func propertyRapidChecksProblem(arguments []taggedShellToken) string {
-	packageIndex := -1
-	for index, argument := range arguments {
-		if argument.Text == "./test/property/..." {
-			if packageIndex >= 0 {
-				return "property go test command repeats ./test/property/..."
-			}
-			packageIndex = index
-		}
-	}
-	if packageIndex < 0 {
-		return "property go test command is missing ./test/property/..."
-	}
-	type occurrence struct {
-		index int
-		value taggedShellToken
-	}
-	var occurrences []occurrence
-	for index := 0; index < len(arguments); index++ {
-		argument := arguments[index]
-		name, inline, hasInline := strings.Cut(argument.Text, "=")
-		if name != "-rapid.checks" {
-			continue
-		}
-		value, next, err := taggedFlagValue(arguments, index, inline, hasInline)
-		if err != nil {
-			return "property -rapid.checks is invalid: " + err.Error()
-		}
-		occurrences = append(occurrences, occurrence{index: index, value: value})
-		index = next
-	}
-	if len(occurrences) != 1 {
-		return fmt.Sprintf("property go test command has %d -rapid.checks flags, want exactly one", len(occurrences))
-	}
-	checks := occurrences[0]
-	if checks.index < packageIndex {
-		return "property -rapid.checks must appear after the package list"
-	}
-	if checks.value.Dynamic {
-		return "property -rapid.checks must be a literal integer"
-	}
-	value, err := strconv.Atoi(checks.value.Text)
-	if err != nil {
-		return fmt.Sprintf("property -rapid.checks value %q is not an integer", checks.value.Text)
-	}
-	if value != propertyRapidChecksFloor {
-		return fmt.Sprintf("property -rapid.checks = %d, want %d", value, propertyRapidChecksFloor)
-	}
-	return ""
-}
-
-func sortedBoolKeys(values map[string]bool) []string {
-	keys := make([]string, 0, len(values))
-	for key, enabled := range values {
-		if enabled {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	return keys
 }
