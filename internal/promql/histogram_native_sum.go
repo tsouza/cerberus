@@ -10,8 +10,16 @@ import (
 )
 
 const (
-	// hqMergeCountsArrayAlias and hqMergeSumsArrayAlias carry the two scalar
-	// fields through the same compensated across-series fold as every bucket.
+	// hqMergeCountsArrayAlias and hqMergeSumsArrayAlias name the groupArray
+	// columns that collect the Count/Sum scalar fields across matched rows,
+	// shared by every merge in this package. Most callers (this file,
+	// histogram_quantile_native_window.go) fold that array through the same
+	// compensated across-series fold as every bucket — [promHistogramKahanSum]
+	// — but histogram_native_binop.go's two-operand merge deliberately folds
+	// it with the PLAIN [plainArraySum] instead, matching reference
+	// Prometheus's uncompensated FloatHistogram.Add/Sub (see that file's
+	// header doc for why). The aliases only name the collected array; they
+	// carry no compensation guarantee of their own.
 	hqMergeCountsArrayAlias = "_hq_merge_counts"
 	hqMergeSumsArrayAlias   = "_hq_merge_sums"
 )
