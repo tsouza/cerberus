@@ -941,7 +941,8 @@ func compareSampleValue(
 // Sample field to be in range.
 func (sc sampleColumns) arity() int {
 	n := 0
-	for _, idx := range append([]int{sc.name, sc.attrs, sc.ts, sc.value}, sc.hist.indices()...) {
+	idxs := append([]int{sc.name, sc.attrs, sc.ts, sc.value, sc.mixedIsHistogram}, sc.hist.indices()...)
+	for _, idx := range idxs {
 		if idx+1 > n {
 			n = idx + 1
 		}
@@ -1412,6 +1413,12 @@ type sampleColumns struct {
 	// hist locates the native-histogram fields, or is nil when the
 	// projection answers with plain floats. See [locateHistogramColumns].
 	hist *histogramColumns
+
+	// mixedIsHistogram locates [colSetOpMixedIsHistogram], or is -1 when
+	// the projection carries no such discriminator — every fixture except
+	// a Mixed VectorSetOr (cerberus issue #2330), whose hist columns are
+	// real on some rows and placeholders on others.
+	mixedIsHistogram int
 }
 
 // locateSampleColumns maps a projection's column names onto the Sample
@@ -1427,7 +1434,7 @@ type sampleColumns struct {
 // to TimeUnix. If both are present, TimeUnix remains authoritative and
 // anchor_ts is only subquery scaffolding.
 func locateSampleColumns(cols []string) (sampleColumns, error) {
-	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1}
+	sc := sampleColumns{name: -1, attrs: -1, ts: -1, value: -1, mixedIsHistogram: -1}
 	anchorTS := -1
 	for i, col := range cols {
 		switch col {
@@ -1441,6 +1448,8 @@ func locateSampleColumns(cols []string) (sampleColumns, error) {
 			sc.ts = i
 		case colValue:
 			sc.value = i
+		case colSetOpMixedIsHistogram:
+			sc.mixedIsHistogram = i
 		}
 	}
 	if sc.ts < 0 {
@@ -1502,8 +1511,26 @@ func referenceShapeOfExpectedRows(rt *RoundTripSections, sc sampleColumns) ([]re
 
 		var hist *oracle.Histogram
 		if sc.hist != nil {
-			if hist, err = histogramFromExpectedRow(row, sc.hist, i); err != nil {
-				return nil, err
+			// A Mixed VectorSetOr's projection (cerberus issue #2330)
+			// carries all nine Histogram* columns on EVERY row — real on
+			// the histogram-shaped arm's rows, typed placeholders on the
+			// float arm's — so their mere presence doesn't mean this row
+			// is histogram-valued. Only build hist when there's no such
+			// discriminator (every other histogram-shaped projection,
+			// which is homogeneously histogram-valued) or the
+			// discriminator says this row is real.
+			rowIsHistogram := true
+			if sc.mixedIsHistogram >= 0 {
+				disc, derr := rowInt32(row[sc.mixedIsHistogram], i, colSetOpMixedIsHistogram)
+				if derr != nil {
+					return nil, derr
+				}
+				rowIsHistogram = disc != 0
+			}
+			if rowIsHistogram {
+				if hist, err = histogramFromExpectedRow(row, sc.hist, i); err != nil {
+					return nil, err
+				}
 			}
 		}
 
