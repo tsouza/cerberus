@@ -154,6 +154,9 @@ exp_histogram_changes.txtar
 exp_histogram_count.txtar
 exp_histogram_count_by.txtar
 exp_histogram_delta.txtar
+exp_histogram_float_vector_scaling_div.txtar
+exp_histogram_float_vector_scaling_mul.txtar
+exp_histogram_float_vector_scaling_mul_commute.txtar
 exp_histogram_idelta.txtar
 exp_histogram_increase_boundary.txtar
 exp_histogram_increase_cumulative_temporality_control.txtar
