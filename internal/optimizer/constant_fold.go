@@ -139,12 +139,12 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 // flavours (semantic literal arithmetic, heuristic boolean identities)
 // differ only in that per-Binary function.
 //
-// Every chplan Expr kind that holds a child Expr must appear here — a
-// missing case silently strands any pure-literal subtree nested inside
-// it unfolded. This mirrors projection_pushdown.go's walkExpr, which
-// documents the same exhaustiveness requirement for column-reference
-// discovery; the two switches should be kept in lockstep over the
-// chplan Expr vocabulary.
+// Every chplan Expr kind that holds a child Expr must appear here or in
+// foldExprSingleChild — a missing case silently strands any pure-literal
+// subtree nested inside it unfolded. This mirrors projection_pushdown.go's
+// walkExpr, which documents the same exhaustiveness requirement for
+// column-reference discovery; the switches should be kept in lockstep over
+// the chplan Expr vocabulary.
 func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, bool)) (chplan.Expr, bool) {
 	switch v := e.(type) {
 	case *chplan.Binary:
@@ -198,12 +198,6 @@ func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, b
 			return v, false
 		}
 		return &chplan.InList{Left: nl, List: newList, Negated: v.Negated}, true
-	case *chplan.FieldAccess:
-		ns, ch := foldExprWith(v.Source, foldBinary)
-		if !ch {
-			return v, false
-		}
-		return &chplan.FieldAccess{Source: ns, Path: v.Path}, true
 	case *chplan.Subscript:
 		nc, cc := foldExprWith(v.Container, foldBinary)
 		nk, kc := foldExprWith(v.Key, foldBinary)
@@ -211,6 +205,22 @@ func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, b
 			return v, false
 		}
 		return &chplan.Subscript{Container: nc, Key: nk}, true
+	}
+	return foldExprSingleChild(e, foldBinary)
+}
+
+// foldExprSingleChild handles the chplan Expr kinds that hold exactly one
+// child Expr and rebuild via a field copy — split out of foldExprWith
+// purely to keep that function's cognitive complexity within budget; see
+// its doc comment for the exhaustiveness requirement this shares.
+func foldExprSingleChild(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, bool)) (chplan.Expr, bool) {
+	switch v := e.(type) {
+	case *chplan.FieldAccess:
+		ns, ch := foldExprWith(v.Source, foldBinary)
+		if !ch {
+			return v, false
+		}
+		return &chplan.FieldAccess{Source: ns, Path: v.Path}, true
 	case *chplan.Lambda:
 		nb, ch := foldExprWith(v.Body, foldBinary)
 		if !ch {
