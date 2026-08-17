@@ -137,8 +137,10 @@ exp_histogram_bare_selector_range.txtar
 exp_histogram_binop_add.txtar
 exp_histogram_binop_add_downscale_fold.txtar
 exp_histogram_binop_add_range.txtar
+exp_histogram_binop_eq.txtar
 exp_histogram_binop_incompatible_gt_drop.txtar
 exp_histogram_binop_incompatible_mul_drop.txtar
+exp_histogram_binop_neq.txtar
 exp_histogram_binop_sub.txtar
 exp_histogram_changes.txtar
 exp_histogram_count.txtar

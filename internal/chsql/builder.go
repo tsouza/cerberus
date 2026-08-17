@@ -2122,7 +2122,28 @@ type OrderKey struct {
 // accept that shape. The emitter wraps the topk as
 // `row_number() OVER (PARTITION BY <by> ORDER BY <sort> [DESC]) <= K`
 // so the per-partition top-K survives without a constant LIMIT.
+//
+// Window omits the frame clause, so CH applies its default: RANGE
+// UNBOUNDED PRECEDING TO CURRENT ROW when ORDER BY is present (peer rows
+// sharing an ORDER BY key see the same running value), or the whole
+// partition when it isn't. Callers that need each row numbered
+// individually — a strict per-row running frame even across equal ORDER
+// BY keys — use WindowFrame with an explicit frame clause such as
+// RowsUnboundedPrecedingToCurrentRow.
 func Window(fn Frag, partitionBy []Frag, orderBy []OrderKey) Frag {
+	return windowFrag(fn, partitionBy, orderBy, nil)
+}
+
+// WindowFrame is [Window] with an explicit trailing frame clause: "<fn>
+// OVER (PARTITION BY ... ORDER BY ... <frame>)". A nil frame renders
+// identically to Window (CH's default frame applies). Use a frame-clause
+// constructor such as RowsUnboundedPrecedingToCurrentRow to override CH's
+// default RANGE frame with a strict per-row ROWS frame.
+func WindowFrame(fn Frag, partitionBy []Frag, orderBy []OrderKey, frame Frag) Frag {
+	return windowFrag(fn, partitionBy, orderBy, frame)
+}
+
+func windowFrag(fn Frag, partitionBy []Frag, orderBy []OrderKey, frame Frag) Frag {
 	return func(b *Builder) {
 		fn(b)
 		b.sb.WriteString(" OVER (")
@@ -2146,8 +2167,29 @@ func Window(fn Frag, partitionBy []Frag, orderBy []OrderKey) Frag {
 					b.sb.WriteString(" DESC")
 				}
 			}
+			first = false
+		}
+		if frame != nil {
+			if !first {
+				b.sb.WriteByte(' ')
+			}
+			frame(b)
 		}
 		b.sb.WriteByte(')')
+	}
+}
+
+// RowsUnboundedPrecedingToCurrentRow returns a Frag rendering the window
+// frame clause "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": a
+// strict per-row running frame that gives every row its own value even
+// when it shares its ORDER BY key with a neighbour, unlike CH's default
+// RANGE UNBOUNDED PRECEDING TO CURRENT ROW frame (which peer-groups rows
+// with equal ORDER BY keys). Pass to WindowFrame wherever a windowed
+// aggregate must number or accumulate strictly per row — e.g. a running
+// rank over a key that repeats.
+func RowsUnboundedPrecedingToCurrentRow() Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
 	}
 }
 
