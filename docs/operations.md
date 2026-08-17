@@ -1499,7 +1499,7 @@ or a stable backport never drags any of the three backwards.
 #### De-gated lanes on the publish path
 
 The preflight's expected set (`RELEASE_REQUIRED_CHECKS`) covers every
-branch-protection context except the three below, which are listed in
+branch-protection context except the two below, which are listed in
 `RELEASE_INFORMATIONAL_CHECKS` instead: they run, they report, and their
 verdict does not hold a publish. Each one is a deliberate trade, so each one
 carries its reason here — `TestReleasePreflightCoversEveryBranchProtectionContext`
