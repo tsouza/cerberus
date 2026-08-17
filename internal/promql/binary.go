@@ -102,6 +102,19 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
+	// `<exp-hist shape> (==|!=) bool <exp-hist shape>` — a genuinely
+	// FLOAT-valued result (reference's VectorBinop overrides the
+	// histogram result to nil for the `bool` modifier), so it cannot
+	// route through [lowerExpHistogramValuedShape]'s histogram-valued
+	// recursive gate the way the non-bool histogram compare and the
+	// `+`/`-` merge do. This entry point — reached for every
+	// vector-vector binop regardless of nesting depth — is where that
+	// gate's own doc says a bool-histogram-compare picks up instead. See
+	// [expHistogramHistogramCompareBoolBinop]'s doc (histogram_native_binop_eq.go).
+	if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok {
+		return lowerExpHistogramHistogramCompareBoolBinop(lhs, rhs, ne, vm, s, ctx)
+	}
+
 	card := chplan.CardOneToOne
 	var include []string
 	if b.VectorMatching != nil {

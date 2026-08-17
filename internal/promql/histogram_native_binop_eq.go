@@ -67,21 +67,24 @@ import (
 // answers those the same way reference does (this file only recognises
 // EQLC/NEQ), so there is no gap to close there.
 //
-// Two shapes explicitly stay OUT of scope, both rejected with a
-// dedicated error rather than silently mishandled:
+// on()/ignoring() matching is supported via
+// [applyVectorMatchToHistogramOperand] (histogram_native_binop_match.go),
+// the same mechanism [lowerExpHistogramHistogramBinop] uses for `+`/`-`.
+// group_left()/group_right() (many-to-one broadcast) stay unsupported —
+// see [isSupportedHistogramMatchCardinality].
 //
-//   - on()/ignoring()/group_left()/group_right() matching — same
-//     default-matching-only limitation [lowerExpHistogramHistogramBinop]
-//     already carries for `+`/`-`, tracked by the same issue (#2273).
-//   - the `bool` modifier. Reference DOES support `hist1 == bool
-//     hist2`: VectorBinop overrides the histogram result to nil and
-//     the value to 1.0/0.0 for every matched pair regardless of `keep`,
-//     so the result becomes FLOAT-valued rather than histogram-valued —
-//     a third, still-different output shape from both the merge above
-//     and the structural filter below. Left for a future iteration
-//     under the same tracking issue rather than folded in here, to keep
-//     this change's blast radius to the histogram-valued shape the
-//     issue itself describes.
+// The `bool` modifier is ALSO answered, but by a different function
+// ([expHistogramHistogramCompareBoolBinop] /
+// [lowerExpHistogramHistogramCompareBoolBinop] below): reference's
+// VectorBinop overrides the histogram result to nil and the value to
+// 1.0/0.0 for every matched pair regardless of `keep`, so the result
+// becomes FLOAT-valued rather than histogram-valued — a third,
+// still-different output shape from both the merge in
+// histogram_native_binop.go and the structural filter this function
+// builds. Because it is float-valued, it cannot hook into
+// [lowerExpHistogramValuedShape]'s histogram-valued recursive gate the
+// way this file's non-bool recogniser does — see that recogniser's own
+// doc for how the two stay disjoint.
 //
 // Lowering shape (instant mode):
 //
@@ -113,35 +116,43 @@ import (
 // `==`'s kept rows have hlhs and hrhs bit-identical by construction (the
 // Having guard already proved it), so projecting the L-tagged value is
 // equally correct there — one projection shape serves both operators.
-func expHistogramHistogramCompareBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ne bool, vm *parser.VectorMatching, returnBool, ok bool) {
+func expHistogramHistogramCompareBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ne bool, vm *parser.VectorMatching, ok bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false, nil, false, false
+		return nil, nil, false, nil, false
 	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.EQLC && b.Op != parser.NEQ) {
-		return nil, nil, false, nil, false, false
+		return nil, nil, false, nil, false
+	}
+	if b.ReturnBool {
+		// The `bool` modifier overrides the result to a FLOAT 1.0/0.0 for
+		// every matched pair (reference's VectorBinop, see
+		// [expHistogramHistogramCompareBoolBinop]'s doc) — a different,
+		// non-histogram-valued output shape from this recogniser's
+		// structural-equality filter, so it must NOT participate in
+		// [lowerExpHistogramValuedShape]'s histogram-valued recursive
+		// gate. Reporting no match here lets the query fall through the
+		// dispatch chain to [lowerVectorVector] (binary.go), the entry
+		// point every vector-vector binop reaches regardless of nesting
+		// depth, where [expHistogramHistogramCompareBoolBinop] picks it
+		// up instead.
+		return nil, nil, false, nil, false
 	}
 	if !isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx) {
-		return nil, nil, false, nil, false, false
+		return nil, nil, false, nil, false
 	}
-	return b.LHS, b.RHS, b.Op == parser.NEQ, b.VectorMatching, b.ReturnBool, true
+	return b.LHS, b.RHS, b.Op == parser.NEQ, b.VectorMatching, true
 }
 
 // lowerExpHistogramHistogramCompareBinop lowers the shape
 // [expHistogramHistogramCompareBinop] recognised. Both operands defer
 // to their own existing histogram-valued lowering unchanged — this
 // function only adds the join + structural-equality filter on top.
-func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne bool, vm *parser.VectorMatching, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if !isDefaultMatching(vm) {
+func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if !isSupportedHistogramMatchCardinality(vm) {
 		return nil, fmt.Errorf(
-			"promql: on()/ignoring()/group_left()/group_right() matching is not yet supported for == or != " +
-				"between two exponential histogram selectors; only default (full label set) matching is supported",
-		)
-	}
-	if returnBool {
-		return nil, fmt.Errorf(
-			"promql: the 'bool' modifier is not yet supported for == or != between two exponential histogram " +
-				"selectors; only the default histogram-valued structural-equality filter (no 'bool') is supported",
+			"promql: group_left()/group_right() matching is not yet supported for == or != between two " +
+				"exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
 		)
 	}
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
@@ -152,7 +163,65 @@ func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne boo
 	if err != nil {
 		return nil, err
 	}
-	return compareTwoHistogramProjections(hpL, hpR, ne, s, ctx), nil
+	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
+	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
+	return compareTwoHistogramProjections(hpL, hpR, ne, false /* returnBool */, s, ctx), nil
+}
+
+// expHistogramHistogramCompareBoolBinop recognises `<exp-hist shape>
+// (==|!=) bool <exp-hist shape>` — reference overrides EVERY matched
+// pair's result to a FLOAT 1.0/0.0 for the `bool` modifier
+// (promql/engine.go's `VectorBinop`: `if returnBool { histogramValue =
+// nil; floatValue = ... }`), regardless of `keep` — a different, FLOAT-
+// valued output shape from both [expHistogramHistogramBinop]'s
+// histogram-valued merge and [expHistogramHistogramCompareBinop]'s
+// histogram-valued structural filter (cerberus issue #2273, gap 2).
+//
+// Because the output is float-valued, this recogniser does NOT hook into
+// [lowerExpHistogramValuedShape]'s histogram-valued recursive gate the
+// way the other two histogram-histogram binop recognisers do —
+// [expHistogramHistogramCompareBinop] explicitly defers to this one by
+// reporting no match whenever `b.ReturnBool` is set. Instead,
+// [lowerVectorVector] (binary.go) — the canonical entry point every
+// vector-vector binop reaches, top-level or nested — dispatches here
+// directly, mirroring how a plain (non-histogram) `bool`-compare reaches
+// `chplan.VectorJoin` with `ReturnBool: true` from the same call site.
+func expHistogramHistogramCompareBoolBinop(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ne bool, vm *parser.VectorMatching, ok bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool {
+		return nil, nil, false, nil, false
+	}
+	if b.Op != parser.EQLC && b.Op != parser.NEQ {
+		return nil, nil, false, nil, false
+	}
+	if !isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx) {
+		return nil, nil, false, nil, false
+	}
+	return b.LHS, b.RHS, b.Op == parser.NEQ, b.VectorMatching, true
+}
+
+// lowerExpHistogramHistogramCompareBoolBinop lowers the shape
+// [expHistogramHistogramCompareBoolBinop] recognised, reusing
+// [compareTwoHistogramProjections]'s join machinery with returnBool=true
+// — see that function's doc for the Having/output-shape difference the
+// `bool` modifier makes.
+func lowerExpHistogramHistogramCompareBoolBinop(lhsExpr, rhsExpr parser.Expr, ne bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if !isSupportedHistogramMatchCardinality(vm) {
+		return nil, fmt.Errorf(
+			"promql: group_left()/group_right() matching is not yet supported for == or != between two " +
+				"exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
+		)
+	}
+	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	hpR, err := lowerExpHistogramValuedOperand(rhsExpr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
+	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
+	return compareTwoHistogramProjections(hpL, hpR, ne, true /* returnBool */, s, ctx), nil
 }
 
 const (
@@ -170,10 +239,29 @@ const (
 	histEqSideRHS int64 = 1
 )
 
-// compareTwoHistogramProjections builds the join + structural-equality
-// filter [expHistogramHistogramCompareBinop] recognised. ne selects `!=`
-// (keep the mismatching pairs) over `==` (keep the matching ones).
-func compareTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, ne bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
+// compareTwoHistogramProjections builds the join + comparison
+// [expHistogramHistogramCompareBinop] / [expHistogramHistogramCompareBoolBinop]
+// recognised. ne selects `!=` (keep the mismatching pairs, or — with
+// returnBool — value 1.0 where the pair mismatches) over `==`.
+//
+// returnBool selects between two genuinely different output shapes,
+// mirroring reference's own VectorBinop branch:
+//
+//   - false (structural filter): Having additionally requires the
+//     field-by-field comparison to hold ([histogramCompareHavingGuard]),
+//     so only matching (`==`) or mismatching (`!=`) pairs survive the
+//     join at all; the surviving row's value is LHS's own histogram,
+//     unchanged, capped with [nativeHistogramProjection] — a
+//     histogram-VALUED result.
+//   - true (`bool` modifier): Having is just the both-sides-matched
+//     guard — reference keeps EVERY matched pair regardless of the
+//     comparison's truth value — and the output Value is
+//     `toFloat64(<field comparison>)`, a plain 4-column
+//     MetricName/Attributes/Timestamp/Value Sample shape (MetricName
+//     dropped to "", matching reference's dropMetricName rule for a
+//     `bool`-modified V-V binop) rather than a HistogramProjection: the
+//     result is FLOAT-valued, not histogram-valued.
+func compareTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, ne, returnBool bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	histSchema := histogramProjectionSchema(s)
 	stepAligned := ctx.step > 0
 
@@ -197,15 +285,42 @@ func compareTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, ne boo
 		projs = append(projs, chplan.Projection{Expr: anchor, Alias: histSchema.TimestampColumn})
 	}
 
+	having := histogramCompareHavingGuard(histSchema, ne)
+	if returnBool {
+		// Every matched pair survives — the both-sides-matched guard
+		// alone, with no field-equality condition.
+		having = histogramBinopBothSidesMatchedGuard()
+	}
+
 	compared := &chplan.Aggregate{
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{lSide, rSide}},
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
 		AggFuncs:           histogramCompareMergeAggs(histSchema),
-		Having:             histogramCompareHavingGuard(histSchema, ne),
+		Having:             having,
 		DropEmptyOnNoGroup: true,
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
+
+	if returnBool {
+		if !stepAligned {
+			// Instant mode: the shared prefix above only projects
+			// Timestamp in range mode (the `stepAligned` anchor). The
+			// non-bool path defers to nativeHistogramProjection's own
+			// tsExpr for this case; the bool path builds its own
+			// canonical Sample row directly, so it projects the literal
+			// here instead.
+			projs = append(projs, chplan.Projection{Expr: chplan.NowNano(), Alias: histSchema.TimestampColumn})
+		}
+		valueExpr := &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{histogramCompareFieldsExpr(histSchema, ne)}}
+		projs = append(
+			projs,
+			chplan.Projection{Expr: &chplan.LitString{V: ""}, Alias: histSchema.MetricNameColumn},
+			chplan.Projection{Expr: valueExpr, Alias: histSchema.ValueColumn},
+		)
+		return &chplan.Project{Input: compared, Projections: projs}
+	}
+
 	projs = append(projs, histogramCompareOutputProjections(histSchema)...)
 	reshaped := &chplan.Project{Input: compared, Projections: projs}
 
@@ -321,18 +436,19 @@ func histCompareFirstElem(alias string) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArrayElement, Args: []chplan.Expr{&chplan.ColumnRef{Name: alias}, &chplan.LitInt{V: firstArrayIndex}}}
 }
 
-// histogramCompareHavingGuard renders `count() = 2 AND <field equality>`
-// for `==`, or `count() = 2 AND <field inequality>` for `!=` (ne=true) —
-// [FloatHistogram.Equals] is exactly the AND of every
-// [histogramCompareFieldColumns] field comparing equal, so `!=` is the
-// De Morgan dual: the OR of any one of them comparing unequal. Neither
-// direction needs a NOT() wrapper.
+// histogramCompareFieldsExpr renders the field-by-field comparison
+// [FloatHistogram.Equals] performs — the AND of every
+// [histogramCompareFieldColumns] field comparing equal for `==`, or its
+// De Morgan dual (the OR of any one field comparing unequal) for `!=`
+// (ne=true). Neither direction needs a NOT() wrapper.
 //
-// The `count() = 2` guard is shared verbatim with `+`/`-`'s merge — see
-// [histogramBinopBothSidesMatchedGuard]'s doc (histogram_native_binop.go)
-// for why that alone implements default one-to-one V-V matching's INNER
-// JOIN semantics here too.
-func histogramCompareHavingGuard(s schema.Metrics, ne bool) chplan.Expr {
+// Shared by two callers with different uses for the same boolean:
+// [histogramCompareHavingGuard] ANDs it with the both-sides-matched guard
+// to decide which rows the non-bool structural filter KEEPS;
+// [lowerExpHistogramHistogramCompareBoolBinop] wraps it in `toFloat64`
+// directly as the `bool`-modifier VALUE, since reference keeps every
+// matched pair there regardless of this expression's truth value.
+func histogramCompareFieldsExpr(s schema.Metrics, ne bool) chplan.Expr {
 	op, combine := chplan.OpEq, chplan.OpAnd
 	if ne {
 		op, combine = chplan.OpNe, chplan.OpOr
@@ -351,8 +467,20 @@ func histogramCompareHavingGuard(s schema.Metrics, ne bool) chplan.Expr {
 		}
 		fieldCmp = &chplan.Binary{Op: combine, Left: fieldCmp, Right: cond}
 	}
+	return fieldCmp
+}
 
-	return &chplan.Binary{Op: chplan.OpAnd, Left: histogramBinopBothSidesMatchedGuard(), Right: fieldCmp}
+// histogramCompareHavingGuard renders `count() = 2 AND <field equality>`
+// for `==`, or `count() = 2 AND <field inequality>` for `!=` (ne=true) —
+// see [histogramCompareFieldsExpr] for the field-comparison half.
+//
+// The `count() = 2` guard is shared verbatim with `+`/`-`'s merge — see
+// [histogramBinopBothSidesMatchedGuard]'s doc (histogram_native_binop.go)
+// for why that alone implements one-to-one V-V matching's INNER JOIN
+// semantics here too (both for default matching and, once
+// [applyVectorMatchToHistogramOperand] has run, for on()/ignoring()).
+func histogramCompareHavingGuard(s schema.Metrics, ne bool) chplan.Expr {
+	return &chplan.Binary{Op: chplan.OpAnd, Left: histogramBinopBothSidesMatchedGuard(), Right: histogramCompareFieldsExpr(s, ne)}
 }
 
 // histogramCompareOutputProjections rebuilds the kept row's MetricName

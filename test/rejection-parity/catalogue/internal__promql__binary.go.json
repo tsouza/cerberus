@@ -44,6 +44,7 @@
       "evidence": {
         "guard": [
           "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
           "if b.VectorMatching != nil",
           "if len(b.VectorMatching.Include) \u003e 0",
           "if card == chplan.CardOneToOne"
@@ -77,6 +78,7 @@
       "evidence": {
         "guard": [
           "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
           "if b.VectorMatching != nil",
           "case parser.CardManyToMany of switch b.VectorMatching.Card"
         ],
@@ -97,6 +99,7 @@
       "evidence": {
         "guard": [
           "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
           "if b.VectorMatching != nil",
           "default of switch b.VectorMatching.Card over [case parser.CardOneToOne; case parser.CardManyToOne; case parser.CardOneToMany; case parser.CardManyToMany; default]"
         ],
