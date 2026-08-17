@@ -547,7 +547,9 @@ const (
 	FnCountEqual Fn = "countEqual"
 
 	// groupArray(x) aggregate — every x value in the group collected into an
-	// Array, in an unspecified (block) order.
+	// Array, in an unspecified (block) order. Composed with AggFunc.Combinators'
+	// CombIf ("groupArray over only the rows where cond is true") to render
+	// CH's groupArrayIf.
 	FnGroupArray Fn = "groupArray"
 
 	// max(x) aggregate — the maximum non-NULL x in the group.
