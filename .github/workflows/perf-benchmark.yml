@@ -18,7 +18,14 @@ name: perf-benchmark
 # prone) and never gates. The deterministic perf-regression ASSERTIONS —
 # the metrics ORDER BY granule-prune ratio floor and the /series
 # round-trip baseline — live in the `perf-guards` job of chdb.yml and DO
-# gate. Keep wall-clock here; keep structural assertions there.
+# gate (as a release-gate lane, #2230). Keep wall-clock here; keep
+# structural assertions there.
+#
+# RELEASE-gate cost posture (#2230): the `pull_request:` trigger below stays
+# path-filtered to the hot benchmark packages, but even a matching PR now
+# short-circuits to a no-op — the real baseline-vs-ref benchstat run happens
+# only on the weekly `schedule` and on manual `workflow_dispatch`, mirroring
+# every other demoted lane's RUN_HEAVY split.
 
 on:
   pull_request:
@@ -63,17 +70,26 @@ jobs:
   bench:
     name: benchstat diff (baseline vs ref)
     runs-on: ubuntu-latest
+    # RUN_HEAVY gates the real work (#2230): true on schedule / dispatch, false
+    # on a pull_request (even one the path filter matched). There is no `push:`
+    # trigger on this lane and no release-branch carve-out is needed — the
+    # nightly-scale weekly schedule and manual dispatch are the only ways this
+    # ever ran the full baseline-vs-ref benchstat pass, and that is unchanged.
+    env:
+      RUN_HEAVY: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
+      - if: env.RUN_HEAVY == 'true'
+        uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - name: install benchstat
+        if: env.RUN_HEAVY == 'true'
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       # Baseline/ref selection: explicit input wins; else if the trigger
@@ -84,11 +100,13 @@ jobs:
       # which writes ref_sha / baseline_sha / baseline_ref to $GITHUB_OUTPUT.
       - name: resolve baseline + ref SHAs
         id: refs
+        if: env.RUN_HEAVY == 'true'
         env:
           INPUT_BASELINE_REF: ${{ inputs.baseline_ref }}
         run: node .github/scripts/resolve-bench-refs.mjs
 
       - name: bench against baseline
+        if: env.RUN_HEAVY == 'true'
         env:
           BASELINE_SHA: ${{ steps.refs.outputs.baseline_sha }}
         run: |
@@ -101,6 +119,7 @@ jobs:
             | tee baseline.bench
 
       - name: bench against trigger ref
+        if: env.RUN_HEAVY == 'true'
         env:
           REF_SHA: ${{ steps.refs.outputs.ref_sha }}
         run: |
@@ -109,11 +128,16 @@ jobs:
           go test -bench=. -benchmem -benchtime=1s -count=6 -cpu=1 -run='^$' ./... \
             | tee ref.bench
 
+      - name: no-op (ordinary PR)
+        if: env.RUN_HEAVY != 'true'
+        run: echo "benchstat diff is a no-op on pull requests; the real baseline-vs-ref run happens on the weekly schedule and on manual dispatch (#2230)."
+
       - name: benchstat diff
+        if: env.RUN_HEAVY == 'true'
         run: benchstat baseline.bench ref.bench | tee benchstat.txt
 
       - name: write job summary
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline_ref }}
           BASELINE_SHA: ${{ steps.refs.outputs.baseline_sha }}
@@ -144,7 +168,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: upload bench artifacts
-        if: always()
+        if: always() && env.RUN_HEAVY == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: perf-benchmark

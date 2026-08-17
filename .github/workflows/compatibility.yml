@@ -3,11 +3,16 @@ name: compatibility
 # Unified compatibility CI for all three heads (PromQL / LogQL / TraceQL).
 #
 # Each head has its own job; the job-level `name:` is `compatibility/<head>`
-# so the per-job status check shows up in PR status / branch protection as
-# that string. The harness directories live under `compatibility/<head>/`
-# (parallel to `internal/`). All three heads run on every triggering event:
-# the only short-circuit is the docs-only `changes` filter on pull_request
-# (see the `changes` job), so a code change can never skip a parity head.
+# so the per-job status check shows up in PR status as that string. The
+# harness directories live under `compatibility/<head>/` (parallel to
+# `internal/`). Every head job is a RELEASE-gate lane (#2230, the
+# merge/release two-tier split): it runs for real on push / schedule /
+# dispatch and on a `release/*` head-branch PR — where it also short-circuits
+# on a docs-only diff (the `changes` job's `docs_only` output) so a code
+# change can never skip a parity head — and short-circuits to a fast no-op on
+# an ordinary PR or a merge-group entry (`changes`' `run_heavy` output).
+# `gate`, the cheap discipline-scan + build-sanity tripwire, is not part of
+# that split and always runs.
 #
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
@@ -43,18 +48,21 @@ name: compatibility
 #     fails at teardown with "Can't find 'action.yml'".
 
 on:
-  # PR trigger has no `paths:` filter so the three head checks always
-  # appear in the rollup. This is intentional for the
-  # required-status-checks promotion: path-skipped checks would leave
-  # the rollup missing entries and block merges.
+  # PR trigger has no `paths:` filter so every head check always appears in
+  # the rollup — a fast no-op on an ordinary PR, the real run on a `release/*`
+  # head-branch PR (release.yml's RELEASE_REQUIRED_CHECKS names
+  # compatibility/prometheus, compatibility/loki, compatibility/tempo and
+  # compatibility/prometheus-forced-route; a path-skipped check would leave
+  # the rollup missing entries a release PR must show green).
   pull_request:
     branches: [main]
-  # All four head checks are required contexts, so the merge queue waits on them
-  # against its projected trunk. No `branches:` filter is available or needed
-  # here — a merge group only ever targets the branch whose queue it belongs to.
+  # Held to the PR posture (see `changes`' run_heavy output): a merge-group
+  # entry short-circuits exactly like an ordinary PR, so it costs nothing to
+  # keep the trigger. No `branches:` filter is available or needed here — a
+  # merge group only ever targets the branch whose queue it belongs to.
   merge_group:
   push:
-    # `release/*.x` so the three compatibility head checks also run on a
+    # `release/*.x` so the compatibility head checks also run for real on a
     # maintenance-line hotfix push — giving release.yml's maintenance preflight
     # green check-runs to verify.
     #
@@ -111,6 +119,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
+      # run_heavy — the merge/release two-tier split (#2230). Every head job
+      # below (`prometheus`, `prometheus-forced-route`, `tempo`, `loki`,
+      # `prometheus-floor`, `promql-surface`) is a RELEASE-gate lane, not a
+      # merge-gate one: it does its real Docker-differential work on push /
+      # schedule / dispatch and on a `release/*` head-branch PR, and short-
+      # circuits to a fast no-op everywhere else (an ordinary PR, or a
+      # merge-group entry, held to the PR posture — matches coverage.yml /
+      # property.yml). `gate` (the cheap discipline-scan tripwire) is NOT
+      # gated on this: it stays cheap enough to always run.
+      run_heavy: ${{ steps.compute.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -136,6 +154,13 @@ jobs:
               - '!README*'
 
       - id: compute
+        # HEAD_REF is passed through the environment, never interpolated
+        # directly into the script: github.head_ref is attacker-controlled on
+        # a fork PR (it is a branch name), and a raw `${{ github.head_ref }}`
+        # in a `run:` block is a script-injection hazard. github.event_name is
+        # server-controlled and safe to interpolate directly.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
@@ -145,6 +170,14 @@ jobs:
             fi
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${{ github.event_name }}" != "pull_request" ] && [ "${{ github.event_name }}" != "merge_group" ]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$HEAD_REF" == release/* ]]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
           fi
 
   # `gate` is the cheap-first tripwire. The compatibility harnesses are
@@ -204,7 +237,7 @@ jobs:
   prometheus:
     name: compatibility/prometheus
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was REMOVED here on
@@ -434,14 +467,15 @@ jobs:
     # reference Prometheus, so a green result is the corpus-wide proof that
     # route B == reference — far stronger than the 3 chDB-lane fixtures.
     #
-    # It is a branch-protection REQUIRED check, and one of the release
-    # preflight's required lanes: route B is a correctness-equivalent
-    # rewriting of the same query, so a diff here is a wrong answer served to
-    # a user, not a performance regression. The proof has to hold on every
-    # commit that ships, not only on the flip PR.
+    # It is one of the release preflight's required lanes (#2230 moved it off
+    # branch protection's own required-contexts set, onto the release gate
+    # only): route B is a correctness-equivalent rewriting of the same query,
+    # so a diff here is a wrong answer served to a user, not a performance
+    # regression. The proof has to hold on every commit that ships, not only
+    # on the flip PR.
     name: compatibility/prometheus-forced-route
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -618,7 +652,7 @@ jobs:
     # schema-integration.yml's schema-ddl lane started from.
     name: compatibility/prometheus-floor
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -806,7 +840,7 @@ jobs:
     # it has soaked on main — its green status on this PR is the proof.
     name: compatibility/promql-surface
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -857,7 +891,7 @@ jobs:
   tempo:
     name: compatibility/tempo
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1026,7 +1060,7 @@ jobs:
   loki:
     name: compatibility/loki
     needs: [changes, gate]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # NOTE: job-level `continue-on-error: true` was removed here.

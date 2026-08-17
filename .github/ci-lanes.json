@@ -154,7 +154,7 @@
       "package_globs": ["internal/logql/**", "test/integration/logql/**"],
       "substrate": "chdb",
       "risk_domains": ["logql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "advisory",
       "determinism": "deterministic",
@@ -189,7 +189,7 @@
       "package_globs": ["internal/promql/**", "test/integration/promql/**"],
       "substrate": "chdb",
       "risk_domains": ["promql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "advisory",
       "determinism": "deterministic",
@@ -224,7 +224,7 @@
       "package_globs": ["internal/traceql/**", "test/integration/traceql/**"],
       "substrate": "chdb",
       "risk_domains": ["sql", "traceql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "advisory",
       "determinism": "deterministic",
@@ -245,7 +245,7 @@
         "context_job": "perf-guards"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "perf-guards", "protected": true },
+      "context": { "match": "exact", "name": "perf-guards", "protected": false },
       "purpose": "performance",
       "layers": ["12"],
       "oracle_class": "performance",
@@ -255,7 +255,7 @@
       "package_globs": ["internal/**", "test/perf/**", "test/spec/**"],
       "substrate": "chdb",
       "risk_domains": ["cardinality", "optimizer", "performance", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -314,7 +314,7 @@
       "context": {
         "match": "exact",
         "name": "roundtrip (logql)",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6b"],
@@ -325,7 +325,7 @@
       "package_globs": ["internal/logql/**", "test/spec/logql/**"],
       "substrate": "chdb",
       "risk_domains": ["logql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -349,7 +349,7 @@
       "context": {
         "match": "exact",
         "name": "roundtrip (promql)",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6a"],
@@ -360,7 +360,7 @@
       "package_globs": ["internal/promql/**", "test/spec/promql/**"],
       "substrate": "chdb",
       "risk_domains": ["promql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -384,7 +384,7 @@
       "context": {
         "match": "exact",
         "name": "roundtrip (traceql)",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6c"],
@@ -395,7 +395,7 @@
       "package_globs": ["internal/traceql/**", "test/spec/traceql/**"],
       "substrate": "chdb",
       "risk_domains": ["sql", "traceql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -457,7 +457,7 @@
         "context_job": "agpl-clean"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "agpl-clean", "protected": false },
+      "context": { "match": "exact", "name": "agpl-clean", "protected": true },
       "purpose": "security",
       "layers": [],
       "oracle_class": "static",
@@ -469,7 +469,7 @@
       "risk_domains": ["agpl-boundary", "dependencies", "security"],
       "merge_posture": "always",
       "main_posture": "always",
-      "release_posture": "advisory",
+      "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "selector": { "unknown_paths": "full", "failure": "full" },
@@ -616,7 +616,7 @@
         "context_job": "link-check"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "link-check", "protected": false },
+      "context": { "match": "exact", "name": "link-check", "protected": true },
       "purpose": "quality",
       "layers": [],
       "oracle_class": "static",
@@ -628,7 +628,7 @@
       "risk_domains": ["docs"],
       "merge_posture": "always",
       "main_posture": "always",
-      "release_posture": "advisory",
+      "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "selector": { "unknown_paths": "full", "failure": "full" },
@@ -712,7 +712,7 @@
       "context": {
         "match": "exact",
         "name": "compatibility/loki",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6b", "6d"],
@@ -727,7 +727,7 @@
       ],
       "substrate": "reference-stack",
       "risk_domains": ["http", "logql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -751,7 +751,7 @@
       "context": {
         "match": "exact",
         "name": "compatibility/prometheus",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6a", "6d"],
@@ -766,7 +766,7 @@
       ],
       "substrate": "reference-stack",
       "risk_domains": ["http", "promql", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -805,7 +805,7 @@
       ],
       "substrate": "reference-stack",
       "risk_domains": ["clickhouse-floor", "optimizer", "promql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "advisory",
       "determinism": "deterministic",
@@ -829,7 +829,7 @@
       "context": {
         "match": "exact",
         "name": "compatibility/prometheus-forced-route",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6a"],
@@ -840,7 +840,7 @@
       "package_globs": ["compatibility/prometheus/**", "internal/solver/**"],
       "substrate": "reference-stack",
       "risk_domains": ["promql", "solver", "sql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -875,7 +875,7 @@
       "package_globs": ["internal/promql/**", "test/surface-parity/**"],
       "substrate": "reference-stack",
       "risk_domains": ["promql", "surface-parity"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "advisory",
       "determinism": "deterministic",
@@ -899,7 +899,7 @@
       "context": {
         "match": "exact",
         "name": "compatibility/tempo",
-        "protected": true
+        "protected": false
       },
       "purpose": "correctness",
       "layers": ["6c", "6d"],
@@ -914,7 +914,7 @@
       ],
       "substrate": "reference-stack",
       "risk_domains": ["grpc", "http", "sql", "traceql"],
-      "merge_posture": "always",
+      "merge_posture": "never",
       "main_posture": "coalesced",
       "release_posture": "required",
       "determinism": "deterministic",
@@ -938,7 +938,7 @@
       "context": {
         "match": "exact",
         "name": "config-docs",
-        "protected": false
+        "protected": true
       },
       "purpose": "quality",
       "layers": ["8"],
@@ -955,7 +955,7 @@
       "risk_domains": ["config", "docs"],
       "merge_posture": "always",
       "main_posture": "always",
-      "release_posture": "advisory",
+      "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "selector": { "unknown_paths": "full", "failure": "full" },
@@ -1552,7 +1552,7 @@
       ],
       "substrate": "runner",
       "risk_domains": ["performance"],
-      "merge_posture": "impact",
+      "merge_posture": "never",
       "main_posture": "never",
       "release_posture": "advisory",
       "determinism": "observational",
@@ -1682,7 +1682,7 @@
         "context_job": "mutation"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "mutation", "protected": true },
+      "context": { "match": "exact", "name": "mutation", "protected": false },
       "purpose": "quality",
       "layers": ["2b", "3", "4", "5"],
       "oracle_class": "mutation",
@@ -1887,7 +1887,7 @@
         "context_job": "schema-ddl"
       },
       "executions": ["default"],
-      "context": { "match": "exact", "name": "schema-ddl", "protected": false },
+      "context": { "match": "exact", "name": "schema-ddl", "protected": true },
       "purpose": "correctness",
       "layers": ["8"],
       "oracle_class": "execution",
@@ -1907,7 +1907,7 @@
       "risk_domains": ["lifecycle", "schema"],
       "merge_posture": "impact",
       "main_posture": "coalesced",
-      "release_posture": "advisory",
+      "release_posture": "required",
       "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "selector": { "unknown_paths": "full", "failure": "full" },

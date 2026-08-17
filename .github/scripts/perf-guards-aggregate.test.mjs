@@ -54,6 +54,30 @@ test('a docs-only change short-circuits green', () => {
   assert.match(v.message, /docs-only/);
 });
 
+test('an ordinary (non-release) PR short-circuits green via run_heavy=false (#2230)', () => {
+  const v = classifyPerfGuards({
+    changesResult: 'success',
+    docsOnly: 'false',
+    runHeavy: 'false',
+    shardsResult: 'skipped',
+    shardCount: '8',
+  });
+  assert.equal(v.ok, true);
+  assert.match(v.message, /release-gate/);
+});
+
+test('a heavy event (run_heavy=true) that skips is still a failure, not a pass', () => {
+  const v = classifyPerfGuards({
+    changesResult: 'success',
+    docsOnly: 'false',
+    runHeavy: 'true',
+    shardsResult: 'skipped',
+    shardCount: '8',
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.message, /should have run/);
+});
+
 test('a skipped matrix is NOT green when the changes job failed to decide', () => {
   // The hollow green this aggregate exists to prevent: a crashed `changes` job
   // also skips the matrix, and reading the skip alone cannot tell the two

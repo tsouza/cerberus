@@ -1,6 +1,7 @@
 // perf-guards-aggregate.mjs — roll the `perf-guards-shard` matrix up into the
-// single `perf-guards` status check branch protection and release.yml resolve
-// by name.
+// single `perf-guards` status check release.yml's RELEASE_REQUIRED_CHECKS
+// resolves by name (#2230: `perf-guards` moved off branch protection's own
+// required-contexts set onto the release gate only).
 //
 // Why this exists
 // ---------------
@@ -37,17 +38,23 @@
 // cancelled matrix through green, which is the shape that silently de-gates a
 // lane.
 //
-// The docs-only short-circuit is the other half. `perf-guards-shard` carries
-// `if: needs.changes.outputs.docs_only != 'true'`, so a docs-only PR skips the
-// whole matrix and this job must still report green — but ONLY on the two facts
-// together: the `changes` job SUCCEEDED, and it is the one that said docs_only.
-// Reading the skip alone would be the hollow green this aggregate exists to
-// prevent, because a crashed `changes` job also skips the matrix, and that is a
-// lane that failed to decide rather than a lane with nothing to do.
+// The docs-only / non-heavy short-circuit is the other half.
+// `perf-guards-shard` carries `if: needs.changes.outputs.docs_only != 'true'
+// && needs.changes.outputs.run_heavy == 'true'`, so a docs-only PR OR an
+// ordinary (non-release) PR — `perf-guards` is a release-gate lane, #2230 —
+// skips the whole matrix, and this job must still report green — but ONLY on
+// the right facts together: the `changes` job SUCCEEDED, and it is the one
+// that said docs_only or said run_heavy=false. Reading the skip alone would be
+// the hollow green this aggregate exists to prevent, because a crashed
+// `changes` job also skips the matrix, and that is a lane that failed to
+// decide rather than a lane with nothing to do.
 //
 // Env:
 //   CHANGES_RESULT  `needs.changes.result` — did the path filter decide at all.
 //   DOCS_ONLY       `needs.changes.outputs.docs_only` — its verdict.
+//   RUN_HEAVY       `needs.changes.outputs.run_heavy` — its verdict; 'false'
+//                   on an ordinary PR / merge-group entry legitimately skips
+//                   the matrix (the release gate, not the merge gate, runs it).
 //   SHARDS_RESULT   `needs.perf-guards-shard.result` — the rolled-up matrix.
 //   SHARD_COUNT     the number of legs the matrix declares, for the log line.
 //
@@ -64,8 +71,14 @@ import { error, notice } from './lib/gh.mjs';
  * caller turns that into a `::notice::`/`::error::` and an exit code. Kept pure
  * so the guard test can drive every branch without a workflow run.
  */
-export function classifyPerfGuards({ changesResult, docsOnly, shardsResult, shardCount }) {
+export function classifyPerfGuards({ changesResult, docsOnly, shardsResult, shardCount, runHeavy }) {
   const legs = shardCount ? `${shardCount} shard(s)` : 'the shard matrix';
+  // `runHeavy === 'false'` is a legitimate, deliberate reason to skip: #2230
+  // moved `perf-guards` to the release gate, so an ordinary (non-release) PR
+  // or a merge-group entry is SUPPOSED to short-circuit here. Absent/undefined
+  // (older callers, and every existing test) behaves exactly as before this
+  // was added — only an explicit 'false' counts as the non-heavy reason.
+  const nonHeavySkip = runHeavy === 'false';
 
   if (shardsResult === 'skipped') {
     if (changesResult !== 'success') {
@@ -77,18 +90,27 @@ export function classifyPerfGuards({ changesResult, docsOnly, shardsResult, shar
           'guards had nothing to check.',
       };
     }
-    if (docsOnly !== 'true') {
+    if (docsOnly !== 'true' && !nonHeavySkip) {
       return {
         ok: false,
         message:
-          `perf-guards-shard skipped although \`changes\` reported docs_only='${docsOnly}' — ${legs} ` +
-          'should have run. A required gate that skips on a code change is the gate being off.',
+          `perf-guards-shard skipped although \`changes\` reported docs_only='${docsOnly}' and ` +
+          `run_heavy='${runHeavy}' — ${legs} should have run. A release-gate lane that skips on push / ` +
+          'schedule / dispatch / a release/* PR is the gate being off.',
+      };
+    }
+    if (docsOnly === 'true') {
+      return {
+        ok: true,
+        message:
+          'docs-only change — the chDB perf guards were not dispatched, and nothing claims they ran.',
       };
     }
     return {
       ok: true,
       message:
-        'docs-only change — the chDB perf guards were not dispatched, and nothing claims they ran.',
+        'an ordinary (non-release) pull request or merge-group entry — perf-guards is a release-gate ' +
+        'lane (#2230); the chDB perf guards were not dispatched here, and nothing claims they ran.',
     };
   }
 
@@ -121,6 +143,7 @@ function main() {
   const verdict = classifyPerfGuards({
     changesResult: process.env.CHANGES_RESULT ?? '',
     docsOnly: process.env.DOCS_ONLY ?? '',
+    runHeavy: process.env.RUN_HEAVY ?? '',
     shardsResult: process.env.SHARDS_RESULT ?? '',
     shardCount: process.env.SHARD_COUNT ?? '',
   });

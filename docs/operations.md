@@ -1377,6 +1377,49 @@ Each individual publish in steps 5 and 6 runs through the machinery below — a
 backport by pushing its `release/*.x` branch, the head release by merging its
 release PR.
 
+### Two-tier test fence: merge gate vs. release gate
+
+Every PR passes through exactly one of two fixed gates, never a per-diff
+selection between them:
+
+- **Merge gate** — the required-status-checks set on `main`, waited on by
+  every ordinary PR: `check`, `lint`, `CodeQL`, `agpl-clean`, `schema-ddl`,
+  `config-docs`, `pr-body`, `link-check`, `forbid-skip` (which subsumes the
+  soft-assert / escape-hatch / feature-discipline / should-skip scans),
+  `forbid-deferral`, `forbid-sql-raw` and `forbid-chplan-fn-literal` (both
+  steps of `forbid-skip`), `quickstart`, `compose-smoke`, `dashboard`,
+  `probe`, `chart-validate`, `coverage`, `property`, and `strict-scan`. It is
+  small and fast by construction: build/correctness basics, the discipline
+  scans, and the substrate smoke lanes (`compose-smoke` / `dashboard`, which
+  short-circuit to a green no-op on an ordinary PR and do their real
+  Compose/k3d work on a release PR or a main push).
+- **Release gate** — the full matrix: every merge-gate check plus the
+  cost-dominating lanes an ordinary PR does not need to wait on —
+  `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
+  `chdb-build` lanes, `gremlins` mutation testing, all six `compatibility/*`
+  differential heads, and `migration-e2e`. Each of those lanes still triggers
+  on every `pull_request` (so its check-run stays visible for author
+  feedback), but short-circuits to a fast no-op unless the event is a push to
+  `main` / a maintenance `release/*.x` branch, a schedule, a manual dispatch,
+  or a pull request whose head branch starts with `release/` — the exact
+  `RUN_HEAVY` pattern `coverage.yml` and `property.yml` originated. A release
+  PR's head branch always matches, so its green status reflects the complete
+  matrix; an ordinary PR pays only the merge gate's cost. `mutation` keeps its
+  own diff-scoped selection (run only the phases whose package the PR
+  touched) rather than a blanket no-op, because that scoping is what closed
+  the v1.13.2-cycle hollow-green class described in `mutation.yml` — but
+  `mutation` was never required by either gate; it is informational
+  everywhere (see the de-gated-lanes table below).
+
+This is a fixed split, not a per-diff selection: an ordinary PR always runs
+the same merge-gate set regardless of which files it touches, and a release
+PR always runs the same release-gate superset. An earlier, more elaborate
+design attempted to route each PR through a *predicted* lane subset based on
+its diff's blast radius; a backtest against real PRs found the predictor fell
+back to the full lane set on the large majority of them anyway, so it bought
+none of its intended savings while adding real selection-logic risk. The
+two-tier split above replaces that attempt.
+
 ### Release pipeline (publish-on-merge)
 
 Cerberus publishes when a **validated release PR is merged to main**, not when
@@ -1386,12 +1429,10 @@ a raw tag is pushed (release-please-style). The flow:
    `prepare-release` workflow manually). `prepare-release.yml` bumps the chart
    `version:` and/or `appVersion:`, rewrites the CHANGELOG, regenerates the
    chart README, and opens a PR from a `release/v<app>-chart-<chart>` branch.
-2. **The PR runs the full matrix.** Because the head branch starts with
-   `release/`, the PR runs not only the standard required checks and the e2e
-   `split` + `crawl` legs, but also the four parity lanes —
-   `coverage`, `mutation`, `perf-profile`, `property` — which on an ordinary PR
-   short-circuit to a green no-op and only do their real (chDB-heavy) work on a
-   release PR. So a release PR's green status reflects the *complete* matrix.
+2. **The PR runs the release gate.** Because the head branch starts with
+   `release/`, every release-gate lane above (the e2e `split` + `crawl` legs
+   included) does its real work instead of short-circuiting to a no-op, so a
+   release PR's green status reflects the *complete* matrix.
 3. **Merge when green.** The maintainer merges once every required check is
    green on a tree up to date with main. That merge-when-green gate is the only
    thing standing between a release PR and publication — the commit on main is
@@ -1472,10 +1513,10 @@ lanes `compose-smoke`, `dashboard` and `profile` went the OTHER way — they
 stopped gating pull requests and became release-required, so this preflight is
 now the only thing standing between them and a publish.
 
-| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                         |
-| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact. It ran green under branch protection on the release PR, and requiring it here would put its ~11-leg matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly.                                                                                         |
+| Lane                       | Why it does not gate a publish                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose-smoke-shard-info` | A matrix child of `compose-smoke`, which is required. The aggregate deliberately does not `needs:` the crawl info shard, so the shard posts its own check-run; treating that run as required would let a flake in an explicitly non-blocking shard hold a release.                                                                                                                                                                                                                            |
+| `mutation`                 | A test-QUALITY ratchet, not a property of the artifact — and not a required check on either gate (its diff-scoped selection runs on ordinary PRs for author-time visibility only; see "Two-tier test fence" above). Requiring it here would put its ~11-leg full-sweep matrix on the critical path of every publish. On a maintenance line — where there is no PR at all — this means a hotfix publishes without a mutation verdict; that is the accepted cost of shipping hotfixes promptly. |
 
 #### Homebrew tap
 

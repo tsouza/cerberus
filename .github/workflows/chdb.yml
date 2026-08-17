@@ -17,43 +17,46 @@ name: chdb
 #                    walker over every *.txtar fixture under that head
 #                    that declares both `seed:` and `expected_rows:`.
 #
-# Why split: the required PR gates (`check` + `lint` + `forbid-skip`) are
+# Why this exists: the required PR gates (`check` + `lint` + `forbid-skip`) are
 # CGO-free and never compile the chdb-go driver, so they cannot run the
 # roundtrip pass. Without this workflow exercising
 # `./test/spec/{promql,logql,traceql}/`, fixture regressions slip past
 # code review (e.g. label_replace_basic.txtar landed broken on main via
 # #312 — no workflow caught it).
 #
-# Required on PRs whose path filter matches (see `paths:` below). The
-# `probe` job and each `roundtrip (<ql>)` matrix entry are entries in
-# the required-status-checks list on `main`. Required-on-match means
-# GitHub's branch protection waits for the workflow to register a
-# context; when the workflow is skipped by the path filter, the check
-# is recorded as `expected` and resolves automatically because no run
-# was created. Promoted from informational after Pool-DD #382 merged
-# while the chDB lane was skipping `internal/api/**` changes and let
-# four broken handler tests through (fixed in #388).
+# `probe` is a required PR gate (branch protection). `roundtrip (<ql>)`,
+# `chdb-build`, `integration-<ql>` and `perf-guards` are RELEASE-gate lanes
+# (#2230, the merge/release two-tier split): they still trigger on every
+# `pull_request` — no `paths:` filter, so their check-run always appears in
+# the PR rollup — but short-circuit to a fast no-op there and do their real
+# chDB-heavy work only on push / schedule / dispatch and on a `release/*`
+# head-branch PR. `needs.changes.outputs.run_heavy` carries that decision;
+# `roundtrip`'s per-step (not job-level) guard exists so its three matrix
+# legs always publish their names even while short-circuited — see the
+# comment above that job.
 #
-# If you widen the path filter, audit the required-checks list at the
-# same time — a context that never runs blocks every PR.
+# If you widen `probe`'s trigger scope, audit the required-checks list at
+# the same time — a context that never runs blocks every PR.
 
 on:
   push:
-    # `release/*.x` so `probe` + `roundtrip (<ql>)` + `perf-guards` (required
-    # checks, and all three named in release.yml's RELEASE_REQUIRED_CHECKS) also
-    # run on a maintenance-line hotfix push, giving release.yml's maintenance
+    # `release/*.x` so `probe` (a required check) and the release-gate lanes
+    # (`roundtrip (<ql>)` / `chdb-build` / `integration-<ql>` / `perf-guards`,
+    # all named in release.yml's RELEASE_REQUIRED_CHECKS) also run for real on
+    # a maintenance-line hotfix push, giving release.yml's maintenance
     # preflight check-runs to verify before publishing.
     branches: [main, 'release/*.x']
-  # PR trigger has no `paths:` filter so `probe` and `roundtrip (<ql>)`
-  # always appear in the PR rollup. Required for promoting them to
-  # required-status-checks — a path-skipped check leaves the rollup
-  # missing entries and would block merges of pure-docs PRs.
+  # PR trigger has no `paths:` filter so `probe` and every release-gate lane's
+  # check-run always appears in the PR rollup — required for `probe`'s
+  # required-status-check promotion (a path-skipped check leaves the rollup
+  # missing entries and would block merges of pure-docs PRs), and it is what
+  # lets the release-gate lanes keep posting a fast no-op for visibility.
   pull_request:
-  # Same reasoning one step further on: a merge queue gates on the same contexts
-  # branch protection does, so `probe` / `roundtrip (<ql>)` / `perf-guards` have
-  # to post on the projected trunk too. `roundtrip`'s docs-only guard is
-  # per-STEP, never job-level, precisely so its three matrix legs always publish
-  # their names — that property is what makes it queue-safe.
+  # Same reasoning one step further on: a merge queue gates on the same
+  # contexts branch protection does, so `probe` has to post on the projected
+  # trunk too. `roundtrip`'s docs-only/run_heavy guard is per-STEP, never
+  # job-level, precisely so its three matrix legs always publish their
+  # names — that property is what makes it queue-safe.
   merge_group:
   workflow_dispatch:
   schedule:
@@ -88,6 +91,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.compute.outputs.docs_only }}
+      # run_heavy — the merge/release two-tier split (#2230). `roundtrip`,
+      # `integration-*`, `chdb-build` and `perf-guards` are release-gate lanes,
+      # not merge-gate ones: they do their real (chDB-heavy) work on push /
+      # schedule / dispatch and on a `release/*` head-branch PR, and short-
+      # circuit to a fast no-op everywhere else (an ordinary PR, or a
+      # merge-group entry, which is held to the PR posture — see coverage.yml /
+      # property.yml for the same pattern). `probe` is NOT gated on this: it
+      # stays a normal, always-real PR check.
+      run_heavy: ${{ steps.compute.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -113,6 +125,13 @@ jobs:
               - '!README*'
 
       - id: compute
+        # HEAD_REF is passed through the environment, never interpolated
+        # directly into the script: github.head_ref is attacker-controlled on
+        # a fork PR (it is a branch name), and a raw `${{ github.head_ref }}`
+        # in a `run:` block is a script-injection hazard. github.event_name is
+        # server-controlled and safe to interpolate directly.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
@@ -122,6 +141,14 @@ jobs:
             fi
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "${{ github.event_name }}" != "pull_request" ] && [ "${{ github.event_name }}" != "merge_group" ]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$HEAD_REF" == release/* ]]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
           fi
 
   # `chdb-build` is a FAST, PR-visible compile gate over the entire
@@ -153,7 +180,13 @@ jobs:
   chdb-build:
     name: chdb-build
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    # RELEASE-GATE lane (#2230): a chdb-tagged compile break is caught for
+    # real on push / schedule / dispatch and on a `release/*` PR; an ordinary
+    # PR (and a merge-group entry) short-circuits to a no-op in seconds. A
+    # single non-matrix job's `if:` skip still posts its named context and
+    # resolves — see roundtrip's comment below for why that is safe here but
+    # NOT for a matrix job.
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -225,19 +258,23 @@ jobs:
   # Matrix entries run in parallel (`fail-fast: false`) so a regression
   # in one head doesn't mask regressions in the others.
   #
-  # DOCS-ONLY GUARD IS PER-STEP, NOT JOB-LEVEL — deliberately. The three
-  # `roundtrip (<ql>)` matrix legs are required status checks on `main`.
-  # A *job-level* `if: docs_only != 'true'` would skip the job before the
+  # DOCS-ONLY GUARD IS PER-STEP, NOT JOB-LEVEL — deliberately. `roundtrip
+  # (<ql>)` used to be a required status check on `main`; #2230 moved it to
+  # the release gate (branch protection no longer waits on it), but the
+  # matrix still runs on every `pull_request` so its check-run keeps
+  # appearing in the PR rollup for visibility, and a job-level skip would
+  # still hide a matrix's per-leg names from anything that DOES read them
+  # (release.yml's RELEASE_REQUIRED_CHECKS, a future re-promotion). A
+  # *job-level* `if: docs_only != 'true'` would skip the job before the
   # matrix expands, so the contexts `roundtrip (promql/logql/traceql)`
-  # are never created and branch protection blocks every docs-only PR
-  # forever with "Expected — Waiting for status to be reported" (a plain
-  # skipped non-matrix job reports its named context and resolves, but a
-  # skipped matrix job never publishes its per-leg names). Instead the
-  # job always runs so the matrix expands and each leg's context is
-  # published; the docs-only guard sits on the work steps, so on a
-  # docs-only PR every step is skipped and each leg concludes `success`
-  # in seconds (no chDB compile/run) — satisfying the required check
-  # without doing the work. Do NOT hoist this back to the job level.
+  # are never created (a plain skipped non-matrix job reports its named
+  # context and resolves, but a skipped matrix job never publishes its
+  # per-leg names). Instead the job always runs so the matrix expands and
+  # each leg's context is published; the docs-only/run_heavy guard sits on
+  # the work steps, so on a docs-only PR — or any ordinary (non-release)
+  # PR now that this is a release-gate lane — every step is skipped and
+  # each leg concludes `success` in seconds (no chDB compile/run). Do NOT
+  # hoist this back to the job level.
   roundtrip:
     name: roundtrip (${{ matrix.ql }})
     needs: changes
@@ -267,21 +304,21 @@ jobs:
             tags: chdb,agpl_oracle,chdb_agpl_oracle
     steps:
       - uses: actions/checkout@v7
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
 
       - uses: actions/setup-go@v7
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
           go-version-file: 'go.mod'
           cache: true
 
       - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad  # v2.85.10
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
           tool: just
 
       - name: Install libchdb.so
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         run: just chdb-install
 
       # Two packages, not one, because they run DIFFERENT checks over the
@@ -313,7 +350,7 @@ jobs:
       # the script's header) and, for promql, a fan-out over the
       # SPEC_SHARD_* partition with a failure-propagation contract.
       - name: Run TXTAR round-trip (${{ matrix.ql }})
-        if: needs.changes.outputs.docs_only != 'true'
+        if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         env:
           QL: ${{ matrix.ql }}
           TAGS: ${{ matrix.tags }}
@@ -344,14 +381,14 @@ jobs:
   #     executable TXTAR fixture diffed against its test/perf/cardinality-baseline/ shard.
   #   - TestScaleWallPin: the scan-amplification scale-wall pin.
   #
-  # REQUIRED STATUS CHECK on `main`, and named in release.yml's
-  # RELEASE_REQUIRED_CHECKS. It was neither until the cardinality ratchet's
-  # rows were audited: the ratchet's own doc comment claimed the lane was
-  # "already-required" and it was not, so a fixture whose fan-out grew turned
-  # one non-blocking lane red and merged anyway. `test/regression/
-  # perf_guards_gate_test.go` pins the job name, the recipe it runs, and the
-  # release-set membership, because none of those are visible in a PR diff
-  # once branch protection is the thing holding them together.
+  # A RELEASE-GATE lane: named in release.yml's RELEASE_REQUIRED_CHECKS, but
+  # (#2230) no longer a branch-protection required context on ordinary PRs —
+  # it does its real chDB-heavy work on push / schedule / dispatch and on a
+  # `release/*` head-branch PR, and short-circuits to a no-op everywhere else.
+  # `test/regression/perf_guards_gate_test.go` pins the job name, the recipe
+  # it runs, and the release-set membership, because none of those are
+  # visible in a PR diff once release.yml's preflight is the thing holding
+  # them together.
   #
   # Wall-clock perf stays in the informational `perf-benchmark.yml`
   # (benchstat, never gates) to avoid runner-variance flake; only the
@@ -404,8 +441,9 @@ jobs:
     needs: changes
     # Job-level (not per-step like `roundtrip`) because the required context is
     # posted by the `perf-guards` aggregator below, which always runs and reads
-    # this matrix's skip as one of its two docs-only facts.
-    if: needs.changes.outputs.docs_only != 'true'
+    # this matrix's skip as one of three facts: docs-only, non-heavy (#2230 —
+    # `perf-guards` is a release-gate lane now), or a real failure.
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     # Three minutes above `perf-chdb`'s own `-timeout 27m`, so Go's abort — the
     # one that dumps goroutine stacks and names WHERE a leg hung — always fires
@@ -475,17 +513,17 @@ jobs:
           PERF_SHARD_INDEX: ${{ matrix.shard }}
           PERF_SHARD_COUNT: ${{ strategy.job-total }}
 
-  # The AGGREGATOR — named EXACTLY `perf-guards` because that is the name branch
-  # protection's required-contexts set and release.yml's RELEASE_REQUIRED_CHECKS
-  # both resolve by text. The matrix children report as `perf-guards-shard (n)`,
-  # so without this job the required context is never posted and every PR sits
-  # on an "Expected" check forever.
+  # The AGGREGATOR — named EXACTLY `perf-guards` because release.yml's
+  # RELEASE_REQUIRED_CHECKS resolves it by text (#2230 moved `perf-guards` off
+  # branch protection's own required-contexts set, onto the release gate only).
+  # The matrix children report as `perf-guards-shard (n)`, so without this job
+  # the name release.yml waits for is never posted.
   perf-guards:
     name: perf-guards
     needs: [changes, perf-guards-shard]
     # always() so it still runs — and still reports — when the matrix skipped on
-    # a docs-only change. A required context that goes missing is indistinguish-
-    # able from one that is still running.
+    # a docs-only or non-heavy (ordinary PR) change. A required context that
+    # goes missing is indistinguishable from one that is still running.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -497,6 +535,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          RUN_HEAVY: ${{ needs.changes.outputs.run_heavy }}
           SHARDS_RESULT: ${{ needs.perf-guards-shard.result }}
           # Deliberately NOT passed. `strategy.job-total` here would be this
           # job's own (1), and a literal repeating the matrix length is exactly
@@ -525,7 +564,7 @@ jobs:
   integration-promql:
     name: integration (promql)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -564,7 +603,7 @@ jobs:
   integration-logql:
     name: integration (logql)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -603,7 +642,7 @@ jobs:
   integration-traceql:
     name: integration (traceql)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
