@@ -77,9 +77,10 @@ var resourceBoundClassification = map[string]struct {
 	"HistogramProjection":     {boundStructural, "1:1 row map — publishes the bounded input's native-histogram structural columns verbatim (no fan-out, no aggregation, no per-row quantile compute); same shape as Project"},
 
 	// Binary / set vector ops over two already-bounded operand vectors.
-	"VectorJoin":  {boundRuntimeNet, "axis 4: on()/ignoring() match join over two bounded vectors; max_memory_usage"},
-	"VectorSetOp": {boundStructural, "and/or/unless — ≤ the union of the two bounded operand vectors"},
-	"UnionAll":    {boundStructural, "≤ the sum of its bounded inputs"},
+	"VectorJoin":          {boundRuntimeNet, "axis 4: on()/ignoring() match join over two bounded vectors; max_memory_usage"},
+	"HistogramVectorJoin": {boundRuntimeNet, "axis 4: group_left()/group_right() match join between two bounded histogram-valued operand vectors (VectorJoin's many-to-one counterpart for native histograms); max_memory_usage"},
+	"VectorSetOp":         {boundStructural, "and/or/unless — ≤ the union of the two bounded operand vectors"},
+	"UnionAll":            {boundStructural, "≤ the sum of its bounded inputs"},
 }
 
 // TestResourceBoundClassification_Exhaustive discovers every chplan plan-node
