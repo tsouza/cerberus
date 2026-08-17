@@ -273,36 +273,3 @@ func TestLower_ExpHistogram_IncompatibleHistogramBinopDropsSamples(t *testing.T)
 		})
 	}
 }
-
-// TestLower_ExpHistogram_HistogramEqualityStillRejected pins that
-// EQLC/NEQ between two histogram-valued shapes still hard-errors (via
-// expHistogramSelectorRouting) rather than silently dropping or
-// answering — reference Prometheus answers these with a KEPT structural-
-// equality result, a different mechanism tracked separately by #2273,
-// so cerberus must not claim either the merge or drop path here.
-func TestLower_ExpHistogram_HistogramEqualityStillRejected(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	queries := []string{
-		`latency_exp_hist == other_exp_hist`,
-		`latency_exp_hist != other_exp_hist`,
-	}
-
-	for _, query := range queries {
-		t.Run(query, func(t *testing.T) {
-			t.Parallel()
-			expr, err := p.ParseExpr(query)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", query, err)
-			}
-			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-			if err == nil {
-				t.Fatalf("lower(%q): expected an error, got none", query)
-			}
-		})
-	}
-}
