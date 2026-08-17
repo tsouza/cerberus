@@ -189,7 +189,7 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // here — where the absence of a parent is a fact rather than an
 // inference — keeps those shapes on [expHistogramSelectorRouting]'s
 // explicit rejection until each grows its own histogram-AWARE lowering
-// (issue #1967), and never widens the exemption by accident: a nested
+// (issue #2296), and never widens the exemption by accident: a nested
 // selector never reaches this function.
 //
 // The direct histogram-valued dispatches are ordered but not mutually

@@ -34,10 +34,11 @@ import (
 // that reason — the same contract [scanFromTables]'s "called with no
 // candidate tables" panic keeps. What it buys is the failure mode issue
 // #1967 asked for: the day someone teaches a nested shape to carry a
-// histogram (lifting the routing guard for `label_replace`, `abs`, or
-// arithmetic) without first teaching these forwarders the shape, the
-// first test that exercises it dies with a message naming the forwarder
-// and the fix, instead of quietly returning zeros.
+// histogram (lifting the routing guard for `label_join`, `abs`, or
+// arithmetic — see issue #2296, since `label_replace` itself now has its
+// own dedicated lowering) without first teaching these forwarders the
+// shape, the first test that exercises it dies with a message naming the
+// forwarder and the fix, instead of quietly returning zeros.
 
 // assertValueShapedInput panics when inner publishes
 // [chplan.HistogramRowShape], the one shape whose `Value` column is a
@@ -54,7 +55,7 @@ func assertValueShapedInput(inner chplan.Node, forwarder string) {
 			"which a chplan.HistogramProjection publishes only as a placeholder "+
 			"alongside the nine Histogram*Column outputs. Projecting it would "+
 			"answer 0 and drop the histogram. Teach %s the histogram shape "+
-			"before routing a histogram-valued node through it (issue #1967).",
+			"before routing a histogram-valued node through it (issue #2296).",
 		forwarder, chplan.HistogramRowShape, "Value", forwarder,
 	))
 }

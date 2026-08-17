@@ -67,7 +67,7 @@ func TestProjectForwarders_PanicOnHistogramShapedInput(t *testing.T) {
 			if !strings.Contains(msg, chplan.HistogramRowShape.String()) {
 				t.Errorf("panic message does not name the %s shape: %s", chplan.HistogramRowShape, msg)
 			}
-			if !strings.Contains(msg, "#1967") {
+			if !strings.Contains(msg, "#2296") {
 				t.Errorf("panic message does not cite the tracking issue: %s", msg)
 			}
 		})

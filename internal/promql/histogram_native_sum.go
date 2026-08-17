@@ -93,7 +93,7 @@ const (
 //
 // The inner expression must unwrap to a bare selector. `sum(rate(
 // m_exp_hist[5m]))` does not: its aggregand is a range-vector function
-// with its own histogram-valued lowering to grow (issue #1967), and
+// with its own histogram-valued lowering to grow (issue #2296), and
 // admitting it here would silently drop the rate.
 func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
