@@ -1,0 +1,39 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_binop_eq.go:lowerExpHistogramHistogramCompareBinop#6758d5c8",
+      "message": "promql: the 'bool' modifier is not yet supported for == or != between two exponential histogram selectors; only the default histogram-valued structural-equality filter (no 'bool') is supported",
+      "class": "divergence",
+      "trigger_query": "demo_latency_exp_hist == bool demo_latency_exp_hist",
+      "tracking_issue": 2273,
+      "evidence": {
+        "guard": [
+          "past returning if !isDefaultMatching(vm)",
+          "if returnBool"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ]
+      },
+      "since": "2026-08-17"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_binop_eq.go:lowerExpHistogramHistogramCompareBinop#f3d0ee83",
+      "message": "promql: on()/ignoring()/group_left()/group_right() matching is not yet supported for == or != between two exponential histogram selectors; only default (full label set) matching is supported",
+      "class": "divergence",
+      "trigger_query": "demo_latency_exp_hist == on(job) demo_latency_exp_hist",
+      "tracking_issue": 2273,
+      "evidence": {
+        "guard": [
+          "if !isDefaultMatching(vm)"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ]
+      },
+      "since": "2026-08-17"
+    }
+  ]
+}

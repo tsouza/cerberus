@@ -554,6 +554,12 @@ const (
 	// Array, in an unspecified (block) order.
 	FnGroupArray Fn = "groupArray"
 
+	// groupArrayIf(x, cond) aggregate — groupArray over only the rows where
+	// cond is true; CH's `-If` combinator applied to groupArray, spelled as
+	// one literal name pending the structural Combinators split (issue
+	// #2280), same posture as FnArgMinIf.
+	FnGroupArrayIf Fn = "groupArrayIf"
+
 	// max(x) aggregate — the maximum non-NULL x in the group.
 	FnMax Fn = "max"
 
