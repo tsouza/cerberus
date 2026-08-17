@@ -412,3 +412,67 @@ func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
 		t.Errorf("expected matrix anchor fan-out, got:\n%s", sql)
 	}
 }
+
+// TestFusedSamplesQueryTemporalityGate kills the CONDITIONALS_NEGATION
+// mutant at range_window_fused.go:234 (`g.temporality != nil`, inside
+// samplesQuery). When the inner window carries a TemporalityColumn, the
+// fused samples layer must read the series' single AggregationTemporality
+// via `any(...)` under windowTemporalityAlias; when it doesn't, that
+// projection must be absent entirely. The `!=` → `==` flip would invert
+// both cases: absent when needed (the DELTA/CUMULATIVE split in
+// fusedExtrapolatedValueFrag then reads an unprojected column) and present
+// when not (an any() over a column no plan ever set).
+func TestFusedSamplesQueryTemporalityGate(t *testing.T) {
+	t.Parallel()
+	const wantProjection = "any(`AggregationTemporality`) AS `temporality`"
+
+	t.Run("TemporalityColumn set → any() projected", func(t *testing.T) {
+		t.Parallel()
+		r := fusedOuter()
+		r.Input.(*chplan.RangeWindow).TemporalityColumn = "AggregationTemporality"
+		sql, _, err := Emit(context.Background(), r)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, wantProjection) {
+			t.Errorf("expected %q in the fused samples layer (line 234 flipped?)\nSQL: %s", wantProjection, sql)
+		}
+	})
+
+	t.Run("TemporalityColumn unset → no any() projected", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), fusedOuter())
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if strings.Contains(sql, wantProjection) {
+			t.Errorf("unexpected %q with no TemporalityColumn set (line 234 flipped?)\nSQL: %s", wantProjection, sql)
+		}
+	})
+}
+
+// TestFusedMatrixOuterAnchorCount kills the ARITHMETIC_BASE mutants at
+// range_window_fused.go:408 (`r.OuterRange.Nanoseconds()/outerStepNS + 1`,
+// emitFusedMatrixSubquery's OUTER anchor grid — distinct from the INNER
+// grid TestFusedInstantAnchorCount already pins at line 158). Choosing an
+// outer OuterRange/Step pair (6m / 2m) that differs from fusibleInner's
+// (10m / 1m) makes the outer count's literal unambiguous: a `/`→`*` flip
+// or a `+`→`-` flip on the outer arithmetic cannot hide behind the inner
+// grid's own (unrelated) range(11) literal.
+func TestFusedMatrixOuterAnchorCount(t *testing.T) {
+	t.Parallel()
+	r := fusedOuter()
+	r.Step = 2 * time.Minute
+	r.OuterRange = 6 * time.Minute
+	sql, _, err := Emit(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Emit(fused matrix subquery): %v", err)
+	}
+	// OuterRange 6m / Step 2m + 1 = 4 outer anchors.
+	if !strings.Contains(sql, "range(4)") {
+		t.Errorf("outer anchor grid must be range(4) (OuterRange/Step + 1) — line 408 arithmetic flipped\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "range(2)") {
+		t.Errorf("found range(2) — `+ 1` mutated to `- 1` (line 408)\nSQL: %s", sql)
+	}
+}

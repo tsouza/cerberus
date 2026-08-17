@@ -171,6 +171,22 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"stepless anchor grid": func(r *chplan.RangeWindow) {
 			r.Step = 0
 		},
+		// checkFusedVariants.go:92 — the fused emitter drives only the
+		// *_over_time array reducers, which take no scalar parameters.
+		// A scalar argument here is untested territory: the guard's
+		// condition is EVALUATED on every fused Emit (both operands are
+		// always 0 in every other case above), so an `||`→`&&` flip
+		// would still show false everywhere else and only this case
+		// exercises the true branch.
+		"scalar argument present": func(r *chplan.RangeWindow) {
+			r.Scalars = []float64{1}
+		},
+		// checkFusedVariants.go:95 — the fused emitter consults no
+		// temporality column (each arm's own reducer never reads
+		// windowTemporalityRef). Same coverage gap as the scalar case.
+		"temporality column present": func(r *chplan.RangeWindow) {
+			r.TemporalityColumn = "AggregationTemporality"
+		},
 	}
 	for name, mutate := range cases {
 		r := fusedTestWindow()
@@ -203,6 +219,130 @@ func TestFusedVariantValueLayout(t *testing.T) {
 	}
 	if _, _, err := Emit(context.Background(), r); err != nil {
 		t.Fatalf("Emit shared-value fused window: %v", err)
+	}
+}
+
+// TestEmitFusedVariants_InstantVsMatrixDispatch kills the
+// CONDITIONALS_NEGATION / CONDITIONALS_BOUNDARY mutants at
+// range_window_variants.go:114 (`r.OuterRange > 0`) in
+// emitRangeWindowVariants. The instant shape (OuterRange == 0) has no
+// anchor grid at all — no `anchor_ts` column anywhere in the emitted
+// SQL — while the matrix shape fans out across one. A `>` → `<=` flip
+// would route the instant case into the matrix emitter (or vice
+// versa); every other test in this file exercises only the matrix
+// side (fusedTestWindow's default OuterRange > 0), so this is the only
+// coverage of the instant branch existing before this change.
+func TestEmitFusedVariants_InstantVsMatrixDispatch(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OuterRange == 0 → instant, no anchor grid", func(t *testing.T) {
+		t.Parallel()
+		r := fusedTestWindow()
+		r.OuterRange = 0
+		sql, _, err := Emit(context.Background(), r)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if strings.Contains(sql, "anchor_ts") {
+			t.Errorf("instant fused window (OuterRange=0) must not fan out across anchors\nSQL: %s", sql)
+		}
+	})
+
+	t.Run("OuterRange > 0 → matrix, anchor grid present", func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), fusedTestWindow())
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, "anchor_ts") {
+			t.Errorf("matrix fused window (OuterRange>0) must fan out across anchors\nSQL: %s", sql)
+		}
+	})
+}
+
+// TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias kills the
+// CONDITIONALS_NEGATION mutant at range_window_variants.go:351
+// (`r.TimestampColumn != "anchor_ts"`). The matrix outer layer always
+// selects the raw `anchor_ts` column; it additionally re-projects it
+// under the schema timestamp column's own alias UNLESS that alias
+// would just be "anchor_ts" again, in which case the duplicate
+// projection must be skipped. A `!=` → `==` flip inverts which case
+// gets the extra projection.
+func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
+	t.Parallel()
+
+	t.Run(`TimestampColumn != "anchor_ts" → extra alias projected`, func(t *testing.T) {
+		t.Parallel()
+		sql, _, err := Emit(context.Background(), fusedTestWindow()) // TimestampColumn: "Timestamp"
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if !strings.Contains(sql, "anchor_ts AS `Timestamp`") {
+			t.Errorf("expected the schema-timestamp re-projection `anchor_ts AS `Timestamp`` (line 351 flipped?)\nSQL: %s", sql)
+		}
+	})
+
+	t.Run(`TimestampColumn == "anchor_ts" → no duplicate projection`, func(t *testing.T) {
+		t.Parallel()
+		r := fusedTestWindow()
+		r.TimestampColumn = "anchor_ts"
+		sql, _, err := Emit(context.Background(), r)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		if strings.Contains(sql, "anchor_ts AS") {
+			t.Errorf("expected no duplicate anchor_ts re-projection when TimestampColumn==\"anchor_ts\" (line 351 flipped?)\nSQL: %s", sql)
+		}
+	})
+}
+
+// TestVariantValsFrag_TupleSlotArithmetic kills the ARITHMETIC_BASE mutant
+// at range_window_variants.go:151 (`valueSlot + firstValueSlot`). Tuple
+// slot 1 is always the timestamp, so value slot 0 must read tuple index 2
+// and value slot 1 must read tuple index 3; a `+`→`-` flip would read
+// negative/zero indices and a `+`→`*` flip would collide slot 0 onto index
+// 0 instead of 2.
+func TestVariantValsFrag_TupleSlotArithmetic(t *testing.T) {
+	t.Parallel()
+	render := func(f Frag) string {
+		b := &Builder{}
+		f(b)
+		return b.String()
+	}
+	cases := []struct {
+		valueSlot int
+		wantIndex string
+	}{
+		{0, "tupleElement(p, 2)"},
+		{1, "tupleElement(p, 3)"},
+		{2, "tupleElement(p, 4)"},
+	}
+	for _, c := range cases {
+		got := render(variantValsFrag(BareIdent("window_pairs"), c.valueSlot))
+		if !strings.Contains(got, c.wantIndex) {
+			t.Errorf("variantValsFrag(valueSlot=%d) missing %q (line 151 arithmetic flipped?)\ngot: %s",
+				c.valueSlot, c.wantIndex, got)
+		}
+	}
+}
+
+// TestEmitFusedVariantsMatrix_AnchorCountArithmetic kills the
+// ARITHMETIC_BASE mutants at range_window_variants.go:293
+// (`r.OuterRange.Nanoseconds()/stepNS + 1`). fusedTestWindow's OuterRange
+// (1m) / Step (30s) + 1 = 3 anchors, surfacing as the sample-fanout's
+// `least(3, ...)` upper clamp. A `/`→`*` flip overflows to a huge count;
+// a `+`→`-` flip yields `least(1, ...)`.
+func TestEmitFusedVariantsMatrix_AnchorCountArithmetic(t *testing.T) {
+	t.Parallel()
+	sql, _, err := Emit(context.Background(), fusedTestWindow())
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "least(3, ") {
+		t.Errorf("expected least(3, ...) anchor-count clamp (OuterRange/Step + 1 = 3) — line 293 arithmetic flipped?\nSQL: %s", sql)
+	}
+	if strings.Contains(sql, "least(1, ") {
+		t.Errorf("found least(1, ...) — `+ 1` mutated to `- 1` (line 293)\nSQL: %s", sql)
 	}
 }
 
