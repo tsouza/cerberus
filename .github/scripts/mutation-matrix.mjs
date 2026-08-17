@@ -245,8 +245,6 @@ export function mutationRegistryProjection(source) {
     main_posture: lane.main_posture ?? null,
     release_posture: lane.release_posture ?? null,
     applicability: selectedObject(lane.applicability, ['source', 'artifact']),
-    selector: selectedObject(lane.selector, ['unknown_paths', 'failure']),
-    report_schema_version: lane.report_schema_version ?? null,
   };
 }
 
