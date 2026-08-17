@@ -24,6 +24,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/format"
 	"github.com/tsouza/cerberus/internal/api/httperr"
+	"github.com/tsouza/cerberus/internal/api/reqctx"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -152,6 +153,17 @@ type Handler struct {
 	// false every search takes the traditional single wide query. New() defaults
 	// it true; cmd/ overrides from config.
 	StructuralTwoPhase bool
+
+	// QueryTimeout is the default per-request wall-clock budget every query
+	// entrypoint installs via applyQueryTimeout, wired from
+	// Config.ClickHouse.QueryTimeout — the same knob prom and loki draw
+	// theirs from. It is the Go-side watchdog that unblocks a hung handler
+	// and releases its admit slot + pooled connection even if the
+	// server-side ClickHouse cap somehow doesn't fire. Zero disables the
+	// backstop entirely (the pre-#2302 behaviour). Tempo's wire format has
+	// no `?timeout=` convention of its own, so in practice this static
+	// default is the only source of the budget — see applyQueryTimeout.
+	QueryTimeout time.Duration
 }
 
 // New constructs a Handler with the seed optimizer wired in.
@@ -388,6 +400,30 @@ func (h *Handler) withSpanDrainBudget(ctx context.Context) context.Context {
 	return chclient.WithDrainByteBudget(ctx, chclient.NewTempoSpanDrainBudget())
 }
 
+// applyQueryTimeout derives the request context every Tempo query
+// entrypoint runs under, via the shared [reqctx.ApplyQueryTimeout] — the
+// same helper prom and loki call. Tempo's wire format has no `?timeout=`
+// convention of its own (unlike Prometheus's `?timeout=<duration>`), so in
+// practice this installs only the configured QueryTimeout default as a
+// context deadline; a `?timeout=` sent anyway is still honoured by the
+// shared resolution logic, harmlessly, since no Tempo client sends one
+// today. Either way this closes the reliability gap #2302 described: a
+// hung handler now unblocks and releases its admit slot + pooled
+// connection even if the server-side ClickHouse cap doesn't fire.
+//
+// The caller MUST defer the returned cancel (a no-op when no deadline was
+// installed). A malformed `?timeout=` is a 400 via Tempo's own error
+// envelope; ok=false signals the caller already wrote the error and must
+// return.
+func (h *Handler) applyQueryTimeout(w http.ResponseWriter, r *http.Request) (context.Context, context.CancelFunc, bool) {
+	ctx, cancel, err := reqctx.ApplyQueryTimeout(r, h.QueryTimeout)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "", "", err)
+		return r.Context(), func() {}, false
+	}
+	return ctx, cancel, true
+}
+
 func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -426,7 +462,11 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 		start = end.Add(-DefaultSearchLookback)
 	}
 
-	ctx := r.Context()
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
 	// Thread the response trace limit into lowering so the nested-set
 	// numbering walk only numbers the traces this response will keep —
 	// without it the structure-tab `select(nestedSet*)` query numbers
@@ -582,7 +622,12 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	plan = &chplan.Limit{Input: plan, Count: limit}
 
-	ctx := h.withSpanDrainBudget(r.Context())
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	ctx = h.withSpanDrainBudget(ctx)
 	// /search/recent doesn't go through a parser, so use QueryPlan
 	// directly. IsTraceByID stays false: the OrderBy+Limit shape
 	// benefits from the seed optimizer's projection-pushdown pass.
@@ -681,7 +726,12 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	// canonical before emit.
 	// Trace-by-id folds the FULL per-span SpanAttributes map into the projection
 	// (the fattest wide drain), so it must carry the byte budget too.
-	ctx := h.withSpanDrainBudget(r.Context())
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	ctx = h.withSpanDrainBudget(ctx)
 	res, err := h.Engine.QueryPlan(ctx, h.lang, plan, engine.Meta{
 		IsTraceByID:   true,
 		ResponseShape: "tempo-trace",

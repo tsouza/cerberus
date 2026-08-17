@@ -83,7 +83,11 @@ func (h *Handler) handleMetricsQueryInstant(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx := r.Context()
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
 	// Parse + lower inline (same pattern as handleMetricsQueryRange) so
 	// we can wrap the lowered plan with the matrix-shape RangeWindow
 	// before engine.QueryPlan runs.
