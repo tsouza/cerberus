@@ -63,13 +63,12 @@ const KNOWN_GOOD = new Set([
   'internal/chsql/vector_join.go:784',     // aliasedFrag: verbatim(" AS "+bareAlias)
 
   // Category 2 — tracked pre-existing debt, not yet fixed.
-  'internal/chsql/nested_set_annotate.go:370', // ARRAY JOIN arrayFilter(...) shape — #2321
-  // The next two are already fixed by #2297 / PR #2319 (open, converts both to
+  // These two are already fixed by #2297 / PR #2319 (open, converts both to
   // the new typed WindowFrame constructor) — remove once that PR merges and
   // this branch rebases past it; listed here only so this NEW gate doesn't
   // block on a violation a concurrently in-flight PR already resolves.
-  'internal/chsql/nested_set_annotate.go:378', // sum(...) OVER (...) _erank — #2297
-  'internal/chsql/nested_set_annotate.go:388', // first_value(...) OVER (...) _keyrank — #2297
+  'internal/chsql/nested_set_annotate.go:404', // sum(...) OVER (...) _erank — #2297
+  'internal/chsql/nested_set_annotate.go:414', // first_value(...) OVER (...) _keyrank — #2297
 ]);
 
 // findVerbatimCalls() walks content once, locating each `verbatim(` call
