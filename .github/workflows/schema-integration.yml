@@ -20,17 +20,21 @@ name: schema-integration
 # an embedded Keeper) and asserts the DDL is accepted and the tables register in
 # system.replicas — see internal/schema/ddl/ddl_replicated_integration_test.go.
 #
-# INFORMATIONAL, not a required PR gate (yet): it pulls ClickHouse images and
-# starts containers, so it is in the heavier / slower-to-warm category alongside
-# e2e + dashboard. It runs on PRs for author-time visibility and on push-to-main
-# + nightly to catch drift. Promote to a required status check once it has a
-# track record of green stability (the same playbook used for the compatibility
-# gate flip) — that promotion needs a branch-protection edit by the maintainer.
+# A required PR gate (branch protection): it is one of the fast,
+# build/correctness merge-gate checks (#2230's two-tier split) even though it
+# pulls ClickHouse images and starts containers, because it catches a class of
+# bug (DDL a real server rejects, or that silently doesn't replicate) that
+# `check` / `lint` / `forbid-skip` and the chDB lanes structurally cannot see —
+# see the rationale above. It runs on PRs, on push-to-main + `release/*.x`
+# (release.yml's preflight requires this check-run to exist on the maintenance
+# publish path too), on the merge queue's projected trunk, and nightly to
+# catch drift.
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/*.x']
   pull_request:
+  merge_group:
   workflow_dispatch:
   schedule:
     # nightly at 04:30 UTC (offset from the chdb lane's 04:00)

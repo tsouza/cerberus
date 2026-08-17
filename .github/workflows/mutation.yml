@@ -1,7 +1,18 @@
 name: mutation
 
 # Mutation testing runs on push-to-main + nightly + manual dispatch, and on
-# pull_request as a real gate for the publish-on-merge release flow.
+# pull_request for author-time visibility.
+#
+# `mutation` is INFORMATIONAL on an ordinary PR (#2230, the merge/release
+# two-tier split): mutation quality is a release-gate concern — it is not in
+# release.yml's RELEASE_REQUIRED_CHECKS either (see the `mutation` row in
+# docs/operations.md's de-gated-lanes table), only its RELEASE_INFORMATIONAL_
+# CHECKS — so a genuinely full verdict is only ever load-bearing on push-to-
+# main + nightly, never on a PR or a publish. The diff-scoped selection below
+# is kept anyway, deliberately NOT collapsed to a blanket no-op like the other
+# lanes #2230 demoted: it is cheap by construction (most PRs queue one leg or
+# none) and it is what closes the v1.13.2-cycle hollow-green class described
+# below, so it still buys early, real, PR-time signal for the cost.
 #
 # On an ordinary PR the `mutate` matrix runs the legs whose SCOPE the PR
 # changed, and production-only edits use gremlins' merge-base changed-line
@@ -18,17 +29,19 @@ name: mutation
 # matrix on the identical SHA, so the floor is unchanged and the queue is not
 # charged the sweep twice.
 #
-# Previously the matrix was skipped WHOLESALE on any non-release PR and the
-# required `mutation` aggregator reported that skip as green. That is a hollow
-# green — a required check passing on work it never did — and it let a PR drop
-# internal/chplan below its 95% floor, merge green, and surface the regression
-# on the release PR, where it blocked the release instead of the change that
-# caused it. Scoping keeps the wall-clock win that motivated the skip (most PRs
-# still queue one leg or none) without the blind spot.
+# Before this scoping existed, the matrix was skipped WHOLESALE on any
+# non-release PR and the (then-required) `mutation` aggregator reported that
+# skip as green. That is a hollow green — a required check passing on work it
+# never did — and it let a PR drop internal/chplan below its 95% floor, merge
+# green, and surface the regression on the release PR, where it blocked the
+# release instead of the change that caused it. Scoping keeps the wall-clock
+# win that motivated the skip (most PRs still queue one leg or none) without
+# the blind spot, and that property holds regardless of whether `mutation` is
+# a required context.
 #
-# The single `mutation` aggregator job remains the required status check. It
-# passes through green ONLY when the selector proved no phase scope changed,
-# and fails if the selector itself failed — an unknown selection is never a pass.
+# The single `mutation` aggregator job passes through green ONLY when the
+# selector proved no phase scope changed, and fails if the selector itself
+# failed — an unknown selection is never a pass.
 
 on:
   pull_request:
@@ -193,13 +206,15 @@ jobs:
           path: gremlins.json
           retention-days: 14
 
-  # Single rolled-up required-check context (mirrors compose-smoke). The matrix
-  # above exposes ONE .result to dependents: `success` only if EVERY selected
-  # phase succeeded, `failure`/`cancelled` if any did, `skipped` when nothing in
-  # any phase scope changed. `if: always()` guarantees the context always REPORTS
-  # (never resolves to "Expected" / never-reports, which would deadlock branch
-  # protection). Add `mutation` (not the per-phase `gremlins …` names) as the
-  # required check.
+  # Single rolled-up check context (mirrors compose-smoke), named `mutation`
+  # rather than any per-phase `gremlins …` name — not a branch-protection
+  # required context (#2230), but still the one name a reader or a future
+  # re-promotion resolves. The matrix above exposes ONE .result to dependents:
+  # `success` only if EVERY selected phase succeeded, `failure`/`cancelled` if
+  # any did, `skipped` when nothing in any phase scope changed. `if: always()`
+  # guarantees the context always REPORTS (never resolves to "Expected" /
+  # never-reports, which would deadlock the merge queue this workflow still
+  # triggers on).
   #
   # The gate is a decision table over TWO facts, not one, and that is the point:
   # a skipped matrix is green ONLY when `select` succeeded AND reported that it

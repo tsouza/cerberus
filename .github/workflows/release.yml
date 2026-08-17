@@ -231,6 +231,10 @@ jobs:
             lint
             forbid-skip
             forbid-deferral
+            agpl-clean
+            config-docs
+            link-check
+            schema-ddl
             chart-validate
             compatibility/prometheus
             compatibility/loki
