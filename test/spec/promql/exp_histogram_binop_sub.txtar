@@ -1,0 +1,32 @@
+-- query.promql --
+http_server_duration_exp_hist - http_client_duration_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Binary `-` between two exp-histogram metrics (cerberus issue #2263).
+-- Reference Prometheus's FloatHistogram.Sub is Add with the second
+-- operand's counts negated first — both series here share Scale=0 /
+-- PositiveOffset=0 so the fold is a plain element-wise subtraction:
+--
+--   Count 20-8=12, Sum 5.0-1.0=4.0, ZeroCount 2-1=1,
+--   PositiveBucketCounts [10,6] - [4,2] = [6,4].
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'only'), toDateTime64('2026-01-01 00:00:00', 9), 20, 5.0, 0, 2, 0, [10, 6], 0, []),
+    ('http_client_duration_exp_hist', map('series', 'only'), toDateTime64('2026-01-01 00:00:00', 9), 8,  1.0, 0, 1, 0, [4, 2],  0, []);
+-- expected_rows --
+[]

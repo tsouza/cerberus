@@ -46,6 +46,10 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
 		return plan, true, err
 	}
+	if lhs, rhs, sub, vm, ok := expHistogramHistogramBinop(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramHistogramBinop(lhs, rhs, sub, vm, s, ctx)
+		return plan, true, err
+	}
 	return nil, false, nil
 }
 

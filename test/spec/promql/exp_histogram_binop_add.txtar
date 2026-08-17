@@ -1,0 +1,41 @@
+-- query.promql --
+http_server_duration_exp_hist + http_client_duration_exp_hist
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Binary `+` between two DIFFERENT exp-histogram metrics (cerberus issue
+-- #2263). Reference Prometheus's FloatHistogram.Add reconciles the two
+-- operands to the coarser Scale before adding buckets — the same fold
+-- exp_histogram_sum_mixed_scale.txtar exercises for a cross-series
+-- sum(), reused here for a two-operand binop:
+--
+--   `shared`: server at Scale=1 [1,2,3,4]@offset0 downscales to Scale=0
+--   as [1+2,3+4]=[3,7]; client is already Scale=0 [5,10]@offset0.
+--   merged = [3+5, 7+10] = [8, 17] at Scale=0, PositiveOffset=0.
+--   Count 10+15=25, Sum 1+2=3, ZeroCount 0+0=0.
+--
+-- `server_only` and `client_only` each exist on ONE side only — PromQL's
+-- default one-to-one V-V matching drops a series absent from either
+-- operand, so neither reaches the output.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 1, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_server_duration_exp_hist', map('series', 'server_only'), toDateTime64('2026-01-01 00:00:00', 9), 4,  0.4, 0, 0, 0, [7],           0, []),
+    ('http_client_duration_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 15, 2.0, 0, 0, 0, [5, 10],       0, []),
+    ('http_client_duration_exp_hist', map('series', 'client_only'), toDateTime64('2026-01-01 00:00:00', 9), 3,  0.1, 0, 0, 0, [9],            0, []);
+-- expected_rows --
+[]
