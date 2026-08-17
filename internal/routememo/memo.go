@@ -411,11 +411,13 @@ func (m *Memo) observeRouteAResourceFailureLocked(k Key, now time.Time) {
 	switch v.state {
 	case PreferB:
 		v.createdAt = now
+		m.touchLRULocked(k)
 	case BothFail:
 	case Unknown:
 		if v.corroboration < minCorroboratingFailures {
 			v.corroboration++
 		}
+		m.touchLRULocked(k)
 	}
 }
 
