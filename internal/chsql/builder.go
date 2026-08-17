@@ -1708,6 +1708,24 @@ func Subscript(container, key Frag) Frag {
 	}
 }
 
+// TupleIndex returns a Frag rendering "<tuple>.<n>" — CH's 1-based
+// positional tuple-element access (`t.1`, `t.2`). n is written directly
+// into the SQL text rather than bound as a `?` placeholder: CH's tuple
+// dot-index syntax requires a compile-time integer literal at that
+// position, not a parameter. n must be >= 1 (CH tuple indices are
+// 1-based); callers pass a small, self-evident positional constant
+// (invariant 13's own carve-out), never a computed or business value.
+func TupleIndex(tuple Frag, n int) Frag {
+	if n < 1 {
+		panic(fmt.Sprintf("chsql: TupleIndex n must be >= 1 (1-based), got %d", n))
+	}
+	return func(b *Builder) {
+		tuple(b)
+		b.sb.WriteByte('.')
+		b.sb.WriteString(strconv.Itoa(n))
+	}
+}
+
 // If returns a Frag rendering "if(<cond>, <then>, <else>)" — CH's
 // ternary `if` function. The fixed-arity wrapper around Call("if", …)
 // makes the structural intent grep-able and rejects ill-arity uses at
