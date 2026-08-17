@@ -375,7 +375,15 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 			Col(n.SpanIDColumn),
 			Col("_ekey"),
 			Col("_etype"),
-			verbatim("sum(`_etype` != 1) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+" ORDER BY `_ekey` ASC, `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_erank`"),
+			As(
+				WindowFrame(
+					Call("sum", Neq(Col("_etype"), InlineLit(1))),
+					[]Frag{Col(n.TraceIDColumn)},
+					[]OrderKey{{Expr: Col("_ekey")}, {Expr: Col("_etype")}},
+					RowsUnboundedPrecedingToCurrentRow(),
+				),
+				"_erank",
+			),
 		).
 		From(events.Frag())
 
@@ -385,7 +393,15 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 			Col(n.SpanIDColumn),
 			Col("_etype"),
 			Col("_erank"),
-			verbatim("first_value(`_erank`) OVER (PARTITION BY "+quoteIdent(n.TraceIDColumn)+", `_ekey` ORDER BY `_etype` ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `_keyrank`"),
+			As(
+				WindowFrame(
+					Call("first_value", Col("_erank")),
+					[]Frag{Col(n.TraceIDColumn), Col("_ekey")},
+					[]OrderKey{{Expr: Col("_etype")}},
+					RowsUnboundedPrecedingToCurrentRow(),
+				),
+				"_keyrank",
+			),
 		).
 		From(ranked.Frag())
 
@@ -566,14 +582,4 @@ func optQualColFrag(qual, col string) Frag {
 		return Col(col)
 	}
 	return Qual(qual, col)
-}
-
-// quoteIdent backtick-quotes a column name for use inside verbatim
-// fragments (the QueryBuilder slots normally do this via Ident).
-func quoteIdent(name string) string {
-	b := &Builder{}
-	b.Ident(name)
-	// Ident never touches chplan.Expr, so b.err is always nil here.
-	sql, _, _ := b.Build()
-	return sql
 }
