@@ -133,6 +133,37 @@ func TestRowShapeOf_RangeWindowSplitsOnOuterRange(t *testing.T) {
 	}
 }
 
+// TestRowShapeOf_VectorSetOpFlags pins the two boolean flags
+// chplan.RowShapeOf reads off a *VectorSetOp directly, since
+// allNodeKinds() only exercises the zero-value instance (both flags
+// false, SampleRowShape — already covered by
+// TestRowShapeOf_ClassifiesEveryNodeKind). Histogram is #2324's
+// both-arms-histogram flag; Mixed is #2330's exactly-one-arm-histogram
+// sibling — the two are mutually exclusive in practice (chsql's
+// validateVectorSetOpCols rejects both set), but RowShapeOf itself
+// checks Histogram first, so this also pins that ordering doesn't
+// accidentally mask Mixed.
+func TestRowShapeOf_VectorSetOpFlags(t *testing.T) {
+	t.Parallel()
+
+	base := chplan.VectorSetOp{
+		Left: &chplan.Scan{Table: "otel_metrics_sum"}, Right: &chplan.Scan{Table: "otel_metrics_sum"},
+		Op: chplan.VectorSetOr,
+	}
+
+	histogram := base
+	histogram.Histogram = true
+	if got := chplan.RowShapeOf(&histogram); got != chplan.HistogramRowShape {
+		t.Errorf("RowShapeOf(VectorSetOp{Histogram: true}) = %s, want %s", got, chplan.HistogramRowShape)
+	}
+
+	mixed := base
+	mixed.Mixed = true
+	if got := chplan.RowShapeOf(&mixed); got != chplan.MixedRowShape {
+		t.Errorf("RowShapeOf(VectorSetOp{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
+	}
+}
+
 // TestRowShapeString pins the names the failure messages above are written
 // against, including the answer for a value outside the declared set — a
 // forwarder reading a corrupt shape should say so rather than print an
@@ -140,7 +171,7 @@ func TestRowShapeOf_RangeWindowSplitsOnOuterRange(t *testing.T) {
 func TestRowShapeString(t *testing.T) {
 	t.Parallel()
 
-	const outsideDeclaredSet = chplan.HistogramRowShape + 1
+	const outsideDeclaredSet = chplan.MixedRowShape + 1
 
 	for _, tc := range []struct {
 		shape chplan.RowShape
@@ -150,6 +181,7 @@ func TestRowShapeString(t *testing.T) {
 		{chplan.GridWindowRowShape, "grid-window"},
 		{chplan.ReducedWindowRowShape, "reduced-window"},
 		{chplan.HistogramRowShape, "histogram"},
+		{chplan.MixedRowShape, "mixed"},
 		{outsideDeclaredSet, "unknown"},
 	} {
 		if got := tc.shape.String(); got != tc.want {

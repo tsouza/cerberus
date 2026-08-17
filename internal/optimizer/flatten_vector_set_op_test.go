@@ -246,3 +246,35 @@ func TestFlattenVectorSetOp_SingleBinaryFlattensToTwoArms(t *testing.T) {
 		t.Fatalf("Arms = %d, want 2", len(nary.Arms))
 	}
 }
+
+// TestFlattenVectorSetOp_MixedValueTypeSkipsFlattening pins cerberus
+// issue #2330's structural guarantee: unlike the plain two-arm case
+// TestFlattenVectorSetOp_SingleBinaryFlattensToTwoArms just above (which
+// DOES flatten to a NaryVectorSetOp even with no chain to linearise),
+// a VectorSetOp whose Mixed flag is set must be left as a binary node.
+// chplan.NaryVectorSetOp has no MixedHistogramOnLeft field to carry the
+// asymmetric per-arm shape, so rebuilding one here would silently
+// downgrade chplan.RowShapeOf's answer from MixedRowShape to the default
+// SampleRowShape — the exact silent-placeholder-Value hazard this rule's
+// own Mixed guard (see its doc comment) exists to avoid.
+func TestFlattenVectorSetOp_MixedValueTypeSkipsFlattening(t *testing.T) {
+	t.Parallel()
+	mk := setOpCols("MetricName", "Attributes", "TimeUnix", "Value")
+	in := mk(chplan.VectorSetOr, tableScan("float"), tableScan("hist"))
+	in.Mixed = true
+	in.MixedHistogramOnLeft = false
+
+	out := optimizer.New(optimizer.FlattenVectorSetOp{}).Run(context.Background(), in)
+
+	got, ok := out.(*chplan.VectorSetOp)
+	if !ok {
+		t.Fatalf("expected the node to stay *chplan.VectorSetOp, got %T", out)
+	}
+	if !got.Equal(in) {
+		t.Errorf("Mixed VectorSetOp was rewritten: got %#v, want it unchanged", got)
+	}
+	if chplan.RowShapeOf(out) != chplan.MixedRowShape {
+		t.Errorf("RowShapeOf(out) = %s, want %s — flattening must not downgrade the shape",
+			chplan.RowShapeOf(out), chplan.MixedRowShape)
+	}
+}

@@ -122,6 +122,26 @@ const (
 	// SHAPE a node's own SELECT publishes, not which Go type built it, so
 	// this is still the correct answer here.
 	HistogramRowShape
+
+	// MixedRowShape is [VectorSetOp]'s answer when its Mixed field is
+	// set — internal/promql's lowerMixedExpHistogramSetOp builds one for
+	// `or` between a float-valued operand and a histogram-valued operand
+	// (cerberus issue #2330). The SELECT it publishes is the canonical
+	// quartet, the nine Histogram*Column outputs, AND a trailing
+	// discriminator column (unlike [HistogramRowShape]'s thirteen), so a
+	// generic forwarder that reads `Value` unconditionally — the same
+	// hazard [HistogramRowShape]'s doc comment describes — is just as
+	// wrong here: on a histogram-shaped ROW within this result, Value is
+	// still only the placeholder [HistogramProjection] always carries.
+	// [assertValueShapedInput] (internal/promql/histogram_shape_guard.go)
+	// panics on this shape for exactly that reason. Every consumer that
+	// builds a Mixed-shaped node keeps it at the query ROOT — see that
+	// lowering's own doc comment for why nesting one under another
+	// PromQL wrapper is deliberately left unrecognised (falls through to
+	// the pre-existing exp-histogram-selector rejection) rather than
+	// silently forwarding a column whose meaning depends on a per-row
+	// discriminator no generic consumer reads.
+	MixedRowShape
 )
 
 // String names the shape for test and error output. The names are the
@@ -135,6 +155,8 @@ func (s RowShape) String() string {
 		return "reduced-window"
 	case HistogramRowShape:
 		return "histogram"
+	case MixedRowShape:
+		return "mixed"
 	case SampleRowShape:
 		return "sample"
 	}
@@ -172,6 +194,9 @@ func RowShapeOf(n Node) RowShape {
 	case *VectorSetOp:
 		if v.Histogram {
 			return HistogramRowShape
+		}
+		if v.Mixed {
+			return MixedRowShape
 		}
 	case *NaryVectorSetOp:
 		if v.Histogram {

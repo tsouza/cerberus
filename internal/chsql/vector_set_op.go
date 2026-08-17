@@ -15,6 +15,16 @@ import (
 const (
 	setOpSideCol    = "_setop_side"
 	setOpHasLeftCol = "_setop_has_left"
+	// setOpMixedIsHistogramCol is the trailing per-row discriminator a
+	// Mixed VectorSetOr's fourteen-column projection carries (cerberus
+	// issue #2330): 1 when the row came from the histogram-shaped arm
+	// (its nine Histogram*Column outputs are real, its Value is the
+	// [HistogramProjection] placeholder), 0 when it came from the
+	// float-shaped arm (the mirror image — Value is real, the nine
+	// histogram columns are placeholders). internal/chclient/cursor.go's
+	// shapeSampleMixed probes for this exact trailing alias, the same
+	// way shapeSampleHistogram probes for histogramLastColumn.
+	setOpMixedIsHistogramCol = "_setop_is_histogram"
 )
 
 // emitVectorSetOp renders a PromQL vector set operator (`and`, `or`,
@@ -68,6 +78,9 @@ const (
 func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 	if err := e.validateVectorSetOpCols(s); err != nil {
 		return err
+	}
+	if s.Mixed {
+		return e.emitMixedVectorSetOp(s)
 	}
 
 	leftFrag, err := e.subqueryFrag(s.Left)
@@ -204,6 +217,149 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 	return fmt.Errorf("%w: vector set op %q", ErrUnsupported, s.Op)
 }
 
+// emitMixedVectorSetOp renders a VectorSetOr whose two arms disagree on
+// value type — one is histogram-shaped, one is a plain float sample
+// (cerberus issue #2330; chplan.VectorSetOp.Mixed's doc comment has the
+// design). It is the identical single-pass left+anti-right shape
+// [emitVectorSetOp]'s VectorSetOr case renders — a side marker plus a
+// windowed "does a left row share this signature?" flag deciding which
+// right-arm rows survive — with two differences localised entirely to
+// the per-arm projection:
+//
+//  1. Each arm is canonicalised to FOURTEEN columns instead of four —
+//     the canonical quartet, the nine Histogram*Column outputs, and a
+//     trailing discriminator — via [mixedVectorSetOpArmFrag], instead of
+//     [vectorSetOpCanonicalArmFrag]. The histogram-shaped arm publishes
+//     its nine columns for real and 0/1 for the discriminator; the
+//     float-shaped arm publishes nine typed placeholders (matching the
+//     exact CH types histogramFloatFrag / histogramIndexFrag /
+//     histogramBucketsFrag pin, so the UNION ALL's positional type
+//     unification never hits NO_COMMON_TYPE) and the opposite
+//     discriminator value.
+//  2. The output column list is [mixedVectorSetOpOutputCols], not
+//     [vectorSetOpOutputCols] — it carries the discriminator all the way
+//     to the final SELECT (unlike `_setop_side` / `_setop_has_left`,
+//     which are internal bookkeeping the outer SELECT drops), because
+//     internal/chclient's cursor needs it on every row of the actual
+//     result set to decide which of Sample.Value / Sample.Histogram is
+//     the real answer.
+func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
+	leftFrag, err := e.subqueryFrag(s.Left)
+	if err != nil {
+		return err
+	}
+	rightFrag, err := e.subqueryFrag(s.Right)
+	if err != nil {
+		return err
+	}
+
+	leftArm := mixedVectorSetOpArmFrag(s, s.Left, leftFrag, s.MixedHistogramOnLeft)
+	rightArm := mixedVectorSetOpArmFrag(s, s.Right, rightFrag, !s.MixedHistogramOnLeft)
+
+	sideArmL := mixedVectorSetOpSideArmFrag(s, leftArm, 0)
+	sideArmR := mixedVectorSetOpSideArmFrag(s, rightArm, 1)
+	windowed := NewQuery().
+		Select(append(
+			mixedVectorSetOpOutputCols(s),
+			Col(setOpSideCol),
+			As(
+				Window(
+					Call("max", Eq(Col(setOpSideCol), InlineLit(0))),
+					setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned),
+					nil,
+				),
+				setOpHasLeftCol,
+			),
+		)...).
+		From(Paren(UnionAll(sideArmL, sideArmR)))
+	outer := NewQuery().
+		Select(mixedVectorSetOpOutputCols(s)...).
+		From(windowed.Frag()).
+		Where(Or(
+			Eq(Col(setOpSideCol), InlineLit(0)),
+			Eq(Col(setOpHasLeftCol), InlineLit(0)),
+		))
+	return e.emitSelect(outer)
+}
+
+// mixedVectorSetOpOutputCols returns the fourteen-column explicit
+// projection list a Mixed VectorSetOr uses for both its per-arm and its
+// outer SELECTs: the canonical quartet, the nine Histogram*Column
+// outputs, and the trailing [setOpMixedIsHistogramCol] discriminator.
+func mixedVectorSetOpOutputCols(s *chplan.VectorSetOp) []Frag {
+	return append(
+		append(vectorSetOpOutputCols(s), vectorSetOpHistogramCols()...),
+		Col(setOpMixedIsHistogramCol),
+	)
+}
+
+// mixedVectorSetOpArmFrag canonicalises one arm of a Mixed VectorSetOr to
+// the shared fourteen-column shape [mixedVectorSetOpOutputCols] names.
+// isHistogramArm selects which half is real and which is a placeholder:
+// a histogram-shaped arm publishes its own nine structural columns for
+// real and forwards Value unchanged (it is already the
+// [HistogramProjection] placeholder, nothing more to do); a float-shaped
+// arm publishes Value for real and nine typed placeholders standing in
+// for the histogram columns it doesn't have.
+func mixedVectorSetOpArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag, isHistogramArm bool) Frag {
+	cols := vectorSetOpCanonicalQuartetFrags(s, arm)
+	discriminator := InlineLit(0)
+	if isHistogramArm {
+		cols = append(cols, vectorSetOpHistogramCols()...)
+		discriminator = InlineLit(1)
+	} else {
+		cols = append(cols, mixedVectorSetOpHistogramPlaceholderCols()...)
+	}
+	cols = append(cols, As(discriminator, setOpMixedIsHistogramCol))
+	inner := NewQuery().
+		Select(cols...).
+		From(armFrag)
+	return inner.Frag()
+}
+
+// mixedVectorSetOpHistogramPlaceholderCols returns the nine
+// Histogram*Column placeholders a Mixed VectorSetOr's float-shaped arm
+// projects, typed to match [histogramFloatFrag] / [histogramIndexFrag] /
+// [histogramBucketsFrag] exactly — the same Float64 / Int32 /
+// Array(Float64) triple [vectorSetOpHistogramCols] forwards for real
+// from the histogram-shaped arm — so the UNION ALL's positional column
+// unification sees identical types on both arms instead of failing with
+// NO_COMMON_TYPE. The discriminator (appended by the caller, not here)
+// is what marks these unread on decode, mirroring
+// histogramSampleValuePlaceholder's identical convention for the
+// histogram-shaped arm's own placeholder Value.
+func mixedVectorSetOpHistogramPlaceholderCols() []Frag {
+	zeroFloat := Call("toFloat64", InlineLit(0))
+	zeroInt := Call("toInt32", InlineLit(0))
+	emptyBuckets := Call("emptyArrayFloat64")
+	return []Frag{
+		As(zeroFloat, chplan.HistogramCountColumn),
+		As(zeroFloat, chplan.HistogramSumColumn),
+		As(zeroInt, chplan.HistogramScaleColumn),
+		As(zeroFloat, chplan.HistogramZeroThresholdColumn),
+		As(zeroFloat, chplan.HistogramZeroCountColumn),
+		As(zeroInt, chplan.HistogramPositiveOffsetColumn),
+		As(emptyBuckets, chplan.HistogramPositiveBucketCountsColumn),
+		As(zeroInt, chplan.HistogramNegativeOffsetColumn),
+		As(emptyBuckets, chplan.HistogramNegativeBucketCountsColumn),
+	}
+}
+
+// mixedVectorSetOpSideArmFrag is [vectorSetOpSideArmFrag]'s Mixed
+// sibling: it wraps an already fourteen-column-canonicalised arm Frag in
+// a `SELECT <mixed cols>, <side> AS _setop_side FROM (<arm>)` so the
+// VectorSetOr single-pass UNION ALL carries the side marker as a 15th
+// column, the same role it plays in the symmetric emission.
+func mixedVectorSetOpSideArmFrag(s *chplan.VectorSetOp, armFrag Frag, side int) Frag {
+	q := NewQuery().
+		Select(append(
+			mixedVectorSetOpOutputCols(s),
+			As(InlineLit(side), setOpSideCol),
+		)...).
+		From(armFrag)
+	return Paren(q.Frag())
+}
+
 // vectorSetOpCanonicalArmFrag returns a Frag rendering the per-arm
 // canonical 4-column projection used inside the VectorSetOp UNION ALL /
 // IN-subquery shapes. The arm's chplan node is inspected to decide
@@ -272,6 +428,25 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 // derived emitter still passes Attributes + the schema-named
 // ValueColumn through).
 func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Frag) Frag {
+	cols := vectorSetOpCanonicalQuartetFrags(s, arm)
+	if s.Histogram {
+		cols = append(cols, vectorSetOpHistogramCols()...)
+	}
+	inner := NewQuery().
+		Select(cols...).
+		From(armFrag)
+	return inner.Frag()
+}
+
+// vectorSetOpCanonicalQuartetFrags returns the four canonical-shape Frags
+// (MetricName, Attributes, TimeUnix, Value) for arm, synthesising
+// whichever of MetricName / TimeUnix arm's own SELECT doesn't expose —
+// see [vectorSetOpCanonicalArmFrag]'s doc comment for the three
+// resolution shapes this covers. Split out so
+// [mixedVectorSetOpArmFrag] (cerberus issue #2330) can reuse the exact
+// same derived/matrix-shape resolution the symmetric Histogram /
+// float-only paths already use, instead of re-deriving it.
+func vectorSetOpCanonicalQuartetFrags(s *chplan.VectorSetOp, arm chplan.Node) []Frag {
 	derived := chplan.IsDerivedShape(arm, vectorSetOpSampleColumns(s))
 	armTsCol, matrix := vectorSetOpArmTimestampCol(arm, s)
 
@@ -292,19 +467,12 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 		timeFrag = Col(s.TimestampColumn)
 	}
 
-	cols := []Frag{
+	return []Frag{
 		metricNameFrag,
 		Col(s.AttributesColumn),
 		timeFrag,
 		Col(s.ValueColumn),
 	}
-	if s.Histogram {
-		cols = append(cols, vectorSetOpHistogramCols()...)
-	}
-	inner := NewQuery().
-		Select(cols...).
-		From(armFrag)
-	return inner.Frag()
 }
 
 // vectorSetOpHistogramCols returns the nine chplan.Histogram*Column
@@ -467,6 +635,10 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 		return fmt.Errorf("%w: VectorSetOp.TimestampColumn unset", ErrUnsupported)
 	case s.ValueColumn == "":
 		return fmt.Errorf("%w: VectorSetOp.ValueColumn unset", ErrUnsupported)
+	case s.Mixed && s.Histogram:
+		return fmt.Errorf("%w: VectorSetOp.Mixed and .Histogram are mutually exclusive", ErrUnsupported)
+	case s.Mixed && s.Op != chplan.VectorSetOr:
+		return fmt.Errorf("%w: VectorSetOp.Mixed is only supported for %q, got %q", ErrUnsupported, chplan.VectorSetOr, s.Op)
 	}
 	return nil
 }

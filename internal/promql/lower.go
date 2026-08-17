@@ -230,6 +230,14 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // because at most one operand is histogram-valued — so ordering it last
 // cannot shadow either.
 //
+// `or` between a float-valued operand and a histogram-valued operand
+// (cerberus issue #2330) is the exactly-one-side sibling of that shape,
+// recognised by [mixedExpHistogramSetOp] (histogram_native_mixed_or.go)
+// — but registered as its OWN direct dispatch just below, not inside
+// [lowerExpHistogramValuedShape]: unlike the both-histogram case, its
+// result does NOT compose (see that recognizer's own doc comment for
+// why), so it deliberately does not get the same recursive reach.
+//
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
 // expression, consumes no Value column, and already has its own
@@ -240,6 +248,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
 		return plan, err
+	}
+	// `or` between a float-valued operand and a histogram-valued operand
+	// (cerberus issue #2330) — the exactly-one-side sibling of
+	// [expHistogramSetOp]'s both-sides-histogram case just above.
+	// Deliberately checked only here at the root; see
+	// [mixedExpHistogramSetOp]'s doc comment for why it must never be
+	// registered inside [lowerExpHistogramValuedShape]'s recursive
+	// dispatch table.
+	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerMixedExpHistogramSetOp(b, s, ctx)
 	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)

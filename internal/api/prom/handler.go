@@ -1264,7 +1264,18 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Metrics) chplan.Node {
 	// answer back as the placeholder float — so the correct wrapper here
 	// is no wrapper at all. RowShapeOf is the one classifier for "what
 	// does this node publish"; see chplan.HistogramRowShape.
-	if chplan.RowShapeOf(plan) == chplan.HistogramRowShape {
+	//
+	// A Mixed plan (chplan.MixedRowShape, cerberus issue #2330 — `or`
+	// between a float-valued and a histogram-valued operand) needs the
+	// identical no-op: its own SELECT already publishes the same
+	// thirteen columns PLUS the trailing discriminator
+	// internal/chclient's cursor probes for (shapeSampleMixed). Wrapping
+	// it here would re-project just the quartet, dropping both the nine
+	// histogram columns AND the discriminator — the cursor would then
+	// fall back to the plain four-column shape and silently answer every
+	// row as its (possibly placeholder) Value.
+	switch chplan.RowShapeOf(plan) {
+	case chplan.HistogramRowShape, chplan.MixedRowShape:
 		return plan
 	}
 	projections := []chplan.Projection{

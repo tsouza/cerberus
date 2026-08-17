@@ -52,24 +52,49 @@ import (
 // shared recognizer set above, or a dedicated lowering of its own — the
 // first test that exercises it dies with a message naming the forwarder and
 // the fix, instead of quietly returning zeros.
+//
+// [chplan.MixedRowShape] (cerberus issue #2330, histogram_native_mixed_or.go)
+// earns the identical structural guarantee the same way: its lowering
+// (lowerMixedExpHistogramSetOp) is registered only at the query ROOT, never
+// inside [lowerExpHistogramValuedShape]'s recursive dispatch table, so
+// nothing composes a further wrapper around a Mixed node — a query that
+// tries (`abs(a or b)`, `sum(a or b)` for a mixed `a`/`b`) keeps falling
+// through to [expHistogramSelectorRouting]'s existing rejection, exactly as
+// it did before this file learned the Mixed shape.
 
 // assertValueShapedInput panics when inner publishes
-// [chplan.HistogramRowShape], the one shape whose `Value` column is a
-// placeholder rather than the sample's actual magnitude. forwarder names
-// the calling helper so the panic points at the projection that needs
-// teaching. See this file's comment for why the state is unreachable and
-// why an unreachable state is still worth asserting.
+// [chplan.HistogramRowShape] or [chplan.MixedRowShape] — the two shapes
+// whose `Value` column is a placeholder on at least some rows rather than
+// every row's actual magnitude. forwarder names the calling helper so the
+// panic points at the projection that needs teaching. See this file's
+// comment for why the state is unreachable and why an unreachable state is
+// still worth asserting.
+//
+// MixedRowShape (cerberus issue #2330) widens the same hazard rather than
+// sidestepping it: a [chplan.VectorSetOp] with Mixed set publishes Value
+// for every row, but on the rows whose discriminator marks them
+// histogram-shaped that Value is the identical
+// histogramSampleValuePlaceholder a pure [chplan.HistogramProjection]
+// carries. internal/promql's lowerMixedExpHistogramSetOp only ever builds
+// a Mixed node at the query ROOT (see that function's doc comment for
+// why), so — like the pure-histogram case — no generic forwarder should
+// ever actually receive one; this assertion is the same "impossible state,
+// asserted anyway" contract as the HistogramRowShape case below.
 func assertValueShapedInput(inner chplan.Node, forwarder string) {
-	if chplan.RowShapeOf(inner) != chplan.HistogramRowShape {
+	shape := chplan.RowShapeOf(inner)
+	if shape != chplan.HistogramRowShape && shape != chplan.MixedRowShape {
 		return
 	}
 	panic(fmt.Sprintf(
 		"promql: %s received a %s-shaped input: its projection forwards %q, "+
-			"which a chplan.HistogramProjection publishes only as a placeholder "+
-			"alongside the nine Histogram*Column outputs. Projecting it would "+
-			"answer 0 and drop the histogram. Either route this node through the "+
-			"shared histogram-valued recognizer set (see this file's doc comment) "+
-			"instead of %s, or teach %s the histogram shape directly.",
-		forwarder, chplan.HistogramRowShape, "Value", forwarder, forwarder,
+			"which is only a placeholder on at least some rows rather than every "+
+			"row's actual magnitude (a chplan.HistogramProjection publishes it "+
+			"alongside the nine Histogram*Column outputs; a Mixed chplan.VectorSetOp "+
+			"publishes it as the placeholder on its histogram-shaped rows only). "+
+			"Projecting it would answer 0 and drop the histogram on those rows. "+
+			"Either route this node through the shared histogram-valued recognizer "+
+			"set (see this file's doc comment) instead of %s, or teach %s the "+
+			"%s shape directly.",
+		forwarder, shape, "Value", forwarder, forwarder, shape,
 	))
 }

@@ -66,6 +66,45 @@ type VectorSetOp struct {
 	// plumbing is needed here.
 	Histogram bool
 
+	// Mixed marks a VectorSetOr whose Left and Right disagree on value
+	// type -- exactly one is a [HistogramProjection] (or a nested
+	// histogram-shaped VectorSetOp) and the other is a plain
+	// [SampleRowShape] float vector (cerberus issue #2330, the
+	// mixed-type sibling of the Histogram flag above). Reference
+	// Prometheus's `or` never inspects value type, only labels, so a
+	// `Vector` it returns can freely hold both float and native-histogram
+	// `Sample`s at once -- cerberus answers that by widening BOTH arms to
+	// the same fourteen-column projection (the canonical quartet, the
+	// nine Histogram*Column outputs, and a trailing per-row
+	// discriminator) and letting the non-native side publish placeholder
+	// values for the columns its own shape doesn't have: the float arm's
+	// nine histogram columns are placeholders (mirroring
+	// histogramSampleValuePlaceholder's Value placeholder on the
+	// histogram side, just the other four-vs-nine way around), and the
+	// histogram arm's Value stays the placeholder [HistogramProjection]
+	// already carries. See internal/chsql/vector_set_op.go's
+	// emitMixedVectorSetOp for the SQL shape and
+	// internal/chclient/cursor.go's shapeSampleMixed for the decode side
+	// that reads the discriminator to decide, per row, whether
+	// Sample.Histogram or Sample.Value is the real answer.
+	//
+	// Mixed and Histogram are mutually exclusive: Histogram means BOTH
+	// arms are already histogram-shaped (no discriminator needed, no
+	// placeholders), Mixed means exactly one is. Only VectorSetOr
+	// supports Mixed today -- `and`/`unless` between a float-valued and a
+	// histogram-valued operand remains cerberus issue #2325, which this
+	// field does not attempt.
+	Mixed bool
+
+	// MixedHistogramOnLeft is meaningful only when Mixed is true: true
+	// when Left is the histogram-shaped arm and Right is the float arm,
+	// false when it's the other way around. `or`'s union keeps every
+	// Left row unconditionally and only the Right rows whose signature
+	// Left doesn't already have, so which side is which changes which
+	// arm's rows win a signature collision -- this flag preserves the
+	// query's own LHS/RHS order rather than normalising it away.
+	MixedHistogramOnLeft bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -82,6 +121,9 @@ func (s *VectorSetOp) Equal(other Node) bool {
 		return false
 	}
 	if s.Op != o.Op || !s.Match.Equal(o.Match) || s.StepAligned != o.StepAligned || s.Histogram != o.Histogram {
+		return false
+	}
+	if s.Mixed != o.Mixed || s.MixedHistogramOnLeft != o.MixedHistogramOnLeft {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||

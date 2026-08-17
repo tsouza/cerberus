@@ -59,6 +59,17 @@ func TestProbeRowShape(t *testing.T) {
 		{"log row with structured metadata", logRowMetadataProjectionColumns, shapeLogRowMetadata},
 		{"sample row", sampleProjectionColumns, shapeSample},
 		{"histogram row", histogramProjectionColumns, shapeSampleHistogram},
+		{"mixed row", mixedProjectionColumns, shapeSampleMixed},
+		// One column short of the mixed width but ending in the mixed
+		// discriminator's alias: not the trailing alias the histogram
+		// probe keys on, and one short of mixedColumns, so this must
+		// fall back to the default rather than being mistaken for
+		// either sample-shaped layout.
+		{
+			"thirteen wide ending in the mixed discriminator alias",
+			append(append([]string{}, sampleProjectionColumns...), "_setop_is_histogram"),
+			shapeSample,
+		},
 		// No columns at all: nothing to key off, so the default
 		// four-destination scan — the behaviour every path had before any
 		// probe existed. fakeRows leaves Columns() nil in the pre-existing

@@ -53,6 +53,23 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	if !flattenableVectorSetOp(binary.Op) {
 		return n, false
 	}
+	// A Mixed VectorSetOr (cerberus issue #2330) carries its
+	// asymmetric per-arm shape — which side is histogram-valued — on
+	// fields chplan.NaryVectorSetOp has no room for (it only threads
+	// Histogram, the symmetric both-arms case, through). Rebuilding one
+	// as an N-ary node would silently drop MixedHistogramOnLeft, which
+	// downgrades chplan.RowShapeOf's answer from MixedRowShape to the
+	// default SampleRowShape — exactly the silent-placeholder-Value
+	// hazard [assertValueShapedInput] exists to catch, except
+	// [wrapWithSampleProjection] has no guard of its own and would
+	// happily wrap the flattened node's Value column, discarding every
+	// histogram-shaped row's real payload. A Mixed node never actually
+	// chains today (mixedExpHistogramSetOp only matches a bare two-arm
+	// BinaryExpr at the query root — see its own doc comment), so
+	// skipping it here costs nothing: there is no chain to linearise.
+	if binary.Mixed {
+		return n, false
+	}
 
 	// Gather the left-leaning chain's arms in left-to-right source
 	// order. The left child is absorbed when it's a same-shaped binary

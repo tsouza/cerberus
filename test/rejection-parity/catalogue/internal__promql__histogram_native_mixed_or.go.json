@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#38b18b37",
+      "message": "promql: 'or' between a float-valued and a histogram-valued operand only supports a plain (non-windowed) float side today; got a %s-shaped float operand, which cerberus issue #2330 does not yet cover",
+      "class": "divergence",
+      "trigger_query": "rate(up[5m]) or demo_latency_exp_hist",
+      "tracking_issue": 2333,
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if shape := chplan.RowShapeOf(floatNode); shape != chplan.SampleRowShape"
+        ],
+        "callers": [
+          "lowerRoot"
+        ]
+      },
+      "since": "2026-08-17"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerVectorSetOp's identical check for the float case and lowerExpHistogramSetOp's identical check for the both-histogram case",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "lowerExpHistogramSetOp",
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}
