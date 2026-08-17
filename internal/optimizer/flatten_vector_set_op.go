@@ -57,10 +57,7 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 	// order. The left child is absorbed when it's a same-shaped binary
 	// VectorSetOp or an already-flattened NaryVectorSetOp; otherwise it
 	// is a single arm.
-	arms, absorbed := flattenLeftArms(binary)
-	if !absorbed {
-		return n, false
-	}
+	arms := flattenLeftArms(binary)
 	arms = append(arms, binary.Right)
 
 	return &chplan.NaryVectorSetOp{
@@ -76,32 +73,30 @@ func (FlattenVectorSetOp) Apply(n chplan.Node) (chplan.Node, bool) {
 }
 
 // flattenLeftArms returns the arms contributed by the left child of a
-// binary VectorSetOp, in left-to-right order, plus whether the child was
-// an absorbable same-shaped chain link. When the left child is a
+// binary VectorSetOp, in left-to-right order. When the left child is a
 // matching binary VectorSetOp its own (recursively gathered) arms are
 // returned; when it's an already-flattened NaryVectorSetOp its arms are
 // spliced in; otherwise the left child is a single opaque arm.
-func flattenLeftArms(binary *chplan.VectorSetOp) (arms []chplan.Node, absorbed bool) {
+func flattenLeftArms(binary *chplan.VectorSetOp) (arms []chplan.Node) {
 	switch left := binary.Left.(type) {
 	case *chplan.VectorSetOp:
 		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
-			return []chplan.Node{binary.Left}, true
+			return []chplan.Node{binary.Left}
 		}
-		inner, _ := flattenLeftArms(left)
-		return append(inner, left.Right), true
+		return append(flattenLeftArms(left), left.Right)
 	case *chplan.NaryVectorSetOp:
 		if !sameVectorSetOpShape(binary, left.Op, left.Match, left.StepAligned,
 			left.MetricNameColumn, left.AttributesColumn,
 			left.TimestampColumn, left.ValueColumn) {
-			return []chplan.Node{binary.Left}, true
+			return []chplan.Node{binary.Left}
 		}
 		out := make([]chplan.Node, len(left.Arms))
 		copy(out, left.Arms)
-		return out, true
+		return out
 	default:
-		return []chplan.Node{binary.Left}, true
+		return []chplan.Node{binary.Left}
 	}
 }
 
