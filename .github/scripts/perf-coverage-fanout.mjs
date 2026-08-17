@@ -75,8 +75,8 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
-import { spawn } from 'node:child_process';
 import { error, notice, log, group } from './lib/gh.mjs';
+import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
 /** The corpus-wide ratchet this lane fans out. */
 export const RATCHET_TEST = 'TestCardinalityRatchet';
@@ -155,34 +155,6 @@ export function legCommands({ tags, coverpkg, go = 'go' }) {
   });
 }
 
-/**
- * Runs one leg to completion, buffering its output.
- *
- * Buffered rather than inherited because the legs run concurrently and would
- * otherwise interleave line by line — a `go test` failure is a multi-line
- * block (the corpus fixture diff, or a goroutine dump) that is unreadable
- * once several legs shuffle into each other. Each leg's buffer is printed
- * whole, after all finish — mirroring property-fanout.mjs's runLeg.
- */
-function runLeg(leg) {
-  return new Promise((resolve) => {
-    const [cmd, ...args] = leg.argv;
-    const child = spawn(cmd, args, {
-      env: { ...process.env, ...leg.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    child.stdout.on('data', (d) => {
-      out += d;
-    });
-    child.stderr.on('data', (d) => {
-      out += d;
-    });
-    child.on('error', (err) => resolve({ leg, code: 1, out: `${out}\nspawn ${cmd}: ${err.message}` }));
-    child.on('close', (code) => resolve({ leg, code: code ?? 1, out }));
-  });
-}
-
 async function main() {
   const tags = process.env.TAGS ?? '';
   if (tags === '') {
@@ -204,7 +176,7 @@ async function main() {
   );
 
   const started = Date.now();
-  const results = await Promise.all(legs.map(runLeg));
+  const results = await Promise.all(legs.map(runLegBuffered));
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
 
   for (const r of results) {
