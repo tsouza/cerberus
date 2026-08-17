@@ -1,0 +1,66 @@
+name: Registry login
+description: >
+  Log in to the GHCR image mirror, then (if a Docker Hub PAT is configured)
+  to Docker Hub, in that order.
+
+# Why a composite action: every Docker/k3d-backed job needs the identical
+# two-step login pair, and a composite action's steps have no implicit
+# access to the caller's `secrets` context, so the credentials travel in as
+# inputs instead.
+#
+# Order matters and is the whole point of this action: GHCR is the PRIMARY
+# acquisition path (cerberus's own mirror of every upstream image this job
+# pulls - see .github/scripts/lib/mirror.mjs) and Docker Hub is the
+# fallback. Authenticating the fallback first is what let a Docker Hub
+# outage kill a job before the mirror it exists to fall back TO was ever
+# contacted (issue #1933).
+#
+# An unreachable Docker Hub no longer takes a job down with it either: the
+# login exhausts its retries on a transport fault and downgrades the job to
+# MIRROR-ONLY (registry-login.mjs), where every image comes from the GHCR
+# mirror and one the mirror cannot serve fails the job naming itself rather
+# than being pulled anonymously. A quota refusal or a rejected credential
+# still fails here on the first attempt.
+
+inputs:
+  github-token:
+    description: Token used to authenticate to the GHCR image mirror.
+    required: true
+  docker-hub-pat:
+    description: >
+      Docker Hub personal access token. Empty (as on a fork PR, where the
+      secret is unavailable) skips the Docker Hub login and leaves the job
+      on GHCR plus anonymous Docker Hub pulls.
+    required: false
+    default: ''
+  run-docker-hub-login:
+    description: >
+      Extra gate ANDed with `docker-hub-pat` being set. Lets a caller with
+      its own job-level run condition (e.g. a sharded matrix job) skip the
+      Docker Hub login without also skipping the GHCR login, which some
+      callers need to run unconditionally.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to the image mirror (GHCR)
+      shell: bash
+      env:
+        REGISTRY: ghcr.io
+        USERNAME: ${{ github.repository_owner }}
+        PASSWORD: ${{ inputs.github-token }}
+      run: node "$GITHUB_WORKSPACE/.github/scripts/registry-login.mjs"
+
+    # Authenticated Docker Hub pulls get a far higher rate limit than
+    # anonymous pulls from shared runner IPs. Skips silently when the PAT is
+    # absent (forks); GHCR mirroring above is the stronger long-term fix.
+    - name: Log in to Docker Hub
+      if: ${{ inputs.run-docker-hub-login == 'true' && env.DOCKER_HUB_PAT_SET == 'true' }}
+      shell: bash
+      env:
+        DOCKER_HUB_PAT_SET: ${{ inputs.docker-hub-pat != '' }}
+        USERNAME: tsouza
+        PASSWORD: ${{ inputs.docker-hub-pat }}
+      run: node "$GITHUB_WORKSPACE/.github/scripts/registry-login.mjs"
