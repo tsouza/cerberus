@@ -4066,3 +4066,95 @@ func TestWindowFrag_PartitionByBoundary(t *testing.T) {
 		t.Errorf("empty partition list must NOT emit a dangling PARTITION BY; got %q", without)
 	}
 }
+
+// --- range_window.go predict_linear slope-column dispatch (411:5) ---
+
+// TestPredictLinear_SlopeColumnDispatch kills the CONDITIONALS_NEGATION
+// mutant at range_window.go:411 (`r.PredictLinearSlopeColumn == ""`).
+// An empty slope column must route through the plain single-value writer
+// (only the `Value` column projected); a non-empty one must route through
+// the "with extra" writer, projecting a SECOND column that reads the
+// slope out of the same simpleLinearRegression tuple
+// (`tupleElement(..., 1)`). The `==` → `!=` flip swaps which shape gets
+// which path.
+func TestPredictLinear_SlopeColumnDispatch(t *testing.T) {
+	t.Parallel()
+
+	base := func() *chplan.RangeWindow {
+		return &chplan.RangeWindow{
+			Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+			Func:            "predict_linear",
+			Scalars:         []float64{3600},
+			Range:           5 * time.Minute,
+			TimestampColumn: "TimeUnix",
+			ValueColumn:     "Value",
+		}
+	}
+
+	sqlWithout, _, err := Emit(context.Background(), base())
+	if err != nil {
+		t.Fatalf("Emit(no slope column): %v", err)
+	}
+	plan := base()
+	plan.PredictLinearSlopeColumn = "predict_slope"
+	sqlWith, _, err := Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit(slope column set): %v", err)
+	}
+
+	t.Run("no slope column → no extra projection", func(t *testing.T) {
+		t.Parallel()
+		if strings.Contains(sqlWithout, "predict_slope") {
+			t.Errorf("expected no slope projection with PredictLinearSlopeColumn unset\nSQL: %s", sqlWithout)
+		}
+	})
+
+	t.Run("slope column set → extra projection reads slot 1", func(t *testing.T) {
+		t.Parallel()
+		// The extra projection reads the SLOPE slot (tupleElement index
+		// 1) of the regression tuple, mirroring the slope term already
+		// inside `predict` (`... , 1) * ?`) — pinning the exact suffix
+		// distinguishes "the slope projection was added" from "some
+		// other tupleElement(...) call happens to precede the alias".
+		if !strings.Contains(sqlWith, "), 1) AS predict_slope") {
+			t.Errorf("expected the slope projection (tupleElement(..., 1) AS predict_slope) with PredictLinearSlopeColumn set\nSQL: %s", sqlWith)
+		}
+		if strings.Contains(sqlWithout, "predict_slope") {
+			t.Errorf("baseline SQL must not carry the slope alias\nSQL: %s", sqlWithout)
+		}
+	})
+}
+
+// --- range_window.go anchorGridCeilIdxFrag arithmetic (1812:41) ---
+
+// TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne kills the ARITHMETIC_BASE
+// mutant at range_window.go:1812 (`addNS-1` → `addNS+1`) inside
+// anchorGridCeilIdxFrag. The ceiling index is documented to equal the
+// floor index with its addend shifted down by exactly one nanosecond;
+// this pins that relationship directly against anchorGridFloorIdxFrag
+// rather than against a hand-rendered literal, so it can't drift with the
+// floor helper's own rendering.
+func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
+	t.Parallel()
+	render := func(f Frag) string {
+		b := &Builder{}
+		f(b)
+		return b.String()
+	}
+
+	dist := BareIdent("dist")
+	const addNS = int64(5_000_000_000) // 5s, an arbitrary non-zero addend
+	const stepNS = int64(60_000_000_000)
+
+	got := render(anchorGridCeilIdxFrag(dist, addNS, stepNS))
+	want := render(anchorGridFloorIdxFrag(dist, addNS-1, stepNS))
+	if got != want {
+		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) must equal anchorGridFloorIdxFrag(dist, %d-1, step)\ngot:  %s\nwant: %s",
+			addNS, addNS, got, want)
+	}
+	// Negative control: the `addNS+1` mutant would instead match this.
+	wrong := render(anchorGridFloorIdxFrag(dist, addNS+1, stepNS))
+	if got == wrong {
+		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (line 1812 flipped?): %s", addNS, got)
+	}
+}
