@@ -474,6 +474,31 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 // projects the complement. The emitter uses the same
 // matchKeyGroupExpr helper as VectorJoin so the signature shape
 // stays in sync across both V-V binop families.
+//
+// Each operand lowers through [lowerVectorSetOpOperand]
+// (histogram_native_set_op.go), which routes a histogram-VALUED operand
+// through its own histogram-aware lowering — reachable here for a
+// float/histogram MIXED set op (cerberus issue #2325: one side already
+// reduced to a float, e.g. via histogram_quantile(), the other a raw
+// histogram selector) since [lowerRoot]'s own histogram-valued dispatch
+// only recognises the shape where BOTH sides are histogram-valued
+// (cerberus issue #2324 / #2326, histogram_native_set_op.go's
+// [expHistogramSetOp]) and falls through to this generic path otherwise.
+//
+// The resulting VectorSetOp.Histogram flag — which shape the emitter's
+// per-arm canonicalisation and the OUTER SELECT's column list both use —
+// is decided from the ACTUAL lowered shape of each side
+// ([chplan.RowShapeOf]), not from a pre-lowering AST guess: `and` /
+// `unless` forward exactly one side's rows verbatim (the other side's
+// own value type never reaches the wire, only its label signature does),
+// so the output is that FORWARDED side's shape regardless of what the
+// other side is. `or` unions both sides' rows, which cerberus cannot
+// represent when the two sides disagree on shape — the whole-query
+// row-shape decision ([chplan.RowShapeOf] feeding
+// internal/api/prom/handler.go's wrapWithSampleProjection) and the
+// emitter's positional UNION ALL both assume one shape for the entire
+// result — so a mixed-shape `or` is rejected explicitly rather than
+// emitted as invalid SQL or silently dropping a side's histogram.
 func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	kind, err := promVectorSetOpKind(b.Op)
 	if err != nil {
@@ -483,13 +508,28 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	left, err := lower(b.LHS, s, ctx)
+	left, err := lowerVectorSetOpOperand(b.LHS, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lower(b.RHS, s, ctx)
+	right, err := lowerVectorSetOpOperand(b.RHS, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	leftHistogram := chplan.RowShapeOf(left) == chplan.HistogramRowShape
+	rightHistogram := chplan.RowShapeOf(right) == chplan.HistogramRowShape
+	if kind == chplan.VectorSetOr && leftHistogram != rightHistogram {
+		// cerberus issue #2330: unlike `and`/`unless` (which forward one
+		// side's own rows verbatim, so the mixed-shape case above just
+		// works), `or`'s output is a genuine union of both sides' rows —
+		// cerberus has no wire representation for a query result that is
+		// per-row float or histogram, only one shape for the whole query
+		// (see chplan.RowShapeOf / VectorSetOp.Histogram).
+		return nil, fmt.Errorf(
+			"promql: 'or' between a float-valued and a histogram-valued operand is not supported; " +
+				"'and'/'unless' support mixing them",
+		)
 	}
 
 	match := chplan.VectorMatch{}
@@ -504,11 +544,15 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 	// (signature, anchor). Instant mode carries one row per series with
 	// an arm-local timestamp, so it keys on the signature alone.
 	return &chplan.VectorSetOp{
-		Left:             left,
-		Right:            right,
-		Op:               kind,
-		Match:            match,
-		StepAligned:      ctx.step > 0,
+		Left:        left,
+		Right:       right,
+		Op:          kind,
+		Match:       match,
+		StepAligned: ctx.step > 0,
+		// `and`/`unless` always forward the LEFT side's own rows; a
+		// homogeneous `or` has leftHistogram == rightHistogram (asserted
+		// above), so either reads the same answer.
+		Histogram:        leftHistogram,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,

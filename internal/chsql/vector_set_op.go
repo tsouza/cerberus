@@ -298,7 +298,21 @@ func vectorSetOpCanonicalArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag
 		timeFrag,
 		Col(s.ValueColumn),
 	}
-	if s.Histogram {
+	// Widen by THIS ARM's own row shape, not s.Histogram: for a
+	// homogeneous set op (both arms histogram, or both float) the two
+	// answers agree, but a MIXED `and`/`unless` (cerberus issue #2325 —
+	// one operand already reduced to a float, the other a raw histogram
+	// selector) has s.Histogram reporting only the OUTPUT arm's shape
+	// (see chplan.VectorSetOp.Histogram / internal/promql's
+	// lowerVectorSetOp). The other arm is canonicalised here purely to
+	// supply setOpInSubqueryFrag's label-signature membership test — it
+	// is never a source of output columns — so it must be widened (or
+	// not) by what its OWN SELECT actually publishes, or referencing a
+	// Histogram*Column the arm never projects (float side) / omitting
+	// one it does (histogram side, harmlessly unused downstream) would
+	// desync from reality. In the homogeneous cases this is
+	// byte-identical to the old s.Histogram check.
+	if chplan.RowShapeOf(arm) == chplan.HistogramRowShape {
 		cols = append(cols, vectorSetOpHistogramCols()...)
 	}
 	inner := NewQuery().

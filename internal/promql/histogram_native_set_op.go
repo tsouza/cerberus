@@ -49,6 +49,21 @@ import (
 // Prometheus's parser rejects any cardinality modifier on a set operator
 // ("set operations must always be many-to-many") before cerberus ever
 // sees the query.
+//
+// A MIXED shape — one side histogram-valued, the other already reduced
+// to a float (`histogram_quantile(0.5, m_exp_hist) and m_exp_hist`,
+// cerberus issue #2325) — is deliberately NOT recognised by
+// [expHistogramSetOp]: this file's mechanism always builds a
+// histogram-VALUED result (both operands cap with a
+// [chplan.HistogramProjection]-shaped node), but a mixed `and`/`unless`
+// forwards whichever side is FLOAT-valued when that's the LHS, so the
+// result isn't always histogram-valued. [lowerVectorSetOpOperand], used
+// by the generic float-path lowering in binary.go's [lowerVectorSetOp],
+// is the mixed case's entry point instead — it reuses
+// [lowerExpHistogramSetOpOperand] below for whichever operand actually
+// IS histogram-valued and leaves the other to lower through the
+// ordinary float path, so the two mechanisms share the one histogram-
+// operand lowering helper without duplicating it.
 
 // expHistogramSetOp reports whether expr is a `and`/`or`/`unless` binary
 // expression whose BOTH operands are histogram-valued shapes. It is
@@ -146,4 +161,36 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 		)
 	}
 	return node, nil
+}
+
+// lowerVectorSetOpOperand lowers one operand of a `and`/`or`/`unless`
+// vector set op reached through the generic float-path lowering
+// (binary.go's [lowerVectorSetOp]) — the entry point for both the plain
+// float/float shape and the MIXED float/histogram shape (cerberus issue
+// #2325), since the both-histogram shape never reaches it (it is
+// intercepted earlier, at [lowerRoot], by [expHistogramSetOp] via
+// [lowerExpHistogramValuedShape]).
+//
+// An operand that resolves to a histogram-VALUED shape — a bare
+// exp-histogram selector, sum()/avg() over one, a histogram-valued range
+// function, or a nested exp-histogram-valued set op — routes through
+// [lowerExpHistogramSetOpOperand] instead of the generic [lower]: every
+// one of those shapes is recognised ROOT-reachable-only (see
+// [lowerRoot]'s doc comment on why the histogram-valued dispatches live
+// there), and [lower] never re-runs that recognition, so without this
+// check such an operand would descend into [lowerVectorSelector] and hit
+// [expHistogramSelectorRouting]'s catch-all rejection — the exact bug
+// #2325 reports.
+//
+// Every other operand — including a FLOAT-valued function that merely
+// reads a histogram selector as its own argument, like
+// histogram_quantile(), or an operand with no histogram involvement at
+// all — lowers unchanged through [lower]: it already produces the
+// canonical Sample row shape [lowerVectorSetOp] needs with no special
+// handling.
+func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if isExpHistogramValuedShape(expr, s, ctx) {
+		return lowerExpHistogramSetOpOperand(expr, s, ctx)
+	}
+	return lower(expr, s, ctx)
 }
