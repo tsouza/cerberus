@@ -484,13 +484,17 @@ func TestLower_HistogramQuantile_OverAggregation_Native(t *testing.T) {
 			// chplan.Walk is pre-order, so foundAgg is the OUTER
 			// across-series merge stage; the per-series window stage
 			// beneath it is pinned by the _LeDropped sibling below.
-			// Validate the merge's aggregate function set: Count, Sum and
-			// ZeroCount plus every per-row exp-histogram column are collected
-			// with groupArray for the Prometheus-compatible compensated fold;
-			// min(Scale) supplies the common schema. The default schema has no
-			// max(ZeroThreshold) — see the function doc above.
-			if len(foundAgg.AggFuncs) != 9 {
-				t.Errorf("Aggregate.AggFuncs = %d funcs, want 9", len(foundAgg.AggFuncs))
+			// Validate the merge's aggregate function set: sum(Count) +
+			// sum(Sum) (hqQuantileRankScalarMergeAggs, cerberus issue
+			// #2072) + min(Scale) + sum(ZeroCount) + groupArray of every
+			// per-row exp-histogram column (no max(ZeroThreshold) on the
+			// default schema — see the function doc above) + one more
+			// groupArray of each row's own series-identity sort key
+			// (expHistogramMergeSeriesOrderKeyExpr, cerberus issue
+			// #2254), which pins the merge's bucket-sum fold order to
+			// reference Prometheus's own series-fold order.
+			if len(foundAgg.AggFuncs) != 10 {
+				t.Errorf("Aggregate.AggFuncs = %d funcs, want 10", len(foundAgg.AggFuncs))
 			}
 			want := map[chplan.Fn]bool{
 				chplan.FnMin: false, chplan.FnGroupArray: false,

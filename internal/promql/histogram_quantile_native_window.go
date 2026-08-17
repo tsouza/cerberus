@@ -389,6 +389,10 @@ func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
+		// Positionally aligned with the five groupArrays above — see
+		// expHistogramMergeSeriesOrderKeyExpr and
+		// expHistogramSortRowsByKeyExpr (cerberus issue #2254).
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{expHistogramMergeSeriesOrderKeyExpr(s)}, Alias: hqAggSeriesOrderKeyAlias},
 	}...)
 }
 
@@ -413,9 +417,9 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 	}
 	return append(projs, []chplan.Projection{
 		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
+		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, hqAggSeriesOrderKeyAlias), Alias: s.PositiveBucketCountsColumn},
 		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
+		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, hqAggSeriesOrderKeyAlias), Alias: s.NegativeBucketCountsColumn},
 	}...)
 }
 
