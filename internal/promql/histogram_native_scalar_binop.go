@@ -201,13 +201,6 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // still lowers byte-for-byte the same way. drop selects reference's
 // keep=false incompatible-types result; otherwise the capping
 // HistogramProjection is rewritten to scale it.
-//
-// extraPassthrough only differs from empty for the bare-selector range
-// shapes, which read the step-grid anchor off the row. sum()/avg() and the
-// histogram-valued range functions already carry
-// stepGridAnchorColumn in their own Input's output when it applies —
-// [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
-// themselves — so neither needs it repeated here.
 func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx, drop bool) (chplan.Node, error) {
 	node, matched, err := lowerExpHistogramValuedShape(histSide, s, ctx)
 	if !matched {
@@ -234,15 +227,7 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 // [expHistogramAvgScaleProjections] applies for avg()'s "divide by the
 // group's member count", generalised to an arbitrary scalar expression
 // and operator (cerberus issue #2087).
-//
-// extraPassthrough names any columns beyond the closed set every
-// HistogramProjection.Input is already guaranteed to expose — Attributes,
-// Scale, ZeroThreshold (if the schema persists it), both bucket offsets,
-// and the five count-bearing fields — that THIS caller's specific
-// lowering shape also needs carried through unscaled (the step-grid
-// anchor for the bare-selector range shape; see
-// [lowerExpHistogramScalarBinop]'s doc).
-func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, extraPassthrough ...string) *chplan.HistogramProjection {
+func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
 	histSchema := histogramProjectionSchema(s)
 	passthroughCols := []string{
 		s.AttributesColumn,
