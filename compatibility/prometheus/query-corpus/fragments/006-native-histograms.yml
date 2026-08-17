@@ -119,6 +119,19 @@
   # but not to the buckets.
   - query: 'avg(demo_latency_exp_hist)'
   - query: 'avg by (instance) (demo_latency_exp_hist)'
+  # Binary `+`/`-` between two histogram-valued selectors (cerberus issue
+  # #2263). Reference answers these via FloatHistogram's PLAIN Add/Sub —
+  # a different reference method from the cross-series sum() above, which
+  # goes through the Kahan-compensated KahanAdd instead (see
+  # internal/promql/histogram_native_binop.go's header doc). `+` doubles
+  # each of the two instances' own distribution rather than merging them
+  # with each other, so a lowering that accidentally joined the two
+  # DIFFERENT instances (rather than pairing each with itself) would
+  # answer with half as many output series and the wrong bucket layout.
+  # `-` self-cancels to an all-zero histogram, which pins the negation
+  # path independently of the addition path.
+  - query: 'demo_latency_exp_hist + demo_latency_exp_hist'
+  - query: 'demo_latency_exp_hist - demo_latency_exp_hist'
   # Cross-SCALE merge. demo_shifting_latency_exp_hist's third instance
   # is seeded at scale -1 against the other two at scale 0, so summing
   # the three coarsens the merged histogram's schema and folds bucket

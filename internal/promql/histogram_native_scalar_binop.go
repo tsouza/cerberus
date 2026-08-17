@@ -183,6 +183,15 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 			return scalar
 		}
 	}
+	// `<exp-hist shape> (+|-) <exp-hist shape>` with default matching
+	// (cerberus issue #2263) — see histogram_native_binop.go. Gated on
+	// default matching so this predicate only reports true for a shape
+	// [lowerExpHistogramHistogramBinop] actually lowers successfully;
+	// on()/ignoring()/group_left()/group_right() stay unrecognised here
+	// and fall through to that lowering's own explicit rejection.
+	if _, _, _, vm, ok := expHistogramHistogramBinop(expr, s, ctx); ok && isDefaultMatching(vm) {
+		return true
+	}
 	return false
 }
 
