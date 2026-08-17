@@ -78,14 +78,32 @@
 #                      each other that some individually-fast queries miss
 #                      the shared 10s deadline purely from contention —
 #                      "context deadline exceeded" with an empty diff, not
-#                      a semantic divergence. Confirmed by direct
-#                      measurement: every one of the CI-observed timeout
-#                      cases answers in under 3s in isolation; firing the
-#                      same query set at -query-parallelism-equivalent
-#                      concurrency against a 2-vCPU-constrained container
-#                      (matching a GH Actions standard runner) reproduces
-#                      individual response times past 10s at concurrency
-#                      20, comfortably under it at concurrency 2.
+#                      a semantic divergence. That contention argument is
+#                      why the flag is set low at all, and it holds for
+#                      the corpus at large. It does NOT hold for the
+#                      exponential-histogram family, whose cases the flag
+#                      cannot rescue at any value. Re-measured against
+#                      this lane's own CH_IMAGE with this script's own
+#                      seed fixture, ONE query at a time against an
+#                      otherwise idle, unconstrained multi-core host —
+#                      i.e. strictly kinder than a 2-vCPU CI runner and
+#                      with no contention at all:
+#                        histogram_quantile(<phi>,
+#                            sum(rate(demo_shifting_latency_exp_hist[1m|5m])))
+#                            and the bare-selector variant  9-13s
+#                        count_values("hist",
+#                            rate(demo_shifting_latency_exp_hist[5m]))    19-20s
+#                      Both sit at or past the comparer's 10s deadline
+#                      already, so lowering -query-parallelism further
+#                      buys nothing for them. Every one of those seconds
+#                      is ClickHouse-side expression evaluation over the
+#                      fixture's 520 stored rows — measured by timing the
+#                      emitted query's nested sub-SELECTs one level at a
+#                      time, it splits roughly 58% per-series across-TIME
+#                      window fold, 14% across-series bucket merge, 22%
+#                      quantile value expression. Cerberus issue #2267
+#                      owns making that arithmetic cheaper; this knob is
+#                      not the lever.
 #
 # Upstream tester invocation (post-PR #298 / #300 audit):
 #   The upstream `promql-compliance-tester` only accepts `-config-file`
