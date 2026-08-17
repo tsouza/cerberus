@@ -480,22 +480,12 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) {
 			applyRootMetadata(summaries, roots)
 		}
 	}
-	writeEngineHeaders(w, res.Headers)
+	httperr.WriteEngineHeaders(w, res.Headers)
 	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  summaries,
 		Metrics: metrics,
 	})
-}
-
-// writeEngineHeaders stamps the X-Cerberus-* response headers populated
-// by engine.Engine.Query / QueryPlan onto w before the response body
-// fires. Safe to call with a nil / empty map (no-op). See the matching
-// helper in internal/api/loki/handler.go for the full rationale.
-func writeEngineHeaders(w http.ResponseWriter, hdr map[string]string) {
-	for k, v := range hdr {
-		w.Header().Set(k, v)
-	}
 }
 
 // search/recent page-size bounds: the Tempo Search UI's first-page
@@ -620,7 +610,7 @@ func (h *Handler) handleSearchRecent(w http.ResponseWriter, r *http.Request) {
 	// summary set is never truncated in Go and the pre-truncation trace
 	// count is simply the grouped set.
 	metrics, inspectedSpans := SearchMetricsFor(summaries, res.Samples)
-	writeEngineHeaders(w, res.Headers)
+	httperr.WriteEngineHeaders(w, res.Headers)
 	writeInspectedSpans(w, inspectedSpans)
 	writeJSON(w, http.StatusOK, SearchResponse{
 		Traces:  summaries,
@@ -703,7 +693,7 @@ func (h *Handler) serveTraceByID(w http.ResponseWriter, r *http.Request, v2 bool
 	}
 	h.Logger.Debug("cerberus tempo traceByID", "trace_id", traceID, "sql", res.SQL, "args", telemetry.SanitizeArgsForLog(res.Args))
 
-	writeEngineHeaders(w, res.Headers)
+	httperr.WriteEngineHeaders(w, res.Headers)
 
 	// Grafana 11.x's Tempo datasource plugin sends
 	// `Accept: application/protobuf` and proto.Unmarshal-s the response
