@@ -301,54 +301,12 @@ jobs:
       # docker-images: false -> KEEP Docker's prebaked images (the stack
       # needs them). Pinned to a commit SHA (the action only ships @main;
       # repo CI rule: pin explicitly, no HEAD).
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/registry-login
         with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
-
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # Authenticated Docker Hub pulls get a far higher rate limit than
-      # anonymous pulls from shared runner IPs (same hardening as the
-      # compatibility workflow's compose jobs). Skips silently when the
-      # secrets are absent (forks); GHCR mirroring is the stronger
-      # long-term fix. Ahead of the builder setup so the BuildKit
-      # bootstrap image is fetched under the same credentials.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       - uses: ./.github/actions/setup-buildx
 
@@ -566,50 +524,12 @@ jobs:
       # pre-baked toolchains so the compose stack can't exhaust the runner
       # disk -> DiskPressure/Evicted. KEEP Docker images (docker-images:
       # false). Pinned to a commit SHA (action only ships @main).
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
+      - uses: ./.github/actions/free-disk-space
+
+      - uses: ./.github/actions/registry-login
         with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
-
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # Ahead of the builder setup so the BuildKit bootstrap image is
-      # fetched under the same credentials.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       - uses: ./.github/actions/setup-buildx
 
@@ -1049,23 +969,11 @@ jobs:
       # filesystem, which kubelet watches for ephemeral-storage. Bone-stock
       # ubuntu-latest leaves too little headroom -> kubelet DiskPressure,
       # pods Evicted ("node was low on resource: ephemeral-storage"), exit
-      # 137, then the port-forward fails. Reclaim ~25-30 GB of unused
-      # toolchains first. KEEP Docker images (the stack needs them). Gated on
-      # RUN_SHARD so the crawl shard's push no-op stays near-instant. Pinned
-      # to a commit SHA (action only ships @main).
-      - name: Disk free (before reclaim)
-        if: env.RUN_SHARD == 'true'
-        run: df -h
+      # 137, then the port-forward fails. Gated on RUN_SHARD so the crawl
+      # shard's push no-op stays near-instant.
       - name: Free disk space
         if: env.RUN_SHARD == 'true'
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
-        with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        if: env.RUN_SHARD == 'true'
-        run: df -h
+        uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v7
         if: env.RUN_SHARD == 'true'
@@ -1103,36 +1011,13 @@ jobs:
       # credentials; without it the pull falls back to the shared anonymous
       # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
       #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # `just e2e-up` pulls the k3s node image + every external image on
-      # the HOST docker daemon (then `k3d image import`s them into the
-      # cluster's containerd — see Justfile's e2e-up/_pull-retry), so this
-      # login is what actually raises the pull-rate ceiling for k3d jobs,
-      # exactly like the compose-smoke jobs above.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.RUN_SHARD == 'true' && env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+      # No RUN_SHARD guard on the GHCR login itself: it always runs (the
+      # `just e2e-up` pull-rate ceiling below is what's gated on RUN_SHARD).
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+          run-docker-hub-login: ${{ env.RUN_SHARD }}
 
       - name: Bring up k3d stack
         if: env.RUN_SHARD == 'true'
@@ -1583,42 +1468,10 @@ jobs:
         with:
           tool: just
 
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # The mirror is reached for FIRST, but a mirror miss falls back to Docker
-      # Hub — and that fallback is the anonymous shared per-runner-IP quota
-      # unless this step has run. Every other image-acquiring job in this
-      # workflow carries both logins; this one carried only the mirror half,
-      # which is invisible for as long as the mirror keeps hitting.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       # `docker run` pulls a missing image itself, single-attempt: a Docker Hub
       # blip fails the job before ClickHouse is even started. `_pull-retry`
@@ -1705,16 +1558,7 @@ jobs:
       # Evicted pods before the fault scenarios even run. Reclaim ~25-30 GB of
       # unused toolchains first; KEEP Docker images. Pinned to a commit SHA
       # (action only ships @main).
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
-        with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v7
         with:
@@ -1740,42 +1584,10 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # `just e2e-up` pulls the k3s node image + every external image on
-      # the HOST docker daemon (then `k3d image import`s them into the
-      # cluster's containerd — see Justfile's e2e-up/_pull-retry), so this
-      # login is what actually raises the pull-rate ceiling for k3d jobs,
-      # exactly like the compose-smoke jobs above.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       # Reuse the e2e k3d bring-up (same first steps as the dashboard job):
       # cluster, cerberus:e2e image, manifests, host port maps
@@ -1911,16 +1723,7 @@ jobs:
       # rationale as dashboard-shard: reclaim ~25-30 GB of unused toolchains so
       # the stack can't trip DiskPressure. KEEP Docker images. Pinned to a commit
       # SHA (action only ships @main).
-      - name: Disk free (before reclaim)
-        run: df -h
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2026-06-18
-        with:
-          docker-images: false
-          large-packages: false
-          tool-cache: false
-      - name: Disk free (after reclaim)
-        run: df -h
+      - uses: ./.github/actions/free-disk-space
 
       - uses: actions/setup-go@v7
         with:
@@ -1948,42 +1751,10 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
 
-      # Cerberus's own copy of every upstream image this job pulls lives in a
-      # PRIVATE GHCR namespace, and `pullImageWithRetry` reaches for it before
-      # Docker Hub. That reach works only once this step has written ghcr.io
-      # credentials; without it the pull falls back to the shared anonymous
-      # Docker Hub quota. See .github/scripts/lib/mirror.mjs.
-      #
-      # FIRST, ahead of the Docker Hub login below, because this is the PRIMARY
-      # acquisition path and that one is the fallback. Authenticating the
-      # fallback first is what let a Docker Hub outage kill this job before the
-      # mirror it exists to fall back TO was ever contacted (issue #1933).
-      - name: Log in to the image mirror (GHCR)
-        env:
-          REGISTRY: ghcr.io
-          USERNAME: ${{ github.repository_owner }}
-          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: node .github/scripts/registry-login.mjs
-
-      # `just e2e-bwc-up` pulls the k3s node image + every external/bwc image
-      # on the HOST docker daemon (then `k3d image import`s them into the
-      # cluster's containerd — see Justfile's e2e-bwc-up/_pull-retry), so
-      # this login is what actually raises the pull-rate ceiling here,
-      # exactly like the compose-smoke jobs above.
-      #
-      # An unreachable Docker Hub no longer takes this job down with it: the
-      # login exhausts its retries on a transport fault and downgrades the job
-      # to MIRROR-ONLY (registry-login.mjs), where every image comes from the
-      # mirror and one the mirror cannot serve fails the job naming itself
-      # rather than being pulled anonymously. A quota refusal or a rejected
-      # credential still fails here on the first attempt.
-      - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_HUB_PAT_SET == 'true' }}
-        env:
-          DOCKER_HUB_PAT_SET: ${{ secrets.DOCKER_HUB_PAT != '' }}
-          USERNAME: tsouza
-          PASSWORD: ${{ secrets.DOCKER_HUB_PAT }}
-        run: node .github/scripts/registry-login.mjs
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
       - name: Bring up k3d + MinIO + bundled-ClickHouse stack
         run: just e2e-bwc-up

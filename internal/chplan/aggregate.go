@@ -1,16 +1,42 @@
 package chplan
 
+// AggCombinator is a ClickHouse aggregate-function combinator: a suffix
+// composed onto a base aggregate's name that changes what rows it
+// consumes or how partial states combine (CH's own
+// "Combinators for Aggregate Functions" family — `-If`, `-Array`,
+// `-Merge`, `-State`, and others cerberus does not emit yet). The set
+// below is sealed on the same "cerberus's own lowerings, not CH's full
+// manual" principle [Fn] documents: a new combinator arrives as a
+// deliberate vocabulary addition, never a bare string.
+type AggCombinator string
+
+const (
+	// CombIf is CH's `-If` combinator: the base aggregate consumes only
+	// the rows where its own TRAILING argument (appended positionally
+	// after the base aggregate's normal arguments) evaluates true —
+	// `argMinIf(arg, val, cond)` is `argMin(arg, val)` restricted to rows
+	// where cond holds. The combinator itself carries no argument of its
+	// own; Args on the owning AggFunc still lists every argument
+	// (including cond) positionally.
+	CombIf AggCombinator = "If"
+)
+
 // AggFunc is one aggregate-function call in an Aggregate node's projection
-// list. The emitter resolves Fn and renders `<fn>(<Args>) AS <Alias>` for plain
-// aggregates and `<fn>(<Params>)(<Args>) AS <Alias>` for parameterised aggregates
-// (e.g. CH `quantile(0.95)(value)`).
+// list. The emitter resolves Fn (and any Combinators) and renders
+// `<fn><combinators>(<Args>) AS <Alias>` for plain aggregates and
+// `<fn><combinators>(<Params>)(<Args>) AS <Alias>` for parameterised
+// aggregates (e.g. CH `quantile(0.95)(value)`).
 //
-// Fn is the sealed function symbol. A combinator-suffixed spelling
-// (`argMinIf`) is, for now, its own Fn symbol rather than a
-// structural combinator; the structural split is #2280's job, not
-// this one's.
+// Fn is the sealed BASE function symbol — `argMin`, never `argMinIf`.
+// Combinators is the ordered list of CH combinator suffixes composed onto
+// it; nil/empty for a plain (uncombined) aggregate. Splitting the
+// CH-suffixed spelling into Fn + Combinators (rather than a single
+// literal Fn symbol per combined spelling, e.g. FnArgMinIf) keeps the
+// structure a rule can pattern-match on ("this is argMin, restricted by
+// something") instead of a string a rule would have to parse.
 type AggFunc struct {
-	Fn Fn
+	Fn          Fn
+	Combinators []AggCombinator
 	// Params is the parameter list for parameterised aggregates (CH-style).
 	// Nil/empty for plain aggregates.
 	Params []Expr
@@ -21,8 +47,14 @@ type AggFunc struct {
 // Equal reports structural equality with another AggFunc.
 func (a AggFunc) Equal(other AggFunc) bool {
 	if a.Fn != other.Fn || a.Alias != other.Alias ||
-		len(a.Args) != len(other.Args) || len(a.Params) != len(other.Params) {
+		len(a.Args) != len(other.Args) || len(a.Params) != len(other.Params) ||
+		len(a.Combinators) != len(other.Combinators) {
 		return false
+	}
+	for i := range a.Combinators {
+		if a.Combinators[i] != other.Combinators[i] {
+			return false
+		}
 	}
 	for i := range a.Params {
 		if !a.Params[i].Equal(other.Params[i]) {
