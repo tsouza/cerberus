@@ -1505,7 +1505,7 @@ jobs:
   # where dashboard-setup does not run).
   dashboard:
     name: dashboard
-    needs: [dashboard-setup, dashboard-shard]
+    needs: [dashboard-setup, dashboard-shard, dashboard-crawl-merge]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1514,6 +1514,7 @@ jobs:
         run: |
           echo "setup  = ${{ needs.dashboard-setup.result }}"
            echo "shards = ${{ needs.dashboard-shard.result }}"
+          echo "crawl-merge = ${{ needs.dashboard-crawl-merge.result }}"
           # If setup was skipped (docs-only PR, or a non-PR/push/schedule/
           # dispatch path), there is nothing to aggregate — report green
           # without work. On a code PR setup runs, so this branch does not fire
@@ -1536,6 +1537,16 @@ jobs:
             echo "::error::one or more dashboard shards failed/cancelled (rolled-up: ${{ needs.dashboard-shard.result }})."
              exit 1
            fi
+          # dashboard-crawl-merge's own `if:` only runs it on schedule/dispatch/
+          # a release/* PR (see its job definition) — `skipped` there is the
+          # expected, correct outcome on an ordinary push or PR, not a failure.
+          # `success` is the only other acceptable outcome; `failure` or
+          # `cancelled` means the crawl inventory did not merge cleanly and
+          # must gate exactly like a failed shard does above.
+          if [ "${{ needs.dashboard-crawl-merge.result }}" != "success" ] && [ "${{ needs.dashboard-crawl-merge.result }}" != "skipped" ]; then
+            echo "::error::dashboard crawl slice merge did not succeed (${{ needs.dashboard-crawl-merge.result }})."
+            exit 1
+          fi
            echo "all dashboard shards passed."
 
   startup-bench:

@@ -716,6 +716,15 @@ jobs:
           node --test .github/scripts/crawl-budget.test.mjs
           node --test .github/scripts/assert-crawl-terminal.test.mjs
 
+      # Pins e2e.yml's dashboard-crawl-merge wiring: the required `dashboard`
+      # aggregator must depend on it (so a merge failure can gate a release),
+      # and the release/dispatch trigger conditions that decide when the
+      # crawl matrix runs at all. A pure in-process regex-over-YAML test
+      # (~10ms) — it caught a real gap (#2275) that had gone unnoticed
+      # because nothing invoked it.
+      - name: Assert the dashboard-crawl-merge wiring holds
+        run: node --test .github/scripts/crawl-frontier-workflow.test.mjs
+
       # `perf-guards` is a REQUIRED context posted by an aggregator job that
       # runs no tests of its own — it exists only to roll the sharded
       # `perf-guards-shard` matrix up under the name branch protection and
