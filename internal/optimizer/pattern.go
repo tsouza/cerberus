@@ -47,8 +47,11 @@ func KindOf(n chplan.Node) NodeKind {
 	return NodeKind{t: reflect.TypeOf(n)}
 }
 
-// Predefined kinds for every concrete chplan operator. Kept in lockstep
-// with the chplan package; new operators land here when they land there.
+// Predefined kinds for the chplan operators a PatternRule currently
+// matches on. This is NOT exhaustive over chplan's concrete node
+// vocabulary — a new chplan operator does not need an entry here until
+// some PatternRule wants to capture it; KindOf gives a one-off lookup
+// for anything else.
 var (
 	KindScan           = NodeKind{t: reflect.TypeOf((*chplan.Scan)(nil))}
 	KindFilter         = NodeKind{t: reflect.TypeOf((*chplan.Filter)(nil))}

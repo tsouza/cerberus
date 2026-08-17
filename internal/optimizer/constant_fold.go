@@ -138,6 +138,13 @@ func foldNode(n chplan.Node, foldFn func(chplan.Expr) (chplan.Expr, bool)) (chpl
 // Binary node after that node's children have been folded. The two
 // flavours (semantic literal arithmetic, heuristic boolean identities)
 // differ only in that per-Binary function.
+//
+// Every chplan Expr kind that holds a child Expr must appear here — a
+// missing case silently strands any pure-literal subtree nested inside
+// it unfolded. This mirrors projection_pushdown.go's walkExpr, which
+// documents the same exhaustiveness requirement for column-reference
+// discovery; the two switches should be kept in lockstep over the
+// chplan Expr vocabulary.
 func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, bool)) (chplan.Expr, bool) {
 	switch v := e.(type) {
 	case *chplan.Binary:
@@ -176,6 +183,87 @@ func foldExprWith(e chplan.Expr, foldBinary func(*chplan.Binary) (chplan.Expr, b
 			return v, false
 		}
 		return &chplan.FuncCall{Fn: v.Fn, Args: newArgs}, true
+	case *chplan.InList:
+		nl, lc := foldExprWith(v.Left, foldBinary)
+		newList := make([]chplan.Expr, len(v.List))
+		anyChange := lc
+		for i, e := range v.List {
+			ne, ch := foldExprWith(e, foldBinary)
+			newList[i] = ne
+			if ch {
+				anyChange = true
+			}
+		}
+		if !anyChange {
+			return v, false
+		}
+		return &chplan.InList{Left: nl, List: newList, Negated: v.Negated}, true
+	case *chplan.FieldAccess:
+		ns, ch := foldExprWith(v.Source, foldBinary)
+		if !ch {
+			return v, false
+		}
+		return &chplan.FieldAccess{Source: ns, Path: v.Path}, true
+	case *chplan.Subscript:
+		nc, cc := foldExprWith(v.Container, foldBinary)
+		nk, kc := foldExprWith(v.Key, foldBinary)
+		if !cc && !kc {
+			return v, false
+		}
+		return &chplan.Subscript{Container: nc, Key: nk}, true
+	case *chplan.Lambda:
+		nb, ch := foldExprWith(v.Body, foldBinary)
+		if !ch {
+			return v, false
+		}
+		return &chplan.Lambda{Params: v.Params, Body: nb}, true
+	case *chplan.LabelJoin:
+		nm, ch := foldExprWith(v.Map, foldBinary)
+		if !ch {
+			return v, false
+		}
+		cp := *v
+		cp.Map = nm
+		return &cp, true
+	case *chplan.LabelReplace:
+		nm, ch := foldExprWith(v.Map, foldBinary)
+		if !ch {
+			return v, false
+		}
+		cp := *v
+		cp.Map = nm
+		return &cp, true
+	case *chplan.LineContent:
+		ns, ch := foldExprWith(v.Source, foldBinary)
+		if !ch {
+			return v, false
+		}
+		cp := *v
+		cp.Source = ns
+		return &cp, true
+	case *chplan.MapWithoutEmptyValues:
+		nm, ch := foldExprWith(v.Map, foldBinary)
+		if !ch {
+			return v, false
+		}
+		return &chplan.MapWithoutEmptyValues{Map: nm}, true
+	case *chplan.MapWithoutKeys:
+		nm, ch := foldExprWith(v.Map, foldBinary)
+		if !ch {
+			return v, false
+		}
+		return &chplan.MapWithoutKeys{Map: nm, Keys: v.Keys}, true
+	case *chplan.NestedArrayExists:
+		if v.Value == nil {
+			return v, false
+		}
+		nval, ch := foldExprWith(v.Value, foldBinary)
+		if !ch {
+			return v, false
+		}
+		cp := *v
+		cp.Value = nval
+		return &cp, true
 	}
 	return e, false
 }
