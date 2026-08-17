@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/migrate"
 )
 
 // WriteJSON renders the inventory as machine-readable JSON with a trailing
@@ -25,34 +27,34 @@ func (inv Inventory) WriteJSON(w io.Writer) error {
 // OOM risk, not a cerberus memory prediction), then the head-block size, then
 // the ranked risk tables, then any enrichment notes.
 func (inv Inventory) WriteText(w io.Writer) error {
-	bw := &errWriter{w: w}
-	bw.printf("# cerberus migrate inventory\n")
-	bw.printf("#\n")
-	bw.printf("# Live cardinality probed from the SOURCE Prometheus TSDB (%s).\n", inv.Source)
-	bw.printf("# These are source-Prometheus runtime facts — the realized series counts\n")
-	bw.printf("# config can't reveal offline. High-cardinality metrics are the OOM\n")
-	bw.printf("# CANDIDATES cerberus can't see before cutover. They RANK RISK; they do\n")
-	bw.printf("# NOT predict cerberus's exact memory (that depends on the query + engine).\n")
+	bw := migrate.NewErrWriter(w)
+	bw.Printf("# cerberus migrate inventory\n")
+	bw.Printf("#\n")
+	bw.Printf("# Live cardinality probed from the SOURCE Prometheus TSDB (%s).\n", inv.Source)
+	bw.Printf("# These are source-Prometheus runtime facts — the realized series counts\n")
+	bw.Printf("# config can't reveal offline. High-cardinality metrics are the OOM\n")
+	bw.Printf("# CANDIDATES cerberus can't see before cutover. They RANK RISK; they do\n")
+	bw.Printf("# NOT predict cerberus's exact memory (that depends on the query + engine).\n")
 	if inv.Window != "" {
-		bw.printf("# Observation window (operator context): %s. TSDB status is a\n", inv.Window)
-		bw.printf("# point-in-time head snapshot, so the window frames the numbers.\n")
+		bw.Printf("# Observation window (operator context): %s. TSDB status is a\n", inv.Window)
+		bw.Printf("# point-in-time head snapshot, so the window frames the numbers.\n")
 	}
-	bw.printf("#\n\n")
+	bw.Printf("#\n\n")
 
-	bw.printf("== head block\n")
-	bw.printf("  series:      %d\n", inv.Head.NumSeries)
-	bw.printf("  label pairs: %d\n", inv.Head.NumLabelPairs)
-	bw.printf("  chunks:      %d\n", inv.Head.ChunkCount)
+	bw.Printf("== head block\n")
+	bw.Printf("  series:      %d\n", inv.Head.NumSeries)
+	bw.Printf("  label pairs: %d\n", inv.Head.NumLabelPairs)
+	bw.Printf("  chunks:      %d\n", inv.Head.ChunkCount)
 	if hasHeadSpan(inv.Head) {
-		bw.printf("  head span:   %s .. %s\n", formatMillis(inv.Head.MinTime), formatMillis(inv.Head.MaxTime))
+		bw.Printf("  head span:   %s .. %s\n", formatMillis(inv.Head.MinTime), formatMillis(inv.Head.MaxTime))
 	}
 	if inv.MetricNameTotal >= 0 {
-		bw.printf("  distinct metric names: %d\n", inv.MetricNameTotal)
+		bw.Printf("  distinct metric names: %d\n", inv.MetricNameTotal)
 	}
 	if inv.MetadataMetricTotal >= 0 {
-		bw.printf("  metrics with metadata: %d\n", inv.MetadataMetricTotal)
+		bw.Printf("  metrics with metadata: %d\n", inv.MetadataMetricTotal)
 	}
-	bw.printf("\n")
+	bw.Printf("\n")
 
 	writeRanked(bw, fmt.Sprintf("top %d metrics by series count (OOM candidates)", inv.Top),
 		inv.TopMetricsBySeries, "series")
@@ -62,40 +64,40 @@ func (inv Inventory) WriteText(w io.Writer) error {
 		inv.TopLabelsByMemory, "bytes")
 
 	if len(inv.Notes) > 0 {
-		bw.printf("== notes (%d)\n", len(inv.Notes))
+		bw.Printf("== notes (%d)\n", len(inv.Notes))
 		for _, n := range inv.Notes {
-			bw.printf("  %s\n", n)
+			bw.Printf("  %s\n", n)
 		}
 	}
 
 	writeLokiSection(bw, inv.Loki)
 	writeTempoSection(bw, inv.Tempo)
 
-	return bw.err
+	return bw.Err
 }
 
 // writeLokiSection prints the optional per-selector Loki section, or nothing
 // at all when the operator never supplied a Loki source — a nil section is
 // simply absent from the report, never rendered as an empty ranked table.
-func writeLokiSection(bw *errWriter, loki *LokiInventory) {
+func writeLokiSection(bw *migrate.ErrWriter, loki *LokiInventory) {
 	if loki == nil {
 		return
 	}
-	bw.printf("\n== loki: %s\n", loki.Source)
+	bw.Printf("\n== loki: %s\n", loki.Source)
 	if loki.Window != "" {
-		bw.printf("  window: %s\n", loki.Window)
+		bw.Printf("  window: %s\n", loki.Window)
 	}
 	if len(loki.Selectors) == 0 {
-		bw.printf("  none reported by the source\n")
+		bw.Printf("  none reported by the source\n")
 	}
 	for i, s := range loki.Selectors {
-		bw.printf("  %3d. %-*s %d streams %d chunks %d entries %d bytes\n",
+		bw.Printf("  %3d. %-*s %d streams %d chunks %d entries %d bytes\n",
 			i+1, rankNameWidth, s.Selector, s.Streams, s.Chunks, s.Entries, s.Bytes)
 	}
 	if len(loki.Notes) > 0 {
-		bw.printf("  notes (%d):\n", len(loki.Notes))
+		bw.Printf("  notes (%d):\n", len(loki.Notes))
 		for _, n := range loki.Notes {
-			bw.printf("    %s\n", n)
+			bw.Printf("    %s\n", n)
 		}
 	}
 }
@@ -103,26 +105,26 @@ func writeLokiSection(bw *errWriter, loki *LokiInventory) {
 // writeTempoSection prints the optional, always-fixed Tempo out-of-scope
 // section, or nothing at all when the operator never supplied a Tempo
 // source.
-func writeTempoSection(bw *errWriter, tempo *TempoInventory) {
+func writeTempoSection(bw *migrate.ErrWriter, tempo *TempoInventory) {
 	if tempo == nil {
 		return
 	}
-	bw.printf("\n== tempo: %s\n", tempo.Source)
-	bw.printf("  out of scope: %s\n", tempo.OutOfScope)
+	bw.Printf("\n== tempo: %s\n", tempo.Source)
+	bw.Printf("  out of scope: %s\n", tempo.OutOfScope)
 }
 
 // writeRanked prints one ranked table, or an explicit "none reported" line so an
 // empty array is visible rather than a silent gap.
-func writeRanked(bw *errWriter, title string, rows []NameValue, unit string) {
-	bw.printf("== %s\n", title)
+func writeRanked(bw *migrate.ErrWriter, title string, rows []NameValue, unit string) {
+	bw.Printf("== %s\n", title)
 	if len(rows) == 0 {
-		bw.printf("  none reported by the source\n\n")
+		bw.Printf("  none reported by the source\n\n")
 		return
 	}
 	for i, r := range rows {
-		bw.printf("  %3d. %-*s %d %s\n", i+1, rankNameWidth, r.Name, r.Value, unit)
+		bw.Printf("  %3d. %-*s %d %s\n", i+1, rankNameWidth, r.Name, r.Value, unit)
 	}
-	bw.printf("\n")
+	bw.Printf("\n")
 }
 
 // rankNameWidth pads the name column so the value column lines up in the ranked
@@ -141,19 +143,4 @@ func hasHeadSpan(h HeadStats) bool {
 // formatMillis renders a Prometheus millisecond epoch as an RFC3339 UTC instant.
 func formatMillis(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
-}
-
-// errWriter collapses the Fprintf error checks in the text writers into a single
-// short-circuiting sink: once a write fails, later printf calls no-op and the
-// first error is returned.
-type errWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (e *errWriter) printf(format string, args ...any) {
-	if e.err != nil {
-		return
-	}
-	_, e.err = fmt.Fprintf(e.w, format, args...)
 }

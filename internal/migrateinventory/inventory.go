@@ -309,12 +309,21 @@ func (c *Client) fetchMetadataTotal(ctx context.Context) (int, error) {
 // (including a 404 of an endpoint an old Prometheus lacks) is an error carrying
 // the status, so the caller can surface it and exit non-zero.
 func (c *Client) getOK(ctx context.Context, path string) ([]byte, error) {
-	reqURL := c.BaseURL + path
+	return httpGetOK(ctx, c.HTTP, c.BaseURL, path)
+}
+
+// httpGetOK issues GET {baseURL}{path} via client and returns the body only on
+// a 200. A non-200 (including a 404 of an endpoint an old source lacks) is an
+// error carrying the status, so the caller can surface it and exit non-zero.
+// Shared by every probe client in this package (Client, LokiClient) so the
+// request-build / do / capped-read / status-check sequence is written once.
+func httpGetOK(ctx context.Context, client *http.Client, baseURL, path string) ([]byte, error) {
+	reqURL := baseURL + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request %s: %w", path, err)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)
 	}
