@@ -1923,9 +1923,10 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// Inner Project re-shapes the aggregate output into the exp-histogram
 	// row contract HistogramQuantileNative expects: Attributes (rebuilt
 	// from gkeys) + the merged Scale / ZeroCount / ZeroThreshold +
-	// the folded {Positive,Negative}{Offset,BucketCounts}.
+	// the folded {Positive,Negative}{Offset,BucketCounts}. Routed through
+	// expHistogramMergeSortStage first — see its doc for why.
 	rebuilt := &chplan.Project{
-		Input: agg,
+		Input: expHistogramMergeSortStage(agg),
 		Projections: append(
 			[]chplan.Projection{{Expr: attrsRebuild, Alias: s.AttributesColumn}},
 			hqQuantileRankScalarMergeProjections(s)...,
@@ -2034,11 +2035,18 @@ func expHistogramMergeOffsetExpr(offArrAlias, scalesArrAlias, mergedScaleAlias s
 // across rows. Rows with empty bucket arrays contribute zero to every
 // target position (no `j` in arrayEnumerate of empty array).
 //
-// orderKeyArrAlias names the groupArray of per-row series-identity keys
-// [expHistogramMergeSeriesOrderKeyExpr] collected — see
-// [expHistogramSortRowsByKeyExpr] for why the three row arrays are
-// reordered by it before the fold (cerberus issue #2254).
-func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias, orderKeyArrAlias string) chplan.Expr {
+// offArrAlias/bucArrAlias/scalesArrAlias MUST already be sorted into the
+// deterministic per-series order [expHistogramMergeSortStage] pins
+// (cerberus issue #2254) before they reach here — this function no
+// longer sorts them itself. It used to call
+// [expHistogramSortRowsByKeyExpr] inline, once per call, but that call
+// sat inside the arrayMap(t -> ...) this function itself builds below,
+// so ClickHouse re-ran all three arraySort calls once per target bucket
+// instead of once per output row (cerberus issue #2267). Sorting once,
+// upstream, in expHistogramMergeSortStage's own Project — outside any
+// per-bucket loop — removes the redundant work without touching the
+// #2254 fix's actual correctness properties.
+func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string) chplan.Expr {
 	const paramT = "t"
 
 	mergedScale := &chplan.ColumnRef{Name: mergedScaleAlias}
@@ -2047,26 +2055,7 @@ func expHistogramMergeBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, merg
 	bucArr := &chplan.ColumnRef{Name: bucArrAlias}
 
 	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
-
-	// The per-target-bucket fold below sums FLOAT64 terms, one per
-	// contributing series, and float addition is not associative — not
-	// even under the Kahan-Neumaier compensation
-	// expHistogramMergeBucketsRowsSumExpr now applies (cerberus issue
-	// #2254: summing the SAME set of per-series contributions in a
-	// DIFFERENT order can still land on a different ULP). groupArray's
-	// own row order is whatever ClickHouse's scan/aggregation execution
-	// happens to produce, which need not match the order reference
-	// Prometheus's own series iteration folds the same histograms in.
-	// Reordering all three per-row arrays by each row's own series
-	// identity, ascending, pins one deterministic order instead — the
-	// same order two positionally-aligned groupArray()s of the SAME rows
-	// always agree on to begin with, which is what keeps
-	// scalesArr/offArr/bucArr aligned to EACH OTHER after the reorder.
-	orderKey := &chplan.ColumnRef{Name: orderKeyArrAlias}
-	sortedScales := expHistogramSortRowsByKeyExpr(scalesArr, orderKey)
-	sortedOff := expHistogramSortRowsByKeyExpr(offArr, orderKey)
-	sortedBuc := expHistogramSortRowsByKeyExpr(bucArr, orderKey)
-	rowsSum := expHistogramMergeBucketsRowsSumExpr(sortedScales, sortedOff, sortedBuc, mergedScale, mergedStart, paramT)
+	rowsSum := expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart, paramT)
 
 	// Outer: arrayMap(t -> rowsSum, range(toUInt64(mergedLength))).
 	// `t` is 0-based; the inner expression reconstructs the absolute
@@ -2194,9 +2183,9 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 // FloatHistogram.KahanAdd — itself a Neumaier-compensated recurrence, not
 // a plain float add — so a plain arraySum here would diverge from it at
 // the ULP level even once the row order matches (cerberus issue #2254).
-// scalesArr/offArr/bucArr are expected to already be reordered by the
-// caller ([expHistogramMergeBucketsExpr]'s [expHistogramSortRowsByKeyExpr]
-// calls) to match reference Prometheus's own series-fold order — sumKahan
+// scalesArr/offArr/bucArr are expected to already be reordered — by
+// [expHistogramMergeSortStage], upstream of [expHistogramMergeBucketsExpr]
+// — to match reference Prometheus's own series-fold order — sumKahan
 // still is not perfectly order-invariant in general (only plain addition
 // commutes; compensated summation only bounds the error), so getting the
 // order right is what the compensation alone cannot buy back.
@@ -2325,7 +2314,9 @@ func promHistogramKahanSum(values chplan.Expr) chplan.Expr {
 // as the sort key, so calling it once per collected array — all keyed off
 // the SAME orderKey array — reorders every array by the identical
 // permutation and keeps them positionally aligned to each other
-// afterward. See expHistogramMergeBucketsExpr, its only caller.
+// afterward. See expHistogramMergeSortStage, its only caller — called
+// once per group there rather than once per target bucket, which is why
+// that Project stage exists at all (cerberus issue #2267).
 func expHistogramSortRowsByKeyExpr(arr, orderKey chplan.Expr) chplan.Expr {
 	const (
 		paramMergeSortRow = "row"

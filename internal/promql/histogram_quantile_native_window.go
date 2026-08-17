@@ -415,6 +415,51 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 	}
 }
 
+// expHistogramMergeSortStage wraps agg — the across-series merge
+// [chplan.Aggregate] built from [expHistogramMergeAggs] plus
+// [expHistogramMergeSeriesOrderKeyAgg] — in a passthrough Project that
+// resorts three of its groupArray columns into the deterministic
+// per-series order expHistogramMergeSeriesOrderKeyExpr pins (cerberus
+// issue #2254), computed exactly ONCE per group here.
+//
+// expHistogramMergeBucketsExpr used to call expHistogramSortRowsByKeyExpr
+// directly on the raw groupArray columns from inside its own
+// per-target-bucket arrayMap(t -> ...): ClickHouse has no reason to hoist
+// a t-INDEPENDENT subexpression out of a lambda body, so the three
+// arraySort calls re-ran once per target bucket instead of once per
+// output row — an O(mergedLength) blowup that regressed the -floor
+// compat lane's already-thin timeout margin (cerberus issue #2267,
+// caused by #2258's otherwise-correct fix for #2254). `* REPLACE (...)`
+// rewrites the three columns IN PLACE under their existing aliases, so
+// every downstream reader — expHistogramMergeBucketsExpr included —
+// keeps reading hqAggScalesArrayAlias / hqAggPos*Alias / hqAggNeg*Alias
+// exactly as before and needs no signature change to know the sort now
+// happens here instead of inline.
+//
+// Sorting hqAggScalesArrayAlias here also benefits
+// expHistogramMergeOffsetExpr's arrayMin call, which is order-invariant
+// either way — sorting it once is strictly cheaper than the alternative
+// of carrying two differently-ordered copies of the same column.
+func expHistogramMergeSortStage(agg chplan.Node) chplan.Node {
+	orderKey := &chplan.ColumnRef{Name: hqAggSeriesOrderKeyAlias}
+	sorted := func(arrAlias string) chplan.Projection {
+		return chplan.Projection{
+			Expr:  expHistogramSortRowsByKeyExpr(&chplan.ColumnRef{Name: arrAlias}, orderKey),
+			Alias: arrAlias,
+		}
+	}
+	return &chplan.Project{
+		Input: agg,
+		Replacements: []chplan.Projection{
+			sorted(hqAggScalesArrayAlias),
+			sorted(hqAggPosOffsetsArrayAlias),
+			sorted(hqAggPosBucketsArrayAlias),
+			sorted(hqAggNegOffsetsArrayAlias),
+			sorted(hqAggNegBucketsArrayAlias),
+		},
+	}
+}
+
 // expHistogramMergeProjections renders the across-series stage's
 // reshape back into the exponential-histogram row contract: the merged
 // scale, zero count and both signed bucket ladders, folded from the
@@ -422,7 +467,9 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 //
 // Shared by the instant and range aggregated paths for the same reason
 // expHistogramMergeAggs is — the two differ only in the anchor column
-// the caller prepends.
+// the caller prepends. Callers MUST route the Aggregate through
+// [expHistogramMergeSortStage] before it reaches this Project — see that
+// function's doc for why.
 func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 	projs := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
@@ -436,9 +483,9 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 	}
 	return append(projs, []chplan.Projection{
 		{Expr: expHistogramMergeOffsetExpr(hqAggPosOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, hqAggSeriesOrderKeyAlias), Alias: s.PositiveBucketCountsColumn},
+		{Expr: expHistogramMergeBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.PositiveBucketCountsColumn},
 		{Expr: expHistogramMergeOffsetExpr(hqAggNegOffsetsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeOffsetColumn},
-		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, hqAggSeriesOrderKeyAlias), Alias: s.NegativeBucketCountsColumn},
+		{Expr: expHistogramMergeBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias), Alias: s.NegativeBucketCountsColumn},
 	}...)
 }
 

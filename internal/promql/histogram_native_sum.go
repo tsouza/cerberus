@@ -273,7 +273,8 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 		fields = expHistogramAvgScaleProjections(fields, s)
 	}
 	projs = append(projs, fields...)
-	return &chplan.Project{Input: merged, Projections: projs}
+	// Routed through expHistogramMergeSortStage first — see its doc.
+	return &chplan.Project{Input: expHistogramMergeSortStage(merged), Projections: projs}
 }
 
 // lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
@@ -306,7 +307,8 @@ func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.N
 		fields = expHistogramAvgScaleProjections(fields, histSchema)
 	}
 	reshaped := &chplan.Project{
-		Input: merged,
+		// Routed through expHistogramMergeSortStage first — see its doc.
+		Input: expHistogramMergeSortStage(merged),
 		Projections: append([]chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: attrsRebuild, Alias: s.AttributesColumn},
