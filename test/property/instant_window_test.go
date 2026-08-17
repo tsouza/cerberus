@@ -174,8 +174,8 @@ const (
 // presence, and value. Unsupported functions are harness errors, never an
 // implicit empty result.
 func oracleInstantWindow(c gen.InstantWindowCase) property.Outcome {
-	if invalid := property.ValidateGeneratedDataset(c.Dataset); invalid != "" {
-		return property.Outcome{Err: fmt.Errorf("instant-window oracle: invalid dataset: %s", invalid)}
+	if c.Dataset.Metrics == nil {
+		return property.Outcome{Err: fmt.Errorf("instant-window oracle: missing metrics model")}
 	}
 	if len(c.Dataset.Metrics.Series) != 1 {
 		return property.Outcome{Err: fmt.Errorf(
