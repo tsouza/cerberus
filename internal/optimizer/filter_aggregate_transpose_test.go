@@ -137,6 +137,55 @@ func TestFilterAggregateTranspose_BlockedByComputedGroupKey(t *testing.T) {
 	}
 }
 
+// TestFilterAggregateTranspose_MixedBareAndComputedGroupKey verifies that a
+// GroupBy mixing a bare key (`job`) with a computed one
+// (`substr(MetricName, 1)`) still allows the rewrite via the bare subset:
+// the computed entry contributes no passthrough name and is simply skipped,
+// it does not abort the whole passthrough set. This pins the "skip, don't
+// abort" policy (see #2285) against a case both existing
+// BlockedByComputedGroupKey tests miss — they use a single-entry GroupBy,
+// where "skip down to empty" and "abort the whole set" happen to coincide.
+func TestFilterAggregateTranspose_MixedBareAndComputedGroupKey(t *testing.T) {
+	t.Parallel()
+
+	scan := &chplan.Scan{Table: "otel_metrics_gauge"}
+	pred := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "job"},
+		Right: &chplan.LitString{V: "api"},
+	}
+	computedKey := &chplan.FuncCall{
+		Fn:   chplan.FnSubstring,
+		Args: []chplan.Expr{&chplan.ColumnRef{Name: "MetricName"}, &chplan.LitInt{V: 1}},
+	}
+	groupBy := []chplan.Expr{&chplan.ColumnRef{Name: "job"}, computedKey}
+	aggFuncs := []chplan.AggFunc{
+		{Fn: chplan.FnCount, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}, Alias: "n"},
+	}
+	input := &chplan.Filter{
+		Input: &chplan.Aggregate{
+			Input:    scan,
+			GroupBy:  groupBy,
+			AggFuncs: aggFuncs,
+		},
+		Predicate: pred,
+	}
+
+	expected := &chplan.Aggregate{
+		Input: &chplan.Filter{
+			Input:     scan,
+			Predicate: pred,
+		},
+		GroupBy:  groupBy,
+		AggFuncs: aggFuncs,
+	}
+
+	out := optimizer.New(optimizer.FilterAggregateTranspose()).Run(context.Background(), input)
+	if !out.Equal(expected) {
+		t.Fatalf("FilterAggregateTranspose did not fire on mixed bare/computed GroupBy:\n got: %#v\nwant: %#v", out, expected)
+	}
+}
+
 // TestFilterAggregateTranspose_AliasMatchesName allows the rewrite when
 // the alias matches the underlying column name — that's a no-op rename.
 func TestFilterAggregateTranspose_AliasMatchesName(t *testing.T) {
