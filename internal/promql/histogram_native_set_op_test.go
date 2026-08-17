@@ -63,27 +63,67 @@ func TestLower_ExpHistogram_SetOpIsHistogramValued(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_SetOpMixedOperandStillRejects pins that a set
-// op with only ONE histogram-valued operand does not spuriously match
-// [expHistogramSetOp] (which requires BOTH sides histogram-valued) and
-// still rejects cleanly — via the pre-existing
-// expHistogramSelectorRouting message the plain vector-selector path
-// hits for the histogram-shaped operand — rather than a panic or a
-// silently wrong plan.
-func TestLower_ExpHistogram_SetOpMixedOperandStillRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOp_AndUnless pins cerberus issue #2325:
+// `and` / `unless` between a FLOAT-valued operand (already reduced from
+// a native histogram, e.g. via histogram_quantile()) and a raw
+// histogram-valued selector lowers successfully in EITHER operand
+// order. Reference Prometheus's set operators match purely on labels,
+// never on either side's value type, so mixing is legal upstream; only
+// #2324/#2326's OWN fix (routing the shape where BOTH sides are
+// histogram-valued) left this gap, because [expHistogramSetOp] requires
+// both sides histogram-valued and the mixed shape used to fall through
+// to lowerVectorSetOp's plain lower() on each side, which sent the
+// histogram-valued operand into [lowerVectorSelector] and hit
+// [expHistogramSelectorRouting]'s catch-all rejection.
+//
+// `and` / `unless` forward exactly one side's rows verbatim (the LHS,
+// filtered by whether its signature also — for `and` — or does not, for
+// `unless` — appear on the RHS), so the RESULT's value type always
+// matches the LHS's own: float when the float-reduced operand is on the
+// left, histogram when the raw selector is.
+func TestLower_ExpHistogram_MixedSetOp_AndUnless(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	query := `latency_exp_hist and up`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
+	tests := []struct {
+		query         string
+		wantHistogram bool
+	}{
+		{`histogram_quantile(0.5, latency_exp_hist) and latency_exp_hist`, false},
+		{`latency_exp_hist and histogram_quantile(0.5, latency_exp_hist)`, true},
+		{`histogram_quantile(0.5, latency_exp_hist) unless latency_exp_hist`, false},
+		{`latency_exp_hist unless histogram_quantile(0.5, latency_exp_hist)`, true},
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tt.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tt.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", tt.query, err)
+			}
+			wantShape := chplan.SampleRowShape
+			if tt.wantHistogram {
+				wantShape = chplan.HistogramRowShape
+			}
+			if shape := chplan.RowShapeOf(plan); shape != wantShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s", tt.query, shape, wantShape)
+			}
+			setOp, ok := plan.(*chplan.VectorSetOp)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.VectorSetOp", tt.query, plan)
+			}
+			if setOp.Histogram != tt.wantHistogram {
+				t.Fatalf("lower(%q): VectorSetOp.Histogram = %v, want %v", tt.query, setOp.Histogram, tt.wantHistogram)
+			}
+		})
 	}
 }
 
