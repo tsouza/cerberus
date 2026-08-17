@@ -36,9 +36,10 @@ import (
 // between two histograms ARE answered by reference with a KEPT result (a
 // structural-equality filter, not a drop and not a merge), need
 // different mechanics than either path in this file, and are tracked
-// separately (#2273) — along with on()/ignoring()/group_left()/
-// group_right() support for `+`/`-` (see this file's rejection error
-// below).
+// separately (#2273) — along with group_left()/group_right() support
+// for `+`/`-` (see this file's rejection error below;
+// on()/ignoring() are supported via
+// [applyVectorMatchToHistogramOperand], histogram_native_binop_match.go).
 //
 // The bucket RECONCILIATION (which absolute index each operand's own
 // buckets land on at the merged, coarser Scale) is the same integer
@@ -92,16 +93,23 @@ import (
 //	        <rhs HistogramProjection, negated for `-`>
 //
 // The `having count() = 2` clause stands in for VectorJoin's INNER JOIN:
-// default vector matching (no on()/ignoring()/group_left()/group_right())
-// keys on the full Attributes map — the same map each operand's own
-// HistogramProjection is already grouped by — so a matching key with
-// fewer than two contributing rows means the series existed on only one
-// side, which PromQL's default one-to-one V-V matching drops. Two rows
-// sharing a key on the SAME side cannot happen (each operand's own
-// grouping already guarantees one row per Attributes value), so
-// `!= 2` can only mean "unmatched", never "ambiguous" — unlike
-// VectorJoin's on()/ignoring() case, no runtime many-to-many guard is
-// needed here.
+// default vector matching keys on the full Attributes map — the same map
+// each operand's own HistogramProjection is already grouped by — so a
+// matching key with fewer than two contributing rows means the series
+// existed on only one side, which PromQL's default one-to-one V-V
+// matching drops. Two rows sharing a key on the SAME side cannot happen
+// (each operand's own grouping already guarantees one row per Attributes
+// value), so `!= 2` can only mean "unmatched", never "ambiguous" — no
+// runtime many-to-many guard is needed here for DEFAULT matching.
+//
+// on()/ignoring() matching reduces the match key to a label subset, where
+// two distinct series CAN share one key — [applyVectorMatchToHistogramOperand]
+// (histogram_native_binop_match.go) restores the "at most one row per
+// key" invariant this file's own merge depends on, with its own runtime
+// many-to-many guard, before either operand ever reaches
+// [mergeTwoHistogramProjections]. group_left()/group_right() (many-to-one
+// broadcast) remain unsupported — see
+// [isSupportedHistogramMatchCardinality].
 func expHistogramHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, sub bool, vm *parser.VectorMatching, ok bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, false, nil, false
@@ -121,10 +129,10 @@ func expHistogramHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx
 // own existing histogram-valued lowering unchanged — this function only
 // adds the join + merge on top.
 func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if !isDefaultMatching(vm) {
+	if !isSupportedHistogramMatchCardinality(vm) {
 		return nil, fmt.Errorf(
-			"promql: on()/ignoring()/group_left()/group_right() matching is not yet supported for binary " +
-				"arithmetic between two exponential histogram selectors; only default (full label set) matching is supported",
+			"promql: group_left()/group_right() matching is not yet supported for binary arithmetic between " +
+				"two exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
 		)
 	}
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
@@ -135,6 +143,8 @@ func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm 
 	if err != nil {
 		return nil, err
 	}
+	hpL = applyVectorMatchToHistogramOperand(hpL, vm, s, ctx)
+	hpR = applyVectorMatchToHistogramOperand(hpR, vm, s, ctx)
 	if sub {
 		// `h1 - h2` is FloatHistogram.Sub, which reference documents as
 		// Add with the second operand's counts negated first — reuse the

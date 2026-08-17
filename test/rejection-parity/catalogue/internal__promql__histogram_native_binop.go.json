@@ -2,13 +2,13 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramHistogramBinop#f9a375de",
-      "message": "promql: on()/ignoring()/group_left()/group_right() matching is not yet supported for binary arithmetic between two exponential histogram selectors; only default (full label set) matching is supported",
+      "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramHistogramBinop#cbed3d45",
+      "message": "promql: group_left()/group_right() matching is not yet supported for binary arithmetic between two exponential histogram selectors; only one-to-one matching (default, on(), or ignoring()) is supported",
       "class": "rejection",
-      "trigger_query": "demo_latency_exp_hist + on(job) demo_latency_exp_hist",
+      "trigger_query": "demo_latency_exp_hist + on(job) group_left() demo_latency_exp_hist",
       "evidence": {
         "guard": [
-          "if !isDefaultMatching(vm)"
+          "if !isSupportedHistogramMatchCardinality(vm)"
         ],
         "callers": [
           "lowerExpHistogramValuedShape"
@@ -20,7 +20,7 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#2fa7ca70",
       "message": "promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "all three callers (lowerExpHistogramHistogramBinop for +/-, lowerExpHistogramHistogramCompareBinop for ==/!=, lowerExpHistogramDroppingHistogramBinop for the incompatible-type drop family) admit only isExpHistogramValuedShape operands on both sides, whose lowerExpHistogramValuedShape producer never returns matched=false for a shape that recogniser already accepted",
+      "rationale": "all four callers (lowerExpHistogramHistogramBinop for +/-, lowerExpHistogramHistogramCompareBinop for ==/!=, lowerExpHistogramHistogramCompareBoolBinop for == bool/!= bool, lowerExpHistogramDroppingHistogramBinop for the incompatible-type drop family) admit only isExpHistogramValuedShape operands on both sides, whose lowerExpHistogramValuedShape producer never returns matched=false for a shape that recogniser already accepted",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -29,13 +29,15 @@
         "callers": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop",
-          "lowerExpHistogramHistogramCompareBinop"
+          "lowerExpHistogramHistogramCompareBinop",
+          "lowerExpHistogramHistogramCompareBoolBinop"
         ],
         "cited": [
           "isExpHistogramValuedShape",
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
+          "lowerExpHistogramHistogramCompareBoolBinop",
           "lowerExpHistogramValuedShape"
         ]
       }
@@ -45,7 +47,7 @@
       "site": "internal/promql/histogram_native_binop.go:lowerExpHistogramValuedOperand#f7926a05",
       "message": "promql: internal invariant violated: exp-histogram binop operand lowering did not cap with *chplan.HistogramProjection, got %T",
       "class": "internal",
-      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop, and now all three of lowerExpHistogramHistogramBinop, lowerExpHistogramHistogramCompareBinop, and lowerExpHistogramDroppingHistogramBinop, already rely on",
+      "rationale": "lowerExpHistogramValuedShape's producer contract ends in *chplan.HistogramProjection for every shape it reports matched=true for — the same contract histogram_native_scalar_binop.go's lowerExpHistogramScalarBinop, and now all four of lowerExpHistogramHistogramBinop, lowerExpHistogramHistogramCompareBinop, lowerExpHistogramHistogramCompareBoolBinop, and lowerExpHistogramDroppingHistogramBinop, already rely on",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -55,12 +57,14 @@
         "callers": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop",
-          "lowerExpHistogramHistogramCompareBinop"
+          "lowerExpHistogramHistogramCompareBinop",
+          "lowerExpHistogramHistogramCompareBoolBinop"
         ],
         "cited": [
           "lowerExpHistogramDroppingHistogramBinop",
           "lowerExpHistogramHistogramBinop",
           "lowerExpHistogramHistogramCompareBinop",
+          "lowerExpHistogramHistogramCompareBoolBinop",
           "lowerExpHistogramScalarBinop",
           "lowerExpHistogramValuedShape"
         ]

@@ -81,11 +81,12 @@ func TestLower_ExpHistogram_HistogramBinopIsHistogramValued(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_HistogramBinopRejectsNonDefaultMatching pins
-// that on()/ignoring()/group_left()/group_right() are explicitly
-// rejected for now (tracked as a follow-up, see this file's sibling
-// histogram_native_binop.go) rather than silently mismatching series.
-func TestLower_ExpHistogram_HistogramBinopRejectsNonDefaultMatching(t *testing.T) {
+// TestLower_ExpHistogram_HistogramBinopRejectsGroupLeftRight pins that
+// group_left()/group_right() (many-to-one broadcast) are explicitly
+// rejected for now (cerberus issue #2273's carved-out remainder) rather
+// than silently mismatching series. on()/ignoring() one-to-one matching
+// is answered — see [TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching].
+func TestLower_ExpHistogram_HistogramBinopRejectsGroupLeftRight(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -93,8 +94,6 @@ func TestLower_ExpHistogram_HistogramBinopRejectsNonDefaultMatching(t *testing.T
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	queries := []string{
-		`latency_exp_hist + on(service) other_exp_hist`,
-		`latency_exp_hist + ignoring(service) other_exp_hist`,
 		`latency_exp_hist + on(service) group_left() other_exp_hist`,
 		`latency_exp_hist + on(service) group_right() other_exp_hist`,
 	}
@@ -109,6 +108,51 @@ func TestLower_ExpHistogram_HistogramBinopRejectsNonDefaultMatching(t *testing.T
 			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
 			if err == nil {
 				t.Fatalf("lower(%q): expected an error, got none", query)
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching pins
+// cerberus issue #2273's on()/ignoring() gap being closed: `+`/`-`
+// between two exponential-histogram selectors lowers successfully under
+// a custom matching modifier, publishing the same histogram-valued
+// contract the default-matching case does. Each UnionAll arm gains an
+// extra match-key-reduction Aggregate ahead of the merge (with a runtime
+// ambiguity guard — see [TestApplyVectorMatchToHistogramOperand_AddsAmbiguityGuard]
+// for that guard's own shape) that the default-matching case does not
+// need — see [applyVectorMatchToHistogramOperand]'s doc
+// (histogram_native_binop_match.go) for why.
+func TestLower_ExpHistogram_HistogramBinopSupportsOnIgnoringMatching(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	queries := []string{
+		`latency_exp_hist + on(service) other_exp_hist`,
+		`latency_exp_hist + ignoring(service) other_exp_hist`,
+		`latency_exp_hist - on(service) other_exp_hist`,
+		`latency_exp_hist + on() other_exp_hist`,
+	}
+
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("lower(%q): unexpected error: %v", query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want histogram", query, shape)
+			}
+			if _, ok := plan.(*chplan.HistogramProjection); !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", query, plan)
 			}
 		})
 	}
