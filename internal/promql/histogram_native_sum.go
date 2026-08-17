@@ -1,10 +1,19 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
+)
+
+const (
+	// hqMergeCountsArrayAlias and hqMergeSumsArrayAlias carry the two scalar
+	// fields through the same compensated across-series fold as every bucket.
+	hqMergeCountsArrayAlias = "_hq_merge_counts"
+	hqMergeSumsArrayAlias   = "_hq_merge_sums"
 )
 
 // histogram_native_sum.go lowers `sum [by/without] (<selector>)` over an
@@ -97,6 +106,19 @@ func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		return nil, nil, false
 	}
 	return agg, vs, true
+}
+
+// mergeableExpHistogramAggregate recognizes the SUM/AVG consumer itself,
+// independently of the expression that produces its input samples. The
+// direct-selector fast path above keeps its byte-stable lowering; this
+// consumer shape is what lets the same histogram merge stack over a window
+// result, another aggregation, or a label-only wrapper.
+func mergeableExpHistogramAggregate(expr parser.Expr) (*parser.AggregateExpr, bool) {
+	agg, ok := unwrapAggregateExpr(expr)
+	if !ok || !expHistogramAggOpIsMergeable(agg.Op) || agg.Param != nil {
+		return nil, false
+	}
+	return agg, true
 }
 
 // unwrapAggregateExpr peels the transparent wrappers the parser can put
@@ -239,15 +261,76 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 	return &chplan.Project{Input: merged, Projections: projs}
 }
 
+// lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
+// already histogram-valued result. The input's HistogramProjection is a
+// stable thirteen-column boundary, so this path deliberately consumes those
+// public aliases instead of reaching through to a producer-specific subtree.
+// Grouping by the published timestamp keeps every query_range anchor
+// independent while remaining a single key for an instant evaluation.
+func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics) (chplan.Node, error) {
+	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	}
+
+	histSchema := histogramProjectionSchema(s)
+	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
+		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
+	)
+	groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
+	groupByAliases = append([]string{s.TimestampColumn}, groupByAliases...)
+	merged := &chplan.Aggregate{
+		Input:              input,
+		GroupBy:            groupBy,
+		GroupByAliases:     groupByAliases,
+		AggFuncs:           expHistogramGroupMergeAggs(agg, histSchema),
+		DropEmptyOnNoGroup: true,
+	}
+
+	fields := expHistogramGroupMergeProjections(histSchema)
+	if expHistogramGroupIsAvg(agg) {
+		fields = expHistogramAvgScaleProjections(fields, histSchema)
+	}
+	reshaped := &chplan.Project{
+		Input: merged,
+		Projections: append([]chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: attrsRebuild, Alias: s.AttributesColumn},
+		}, fields...),
+	}
+	return nativeHistogramProjection(
+		reshaped,
+		&chplan.LitString{V: ""},
+		&chplan.ColumnRef{Name: s.TimestampColumn},
+		histSchema,
+	), nil
+}
+
+// histogramProjectionSchema names the physical histogram fields exposed by a
+// HistogramProjection. It leaves the canonical sample quartet unchanged and
+// redirects only the nine payload columns to their fixed output aliases.
+func histogramProjectionSchema(s schema.Metrics) schema.Metrics {
+	s.CountColumn = chplan.HistogramCountColumn
+	s.SumColumn = chplan.HistogramSumColumn
+	s.ScaleColumn = chplan.HistogramScaleColumn
+	s.ZeroThresholdColumn = chplan.HistogramZeroThresholdColumn
+	s.ZeroCountColumn = chplan.HistogramZeroCountColumn
+	s.PositiveOffsetColumn = chplan.HistogramPositiveOffsetColumn
+	s.PositiveBucketCountsColumn = chplan.HistogramPositiveBucketCountsColumn
+	s.NegativeOffsetColumn = chplan.HistogramNegativeOffsetColumn
+	s.NegativeBucketCountsColumn = chplan.HistogramNegativeBucketCountsColumn
+	return s
+}
+
 // expHistogramGroupMergeAggs is [expHistogramMergeAggs] — the shared
 // scale-fold + offset-align + zero-pad collection, the arithmetic of
 // FloatHistogram.Add — widened by the two whole-histogram scalars a
 // histogram-VALUED answer must also publish.
 //
-// Count and Sum add plainly: they are the group's total observation
-// count and total observed value, and neither depends on bucket
-// alignment. `sum(<col>) AS <col>` reuses the source column's own name,
-// the same aliasing expHistogramMergeAggs already applies to ZeroCount.
+// Count and Sum are collected into arrays and folded with the same
+// compensated recurrence as the buckets: they are the group's total
+// observation count and total observed value, and neither depends on bucket
+// alignment, but Prometheus's FloatHistogram.KahanAdd makes their rounding
+// behavior part of parity.
 // `avg()` additionally collects the group's member count, the divisor it
 // scales the merged distribution by (see
 // [expHistogramGroupSeriesCountAgg]). `sum()` does NOT collect it: it
@@ -256,8 +339,8 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 // nothing.
 func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
-		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
-		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
 	}
 	if expHistogramGroupIsAvg(agg) {
 		aggs = append(aggs, expHistogramGroupSeriesCountAgg())
@@ -272,8 +355,8 @@ func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []c
 func expHistogramGroupMergeProjections(s schema.Metrics) []chplan.Projection {
 	return append(
 		[]chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: s.CountColumn}, Alias: s.CountColumn},
-			{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
+			{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
+			{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeSumsArrayAlias}), Alias: s.SumColumn},
 		},
 		expHistogramMergeProjections(s)...,
 	)

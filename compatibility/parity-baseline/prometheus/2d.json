@@ -5,6 +5,7 @@
   "cases": [
     "ceil(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
     "count_over_time(demo_memory_usage_bytes[15s])",
+    "delta(demo_shifting_latency_exp_hist[5m:1m])",
     "histogram_quantile(0.9, nonexistent_metric)",
     "increase(demo_cpu_usage_seconds_total[1s] offset 1m)",
     "increase(demo_cpu_usage_seconds_total[5m] offset -10m)",

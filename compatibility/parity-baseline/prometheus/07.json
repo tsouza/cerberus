@@ -18,6 +18,7 @@
     "quantile_over_time(1.5, demo_memory_usage_bytes[5m])",
     "stddev(demo_memory_usage_bytes)",
     "sum(nonexistent_metric_name)",
+    "sum(rate(demo_shifting_latency_exp_hist[1m]) * 2)",
     "time() != demo_memory_usage_bytes"
   ]
 }

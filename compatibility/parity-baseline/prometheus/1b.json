@@ -6,6 +6,7 @@
     "absent_over_time(demo_memory_usage_bytes[15s])",
     "absent_over_time(demo_memory_usage_bytes[5m] offset -10m)",
     "avg_over_time(rate(demo_cpu_usage_seconds_total[1m])[2m:10s])",
+    "count(rate(demo_shifting_latency_exp_hist[5m]))",
     "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
     "day_of_month(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[1m]))",
     "delta(demo_cpu_usage_seconds_total[15m])",

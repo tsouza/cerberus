@@ -10,6 +10,7 @@
     "hour(avg_over_time({__name__=~\"demo_disk_usage_bytes|demo_disk_total_bytes\"}[15m]))",
     "increase(demo_cpu_usage_seconds_total[15s] offset 5m)",
     "log10(-demo_memory_usage_bytes)",
+    "max(rate(demo_shifting_latency_exp_hist[5m]))",
     "max_over_time(demo_memory_usage_bytes[15m])",
     "quantile_over_time(0.1, demo_memory_usage_bytes[1h])",
     "time() % time()"

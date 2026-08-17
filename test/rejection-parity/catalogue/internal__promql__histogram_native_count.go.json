@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountOrGroupOverPlan#6724a38c",
+      "message": "promql: internal invariant violated: nested native-histogram count/group input is %T with %s row shape",
+      "class": "internal",
+      "rationale": "countOrGroupOverExpHistogramValue admits only histogram-valued operands; lowerRoot lowers that same operand through lowerExpHistogramValuedShape, whose matched contract is HistogramRowShape",
+      "evidence": {
+        "guard": [
+          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue",
+          "lowerExpHistogramValuedShape",
+          "lowerRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountOrGroupOverPlan#9c86789a",
+      "message": "promql: internal invariant violated: %s is not count/group",
+      "class": "internal",
+      "rationale": "the sole caller arrives only through countOrGroupOverExpHistogramValue, which admits only COUNT or GROUP",
+      "evidence": {
+        "guard": [
+          "past returning if chplan.RowShapeOf(input) != chplan.HistogramRowShape",
+          "default of switch agg.Op over [case parser.COUNT; case parser.GROUP; default]"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue"
+        ]
+      }
+    }
+  ]
+}

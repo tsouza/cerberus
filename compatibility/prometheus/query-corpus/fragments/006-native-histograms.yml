@@ -163,6 +163,36 @@
   - query: 'avg_over_time(demo_shifting_latency_exp_hist[5m])'
   - query: 'sum_over_time(demo_latency_exp_hist[5m] offset 5m)'
   - query: 'avg_over_time(demo_latency_exp_hist[5m] @ 1778457600)'
+  # Nested native-histogram consumers. These compare the histogram payload
+  # itself after the inner range function crosses the canonical row boundary;
+  # the neighbouring quantile cases only compare one scalar derived from it.
+  #
+  # The 5m whole-collapse `sum()` is deliberately NOT here: the sparse third
+  # shifting series enters only the 5m window and forces the across-series
+  # Kahan merge to coarsen its scale, which exposes a pre-existing fold-order
+  # dependency in the merge (tracked in #2254) as a ULP-level divergence.
+  # Every other shape below — including the 1m sum, which never coarsens,
+  # and the by-instance grouping, which never merges series together at all
+  # — passes clean.
+  - query: 'sum(rate(demo_shifting_latency_exp_hist[1m]))'
+  - query: 'avg by (instance) (rate(demo_shifting_latency_exp_hist[5m]))'
+  - query: 'sum(rate(demo_shifting_latency_exp_hist[1m]) * 2)'
+  # Label-only consumers preserve the payload; presence-only consumers count
+  # histogram samples without reading it; float-only reducers drop them.
+  - query: 'label_join(rate(demo_shifting_latency_exp_hist[5m]), "copy", "-", "instance")'
+  - query: 'count(rate(demo_shifting_latency_exp_hist[5m]))'
+  - query: 'group(rate(demo_shifting_latency_exp_hist[5m]))'
+  - query: 'count_values("hist", rate(demo_shifting_latency_exp_hist[5m]))'
+  - query: 'count_values("hist", demo_shifting_latency_exp_hist) by (instance)'
+  - query: 'max(rate(demo_shifting_latency_exp_hist[5m]))'
+  # Histogram-valued subqueries evaluate the inner histogram onto the
+  # subquery grid before the outer range kernel folds it. The 1m range at a
+  # 1m subquery step is the one-sample negative control.
+  - query: 'rate(demo_shifting_latency_exp_hist[5m:1m])'
+  - query: 'delta(demo_shifting_latency_exp_hist[5m:1m])'
+  - query: 'irate(demo_shifting_latency_exp_hist[5m:1m])'
+  - query: 'idelta(demo_shifting_latency_exp_hist[5m:1m] offset 1m)'
+  - query: 'rate(demo_shifting_latency_exp_hist[1m:1m])'
   # The FLOAT-valued reductions over a native histogram: reference's
   # funcResets, funcChanges and the `count` aggregation all publish a
   # plain sample rather than a distribution, so unlike every case above

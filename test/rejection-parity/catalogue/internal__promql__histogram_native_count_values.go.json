@@ -1,0 +1,57 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#30cc8718",
+      "message": "promql: internal invariant violated: count_values native-histogram input is %T with %s row shape",
+      "class": "internal",
+      "rationale": "countValuesOverExpHistogramValue admits a histogram-valued operand and lowerRoot lowers that same operand through lowerExpHistogramValuedShape and its histogram-row contract",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "past returning if label == \"\"",
+          "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "countValuesOverExpHistogramValue",
+          "lowerExpHistogramValuedShape",
+          "lowerRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the PromQL typechecker admits only a string literal as count_values' parameter",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "count_values(\"\", demo_latency_exp_hist)",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerRoot"
+        ]
+      }
+    }
+  ]
+}

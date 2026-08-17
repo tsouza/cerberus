@@ -2158,15 +2158,114 @@ func expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale c
 // arraySum-of-arrayMap that picks bucket[j] when (off + j - 1) >>
 // (s - merged_scale) == mergedStart + t, else 0.
 func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
-	return &chplan.FuncCall{
-		Fn: chplan.FnArraySum,
+	return promHistogramKahanSum(expHistogramRowContribsExpr(
+		scalesArr, offArr, bucArr,
+		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramT),
+	))
+}
+
+// promHistogramKahanSum mirrors Prometheus v3.11's FloatHistogram.KahanAdd
+// scalar recurrence, including its Neumaier improvement and the final
+// compensation addition performed by the SUM aggregation. Starting at
+// (sum=0, compensation=0) is equivalent to Prometheus copying the first
+// histogram and folding the remainder, because the first recurrence has
+// exactly zero compensation.
+func promHistogramKahanSum(values chplan.Expr) chplan.Expr {
+	const (
+		paramKahanAcc   = "kh_acc"
+		paramKahanValue = "kh_x"
+		paramKahanTotal = "kh_total"
+		paramKahanFinal = "kh_final"
+	)
+
+	tupleElement := func(tuple chplan.Expr, index int64) chplan.Expr {
+		return &chplan.FuncCall{
+			Fn:   chplan.FnTupleElement,
+			Args: []chplan.Expr{tuple, &chplan.LitInt{V: index}},
+		}
+	}
+	bindOne := func(param string, value, body chplan.Expr) chplan.Expr {
+		return &chplan.Subscript{
+			Container: &chplan.FuncCall{
+				Fn: chplan.FnArrayMap,
+				Args: []chplan.Expr{
+					&chplan.Lambda{Params: []string{param}, Body: body},
+					&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{value}},
+				},
+			},
+			Key: &chplan.LitInt{V: 1},
+		}
+	}
+
+	acc := &chplan.BareIdent{Name: paramKahanAcc}
+	value := &chplan.BareIdent{Name: paramKahanValue}
+	accSum := tupleElement(acc, 1)
+	accCompensation := tupleElement(acc, 2)
+	total := &chplan.Binary{Op: chplan.OpAdd, Left: accSum, Right: value}
+	boundTotal := &chplan.BareIdent{Name: paramKahanTotal}
+	correction := &chplan.FuncCall{
+		Fn: chplan.FnIf,
 		Args: []chplan.Expr{
-			expHistogramRowContribsExpr(
-				scalesArr, offArr, bucArr,
-				expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramT),
-			),
+			&chplan.Binary{
+				Op:    chplan.OpGe,
+				Left:  &chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{accSum}},
+				Right: &chplan.FuncCall{Fn: chplan.FnAbs, Args: []chplan.Expr{value}},
+			},
+			&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.Binary{Op: chplan.OpSub, Left: accSum, Right: boundTotal},
+				Right: value,
+			},
+			&chplan.Binary{
+				Op:    chplan.OpAdd,
+				Left:  &chplan.Binary{Op: chplan.OpSub, Left: value, Right: boundTotal},
+				Right: accSum,
+			},
 		},
 	}
+	nextCompensation := &chplan.FuncCall{
+		Fn: chplan.FnIf,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnIsInfinite, Args: []chplan.Expr{boundTotal}},
+			&chplan.LitFloat{V: 0},
+			&chplan.Binary{Op: chplan.OpAdd, Left: accCompensation, Right: correction},
+		},
+	}
+	next := bindOne(
+		paramKahanTotal,
+		total,
+		&chplan.FuncCall{
+			Fn: chplan.FnTuple,
+			Args: []chplan.Expr{
+				boundTotal,
+				nextCompensation,
+			},
+		},
+	)
+	folded := &chplan.FuncCall{
+		Fn: chplan.FnArrayFold,
+		Args: []chplan.Expr{
+			&chplan.Lambda{Params: []string{paramKahanAcc, paramKahanValue}, Body: next},
+			values,
+			&chplan.FuncCall{
+				Fn: chplan.FnTuple,
+				Args: []chplan.Expr{
+					&chplan.LitFloat{V: 0},
+					&chplan.LitFloat{V: 0},
+				},
+			},
+		},
+	}
+	final := &chplan.BareIdent{Name: paramKahanFinal}
+	return bindOne(
+		paramKahanFinal,
+		folded,
+		&chplan.Binary{
+			Op:    chplan.OpAdd,
+			Left:  tupleElement(final, 1),
+			Right: tupleElement(final, 2),
+		},
+	)
 }
 
 // expHistogramBucketRowContribExpr renders ONE stored row's count at the
@@ -2178,8 +2277,10 @@ func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale,
 // so landing it on a shared index means downscaling: position j of row i
 // carries absolute index (off_i + j - 1) at scale s_i, which becomes
 // (off_i + j - 1) >> (s_i - merged_scale) once folded to the merged
-// scale. Several of a row's positions can fold onto the same target,
-// hence the sum rather than a lookup.
+// scale. Several of a row's positions can fold onto the same target.
+// Prometheus's kahanReduceResolution combines those positions with the same
+// compensated recurrence KahanAdd uses across rows, so both axes must be
+// compensated independently.
 //
 // Shared by the across-series merge and the across-time window
 // reduction: both must agree bucket-for-bucket about which stored
@@ -2187,62 +2288,59 @@ func expHistogramMergeBucketsRowsSumExpr(scalesArr, offArr, bucArr, mergedScale,
 // exactly where they would stop agreeing.
 func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
 	// For one (s, off, arr) tuple and target absolute index T,
-	// arraySum(arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))).
-	return &chplan.FuncCall{
-		Fn: chplan.FnArraySum,
-		Args: []chplan.Expr{
-			&chplan.FuncCall{
-				Fn: chplan.FnArrayMap,
-				Args: []chplan.Expr{
-					&chplan.Lambda{
-						Params: []string{paramExpBucketPos},
-						Body: &chplan.FuncCall{
-							Fn: chplan.FnIf,
-							Args: []chplan.Expr{
-								&chplan.Binary{
-									Op: chplan.OpEq,
-									Left: &chplan.FuncCall{
-										Fn: chplan.FnBitShiftRight,
-										Args: []chplan.Expr{
-											&chplan.Binary{
-												Op:   chplan.OpAdd,
-												Left: &chplan.BareIdent{Name: paramExpRowOffset},
-												Right: &chplan.Binary{
-													Op:    chplan.OpSub,
-													Left:  &chplan.BareIdent{Name: paramExpBucketPos},
-													Right: &chplan.LitInt{V: 1},
-												},
-											},
-											&chplan.Binary{
+	// KahanSum(arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))).
+	return promHistogramKahanSum(
+		&chplan.FuncCall{
+			Fn: chplan.FnArrayMap,
+			Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramExpBucketPos},
+					Body: &chplan.FuncCall{
+						Fn: chplan.FnIf,
+						Args: []chplan.Expr{
+							&chplan.Binary{
+								Op: chplan.OpEq,
+								Left: &chplan.FuncCall{
+									Fn: chplan.FnBitShiftRight,
+									Args: []chplan.Expr{
+										&chplan.Binary{
+											Op:   chplan.OpAdd,
+											Left: &chplan.BareIdent{Name: paramExpRowOffset},
+											Right: &chplan.Binary{
 												Op:    chplan.OpSub,
-												Left:  &chplan.BareIdent{Name: paramExpRowScale},
-												Right: mergedScale,
+												Left:  &chplan.BareIdent{Name: paramExpBucketPos},
+												Right: &chplan.LitInt{V: 1},
 											},
 										},
-									},
-									// target absolute index = mergedStart + t (t is 0-based).
-									Right: &chplan.Binary{
-										Op:    chplan.OpAdd,
-										Left:  mergedStart,
-										Right: &chplan.BareIdent{Name: paramT},
+										&chplan.Binary{
+											Op:    chplan.OpSub,
+											Left:  &chplan.BareIdent{Name: paramExpRowScale},
+											Right: mergedScale,
+										},
 									},
 								},
-								&chplan.Subscript{
-									Container: &chplan.BareIdent{Name: paramExpRowBuckets},
-									Key:       &chplan.BareIdent{Name: paramExpBucketPos},
+								// target absolute index = mergedStart + t (t is 0-based).
+								Right: &chplan.Binary{
+									Op:    chplan.OpAdd,
+									Left:  mergedStart,
+									Right: &chplan.BareIdent{Name: paramT},
 								},
-								&chplan.LitInt{V: 0},
 							},
+							&chplan.Subscript{
+								Container: &chplan.BareIdent{Name: paramExpRowBuckets},
+								Key:       &chplan.BareIdent{Name: paramExpBucketPos},
+							},
+							&chplan.LitInt{V: 0},
 						},
 					},
-					&chplan.FuncCall{
-						Fn:   chplan.FnArrayEnumerate,
-						Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
-					},
+				},
+				&chplan.FuncCall{
+					Fn:   chplan.FnArrayEnumerate,
+					Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
 				},
 			},
 		},
-	}
+	)
 }
 
 // expHistogramRowContribsExpr renders the PER-ROW contributions at one

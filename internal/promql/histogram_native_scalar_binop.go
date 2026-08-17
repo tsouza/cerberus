@@ -154,6 +154,9 @@ func unwrapBinaryExpr(e parser.Expr) (*parser.BinaryExpr, bool) {
 // sum()/avg() over one, or a supported histogram-valued range function over
 // one.
 func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	if call, ok := labelCallOverExpHistogram(expr, s, ctx); ok {
+		return isExpHistogramValuedShape(call.Args[0], s, ctx)
+	}
 	if _, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		return true
 	}
@@ -162,6 +165,23 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	}
 	if _, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
 		return true
+	}
+	if _, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
+		return true
+	}
+	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
+		return isExpHistogramValuedShape(agg.Expr, s, ctx)
+	}
+	if b, ok := unwrapBinaryExpr(expr); ok {
+		if b.Op == parser.MUL {
+			if _, scalar := tryScalarLiteral(b.LHS); scalar && isExpHistogramValuedShape(b.RHS, s, ctx) {
+				return true
+			}
+		}
+		if (b.Op == parser.MUL || b.Op == parser.DIV) && isExpHistogramValuedShape(b.LHS, s, ctx) {
+			_, scalar := tryScalarLiteral(b.RHS)
+			return scalar
+		}
 	}
 	return false
 }
@@ -180,29 +200,9 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // [expHistogramGroupMerge] / [expHistogramWindowReshape] project it
 // themselves — so neither needs it repeated here.
 func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx, drop bool) (chplan.Node, error) {
-	var (
-		node  chplan.Node
-		err   error
-		extra []string
-	)
-	switch {
-	case func() bool { _, ok := bareExpHistogramSelector(histSide, s, ctx); return ok }():
-		vs, _ := bareExpHistogramSelector(histSide, s, ctx)
-		node, err = lowerExpHistogramBare(vs, s, ctx)
-		if rangeGridShapeFor(vs, ctx) != gridSingleAnchor {
-			extra = []string{stepGridAnchorColumn}
-		}
-	default:
-		if agg, vs, ok := sumOrAvgOverExpHistogram(histSide, s, ctx); ok {
-			node, err = lowerExpHistogramSumOrAvg(agg, vs, s, ctx)
-		} else if shape, ok := rangeFnOverExpHistogram(histSide, s, ctx); ok {
-			node, err = lowerExpHistogramRangeFn(shape, s, ctx)
-		} else {
-			// Unreachable: both scalar-binop recognizers only name histSide
-			// after isExpHistogramValuedShape confirmed it matches one of
-			// these three recognizers.
-			return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v", histSide)
-		}
+	node, matched, err := lowerExpHistogramValuedShape(histSide, s, ctx)
+	if !matched {
+		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v", histSide)
 	}
 	if err != nil {
 		return nil, err
@@ -217,7 +217,7 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 		// matches the accepted empty result.
 		return &chplan.Filter{Input: hp, Predicate: &chplan.LitBool{V: false}}, nil
 	}
-	return scaleHistogramProjection(hp, op, scale, s, extra...), nil
+	return scaleHistogramProjection(hp, op, scale, s), nil
 }
 
 // scaleHistogramProjection rewrites hp's Input so the row it publishes
@@ -234,43 +234,39 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 // anchor for the bare-selector range shape; see
 // [lowerExpHistogramScalarBinop]'s doc).
 func scaleHistogramProjection(hp *chplan.HistogramProjection, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, extraPassthrough ...string) *chplan.HistogramProjection {
-	passthroughCols := append([]string{
+	histSchema := histogramProjectionSchema(s)
+	passthroughCols := []string{
 		s.AttributesColumn,
-		s.ScaleColumn,
-		s.PositiveOffsetColumn,
-		s.NegativeOffsetColumn,
-	}, extraPassthrough...)
+		s.TimestampColumn,
+		histSchema.ScaleColumn,
+		histSchema.ZeroThresholdColumn,
+		histSchema.PositiveOffsetColumn,
+		histSchema.NegativeOffsetColumn,
+	}
 
 	projs := make([]chplan.Projection, 0, len(passthroughCols)+1+5)
 	for _, col := range passthroughCols {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col})
 	}
-	if s.ZeroThresholdColumn != "" {
-		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ZeroThresholdColumn}, Alias: s.ZeroThresholdColumn})
-	}
-	for _, col := range []string{s.CountColumn, s.SumColumn, s.ZeroCountColumn} {
+	for _, col := range []string{histSchema.CountColumn, histSchema.SumColumn, histSchema.ZeroCountColumn} {
 		projs = append(projs, chplan.Projection{
 			Expr:  scaleHistogramScalarExpr(op, &chplan.ColumnRef{Name: col}, scale),
 			Alias: col,
 		})
 	}
-	for _, col := range []string{s.PositiveBucketCountsColumn, s.NegativeBucketCountsColumn} {
+	for _, col := range []string{histSchema.PositiveBucketCountsColumn, histSchema.NegativeBucketCountsColumn} {
 		projs = append(projs, chplan.Projection{
 			Expr:  scaleHistogramLadderExpr(op, &chplan.ColumnRef{Name: col}, scale),
 			Alias: col,
 		})
 	}
 
-	scaled := *hp
-	scaled.Input = &chplan.Project{Input: hp.Input, Projections: projs}
-	scaled.GroupBy = append([]chplan.Expr(nil), hp.GroupBy...)
-	for i, alias := range scaled.GroupByAliases {
-		if alias == s.MetricNameColumn {
-			scaled.GroupBy[i] = &chplan.LitString{V: ""}
-			break
-		}
-	}
-	return &scaled
+	return nativeHistogramProjection(
+		&chplan.Project{Input: hp, Projections: projs},
+		&chplan.LitString{V: ""},
+		&chplan.ColumnRef{Name: s.TimestampColumn},
+		histSchema,
+	)
 }
 
 // scaleHistogramScalarExpr renders `e OP scale` for one scalar

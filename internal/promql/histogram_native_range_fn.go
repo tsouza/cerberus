@@ -1,6 +1,9 @@
 package promql
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -178,6 +181,158 @@ func rangeFnOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 	return shape, true
 }
 
+// histogramSubqueryRangeShape is a histogram-valued range function whose
+// matrix operand is a subquery rather than a raw selector range. The subquery
+// evaluates an already histogram-valued instant expression onto its own
+// anchor grid; the outer function then folds those published histogram rows.
+type histogramSubqueryRangeShape struct {
+	sub      *parser.SubqueryExpr
+	windowFn string
+}
+
+// rangeFnOverExpHistogramSubquery recognizes rate/increase/delta/irate/
+// idelta over a subquery whose inner expression is already histogram-valued.
+// It deliberately asks the same recursive recognizer the lowering uses, so a
+// newly composable histogram producer cannot be admitted on one side only.
+func rangeFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubqueryRangeShape, bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return histogramSubqueryRangeShape{}, false
+	}
+	call, ok := peelWrappers(expr).(*parser.Call)
+	if !ok || len(call.Args) != 1 {
+		return histogramSubqueryRangeShape{}, false
+	}
+	switch call.Func.Name {
+	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
+	default:
+		return histogramSubqueryRangeShape{}, false
+	}
+	sub, ok := peelWrappers(call.Args[0]).(*parser.SubqueryExpr)
+	if !ok || sub.Range <= 0 || !isExpHistogramValuedShape(sub.Expr, s, ctx) {
+		return histogramSubqueryRangeShape{}, false
+	}
+	return histogramSubqueryRangeShape{sub: sub, windowFn: call.Func.Name}, true
+}
+
+// lowerExpHistogramRangeFnOverSubquery keeps the subquery matrix on the
+// public thirteen-column histogram contract. The generic subquery spine is
+// intentionally four-column/float-valued, so routing a HistogramProjection
+// through it would discard the nine payload columns before this consumer can
+// fold them.
+func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	sub := shape.sub
+	step := sub.Step
+	if step == 0 {
+		step = defaultSubqueryStep
+	}
+	if step < 0 {
+		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", sub.Step)
+	}
+	gridCtx, ok, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("promql: histogram-valued subquery requires query eval-time context (use LowerAt)")
+	}
+
+	input, matched, err := lowerExpHistogramValuedShape(sub.Expr, s, gridCtx)
+	if err != nil {
+		return nil, err
+	}
+	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
+	}
+
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	histSchema := histogramProjectionSchema(s)
+	// HistogramProjection is a Prometheus-native value boundary, not a
+	// physical OTel row. The OTel temporality column is intentionally absent;
+	// the outer PromQL kernel operates on the published cumulative values.
+	histSchema.AggregationTemporalityColumn = ""
+	windowShape := histogramAggShape{windowRange: sub.Range, windowFn: shape.windowFn}
+
+	// An @-pinned subquery is evaluated once even on query_range, then the
+	// same histogram is broadcast across the request grid.
+	if ctx.rangeMode() && subqueryPinned(sub) {
+		windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
+		return aggregatedHistogramProjection(
+			&chplan.CrossJoin{Left: grid, Right: windowed},
+			&chplan.ColumnRef{Name: stepGridAnchorColumn},
+			histSchema,
+		), nil
+	}
+
+	if ctx.rangeMode() {
+		return lowerExpHistogramSubqueryRangeFnRange(input, windowShape, anchor.Offset, histSchema, ctx), nil
+	}
+	windowed := expHistogramValuedSubqueryWindowStage(input, windowShape, anchor, histSchema)
+	tsExpr := chplan.NowNano()
+	if !anchor.End.IsZero() {
+		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
+	}
+	return aggregatedHistogramProjection(windowed, tsExpr, histSchema), nil
+}
+
+// expHistogramValuedSubqueryWindowStage applies the instant outer window to
+// histogram rows already evaluated on the subquery grid. The range edges
+// include the subquery offset exactly as the ordinary RangeWindow subquery
+// path does; the group identity is the published Attributes map rather than
+// physical-table resource columns that no longer exist above the projection.
+func expHistogramValuedSubqueryWindowStage(input chplan.Node, shape histogramAggShape, anchor evalAnchor, s schema.Metrics) chplan.Node {
+	rangeEnd := windowRightBoundExpr(anchor)
+	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
+	return expHistogramValuedWindowStageBy(
+		input, shape, rangeStart, rangeEnd, s,
+		&chplan.ColumnRef{Name: s.AttributesColumn},
+	)
+}
+
+// lowerExpHistogramSubqueryRangeFnRange is the query_range sibling of the
+// instant subquery fold. RangeBucketFanout accepts the derived histogram
+// relation as its input and windows its TimeUnix anchors directly; no raw
+// table matcher or canonical-resource overlay belongs above the public row
+// boundary.
+func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAggShape, offset time.Duration, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
+	win := histogramWindow{lookback: shape.windowRange, offset: offset, minSamples: shape.minSamples()}
+	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
+	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
+	grouped := &chplan.RangeBucketFanout{
+		Input:          input,
+		Start:          ctx.start.UTC(),
+		End:            ctx.end.UTC(),
+		Step:           ctx.step,
+		Lookback:       win.lookback,
+		Offset:         win.offset,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases: []string{s.AttributesColumn},
+		AggFuncs:       aggs,
+		MinSamples:     win.minSamples,
+		AnchorAlias:    stepGridAnchorColumn,
+		TimestampCol:   s.TimestampColumn,
+	}
+	selected := selectExpHistogramWindowSamples(
+		grouped, aggs, []string{stepGridAnchorColumn, s.AttributesColumn},
+		histogramWindowSelectionFor(shape.windowFn),
+	)
+	perSeries := expHistogramWindowReshape(
+		selected,
+		aggs,
+		[]string{stepGridAnchorColumn, s.AttributesColumn},
+		expHistogramResetMaskFor(shape.windowFn),
+		fold,
+		expHistogramValuedWindowScalars(fold, s),
+		s,
+	)
+	return aggregatedHistogramProjection(perSeries, anchorRef, s)
+}
+
 // lowerExpHistogramRangeFn lowers a histogram-valued range function across
 // the three evaluation shapes [rangeGridShapeFor] distinguishes, the same
 // three its two siblings handle — see [lowerExpHistogramBare] for what each
@@ -286,11 +441,15 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 // fields the quantile path already collects, and Count / Sum folded into
 // the reshaped row.
 func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) chplan.Node {
+	return expHistogramValuedWindowStageBy(input, shape, rangeStart, rangeEnd, s, histogramIdentityExpr(s))
+}
+
+func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr) chplan.Node {
 	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	group := &chplan.Aggregate{
 		Input:              input,
-		GroupBy:            []chplan.Expr{histogramIdentityExpr(s)},
+		GroupBy:            []chplan.Expr{identity},
 		GroupByAliases:     []string{s.AttributesColumn},
 		AggFuncs:           append(aggs, windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,

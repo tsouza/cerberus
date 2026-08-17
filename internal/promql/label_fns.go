@@ -86,6 +86,21 @@ func labelReplaceAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, erro
 // joined value is the empty string, which our emit path drops via the
 // outer mapFilter — leaving the dst label absent on the wire.
 func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	attrs, err := labelJoinAttributes(c, s)
+	if err != nil {
+		return nil, err
+	}
+
+	inner, err := lower(c.Args[0], s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+}
+
+// labelJoinAttributes validates label_join's string arguments and builds the
+// label-map expression shared by ordinary float rows and histogram rows.
+func labelJoinAttributes(c *parser.Call, s schema.Metrics) (chplan.Expr, error) {
 	if len(c.Args) < 3 {
 		return nil, fmt.Errorf("promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d", len(c.Args))
 	}
@@ -106,17 +121,13 @@ func lowerLabelJoin(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node
 		srcs = append(srcs, src)
 	}
 
-	inner, err := lower(c.Args[0], s, ctx)
-	if err != nil {
-		return nil, err
-	}
 	attrs := &chplan.LabelJoin{
 		Map:       &chplan.ColumnRef{Name: s.AttributesColumn},
 		Dst:       dst,
 		Separator: separator,
 		Srcs:      srcs,
 	}
-	return guardLabelRewriteCollision(projectAttributesOverInner(inner, s, attrs), s), nil
+	return attrs, nil
 }
 
 // stringArg extracts a static string literal from a Call argument,

@@ -225,6 +225,26 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramCount(agg, vs, s, ctx)
 	}
+	if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok {
+		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			return nil, fmt.Errorf("promql: internal invariant violated: count/group input is not histogram-valued: %v", agg.Expr)
+		}
+		return lowerExpHistogramCountOrGroupOverPlan(agg, input, s)
+	}
+	if agg, ok := countValuesOverExpHistogramValue(expr, s, ctx); ok {
+		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			return nil, fmt.Errorf("promql: internal invariant violated: count_values input is not histogram-valued: %v", agg.Expr)
+		}
+		return lowerExpHistogramCountValuesOverPlan(agg, input, s, ctx)
+	}
 	if agg, vs, ok := droppingAggregationOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingAggregation(agg, vs, s, ctx)
 	}
@@ -3386,7 +3406,32 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 	if err != nil {
 		return nil, err
 	}
+	return lowerCountValuesOverPlan(
+		a,
+		label,
+		input,
+		&chplan.FuncCall{
+			Fn:   chplan.FnToString,
+			Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+		},
+		s,
+		ctx,
+	), nil
+}
 
+// lowerCountValuesOverPlan applies the shared count_values grouping and
+// sample projection to input. valueKey is already the exact string that
+// becomes the synthetic label: ordinary float rows pass toString(Value),
+// while the native-histogram consumer passes Prometheus's histogram String
+// representation built from the published thirteen-column row contract.
+func lowerCountValuesOverPlan(
+	a *parser.AggregateExpr,
+	label string,
+	input chplan.Node,
+	valueKey chplan.Expr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) chplan.Node {
 	const (
 		valueKeyAlias = "cv_val"
 		countAlias    = "cv_count"
@@ -3455,10 +3500,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 
 	// Append the value-as-label group key; the wrapping Project
 	// references it by alias to bind the synthetic `<label>` column.
-	groupBy = append(groupBy, &chplan.FuncCall{
-		Fn:   chplan.FnToString,
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
-	})
+	groupBy = append(groupBy, valueKey)
 	aliases = append(aliases, valueKeyAlias)
 
 	agg := &chplan.Aggregate{
@@ -3539,7 +3581,7 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: countAlias}, Alias: s.ValueColumn},
 		},
-	}, nil
+	}
 }
 
 // tryStringLiteral returns the value of a *parser.StringLiteral, peeling

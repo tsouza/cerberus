@@ -4,6 +4,7 @@
   "bucket": "0c",
   "cases": [
     "0.12345 + demo_memory_usage_bytes",
+    "count_values(\"hist\", demo_shifting_latency_exp_hist) by (instance)",
     "delta(demo_cpu_usage_seconds_total[15m] offset 5m)",
     "demo_memory_usage_bytes != bool 1.2345",
     "demo_memory_usage_bytes + on(instance, job, type) demo_memory_usage_bytes",

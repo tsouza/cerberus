@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_drop_aggregation.go:lowerExpHistogramDroppingAggregation#c2a441b1",
+      "message": "promql: internal invariant violated: histogram-dropping aggregation input is not histogram-valued: %v",
+      "class": "internal",
+      "rationale": "droppingAggregationOverExpHistogram already proves agg.Expr histogram-valued; this lowerer reuses lowerExpHistogramValuedShape for that same expression",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateHistogramDroppingAggregationParam(agg, s, ctx); err != nil",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "droppingAggregationOverExpHistogram",
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    }
+  ]
+}

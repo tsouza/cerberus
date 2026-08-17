@@ -68,6 +68,11 @@ const hqWindowZeroCountsArrayAlias = "_hq_zero_counts"
 // directly for that path instead — see histogramWindowFold's doc.
 const hqWindowCountArrayAlias = "_hq_count_list"
 
+// hqMergeZeroCountsArrayAlias holds the across-series group's zero-bucket
+// counts. Histogram SUM/AVG folds it with Prometheus's compensated histogram
+// addition rather than ClickHouse's plain sum aggregate.
+const hqMergeZeroCountsArrayAlias = "_hq_merge_zero_counts"
+
 // paramExpRowCount binds one row's already-rescaled count while it is
 // cast into the float domain the window fold needs.
 const paramExpRowCount = "n"
@@ -369,7 +374,7 @@ func expHistogramWindowCountValuesExpr() chplan.Expr {
 func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
 		{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
-		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: s.ZeroCountColumn},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ZeroCountColumn}}, Alias: hqMergeZeroCountsArrayAlias},
 	}
 	if s.ZeroThresholdColumn != "" {
 		aggs = append(aggs, chplan.AggFunc{
@@ -398,7 +403,7 @@ func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 	projs := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
-		{Expr: &chplan.ColumnRef{Name: s.ZeroCountColumn}, Alias: s.ZeroCountColumn},
+		{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeZeroCountsArrayAlias}), Alias: s.ZeroCountColumn},
 	}
 	if s.ZeroThresholdColumn != "" {
 		projs = append(projs, chplan.Projection{
@@ -415,8 +420,9 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 }
 
 // hqQuantileRankScalarMergeAggs is [expHistogramMergeAggs] widened by the
-// group's total Count and Sum — sum(Count) AS Count, sum(Sum) AS Sum —
-// the histogram's own stored scalars the quantile kernel ranks against
+// group's Count and Sum arrays, which the projection folds with Prometheus's
+// compensated histogram addition before the quantile kernel ranks against
+// the histogram's own stored scalars
 // (histogram_quantile_native.go's rankBase / sumIsNaN, cerberus issue
 // #2072). Count and Sum add plainly across a merge, the same additivity
 // [expHistogramGroupMergeAggs] relies on for a histogram-VALUED sum() /
@@ -425,8 +431,8 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 // avg-shaped caller.
 func hqQuantileRankScalarMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	return append([]chplan.AggFunc{
-		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: s.CountColumn},
-		{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: s.SumColumn},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
+		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
 	}, expHistogramMergeAggs(s)...)
 }
 
@@ -436,7 +442,7 @@ func hqQuantileRankScalarMergeAggs(s schema.Metrics) []chplan.AggFunc {
 // alongside the merged bucket ladders.
 func hqQuantileRankScalarMergeProjections(s schema.Metrics) []chplan.Projection {
 	return append([]chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.CountColumn}, Alias: s.CountColumn},
-		{Expr: &chplan.ColumnRef{Name: s.SumColumn}, Alias: s.SumColumn},
+		{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeCountsArrayAlias}), Alias: s.CountColumn},
+		{Expr: promHistogramKahanSum(&chplan.ColumnRef{Name: hqMergeSumsArrayAlias}), Alias: s.SumColumn},
 	}, expHistogramMergeProjections(s)...)
 }

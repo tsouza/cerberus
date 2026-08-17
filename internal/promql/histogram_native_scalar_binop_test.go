@@ -311,14 +311,14 @@ func TestLower_ExpHistogram_ScalarBinopScalesOnlyTheCountFields(t *testing.T) {
 				}
 			}
 
-			scaledScalar(s.CountColumn)
-			scaledScalar(s.SumColumn)
-			scaledScalar(s.ZeroCountColumn)
-			scaledLadder(s.PositiveBucketCountsColumn)
-			scaledLadder(s.NegativeBucketCountsColumn)
-			unscaled(s.ScaleColumn)
-			unscaled(s.PositiveOffsetColumn)
-			unscaled(s.NegativeOffsetColumn)
+			scaledScalar(chplan.HistogramCountColumn)
+			scaledScalar(chplan.HistogramSumColumn)
+			scaledScalar(chplan.HistogramZeroCountColumn)
+			scaledLadder(chplan.HistogramPositiveBucketCountsColumn)
+			scaledLadder(chplan.HistogramNegativeBucketCountsColumn)
+			unscaled(chplan.HistogramScaleColumn)
+			unscaled(chplan.HistogramPositiveOffsetColumn)
+			unscaled(chplan.HistogramNegativeOffsetColumn)
 		})
 	}
 }

@@ -12,6 +12,7 @@
     "demo_num_cpus * Inf",
     "increase(demo_cpu_usage_seconds_total[1m] offset 1m)",
     "increase(demo_delta_requests_total[1m])",
+    "irate(demo_shifting_latency_exp_hist[5m:1m])",
     "label_replace(demo_num_cpus, \"instance\", \"merged\", \"instance\", \".*\")",
     "last_over_time(demo_memory_usage_bytes[1s])",
     "min without(nonexistent) (demo_memory_usage_bytes)",

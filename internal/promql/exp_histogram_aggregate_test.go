@@ -132,8 +132,9 @@ func TestLower_ExpHistogram_SumIsHistogramValued(t *testing.T) {
 //
 // `min(Scale)` is the fold's signature: it is the merged scale every
 // per-row ladder is downshifted to, and nothing else in the plan emits
-// it. The three `sum(...)` folds are the scalars that must add across the
-// group rather than be picked from it.
+// it. The three groupArray + arrayFold paths are the scalars that must add
+// across the group with Prometheus's compensated histogram summation rather
+// than be picked from it or fed through ClickHouse's plain sum aggregate.
 func TestLower_ExpHistogram_SumMergesBucketLadders(t *testing.T) {
 	t.Parallel()
 
@@ -154,9 +155,10 @@ func TestLower_ExpHistogram_SumMergesBucketLadders(t *testing.T) {
 	}
 	for _, want := range []string{
 		"min(`" + s.ScaleColumn + "`)",
-		"sum(`" + s.CountColumn + "`) AS `" + s.CountColumn + "`",
-		"sum(`" + s.SumColumn + "`) AS `" + s.SumColumn + "`",
-		"sum(`" + s.ZeroCountColumn + "`) AS `" + s.ZeroCountColumn + "`",
+		"groupArray(`" + s.CountColumn + "`) AS `_hq_merge_counts`",
+		"groupArray(`" + s.SumColumn + "`) AS `_hq_merge_sums`",
+		"groupArray(`" + s.ZeroCountColumn + "`) AS `_hq_merge_zero_counts`",
+		"arrayFold(",
 		"bitShiftRight",
 	} {
 		if !strings.Contains(sql, want) {

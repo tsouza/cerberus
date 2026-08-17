@@ -108,10 +108,14 @@ type wireHistogram struct {
 // a float-valued answer means the shape silently collapsed to a scalar,
 // which is the regression these tests exist to catch.
 func queryHistogramResult(t *testing.T, srv *httptest.Server, query string) (map[string]string, wireHistogram) {
+	return queryHistogramResultAt(t, srv, query, histValuedEvalTime)
+}
+
+func queryHistogramResultAt(t *testing.T, srv *httptest.Server, query string, at time.Time) (map[string]string, wireHistogram) {
 	t.Helper()
 
 	reqURL := fmt.Sprintf("%s/api/v1/query?query=%s&time=%s",
-		srv.URL, url.QueryEscape(query), histValuedEvalTime.Format(time.RFC3339))
+		srv.URL, url.QueryEscape(query), at.Format(time.RFC3339))
 	resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
 	if err != nil {
 		t.Fatalf("GET /api/v1/query %q: %v", query, err)
@@ -164,4 +168,58 @@ func queryHistogramResult(t *testing.T, srv *httptest.Server, query string) (map
 		t.Fatalf("decode histogram body for %q: %v", query, err)
 	}
 	return res.Metric, hist
+}
+
+func queryRangeHistogramResult(t *testing.T, srv *httptest.Server, query string, start, end time.Time, step time.Duration) (map[string]string, []wireHistogram) {
+	t.Helper()
+	reqURL := fmt.Sprintf("%s/api/v1/query_range?query=%s&start=%s&end=%s&step=%d",
+		srv.URL, url.QueryEscape(query), start.Format(time.RFC3339), end.Format(time.RFC3339), int64(step.Seconds()))
+	resp, err := http.Get(reqURL) //nolint:noctx // test-local request against httptest
+	if err != nil {
+		t.Fatalf("GET /api/v1/query_range %q: %v", query, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET /api/v1/query_range %q: status %d\nbody: %s", query, resp.StatusCode, body)
+	}
+
+	var body struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric     map[string]string `json:"metric"`
+				Values     []any             `json:"values"`
+				Histograms []any             `json:"histograms"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode range response for %q: %v", query, err)
+	}
+	if body.Status != "success" || body.Data.ResultType != "matrix" || len(body.Data.Result) != 1 {
+		t.Fatalf("query_range %q returned status=%q resultType=%q series=%d", query, body.Status, body.Data.ResultType, len(body.Data.Result))
+	}
+	series := body.Data.Result[0]
+	if len(series.Values) != 0 {
+		t.Fatalf("query_range %q returned float values %v alongside histogram payload", query, series.Values)
+	}
+	out := make([]wireHistogram, 0, len(series.Histograms))
+	for _, rawPoint := range series.Histograms {
+		point, ok := rawPoint.([]any)
+		if !ok || len(point) != 2 {
+			t.Fatalf("query_range %q histogram point = %v, want [timestamp, body]", query, rawPoint)
+		}
+		raw, err := json.Marshal(point[1])
+		if err != nil {
+			t.Fatalf("marshal range histogram body: %v", err)
+		}
+		var hist wireHistogram
+		if err := json.Unmarshal(raw, &hist); err != nil {
+			t.Fatalf("decode range histogram body: %v", err)
+		}
+		out = append(out, hist)
+	}
+	return series.Metric, out
 }
