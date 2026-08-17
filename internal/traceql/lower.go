@@ -1721,7 +1721,8 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Aggregate{
 			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{{
-				Fn: chplan.FnArgMinIf,
+				Fn:          chplan.FnArgMin,
+				Combinators: []chplan.AggCombinator{chplan.CombIf},
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.ServiceNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},
@@ -1734,7 +1735,8 @@ func traceScopedValueNode(i traceql.Intrinsic, s schema.Traces) (node chplan.Nod
 		return &chplan.Aggregate{
 			Input: base, GroupBy: groupBy, GroupByAliases: groupByAliases,
 			AggFuncs: []chplan.AggFunc{{
-				Fn: chplan.FnArgMinIf,
+				Fn:          chplan.FnArgMin,
+				Combinators: []chplan.AggCombinator{chplan.CombIf},
 				Args: []chplan.Expr{
 					&chplan.ColumnRef{Name: s.SpanNameColumn},
 					&chplan.ColumnRef{Name: s.TimestampColumn},

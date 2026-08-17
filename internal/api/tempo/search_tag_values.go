@@ -123,12 +123,18 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 	// fact table (same map-explosion failure as /search/tags).
 	start, end = BoundDiscoveryWindow(start, end)
 
+	ctx, cancel, ok := h.applyQueryTimeout(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+
 	// The optional `?q=` narrowing filter — the same one the tag-NAME
 	// routes take, resolved through the same tagQueryFilter so a `q`
 	// selects the same spans wherever it is sent. It is read after the
 	// window so a request that gets both wrong reports the window first,
 	// matching upstream's parameter order.
-	filter, err := h.tagQueryFilter(r.Context(), route, r.URL.Query().Get("q"), start, end)
+	filter, err := h.tagQueryFilter(ctx, route, r.URL.Query().Get("q"), start, end)
 	if err != nil {
 		writeError(w, tagsErrStatus(err), "", "", err)
 		return
@@ -155,7 +161,7 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 		"sql", sqlStr,
 		"args", telemetry.SanitizeArgsForLog(args))
 
-	values, err := h.Client.QueryStrings(r.Context(), sqlStr, args...)
+	values, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
 		writeError(w, tagsErrStatus(err), "", "", err)

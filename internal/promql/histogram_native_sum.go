@@ -92,9 +92,16 @@ const (
 // ordinary descent and is still rejected there.
 //
 // The inner expression must unwrap to a bare selector. `sum(rate(
-// m_exp_hist[5m]))` does not: its aggregand is a range-vector function
-// with its own histogram-valued lowering to grow (issue #2296), and
-// admitting it here would silently drop the rate.
+// m_exp_hist[5m]))` does not: its aggregand is a range-vector function, and
+// admitting it here would silently drop the rate. That composed shape is
+// answered by a different recognizer, not this one — mergeableExpHistogramAggregate
+// (also in this file) matches a `sum`/`avg` wrapping ANY already
+// histogram-valued shape, [lowerExpHistogramValuedShape] recurses into the
+// aggregand to lower the `rate()` first, and
+// [lowerExpHistogramSumOrAvgOverPlan] then reuses this function's merge
+// machinery over that already-histogram-valued result (issue #2296, closed
+// by #2245). Keeping this recognizer narrow to the bare-selector fast path
+// keeps its byte-stable direct lowering unchanged by that composition.
 func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, false
@@ -353,7 +360,8 @@ func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []c
 	if expHistogramGroupIsAvg(agg) {
 		aggs = append(aggs, expHistogramGroupSeriesCountAgg())
 	}
-	return append(aggs, expHistogramMergeAggs(s)...)
+	aggs = append(aggs, expHistogramMergeAggs(s)...)
+	return append(aggs, expHistogramMergeSeriesOrderKeyAgg(s))
 }
 
 // expHistogramGroupMergeProjections is [expHistogramMergeProjections] plus

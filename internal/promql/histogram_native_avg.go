@@ -113,38 +113,24 @@ func expHistogramAvgScaleProjections(projs []chplan.Projection, s schema.Metrics
 }
 
 // expHistogramAvgDivide divides one scalar field by the group's series
-// count.
+// count. It is [scaleHistogramScalarExpr] specialised to OpDiv by the
+// group's series count — see histogram_native_scalar_binop.go, which
+// generalises this exact shape to an arbitrary scalar and operator.
 func expHistogramAvgDivide(e chplan.Expr) chplan.Expr {
-	return &chplan.Binary{
-		Op:    chplan.OpDiv,
-		Left:  e,
-		Right: &chplan.ColumnRef{Name: expHistogramGroupSeriesCountAlias},
-	}
+	return scaleHistogramScalarExpr(chplan.OpDiv, e, &chplan.ColumnRef{Name: expHistogramGroupSeriesCountAlias})
 }
 
 // expHistogramAvgDivideLadder divides every bucket of one merged ladder
-// by the group's series count, element-wise.
+// by the group's series count, element-wise. It is
+// [scaleHistogramLadderExpr] specialised the same way as
+// [expHistogramAvgDivide].
 //
 // The merged ladder is already dense over the merged scale — the
 // across-series merge emits one entry per index in the merged range — so
 // an element-wise map is the whole of reference's
 // `for i := range h.PositiveBuckets { h.PositiveBuckets[i] /= scalar }`.
 func expHistogramAvgDivideLadder(e chplan.Expr) chplan.Expr {
-	const paramBucket = "b"
-	return &chplan.FuncCall{
-		Fn: chplan.FnArrayMap,
-		Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramBucket},
-				// BareIdent, not ColumnRef: a lambda parameter is bound by
-				// the lambda, not read off a row, and every other
-				// exp-histogram bucket expression in this package spells it
-				// that way (see expHistogramBucketRowContribExpr).
-				Body: expHistogramAvgDivide(&chplan.BareIdent{Name: paramBucket}),
-			},
-			e,
-		},
-	}
+	return scaleHistogramLadderExpr(chplan.OpDiv, e, &chplan.ColumnRef{Name: expHistogramGroupSeriesCountAlias})
 }
 
 // expHistogramGroupIsAvg reports whether an aggregation this file's

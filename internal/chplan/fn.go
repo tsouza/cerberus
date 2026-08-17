@@ -532,13 +532,9 @@ const (
 	FnArgMax Fn = "argMax"
 
 	// argMin(arg, val) aggregate — the arg value from the row where val is minimal
-	// in the group.
+	// in the group. Composed with AggFunc.Combinators' CombIf ("argMin over only
+	// the rows where cond is true") to render CH's argMinIf.
 	FnArgMin Fn = "argMin"
-
-	// argMinIf(arg, val, cond) aggregate — argMin over only the rows where cond is
-	// true; CH's `-If` combinator applied to argMin, spelled as one literal name
-	// pending the structural Combinators split (issue #2280).
-	FnArgMinIf Fn = "argMinIf"
 
 	// avg(x) aggregate — the arithmetic mean of non-NULL x in the group.
 	FnAvg Fn = "avg"
@@ -551,14 +547,10 @@ const (
 	FnCountEqual Fn = "countEqual"
 
 	// groupArray(x) aggregate — every x value in the group collected into an
-	// Array, in an unspecified (block) order.
+	// Array, in an unspecified (block) order. Composed with AggFunc.Combinators'
+	// CombIf ("groupArray over only the rows where cond is true") to render
+	// CH's groupArrayIf.
 	FnGroupArray Fn = "groupArray"
-
-	// groupArrayIf(x, cond) aggregate — groupArray over only the rows where
-	// cond is true; CH's `-If` combinator applied to groupArray, spelled as
-	// one literal name pending the structural Combinators split (issue
-	// #2280), same posture as FnArgMinIf.
-	FnGroupArrayIf Fn = "groupArrayIf"
 
 	// max(x) aggregate — the maximum non-NULL x in the group.
 	FnMax Fn = "max"

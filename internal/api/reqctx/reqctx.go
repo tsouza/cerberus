@@ -1,12 +1,18 @@
-// Package reqctx hosts the request-context derivation shared by the
-// prom and loki HTTP handlers. Envelope shaping and error writing stay
-// per-handler (each upstream API has its own wire format); what this
-// package owns is the neutral plumbing those handlers run identically —
-// today, the `?timeout=` budget resolution + context wiring.
+// Package reqctx hosts the request-context derivation shared across all
+// three heads' HTTP handlers — prom, loki, and tempo. Envelope shaping and
+// error writing stay per-handler (each upstream API has its own wire
+// format); what this package owns is the neutral plumbing those handlers
+// run identically — today, the `?timeout=` budget resolution + context
+// wiring.
 //
-// Tempo does not call ApplyQueryTimeout: its handlers rely solely on the
-// chclient's static configured QueryTimeout, with no per-request context
-// deadline backstop. See https://github.com/tsouza/cerberus/issues/2302.
+// Tempo's own wire format has no `?timeout=` convention of its own (unlike
+// Prometheus's `?timeout=<duration>`), so its entrypoints call
+// ApplyQueryTimeout purely for the static configured default: the Go-side
+// watchdog that unblocks a hung handler and releases its admit slot +
+// pooled connection even if the server-side ClickHouse cap doesn't fire.
+// The `?timeout=` resolution below still applies if a caller sends one to
+// a Tempo route — nothing Tempo-specific rejects it — but no Tempo client
+// does today, so in practice only the default ever caps a Tempo request.
 package reqctx
 
 import (

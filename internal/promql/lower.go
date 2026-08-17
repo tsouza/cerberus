@@ -187,10 +187,9 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // shape with a histogram projection would either fail in ClickHouse with
 // code 47 or, worse, silently reduce the placeholder Value. Deciding
 // here — where the absence of a parent is a fact rather than an
-// inference — keeps those shapes on [expHistogramSelectorRouting]'s
-// explicit rejection until each grows its own histogram-AWARE lowering
-// (issue #2296), and never widens the exemption by accident: a nested
-// selector never reaches this function.
+// inference — keeps every shape that has grown NO histogram-aware lowering
+// on [expHistogramSelectorRouting]'s explicit rejection, and never widens
+// the exemption by accident: a nested selector never reaches this function.
 //
 // The direct histogram-valued dispatches are ordered but not mutually
 // exclusive in principle, and the order is arbitrary:
@@ -199,11 +198,19 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // aggregation, a range-vector call), so none can shadow another.
 // Histogram-preserving wrappers dispatch before them because their operand
 // is one of those payload shapes.
-// [rangeFnOverExpHistogram] additionally refuses an aggregation WRAPPER, so
-// `sum(rate(...))` — which needs both reductions — matches neither it nor
-// [sumOrAvgOverExpHistogram] and stays rejected. The scaling scalar-binop
-// recognizer intentionally precedes the dropping recognizer so histogram /
-// scalar keeps its value while scalar / histogram drops it.
+// the direct dispatch alone does not answer `sum(rate(...))` — which needs
+// both reductions. [lowerExpHistogramValuedShape] (called just below, and
+// recursively from inside itself) is what closes that gap:
+// mergeableExpHistogramAggregate recognises a `sum`/`avg` wrapping ANY
+// already-histogram-valued shape, not only a bare selector, so
+// `sum(rate(m_exp_hist[5m]))` recurses into the `rate()` dispatch and feeds
+// its result to [lowerExpHistogramSumOrAvgOverPlan] (issue #2296, closed by
+// #2245). The scaling scalar-binop recognizer intentionally precedes the
+// dropping recognizer so histogram / scalar keeps its value while scalar /
+// histogram drops it. [expHistogramDroppingHistogramBinop] is the
+// histogram/histogram sibling of that same drop path (cerberus issue
+// #2277) — it never shadows [expHistogramHistogramBinop]'s own +/- merge
+// above since the two recognisers key off disjoint operator sets.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -250,6 +257,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	}
 	if histSide, ok := expHistogramDroppingScalarBinop(expr, s, ctx); ok {
 		return lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
+	}
+	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
+		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
 	}
 	return lower(expr, s, ctx)
 }

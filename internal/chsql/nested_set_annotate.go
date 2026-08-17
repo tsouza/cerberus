@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -318,8 +317,6 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 		// toDate(Timestamp) partitions (the IN membership does not).
 		Where(appendNonNilFrags([]Frag{structuralDepthBoundFrag(0), stepTraceIn}, winLo, winHi)...)
 
-	w := strconv.Itoa(nestedSetPathElemWidth)
-
 	// The numbering is computed as the rank of each span's ENTRY and
 	// EXIT event in the per-trace DFS event sequence — literally
 	// Tempo's two-pointer walk, recovered from the sorted paths:
@@ -364,10 +361,39 @@ func (e *emitter) buildNestedSetNumbering(n *chplan.NestedSetAnnotate, scope Fra
 		Select(
 			Col(n.TraceIDColumn),
 			Col(n.SpanIDColumn),
-			verbatim("`_ev`.1 AS `_ekey`"),
-			verbatim("`_ev`.2 AS `_etype`"),
+			As(TupleIndex(Col("_ev"), 1), "_ekey"),
+			As(TupleIndex(Col("_ev"), 2), "_etype"),
 		).
-		From(verbatim("`_cerberus_ns_paths` ARRAY JOIN arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [(`_path`, 0), (concat(`_path`, '~'), 2), (substring(`_path`, 1, length(`_path`) - " + w + "), 1)]) AS `_ev`"))
+		From(verbatim("`_cerberus_ns_paths`"))
+	events.ArrayJoin(As(
+		// arrayFilter(e -> NOT (e.2 = 1 AND e.1 = ''), [...]) — drop
+		// PARENT-LOOKUP events for root spans (empty `_path` prefix):
+		// roots have no parent, so their lookup event would otherwise
+		// contribute a bogus rank. `e` is a synthetic lambda-bound loop
+		// variable (never user input), referenced bare per this
+		// package's own single-letter-alias convention.
+		Call(
+			"arrayFilter",
+			Lambda1("e", Not(Paren(And(
+				Eq(TupleIndex(verbatim("e"), 2), InlineLit(1)),
+				Eq(TupleIndex(verbatim("e"), 1), InlineLit("")),
+			)))),
+			Array(
+				// entry event: key = `_path`, type 0.
+				Tuple(Col("_path"), InlineLit(0)),
+				// exit event: key = `_path` + '~' (sorts after every
+				// digit, see the DFS-order comment above), type 2.
+				Tuple(Call("concat", Col("_path"), InlineLit("~")), InlineLit(2)),
+				// parent-lookup event: key = `_path` with its last
+				// element stripped, type 1.
+				Tuple(
+					Call("substring", Col("_path"), InlineLit(1), Sub(Call("length", Col("_path")), InlineLit(nestedSetPathElemWidth))),
+					InlineLit(1),
+				),
+			),
+		),
+		"_ev",
+	))
 
 	ranked := NewQuery().
 		Select(

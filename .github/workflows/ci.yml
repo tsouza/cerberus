@@ -947,6 +947,16 @@ jobs:
       - name: Reject raw SQL writes outside the chsql Frag layer
         run: node .github/scripts/forbid-sql-raw.mjs
 
+      # forbid-sql-raw.mjs's regex is blind to verbatim() misuse by design
+      # (its own doc says so) — this closes that gap: a verbatim(...) call
+      # built via string concatenation is shape-building, not a synthetic
+      # token, and violates the same invariant 10. See #2297.
+      - name: Reject verbatim() calls built via string concatenation
+        run: node .github/scripts/forbid-verbatim-concat.mjs
+
+      - name: Assert the verbatim-concat gate scans a flat package correctly
+        run: node --test .github/scripts/forbid-verbatim-concat.test.mjs
+
       - name: Assert the sealed chplan Fn vocabulary gate
         run: node --test .github/scripts/forbid-chplan-fn-literal.test.mjs
 

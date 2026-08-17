@@ -189,24 +189,22 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnRadians:       {Name: "radians"},
 
 	// Aggregate functions.
-	chplan.FnAny:          {Name: "any"},
-	chplan.FnArgMax:       {Name: "argMax"},
-	chplan.FnArgMin:       {Name: "argMin"},
-	chplan.FnArgMinIf:     {Name: "argMinIf"},
-	chplan.FnAvg:          {Name: "avg"},
-	chplan.FnCount:        {Name: "count"},
-	chplan.FnCountEqual:   {Name: "countEqual"},
-	chplan.FnGroupArray:   {Name: "groupArray"},
-	chplan.FnGroupArrayIf: {Name: "groupArrayIf"},
-	chplan.FnMax:          {Name: "max"},
-	chplan.FnMin:          {Name: "min"},
-	chplan.FnQuantile:     {Name: "quantile"},
-	chplan.FnQuantiles:    {Name: "quantiles"},
-	chplan.FnStddevPop:    {Name: "stddevPop"},
-	chplan.FnSum:          {Name: "sum"},
-	chplan.FnSumForEach:   {Name: "sumForEach"},
-	chplan.FnUniqExact:    {Name: "uniqExact"},
-	chplan.FnVarPop:       {Name: "varPop"},
+	chplan.FnAny:        {Name: "any"},
+	chplan.FnArgMax:     {Name: "argMax"},
+	chplan.FnArgMin:     {Name: "argMin"},
+	chplan.FnAvg:        {Name: "avg"},
+	chplan.FnCount:      {Name: "count"},
+	chplan.FnCountEqual: {Name: "countEqual"},
+	chplan.FnGroupArray: {Name: "groupArray"},
+	chplan.FnMax:        {Name: "max"},
+	chplan.FnMin:        {Name: "min"},
+	chplan.FnQuantile:   {Name: "quantile"},
+	chplan.FnQuantiles:  {Name: "quantiles"},
+	chplan.FnStddevPop:  {Name: "stddevPop"},
+	chplan.FnSum:        {Name: "sum"},
+	chplan.FnSumForEach: {Name: "sumForEach"},
+	chplan.FnUniqExact:  {Name: "uniqExact"},
+	chplan.FnVarPop:     {Name: "varPop"},
 }
 
 // resolveFn resolves a sealed plan symbol to this emitter's ClickHouse
@@ -222,11 +220,26 @@ func resolveFn(fn chplan.Fn) (resolvedName string, render fnRender, err error) {
 	return resolution.Name, resolution.Render, nil
 }
 
+// combinatorSuffixes is chsql's ClickHouse rendering for each
+// chplan.AggCombinator — the suffix resolveAggFuncName concatenates onto
+// the base Fn's resolved name, in AggFunc.Combinators order, to produce
+// CH's combined spelling (`argMin` + CombIf's "If" = `argMinIf`).
+// Completeness against chplan's declared AggCombinator set is enforced
+// the same way fnResolutions is, by fnresolution_completeness_test.go.
+var combinatorSuffixes = map[chplan.AggCombinator]string{
+	chplan.CombIf: "If",
+}
+
 // resolveAggFuncName resolves af's rendered ClickHouse aggregate-function
-// name via resolveFn. AggFunc rendering (aggFuncFrag) has no
-// fnRender path — every aggregate shape today is the plain
-// `<name>[(<params>)](<args>)` ParamAgg produces — so a Fn resolving to a
-// Render hook is itself an error here, not a silently-ignored hook.
+// name via resolveFn, plus any AggFunc.Combinators suffixes composed onto
+// it (see combinatorSuffixes) — `Fn: FnArgMin, Combinators:
+// []chplan.AggCombinator{chplan.CombIf}` resolves to `argMinIf`, the same
+// CH spelling a single combined Fn symbol would have produced before the
+// structural Combinators split (issue #2280). AggFunc rendering
+// (aggFuncFrag) has no fnRender path — every aggregate shape today is the
+// plain `<name><combinators>[(<params>)](<args>)` ParamAgg produces — so
+// a Fn resolving to a Render hook is itself an error here, not a
+// silently-ignored hook.
 func resolveAggFuncName(af chplan.AggFunc) (string, error) {
 	name, render, err := resolveFn(af.Fn)
 	if err != nil {
@@ -235,6 +248,15 @@ func resolveAggFuncName(af chplan.AggFunc) (string, error) {
 	if render != nil {
 		return "", fmt.Errorf("%w: chplan.Fn %q resolves via a render hook, "+
 			"which AggFunc rendering does not support", ErrUnsupported, af.Fn)
+	}
+	for _, c := range af.Combinators {
+		suffix, ok := combinatorSuffixes[c]
+		if !ok {
+			return "", fmt.Errorf("%w: chplan.AggCombinator %q has no chsql resolution — "+
+				"fnresolution_completeness_test.go should have caught this before it ever reached "+
+				"the emitter", ErrUnsupported, c)
+		}
+		name += suffix
 	}
 	return name, nil
 }

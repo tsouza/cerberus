@@ -43,15 +43,16 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //
 //   - Empty `GroupBy` — no per-series identity is passthrough.
 //   - `GroupBy[i]` that is not a bare `ColumnRef` (e.g. a function
-//     call or arithmetic) — could be substituted into the predicate,
-//     but that's a more involved rewrite. Unlike `FilterAggregateTranspose`,
-//     which skips only the offending entry and keeps the remaining bare
-//     keys passthrough-safe, this rule declines the rewrite entirely for
-//     the whole `GroupBy` when any single entry is non-bare (see
-//     `seriesIdentifyingColumns` below) — deliberately more conservative,
-//     since a RangeWindow's grid/value columns make substituting the
-//     computed key back into the predicate a riskier rewrite than for a
-//     plain Aggregate.
+//     call or arithmetic) — that entry contributes no passthrough name
+//     (see `seriesIdentifyingColumns`, which shares its policy with
+//     `FilterAggregateTranspose`'s `passthroughGroupKeys` via
+//     `bareGroupByColumnNames`): it is skipped, not substituted, and it
+//     does not disqualify the OTHER bare entries in the same `GroupBy`.
+//     Skipping a computed key never risks correctness here — a pushed
+//     predicate can only ever reference the bare keys still in the
+//     passthrough set (`onlyReferencesPassthrough` rejects anything
+//     else), so the rule never needs to reason about the computed key's
+//     shape at all.
 //   - `ColumnRef` with a non-empty `Qualifier` in the predicate.
 //   - Mixed predicates (one safe AND one unsafe sub-clause): we keep
 //     the *entire* Filter above the RangeWindow. Splitting an AND
@@ -113,25 +114,12 @@ func transposeFilterRangeWindow(b Bindings) chplan.Node {
 
 // seriesIdentifyingColumns returns the set of bare-column series-identity
 // keys exposed unchanged by r, or nil to signal "this RangeWindow has no
-// passthrough keys — decline the rewrite". Computed-key entries (anything
-// other than a bare `*chplan.ColumnRef`) cause the entire set to be
-// rejected: the caller would have to substitute the computed expression
-// into the predicate to keep semantics, and the seed rule stays
-// conservative.
+// passthrough keys — decline the rewrite". A computed-key entry (anything
+// other than a bare `*chplan.ColumnRef`) simply contributes no name to the
+// set; it does not disqualify the RangeWindow's other, bare keys. See
+// `bareGroupByColumnNames` for why that's sound: `RangeWindow.GroupBy` has
+// the same per-row, series-identity semantics as `Aggregate.GroupBy` (the
+// doc comment above), so the two rules share one policy here.
 func seriesIdentifyingColumns(r *chplan.RangeWindow) map[string]struct{} {
-	if len(r.GroupBy) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(r.GroupBy))
-	for _, g := range r.GroupBy {
-		cr, ok := g.(*chplan.ColumnRef)
-		if !ok || cr.Qualifier != "" {
-			return nil
-		}
-		out[cr.Name] = struct{}{}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return bareGroupByColumnNames(r.GroupBy)
 }

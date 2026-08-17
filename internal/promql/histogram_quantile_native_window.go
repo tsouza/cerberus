@@ -370,7 +370,11 @@ func expHistogramWindowCountValuesExpr() chplan.Expr {
 //
 // Shared by the instant and range aggregated paths, which differ only
 // in whether the grouping is a chplan.Aggregate or the per-anchor
-// RangeBucketFanout underneath it.
+// RangeBucketFanout underneath it, AND by the two-operand binary-op
+// merge (histogram_native_binop.go), whose bucket fold is plain and
+// order-invariant and so does not append
+// [expHistogramMergeSeriesOrderKeyAgg] the way the Kahan-compensated
+// callers below do.
 func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
 		{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ScaleColumn}}, Alias: hqAggMergedScaleAlias},
@@ -389,11 +393,26 @@ func expHistogramMergeAggs(s schema.Metrics) []chplan.AggFunc {
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.PositiveBucketCountsColumn}}, Alias: hqAggPosBucketsArrayAlias},
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeOffsetColumn}}, Alias: hqAggNegOffsetsArrayAlias},
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.NegativeBucketCountsColumn}}, Alias: hqAggNegBucketsArrayAlias},
-		// Positionally aligned with the five groupArrays above — see
-		// expHistogramMergeSeriesOrderKeyExpr and
-		// expHistogramSortRowsByKeyExpr (cerberus issue #2254).
-		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{expHistogramMergeSeriesOrderKeyExpr(s)}, Alias: hqAggSeriesOrderKeyAlias},
 	}...)
+}
+
+// expHistogramMergeSeriesOrderKeyAgg collects the per-row sort key
+// [expHistogramMergeBucketsExpr]'s Kahan-compensated fold needs to
+// re-sort the groupArrays [expHistogramMergeAggs] collects back into a
+// stable order before summing — see expHistogramMergeSeriesOrderKeyExpr
+// and expHistogramSortRowsByKeyExpr (cerberus issue #2254).
+//
+// Positionally, callers append this immediately after
+// [expHistogramMergeAggs]'s five groupArrays. Only the Kahan-compensated
+// callers (sum()/avg(), histogram_quantile()) need it: a plain,
+// order-invariant fold — the two-operand binary-op merge — has no use
+// for a sort key and does not collect one.
+func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
+	return chplan.AggFunc{
+		Fn:    chplan.FnGroupArray,
+		Args:  []chplan.Expr{expHistogramMergeSeriesOrderKeyExpr(s)},
+		Alias: hqAggSeriesOrderKeyAlias,
+	}
 }
 
 // expHistogramMergeProjections renders the across-series stage's
@@ -434,10 +453,11 @@ func expHistogramMergeProjections(s schema.Metrics) []chplan.Projection {
 // avg's per-series-count collection, since histogram_quantile has no
 // avg-shaped caller.
 func hqQuantileRankScalarMergeAggs(s schema.Metrics) []chplan.AggFunc {
-	return append([]chplan.AggFunc{
+	aggs := append([]chplan.AggFunc{
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
 		{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
 	}, expHistogramMergeAggs(s)...)
+	return append(aggs, expHistogramMergeSeriesOrderKeyAgg(s))
 }
 
 // hqQuantileRankScalarMergeProjections is [expHistogramMergeProjections]

@@ -288,23 +288,26 @@ func histCompareFieldAlias(col string, side int64) string {
 func histogramCompareMergeAggs(s schema.Metrics) []chplan.AggFunc {
 	aggs := []chplan.AggFunc{
 		{
-			Fn:    chplan.FnGroupArrayIf,
-			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}, histEqSideCond(histEqSideLHS)},
-			Alias: histCompareFieldAlias(s.MetricNameColumn, histEqSideLHS),
+			Fn:          chplan.FnGroupArray,
+			Combinators: []chplan.AggCombinator{chplan.CombIf},
+			Args:        []chplan.Expr{&chplan.ColumnRef{Name: s.MetricNameColumn}, histEqSideCond(histEqSideLHS)},
+			Alias:       histCompareFieldAlias(s.MetricNameColumn, histEqSideLHS),
 		},
 	}
 	for _, f := range histogramCompareFieldColumns(s) {
 		aggs = append(
 			aggs,
 			chplan.AggFunc{
-				Fn:    chplan.FnGroupArrayIf,
-				Args:  []chplan.Expr{&chplan.ColumnRef{Name: f}, histEqSideCond(histEqSideLHS)},
-				Alias: histCompareFieldAlias(f, histEqSideLHS),
+				Fn:          chplan.FnGroupArray,
+				Combinators: []chplan.AggCombinator{chplan.CombIf},
+				Args:        []chplan.Expr{&chplan.ColumnRef{Name: f}, histEqSideCond(histEqSideLHS)},
+				Alias:       histCompareFieldAlias(f, histEqSideLHS),
 			},
 			chplan.AggFunc{
-				Fn:    chplan.FnGroupArrayIf,
-				Args:  []chplan.Expr{&chplan.ColumnRef{Name: f}, histEqSideCond(histEqSideRHS)},
-				Alias: histCompareFieldAlias(f, histEqSideRHS),
+				Fn:          chplan.FnGroupArray,
+				Combinators: []chplan.AggCombinator{chplan.CombIf},
+				Args:        []chplan.Expr{&chplan.ColumnRef{Name: f}, histEqSideCond(histEqSideRHS)},
+				Alias:       histCompareFieldAlias(f, histEqSideRHS),
 			},
 		)
 	}
