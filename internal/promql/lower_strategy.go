@@ -265,10 +265,10 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 		if native := nativeTSGridRateNode(&cumulative, s, n.Recollapse); native != nil {
 			delta := *rw
 			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
-			return &chplan.UnionAll{Inputs: []chplan.Node{
-				derivedRateArm(native, s),
-				derivedRateArm(n.Fallback.LowerRate(&delta, s), s),
-			}}
+			return derivedRateArm(&chplan.UnionAll{Inputs: []chplan.Node{
+				native,
+				&delta,
+			}}, s)
 		}
 	}
 	if native := nativeTSGridRateNode(rw, s, n.Recollapse); native != nil {
@@ -277,9 +277,10 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 	return n.Fallback.LowerRate(rw, s)
 }
 
-// derivedRateArm restores the derived metric name both range arms conventionally
-// expose to downstream PromQL nodes. rate() drops source __name__, so the value
-// is the same empty literal on both sides of the positional union.
+// derivedRateArm restores the derived metric name the complementary range arms
+// expose to downstream PromQL nodes. Projecting once above their positional
+// union avoids repeating identical shaping work in both arms. rate() drops
+// source __name__, so the restored value is the empty literal.
 func derivedRateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 	return &chplan.Project{
 		Input: input,
@@ -295,26 +296,46 @@ func derivedRateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 
 // temporalityFilter preserves the selector's row shape while partitioning its
 // samples by the OTLP DELTA enum. OpNe admits CUMULATIVE and UNSPECIFIED values.
+// When the selector is a Project, place the predicate below it so the rejected
+// arm never pays for per-row label-map reconstruction.
 func temporalityFilter(input chplan.Node, column string, op chplan.BinaryOp) chplan.Node {
-	return &chplan.Filter{
-		Input: input,
-		Predicate: &chplan.Binary{
-			Op:    op,
-			Left:  &chplan.ColumnRef{Name: column},
-			Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
-		},
+	predicate := &chplan.Binary{
+		Op:    op,
+		Left:  &chplan.ColumnRef{Name: column},
+		Right: &chplan.LitInt{V: schema.AggregationTemporalityDelta},
 	}
+	project, ok := input.(*chplan.Project)
+	if !ok {
+		return fuseTemporalityFilter(input, predicate)
+	}
+	projectCopy := *project
+	projectCopy.Input = fuseTemporalityFilter(project.Input, predicate)
+	return &projectCopy
+}
+
+func fuseTemporalityFilter(input chplan.Node, predicate chplan.Expr) chplan.Node {
+	filter, ok := input.(*chplan.Filter)
+	if !ok {
+		return &chplan.Filter{Input: input, Predicate: predicate}
+	}
+	filterCopy := *filter
+	filterCopy.Predicate = &chplan.Binary{
+		Op:    chplan.OpAnd,
+		Left:  filter.Predicate,
+		Right: predicate,
+	}
+	return &filterCopy
 }
 
 // nativeTemporalityFilter removes the fan-out-only temporality projection from
 // the native arm, while placing the filter beneath selector shaping so the
 // resulting input still satisfies nativeTSGridMatrixNode's four-column shape.
 func nativeTemporalityFilter(input chplan.Node, column string) chplan.Node {
-	filter := temporalityFilter(input, column, chplan.OpNe)
 	project, ok := input.(*chplan.Project)
 	if !ok {
-		return filter
+		return temporalityFilter(input, column, chplan.OpNe)
 	}
+	filter := temporalityFilter(project.Input, column, chplan.OpNe)
 	projectCopy := *project
 	projectCopy.Projections = make([]chplan.Projection, 0, len(project.Projections)-1)
 	for _, projection := range project.Projections {
@@ -322,9 +343,7 @@ func nativeTemporalityFilter(input chplan.Node, column string) chplan.Node {
 			projectCopy.Projections = append(projectCopy.Projections, projection)
 		}
 	}
-	filterNode := filter.(*chplan.Filter)
-	filterNode.Input = project.Input
-	projectCopy.Input = filterNode
+	projectCopy.Input = filter
 	return &projectCopy
 }
 

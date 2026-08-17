@@ -11,13 +11,16 @@ import "github.com/tsouza/cerberus/internal/schema"
 // columns (large strings, Maps, Arrays) that PREWHERE wants to avoid
 // reading until predicates have culled the row set.
 //
-// SkipIndexColumns names columns covered by registered Bloom-filter
-// or set indexes. The default tables expose none — the field is
-// plumbed so an override can populate it without a schema migration.
+// IntegerDiscriminatorColumns names narrow enum-like columns whose integer
+// equality predicates should stay in PREWHERE even when no WHERE predicate
+// remains. SkipIndexColumns names columns covered by registered Bloom-filter
+// or set indexes. The default tables expose none — the field is plumbed so an
+// override can populate it without a schema migration.
 type TableShape struct {
-	SortColumns      []string
-	WideColumns      []string
-	SkipIndexColumns []string
+	SortColumns                 []string
+	WideColumns                 []string
+	IntegerDiscriminatorColumns []string
+	SkipIndexColumns            []string
 }
 
 // IsSortColumn reports whether name is listed in SortColumns.
@@ -45,6 +48,17 @@ func (s TableShape) SortRank(name string) int {
 // IsWideColumn reports whether name is listed in WideColumns.
 func (s TableShape) IsWideColumn(name string) bool {
 	for _, c := range s.WideColumns {
+		if c == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsIntegerDiscriminatorColumn reports whether name is an explicitly
+// registered narrow enum-like integer discriminator.
+func (s TableShape) IsIntegerDiscriminatorColumn(name string) bool {
+	for _, c := range s.IntegerDiscriminatorColumns {
 		if c == name {
 			return true
 		}
@@ -147,6 +161,9 @@ func buildDefaultTableShapes() map[string]TableShape {
 			metrics.ResourceAttributesColumn,
 			metrics.ScopeAttributesColumn,
 			metrics.ExemplarsColumn,
+		},
+		IntegerDiscriminatorColumns: []string{
+			metrics.AggregationTemporalityColumn,
 		},
 	}
 	for _, tbl := range []string{

@@ -238,9 +238,9 @@ func TestPartitionPrewhere_NoWideColumnsShape(t *testing.T) {
 func TestPartitionPrewhere_AllQualifyLastInWhere(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{WideColumns: []string{"Body"}}
-	a := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "A"}, Right: &chplan.LitInt{V: 1}}
-	b := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "B"}, Right: &chplan.LitInt{V: 2}}
-	c := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "C"}, Right: &chplan.LitInt{V: 3}}
+	a := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "A"}, Right: &chplan.LitString{V: "a"}}
+	b := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "B"}, Right: &chplan.LitString{V: "b"}}
+	c := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "C"}, Right: &chplan.LitString{V: "c"}}
 	pre, where := partitionPrewhere([]chplan.Expr{a, b, c}, shape)
 	if len(pre) != 2 || pre[0] != a || pre[1] != b {
 		t.Errorf("PREWHERE = %v, want [a, b]", pre)

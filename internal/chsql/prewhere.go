@@ -221,10 +221,11 @@ func orderedConjuncts(conjuncts []chplan.Expr, shape TableShape) []chplan.Expr {
 // PREWHERE iff it is cheap and references no wide column.
 //
 // When *every* conjunct qualifies for PREWHERE, the last cheap-but-
-// non-wide-touching predicate is kept in WHERE so CH's executor
-// doesn't degenerate to a no-op WHERE clause. The behaviour is purely
-// cosmetic — CH happily accepts a query with only PREWHERE — but the
-// retained predicate matches the PREWHERE-promotion design note.
+// non-wide-touching predicate is normally kept in WHERE so CH's executor
+// doesn't degenerate to a no-op WHERE clause. A narrow integer discriminator
+// that is not part of the sort key stays in PREWHERE: it commonly partitions
+// a wide row shape, and demoting it would make CH read the wide projection for
+// rows the discriminator rejects. CH accepts PREWHERE without WHERE.
 //
 // When the shape has no wide columns registered (e.g. an unknown
 // table), partitionPrewhere returns empty PREWHERE and all conjuncts
@@ -243,6 +244,11 @@ func partitionPrewhere(conjuncts []chplan.Expr, shape TableShape) (prewhere, whe
 		}
 	}
 	if len(where) == 0 && len(prewhere) > 0 {
+		for _, predicate := range prewhere {
+			if isNarrowIntegerDiscriminator(predicate, shape) {
+				return prewhere, where
+			}
+		}
 		// Demote the last PREWHERE conjunct to WHERE so CH's executor
 		// doesn't degenerate to a no-op WHERE clause — EXCEPT when the sole
 		// remaining PREWHERE conjunct is a leading-sort-key equality
@@ -259,6 +265,28 @@ func partitionPrewhere(conjuncts []chplan.Expr, shape TableShape) (prewhere, whe
 		prewhere = prewhere[:last]
 	}
 	return prewhere, where
+}
+
+// isNarrowIntegerDiscriminator reports an equality/inequality between a bare,
+// explicitly registered non-sort-key discriminator column and an integer
+// literal. Keeping the discriminator in PREWHERE lets ClickHouse reject a
+// branch before reading its Map/Array/String payload. Requiring registration
+// prevents ordinary numeric filters such as trace Duration from accidentally
+// receiving the enum-only no-WHERE exception.
+func isNarrowIntegerDiscriminator(e chplan.Expr, shape TableShape) bool {
+	binary, ok := e.(*chplan.Binary)
+	if !ok || (binary.Op != chplan.OpEq && binary.Op != chplan.OpNe) {
+		return false
+	}
+	column, columnOK := binary.Left.(*chplan.ColumnRef)
+	_, literalOK := binary.Right.(*chplan.LitInt)
+	if !columnOK || !literalOK {
+		column, columnOK = binary.Right.(*chplan.ColumnRef)
+		_, literalOK = binary.Left.(*chplan.LitInt)
+	}
+	return columnOK && literalOK && column.Qualifier == "" &&
+		shape.IsIntegerDiscriminatorColumn(column.Name) &&
+		sortRankFor([]string{column.Name}, shape) < 0
 }
 
 // isLeadingSortKeyEquality reports whether e is an equality predicate

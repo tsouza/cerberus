@@ -241,8 +241,9 @@ func TestOrderedConjuncts(t *testing.T) {
 func TestPartitionPrewhere(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{
-		SortColumns: []string{"ServiceName"},
-		WideColumns: []string{"Body"},
+		SortColumns:                 []string{"ServiceName"},
+		WideColumns:                 []string{"Body"},
+		IntegerDiscriminatorColumns: []string{"AggregationTemporality"},
 	}
 	cheapNoWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}}
 	cheapWide := &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "Body"}, Right: &chplan.LitString{V: "x"}}
@@ -265,6 +266,91 @@ func TestPartitionPrewhere(t *testing.T) {
 	}
 	if len(where) != 1 || where[0] != another {
 		t.Errorf("partitionPrewhere (all qualify) WHERE = %v, want [another]", where)
+	}
+
+	// A narrow enum discriminator stays beside the sort-key predicate in
+	// PREWHERE. Demoting it would force wide-column reads for rows it rejects.
+	discriminator := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminator}, shape)
+	if len(pre) != 2 || pre[0] != cheapNoWide || pre[1] != discriminator {
+		t.Errorf("partitionPrewhere (integer discriminator) PREWHERE = %v, want both predicates", pre)
+	}
+	if len(where) != 0 {
+		t.Errorf("partitionPrewhere (integer discriminator) WHERE = %v, want empty", where)
+	}
+
+	// An ordinary numeric column is not a discriminator. When it is the sole
+	// predicate it remains in WHERE instead of receiving the enum exception.
+	duration := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "Duration"},
+		Right: &chplan.LitInt{V: 1_000_000_000},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{duration}, shape)
+	if len(pre) != 0 || len(where) != 1 || where[0] != duration {
+		t.Errorf("partitionPrewhere (ordinary integer) pre=%v where=%v, want WHERE-only", pre, where)
+	}
+
+	// A non-equality/inequality comparison on the discriminator column
+	// (e.g. `<`) does not qualify for isNarrowIntegerDiscriminator's
+	// no-WHERE exception: only Eq/Ne are int-discriminator shapes. It
+	// still demotes like any other sole trailing PREWHERE conjunct.
+	discriminatorLess := &chplan.Binary{
+		Op:    chplan.OpLt,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminatorLess}, shape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator column, non-eq/ne op) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != discriminatorLess {
+		t.Errorf("partitionPrewhere (discriminator column, non-eq/ne op) WHERE = %v, want [discriminatorLess]", where)
+	}
+
+	// An equality between the discriminator column and ANOTHER column (no
+	// literal on either side) is not an integer-literal comparison, so it
+	// does not qualify for the no-WHERE exception either — it still
+	// demotes like any other sole trailing PREWHERE conjunct.
+	discriminatorColumnPair := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.ColumnRef{Name: "OtherTemporality"},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, discriminatorColumnPair}, shape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator column vs column) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != discriminatorColumnPair {
+		t.Errorf("partitionPrewhere (discriminator column vs column) WHERE = %v, want [discriminatorColumnPair]", where)
+	}
+
+	// A discriminator column that is ALSO the leading sort key (SortRank 0)
+	// falls outside isNarrowIntegerDiscriminator's non-sort-key requirement
+	// (sortRankFor(...) < 0 is false at rank 0), so it still demotes like
+	// any other sole trailing PREWHERE conjunct — the len(prewhere)==1
+	// leading-sort-key-equality exception doesn't apply here because there
+	// are two PREWHERE conjuncts, not one.
+	sortKeyDiscriminatorShape := TableShape{
+		SortColumns:                 []string{"AggregationTemporality"},
+		WideColumns:                 []string{"Body"},
+		IntegerDiscriminatorColumns: []string{"AggregationTemporality"},
+	}
+	sortKeyDiscriminator := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "AggregationTemporality"},
+		Right: &chplan.LitInt{V: 1},
+	}
+	pre, where = partitionPrewhere([]chplan.Expr{cheapNoWide, sortKeyDiscriminator}, sortKeyDiscriminatorShape)
+	if len(pre) != 1 || pre[0] != cheapNoWide {
+		t.Errorf("partitionPrewhere (discriminator is leading sort key) PREWHERE = %v, want [cheapNoWide]", pre)
+	}
+	if len(where) != 1 || where[0] != sortKeyDiscriminator {
+		t.Errorf("partitionPrewhere (discriminator is leading sort key) WHERE = %v, want [sortKeyDiscriminator]", where)
 	}
 
 	// Shape with no wide columns: everything stays in WHERE.

@@ -400,6 +400,7 @@ rad_metric.txtar
 range_window_func_over_scalar_div.txtar
 rate_delta_temporality.txtar
 rate_delta_temporality_cumulative_control.txtar
+rate_delta_temporality_range_prefix.txtar
 rate_empty_window.txtar
 rate_http_count.txtar
 rate_offset_5m.txtar
