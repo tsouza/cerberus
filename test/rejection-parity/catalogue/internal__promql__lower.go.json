@@ -111,7 +111,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) is the newest such caller: it re-enters lower() only for one BinaryExpr operand of an already-parsed vector-vector query, likewise typechecker-constrained to a vector, so it does not widen the set either.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -124,6 +124,7 @@
           "lowerClamp",
           "lowerCountValues",
           "lowerDateFn",
+          "lowerExpHistogramDroppingVectorBinop",
           "lowerHistogramQuantile",
           "lowerHistogramQuantileClassicFloat",
           "lowerHistogramValueFn",
@@ -148,6 +149,7 @@
         ],
         "cited": [
           "lower",
+          "lowerExpHistogramDroppingVectorBinop",
           "lowerHistogramQuantileClassicFloat",
           "lowerRoot"
         ]
