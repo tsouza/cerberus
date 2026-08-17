@@ -353,7 +353,8 @@ func expHistogramGroupMergeAggs(agg *parser.AggregateExpr, s schema.Metrics) []c
 	if expHistogramGroupIsAvg(agg) {
 		aggs = append(aggs, expHistogramGroupSeriesCountAgg())
 	}
-	return append(aggs, expHistogramMergeAggs(s)...)
+	aggs = append(aggs, expHistogramMergeAggs(s)...)
+	return append(aggs, expHistogramMergeSeriesOrderKeyAgg(s))
 }
 
 // expHistogramGroupMergeProjections is [expHistogramMergeProjections] plus
