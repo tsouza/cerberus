@@ -2182,7 +2182,7 @@ func lowerNestedSetBinary(b *traceql.BinaryOperation, op chplan.BinaryOp, s sche
 		// is not.
 		op = flipComparisonOp(op)
 		if lit, ok := fieldExprStatic(other); ok {
-			negatedLit, ok := negateStatic(lit)
+			negatedLit, ok := traceql.NegateStatic(lit)
 			if !ok {
 				return nil, true, fmt.Errorf("traceql: cannot negate a %s literal", lit.Type)
 			}
@@ -2304,24 +2304,6 @@ func nestedSetIntrinsicOperand(e traceql.FieldExpression) (attr traceql.Attribut
 		return traceql.Attribute{}, false, false
 	}
 	return a, true, true
-}
-
-// negateStatic returns the arithmetic negation of an int/float/duration
-// literal, mirroring how the parser folds a unary minus over a constant
-// operand (lowerUnaryMinus's doc comment). Any other Static type cannot be
-// negated.
-func negateStatic(lit traceql.Static) (traceql.Static, bool) {
-	switch lit.Type {
-	case traceql.TypeInt:
-		v, _ := lit.Int()
-		return traceql.NewStaticInt(-v), true
-	case traceql.TypeFloat:
-		return traceql.NewStaticFloat(-lit.Float()), true
-	case traceql.TypeDuration:
-		v, _ := lit.Duration()
-		return traceql.NewStaticDuration(-v), true
-	}
-	return traceql.Static{}, false
 }
 
 // fieldExprStatic unwraps a FieldExpression into its Static literal
