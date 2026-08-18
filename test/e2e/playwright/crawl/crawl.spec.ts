@@ -167,6 +167,7 @@ import {
   activeStack,
   knownStackNames,
   stackByName,
+  type CrawlStackConfig,
 } from './stacks.js';
 
 // Self-traffic warmup — same rationale + value as the iterate-* specs:
@@ -1789,6 +1790,41 @@ function deriveShardKey(parent: QueueEntry, childCanonical: string): string {
   return parent.shardKey === parent.canonical ? childCanonical : parent.shardKey;
 }
 
+/**
+ * Seeds that exist ONLY to prove a redirector still lands somewhere
+ * in-scope (e.g. the Metrics Drilldown app's legacy `/trail` alias —
+ * see METRICS_DRILLDOWN_LEGACY_TRAIL_SEED's doc comment in stacks.ts)
+ * are seeded but deliberately excluded from `leanInteractionRoots`:
+ * driving controls against one drives them against the page it ALREADY
+ * redirected to, so every resulting canonical belongs to that OTHER
+ * page's family, not this seed's own. At lean depth `isLeanRoot` already
+ * keeps the sweep off these; at full depth `ownsSurface` was the ONLY
+ * gate, so every non-interactive seed got swept anyway — whichever
+ * shard owns it (co-)discovers the SAME states the seed it's an alias
+ * of independently discovers too, so two shards' slices can legitimately
+ * both claim the same surface. This is a real, observed regression
+ * (dashboard-crawl-merge run 32133767578: `/a/grafana-metricsdrilldown-
+ * app/drilldown?actionView=related&metric={metric}` claimed by both the
+ * `/drilldown` seed's owner and the `/trail` seed's owner). Excluding
+ * every non-interaction-root seed from the sweep, at ANY depth, closes
+ * this for the known /trail case and any future one — matching the lean
+ * gate's existing behaviour instead of only mimicking it below full
+ * depth's page cap.
+ */
+function nonInteractiveSeedSet(
+  stack: CrawlStackConfig,
+  baseURL: string,
+): Set<string> {
+  return new Set(
+    stack.leanSeedRoots
+      .map((root) => canonicalTarget(root, baseURL, stack.scope)?.canonical)
+      .filter(
+        (c): c is string =>
+          c !== undefined && !stack.leanInteractionRoots.includes(c),
+      ),
+  );
+}
+
 test.describe('crawl: shard ownership inheritance (#2136 regression)', () => {
   const seed = (canonical: string): QueueEntry => ({
     canonical,
@@ -1879,6 +1915,40 @@ test.describe('crawl: shard ownership inheritance (#2136 regression)', () => {
     expect(belongsToCrawlShard(fieldShardKey, { index: ownerIndex, count: 3 })).toBe(
       true,
     );
+  });
+
+  test('#2136 follow-up (run 32133767578): a redirector-only seed never gets independently swept', () => {
+    // Every registered stack's non-interactive seeds today are exactly
+    // its lean seed roots minus its lean interaction roots — the
+    // Metrics Drilldown app's legacy `/trail` alias is the only one
+    // (see METRICS_DRILLDOWN_LEGACY_TRAIL_SEED in stacks.ts), but this
+    // asserts the DERIVATION, not a hardcoded path, so a future stack
+    // adding another alias-only seed is covered for free.
+    for (const name of knownStackNames()) {
+      const stack = stackByName(name);
+      const base = 'http://localhost:3000';
+      const nonInteractive = nonInteractiveSeedSet(stack, base);
+      const interactionRoots = new Set(
+        stack.leanInteractionRoots.map(
+          (root) => canonicalTarget(root, base, stack.scope)?.canonical,
+        ),
+      );
+      for (const canonical of nonInteractive) {
+        expect(
+          interactionRoots.has(canonical),
+          `${name}: a non-interactive seed must never also be an interaction root (${canonical})`,
+        ).toBe(false);
+      }
+      // Live regression: the trail seed is in the registry precisely
+      // because it must stay excluded from the sweep at every depth.
+      const trail = canonicalTarget(
+        '/a/grafana-metricsdrilldown-app/trail',
+        base,
+        stack.scope,
+      );
+      expect(trail).not.toBeNull();
+      expect(nonInteractive.has(trail!.canonical)).toBe(true);
+    }
   });
 });
 
@@ -1997,6 +2067,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       shardKey: target.canonical,
     });
   }
+  const nonInteractiveSeeds = nonInteractiveSeedSet(stack, baseURL);
   // The lean surface set: root + the configured representatives (the
   // nav links harvested from the root page join it during the
   // root visit below). Snapshot BEFORE the full-depth dashboard
@@ -2108,7 +2179,11 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       // the pairwise bound: surfaces pinning ≥2 structural params are
       // terminal (planInteractions returns an empty plan for them).
       const isLeanRoot = stack.leanInteractionRoots.includes(entry.canonical);
-      if (ownsSurface && (depth === 'full' || isLeanRoot)) {
+      if (
+        ownsSurface &&
+        !nonInteractiveSeeds.has(entry.canonical) &&
+        (depth === 'full' || isLeanRoot)
+      ) {
         const sweep = await sweepInteractions(
           lease,
           baseURL,
