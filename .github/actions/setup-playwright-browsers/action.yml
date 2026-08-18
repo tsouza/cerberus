@@ -81,6 +81,24 @@ runs:
         path: /var/cache/apt/archives/*.deb
         key: playwright-chromium-apt-${{ runner.os }}-${{ steps.pw.outputs.version }}
 
+    # apt's defaults are patient with a degraded mirror (long per-request
+    # timeout, several internal retries per source) - fine when the mirror is
+    # merely slow, but it means a genuinely stuck mirror (observed:
+    # azure.archive.ubuntu.com repeatedly `Ign:`-ing every package) can
+    # consume an entire attempt's timeout budget below without ever reaching
+    # the working archive.ubuntu.com fallback the same apt run already falls
+    # back to for other sources. Shortening both makes a bad source fail over
+    # faster instead of eating the attempt; system-wide apt.conf.d applies to
+    # apt-get however it's invoked, including from inside `npx playwright
+    # install-deps`, which does not expose its own apt flags to set this on
+    # its command line directly.
+    - name: Fail over from a stalled apt mirror faster
+      shell: bash
+      run: |
+        echo 'Acquire::http::Timeout "15";
+        Acquire::https::Timeout "15";
+        Acquire::Retries "1";' | sudo tee /etc/apt/apt.conf.d/99-ci-fast-mirror-failover >/dev/null
+
     # Cache HIT: browser binaries are already restored; only install the OS
     # shared-library deps. Cache MISS: download chromium AND install OS deps.
     # Both apt-touching branches retry with backoff under a per-attempt
@@ -106,6 +124,24 @@ runs:
         # CDN-hosted chromium binary the browser cache normally avoids
         # entirely, so each attempt gets more room but fewer retries - both
         # bound worst case to well under a typical 30m job timeout.
+        # `timeout` only signals the direct child (npx) it spawns, not the
+        # apt-get grandchild npx shells out to - a killed attempt can leave
+        # that apt-get running as an orphan, still holding /var/lib/apt's
+        # locks, so the very next attempt fails instantly with "Could not
+        # get lock" instead of getting a clean retry (observed on a real
+        # run). Force-clear that state before every retry: kill any
+        # surviving apt/dpkg processes, drop the lock files they hold, and
+        # let dpkg finish configuring whatever the killed attempt left
+        # half-installed. Safe to run even when nothing needs cleaning - a
+        # command failure that was NOT an apt lock issue just gets retried
+        # as it would have anyway.
+        clean_apt_state() {
+          sudo pkill -9 -f 'apt-get|/usr/lib/apt/methods' >/dev/null 2>&1 || true
+          sudo rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock \
+            /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend
+          sudo dpkg --configure -a >/dev/null 2>&1 || true
+        }
+
         install_with_retry() {
           local attempt_timeout_secs="$1" retries="$2"
           shift 2
@@ -118,6 +154,7 @@ runs:
               return 1
             fi
             echo "$* attempt $attempt timed out or failed (${attempt_timeout_secs}s budget), retrying after backoff" >&2
+            clean_apt_state
             sleep $(( attempt * 10 ))
           done
         }
