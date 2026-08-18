@@ -671,13 +671,14 @@ func buildHistogramNativeRangeTreeMerge(
 	// the sample floor natively through RangeBucketFanout.MinSamples,
 	// which emits it as a HAVING — so the per-series reshape here does
 	// not repeat minSamplesFilter's wrapping Filter.
-	fold := histogramWindowFold(shape.windowFn, histogramWindowInputs{
+	winIn := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      resets,
-	})
+	}
+	fold := histogramWindowFold(shape.windowFn, winIn)
 	perSeries := expHistogramWindowReshape(
 		buildHistogramBucketFanout(
 			scan, pred, nil, win,
@@ -692,6 +693,8 @@ func buildHistogramNativeRangeTreeMerge(
 		// hqWindowCountArrayAlias groupArray expHistogramWindowAggs adds
 		// for the instant path — see expHistogramWindowCountValuesExpr.
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)

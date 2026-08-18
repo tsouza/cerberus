@@ -167,6 +167,14 @@ func expHistogramWindowFloatsExpr(contribs chplan.Expr) chplan.Expr {
 // counter's readings do not add — they telescope — so the same
 // contributions go through the range-vector function's own fold
 // instead.
+//
+// Callers pass a `fold` already built with `in.hoistedFactor` set when
+// [expHistogramWindowFactorStage] found rate/increase's boundary-
+// extrapolation factor hoistable — see that function's doc for why a
+// plain COLUMN read here, however many times the per-target-bucket
+// arrayMap this function builds evaluates it, costs nothing extra: it is
+// the factor's own EXPRESSION that was expensive to re-render, not the
+// act of reading it back.
 func expHistogramWindowBucketsExpr(
 	offArrAlias, bucArrAlias, scalesArrAlias, mergedScaleAlias string,
 	fold histogramWindowTimeFold,
@@ -217,6 +225,87 @@ func expHistogramWindowBucketsExpr(
 	}
 }
 
+// hqWindowFactorAlias holds rate/increase's per-series boundary-
+// extrapolation factor, materialized once by
+// [expHistogramWindowFactorStage] — see that function's doc.
+const hqWindowFactorAlias = "_hq_window_factor"
+
+// expHistogramWindowFactorStage precomputes rate/increase's per-series
+// boundary-extrapolation factor ONCE as a plain column, when
+// [histogramWindowInvariantFactorExpr] reports it safe to, and returns a
+// `fold` rebuilt to read that column instead of re-deriving it — along
+// with the Node the caller should route through it. Every OTHER windowFn,
+// and rate/increase itself when in.countValues is nil, returns
+// (input, fold) UNCHANGED: there is nothing invariant to hoist, and
+// histogramWindowFold(windowFn, in) does not reproduce every fold this
+// package builds (sum_over_time/avg_over_time's Kahan-compensated
+// [expHistogramValuedOverTimeFold] most visibly), so rebuilding is only
+// ever safe on the branch histogramWindowInvariantFactorExpr itself
+// gates on.
+//
+// The duplication this closes is not merely the per-target-bucket
+// runtime cost [expHistogramWindowBucketsExpr]'s own arrayMap(tb -> …)
+// loop would otherwise pay — it is that EVERY reader downstream of the
+// per-series window Aggregate calls `fold` independently (the ZeroCount
+// projection, the Count/Sum scalars via
+// [expHistogramValuedWindowScalars], and both bucket arrays), so a
+// factor left inline renders its own arraySort/arrayFold pipeline that
+// many separate times in the emitted SQL text. ClickHouse's query
+// ANALYSIS time (distinct from the time spent reading rows) scales with
+// how large that rendered text/expression tree is, not with how many
+// rows the query touches: measured directly against a floor-pinned
+// ClickHouse (the compatibility/prometheus-floor CI lane's own
+// substrate), a single `histogram_quantile(phi,
+// rate(demo_shifting_latency_exp_hist[1m]))` answered in ~10s whether
+// evaluated over one series and five minutes or three series and a full
+// hour — a FIXED cost, not one that scales with the fanout
+// [chplan.RangeBucketFanout] or the merged-bucket width
+// [expHistogramMergeSortStage] already bounds — while a structurally
+// simpler classic-histogram query (one fold rendering instead of five)
+// over the same shape answered in ~5s. Rendering the factor once here,
+// as a column every other rendering reads back by name, is what brings
+// the exponential-histogram lane back down to that scale rather than
+// multiplying it by the number of independent readers.
+//
+// aggs/keyAliases are the same lists the caller already threads through
+// [expHistogramResetMaskStage] (or would, were resets nil); every alias
+// they name is forwarded unchanged, so this stage composes with that one
+// exactly like [expHistogramResetMaskStage] composes with the raw
+// Aggregate — extraAliases carries hqWindowResetsAlias through when this
+// stage sits ABOVE it, so counterIncreaseFold's own reset-mask read
+// still resolves once this stage becomes its input.
+func expHistogramWindowFactorStage(
+	input chplan.Node,
+	aggs []chplan.AggFunc,
+	keyAliases []string,
+	extraAliases []string,
+	windowFn string,
+	in histogramWindowInputs,
+	fold histogramWindowTimeFold,
+) (chplan.Node, histogramWindowTimeFold) {
+	factorExpr, hoistable := histogramWindowInvariantFactorExpr(
+		windowFn, in, &chplan.ColumnRef{Name: hqWindowTsListAlias},
+	)
+	if !hoistable {
+		return input, fold
+	}
+	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+len(extraAliases)+1)
+	for _, name := range keyAliases {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
+	}
+	for _, agg := range aggs {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: agg.Alias}, Alias: agg.Alias})
+	}
+	for _, name := range extraAliases {
+		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
+	}
+	projs = append(projs, chplan.Projection{Expr: factorExpr, Alias: hqWindowFactorAlias})
+
+	hoisted := in
+	hoisted.hoistedFactor = &chplan.ColumnRef{Name: hqWindowFactorAlias}
+	return &chplan.Project{Input: input, Projections: projs}, histogramWindowFold(windowFn, hoisted)
+}
+
 // expHistogramWindowReshape wraps the per-series grouping in the Project
 // that turns it back into the exponential-histogram row contract
 // (Attributes + Scale + ZeroCount + {Positive,Negative}{Offset,
@@ -245,15 +334,42 @@ func expHistogramWindowBucketsExpr(
 // window-reduced whole-histogram scalars a histogram-VALUED answer
 // publishes and a quantile does not — see
 // [expHistogramValuedWindowScalars].
+//
+// windowFn/in are the SAME shape `fold` itself was built from
+// (histogramWindowFold(windowFn, in) — callers must keep the two in
+// sync, [expHistogramValuedWindowFold] returns them as a pair for
+// exactly this reason). This function reads them to hoist rate/
+// increase's boundary-extrapolation factor via
+// [expHistogramWindowFactorStage] — see that function's doc for why:
+// EVERY projection below reads the fold at least once (ZeroCount,
+// Count, Sum, Positive/NegativeBucketCounts — the last two once per
+// target bucket besides), so a rate/increase factor left inline renders
+// its own arraySort/arrayFold pipeline that many times over in the
+// emitted SQL. When hoistable, this function rebuilds `fold` from the
+// hoisted `in` for every one of those readers, including the caller's
+// own — the caller's `fold` argument is used ONLY to decide the
+// non-hoistable shape is unaffected (sum_over_time/avg_over_time's
+// Kahan-compensated fold, which histogramWindowFold(windowFn, in) does
+// not reproduce and must never be rebuilt from).
 func expHistogramWindowReshape(
 	group chplan.Node,
 	aggs []chplan.AggFunc,
 	keyAliases []string,
 	resets chplan.Expr,
 	fold histogramWindowTimeFold,
+	windowFn string,
+	in histogramWindowInputs,
 	scalars []chplan.Projection,
 	s schema.Metrics,
 ) chplan.Node {
+	input := group
+	var extraFactorAliases []string
+	if resets != nil {
+		input = expHistogramResetMaskStage(group, aggs, keyAliases)
+		extraFactorAliases = []string{hqWindowResetsAlias}
+	}
+	input, effectiveFold := expHistogramWindowFactorStage(input, aggs, keyAliases, extraFactorAliases, windowFn, in, fold)
+
 	projs := make([]chplan.Projection, 0, len(keyAliases)+len(scalars)+7)
 	for _, name := range keyAliases {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}, Alias: name})
@@ -263,7 +379,7 @@ func expHistogramWindowReshape(
 		projs,
 		chplan.Projection{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
 		chplan.Projection{
-			Expr: fold(
+			Expr: effectiveFold(
 				expHistogramWindowFloatsExpr(&chplan.ColumnRef{Name: hqWindowZeroCountsArrayAlias}),
 				&chplan.ColumnRef{Name: hqWindowTsListAlias},
 			),
@@ -276,10 +392,6 @@ func expHistogramWindowReshape(
 			Alias: s.ZeroThresholdColumn,
 		})
 	}
-	input := group
-	if resets != nil {
-		input = expHistogramResetMaskStage(group, aggs, keyAliases)
-	}
 	return &chplan.Project{
 		Input: input,
 		Projections: append(
@@ -289,7 +401,7 @@ func expHistogramWindowReshape(
 				Alias: s.PositiveOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, fold),
+				Expr:  expHistogramWindowBucketsExpr(hqAggPosOffsetsArrayAlias, hqAggPosBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, effectiveFold),
 				Alias: s.PositiveBucketCountsColumn,
 			},
 			chplan.Projection{
@@ -297,7 +409,7 @@ func expHistogramWindowReshape(
 				Alias: s.NegativeOffsetColumn,
 			},
 			chplan.Projection{
-				Expr:  expHistogramWindowBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, fold),
+				Expr:  expHistogramWindowBucketsExpr(hqAggNegOffsetsArrayAlias, hqAggNegBucketsArrayAlias, hqAggScalesArrayAlias, hqAggMergedScaleAlias, effectiveFold),
 				Alias: s.NegativeBucketCountsColumn,
 			},
 		),
@@ -332,19 +444,22 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		DropEmptyOnNoGroup: true,
 	}
 	resets := expHistogramResetMaskFor(shape.windowFn)
-	fold := histogramWindowFold(shape.windowFn, histogramWindowInputs{
+	winIn := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      resets,
-	})
+	}
+	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
 		minSamplesFilter(group, shape.minSamples()),
 		expHistogramValuedWindowAggs(s, shape.windowFn),
 		[]string{s.AttributesColumn},
 		resets,
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)

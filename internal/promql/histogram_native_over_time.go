@@ -107,7 +107,7 @@ func lowerExpHistogramOverTimeRange(shape histogramAggShape, s schema.Metrics, c
 	win := aggWindowFor(shape)
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchor, win)
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 
 	perSeries := expHistogramWindowReshape(
@@ -126,6 +126,8 @@ func lowerExpHistogramOverTimeRange(shape histogramAggShape, s schema.Metrics, c
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		nil,
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
