@@ -93,11 +93,31 @@ jobs:
       - name: Profile corpus fan-out
         if: env.RUN_HEAVY == 'true'
         run: |
-          go run -tags chdb ./cmd/perf-profile \
-            -spec test/spec \
-            -out perf-profile.json \
-            -md "$GITHUB_STEP_SUMMARY" \
-            -top 40
+          # This run is a ~10-15s in-process chDB walk once dependencies are
+          # resolved, so a stall means `go run`'s own module
+          # download/build step - not the profiler - is stuck. Observed
+          # directly: three separate runs of this job sat with zero log
+          # output until killed by the 30-minute job timeout, the same
+          # silent-hang shape `go mod download` guards against with a retry
+          # loop elsewhere in this repo (the e2e seed Dockerfile) and that
+          # the Playwright chromium install step now guards against with an
+          # explicit `timeout`. Apply the same fix here: bound each attempt
+          # and retry instead of burning the whole job on one stuck attempt.
+          for attempt in 1 2 3 4 5; do
+            if timeout 300 go run -tags chdb ./cmd/perf-profile \
+              -spec test/spec \
+              -out perf-profile.json \
+              -md "$GITHUB_STEP_SUMMARY" \
+              -top 40; then
+              exit 0
+            fi
+            if [ "$attempt" = "5" ]; then
+              echo "go run ./cmd/perf-profile timed out or failed after 5 attempts" >&2
+              exit 1
+            fi
+            echo "go run ./cmd/perf-profile attempt $attempt timed out or failed, retrying after backoff" >&2
+            sleep $(( attempt * 10 ))
+          done
 
       - name: No-op (non-release PR)
         if: env.RUN_HEAVY != 'true'
