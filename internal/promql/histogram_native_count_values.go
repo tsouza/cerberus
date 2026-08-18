@@ -153,17 +153,25 @@ func nativeHistogramBucketStrings(buckets, offset, scale chplan.Expr, positive b
 }
 
 func nativeHistogramZeroBucketString(s schema.Metrics) chplan.Expr {
+	const thresholdStringParam = "hgts"
 	zeroCount := &chplan.ColumnRef{Name: s.ZeroCountColumn}
 	threshold := &chplan.ColumnRef{Name: s.ZeroThresholdColumn}
-	value := histStringCall(
-		chplan.FnConcat,
-		&chplan.InlineString{V: "[-"},
-		nativeHistogramFloatString(threshold),
-		&chplan.InlineString{V: ","},
-		nativeHistogramFloatString(threshold),
-		&chplan.InlineString{V: "]:"},
-		nativeHistogramFloatString(zeroCount),
-	)
+	// The threshold's formatted string is read twice — once for the "[-"
+	// edge, once for the "," edge — and nativeHistogramFloatString's own
+	// tree is large even after nativeHistogramShortestGString's hqLet
+	// binding, so hqLet it here too rather than rendering two independent
+	// copies of the same value's formatting.
+	value := hqLet(thresholdStringParam, nativeHistogramFloatString(threshold), func(thresholdStr chplan.Expr) chplan.Expr {
+		return histStringCall(
+			chplan.FnConcat,
+			&chplan.InlineString{V: "[-"},
+			thresholdStr,
+			&chplan.InlineString{V: ","},
+			thresholdStr,
+			&chplan.InlineString{V: "]:"},
+			nativeHistogramFloatString(zeroCount),
+		)
+	})
 	return histStringCall(
 		chplan.FnIf,
 		histStringBinary(chplan.OpNe, zeroCount, &chplan.LitFloat{V: 0}),
@@ -188,17 +196,29 @@ func nativeHistogramBoundExpr(index, scale chplan.Expr) chplan.Expr {
 // Finite values borrow ClickHouse's shortest round-trip digits and relay
 // them out under Go's layout rule via nativeHistogramShortestGString.
 func nativeHistogramFloatString(value chplan.Expr) chplan.Expr {
-	return histStringCall(
-		chplan.FnMultiIf,
-		histStringCall(chplan.FnIsNaN, value), &chplan.InlineString{V: "NaN"},
-		histStringBinary(
-			chplan.OpAnd,
-			histStringCall(chplan.FnIsInfinite, value),
-			histStringBinary(chplan.OpGt, value, &chplan.LitFloat{V: 0}),
-		), &chplan.InlineString{V: "+Inf"},
-		histStringCall(chplan.FnIsInfinite, value), &chplan.InlineString{V: "-Inf"},
-		nativeHistogramShortestGString(value),
-	)
+	// `value` is read six times below (isNaN, isInfinite twice, the sign
+	// compare, and twice more inside nativeHistogramShortestGString's own
+	// outer binding) — cheap when a caller passes a plain ColumnRef, but
+	// callers like nativeHistogramBucketStrings pass lowerBound/upperBound,
+	// each its own two-level `pow(pow(...), ...)` expression
+	// (nativeHistogramBoundExpr). Left unbound, six mentions of THAT
+	// expression is six independent copies of it in the emitted SQL — see
+	// nativeHistogramShortestGString's own doc on why that class of
+	// repetition matters here. hqLet binds it once instead.
+	const floatValueParam = "hgfv"
+	return hqLet(floatValueParam, value, func(v chplan.Expr) chplan.Expr {
+		return histStringCall(
+			chplan.FnMultiIf,
+			histStringCall(chplan.FnIsNaN, v), &chplan.InlineString{V: "NaN"},
+			histStringBinary(
+				chplan.OpAnd,
+				histStringCall(chplan.FnIsInfinite, v),
+				histStringBinary(chplan.OpGt, v, &chplan.LitFloat{V: 0}),
+			), &chplan.InlineString{V: "+Inf"},
+			histStringCall(chplan.FnIsInfinite, v), &chplan.InlineString{V: "-Inf"},
+			nativeHistogramShortestGString(v),
+		)
+	})
 }
 
 // nativeHistogramShortestGString renders the finite-value spelling of Go's
@@ -230,7 +250,18 @@ func nativeHistogramFloatString(value chplan.Expr) chplan.Expr {
 // sub-expressions instead of binding them re-expands the tree at every
 // mention. Left unbound, that repetition compounds multiplicatively across
 // the ~6 nested layers between `value` and the top-level `multiIf` — enough
-// to blow ClickHouse's `max_query_size` on a single histogram bucket cell.
+// to blow ClickHouse's `max_query_size` on a single histogram bucket cell,
+// which is why every intermediate quantity below is bound with [hqLet]
+// exactly once rather than re-derived at each mention: hqLet renders
+// `arrayMap(<param> -> <body>, array(<val>))[1]`, ClickHouse's spelling of a
+// let-binding, so `mantRaw`, say, appears ONCE in the emitted SQL no matter
+// how many of the helpers below read it. A caller that mentions this
+// function's own result several times — nativeHistogramStringExpr calls it
+// eleven times over across Count, Sum and every bucket's lower/upper/count —
+// still renders eleven independent copies of the WHOLE chain; that
+// duplication is inherent (each call receives a different `value`) and is
+// not what this binding fixes. What it fixes is each of those eleven copies
+// no longer being its own multiplicative blowup on top of that.
 func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 	const (
 		sciLowerBound = 1e-4
@@ -242,6 +273,18 @@ func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 		// of its magnitude.
 		valueParam  = "hgv"
 		digitsParam = "hgu"
+		// hqLet binding names for the intermediate quantities below.
+		// Distinct from valueParam/digitsParam and from every other hqLet
+		// binding in this package (see histogram_quantile_window.go's own
+		// naming note) because these nest inside the value/digits lambda.
+		posParam         = "hge"
+		mantRawParam     = "hgm"
+		digitsAllParam   = "hgda"
+		digitsLeadParam  = "hgdl"
+		digitsFinalParam = "hgd"
+		pointPosParam    = "hgp"
+		intLenParam      = "hgi"
+		expValParam      = "hgx"
 	)
 
 	call := func(fn chplan.Fn, args ...chplan.Expr) chplan.Expr {
@@ -257,76 +300,94 @@ func nativeHistogramShortestGString(value chplan.Expr) chplan.Expr {
 		return call(chplan.FnToInt64, call(fn, args...))
 	}
 
-	// Every sub-expression below is a factory: the IR is a tree, so two
-	// mentions of e.g. `epos` must be two distinct node graphs even though
-	// both read the same bound lambda parameter.
-	v := func() chplan.Expr { return &chplan.BareIdent{Name: valueParam} }
-	u := func() chplan.Expr { return &chplan.BareIdent{Name: digitsParam} }
+	v := &chplan.BareIdent{Name: valueParam}
+	u := &chplan.BareIdent{Name: digitsParam}
 
 	// Position of the exponent marker in CH's rendering; 0 when CH chose
 	// fixed notation.
-	epos := func() chplan.Expr { return countOf(chplan.FnStringPosition, u(), str("e")) }
-	// The mantissa CH rendered — the whole string in fixed notation.
-	mantRaw := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
-			call(chplan.FnSubstring, u(), i(1), bin(chplan.OpSub, epos(), i(1))),
-			u())
-	}
-	// Mantissa digits with the decimal point removed, then with leading
-	// and trailing zeros stripped: the significant digits, most
-	// significant first.
-	digitsAll := func() chplan.Expr { return call(chplan.FnReplaceAll, mantRaw(), str("."), str("")) }
-	digitsLead := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsAll(), str("^0+"), str("")) }
-	digits := func() chplan.Expr { return call(chplan.FnRegexReplaceFirst, digitsLead(), str("0+$"), str("")) }
+	epos := countOf(chplan.FnStringPosition, u, str("e"))
+	body := hqLet(posParam, epos, func(pos chplan.Expr) chplan.Expr {
+		// The mantissa CH rendered — the whole string in fixed notation.
+		mantRaw := call(chplan.FnIf, bin(chplan.OpGt, pos, i(0)),
+			call(chplan.FnSubstring, u, i(1), bin(chplan.OpSub, pos, i(1))),
+			u)
+		return hqLet(mantRawParam, mantRaw, func(mr chplan.Expr) chplan.Expr {
+			// Mantissa digits with the decimal point removed, then with
+			// leading and trailing zeros stripped: the significant digits,
+			// most significant first.
+			digitsAll := call(chplan.FnReplaceAll, mr, str("."), str(""))
+			return hqLet(digitsAllParam, digitsAll, func(da chplan.Expr) chplan.Expr {
+				digitsLead := call(chplan.FnRegexReplaceFirst, da, str("^0+"), str(""))
+				return hqLet(digitsLeadParam, digitsLead, func(dl chplan.Expr) chplan.Expr {
+					digits := call(chplan.FnRegexReplaceFirst, dl, str("0+$"), str(""))
+					return hqLet(digitsFinalParam, digits, func(d chplan.Expr) chplan.Expr {
+						pointPos := countOf(chplan.FnStringPosition, mr, str("."))
+						return hqLet(pointPosParam, pointPos, func(pp chplan.Expr) chplan.Expr {
+							// Digit count left of the decimal point (the
+							// whole mantissa when there is no point).
+							intLen := call(chplan.FnIf, bin(chplan.OpGt, pp, i(0)),
+								bin(chplan.OpSub, pp, i(1)),
+								countOf(chplan.FnLength, mr))
+							return hqLet(intLenParam, intLen, func(il chplan.Expr) chplan.Expr {
+								// The decimal exponent: read straight off
+								// CH's exponent when it used scientific
+								// notation, else derived from where the
+								// first significant digit sits relative to
+								// the decimal point. FnToInt64OrZero, not
+								// the throwing FnToInt64: ClickHouse's
+								// vectorized `if` does not reliably skip
+								// evaluating the untaken branch inside this
+								// deep an arrayMap/hqLet nesting, so a
+								// fixed-notation row (pos = 0, this branch
+								// never SELECTED) can still have its
+								// substring — the whole digit string, not
+								// an exponent suffix — pushed through
+								// toInt64 and abort the query on a string
+								// like "2.565". The OrZero result is
+								// discarded exactly when that happens
+								// (pos > 0 is false), so the 0 fallback
+								// never reaches the output.
+								leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, da), countOf(chplan.FnLength, dl))
+								expVal := call(chplan.FnIf, bin(chplan.OpGt, pos, i(0)),
+									call(chplan.FnToInt64OrZero, call(chplan.FnSubstring, u, bin(chplan.OpAdd, pos, i(1)))),
+									bin(chplan.OpSub, bin(chplan.OpSub, il, leadingZeros), i(1)))
+								return hqLet(expValParam, expVal, func(ev chplan.Expr) chplan.Expr {
+									// `d` or `d.ddd` — Go's normalised
+									// scientific mantissa.
+									mantissa := call(chplan.FnIf, bin(chplan.OpLe, countOf(chplan.FnLength, d), i(1)),
+										d,
+										call(chplan.FnConcat, call(chplan.FnSubstring, d, i(1), i(1)), str("."), call(chplan.FnSubstring, d, i(2))))
+									expDigits := call(chplan.FnToString, call(chplan.FnAbs, ev))
+									expSuffix := call(chplan.FnConcat,
+										call(chplan.FnIf, bin(chplan.OpLt, ev, i(0)), str("-"), str("+")),
+										call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, ev), i(expPadBelow)),
+											call(chplan.FnConcat, str("0"), expDigits),
+											expDigits))
+									sign := call(chplan.FnIf, bin(chplan.OpLt, v, f(0)), str("-"), str(""))
+									sci := call(chplan.FnConcat, sign, mantissa, str("e"), expSuffix)
+									fixed := call(chplan.FnConcat, sign, u)
 
-	pointPos := func() chplan.Expr { return countOf(chplan.FnStringPosition, mantRaw(), str(".")) }
-	// Digit count left of the decimal point (the whole mantissa when
-	// there is no point).
-	intLen := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpGt, pointPos(), i(0)),
-			bin(chplan.OpSub, pointPos(), i(1)),
-			countOf(chplan.FnLength, mantRaw()))
-	}
-	// The decimal exponent: read straight off CH's exponent when it used
-	// scientific notation, else derived from where the first significant
-	// digit sits relative to the decimal point.
-	expVal := func() chplan.Expr {
-		leadingZeros := bin(chplan.OpSub, countOf(chplan.FnLength, digitsAll()), countOf(chplan.FnLength, digitsLead()))
-		return call(chplan.FnIf, bin(chplan.OpGt, epos(), i(0)),
-			call(chplan.FnToInt64, call(chplan.FnSubstring, u(), bin(chplan.OpAdd, epos(), i(1)))),
-			bin(chplan.OpSub, bin(chplan.OpSub, intLen(), leadingZeros), i(1)))
-	}
-
-	// `d` or `d.ddd` — Go's normalised scientific mantissa.
-	mantissa := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpLe, countOf(chplan.FnLength, digits()), i(1)),
-			digits(),
-			call(chplan.FnConcat, call(chplan.FnSubstring, digits(), i(1), i(1)), str("."), call(chplan.FnSubstring, digits(), i(2))))
-	}
-	expDigits := func() chplan.Expr { return call(chplan.FnToString, call(chplan.FnAbs, expVal())) }
-	expSuffix := func() chplan.Expr {
-		return call(chplan.FnConcat,
-			call(chplan.FnIf, bin(chplan.OpLt, expVal(), i(0)), str("-"), str("+")),
-			call(chplan.FnIf, bin(chplan.OpLt, call(chplan.FnAbs, expVal()), i(expPadBelow)),
-				call(chplan.FnConcat, str("0"), expDigits()),
-				expDigits()))
-	}
-	sign := func() chplan.Expr {
-		return call(chplan.FnIf, bin(chplan.OpLt, v(), f(0)), str("-"), str(""))
-	}
-	sci := call(chplan.FnConcat, sign(), mantissa(), str("e"), expSuffix())
-	fixed := call(chplan.FnConcat, sign(), u())
-
-	body := call(chplan.FnMultiIf,
-		// Zero's digit string is all zeros, which the leading/trailing-zero
-		// strip above reduces to "" — steer it into `fixed` ("0") before
-		// the digit-parsing logic ever sees it, rather than special-casing
-		// an empty `digits()` inside `mantissa`.
-		bin(chplan.OpEq, v(), f(0)), str("0"),
-		bin(chplan.OpOr,
-			bin(chplan.OpLt, call(chplan.FnAbs, v()), f(sciLowerBound)),
-			bin(chplan.OpGe, call(chplan.FnAbs, v()), f(sciUpperBound))), sci,
-		fixed)
+									return call(chplan.FnMultiIf,
+										// Zero's digit string is all zeros,
+										// which the leading/trailing-zero
+										// strip above reduces to "" — steer
+										// it into `fixed` ("0") before the
+										// digit-parsing logic ever sees it,
+										// rather than special-casing an
+										// empty `digits` inside `mantissa`.
+										bin(chplan.OpEq, v, f(0)), str("0"),
+										bin(chplan.OpOr,
+											bin(chplan.OpLt, call(chplan.FnAbs, v), f(sciLowerBound)),
+											bin(chplan.OpGe, call(chplan.FnAbs, v), f(sciUpperBound))), sci,
+										fixed)
+								})
+							})
+						})
+					})
+				})
+			})
+		})
+	})
 
 	return &chplan.Subscript{
 		Container: call(chplan.FnArrayMap,

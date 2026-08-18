@@ -351,6 +351,15 @@ const (
 	// toInt64(x) — x cast to Int64; aborts the query if x cannot be represented.
 	FnToInt64 Fn = "toInt64"
 
+	// toInt64OrZero(x) — x cast to Int64, or 0 if x cannot be parsed/
+	// represented. Use over the throwing FnToInt64 whenever the caller's
+	// own conditional guards the value against ever reading a genuinely
+	// unparseable string — a `multiIf`/`if` branch ClickHouse's vectorized
+	// evaluator may still evaluate even when its condition selects the
+	// OTHER branch (see nativeHistogramShortestGString's own doc for a
+	// worked case).
+	FnToInt64OrZero Fn = "toInt64OrZero"
+
 	// toIntervalNanosecond(n) — the Interval value of n nanoseconds, usable in
 	// DateTime64 arithmetic.
 	FnToIntervalNanosecond Fn = "toIntervalNanosecond"
