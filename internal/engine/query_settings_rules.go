@@ -195,6 +195,84 @@ func planHasMetricsCompare(plan chplan.Node) bool {
 	return found
 }
 
+// applyNativeHistogramAnalyzerFix stamps enable_analyzer=0 on a query whose
+// plan reaches the native (exponential) histogram merge/window-fold machinery
+// — histogram_quantile.go's promHistogramKahanSum and the deeply-nested
+// arrayFold/arrayMap/tupleElement trees it builds, shared by every
+// histogram_quantile()/sum()/avg()/rate()/increase() lowering over an
+// exponential histogram (histogram_quantile_native_window.go,
+// histogram_native_sum.go).
+//
+// It exists because ClickHouse's newer query analyzer (the GA default since
+// well before cerberus's 24.8 floor) has a cost on that specific shape —
+// deeply nested lambda/arrayMap/arrayFold expressions — that is wildly
+// superlinear relative to the OLDER analyzer, and almost entirely
+// PRE-EXECUTION: `send_logs_level=trace` against a floor-pinned CH 24.8 shows
+// the gap sits between `executeQuery` and the first `Planner` trace line, not
+// in row processing. Measured on CH 24.8.14 with
+// `histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[1m])))`
+// (the cerberus issue #2355 regression case), averaged over 8 runs each via
+// system.query_log's OSCPUVirtualTimeMicroseconds: ~8.4s with the new
+// analyzer (default) vs ~1.4s with it disabled — an 83% reduction, comfortably
+// inside the compatibility harness's 10s per-query deadline where the default
+// analyzer left only a ~1.5s margin under CI contention. The SAME query on CH
+// 26.5 is fast either way (0.57s new analyzer vs 1.2s old analyzer) — both
+// settings names (`enable_analyzer` / `allow_experimental_analyzer`) alias the
+// same underlying flag on every ClickHouse version cerberus supports, so this
+// is a strict, version-safe win on the floor and a bounded, harmless trade
+// (well under any deadline) on newer servers.
+//
+// It is an execution-PLANNER choice, not a result rewrite — RESULT-EQUIVALENT
+// like every other rule in this file — so it is unconditional (no CERBERUS_*
+// opt-in) and always stamped when the plan shape matches, mirroring
+// applyCompareMemoryBound's always-on treatment of a validated, plan-shape-
+// gated fix rather than SettingsRules' operator-opt-in rules.
+//
+// Two OTHER levers were tried and measured flat before this one: hoisting
+// promHistogramKahanSum's shared fold lambda into a query-level
+// `WITH (kh_acc, kh_x) -> ... AS name` CTE referenced by all ~11 call sites
+// (ClickHouse rejects resolving a LAMBDA-typed WITH alias across a subquery
+// scope boundary — "Resolve identifier ... from parent scope only supported
+// for constants and CTE"), and the SAME hoist scoped locally to the three
+// same-statement call-site clusters (5/2/4 occurrences) that CAN share a
+// local WITH — which parses and runs correctly, cuts rendered SQL by ~9%, but
+// moved wall-clock/CPU time by less than run-to-run noise (measured via the
+// same OSCPUVirtualTimeMicroseconds profile event). Neither reduces the
+// ANALYZER's real per-call-site work; disabling the analyzer itself does.
+func applyNativeHistogramAnalyzerFix(ctx context.Context, plan chplan.Node) context.Context {
+	if !planHasNativeHistogramMerge(plan) {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 0)
+}
+
+// planHasNativeHistogramMerge reports whether plan contains a
+// chplan.HistogramQuantileNative or chplan.HistogramProjection node anywhere
+// in its tree — the two IR nodes exclusive to the exponential (native)
+// histogram lowering (both carry the Scale/ZeroCount/PositiveOffset/
+// NegativeOffset field set no classic-histogram or non-histogram node has),
+// and the only roots internal/promql builds over histogram_quantile.go's
+// shared merge/window-fold machinery. A bare native-histogram selector with no
+// range function or cross-series aggregation still reaches
+// HistogramQuantileNative / HistogramProjection, so this can over-match a
+// cheap query — harmless, since the setting is result-equivalent either way.
+//
+// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
+// planHasTSGridNative: a native-histogram node nested inside a scalar-binding
+// subtree (an Expr slot Walk does not follow) must still be found.
+func planHasNativeHistogramMerge(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		switch n.(type) {
+		case *chplan.HistogramQuantileNative, *chplan.HistogramProjection:
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // eligibleForAggregationInOrder reports whether plan's single Aggregate has a
 // GROUP BY that is a genuine bare-column prefix of its scanned table's
 // sorting key. The check is deliberately conservative: it returns false on

@@ -197,12 +197,15 @@ func strategyFor(meta Meta) string {
 // (QueryPlanCursor) execute sites so the native path is gated the same
 // way regardless of which one runs.
 //
-// On top of the always-on ts-grid gate, execContext layers the DARK,
-// flag-gated settings rules from e.settings() (optimize_aggregation_in_order,
-// log_comment shape id). Each rule is OFF unless its CERBERUS_* flag is set,
-// so the default ctx is byte-identical to before these rules existed. Every
-// rule writes through chclient.WithQuerySetting, so a plan that triggers more
-// than one rule carries all of them on the one per-request settings map.
+// On top of the always-on ts-grid gate, spill bound, compare() memory bound
+// and native-histogram analyzer fix, execContext layers the DARK, flag-gated
+// settings rules from e.settings() (optimize_aggregation_in_order, log_comment
+// shape id). Each of THOSE rules is OFF unless its CERBERUS_* flag is set, so
+// the default ctx is byte-identical to before they existed; the always-on
+// rules above them fire unconditionally whenever their plan shape matches.
+// Every rule writes through chclient.WithQuerySetting, so a plan that
+// triggers more than one rule carries all of them on the one per-request
+// settings map.
 func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
@@ -215,6 +218,12 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills. Fires only on the metrics-compare plan shape.
 	ctx = applyCompareMemoryBound(ctx, plan, memCap)
+	// Native-histogram-only: disable ClickHouse's newer query analyzer, whose
+	// cost on the merge/window-fold machinery's deeply nested lambda/arrayMap
+	// expressions is wildly superlinear on the floor-pinned CH 24.8 relative
+	// to the older analyzer (cerberus issue #2355). Always-on and
+	// result-equivalent, like the compare() bound above.
+	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
 	ctx = e.settings().apply(ctx, plan)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
