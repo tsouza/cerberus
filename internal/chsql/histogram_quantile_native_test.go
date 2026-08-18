@@ -164,10 +164,12 @@ func TestEmit_HistogramQuantileNative_ShapeSanity(t *testing.T) {
 		"pow(2, pow(2, -`Scale`))",
 		"arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`)",
 		// phi = 0.95 >= 0.5, so the rank walk runs BACKWARD from the top
-		// bucket (#2066) — rank = (1 - phi) * total, tested against the
-		// count at or above each bucket.
-		"arrayFirstIndex(c -> ",
-		"c < ((1 - 0.95) * ",
+		// bucket (#2066) — rank = (1 - phi) * Count, tested against the
+		// count at or above each bucket, which is the bucket array
+		// accumulated from the TOP rather than the forward cum-sum's
+		// complement.
+		"arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`)))",
+		"arrayLastIndex(c -> c >= ((1 - 0.95) * ",
 		"length(`NegativeBucketCounts`)",
 		// phi == 0 / phi == 1 saturate to the lowest / highest POPULATED
 		// bucket, so each walks the concatenated counts for a non-zero
@@ -288,9 +290,18 @@ func hqNativePlan(phi float64, phiExpr chplan.Expr) *chplan.HistogramQuantileNat
 func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
 	t.Parallel()
 
+	// The forward arm scans the bottom-up cum-sum for the first bucket
+	// reaching phi * Count; the backward arm scans the TOP-DOWN running
+	// count (revCum) for the last bucket still reaching (1 - phi) * Count.
+	// The backward running count is accumulated rather than derived as
+	// `total - cum`, because the subtraction loses low-order bits once a
+	// window fold has scaled the buckets and that moves an exact rank tie.
 	const (
+		fwdWalk = "arrayFirstIndex(c -> "
+		revWalk = "arrayLastIndex(c -> "
+		revCum  = "arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`)))"
 		fwdRank = "c >= ("
-		revRank = "c < (("
+		revRank = "c >= (("
 	)
 	cases := []struct {
 		name    string
@@ -302,8 +313,8 @@ func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
 		{
 			name:    "below-half-walks-forward",
 			phi:     0.25,
-			want:    []string{"arrayFirstIndex(c -> " + fwdRank + "0.25 * "},
-			notWant: []string{"1 - 0.25"},
+			want:    []string{fwdWalk + fwdRank + "0.25 * "},
+			notWant: []string{"1 - 0.25", revWalk + revRank, revCum},
 		},
 		{
 			// The exact boundary: reference flips AT 0.5, not above it —
@@ -315,18 +326,20 @@ func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
 			name: "at-half-walks-backward",
 			phi:  0.5,
 			want: []string{
-				"arrayFirstIndex(c -> ", revRank + "1 - 0.5) * ",
+				revWalk + revRank + "1 - 0.5) * ",
+				revCum,
 				"isNaN(`Sum`)",
-				"c >= (0.5 * ",
+				fwdWalk + fwdRank + "0.5 * ",
 			},
 		},
 		{
 			name: "above-half-walks-backward",
 			phi:  0.95,
 			want: []string{
-				revRank + "1 - 0.95) * ",
+				revWalk + revRank + "1 - 0.95) * ",
+				revCum,
 				"isNaN(`Sum`)",
-				"c >= (0.95 * ",
+				fwdWalk + fwdRank + "0.95 * ",
 			},
 		},
 		{
@@ -338,6 +351,7 @@ func TestEmit_HistogramQuantileNative_WalkDirection(t *testing.T) {
 				"`PhiCol` < 0.5",
 				"1 - `PhiCol`",
 				"isNaN(`PhiCol`)",
+				revCum,
 			},
 		},
 	}
