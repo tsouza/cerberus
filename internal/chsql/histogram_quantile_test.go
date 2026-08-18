@@ -15,7 +15,7 @@ func TestHistogramQuantileValueFrag_DividesRankBeforeWidth(t *testing.T) {
 		Phi:                  0.5,
 		BucketCountsColumn:   "BucketCounts",
 		ExplicitBoundsColumn: "ExplicitBounds",
-	})(b)
+	}, hqClassicHelperColumns{})(b)
 
 	if !strings.Contains(b.String(), " * (((0.5 *") {
 		t.Fatalf("interpolation must divide the rank offset before multiplying by the bucket width:\n%s", b.String())
@@ -23,8 +23,8 @@ func TestHistogramQuantileValueFrag_DividesRankBeforeWidth(t *testing.T) {
 }
 
 // TestHistogramQuantileValueFrag_PhiExprGating kills the two
-// CONDITIONALS_NEGATION mutants at histogram_quantile.go:217
-// (`h.PhiExpr != nil`, inside the arrayFirstIndex predicate) and :318
+// CONDITIONALS_NEGATION mutants at histogram_quantile.go:457
+// (`h.PhiExpr != nil`, inside the arrayFirstIndex predicate) and :266
 // (`h.PhiExpr == nil`, the early return before the isNaN wrapper).
 //
 // The literal-Phi path (h.PhiExpr == nil) must render the BARE `c >=
@@ -52,16 +52,16 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 			Phi:                  0.5,
 			BucketCountsColumn:   "BucketCounts",
 			ExplicitBoundsColumn: "ExplicitBounds",
-		})(b)
+		}, hqClassicHelperColumns{})(b)
 		sql := b.String()
 		if !strings.Contains(sql, "arrayFirstIndex(c -> c >=") {
-			t.Errorf("literal phi must use the bare `c >= target` predicate (line 217 flipped?):\n%s", sql)
+			t.Errorf("literal phi must use the bare `c >= target` predicate (line 457 flipped?):\n%s", sql)
 		}
 		if strings.Contains(sql, "arrayFirstIndex(c -> (if(") {
-			t.Errorf("literal phi must NOT wrap the predicate in if(...)=1 (line 217 flipped?):\n%s", sql)
+			t.Errorf("literal phi must NOT wrap the predicate in if(...)=1 (line 457 flipped?):\n%s", sql)
 		}
 		if strings.Contains(sql, "isNaN(") {
-			t.Errorf("literal phi must NOT carry the isNaN guard (line 318 flipped?):\n%s", sql)
+			t.Errorf("literal phi must NOT carry the isNaN guard (line 266 flipped?):\n%s", sql)
 		}
 	})
 
@@ -72,16 +72,16 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 			PhiExpr:              &chplan.ColumnRef{Name: "PhiCol"},
 			BucketCountsColumn:   "BucketCounts",
 			ExplicitBoundsColumn: "ExplicitBounds",
-		})(b)
+		}, hqClassicHelperColumns{})(b)
 		sql := b.String()
 		if !strings.Contains(sql, "arrayFirstIndex(c -> (if(c >=") {
-			t.Errorf("computed phi must wrap the predicate as (if(c >= ..., 1, 0) = 1) (line 217 flipped?):\n%s", sql)
+			t.Errorf("computed phi must wrap the predicate as (if(c >= ..., 1, 0) = 1) (line 457 flipped?):\n%s", sql)
 		}
 		if !strings.Contains(sql, "= 1),") {
-			t.Errorf("computed phi predicate must close with `= 1)` (line 217 flipped?):\n%s", sql)
+			t.Errorf("computed phi predicate must close with `= 1)` (line 457 flipped?):\n%s", sql)
 		}
 		if !strings.HasPrefix(sql, "if(isNaN(") {
-			t.Errorf("computed phi must lead with the isNaN(phi) guard (line 318 flipped?):\n%s", sql)
+			t.Errorf("computed phi must lead with the isNaN(phi) guard (line 266 flipped?):\n%s", sql)
 		}
 	})
 }
