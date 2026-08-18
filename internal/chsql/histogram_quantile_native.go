@@ -154,17 +154,21 @@ import (
 )
 
 const (
-	hqQuantileBucketsColumn  = "_cerb_hq_buckets"
-	hqQuantileCumColumn      = "_cerb_hq_cum"
-	hqQuantileIdxColumn      = "_cerb_hq_idx"
-	hqQuantileValueIdxColumn = "_cerb_hq_value_idx"
+	hqQuantileBucketsColumn        = "_cerb_hq_buckets"
+	hqQuantileCumColumn            = "_cerb_hq_cum"
+	hqQuantileIdxColumn            = "_cerb_hq_idx"
+	hqQuantileValueIdxColumn       = "_cerb_hq_value_idx"
+	hqQuantileFirstPopulatedColumn = "_cerb_hq_first_populated"
+	hqQuantileLastPopulatedColumn  = "_cerb_hq_last_populated"
 )
 
 type hqNativeHelperColumns struct {
-	buckets  string
-	cum      string
-	idx      string
-	valueIdx string
+	buckets        string
+	cum            string
+	idx            string
+	valueIdx       string
+	firstPopulated string
+	lastPopulated  string
 }
 
 // emitHistogramQuantileNative renders a chplan.HistogramQuantileNative
@@ -193,11 +197,20 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	}
 
 	// Native quantile interpolation reuses the bucket walk, cumulative
-	// counts, stop index, and value index many times. Keep each one in its
-	// own typed derived-query stage so ClickHouse evaluates it once per row.
-	// Expanding those expressions at every use pushed the CH 24.8
-	// compatibility floor past its request deadline on shifting native
-	// histograms even though the result stayed correct.
+	// counts, stop index, value index, and the first/last populated-bucket
+	// positions many times. Keep each one in its own typed derived-query
+	// stage so ClickHouse evaluates it once per row. Expanding those
+	// expressions at every use pushed the CH 24.8 compatibility floor past
+	// its request deadline on shifting native histograms even though the
+	// result stayed correct — and, worse, left firstPopulated/lastPopulated
+	// (each an arrayFirstIndex/arrayLastIndex walk over the full bucket
+	// array) re-derived at every one of their four use sites in
+	// histogramQuantileNativeValueFrag instead of once: those two walks
+	// were the only ones in this function NOT yet materialized this way,
+	// so disabling ClickHouse's own CSE fold for this plan shape (to fix
+	// the CH 24.8 timeout above) left their cost unbounded by row count on
+	// a real high-cardinality histogram, independent of that setting — the
+	// production memory-limit regression this materialization fixes.
 	rawW := newHQNativeWriters(h, hqNativeHelperColumns{})
 	bucketed := NewQuery().
 		Select(Star(), As(rawW.buckets(), hqQuantileBucketsColumn)).
@@ -220,14 +233,24 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	withValueIdx := NewQuery().
 		Select(Star(), As(valueIdxW.valueIdx(), hqQuantileValueIdxColumn)).
 		From(Subquery(indexed))
+	popW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+	})
+	withPopulated := NewQuery().
+		Select(Star(),
+			As(popW.firstPopulated(), hqQuantileFirstPopulatedColumn),
+			As(popW.lastPopulated(), hqQuantileLastPopulatedColumn)).
+		From(Subquery(withValueIdx))
 	helpers := hqNativeHelperColumns{
-		buckets:  hqQuantileBucketsColumn,
-		cum:      hqQuantileCumColumn,
-		idx:      hqQuantileIdxColumn,
-		valueIdx: hqQuantileValueIdxColumn,
+		buckets:        hqQuantileBucketsColumn,
+		cum:            hqQuantileCumColumn,
+		idx:            hqQuantileIdxColumn,
+		valueIdx:       hqQuantileValueIdxColumn,
+		firstPopulated: hqQuantileFirstPopulatedColumn,
+		lastPopulated:  hqQuantileLastPopulatedColumn,
 	}
 
-	sb := NewQuery().From(Subquery(withValueIdx))
+	sb := NewQuery().From(Subquery(withPopulated))
 	for i, g := range h.GroupBy {
 		expr := g
 		alias := ""
@@ -588,13 +611,16 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 	// empty buckets, so a saturating phi (0 / 1) must land on a bucket an
 	// observation actually fell in — not on an array end that may be a
 	// trailing or leading zero.
-	populated := func(fn string) func() Frag {
+	populated := func(fn, helperCol string) func() Frag {
 		return func() Frag {
+			if helperCol != "" {
+				return Col(helperCol)
+			}
 			return Call(fn, Lambda1("c", Gt(BareIdent("c"), InlineLit(0))), w.buckets())
 		}
 	}
-	w.firstPopulated = populated("arrayFirstIndex")
-	w.lastPopulated = populated("arrayLastIndex")
+	w.firstPopulated = populated("arrayFirstIndex", helpers.firstPopulated)
+	w.lastPopulated = populated("arrayLastIndex", helpers.lastPopulated)
 	// Zero-bucket upper edge. With a configured ZeroThreshold column the
 	// edge is the stored per-row value; an empty column name means the
 	// physical schema doesn't persist the OTLP zero_threshold (the
