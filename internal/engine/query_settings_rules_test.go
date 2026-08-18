@@ -268,3 +268,67 @@ func TestApplyCompareMemoryBound_NonCompareStampsNeither(t *testing.T) {
 		t.Errorf("non-compare plan: max_bytes_before_external_group_by = %v; want absent (compare rule must not fire)", got)
 	}
 }
+
+// TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled — a plan whose
+// root is chplan.HistogramQuantileNative (histogram_quantile() over a native
+// histogram, e.g. cerberus issue #2355's
+// `histogram_quantile(0.9, sum(rate(demo_shifting_latency_exp_hist[1m])))`)
+// gets enable_analyzer=0 stamped, since it always reaches
+// histogram_quantile.go's Kahan-fold merge/window-fold machinery.
+func TestApplyNativeHistogramAnalyzerFix_QuantileStampsDisabled(t *testing.T) {
+	plan := &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+
+	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
+		t.Errorf("enable_analyzer = %v; want %v", got, want)
+	}
+}
+
+// TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled — a plan whose
+// root is chplan.HistogramProjection (a histogram-VALUED sum()/avg()/rate()/
+// bare-selector result over a native histogram) gets the same stamp, since it
+// shares the same merge/window-fold machinery as HistogramQuantileNative.
+func TestApplyNativeHistogramAnalyzerFix_ProjectionStampsDisabled(t *testing.T) {
+	plan := &chplan.HistogramProjection{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+
+	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
+		t.Errorf("enable_analyzer = %v; want %v", got, want)
+	}
+}
+
+// TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled — a native
+// histogram quantile nested inside a scalar-binding subtree (an Expr slot
+// chplan.Walk does not follow) is still found, because the sweep is
+// chplan.WalkDeep — mirrors planHasTSGridNative's own nested-scalar case.
+func TestApplyNativeHistogramAnalyzerFix_NestedStampsDisabled(t *testing.T) {
+	inner := &chplan.HistogramQuantileNative{Input: aggOverScan("otel_metrics_exponential_histogram", "Attributes")}
+	plan := &chplan.Project{
+		Input: &chplan.Scan{Table: "otel_metrics_gauge"},
+		Projections: []chplan.Projection{{
+			Expr:  &chplan.ScalarSubquery{Input: inner},
+			Alias: "Value",
+		}},
+	}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+
+	if got, want := settingValue(ctx, settingEnableAnalyzer), 0; got != want {
+		t.Errorf("enable_analyzer = %v; want %v", got, want)
+	}
+}
+
+// TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing — an ordinary
+// {} | rate() plan over a counter never reaches the native-histogram
+// machinery, so the fix never rides it.
+func TestApplyNativeHistogramAnalyzerFix_NonHistogramStampsNothing(t *testing.T) {
+	plan := &chplan.RangeWindow{Input: aggOverScan("otel_metrics_sum", "MetricName")}
+
+	ctx := applyNativeHistogramAnalyzerFix(context.Background(), plan)
+
+	if got := settingValue(ctx, settingEnableAnalyzer); got != nil {
+		t.Errorf("non-histogram plan: enable_analyzer = %v; want absent", got)
+	}
+}
