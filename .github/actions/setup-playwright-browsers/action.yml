@@ -83,34 +83,56 @@ runs:
 
     # Cache HIT: browser binaries are already restored; only install the OS
     # shared-library deps. Cache MISS: download chromium AND install OS deps.
-    # Both apt-touching branches retry with backoff - the Ubuntu package
-    # mirror this runner talks to (azure.archive.ubuntu.com, falling back to
-    # archive.ubuntu.com) occasionally stalls, and an un-retried stall here
-    # burns the whole job's time budget on a transient network hiccup instead
-    # of failing fast (the same failure shape `go mod download` guards
-    # against with an identical attempt-loop in the seed Dockerfile).
+    # Both apt-touching branches retry with backoff under a per-attempt
+    # `timeout` - the Ubuntu package mirror this runner talks to
+    # (azure.archive.ubuntu.com, falling back to archive.ubuntu.com)
+    # occasionally STALLS rather than failing outright (observed: apt sitting
+    # on `Ign:` lines with no exit for 20+ minutes), so retrying only on a
+    # nonzero exit is not enough - a hung attempt has to be killed by a
+    # deadline before the loop can retry it, or it just burns the whole job's
+    # time budget on one stuck attempt (the same failure shape `go mod
+    # download` guards against with an identical attempt-loop, though that
+    # one relies on the download command's own retry/failure behavior rather
+    # than needing an explicit `timeout` - `go mod download` does not hang
+    # silently the way this apt stall did).
     - name: Install chromium (deps only on hit, browser + deps on miss)
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
+        # attempt_timeout_secs bounds a single attempt; retries is how many
+        # attempts install_with_retry makes before giving up. Deps-only is a
+        # local apt op (small package set) so a stuck attempt is killed
+        # quickly and retried more times; the miss path also downloads the
+        # CDN-hosted chromium binary the browser cache normally avoids
+        # entirely, so each attempt gets more room but fewer retries - both
+        # bound worst case to well under a typical 30m job timeout.
         install_with_retry() {
-          for attempt in 1 2 3 4 5; do
-            if "$@"; then
+          local attempt_timeout_secs="$1" retries="$2"
+          shift 2
+          for attempt in $(seq 1 "$retries"); do
+            if timeout "$attempt_timeout_secs" "$@"; then
               return 0
             fi
-            if [ "$attempt" = "5" ]; then
-              echo "$* failed after 5 attempts" >&2
+            if [ "$attempt" = "$retries" ]; then
+              echo "$* timed out or failed after $retries attempts" >&2
               return 1
             fi
-            echo "$* attempt $attempt failed, retrying after backoff" >&2
+            echo "$* attempt $attempt timed out or failed (${attempt_timeout_secs}s budget), retrying after backoff" >&2
             sleep $(( attempt * 10 ))
           done
         }
 
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           echo "Playwright browser cache hit - installing OS deps only."
-          install_with_retry npx playwright install-deps chromium
+          install_with_retry 240 3 npx playwright install-deps chromium
         else
+          # 1200s (20m) per attempt because the CDN chromium download this
+          # branch also does is itself normally ~15m (see this action's
+          # description) - a shorter attempt timeout would kill a slow-but-
+          # healthy first-ever download, not just a genuine hang. This path
+          # only runs right after a Playwright version bump (the apt/browser
+          # caches are shared across every shard and run at a given version),
+          # so it is rare enough that a generous worst case here is fine.
           echo "Playwright browser cache miss - downloading chromium + OS deps."
-          install_with_retry npx playwright install --with-deps chromium
+          install_with_retry 1200 2 npx playwright install --with-deps chromium
         fi
