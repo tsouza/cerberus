@@ -27,14 +27,23 @@
 # counter resets; both are incidental to the tie, and both are why a
 # purely-positive corpus never reached this shape.
 #
-# Enrolled in parity so reference Prometheus itself arbitrates the boundary
-# rather than cerberus's own regenerated output.
+# What pins the behaviour here is `expected_rows:`: the correct stop bucket
+# is the ZERO one, so the answer is 0, and the emitter that subtracted
+# answered -1.68 for this exact seed. Parity therefore carries
+# `except-zero-bucket` rather than `full` — an answer of 0 out of a native
+# histogram can only be the zero band, and the zero threshold is the one
+# axis both sides must invent as 0 (upstream OTel-CH persists no column for
+# it), so comparing the VALUE would compare cerberus's assumption against
+# itself. Reference Prometheus was still what established that 0: its own
+# engine, run over this seed, folds increase() to a histogram identical to
+# cerberus's and answers 0. Parity keeps arbitrating the series set and
+# labels; the value is pinned by the round trip.
 -- query.promql --
 histogram_quantile(0.5, increase(http_server_duration_exp_hist[5m]))
 -- parity --
 oracle: prometheus
 endpoint: /api/v1/query
-scope: full
+scope: except-zero-bucket
 -- seed --
 CREATE TABLE otel_metrics_exponential_histogram (
     MetricName String,
@@ -54,6 +63,10 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:56', 9), 2, 3, 3, [1], 0, [0], 4, 2.2008097036912107),
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:11', 9), 2, 1, 3, [], 3, [4, 3, 0], 8, -11.797216930384575),
     ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:26', 9), 2, 3, -2, [1, 1, 0, 0], 3, [3, 0, 0], 8, -3.241827582821477);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0]
+]
 -- args --
 [0] string = ""
 [1] int64 = 9
