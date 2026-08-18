@@ -15,6 +15,21 @@ export function owner(canonical, count) {
 }
 
 export function mergeSlices(slices, { stack, depth, inventory, exclusions, inventoryFilename }) {
+  // NOTE on ownership: this merge step deliberately does NOT recompute
+  // owner(url, count) and compare it against the claiming shard's
+  // index. crawl.spec.ts's shardKey inheritance (deriveShardKey) can
+  // make a shard the rightful owner of a surface whose OWN hash names a
+  // DIFFERENT shard — any surface reachable only through an interaction
+  // on a page this shard owns is exclusively reachable (and therefore
+  // exclusively auditable) by this shard alone, no matter what its own
+  // canonical hashes to (#2136 shipped strict per-URL hash equality
+  // here, which made that entire class of interaction-discovered
+  // surface unclaimable by ANY shard the moment its hash disagreed with
+  // its discovering ancestor's — the crawl driver, not this merge step,
+  // is what actually knows the discovery graph). The invariant this
+  // step CAN verify without that graph is disjointness: no surface is
+  // ever claimed by more than one shard's slice — see the duplicate
+  // check below.
   const filename = inventoryFilename ?? `grafana-surface-inventory.${stack}.json`;
   if (!Array.isArray(inventory.surfaces)) {
     throw new Error(`loadInventory: ${filename} has no surfaces[] array`);
@@ -45,7 +60,12 @@ export function mergeSlices(slices, { stack, depth, inventory, exclusions, inven
     }
     indexes.add(index);
     for (const url of slice.visited ?? []) {
-      if (owner(url, count) !== index) throw new Error(`crawl slice ${index} contains unowned state ${url}`);
+      if (visited.has(url)) {
+        throw new Error(
+          `crawl slice ${index} claims state ${JSON.stringify(url)} that an earlier shard already claimed — ` +
+            'shards must partition the audited surface set, never double-claim a state',
+        );
+      }
       visited.add(url);
     }
     for (const url of slice.discovered ?? []) discovered.add(url);

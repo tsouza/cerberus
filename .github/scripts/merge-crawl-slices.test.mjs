@@ -132,6 +132,44 @@ test('mergeSlices reports cross-owner discovery as inventory growth', () => {
   assert.match(result.violations.join('\n'), new RegExp(`NEW surface ${JSON.stringify(crossOwner)}`));
 });
 
+test('mergeSlices allows a shard to audit a state whose own hash names a different shard (#2136)', () => {
+  // crawl.spec.ts's shardKey inheritance (deriveShardKey) legitimately
+  // makes a shard the sole owner of a state reachable ONLY through an
+  // interaction on a page it owns, even when the state's OWN hash
+  // disagrees — the merge step must not re-derive ownership from the
+  // bare URL text, since it has no access to the discovery graph that
+  // justified the claim.
+  const first = '/one';
+  const misownedURL = otherOwnerURL(first); // owner(misownedURL) !== owner(first)
+  const second = `${otherOwnerURL(first)}#state=x`;
+  const inventory = {
+    stack,
+    surfaces: [
+      { url: first, lean: true },
+      { url: misownedURL, lean: false },
+      { url: second, lean: false },
+    ],
+  };
+  const slices = [
+    shard(owner(first, shardCount), [first, misownedURL]),
+    shard(owner(second, shardCount), [second]),
+  ];
+  assert.deepEqual(
+    mergeSlices(slices, { stack, depth: 'full', inventory, exclusions: { exclusions: [] } }).violations,
+    [],
+  );
+});
+
+test('mergeSlices rejects two shards double-claiming the same state', () => {
+  const first = '/one';
+  const inventory = { stack, surfaces: [{ url: first, lean: true }] };
+  const slices = [shard(0, [first]), shard(1, [first])];
+  assert.throws(
+    () => mergeSlices(slices, { stack, depth: 'full', inventory, exclusions: { exclusions: [] } }),
+    /already claimed/,
+  );
+});
+
 test('mergeSlices validates inventory and exclusion files like crawl/lib.ts', () => {
   const slices = [shard(0, []), shard(1, [])];
   assert.throws(

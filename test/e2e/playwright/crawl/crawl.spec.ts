@@ -304,6 +304,12 @@ type QueueEntry = {
   concrete: string;
   /** Canonical URL of the page that first discovered this surface. */
   via: string;
+  /**
+   * The canonical whose hash decides shard ownership for this entry —
+   * see deriveShardKey's doc comment for why this can differ from
+   * `canonical` itself. Every entry, including seeds, carries one.
+   */
+  shardKey: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -1750,6 +1756,132 @@ test('crawl: Prometheus metric-select representative commits without React #185'
   }
 });
 
+/**
+ * The shard-ownership key for a page discovered while processing
+ * `parent` — NOT necessarily `childCanonical` itself (#2005's per-URL
+ * hash assumed every canonical is independently reachable by whichever
+ * shard's hash names it, which holds for plain-href discovery but not
+ * for interaction-only discovery).
+ *
+ * A `<a href>` child is reachable by EVERY shard that visits `parent`
+ * (harvestLinks runs unconditionally — see visitAndAudit), so as long
+ * as `parent` is itself universally reachable (its own shardKey equals
+ * its canonical), the child can safely get its OWN independent shardKey
+ * and the usual hash keeps dividing audit work three ways.
+ *
+ * But once `parent` is already exclusive to one shard — either because
+ * `parent` was ITSELF discovered via an interaction (see the
+ * unconditional `entry.shardKey` assignment at the sweepInteractions
+ * call site below: sweepInteractions only ever runs for the shard that
+ * already owns `parent`, so anything it finds is reachable by that
+ * shard alone) or because `parent` inherited exclusivity from a
+ * grandparent — NO other shard will ever visit `parent` to harvest this
+ * same href, so the child is just as exclusive. It must inherit
+ * `parent`'s shardKey unchanged, not get its own: the #2136 sharding
+ * commit's bug was exactly this — a child whose OWN hash landed on a
+ * different shard than the one shard that could ever reach it, so
+ * nobody's slice ever claimed it (dashboard-crawl-merge run
+ * 32126970190, 99 pinned surfaces under
+ * /a/grafana-lokiexplore-app/explore/... and /dashboards/f/{folder}/...
+ * structurally unvisited by every shard).
+ */
+function deriveShardKey(parent: QueueEntry, childCanonical: string): string {
+  return parent.shardKey === parent.canonical ? childCanonical : parent.shardKey;
+}
+
+test.describe('crawl: shard ownership inheritance (#2136 regression)', () => {
+  const seed = (canonical: string): QueueEntry => ({
+    canonical,
+    concrete: canonical,
+    via: '<seed>',
+    shardKey: canonical,
+  });
+
+  test('a universal parent lets an href child keep its own independent shard key', () => {
+    const root = seed('/');
+    expect(deriveShardKey(root, '/dashboards')).toBe('/dashboards');
+  });
+
+  test('a page already exclusive to one shard propagates that ownership to its href child unchanged', () => {
+    const explore = seed('/a/grafana-lokiexplore-app/explore');
+    // /logs was reached via an interaction on `explore` (sweepInteractions
+    // always inherits shardKey unchanged — see the queue.push call site),
+    // so it is exclusive even though it is itself universal-shaped.
+    const logs: QueueEntry = {
+      canonical: '/a/grafana-lokiexplore-app/explore/service/{service}/logs',
+      concrete: '/a/grafana-lokiexplore-app/explore/service/cerberus/logs',
+      via: explore.canonical,
+      shardKey: explore.shardKey,
+    };
+    expect(logs.shardKey).not.toBe(logs.canonical);
+    expect(
+      deriveShardKey(
+        logs,
+        '/a/grafana-lokiexplore-app/explore/service/{service}/fields',
+      ),
+    ).toBe(explore.canonical);
+  });
+
+  test('#2136: an interaction-only subtree stays with a single owner even when a descendant hashes to a different shard', () => {
+    // The exact family the k3d dashboard-crawl-merge run 32126970190
+    // reported as structurally unvisited: reachable ONLY through a
+    // service-selection interaction on the explore root, several levels
+    // deep, whose own canonicals hash to shards OTHER than the root's.
+    const root = seed('/a/grafana-lokiexplore-app/explore');
+    const owners = [0, 1, 2].filter((index) =>
+      belongsToCrawlShard(root.canonical, { index, count: 3 }),
+    );
+    expect(owners).toHaveLength(1);
+    const ownerIndex = owners[0]!;
+
+    // Level 1: reached via sweepInteractions on `root` — always inherits.
+    const logs: QueueEntry = {
+      canonical: '/a/grafana-lokiexplore-app/explore/service/{service}/logs',
+      concrete: '/a/grafana-lokiexplore-app/explore/service/cerberus/logs',
+      via: root.canonical,
+      shardKey: root.shardKey,
+    };
+    // Level 2: reached via expandSiblingTabs off `logs` — an href-shaped
+    // discovery, so it runs through deriveShardKey rather than a bare
+    // inherit; `logs` is already exclusive, so the derivation must still
+    // propagate root's key rather than minting `fields`'s own hash.
+    const fieldsCanonical =
+      '/a/grafana-lokiexplore-app/explore/service/{service}/fields';
+    const fields: QueueEntry = {
+      canonical: fieldsCanonical,
+      concrete: fieldsCanonical,
+      via: logs.canonical,
+      shardKey: deriveShardKey(logs, fieldsCanonical),
+    };
+    // Level 3: `field/{field}` off `fields`, same href-shaped derivation.
+    const fieldCanonical =
+      '/a/grafana-lokiexplore-app/explore/service/{service}/field/{field}';
+    const fieldShardKey = deriveShardKey(fields, fieldCanonical);
+
+    // The three canonicals' OWN hashes must actually disagree for this
+    // regression test to mean anything — pin that premise so a future
+    // hash-function change fails loudly here instead of this test
+    // silently stopping to exercise the bug it names.
+    const ownHashes = new Set(
+      [root.canonical, fieldsCanonical, fieldCanonical].map(
+        (c) => [0, 1, 2].find((i) => belongsToCrawlShard(c, { index: i, count: 3 }))!,
+      ),
+    );
+    expect(ownHashes.size).toBeGreaterThan(1);
+
+    // Whichever shard owns the interaction root is the ONLY shard that
+    // will ever reach `fields`/`field/{field}` at all (see
+    // deriveShardKey's doc comment) — so it must also be the shard that
+    // AUDITS them, regardless of what their own canonicals hash to.
+    expect(belongsToCrawlShard(fields.shardKey, { index: ownerIndex, count: 3 })).toBe(
+      true,
+    );
+    expect(belongsToCrawlShard(fieldShardKey, { index: ownerIndex, count: 3 })).toBe(
+      true,
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The crawl
 // ---------------------------------------------------------------------------
@@ -1842,7 +1974,13 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
   // full depth — every provisioned dashboard (also reachable via
   // /dashboards, but seeding them makes the crawl independent of the
   // browse-page's pagination/virtualised list rendering).
-  const queue: QueueEntry[] = [{ canonical: '/', concrete: '/', via: '<seed>' }];
+  // Every seed is universally reachable (every shard enqueues the same
+  // seed set), so each keys its OWN shardKey — the normal three-way
+  // hash split governs from here unless a page turns out to be
+  // exclusively interaction-discovered (see deriveShardKey).
+  const queue: QueueEntry[] = [
+    { canonical: '/', concrete: '/', via: '<seed>', shardKey: '/' },
+  ];
   for (const root of stack.leanSeedRoots) {
     const target = canonicalTarget(root, baseURL, stack.scope);
     if (target === null) {
@@ -1856,6 +1994,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
       canonical: target.canonical,
       concrete: new URL(root, baseURL).pathname + new URL(root, baseURL).search,
       via: '<seed:lean>',
+      shardKey: target.canonical,
     });
   }
   // The lean surface set: root + the configured representatives (the
@@ -1870,6 +2009,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         canonical: `/d/${d.uid}`,
         concrete: `/d/${d.uid}`,
         via: '<seed:dashboard>',
+        shardKey: `/d/${d.uid}`,
       });
     }
   }
@@ -1906,7 +2046,7 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
 
       visited.set(entry.canonical, entry.concrete);
 
-      const ownsSurface = belongsToCrawlShard(entry.canonical, shard);
+      const ownsSurface = belongsToCrawlShard(entry.shardKey, shard);
       const { harvested, pageFailures } = await visitAndAudit(
         lease,
         baseURL,
@@ -1939,13 +2079,22 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
         for (const [canonical, { concrete }] of [...canonicals.entries()].sort(
           ([a], [b]) => byCodepoint(a, b),
         )) {
-          queue.push({ canonical, concrete, via: entry.canonical });
+          queue.push({
+            canonical,
+            concrete,
+            via: entry.canonical,
+            shardKey: deriveShardKey(entry, canonical),
+          });
           if (entry.canonical === '/') leanSet.add(canonical);
           // Known sibling-route families expand deterministically —
           // see expandSiblingTabs.
           for (const sib of expandSiblingTabs(canonical, concrete)) {
             if (!visited.has(sib.canonical) && !canonicals.has(sib.canonical)) {
-              queue.push({ ...sib, via: `${entry.canonical} (sibling)` });
+              queue.push({
+                ...sib,
+                via: `${entry.canonical} (sibling)`,
+                shardKey: deriveShardKey(entry, sib.canonical),
+              });
             }
           }
         }
@@ -2000,10 +2149,15 @@ test('crawl: BFS over every reachable Grafana surface with universal oracles + i
             leanSet.add(d.canonical);
           }
           if (!visited.has(d.canonical)) {
+            // Always inherit — see deriveShardKey's doc comment: this
+            // shard is the sole discoverer of every interaction-derived
+            // surface, so it must also be the sole owner, regardless of
+            // where d.canonical's own hash would otherwise land it.
             queue.push({
               canonical: d.canonical,
               concrete: d.concrete,
               via: d.via,
+              shardKey: entry.shardKey,
             });
           }
         }
@@ -2406,9 +2560,24 @@ async function visitAndAudit(
   try {
     lease.noteNavigation();
     await gotoCold(page, `${baseURL}${entry.concrete}`);
-    if (audit) {
-      await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
-    }
+    // Unconditional — NOT gated on `audit`. harvestLinks below reads
+    // `a[href]` out of the live DOM, and Grafana's dashboard/folder
+    // browse pages render their rows asynchronously (an API round-trip
+    // after the initial paint): a page queried right after `gotoCold`,
+    // before anything has settled, has 0-1 hrefs — verified live
+    // against a real Grafana instance, deterministic across repeated
+    // attempts, not a rare race. Gating this settle on `audit` silently
+    // broke "every shard retains link discovery" (this file's own
+    // header doc) for exactly the pages a non-owning shard visits but
+    // doesn't audit: harvestLinks still ran, but too early to see
+    // anything, so a plain-href child ONLY the current page's hash
+    // OWNER (who gets the settle wait via `audit`) could reliably
+    // discover would silently vanish for every OTHER shard — the
+    // /dashboards/f/{folder} half of #2136's 99 missing surfaces (the
+    // folder row IS a real <a href> on /dashboards, not an interaction
+    // — see deriveShardKey's doc comment for the other, interaction-
+    // gated half of that same run's coverage gap).
+    await tolerateRepaintFlicker(page, { settleMs: 600, timeoutMs: 45_000 });
 
     harvested = await harvestLinks(page);
 
@@ -2453,8 +2622,15 @@ async function visitAndAudit(
 // ---------------------------------------------------------------------------
 
 type InteractionSweepResult = {
-  /** URL-encoding deviations → first-class surfaces to enqueue. */
-  discovered: Array<QueueEntry & { leanRepresentative: boolean }>;
+  /**
+   * URL-encoding deviations → first-class surfaces to enqueue. No
+   * `shardKey`: sweepInteractions only ever runs for the shard that
+   * already owns the surface it was called on (the BFS loop's
+   * `ownsSurface` gate), so every discovery here is reachable by that
+   * one shard alone — the caller assigns `shardKey` from its OWN entry
+   * (see deriveShardKey's doc comment), never independently.
+   */
+  discovered: Array<Omit<QueueEntry, 'shardKey'> & { leanRepresentative: boolean }>;
   /**
    * Non-URL deviations audited in place, keyed by the
    * `<canonical>#<control>=<value>` state notation → concrete URL
