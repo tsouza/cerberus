@@ -1,9 +1,11 @@
 name: Setup Playwright browsers (cached)
 description: >
-  Install the Playwright npm deps and the chromium browser binary, caching
-  ~/.cache/ms-playwright keyed on the EXACT resolved Playwright version so the
-  ~15-min Microsoft-CDN chromium download is paid once per version (across all
-  shards and all runs) instead of on every shard of every run.
+  Install the Playwright npm deps, the chromium browser binary, and its OS
+  shared-library deps. Caches ~/.cache/ms-playwright and the apt archives for
+  those OS deps, both keyed on the EXACT resolved Playwright version, so the
+  ~15-min Microsoft-CDN chromium download and the apt fetch are each paid once
+  per version (across all shards and all runs) instead of on every shard of
+  every run. The apt install additionally retries with backoff.
 
 # Why a composite action: the same install+cache logic runs in three e2e jobs
 # (compose-smoke-shard, compose-smoke-shard-info, dashboard-shard). Keeping the
@@ -64,17 +66,73 @@ runs:
         path: ~/.cache/ms-playwright
         key: playwright-browsers-${{ runner.os }}-${{ steps.pw.outputs.version }}
 
+    # Cache the downloaded .deb packages apt fetches for chromium's OS
+    # shared-library deps, keyed the same as the browser cache (Playwright
+    # version tracks the required package set closely enough to be a useful
+    # proxy key). This never risks installing a stale/wrong package: apt
+    # verifies every cached .deb against the current Packages index checksum
+    # before using it and silently re-downloads on a mismatch, so a runner
+    # image bump just falls back to a normal fetch rather than corrupting
+    # anything - a cache miss here costs nothing beyond what today already
+    # pays.
+    - name: Cache apt archives for chromium OS deps
+      uses: actions/cache@v5
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: playwright-chromium-apt-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
     # Cache HIT: browser binaries are already restored; only install the OS
-    # shared-library deps (apt; fast, not cached because they're an apt op, not
-    # the CDN download). Cache MISS: download chromium AND install OS deps.
+    # shared-library deps. Cache MISS: download chromium AND install OS deps.
+    # Both apt-touching branches retry with backoff under a per-attempt
+    # `timeout` - the Ubuntu package mirror this runner talks to
+    # (azure.archive.ubuntu.com, falling back to archive.ubuntu.com)
+    # occasionally STALLS rather than failing outright (observed: apt sitting
+    # on `Ign:` lines with no exit for 20+ minutes), so retrying only on a
+    # nonzero exit is not enough - a hung attempt has to be killed by a
+    # deadline before the loop can retry it, or it just burns the whole job's
+    # time budget on one stuck attempt (the same failure shape `go mod
+    # download` guards against with an identical attempt-loop, though that
+    # one relies on the download command's own retry/failure behavior rather
+    # than needing an explicit `timeout` - `go mod download` does not hang
+    # silently the way this apt stall did).
     - name: Install chromium (deps only on hit, browser + deps on miss)
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
+        # attempt_timeout_secs bounds a single attempt; retries is how many
+        # attempts install_with_retry makes before giving up. Deps-only is a
+        # local apt op (small package set) so a stuck attempt is killed
+        # quickly and retried more times; the miss path also downloads the
+        # CDN-hosted chromium binary the browser cache normally avoids
+        # entirely, so each attempt gets more room but fewer retries - both
+        # bound worst case to well under a typical 30m job timeout.
+        install_with_retry() {
+          local attempt_timeout_secs="$1" retries="$2"
+          shift 2
+          for attempt in $(seq 1 "$retries"); do
+            if timeout "$attempt_timeout_secs" "$@"; then
+              return 0
+            fi
+            if [ "$attempt" = "$retries" ]; then
+              echo "$* timed out or failed after $retries attempts" >&2
+              return 1
+            fi
+            echo "$* attempt $attempt timed out or failed (${attempt_timeout_secs}s budget), retrying after backoff" >&2
+            sleep $(( attempt * 10 ))
+          done
+        }
+
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           echo "Playwright browser cache hit - installing OS deps only."
-          npx playwright install-deps chromium
+          install_with_retry 240 3 npx playwright install-deps chromium
         else
+          # 1200s (20m) per attempt because the CDN chromium download this
+          # branch also does is itself normally ~15m (see this action's
+          # description) - a shorter attempt timeout would kill a slow-but-
+          # healthy first-ever download, not just a genuine hang. This path
+          # only runs right after a Playwright version bump (the apt/browser
+          # caches are shared across every shard and run at a given version),
+          # so it is rare enough that a generous worst case here is fine.
           echo "Playwright browser cache miss - downloading chromium + OS deps."
-          npx playwright install --with-deps chromium
+          install_with_retry 1200 2 npx playwright install --with-deps chromium
         fi
