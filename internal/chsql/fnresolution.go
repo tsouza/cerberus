@@ -131,6 +131,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnToFloat64OrNull:      {Name: "toFloat64OrNull"},
 	chplan.FnToFloat64OrZero:      {Name: "toFloat64OrZero"},
 	chplan.FnToInt64:              {Name: "toInt64"},
+	chplan.FnToInt64OrZero:        {Name: "toInt64OrZero"},
 	chplan.FnToIntervalNanosecond: {Name: "toIntervalNanosecond"},
 	chplan.FnToNullable:           {Name: "toNullable"},
 	chplan.FnToUInt32:             {Name: "toUInt32"},

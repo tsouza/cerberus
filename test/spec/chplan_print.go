@@ -887,6 +887,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnToFloat64OrNull:                 "FnToFloat64OrNull",
 	chplan.FnToFloat64OrZero:                 "FnToFloat64OrZero",
 	chplan.FnToInt64:                         "FnToInt64",
+	chplan.FnToInt64OrZero:                   "FnToInt64OrZero",
 	chplan.FnToIntervalNanosecond:            "FnToIntervalNanosecond",
 	chplan.FnToNullable:                      "FnToNullable",
 	chplan.FnToUInt32:                        "FnToUInt32",
