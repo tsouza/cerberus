@@ -301,7 +301,7 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	win := histogramWindow{lookback: shape.windowRange, offset: offset, minSamples: shape.minSamples()}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	grouped := &chplan.RangeBucketFanout{
 		Input:          input,
@@ -327,6 +327,8 @@ func lowerExpHistogramSubqueryRangeFnRange(input chplan.Node, shape histogramAgg
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
@@ -411,7 +413,7 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, win)
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	grouped := buildHistogramBucketFanout(
@@ -429,6 +431,8 @@ func lowerExpHistogramRangeFnRange(shape histogramAggShape, s schema.Metrics, ct
 		[]string{stepGridAnchorColumn, s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
@@ -445,7 +449,7 @@ func expHistogramValuedWindowStage(input chplan.Node, shape histogramAggShape, r
 }
 
 func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics, identity chplan.Expr) chplan.Node {
-	fold := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
+	fold, winIn := expHistogramValuedWindowFold(shape, rangeStart, rangeEnd, s)
 	aggs := expHistogramValuedWindowAggs(s, shape.windowFn)
 	group := &chplan.Aggregate{
 		Input:              input,
@@ -464,6 +468,8 @@ func expHistogramValuedWindowStageBy(input chplan.Node, shape histogramAggShape,
 		[]string{s.AttributesColumn},
 		expHistogramResetMaskFor(shape.windowFn),
 		fold,
+		shape.windowFn,
+		winIn,
 		expHistogramValuedWindowScalars(fold, s),
 		s,
 	)
@@ -622,9 +628,20 @@ func selectExpHistogramSorted(sorted chplan.Expr, selection histogramWindowSampl
 //
 // countValues is the whole-histogram Count series rather than any one bucket's
 // counts. Its per-series temporality selects the DELTA numerator when needed.
-func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) histogramWindowTimeFold {
+//
+// The second return value is the histogramWindowInputs the fold was built
+// from (a zero value for the sum_over_time/avg_over_time early return,
+// which never reads it — expHistogramValuedOverTimeFold takes no
+// histogramWindowInputs at all). Callers thread it, alongside
+// shape.windowFn, into [expHistogramWindowReshape], which uses it to
+// materialize rate/increase's boundary-extrapolation factor ONCE via
+// [expHistogramWindowFactorStage] instead of every downstream projection
+// re-deriving it independently — see that function's doc. The fold
+// returned here stays the single source of truth for the non-hoistable
+// shape; this second value only ever feeds that one hoist decision.
+func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd chplan.Expr, s schema.Metrics) (histogramWindowTimeFold, histogramWindowInputs) {
 	if shape.windowFn == sumOverTimeWindowFn || shape.windowFn == avgOverTimeWindowFn {
-		return expHistogramValuedOverTimeFold(shape.windowFn)
+		return expHistogramValuedOverTimeFold(shape.windowFn), histogramWindowInputs{}
 	}
 	var perSecond chplan.Expr
 	if shape.windowFn == rateWindowFn {
@@ -634,7 +651,7 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 	if shape.windowFn == deltaWindowFn {
 		factorOrder = &chplan.ColumnRef{Name: hqWindowAllTsListAlias}
 	}
-	return histogramWindowFold(shape.windowFn, histogramWindowInputs{
+	in := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
 		factorOrder: factorOrder,
@@ -642,7 +659,8 @@ func expHistogramValuedWindowFold(shape histogramAggShape, rangeStart, rangeEnd 
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      expHistogramResetMaskFor(shape.windowFn),
 		perSecond:   perSecond,
-	})
+	}
+	return histogramWindowFold(shape.windowFn, in), in
 }
 
 // expHistogramValuedWindowAggs is [expHistogramWindowAggs] widened by the

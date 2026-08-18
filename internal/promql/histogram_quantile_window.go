@@ -212,6 +212,29 @@ type histogramWindowInputs struct {
 	// is compared under an epsilon and a quantile reads ratios the factor
 	// cancels out of.
 	perSecond chplan.Expr
+
+	// hoistedFactor, when non-nil, is a reference to an
+	// ALREADY-COMPUTED rate/increase extrapolation factor — a plain
+	// column [expHistogramWindowFactorStage] materializes ONCE per
+	// series row — and the "rate"/"increase" branch below renders it
+	// as-is instead of calling histogramExtrapolationFactorExpr again.
+	// Set only by [expHistogramWindowFactorStage], via
+	// [histogramWindowInvariantFactorExpr]'s hoistability check: that
+	// factor reads only countValues and the series-wide order (never the
+	// per-target-bucket `values` [expHistogramWindowBucketsExpr]'s own
+	// fold call receives for the two bucket-array columns), so every
+	// downstream reader of `fold` — the ZeroCount projection, the
+	// Count/Sum scalars, and both bucket arrays — would otherwise render
+	// the IDENTICAL factor expression independently, once each.
+	// ClickHouse has no reason to notice that identity across
+	// independently-rendered SELECT-list entries, so left inline it
+	// re-renders the whole arraySort/arrayFold pipeline once per reader
+	// — a text/analysis-time cost distinct from, and in addition to, the
+	// O(mergedLength) per-target-bucket RUNTIME blowup #2317 already
+	// fixed for the across-series merge step (cerberus issue #2267).
+	// nil everywhere else, which reproduces the pre-existing inline
+	// computation unchanged.
+	hoistedFactor chplan.Expr
 }
 
 // histogramWindowFold maps a matched range-vector function to the
@@ -303,27 +326,36 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 			// rendering of each rather than a copy apiece — see hqLet.
 			return hqLet(paramWindowValues, values, func(vals chplan.Expr) chplan.Expr {
 				return hqLet(paramWindowOrder, order, func(ord chplan.Expr) chplan.Expr {
-					cv := vals
-					if in.countValues != nil {
-						cv = in.countValues
-					}
-					factorOrder := ord
-					if in.factorOrder != nil {
-						factorOrder = in.factorOrder
-					}
-					factor := histogramExtrapolationFactorExpr(factorOrder, cv, in, true)
-					if in.perSecond != nil {
-						// Reference divides the FACTOR and then multiplies
-						// once (`factor /= ms.Range.Seconds()`, then one
-						// Mul over the whole histogram). Dividing the
-						// product instead would be the same value in exact
-						// arithmetic but not in float64: (a*b)/c and
-						// a*(b/c) differ by an ulp on most inputs, and a
-						// histogram-valued answer is compared against
-						// reference WITHOUT an epsilon, so the order is
-						// observable rather than cosmetic. See
-						// expHistogramValuedWindowFold.
-						factor = &chplan.Binary{Op: chplan.OpDiv, Left: factor, Right: in.perSecond}
+					var factor chplan.Expr
+					if in.hoistedFactor != nil {
+						// Already computed once by the caller, outside
+						// whatever per-target-bucket loop this fold call
+						// sits inside — see hoistedFactor's doc. Render the
+						// bound reference rather than re-deriving it.
+						factor = in.hoistedFactor
+					} else {
+						cv := vals
+						if in.countValues != nil {
+							cv = in.countValues
+						}
+						factorOrder := ord
+						if in.factorOrder != nil {
+							factorOrder = in.factorOrder
+						}
+						factor = histogramExtrapolationFactorExpr(factorOrder, cv, in, true)
+						if in.perSecond != nil {
+							// Reference divides the FACTOR and then multiplies
+							// once (`factor /= ms.Range.Seconds()`, then one
+							// Mul over the whole histogram). Dividing the
+							// product instead would be the same value in exact
+							// arithmetic but not in float64: (a*b)/c and
+							// a*(b/c) differ by an ulp on most inputs, and a
+							// histogram-valued answer is compared against
+							// reference WITHOUT an epsilon, so the order is
+							// observable rather than cosmetic. See
+							// expHistogramValuedWindowFold.
+							factor = &chplan.Binary{Op: chplan.OpDiv, Left: factor, Right: in.perSecond}
+						}
 					}
 					return &chplan.Binary{
 						Op:    chplan.OpMul,
@@ -360,6 +392,47 @@ func histogramWindowFold(fn string, in histogramWindowInputs) histogramWindowTim
 			return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{values}}
 		}
 	}
+}
+
+// histogramWindowInvariantFactorExpr renders the rate/increase
+// extrapolation factor exactly as histogramWindowFold's "rate"/"increase"
+// branch would, and reports whether every one of a per-series window
+// fold's several independent `fold(...)` call sites — the ZeroCount
+// projection, the Count/Sum scalars, and both bucket arrays, see
+// [expHistogramWindowFactorStage], this function's only caller — would
+// render the IDENTICAL factor expression, making it safe to materialize
+// once instead.
+//
+// It is safe exactly when BOTH of the following hold:
+//
+//   - in.countValues is non-nil, so the fold reads the series-wide
+//     whole-histogram Count rather than the bucket-specific `values` each
+//     fold call receives (see histogramWindowFold's own doc on
+//     countValues) — a nil countValues (the classic-histogram ladder,
+//     which folds a genuinely different rung's own values per call) makes
+//     the factor call-dependent and this function must not be used.
+//   - order is the SAME expression every one of those call sites passes
+//     to fold — [expHistogramWindowFactorStage] always passes the
+//     series-wide timestamp list, never a bucket-narrowed one, so this
+//     holds for every one of its callers' call sites.
+//
+// windowFn gates on "rate"/"increase" specifically: histogramWindowFold's
+// "delta" branch reads the CALLER's own `values` (not countValues) as its
+// factor's second argument even when countValues is set, so it is never
+// call-invariant and always returns false here.
+func histogramWindowInvariantFactorExpr(windowFn string, in histogramWindowInputs, order chplan.Expr) (chplan.Expr, bool) {
+	if (windowFn != rateWindowFn && windowFn != increaseWindowFn) || in.countValues == nil {
+		return nil, false
+	}
+	factorOrder := order
+	if in.factorOrder != nil {
+		factorOrder = in.factorOrder
+	}
+	factor := histogramExtrapolationFactorExpr(factorOrder, in.countValues, in, true)
+	if in.perSecond != nil {
+		factor = &chplan.Binary{Op: chplan.OpDiv, Left: factor, Right: in.perSecond}
+	}
+	return factor, true
 }
 
 func gaugeEndpointDeltaFold(values, order chplan.Expr) chplan.Expr {
