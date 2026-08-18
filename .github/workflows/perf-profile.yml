@@ -65,7 +65,23 @@ jobs:
   profile:
     name: profile
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The corpus-wide walk's cost tracks the size of test/spec, which has been
+    # growing. Job history shows the real (RUN_HEAVY) run now sits close to
+    # or past a 30-minute budget even when it completes cleanly (two recent
+    # successes: 22m21s and 28m58s at the job level), and 9 of the 11 most
+    # recent non-PR runs before this change were killed by that timeout with
+    # no error of their own - the step was still working, just not finished.
+    # Confirmed by direct log comparison: a genuinely successful run has the
+    # exact same multi-minute silent gap (no stdout between the last `go:
+    # downloading` line and the final results table) that the killed runs
+    # show right up to the point they get cut off - the silence is normal
+    # output shape for this step, not evidence of a stall. Double the budget
+    # for real headroom rather than retrying an operation that was never
+    # stuck. cerberus issue #2375 tracks reducing the step's own cost (e.g.
+    # sharding the corpus walk the way the e2e crawl lanes already do) as the
+    # more durable fix; this bump is what actually restores a working gate
+    # today.
+    timeout-minutes: 60
     # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
     # a release PR (head branch release/*). On a regular PR every heavy step is
     # skipped and the job reports green without work — so `profile` gates the
@@ -93,31 +109,11 @@ jobs:
       - name: Profile corpus fan-out
         if: env.RUN_HEAVY == 'true'
         run: |
-          # This run is a ~10-15s in-process chDB walk once dependencies are
-          # resolved, so a stall means `go run`'s own module
-          # download/build step - not the profiler - is stuck. Observed
-          # directly: three separate runs of this job sat with zero log
-          # output until killed by the 30-minute job timeout, the same
-          # silent-hang shape `go mod download` guards against with a retry
-          # loop elsewhere in this repo (the e2e seed Dockerfile) and that
-          # the Playwright chromium install step now guards against with an
-          # explicit `timeout`. Apply the same fix here: bound each attempt
-          # and retry instead of burning the whole job on one stuck attempt.
-          for attempt in 1 2 3 4 5; do
-            if timeout 300 go run -tags chdb ./cmd/perf-profile \
-              -spec test/spec \
-              -out perf-profile.json \
-              -md "$GITHUB_STEP_SUMMARY" \
-              -top 40; then
-              exit 0
-            fi
-            if [ "$attempt" = "5" ]; then
-              echo "go run ./cmd/perf-profile timed out or failed after 5 attempts" >&2
-              exit 1
-            fi
-            echo "go run ./cmd/perf-profile attempt $attempt timed out or failed, retrying after backoff" >&2
-            sleep $(( attempt * 10 ))
-          done
+          go run -tags chdb ./cmd/perf-profile \
+            -spec test/spec \
+            -out perf-profile.json \
+            -md "$GITHUB_STEP_SUMMARY" \
+            -top 40
 
       - name: No-op (non-release PR)
         if: env.RUN_HEAVY != 'true'
