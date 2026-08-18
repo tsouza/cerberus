@@ -4,6 +4,16 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.15.1] — 2026-08-18
+
+### Fixed
+
+- **chsql:** materialize native-quantile bucket-edge scans instead of re-deriving them (#2366)
+
+### Performance
+
+- **chsql:** materialise the classic histogram_quantile array walks once per row (#2367)
+
 ## [v1.15.0] — 2026-08-18
 
 ### Added
