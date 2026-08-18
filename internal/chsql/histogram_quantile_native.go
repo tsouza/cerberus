@@ -16,15 +16,17 @@
 //     order. arrayReverse([]) = [], so distributions with no negative
 //     observations collapse to the positive-only walk
 //     (`arrayConcat([ZeroCount], PositiveBucketCounts)`).
-//  3. total = cum[length(cum)] — the BUCKET-DERIVED total, used only for
-//     the backward arm's own complement arithmetic (step 4). The RANK is
-//     taken against the histogram's own stored Count column instead
-//     (rankBase), matching reference Prometheus's `HistogramQuantile`,
-//     which ranks against `h.Count` and never re-derives a total from
-//     the bucket array. The two agree everywhere except when the
-//     histogram counted NaN observations: those inflate stored Count
-//     without landing in any bucket, so Sum comes out NaN (the only way
-//     Count can exceed the bucket-derived total) and rankBase > total.
+//  3. revCum = arrayReverse(arrayCumSum(arrayReverse(buckets))) — the
+//     same bucket array accumulated from the TOP instead of the bottom,
+//     so revCum[i] is the count at or above position i. It is the
+//     backward arm's running count (step 4). The RANK is taken against
+//     the histogram's own stored Count column (rankBase), matching
+//     reference Prometheus's `HistogramQuantile`, which ranks against
+//     `h.Count` and never re-derives a total from the bucket array. The
+//     two agree everywhere except when the histogram counted NaN
+//     observations: those inflate stored Count without landing in any
+//     bucket, so Sum comes out NaN (the only way Count can exceed the
+//     bucket-derived total) and rankBase > revCum[1].
 //     target = phi * rankBase.
 //  4. idx = the 1-based position the rank walk stops on. Reference
 //     Prometheus walks the buckets in one of TWO directions depending
@@ -37,12 +39,22 @@
 //     of phi, because a reverse walk cannot find a percentile whose
 //     mass sits outside every bucket.
 //     - phi >= reverseWalkPhi AND Sum is not NaN: backward from the
-//     top, rank = (1 - phi) * rankBase. The count at or above the
-//     bucket at position i is `total - cum[i-1]` (bucket-derived total,
-//     which equals rankBase whenever Sum is finite), so the walk stops
-//     at the smallest i with `total - cum[i-1] >= rank`, emitted as the
-//     first index at which the complementary test flips:
-//     idx = arrayFirstIndex(c -> total - c < rank, cum).
+//     top, rank = (1 - phi) * rankBase. Reference accumulates the
+//     bucket counts downward from the highest bucket and stops on the
+//     first one whose running total reaches the rank; revCum IS that
+//     running total, and since it is non-increasing in i the bucket it
+//     stops on is the LAST position still reaching the rank:
+//     idx = arrayLastIndex(c -> c >= rank, revCum).
+//     The running count is accumulated rather than derived as
+//     `total - cum[i-1]`: the two are equal in exact arithmetic, but
+//     the subtraction cancels away low-order bits, and once a
+//     rate()/increase() window fold has scaled every bucket by one
+//     extrapolation factor the counts are Float64 rather than exact
+//     integers. A few ULPs there move an EXACT rank tie one bucket, and
+//     across the zero bucket that flips the answer's sign. Accumulating
+//     in reference's own order and direction reproduces its running
+//     count bit for bit, so the tie resolves the same way it does
+//     upstream.
 //     The two directions agree everywhere except at an exact rank tie
 //     (target lands exactly on a cum boundary): forward stops on the
 //     bucket whose cumulative count ENDS at the target and reports its
@@ -52,15 +64,18 @@
 //     histogram with equal negative and positive mass either side of an
 //     empty zero bucket answered phi = 0.5 with the wrong SIGN before
 //     the backward arm existed.
-//     Both arms skip empty buckets for free: cum (and revCum) is
-//     non-decreasing, so an empty bucket repeats its predecessor's value
-//     and can never be the FIRST index to reach a strictly positive
-//     rank. Only rank = 0 could stop on one, and that is exactly the
-//     phi = 0 / phi = 1 pair the phiLow / phiHigh edges handle
-//     explicitly (step 6).
-//     A rank ABOVE every bucket's reach — rankBase > total, which only
-//     happens when Sum is NaN and the walk is forced forward — leaves
-//     arrayFirstIndex with nothing to stop on; it returns 0, and the
+//     Both arms skip empty buckets for free, exactly as reference's own
+//     `if bucket.Count == 0 { continue }` does. cum is non-decreasing, so
+//     an empty bucket repeats its predecessor's value and can never be
+//     the FIRST index to reach a strictly positive rank; revCum is
+//     non-increasing, so an empty bucket repeats its SUCCESSOR's value
+//     and can never be the LAST index still reaching one. Only rank = 0
+//     could stop on an empty bucket, and that is exactly the phi = 0 /
+//     phi = 1 pair the phiLow / phiHigh edges handle explicitly (step 6).
+//     A rank ABOVE every bucket's reach — rankBase > the bucket-derived
+//     total, which only happens when Sum is NaN and the walk is forced
+//     forward — leaves arrayFirstIndex with nothing to stop on; it
+//     returns 0, and the
 //     outer chain (step 6a) answers NaN, matching reference's own
 //     "walk exhausted every bucket without reaching the rank" result.
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
@@ -103,12 +118,12 @@
 //     fraction = 0 (lower) / 1 (upper), with idx replaced by
 //     `arrayFirstIndex` / `arrayLastIndex` of a non-zero count over
 //     the same concatenated walk order.
-//     - idx = 0 → NaN. arrayFirstIndex returns 0 when no cum element
-//     satisfies the walk's comparison — the "walk exhausted every
-//     bucket without reaching the rank" case from step 4, reachable
-//     only when Sum is NaN and rankBase (Count) exceeds every bucket's
-//     reach. Checked after phi == 0 / phi == 1 (step 6a) since those
-//     saturate rather than walk.
+//     - idx = 0 → NaN. Both index functions return 0 when no element of
+//     the running-count array satisfies the walk's comparison — the
+//     "walk exhausted every bucket without reaching the rank" case from
+//     step 4, reachable only when Sum is NaN and rankBase (Count)
+//     exceeds every bucket's reach. Checked after phi == 0 / phi == 1
+//     (step 6a) since those saturate rather than walk.
 //  7. Interpolation, by region:
 //     - Negative bucket (idx ≤ nlen). Original-array 0-based index
 //     within Negative is `nlen - idx`; absolute exp-bucket index is
@@ -355,8 +370,8 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 	// reference's own `q < 0` / `q > 1` / `h.Count == 0` order — cerberus
 	// issue #2067. rankBase = 0 ranks against the histogram's STORED
 	// Count rather than the bucket-derived total, so an empty histogram
-	// answers NaN even when Sum is itself NaN (0 == 0). idx = 0 is
-	// arrayFirstIndex's "not found" sentinel: the walk exhausted every
+	// answers NaN even when Sum is itself NaN (0 == 0). idx = 0 is the
+	// index functions' "not found" sentinel: the walk exhausted every
 	// bucket without reaching the rank, which only happens when Sum is
 	// NaN and the forced-forward rank exceeds the buckets' combined
 	// reach — cerberus issue #2072.
@@ -406,7 +421,7 @@ type hqNativeWriters struct {
 	base           func() Frag
 	buckets        func() Frag
 	cum            func() Frag
-	total          func() Frag
+	revCum         func() Frag
 	rankBase       func() Frag
 	sumIsNaN       func() Frag
 	idx            func() Frag
@@ -490,11 +505,14 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 		}
 		return Call("arrayCumSum", w.buckets())
 	}
-	// total = cum[length(cum)] — last element of cum. Used only for the
-	// backward arm's own complement arithmetic (rankBase, not total, is
-	// what the rank walk ranks against — see rankBase below).
-	w.total = func() Frag {
-		return Subscript(w.cum(), Call("length", w.cum()))
+	// revCum is the bucket array accumulated from the TOP:
+	// revCum[i] = sum(buckets[i..n]), the count at or above position i.
+	// It is the backward arm's running count, and it is ACCUMULATED
+	// rather than derived from cum by subtraction so that its rounding
+	// matches reference Prometheus's own reverse iterator bit for bit —
+	// see revIdx below.
+	w.revCum = func() Frag {
+		return Call("arrayReverse", Call("arrayCumSum", Call("arrayReverse", w.buckets())))
 	}
 	// rankBase is the histogram's own stored Count — what reference
 	// Prometheus's rank walk ranks against (quantile.go), as opposed to
@@ -507,19 +525,20 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 	// marker for "counted an observation that fell in no bucket" and the
 	// condition that forces the forward rank walk regardless of phi.
 	w.sumIsNaN = func() Frag { return Call("isNaN", Col(sumCol)) }
-	// rankWalk renders `arrayFirstIndex(c -> <cmp>, cum)`, the shape both
-	// walk arms share — only the per-element comparison differs. Computed
-	// phi: wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` — CH 24.8
-	// rejects a scalar subquery anywhere in arrayFirstIndex's argument
-	// tree with ILLEGAL_COLUMN (see the classic emitter for the full
-	// rationale). The literal path keeps the bare comparison (byte-stable
-	// fixtures).
-	rankWalk := func(cmp Frag) Frag {
+	// rankWalk renders `<fn>(c -> <cmp>, <running>)`, the shape both walk
+	// arms share — they differ only in which running-count array they
+	// scan, from which end, and with which per-element comparison.
+	// Computed phi: wrap the lambda predicate as `(if(<cmp>, 1, 0) = 1)` —
+	// CH 24.8 rejects a scalar subquery anywhere in the index function's
+	// argument tree with ILLEGAL_COLUMN (see the classic emitter for the
+	// full rationale). The literal path keeps the bare comparison
+	// (byte-stable fixtures).
+	rankWalk := func(fn string, running, cmp Frag) Frag {
 		pred := cmp
 		if h.PhiExpr != nil {
 			pred = Paren(Eq(If(cmp, InlineLit(1), InlineLit(0)), InlineLit(1)))
 		}
-		return Call("arrayFirstIndex", Lambda1("c", pred), w.cum())
+		return Call(fn, Lambda1("c", pred), running)
 	}
 	// Forward arm: stop on the first bucket whose cumulative count from
 	// the BOTTOM reaches rank = phi * rankBase. Ranking against rankBase
@@ -528,31 +547,33 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 	// NaN-observation histogram's rank exceeds every bucket's reach — see
 	// the outer chain's idx = 0 branch.
 	fwdIdx := func() Frag {
-		return rankWalk(Gte(BareIdent("c"), Paren(Mul(w.phi(), w.rankBase()))))
+		return rankWalk("arrayFirstIndex", w.cum(),
+			Gte(BareIdent("c"), Paren(Mul(w.phi(), w.rankBase()))))
 	}
 	// Backward arm: reference accumulates from the TOP and stops on the
 	// first bucket at which that running count reaches
-	// rank = (1 - phi) * rankBase. The count at or above the bucket
-	// sitting at forward position i is exactly `total - cum[i-1]`, so the
-	// walk stops at the SMALLEST i with `total - cum[i-1] >= rank` — and
-	// since `total - cum[i]` only shrinks as i grows, that is the first i
-	// at which the complementary test `total - cum[i] < rank` flips true.
-	// Expressing it that way keeps the arm a mirror image of the forward
-	// one: same arrayFirstIndex, same cum array, same walk coordinates,
-	// so every downstream region / interpolation branch reads one index
-	// with no remapping.
+	// rank = (1 - phi) * rankBase. revCum[i] IS that running count once
+	// the walk has descended to position i, so — revCum being
+	// non-increasing in i — the bucket reference stops on is the LAST
+	// position whose running count still reaches the rank.
 	//
-	// This arm only ever runs when Sum is finite (w.idx() forces forward
-	// whenever Sum is NaN), and rankBase == total whenever Sum is finite,
-	// so using the bucket-derived total for the LHS complement — an exact
-	// integer bucket sum (arrayCumSum over UInt64 counts), reproducing
-	// reference's running count bit-for-bit — never disagrees with
-	// rankBase on the RHS target.
+	// The running count is accumulated top-down rather than derived as
+	// `total - cum[i-1]`. Those are equal in exact arithmetic, and while
+	// the bucket counts are the table's own integers they are equal in
+	// floating point too. They are NOT equal once a rate()/increase()
+	// window fold has multiplied every bucket by an extrapolation factor:
+	// the subtraction then cancels away low-order bits and lands a few
+	// ULPs off reference's accumulated value, which moves an EXACT rank
+	// tie one bucket down. Across the zero bucket that is a sign flip in
+	// the answer, so this arm accumulates in reference's own direction
+	// and order and reproduces its running count bit for bit.
+	//
+	// Keeping the result in the same walk coordinates as the forward arm
+	// means every downstream region / interpolation branch reads one
+	// index with no remapping.
 	revIdx := func() Frag {
-		return rankWalk(Lt(
-			Sub(w.total(), BareIdent("c")),
-			Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase())),
-		))
+		return rankWalk("arrayLastIndex", w.revCum(),
+			Gte(BareIdent("c"), Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase()))))
 	}
 	// idx: the direction-selected stop index (see the file header,
 	// step 4). Reference forces the forward arm whenever Sum is NaN,

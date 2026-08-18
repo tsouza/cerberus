@@ -1,0 +1,56 @@
+# `histogram_quantile(0.5, increase(<native hist>[5m]))` on a distribution
+# whose median rank lands EXACTLY on a bucket boundary after the window fold
+# has scaled every bucket by an extrapolation factor.
+#
+# histogram_quantile_native_rank_tie_sign pins the same tie on the raw
+# stored buckets, where every count is an exact integer. This fixture is the
+# scaled sibling, and it is a different test because the scaling is what
+# breaks the arithmetic: increase() multiplies the whole distribution by one
+# boundary-extrapolation factor (4/3 here — the four samples span 45s of a
+# 300s window and both edges clamp to half an average gap), so the bucket
+# counts arriving at the quantile walk are Float64, not integers.
+#
+# The rank walk for phi >= 0.5 runs BACKWARD, accumulating bucket counts
+# down from the highest bucket. Deriving that running count as
+# `total - cum[i-1]` from the forward cumulative sum is exact while the
+# counts are integers and loses low-order bits once they are not: the
+# bucket-derived total comes out 26.66666666666666 against a stored Count of
+# 26.666666666666664, and the median rank misses the boundary by three ULPs.
+# That moved the stop bucket one position down, out of the zero bucket and
+# into the negative region, so the median of a distribution reference
+# Prometheus answers 0 for came back at -2^(3/4) ≈ -1.68 — a sign flip, not
+# a rounding wobble. Accumulating the backward running count in reference's
+# own direction reproduces its rounding bit for bit and the tie resolves the
+# same way.
+#
+# Every sample here has a NEGATIVE Sum and three of the four transitions are
+# counter resets; both are incidental to the tie, and both are why a
+# purely-positive corpus never reached this shape.
+#
+# Enrolled in parity so reference Prometheus itself arbitrates the boundary
+# rather than cerberus's own regenerated output.
+-- query.promql --
+histogram_quantile(0.5, increase(http_server_duration_exp_hist[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:41', 9), 2, 1, 1, [3], -2, [4, 4], 12, -2.432631285729307),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:56', 9), 2, 3, 3, [1], 0, [0], 4, 2.2008097036912107),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:11', 9), 2, 1, 3, [], 3, [4, 3, 0], 8, -11.797216930384575),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:26', 9), 2, 3, -2, [1, 1, 0, 0], 3, [3, 0, 0], 8, -3.241827582821477);
