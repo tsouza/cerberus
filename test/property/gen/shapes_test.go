@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/test/property"
 )
 
 func TestShapeRostersAreExact(t *testing.T) {
@@ -340,6 +342,33 @@ func TestByShapeGeneratorsDoNotCollapse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestByShapeGeneratorsPanicOnUnknownShape pins the invariant every
+// *ForShape generator relies on: the shape ID it is called with always
+// comes from that generator's own roster (PromQLShapeIDs and friends), so a
+// shape ID absent from the roster is a caller bug, not runtime input to
+// tolerate. Each generator panics loudly instead of silently drawing a
+// mismatched case.
+func TestByShapeGeneratorsPanicOnUnknownShape(t *testing.T) {
+	const bogus ShapeID = "unknown.shape"
+
+	wantPanic := func(t *testing.T, label string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("%s: want panic for unknown shape, got none", label)
+			}
+		}()
+		fn()
+	}
+
+	wantPanic(t, "PromQLQueryForShape", func() { PromQLQueryForShape(property.Dataset{}, bogus) })
+	wantPanic(t, "PromQLRangeQueryForShape", func() { PromQLRangeQueryForShape(property.Dataset{}, bogus) })
+	wantPanic(t, "ExpHistogramQueryForShape", func() { ExpHistogramQueryForShape(property.Dataset{}, bogus) })
+	wantPanic(t, "LogQLQueryForShape", func() { LogQLQueryForShape(property.Dataset{}, bogus) })
+	wantPanic(t, "TraceQLQueryForShape", func() { TraceQLQueryForShape(property.Dataset{}, bogus) })
+	wantPanic(t, "InstantWindowSweepForShape", func() { InstantWindowSweepForShape(bogus) })
 }
 
 func assertStampedShape(t *testing.T, got ShapeID, query string, want ShapeID) {
