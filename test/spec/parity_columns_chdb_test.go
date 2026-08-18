@@ -30,14 +30,14 @@ func TestLocateSampleColumns(t *testing.T) {
 		{
 			name: "canonical Sample projection",
 			cols: []string{"MetricName", "Attributes", "TimeUnix", "Value"},
-			want: sampleColumns{name: 0, attrs: 1, ts: 2, value: 3},
+			want: sampleColumns{name: 0, attrs: 1, ts: 2, value: 3, mixedIsHistogram: -1},
 		},
 		{
 			// An instant aggregation drops __name__ and has no sample
 			// time to report, so it projects only what its answer has.
 			name: "instant aggregation projection",
 			cols: []string{"Attributes", "Value"},
-			want: sampleColumns{name: -1, attrs: 0, ts: -1, value: 1},
+			want: sampleColumns{name: -1, attrs: 0, ts: -1, value: 1, mixedIsHistogram: -1},
 		},
 		{
 			// anchor_ts is scaffolding of the emitted subquery, not a
@@ -45,19 +45,19 @@ func TestLocateSampleColumns(t *testing.T) {
 			// sample time sitting behind it.
 			name: "subquery projection interposing anchor_ts",
 			cols: []string{"Attributes", "anchor_ts", "TimeUnix", "Value"},
-			want: sampleColumns{name: -1, attrs: 0, ts: 2, value: 3},
+			want: sampleColumns{name: -1, attrs: 0, ts: 2, value: 3, mixedIsHistogram: -1},
 		},
 		{
 			// A raw range projection is wrapped into the public Sample
 			// shape by renaming anchor_ts to TimeUnix in the HTTP layer.
 			name: "range projection whose sample time is anchor_ts",
 			cols: []string{"Attributes", "anchor_ts", "Value"},
-			want: sampleColumns{name: -1, attrs: 0, ts: 1, value: 2},
+			want: sampleColumns{name: -1, attrs: 0, ts: 1, value: 2, mixedIsHistogram: -1},
 		},
 		{
 			name: "named subquery projection interposing anchor_ts",
 			cols: []string{"MetricName", "Attributes", "anchor_ts", "TimeUnix", "Value"},
-			want: sampleColumns{name: 0, attrs: 1, ts: 3, value: 4},
+			want: sampleColumns{name: 0, attrs: 1, ts: 3, value: 4, mixedIsHistogram: -1},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
