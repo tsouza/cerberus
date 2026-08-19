@@ -225,6 +225,21 @@ func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
 		c.End = time.Time{}
 		c.Input = input
 		return &c, true
+	case *chplan.RangeBucketFanout:
+		input, _ := unpinSpineCOW(v.Input)
+		c := *v
+		c.Start = time.Time{}
+		c.End = time.Time{}
+		c.Input = input
+		return &c, true
+	case *chplan.HistogramQuantile:
+		input, changed := unpinSpineCOW(v.Input)
+		if !changed {
+			return v, false
+		}
+		c := *v
+		c.Input = input
+		return &c, true
 	case *chplan.Filter:
 		input, changed := unpinSpineCOW(v.Input)
 		if !changed {
@@ -286,6 +301,8 @@ func subtreeHasZeroableSpine(n chplan.Node) bool {
 		switch v := node.(type) {
 		case *chplan.RangeLWR:
 			found = true
+		case *chplan.RangeBucketFanout:
+			found = true
 		case *chplan.RangeWindow:
 			if v.Step > 0 {
 				found = true
@@ -322,6 +339,11 @@ func zeroSpineInPlace(n chplan.Node) {
 		zeroSpineInPlace(v.Input)
 		return
 	case *chplan.RangeLWR:
+		v.Start = time.Time{}
+		v.End = time.Time{}
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.RangeBucketFanout:
 		v.Start = time.Time{}
 		v.End = time.Time{}
 		zeroSpineInPlace(v.Input)

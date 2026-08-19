@@ -106,6 +106,17 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		return reanchorUnionAll(v, start, end)
 	case *RangeLWR:
 		return reanchorRangeLWR(v, start, end)
+	case *RangeBucketFanout:
+		return reanchorRangeBucketFanout(v, start, end)
+	case *HistogramQuantile:
+		input, err := reanchor(v.Input, start, end)
+		if err != nil {
+			return nil, err
+		}
+		// Phi / other scalar params are off-grid immutable: share.
+		c := *v
+		c.Input = input
+		return &c, nil
 	case *Project:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
@@ -328,6 +339,37 @@ func reanchorRangeLWR(v *RangeLWR, start, end time.Time) (Node, error) {
 // timestamp with now64(9), a wall-clock that diverges across shards);
 // registration is by node kind, so that guard — not this function — is what
 // excludes it.
+// reanchorRangeBucketFanout re-grids the array-aggregate fan-out behind the
+// classic-histogram families — the RangeLWR sibling that collapses each
+// (series, anchor)'s raw BucketCounts/ExplicitBounds rows via
+// `GROUP BY (<user keys>, anchor)` instead of picking one last sample. Its
+// per-anchor membership window is the same shape as RangeLWR's:
+// `(anchor - Offset - Lookback, anchor - Offset]`, and it carries no
+// OuterRange field and no StepAlign mode (RangeBucketFanout only ever
+// lowers already gridded to the request's own step, never as a
+// subquery-inner epoch-aligned leaf) — so this mirrors reanchorRangeLWR
+// with the StepAlign branch dropped.
+func reanchorRangeBucketFanout(v *RangeBucketFanout, start, end time.Time) (Node, error) {
+	if v.Step <= 0 {
+		// No anchor grid to re-grid; share verbatim.
+		return v, nil
+	}
+	if err := checkPredictedGridBucketFanout(v, start, end); err != nil {
+		return nil, err
+	}
+	c := *v
+	c.Start = start
+	c.End = end
+	// The membership window looks back Offset+Lookback from each anchor;
+	// widen the input spine by that much so every anchor finds its samples.
+	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
+	if err != nil {
+		return nil, err
+	}
+	c.Input = input
+	return &c, nil
+}
+
 func reanchorVectorJoin(v *VectorJoin, start, end time.Time) (Node, error) {
 	left, err := reanchor(v.Left, start, end)
 	if err != nil {
@@ -420,6 +462,26 @@ func checkPredictedGridLWR(r *RangeLWR, predStart, predEnd time.Time) error {
 		return nil
 	}
 	return fmt.Errorf("%w: RangeLWR bounds (Start=%v End=%v) "+
+		"do not match predicted grid (Start=%v End=%v) — an @-pinned or non-grid anchor",
+		ErrReanchorGridMismatch,
+		r.Start, r.End,
+		predStart, predEnd)
+}
+
+// checkPredictedGridBucketFanout is checkPredictedGrid for a
+// RangeBucketFanout. Like RangeLWR it carries no OuterRange field — its
+// grid span is End-Start directly — so the predicted grid is just
+// [predStart, predEnd]. Either the bounds are unpinned (zero Start and End —
+// the slicer's UnpinSpine shape) or they already sit exactly on the
+// predicted grid. Anything else is rejected so the solver routes A.
+func checkPredictedGridBucketFanout(r *RangeBucketFanout, predStart, predEnd time.Time) error {
+	if r.Start.IsZero() && r.End.IsZero() {
+		return nil
+	}
+	if r.Start.Equal(predStart) && r.End.Equal(predEnd) {
+		return nil
+	}
+	return fmt.Errorf("%w: RangeBucketFanout bounds (Start=%v End=%v) "+
 		"do not match predicted grid (Start=%v End=%v) — an @-pinned or non-grid anchor",
 		ErrReanchorGridMismatch,
 		r.Start, r.End,

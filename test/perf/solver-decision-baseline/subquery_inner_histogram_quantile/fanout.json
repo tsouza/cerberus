@@ -3,7 +3,7 @@
   "lowering": "fanout",
   "routed": false,
   "k": 0,
-  "reason": "not-sliceable",
+  "reason": "incommensurate",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "10m0s",

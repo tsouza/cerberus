@@ -153,6 +153,12 @@ func carrierCases() []carrierCase {
 			reanchorable: false,
 		},
 		{
+			// RangeBucketFanout is re-anchored by chplan.ReanchorRange (and
+			// zeroed/re-filled by the slicer's UnpinSpine) the same way RangeLWR
+			// is — the classic-histogram OOM fix. See
+			// TestPlan_RangeBucketFanoutSpineRoutes /
+			// TestPlan_HistogramQuantileOverRangeBucketFanoutRoutes for the
+			// positive routing assertions.
 			kind: "RangeBucketFanout",
 			plan: func() chplan.Node {
 				return &chplan.RangeBucketFanout{
@@ -172,7 +178,7 @@ func carrierCases() []carrierCase {
 			},
 			wantD:        geomFanoutLookback,
 			wantFanout:   int64(geomFanoutLookback / gridStep),
-			reanchorable: false,
+			reanchorable: true,
 		},
 		{
 			kind: "AbsentOverTime",
@@ -222,9 +228,11 @@ func carrierCases() []carrierCase {
 // collapses on CumulativeD alone for the same reason.
 //
 // It also pins the correctness half in the same rows: measuring a carrier must
-// never make it sliceable. Only the two re-anchorable families may be eligible;
-// the other five are refused with a non-zero grid, which is exactly the state
-// the corpus needs (what it cost, and why we declined).
+// never make it sliceable UNLESS it is one of the re-anchorable families
+// (RangeWindow / RangeWindowGridNative / RangeLWR / RangeBucketFanout); the
+// remaining three (RangeWindowStaleResample, AbsentOverTime, StepGrid) are
+// refused with a non-zero grid, which is exactly the state the corpus needs
+// (what it cost, and why we declined).
 func TestCarrierGeometry_ExtractsFeaturesForEveryKind(t *testing.T) {
 	t.Parallel()
 

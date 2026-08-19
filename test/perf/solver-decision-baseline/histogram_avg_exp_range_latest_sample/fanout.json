@@ -1,9 +1,9 @@
 {
   "query": "histogram_avg_exp_range_latest_sample/fanout",
   "lowering": "fanout",
-  "routed": false,
-  "k": 0,
-  "reason": "not-sliceable",
+  "routed": true,
+  "k": 8,
+  "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "5m0s",

@@ -451,36 +451,155 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 	}
 }
 
+// rangeBucketFanoutSpine builds the array-aggregate fan-out behind the
+// classic-histogram families over the standard 1h/15s grid, mirroring
+// lwrSpine's shape (Lookback 5m, no offset).
+func rangeBucketFanoutSpine() *chplan.RangeBucketFanout {
+	return &chplan.RangeBucketFanout{
+		Input:        leafScan(),
+		Start:        gridStart,
+		End:          gridEnd,
+		Step:         gridStep,
+		Lookback:     5 * time.Minute,
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSumForEach,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
+			Alias: "BucketCounts",
+		}},
+	}
+}
+
+// TestPlan_RangeBucketFanoutSpineRoutes is the production-incident fix: a
+// bare RangeBucketFanout spine that route A left un-sliceable now ROUTES B
+// with K >= 2 and correctly-anchored slices — the same shape and grid
+// (gridStart/gridEnd/gridStep = 1h/15s = 240 anchors) as the real production
+// query that OOM'd on shape cerb:project;agg=1;rbf.
+func TestPlan_RangeBucketFanoutSpineRoutes(t *testing.T) {
+	t.Parallel()
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(rangeBucketFanoutSpine(), oomMeta())
+	if !routed {
+		t.Fatalf("RangeBucketFanout spine must route; got reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+	}
+	if d.K < 2 {
+		t.Fatalf("K = %d, want >= 2", d.K)
+	}
+	if d.Strategy != StrategyShardedTimeslice {
+		t.Fatalf("strategy = %q, want %q", d.Strategy, StrategyShardedTimeslice)
+	}
+	if len(d.Slices) != d.K {
+		t.Fatalf("len(Slices) = %d, want K=%d", len(d.Slices), d.K)
+	}
+	oldest := d.Slices[0].Plan.(*chplan.RangeBucketFanout)
+	newest := d.Slices[len(d.Slices)-1].Plan.(*chplan.RangeBucketFanout)
+	if !oldest.Start.Equal(gridStart) {
+		t.Fatalf("oldest slice Start=%v, want grid Start=%v", oldest.Start, gridStart)
+	}
+	if !newest.End.Equal(gridEnd) {
+		t.Fatalf("newest slice End=%v, want grid End=%v", newest.End, gridEnd)
+	}
+	for _, sl := range d.Slices {
+		r := sl.Plan.(*chplan.RangeBucketFanout)
+		if r.Start.IsZero() || r.End.IsZero() {
+			t.Fatalf("slice %d left RangeBucketFanout bounds unpinned: Start=%v End=%v",
+				sl.Index, r.Start, r.End)
+		}
+		if r.Step != gridStep || r.Lookback != 5*time.Minute {
+			t.Fatalf("slice %d RangeBucketFanout lost a non-grid field: %+v", sl.Index, r)
+		}
+	}
+}
+
+// TestPlan_HistogramQuantileOverRangeBucketFanoutRoutes pins the CRITICAL
+// correctness fix alongside the routing one: a HistogramQuantile wrapping a
+// RangeBucketFanout — the actual production spine
+// (Project -> HistogramQuantile -> Project -> RangeBucketFanout -> Filter ->
+// Scan) — must ALSO route, proving the HistogramQuantile pass-through arm in
+// chplan.ReanchorRange (and its sliceInvariantKinds registration) are wired.
+// Before this fix, registering ONLY RangeBucketFanout without also teaching
+// ReanchorRange a *HistogramQuantile arm would have been silently WRONG: gate
+// (1) allSliceInvariant would still block on the unregistered HistogramQuantile
+// node (dead code, still route A) — or, had HistogramQuantile been registered
+// slice-invariant without a matching reanchor arm, ReanchorRange's default
+// case would return it UNRECURSED, handing every shard the ORIGINAL
+// full-grid RangeBucketFanout — K silently-duplicated copies of the same
+// rows, not an error. This test is what a regression in either half would
+// break.
+func TestPlan_HistogramQuantileOverRangeBucketFanoutRoutes(t *testing.T) {
+	t.Parallel()
+	plan := &chplan.HistogramQuantile{
+		Input:                rangeBucketFanoutSpine(),
+		Phi:                  0.99,
+		BucketCountsColumn:   "BucketCounts",
+		ExplicitBoundsColumn: "ExplicitBounds",
+		MetricNameColumn:     "MetricName",
+		AttributesColumn:     "Attributes",
+		TimestampColumn:      "TimeUnix",
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if !routed {
+		t.Fatalf("HistogramQuantile over RangeBucketFanout must route; got reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
+	}
+	if d.K < 2 {
+		t.Fatalf("K = %d, want >= 2", d.K)
+	}
+	// Every produced slice must be a HistogramQuantile whose inner
+	// RangeBucketFanout is re-gridded to that slice's own bounds — a
+	// duplication bug would instead show every slice sharing the SAME
+	// (unsliced) inner bounds.
+	seen := map[time.Time]bool{}
+	for _, sl := range d.Slices {
+		hq, ok := sl.Plan.(*chplan.HistogramQuantile)
+		if !ok {
+			t.Fatalf("slice %d plan is %T, want *chplan.HistogramQuantile", sl.Index, sl.Plan)
+		}
+		rbf, ok := hq.Input.(*chplan.RangeBucketFanout)
+		if !ok {
+			t.Fatalf("slice %d HistogramQuantile.Input is %T, want *chplan.RangeBucketFanout", sl.Index, hq.Input)
+		}
+		if rbf.Start.IsZero() || rbf.End.IsZero() {
+			t.Fatalf("slice %d left inner RangeBucketFanout bounds unpinned: Start=%v End=%v",
+				sl.Index, rbf.Start, rbf.End)
+		}
+		if seen[rbf.Start] {
+			t.Fatalf("slice %d inner RangeBucketFanout.Start=%v duplicates an earlier slice — "+
+				"every shard re-gridded to the SAME bounds instead of its own (the silent K-duplication hazard)",
+				sl.Index, rbf.Start)
+		}
+		seen[rbf.Start] = true
+	}
+	oldest := d.Slices[0].Plan.(*chplan.HistogramQuantile).Input.(*chplan.RangeBucketFanout)
+	newest := d.Slices[len(d.Slices)-1].Plan.(*chplan.HistogramQuantile).Input.(*chplan.RangeBucketFanout)
+	if !oldest.Start.Equal(gridStart) {
+		t.Fatalf("oldest slice inner Start=%v, want grid Start=%v", oldest.Start, gridStart)
+	}
+	if !newest.End.Equal(gridEnd) {
+		t.Fatalf("newest slice inner End=%v, want grid End=%v", newest.End, gridEnd)
+	}
+}
+
 // TestPlan_NonRangeWindowSpineRejected pins the residual routable-spine
-// restriction after phase 3: the routable bound-carriers are *RangeWindow
-// (phase 1) and *RangeLWR (phase 3). A RangeBucketFanout / StepGrid spine still
-// carries a grid ReanchorRange leaves un-re-anchored (CloneNode'd verbatim), so
-// each such plan must fail closed to route A with Reason=not-sliceable.
+// restriction: the routable bound-carriers are *RangeWindow (phase 1),
+// *RangeLWR (phase 3), and *RangeBucketFanout (the classic-histogram
+// OOM fix — see TestPlan_RangeBucketFanoutSpineRoutes for the positive case).
+// A StepGrid spine still carries a grid ReanchorRange leaves un-re-anchored
+// (CloneNode'd verbatim), so it must fail closed to route A with
+// Reason=not-sliceable.
 func TestPlan_NonRangeWindowSpineRejected(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		plan func() chplan.Node
 	}{
-		{
-			name: "RangeBucketFanout spine",
-			plan: func() chplan.Node {
-				return &chplan.RangeBucketFanout{
-					Input:        leafScan(),
-					Start:        gridStart,
-					End:          gridEnd,
-					Step:         gridStep,
-					Lookback:     5 * time.Minute,
-					AnchorAlias:  "anchor_ts",
-					TimestampCol: "TimeUnix",
-					AggFuncs: []chplan.AggFunc{{
-						Fn:    chplan.FnSumForEach,
-						Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
-						Alias: "BucketCounts",
-					}},
-				}
-			},
-		},
 		{
 			name: "StepGrid spine",
 			plan: func() chplan.Node {
