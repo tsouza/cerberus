@@ -454,15 +454,20 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 // rangeBucketFanoutSpine builds the array-aggregate fan-out behind the
 // classic-histogram families over the standard 1h/15s grid, mirroring
 // lwrSpine's shape (Lookback 5m, no offset).
+// rangeBucketFanoutSpine is the CLASSIC bucket-ladder fan-out — the shape
+// behind the production APM panel. PeakIndependentOfGrid mirrors what
+// histogram_quantile_range.go's classic lowering sets: route A was measured to
+// fit (2.84 GB), so slicing it is waste.
 func rangeBucketFanoutSpine() *chplan.RangeBucketFanout {
 	return &chplan.RangeBucketFanout{
-		Input:        leafScan(),
-		Start:        gridStart,
-		End:          gridEnd,
-		Step:         gridStep,
-		Lookback:     5 * time.Minute,
-		AnchorAlias:  "anchor_ts",
-		TimestampCol: "TimeUnix",
+		Input:                 leafScan(),
+		PeakIndependentOfGrid: true,
+		Start:                 gridStart,
+		End:                   gridEnd,
+		Step:                  gridStep,
+		Lookback:              5 * time.Minute,
+		AnchorAlias:           "anchor_ts",
+		TimestampCol:          "TimeUnix",
 		AggFuncs: []chplan.AggFunc{{
 			Fn:    chplan.FnSumForEach,
 			Args:  []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}},
@@ -1119,5 +1124,30 @@ func TestPlan_EpochAlignedNestedSpineRoutes(t *testing.T) {
 	d, routed := shardedPlanner().Plan(outer, meta)
 	if !routed {
 		t.Fatalf("epoch-aligned nested spine must route; got reason=%q", d.Reason)
+	}
+}
+
+// TestPlan_NativeFanoutStillRoutes is the counterweight to the classic-path
+// tests above, and the reason PeakIndependentOfGrid is a per-construction-site
+// flag rather than a property of the node type.
+//
+// The exponential/native histogram lowerings build the SAME RangeBucketFanout
+// node, but their route A is where issue #2385's 19 production
+// MEMORY_LIMIT_EXCEEDED failures happened — slicing is what bounds their memory
+// at all. Nothing has measured route A to fit for them, so they must keep
+// routing exactly as they do today. A blanket per-node-kind bit would have
+// silently taken that protection away.
+func TestPlan_NativeFanoutStillRoutes(t *testing.T) {
+	t.Parallel()
+	spine := rangeBucketFanoutSpine()
+	spine.PeakIndependentOfGrid = false // what every native lowering leaves it as
+
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(spine, oomMeta())
+	if !routed {
+		t.Fatalf("a fan-out that has NOT been measured to fit route A must keep routing; got reason=%q", d.Reason)
+	}
+	if d.Reason != ReasonRouted {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
 }

@@ -138,13 +138,18 @@ func (r *RangeWindowStaleResample) AnchorGridDivides() bool { return true }
 // (series, anchor), so its intermediate is linear in N.
 func (r *RangeLWR) AnchorGridDivides() bool { return true }
 
-// AnchorGridDivides is FALSE for the classic/native bucket fan-out. Its
-// intermediate cardinality is rows x (Lookback/Step) — the per-(series, anchor)
-// bucket-ladder fold — which does NOT shrink when the anchor grid is cut,
-// because each shard still rebuilds the whole fold over its own window and
-// neighbouring shards re-read the Lookback overlap. See the interface doc for
-// the production measurement (23x the ClickHouse work for 8.7% of the peak).
-func (r *RangeBucketFanout) AnchorGridDivides() bool { return false }
+// AnchorGridDivides reports the negation of PeakIndependentOfGrid — see that
+// field for why this is per-construction-site rather than per node type.
+//
+// The classic bucket-ladder lowering sets the flag: its intermediate is
+// rows x (Lookback/Step), which does NOT shrink when the grid is cut, because
+// each shard rebuilds the whole per-(series, anchor) fold over its own window
+// and neighbouring shards re-read the Lookback overlap (23x the ClickHouse work
+// for 8.7% of the peak — see the interface doc). The exponential/native
+// lowerings deliberately do NOT set it: route A is where #2385's 19 production
+// OOMs happened, so slicing is what bounds their memory, and nothing has
+// measured otherwise.
+func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependentOfGrid }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
 func (a *AbsentOverTime) AnchorGridDivides() bool { return true }

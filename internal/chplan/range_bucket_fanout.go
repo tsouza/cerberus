@@ -97,6 +97,24 @@ type RangeBucketFanout struct {
 	// TimestampCol is the per-sample timestamp column on Input — the
 	// argMax tie-break argument and the fan-out distance reference.
 	TimestampCol string
+
+	// PeakIndependentOfGrid marks a fan-out whose PEAK intermediate working
+	// set does not shrink when the anchor grid is sliced — see
+	// AnchorGridDivides, which reports its negation to the solver.
+	//
+	// It is a per-CONSTRUCTION-SITE flag rather than a property of the node
+	// type because the two lowerings that build this node have opposite
+	// memory profiles under the same shape. The classic bucket-ladder fold
+	// (histogram_quantile over `<name>_bucket`) fits route A comfortably —
+	// 2.84 GB measured on a production APM panel — so slicing it is 23x pure
+	// waste. The exponential/native merge does NOT: it is the shape behind 19
+	// production MEMORY_LIMIT_EXCEEDED failures (#2385, cause still
+	// unexplained), where slicing is what bounds the memory at all.
+	//
+	// The zero value is therefore the SAFE one: false means "assume slicing
+	// helps", which preserves every existing lowering's behaviour. Only a
+	// site that has MEASURED route A to fit sets it true.
+	PeakIndependentOfGrid bool
 }
 
 func (*RangeBucketFanout) planNode() {}
@@ -118,6 +136,12 @@ func (r *RangeBucketFanout) Equal(other Node) bool {
 		return false
 	}
 	if r.AnchorAlias != o.AnchorAlias || r.TimestampCol != o.TimestampCol {
+		return false
+	}
+	// Part of plan identity: it changes the solver's routing verdict (see
+	// AnchorGridDivides), so two otherwise-identical fan-outs that disagree
+	// here are genuinely different plans.
+	if r.PeakIndependentOfGrid != o.PeakIndependentOfGrid {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) || len(r.AggFuncs) != len(o.AggFuncs) {
