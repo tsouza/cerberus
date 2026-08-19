@@ -94,15 +94,15 @@ func IsSliceInvariant(n Node) bool {
 //     each is its own PR.
 //
 //   - HistogramQuantile — the classic-histogram bucket-array-to-quantile
-//     interpolation. Its input is RangeBucketFanout, whose GROUP BY carries
-//     the anchor key (AnchorAlias, always prepended), so HistogramQuantile's
-//     own row-wise Project/interpolation reads exactly one (series, anchor)
-//     group's BucketCounts/ExplicitBounds columns — no cross-anchor read, no
-//     scan-order dependence, no window function (the emitter,
-//     internal/chsql/histogram_quantile.go, renders plain arrayMap/arraySort
-//     over one row's array columns). Its per-(series, anchor) output is
-//     therefore exactly as scan-lower-bound-independent as its
-//     RangeBucketFanout input already is. See internal/chplan/reanchor.go's
+//     interpolation. Its input is a reshape Project over a RangeBucketFanout,
+//     whose GROUP BY carries the anchor key (AnchorAlias, always prepended),
+//     so HistogramQuantile's own row-wise Project/interpolation reads exactly
+//     one (series, anchor) group's BucketCounts/ExplicitBounds columns — no
+//     cross-anchor read, no scan-order dependence, no window function (the
+//     emitter, internal/chsql/histogram_quantile.go, renders plain
+//     arrayMap/arraySort over one row's array columns). Its per-(series,
+//     anchor) output is therefore exactly as scan-lower-bound-independent as
+//     its RangeBucketFanout input already is. See internal/chplan/reanchor.go's
 //     *HistogramQuantile arm (a pass-through, mirroring *Project) and
 //     internal/solver/avb_chdb_lane_test.go's classic-histogram fixtures for
 //     the differential (route A vs K-sharded route B) proof this registry

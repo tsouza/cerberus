@@ -40,9 +40,10 @@ The signals, each gathered in the one pass:
    marker is proven.
 2. **Routable spine family.** Re-anchoring rewrites the grid carried by the
    `RangeWindow` matrix family, the `RangeWindowGridNative` ClickHouse-native
-   `timeSeries*ToGrid` family, and the `RangeLWR` bare-selector
-   last-with-respect-to family. Every other grid carrier —
-   `RangeWindowStaleResample`, `RangeBucketFanout`, `StepGrid`, `AbsentOverTime` —
+   `timeSeries*ToGrid` family, the `RangeLWR` bare-selector
+   last-with-respect-to family, and the `RangeBucketFanout` array-aggregate
+   fan-out behind the classic-histogram families. Every other grid carrier —
+   `RangeWindowStaleResample`, `StepGrid`, `AbsentOverTime` —
    carries its own eval grid that re-anchoring clones verbatim, so a plan whose
    spine bound-carrier is one of those fails closed to route A (every shard
    would otherwise emit stale bounds).
@@ -54,7 +55,7 @@ The signals, each gathered in the one pass:
    shard that re-gridded one and shared another verbatim would compose the
    shared arm's full-grid answer `K` times over.
 
-   The three re-anchorable kinds are exactly the kinds the slicer's `unpinSpineCOW`
+   The four re-anchorable kinds are exactly the kinds the slicer's `unpinSpineCOW`
    zeroes and exactly the kinds `carrierGeometryOf` marks re-anchorable. A kind
    that re-anchoring learns but `unpinSpineCOW` does not stays pinned at the full
    request grid, so every slice aborts with a grid mismatch and the plan falls
@@ -114,8 +115,10 @@ The signals, each gathered in the one pass:
    a genuinely independent, unboundedly wide scan — an `@`-pinned interior, or
    one whose span has nothing to do with the outer grid — which really would
    multiply `K×` into real extra cost and stays heavy. A `RangeBucketFanout`
-   is never admitted regardless of its bounds (it is outside the routable
-   spine family on the main spine too, signal 2); a purely row-wise scalar
+   is never admitted here regardless of its bounds — unlike the main spine
+   (signal 2, where it IS now routable), no equality/reanchor argument has
+   been built for the Expr-embedded, never-reanchored replication case this
+   check governs, so it stays conservatively heavy; a purely row-wise scalar
    interior (no windowed node at all) was always cheap and stays admissible.
 
 When every signal passes, the plan is **eligible**. The cost grid then decides

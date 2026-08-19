@@ -587,6 +587,45 @@ func TestPlan_HistogramQuantileOverRangeBucketFanoutRoutes(t *testing.T) {
 	}
 }
 
+// TestPlan_Now64InHistogramQuantilePhiExprRejected pins the walkNode arm
+// HistogramQuantile needs alongside its slice-invariance registration: a
+// computed phi (`histogram_quantile(scalar(x), b)`) lowers PhiExpr to a
+// ScalarSubquery (see chplan.HistogramQuantile.PhiExpr's doc), and
+// walkScalarInterior's own doc already names "a histogram_quantile's phi" as
+// a historically-missed slot that let a now64 escape every gate and route B.
+// Registering HistogramQuantile as slice-invariant (the classic-histogram OOM
+// fix) reopens exactly that hazard at this package's own top-level walk
+// unless walkNode also sweeps GroupBy/PhiExpr the way the Aggregate arm
+// sweeps its own — this test is what a regression in that sweep would break.
+func TestPlan_Now64InHistogramQuantilePhiExprRejected(t *testing.T) {
+	t.Parallel()
+	scalarInner := &chplan.Aggregate{
+		Input: leafScan(),
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSum,
+			Args:  []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
+			Alias: "v",
+		}},
+	}
+	plan := &chplan.HistogramQuantile{
+		Input:                rangeBucketFanoutSpine(),
+		PhiExpr:              &chplan.ScalarSubquery{Input: scalarInner},
+		BucketCountsColumn:   "BucketCounts",
+		ExplicitBoundsColumn: "ExplicitBounds",
+		MetricNameColumn:     "MetricName",
+		AttributesColumn:     "Attributes",
+		TimestampColumn:      "TimeUnix",
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if routed {
+		t.Fatal("now64 in HistogramQuantile.PhiExpr's scalar interior must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+}
+
 // TestPlan_NonRangeWindowSpineRejected pins the residual routable-spine
 // restriction: the routable bound-carriers are *RangeWindow (phase 1),
 // *RangeLWR (phase 3), and *RangeBucketFanout (the classic-histogram
