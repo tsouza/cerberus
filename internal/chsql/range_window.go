@@ -3526,6 +3526,46 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 	return levels.Frag()
 }
 
+// applyMatrixFanoutScanBound restricts fanout's input scan to the
+// offset-shifted (Start - Offset - range, End - Offset] window the anchor
+// grid covers — same pushdown as emitWindowedArrayMatrix, against srcTs (the
+// timestamp column present in fanout's FROM).
+//
+// The needsDeltaFirstLevel branch has a DELTA arm with the identical
+// unbounded-below shape as instantDeltaPrefixSource — a DELTA-temporality row
+// qualifies regardless of how far before the grid it sits, so without a bound
+// this reads a metric's ENTIRE retention. deltaPrefixLowerBoundFrag applies
+// the same operator-configured e.deltaPrefixLookbackNS bound; see
+// instantDeltaPrefixSource's doc for the correctness tradeoff this accepts.
+func (e *emitter) applyMatrixFanoutScanBound(
+	fanout *QueryBuilder,
+	r *chplan.RangeWindow,
+	srcTs string,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+	needsDeltaFirstLevel bool,
+) {
+	if !needsDeltaFirstLevel {
+		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
+		return
+	}
+	earliestAnchor := Sub(
+		end,
+		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
+	)
+	deltaBranch := Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta))
+	if lower := deltaPrefixLowerBoundFrag(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS), e.deltaPrefixLookbackNS); lower != nil {
+		deltaBranch = And(deltaBranch, lower)
+	}
+	fanout.Where(
+		Lte(Col(srcTs), end),
+		Paren(Or(
+			deltaBranch,
+			Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
+		)),
+	)
+}
+
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
 // emitWindowedArrayExtrapolated. Each series emits one row per anchor
 // (across [End-OuterRange, End] spaced by Step, end-inclusive) whose
@@ -3597,31 +3637,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
 	// (the timestamp column present in the fanout's FROM). See
 	// maybePushInnerScanTimeBounds.
-	if needsDeltaFirstLevel {
-		earliestAnchor := Sub(
-			end,
-			Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
-		)
-		// The DELTA branch has the identical unbounded-below shape as
-		// instantDeltaPrefixSource — a DELTA-temporality row
-		// qualifies regardless of how far before the grid it sits, so without
-		// a bound this reads a metric's ENTIRE retention. deltaPrefixLowerBoundFrag
-		// applies the same operator-configured e.deltaPrefixLookbackNS bound;
-		// see instantDeltaPrefixSource's doc for the correctness tradeoff.
-		deltaBranch := Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta))
-		if lower := deltaPrefixLowerBoundFrag(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS), e.deltaPrefixLookbackNS); lower != nil {
-			deltaBranch = And(deltaBranch, lower)
-		}
-		fanout.Where(
-			Lte(Col(srcTs), end),
-			Paren(Or(
-				deltaBranch,
-				Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
-			)),
-		)
-	} else {
-		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
-	}
+	e.applyMatrixFanoutScanBound(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
 
 	fanoutSource := fanout.Frag()
 
