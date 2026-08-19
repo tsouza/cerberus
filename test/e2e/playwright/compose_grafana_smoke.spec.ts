@@ -88,6 +88,16 @@ const WARMUP_BEFOREALL_TIMEOUT_MS =
   (SEED_TRAFFIC_SECONDS + WARMUP_BOUNDED_WAITS * WARMUP_SIGNAL_DEADLINE_SECONDS) *
   1000;
 
+// Bound on ACTIVELY waiting for the "Query rate by language" panel's own
+// /api/ds/query response once `networkidle` has already settled without it
+// having arrived. Grafana's scene runtime does not dispatch every panel's
+// query on a fixed schedule relative to network activity — dispatch can
+// follow a debounced query-runner tick or template-variable resolution,
+// neither of which is network traffic `networkidle` observes — so a panel's
+// request can legitimately fire (and its response land) after the passive
+// capture window has already closed. See driveCerberusQLPartition.
+const PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS = 60_000;
+
 test.beforeAll(async ({ request }) => {
   test.setTimeout(WARMUP_BEFOREALL_TIMEOUT_MS);
   await generateSelfTraffic(request, SEED_TRAFFIC_SECONDS);
@@ -752,10 +762,44 @@ async function driveCerberusQLPartition(
   // PromQL into the response envelope alongside the result, so
   // `body.includes('cerberus_ql')` narrows to the panel's request
   // without parsing the JSON.
-  const panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+  let panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+  if (panelResponses.length === 0) {
+    // Nothing landed in the passive `captured` buffer during the
+    // navigation + networkidle window above. Rather than trust that
+    // window's timing (see PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS), give
+    // the panel's own query one more, actively-awaited chance to
+    // dispatch and resolve before declaring it missing — this is not a
+    // cache-serving artifact (the request is a POST, which browsers do
+    // not disk-cache, and Playwright's response event fires for the
+    // real network round trip regardless), it is a dispatch-timing race
+    // between the panel and our capture window.
+    const late = await page
+      .waitForResponse(
+        async (resp) => {
+          if (!resp.url().includes('/api/ds/query')) return false;
+          try {
+            return (await resp.text()).includes('cerberus_ql');
+          } catch {
+            return false;
+          }
+        },
+        { timeout: PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS },
+      )
+      .catch(() => null);
+    if (late) {
+      let body = '';
+      try {
+        body = await late.text();
+      } catch {
+        body = '';
+      }
+      captured.push({ url: late.url(), body, status: late.status() });
+      panelResponses = captured.filter((c) => c.body.includes('cerberus_ql'));
+    }
+  }
   if (panelResponses.length === 0) {
     failures.push(
-      `[partition:${panelTitle}] no /api/ds/query response referenced cerberus_ql — Grafana may have served the panel from cache; rerun with cleared session if seen`,
+      `[partition:${panelTitle}] no /api/ds/query response referenced cerberus_ql within ${PANEL_QUERY_LATE_RESPONSE_TIMEOUT_MS}ms of the panel becoming visible — its backend query never dispatched or its response never resolved`,
     );
     return failures;
   }
