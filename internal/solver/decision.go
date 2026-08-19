@@ -93,6 +93,25 @@ const (
 	// or the K clamp collapsed below 2 — not worth slicing.
 	ReasonBelowThreshold = "below-threshold"
 
+	// ReasonAnchorGridIndivisible: eligible and above every cost threshold,
+	// but a carrier on the spine answers false to
+	// chplan.GridCarrier.AnchorGridDivides — its peak intermediate is
+	// Theta(rows x Lookback/Step), constant in the grid width, so slicing the
+	// anchor grid replicates that work per shard instead of partitioning it.
+	// The thresholds cannot see this: they read F = Lookback/Step as a
+	// divisor, and for such a carrier it is a redundancy multiplier, so the
+	// proxy's sign is inverted and a HIGH F is evidence against routing.
+	//
+	// Measured on production ClickHouse 26.6, classic-histogram fan-out spine
+	// at Step=15s / Lookback=5m / OuterRange=1h, K=12: route B cost 23x the
+	// ClickHouse work (185,101 ms vs 8,070 ms) and read 36x the rows, to
+	// recover 8.7% of a perfectly-divisible peak.
+	//
+	// ModeAuto only. Eligible() ignores it, so a genuine route-A resource
+	// failure still routes through the failure-driven memo: the model sets the
+	// prior, measurement overrides it.
+	ReasonAnchorGridIndivisible = "anchor-grid-indivisible"
+
 	// ReasonNotSliceable: some node in the plan is not registered
 	// SliceInvariant (the signal-1 marker gate).
 	ReasonNotSliceable = "not-sliceable"
@@ -168,6 +187,7 @@ const (
 var Reasons = []string{
 	ReasonRouted,
 	ReasonBelowThreshold,
+	ReasonAnchorGridIndivisible,
 	ReasonNotSliceable,
 	ReasonInstant,
 	ReasonHighD,

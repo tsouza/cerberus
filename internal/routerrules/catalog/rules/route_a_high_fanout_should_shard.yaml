@@ -1,12 +1,16 @@
 # The decision_reason leaf is a CORRECTNESS gate, not a noise filter. This
 # rule's advice is "lower the route-B threshold", which is only actionable for a
 # plan the solver found ELIGIBLE and then declined on cost — below-threshold and
-# high-D are the only two reasons that describe. Every other reason is a
+# high-D are the only two reasons that describe. Most other reasons are a
 # structural refusal (instant, instant-join, not-sliceable, now64, grid-mismatch,
 # incommensurate, scalar-heavy): route B cannot take those plans at ANY
 # threshold, so recommending a lower one is wrong advice rather than weak
-# advice. The leaf is stated positively so a Reason added to the solver later is
-# excluded by default instead of silently joining the population.
+# advice. anchor-grid-indivisible is the exception showing why this leaf must be
+# a LIST rather than "declined on cost": it IS a cost verdict, but one reached
+# ABOVE every threshold, on a plan slicing would make more expensive — so a
+# lower threshold cannot help it either. The leaf is stated positively so that
+# reason, and any Reason added to the solver later, is excluded by default
+# instead of silently joining the population.
 rules:
   - id: route_a_high_fanout_should_shard
     severity: medium

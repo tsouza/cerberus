@@ -1,9 +1,9 @@
 {
   "query": "histogram_quantile_sum_by_le_mixed_layouts/fanout",
   "lowering": "fanout",
-  "routed": true,
-  "k": 8,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "anchor-grid-indivisible",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "5m0s",

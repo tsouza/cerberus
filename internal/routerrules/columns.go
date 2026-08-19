@@ -211,6 +211,14 @@ var enumDomains = map[string]map[string]struct{}{
 		// thresholds decided the route. Only these two are actionable evidence
 		// about where a routing threshold sits.
 		"below-threshold", "high-D",
+		// Cost-model refusal ABOVE every threshold: the spine carries a grid
+		// carrier whose peak does not divide with the anchor grid, so slicing
+		// replicates that work per shard instead of partitioning it. This is a
+		// cost verdict like the two above, but it is NOT evidence about where a
+		// threshold sits — no threshold declined it — so a rule tuning
+		// MinFanout / MinAnchorPairs must exclude this population rather than
+		// read it as a row the thresholds turned away.
+		"anchor-grid-indivisible",
 		// Routed: eligible and sharded.
 		"routed",
 		// Structurally refused: route B cannot take the plan at any threshold.
