@@ -63,7 +63,7 @@ type GridCarrier interface {
 	// by Lookback. The proxy's sign is inverted for those carriers, so the
 	// very thing that clears the gate is the thing that makes slicing lose.
 	//
-	// Measured on production ClickHouse 26.6 for a classic-histogram
+	// Measured on ClickHouse 26.6 for a classic-histogram
 	// RangeBucketFanout spine (Step=15s, Lookback=5m, OuterRange=1h, K=12):
 	// route A 1 query / 8,070 ms / 93,608 rows / 4.01 GB peak; route B
 	// 12 queries / 185,101 ms / 3,343,211 rows / 3.69 GB peak. Slicing
@@ -146,7 +146,7 @@ func (r *RangeLWR) AnchorGridDivides() bool { return true }
 // each shard rebuilds the whole per-(series, anchor) fold over its own window
 // and neighbouring shards re-read the Lookback overlap (23x the ClickHouse work
 // for 8.7% of the peak — see the interface doc). The exponential/native
-// lowerings deliberately do NOT set it: route A is where #2385's 19 production
+// lowerings deliberately do NOT set it: route A is where #2385's 19 observed
 // OOMs happened, so slicing is what bounds their memory, and nothing has
 // measured otherwise.
 func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependentOfGrid }

@@ -102,7 +102,7 @@ const (
 	// divisor, and for such a carrier it is a redundancy multiplier, so the
 	// proxy's sign is inverted and a HIGH F is evidence against routing.
 	//
-	// Measured on production ClickHouse 26.6, classic-histogram fan-out spine
+	// Measured on ClickHouse 26.6, classic-histogram fan-out spine
 	// at Step=15s / Lookback=5m / OuterRange=1h, K=12: route B cost 23x the
 	// ClickHouse work (185,101 ms vs 8,070 ms) and read 36x the rows, to
 	// recover 8.7% of a perfectly-divisible peak.
