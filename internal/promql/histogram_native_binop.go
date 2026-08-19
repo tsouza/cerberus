@@ -386,27 +386,33 @@ func histogramBinopMergedBucketsExpr(offArrAlias, bucArrAlias, scalesArrAlias, m
 	offArr := &chplan.ColumnRef{Name: offArrAlias}
 	bucArr := &chplan.ColumnRef{Name: bucArrAlias}
 
-	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
-
 	const paramT = "t"
-	rowContribs := expHistogramRowContribsExpr(
-		scalesArr, offArr, bucArr,
-		histogramBinopBucketRowContribExpr(mergedScale, mergedStart, paramT),
-	)
-	rowsSum := plainArraySum(rowContribs)
 
-	return &chplan.FuncCall{
-		Fn: chplan.FnArrayMap,
-		Args: []chplan.Expr{
-			&chplan.Lambda{Params: []string{paramT}, Body: rowsSum},
-			&chplan.FuncCall{
-				Fn: chplan.FnRange,
+	// mergedStart is read from inside the per-target-bucket lambda, so it is
+	// bound once outside it — see expHistogramOverMergedBucketRangeExpr.
+	return expHistogramOverMergedBucketRangeExpr(
+		scalesArr, offArr, bucArr, mergedScale,
+		func(mergedStart, mergedLength chplan.Expr) chplan.Expr {
+			rowContribs := expHistogramRowContribsExpr(
+				scalesArr, offArr, bucArr,
+				histogramBinopBucketRowContribExpr(mergedScale, mergedStart, paramT),
+			)
+			rowsSum := plainArraySum(rowContribs)
+
+			return &chplan.FuncCall{
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+					&chplan.Lambda{Params: []string{paramT}, Body: rowsSum},
+					&chplan.FuncCall{
+						Fn: chplan.FnRange,
+						Args: []chplan.Expr{
+							&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+						},
+					},
 				},
-			},
+			}
 		},
-	}
+	)
 }
 
 // histogramBinopBucketRowContribExpr is [expHistogramBucketRowContribExpr]

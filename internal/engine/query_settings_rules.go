@@ -215,12 +215,38 @@ func planHasMetricsCompare(plan chplan.Node) bool {
 // system.query_log's OSCPUVirtualTimeMicroseconds: ~8.4s with the new
 // analyzer (default) vs ~1.4s with it disabled — an 83% reduction, comfortably
 // inside the compatibility harness's 10s per-query deadline where the default
-// analyzer left only a ~1.5s margin under CI contention. The SAME query on CH
-// 26.5 is fast either way (0.57s new analyzer vs 1.2s old analyzer) — both
-// settings names (`enable_analyzer` / `allow_experimental_analyzer`) alias the
-// same underlying flag on every ClickHouse version cerberus supports, so this
-// is a strict, version-safe win on the floor and a bounded, harmless trade
-// (well under any deadline) on newer servers.
+// analyzer left only a ~1.5s margin under CI contention. Both setting names
+// (`enable_analyzer` / `allow_experimental_analyzer`) alias the same underlying
+// flag on every ClickHouse version cerberus supports, so the stamp is
+// version-safe.
+//
+// It is deliberately NOT version-gated, and that is a measured decision rather
+// than an untested convenience. #2358 spot-checked the same single-series query
+// on CH 26.5 (0.57s new analyzer vs 1.2s old) and read the inversion as "a
+// bounded, harmless trade on newer servers" — which invited a later removal
+// once the 24.8 floor moves. Re-measuring on the shape production actually
+// runs, at production cardinality, refutes that reading: the trade does not
+// merely stay bounded on newer servers, it reverses. On chDB's embedded
+// ClickHouse 26.x engine (the substrate every chdb-tagged lane runs on) with
+// 500 distinct series under a one-label GROUP BY (the `cerb:project;agg=1;rbf`
+// plan shape — histogram_quantile over rate() of a native histogram in a range
+// query), three alternating rounds measured 12.2-14.5s with the new analyzer
+// against 2.3-2.6s with it disabled: ~5x, in the SAME direction as the 24.8
+// floor rather than against it. Peak memory moves the same way — bisecting
+// max_memory_usage, both settings complete at 512 MiB and exceed 256 MiB, but
+// at that failure the new analyzer had already reached 317 MiB against 286 MiB
+// for the old, so it costs ~11% more, not less. EXPLAIN PLAN says why: the new
+// analyzer emits MORE arrayMap nodes on this shape (391 vs 357), so its common-
+// subexpression elimination is not collapsing the merge/window-fold's repeated
+// array walks — the emitter's own bindings (promql's hqLet) are what do that.
+//
+// The 0.57s-vs-1.2s figure was real; it was just taken at a cardinality where
+// the analyzer's per-call-site planning cost still dominated its per-row
+// execution cost. So the standing instruction for whoever next touches this
+// stamp — including on a floor bump that retires 24.8 — is: a single-series
+// timing is not evidence about this shape. Re-measure at several hundred
+// distinct series under a one-label GROUP BY, on the newest server in the
+// supported range, and change the stamp only if THAT measurement says to.
 //
 // It is an execution-PLANNER choice, not a result rewrite — RESULT-EQUIVALENT
 // like every other rule in this file — so it is unconditional (no CERBERUS_*

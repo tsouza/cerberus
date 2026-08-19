@@ -292,39 +292,46 @@ func expHistogramResetPairBucketRegressedExpr(offArrAlias, bucArrAlias string, p
 	pairArray := func(a, b chplan.Expr) chplan.Expr {
 		return &chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{a, b}}
 	}
-	start, length := expHistogramMergeBucketsBoundsExpr(
+	// `start` is read by the length AND by both of the two contributions
+	// compared below, and those two sit inside the per-target-bucket
+	// arrayExists lambda — so an unbound `start` would be re-evaluated
+	// twice per target index. Binding it once outside the lambda, via
+	// expHistogramOverMergedBucketRangeExpr, makes all three reads a bare
+	// identifier.
+	return expHistogramOverMergedBucketRangeExpr(
 		pairArray(prevScale, currScale), pairArray(prevOff, currOff), pairArray(prevBuc, currBuc),
 		currScale,
-	)
-
-	// One row's contribution at target absolute index `start + rk`,
-	// rescaled from that row's OWN scale to currScale. Binding
-	// (paramExpRowScale, paramExpRowOffset, paramExpRowBuckets) via
-	// hqLet — rather than an arrayMap over a parallel array, which is
-	// what every other caller of expHistogramBucketRowContribExpr does —
-	// evaluates the ONE row's contribution exactly once per target
-	// index, matching hqLet's own "one evaluation" contract.
-	contribAt := func(rowScale, rowOff, rowBuc chplan.Expr) chplan.Expr {
-		return hqLet(paramExpRowScale, rowScale, func(chplan.Expr) chplan.Expr {
-			return hqLet(paramExpRowOffset, rowOff, func(chplan.Expr) chplan.Expr {
-				return hqLet(paramExpRowBuckets, rowBuc, func(chplan.Expr) chplan.Expr {
-					return expHistogramBucketRowContribExpr(currScale, start, paramResetTargetBucket)
+		func(start, length chplan.Expr) chplan.Expr {
+			// One row's contribution at target absolute index `start + rk`,
+			// rescaled from that row's OWN scale to currScale. Binding
+			// (paramExpRowScale, paramExpRowOffset, paramExpRowBuckets) via
+			// hqLet — rather than an arrayMap over a parallel array, which is
+			// what every other caller of expHistogramBucketRowContribExpr does —
+			// evaluates the ONE row's contribution exactly once per target
+			// index, matching hqLet's own "one evaluation" contract.
+			contribAt := func(rowScale, rowOff, rowBuc chplan.Expr) chplan.Expr {
+				return hqLet(paramExpRowScale, rowScale, func(chplan.Expr) chplan.Expr {
+					return hqLet(paramExpRowOffset, rowOff, func(chplan.Expr) chplan.Expr {
+						return hqLet(paramExpRowBuckets, rowBuc, func(chplan.Expr) chplan.Expr {
+							return expHistogramBucketRowContribExpr(currScale, start, paramResetTargetBucket)
+						})
+					})
 				})
-			})
-		})
-	}
+			}
 
-	return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{paramResetTargetBucket},
-			Body: &chplan.Binary{
-				Op:    chplan.OpLt,
-				Left:  contribAt(currScale, currOff, currBuc),
-				Right: contribAt(prevScale, prevOff, prevBuc),
-			},
+			return &chplan.FuncCall{Fn: chplan.FnArrayExists, Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramResetTargetBucket},
+					Body: &chplan.Binary{
+						Op:    chplan.OpLt,
+						Left:  contribAt(currScale, currOff, currBuc),
+						Right: contribAt(prevScale, prevOff, prevBuc),
+					},
+				},
+				&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{
+					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{length}},
+				}},
+			}}
 		},
-		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{
-			&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{length}},
-		}},
-	}}
+	)
 }

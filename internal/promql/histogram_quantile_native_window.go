@@ -194,12 +194,6 @@ func expHistogramWindowBucketsExpr(
 	bucArr := chplan.Expr(&chplan.ColumnRef{Name: bucArrAlias})
 	tsList := chplan.Expr(&chplan.ColumnRef{Name: hqWindowTsListAlias})
 
-	mergedStart, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
-	contribs := expHistogramRowContribsExpr(
-		scalesArr, offArr, bucArr,
-		expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramExpTargetBucket),
-	)
-
 	// Every row contributes to every target index — a row whose stored
 	// buckets miss the target contributes a 0 rather than being filtered
 	// out — so the contributions array stays positionally aligned with
@@ -208,21 +202,34 @@ func expHistogramWindowBucketsExpr(
 	// arrayFilter drops rows that never reported a bound: a bucket an
 	// exponential row does not store is a bucket it observed zero of, not
 	// a series it never reported.
-	return &chplan.FuncCall{
-		Fn: chplan.FnArrayMap,
-		Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramExpTargetBucket},
-				Body:   fold(expHistogramWindowFloatsExpr(contribs), tsList),
-			},
-			&chplan.FuncCall{
-				Fn: chplan.FnRange,
+	//
+	// mergedStart is read from inside the per-target-bucket lambda — under
+	// `fold`, so once per window row per bucket — which is why it is bound
+	// once outside it; see expHistogramOverMergedBucketRangeExpr.
+	return expHistogramOverMergedBucketRangeExpr(
+		scalesArr, offArr, bucArr, mergedScale,
+		func(mergedStart, mergedLength chplan.Expr) chplan.Expr {
+			contribs := expHistogramRowContribsExpr(
+				scalesArr, offArr, bucArr,
+				expHistogramBucketRowContribExpr(mergedScale, mergedStart, paramExpTargetBucket),
+			)
+			return &chplan.FuncCall{
+				Fn: chplan.FnArrayMap,
 				Args: []chplan.Expr{
-					&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+					&chplan.Lambda{
+						Params: []string{paramExpTargetBucket},
+						Body:   fold(expHistogramWindowFloatsExpr(contribs), tsList),
+					},
+					&chplan.FuncCall{
+						Fn: chplan.FnRange,
+						Args: []chplan.Expr{
+							&chplan.FuncCall{Fn: chplan.FnToUInt64, Args: []chplan.Expr{mergedLength}},
+						},
+					},
 				},
-			},
+			}
 		},
-	}
+	)
 }
 
 // hqWindowFactorAlias holds rate/increase's per-series boundary-
