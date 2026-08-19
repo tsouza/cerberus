@@ -242,3 +242,67 @@ func TestChCodeTimeoutExceeded_ExactCode(t *testing.T) {
 		t.Errorf("chCodeTimeoutExceeded = %d; want %d", chCodeTimeoutExceeded, want)
 	}
 }
+
+// TestHiddenDeadlineContext_HidesDeadlineOnly pins the exact contract
+// hiddenDeadlineContext must uphold: Deadline() reports "none" so
+// clickhouse-go/v2's own queryOptions() never derives (and clobbers
+// chclient's own) max_execution_time from it, while Done()/Err()/Value()
+// are byte-identical to the wrapped context — cancellation still fires at
+// exactly the same instant it always did.
+func TestHiddenDeadlineContext_HidesDeadlineOnly(t *testing.T) {
+	t.Parallel()
+
+	type key struct{}
+	inner, cancel := context.WithTimeout(context.WithValue(context.Background(), key{}, "v"), time.Hour)
+	defer cancel()
+
+	wrapped := hiddenDeadlineContext(inner)
+
+	if _, ok := wrapped.Deadline(); ok {
+		t.Error("Deadline() reported a deadline; want none")
+	}
+	if wrapped.Done() != inner.Done() {
+		t.Error("Done() channel diverged from the wrapped context — cancellation timing would change")
+	}
+	if wrapped.Err() != inner.Err() {
+		t.Errorf("Err() = %v; want %v (delegated unchanged)", wrapped.Err(), inner.Err())
+	}
+	if got := wrapped.Value(key{}); got != "v" {
+		t.Errorf("Value(key{}) = %v; want %q", got, "v")
+	}
+}
+
+// TestHiddenDeadlineContext_NoOpWithoutDeadline — a ctx that never had a
+// Deadline() is returned unchanged (no wrapper allocation, no behavioural
+// difference): the fix only needs to intervene when there is a Deadline() to
+// hide in the first place.
+func TestHiddenDeadlineContext_NoOpWithoutDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if got := hiddenDeadlineContext(ctx); got != ctx {
+		t.Errorf("hiddenDeadlineContext returned a different context for a Deadline()-less input")
+	}
+}
+
+// TestQueryContext_HidesCallerDeadline — the seam every data-plane query
+// routes through (queryContext) must apply hiddenDeadlineContext to
+// whatever it hands the driver, or the fix has no effect in production: this
+// is what actually reaches c.conn.Query.
+func TestQueryContext_HidesCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+
+	got := c.queryContext(ctx)
+	if _, ok := got.Deadline(); ok {
+		t.Error("queryContext's returned ctx still reports a Deadline() — clickhouse-go's own max_execution_time auto-override would still clobber chclient's own setting")
+	}
+	if got.Done() != ctx.Done() {
+		t.Error("queryContext's returned ctx has a different Done() channel — cancellation timing changed")
+	}
+}

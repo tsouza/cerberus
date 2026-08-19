@@ -892,8 +892,14 @@ var queryIDCounter atomic.Uint64
 // active trace. clickhouse.Context merges per-option with any QueryOptions
 // already on ctx (e.g. the progress callback installed by
 // WithProgressFor), so stacking is safe and the existing options are
-// preserved. When neither a setting nor a query_id is available the ctx
-// is returned unchanged.
+// preserved.
+//
+// The returned context also hides its own Deadline() from anything reading
+// it downstream — see hiddenDeadlineContext for why: clickhouse-go/v2
+// otherwise derives its OWN `max_execution_time` from ctx's Deadline() and
+// silently overwrites whatever this method just computed, which structurally
+// prevents ClickHouse's clean server-side timeout abort from ever winning
+// the race against the caller's own ctx cancellation.
 //
 // The query_id is computed ONCE here, stored on the returned context, and
 // reused by queryIDFromContext, so the value stamped via WithQueryID is the
@@ -905,6 +911,7 @@ var queryIDCounter atomic.Uint64
 func (c *Client) queryContext(ctx context.Context) context.Context {
 	s := c.querySettings(ctx)
 	queryID, ctx := ensureQueryID(ctx)
+	ctx = hiddenDeadlineContext(ctx)
 	if s == nil && queryID == "" {
 		return ctx
 	}
