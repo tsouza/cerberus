@@ -4,6 +4,16 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.15.2] — 2026-08-19
+
+### Added
+
+- **engine:** log a WARN line for every non-ok query exit (#2376)
+
+### Fixed
+
+- **chclient:** stop clickhouse-go from clobbering the query timeout setting (#2377)
+
 ## [v1.15.1] — 2026-08-18
 
 ### Fixed
