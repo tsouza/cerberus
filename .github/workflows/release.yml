@@ -261,7 +261,15 @@ jobs:
           # block a release. `mutation` is a test-QUALITY ratchet rather than a
           # correctness gate on the artifact being shipped; requiring it here
           # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes.
+          # including maintenance hotfixes. `drought` (chaos-not-applicable-rate.yml)
+          # is a Wednesday-cron historical drift detector over chaos-lane run
+          # history, not a property of any specific commit — its own header
+          # comment already excludes it from PR gating for the same reason.
+          # It posts a check-run on whatever main HEAD happens to be when the
+          # cron fires, so an unlucky coincidence (observed directly: the
+          # v1.15.2 release commit) would otherwise hold a release hostage to a
+          # signal about accumulated chaos-job history that release did not
+          # change.
           #
           # `CodeQL` is NOT here — it is in RELEASE_REQUIRED_CHECKS above.
           # Advanced setup's own `codeql.yml` (added in #1558 for merge-queue
@@ -281,6 +289,7 @@ jobs:
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
+            drought
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
