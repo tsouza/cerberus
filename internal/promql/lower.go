@@ -3303,6 +3303,17 @@ func wrapRangeWindowAtBroadcast(
 	return &chplan.Project{Input: joined, Projections: projections}
 }
 
+// rangeBucketAlias is the GroupByAliases name [lowerAggregate] gives the
+// per-step bucket column it injects into a range-mode Aggregate's own group
+// key. It is deliberately NOT s.TimestampColumn: [wrapAggregateForSample]
+// re-aliases it to the canonical timestamp column only in the WRAPPING
+// Project's own projection list, one layer above the raw Aggregate. The
+// const is package-level (rather than local to lowerAggregate) specifically
+// so [guardKeysOnTimestamp] in duplicate_labelset_guard.go can recognize
+// this alias too — a range-bucketed Aggregate is already per-step even
+// though its own GroupByAliases never spell the canonical column name.
+const rangeBucketAlias = "bucket_ts"
+
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
 // `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
 // `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
@@ -3351,12 +3362,11 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// must group by the per-step bucket in addition to the user's
 	// `by/without` keys — otherwise CH would collapse N anchors into one
 	// row per series-set. Inject TimeUnix as an extra group key with a
-	// stable alias (`bucket_ts`) the wrap can reference.
-	const bucketAlias = "bucket_ts"
+	// stable alias ([rangeBucketAlias]) the wrap can reference.
 	rangeBucketed := ctx.step > 0
 	if rangeBucketed {
 		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
-		aliases = append(aliases, bucketAlias)
+		aliases = append(aliases, rangeBucketAlias)
 	}
 	agg := &chplan.Aggregate{
 		Input:              input,
@@ -3371,7 +3381,7 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	if rangeBucketed {
 		userAliases = aliases[:len(aliases)-1]
 	}
-	wrapped := wrapAggregateForSample(agg, a, s, userAliases, rangeBucketed, bucketAlias)
+	wrapped := wrapAggregateForSample(agg, a, s, userAliases, rangeBucketed, rangeBucketAlias)
 	// quantile(phi, V) with phi outside [0, 1] is well-defined in
 	// PromQL — see prometheus/promql/quantile.go: phi<0 → -Inf,
 	// phi>1 → +Inf. CH's `quantile` aggregate rejects out-of-range
