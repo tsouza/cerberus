@@ -200,6 +200,62 @@ func (c *Client) classifyDriverErr(ctx context.Context, err error) error {
 	return wrapQueryTimeout(wrapMemoryLimit(err, c.maxMemory), c.effectiveQueryTimeout(ctx))
 }
 
+// hiddenDeadlineContext hides ctx's own Deadline() from anything reading it
+// downstream — Done(), Err() and Value() all delegate straight through to
+// ctx unchanged, so cancellation still fires at exactly the same instant it
+// always did; only the Deadline() ACCESSOR reports "none".
+//
+// This exists to work around a clickhouse-go/v2 behaviour that otherwise
+// silently overrides cerberus's own per-query `max_execution_time` setting.
+// clickhouse-go/v2's queryOptions() (context.go) derives its own
+// `max_execution_time` from the ctx it is handed — `time.Until(ctx.
+// Deadline()) + 5s` — and stamps it into the outgoing settings map whenever
+// ctx carries a Deadline() more than a second away, UNCONDITIONALLY
+// clobbering whatever value querySettings already placed there. Because that
+// derived cap is, by construction, always LATER than ctx's own Done() firing
+// time (ctx-remaining + 5s is always > ctx-remaining), ClickHouse's clean
+// server-side abort (TIMEOUT_EXCEEDED, code 159 — the very thing
+// classifyDriverErr/wrapQueryTimeout exist to classify) can never win the
+// race against the caller's own Go ctx: every data-plane query that runs its
+// full configured budget ends up cancelled through the client-ctx path
+// instead. That path is itself racy inside the driver (conn_process.go races
+// the outer ctx.Done() select against the raw socket's own
+// ctx.Deadline()-derived read/write deadline — see startReadWriteTimeout),
+// and when the raw-socket side of that race wins, ClickHouse never receives
+// a protocol-level Cancel packet at all: it only notices the dropped TCP
+// connection, which surfaces server-side as a NetException instead of a
+// clean cancellation. This was confirmed against a live ClickHouse instance:
+// the same request-shaped query flipped between a clean
+// QUERY_WAS_CANCELLED_BY_CLIENT (code 735) and a bare "client has dropped
+// the connection" NetException (code 236) across otherwise-identical runs,
+// with ClickHouse's own max_execution_time never getting a chance to fire.
+//
+// Hiding Deadline() from the driver disarms both the auto-override AND the
+// internal race: chclient's own querySettings-computed `max_execution_time`
+// (or its deliberate absence, when no timeout is configured — see
+// Config.QueryTimeout's "0 = don't set the setting" contract) reaches
+// ClickHouse unmodified and gets the first chance to abort the query
+// cleanly; the caller's Go ctx remains the backstop it was always meant to
+// be (queryContext / reqctx.ApplyQueryTimeout's own doc comment), unblocking
+// a hung call exactly when it always did, via the SAME Done() channel.
+func hiddenDeadlineContext(ctx context.Context) context.Context {
+	if _, ok := ctx.Deadline(); !ok {
+		return ctx
+	}
+	return noDeadlineContext{ctx}
+}
+
+// noDeadlineContext embeds a context.Context so Done() / Err() / Value() all
+// delegate to it unchanged, while Deadline() is overridden to report "none".
+// See hiddenDeadlineContext.
+type noDeadlineContext struct {
+	context.Context
+}
+
+func (noDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
 // effectiveQueryTimeout resolves the wall-clock cap a query runs under:
 // the Client's configured default (c.queryTimeout) unless ctx carries a
 // per-request WithQueryTimeout override, in which case the SMALLER of
