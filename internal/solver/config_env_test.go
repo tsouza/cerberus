@@ -1,6 +1,7 @@
 package solver
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,50 +93,83 @@ func TestConfigFromEnv_RetiredKnobsIgnored(t *testing.T) {
 // operator explicitly opts in. An unset env var (a routine upgrade,
 // deploying this binary onto an existing config with no manifest change)
 // must resolve to disabled, not enabled.
-func TestConfigFromEnv_RouteMemoDefaultsOff(t *testing.T) {
-	t.Setenv(EnvRouteMemoEnabled, "")
+func TestConfigFromEnv_AdaptiveDefaultsOn(t *testing.T) {
+	t.Setenv(EnvAdaptiveEnabled, "")
+	t.Setenv(EnvLegacyRouteMemoEnabled, "")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv() error = %v", err)
 	}
-	if cfg.RouteMemoEnabled {
-		t.Errorf("RouteMemoEnabled = true, want false (default-off)")
+	if !cfg.AdaptiveEnabled {
+		t.Errorf("AdaptiveEnabled = false, want true (default-on: it is the only half of the routing decision that reacts to what happened)")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("default config failed Validate: %v", err)
 	}
 }
 
-// TestConfigFromEnv_RouteMemoExplicitOn confirms the opt-in path.
-func TestConfigFromEnv_RouteMemoExplicitOn(t *testing.T) {
-	t.Setenv(EnvRouteMemoEnabled, "true")
+// TestConfigFromEnv_AdaptiveExplicitOff pins that an operator can still turn it
+// off — and that doing so is honoured, not silently overridden by the default.
+func TestConfigFromEnv_AdaptiveExplicitOff(t *testing.T) {
+	t.Setenv(EnvAdaptiveEnabled, "false")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv() error = %v", err)
 	}
-	if !cfg.RouteMemoEnabled {
-		t.Errorf("RouteMemoEnabled = false, want true (explicit opt-in)")
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("route-memo-enabled config failed Validate: %v", err)
+	if cfg.AdaptiveEnabled {
+		t.Errorf("AdaptiveEnabled = true, want false (explicit opt-out must win over the default)")
 	}
 }
 
-// TestConfigFromEnv_RouteMemoExplicitOff confirms an explicit "false" is
-// indistinguishable in effect from leaving the var unset (both resolve to
-// disabled) — the option to be explicit about the default must not itself
-// change behaviour.
-func TestConfigFromEnv_RouteMemoExplicitOff(t *testing.T) {
-	t.Setenv(EnvRouteMemoEnabled, "false")
+// TestConfigFromEnv_LegacyRouteMemoAliasStillApplies pins the soft deprecation:
+// an operator who set the OLD name to false on a previous version must not have
+// the feature silently re-enabled by an upgrade that merely renamed the knob.
+func TestConfigFromEnv_LegacyRouteMemoAliasStillApplies(t *testing.T) {
+	t.Setenv(EnvLegacyRouteMemoEnabled, "false")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv() error = %v", err)
 	}
-	if cfg.RouteMemoEnabled {
-		t.Errorf("RouteMemoEnabled = true, want false (explicit opt-out)")
+	if cfg.AdaptiveEnabled {
+		t.Errorf("AdaptiveEnabled = true; the deprecated %s=false must still disable it", EnvLegacyRouteMemoEnabled)
+	}
+}
+
+// TestConfigFromEnv_NewNameWinsOverLegacy pins the precedence when both are set.
+func TestConfigFromEnv_NewNameWinsOverLegacy(t *testing.T) {
+	t.Setenv(EnvLegacyRouteMemoEnabled, "false")
+	t.Setenv(EnvAdaptiveEnabled, "true")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if !cfg.AdaptiveEnabled {
+		t.Errorf("AdaptiveEnabled = false; the new name must win over the deprecated alias")
+	}
+}
+
+// TestDeprecatedEnvWarnings_FiresOnLegacyName pins that the deprecation is
+// ANNOUNCED, not silent. A rename nobody is told about is a rename that rots.
+func TestDeprecatedEnvWarnings_FiresOnLegacyName(t *testing.T) {
+	t.Setenv(EnvLegacyRouteMemoEnabled, "true")
+
+	warns := DeprecatedEnvWarnings()
+	if len(warns) == 0 {
+		t.Fatal("no deprecation warning for the legacy route-memo env var")
+	}
+	if !strings.Contains(warns[0], EnvAdaptiveEnabled) {
+		t.Errorf("warning %q does not name the replacement %s", warns[0], EnvAdaptiveEnabled)
+	}
+}
+
+// TestDeprecatedEnvWarnings_SilentWhenUnset: no warning when nobody set it.
+func TestDeprecatedEnvWarnings_SilentWhenUnset(t *testing.T) {
+	if w := DeprecatedEnvWarnings(); len(w) != 0 {
+		t.Errorf("unexpected deprecation warnings with nothing set: %v", w)
 	}
 }
 

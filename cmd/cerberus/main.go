@@ -740,7 +740,7 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 // buildRouteMemo wires the failure-driven route memo (internal/routememo,
 // docs/solver.md §"Failure-driven route memo") when explicitly enabled via
 // CERBERUS_SOLVER_ROUTE_MEMO_ENABLED (default false — see
-// solver.Config.RouteMemoEnabled's doc for why this is opt-in rather than
+// solver.Config.AdaptiveEnabled's doc for why this is on by default rather than
 // riding along with Mode=auto/sharded automatically). Returns nil (the
 // engine's byte-unchanged, feature-off default) when disabled or when
 // evalSolver is nil.
@@ -754,7 +754,7 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 // after construction so an operator can override either without this
 // function needing to know the routememo package's own default constants.
 func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.Memo {
-	if evalSolver == nil || !evalSolver.Cfg.RouteMemoEnabled {
+	if evalSolver == nil || !evalSolver.Cfg.AdaptiveEnabled {
 		return nil
 	}
 	memo := routememo.New(evalSolver.EffectiveTimeout())
