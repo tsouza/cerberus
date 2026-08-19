@@ -141,7 +141,9 @@ async function apiJson(url, headers, what) {
 async function apiText(url, headers, what) {
   const res = await fetch(url, { headers });
   if (!res.ok) {
-    throw new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
+    const err = new Error(`${what}: HTTP ${res.status} ${res.statusText} for ${url}`);
+    err.status = res.status;
+    throw err;
   }
   return res.text();
 }
@@ -185,6 +187,7 @@ async function main() {
   }
 
   const logs = [];
+  let expiredLogCount = 0;
   for (const run of runs) {
     const jobsResp = await apiJson(
       `${apiBase}/repos/${repo}/actions/runs/${run.id}/jobs?per_page=${maxPerPage}`,
@@ -193,12 +196,36 @@ async function main() {
     );
     const job = (jobsResp.jobs ?? []).find((j) => j.name === jobName);
     if (!job || job.status !== 'completed') continue;
-    const logText = await apiText(
-      `${apiBase}/repos/${repo}/actions/jobs/${job.id}/logs`,
-      headers,
-      `read log for job ${job.id}`,
-    );
+    let logText;
+    try {
+      logText = await apiText(
+        `${apiBase}/repos/${repo}/actions/jobs/${job.id}/logs`,
+        headers,
+        `read log for job ${job.id}`,
+      );
+    } catch (err) {
+      // GitHub does not guarantee a completed job's log blob stays fetchable
+      // for as long as its check-run/run metadata does (observed directly: a
+      // job well inside the `window`-run sample 404'd on its own log while
+      // the run and job records themselves still listed fine). Treat an
+      // expired log the same as a job this script already skips for not
+      // being completed — drop it from the sample — rather than crashing the
+      // whole drought check on a storage-retention detail unrelated to
+      // whether any scenario actually drought this run.
+      if (err.status === 404) {
+        expiredLogCount += 1;
+        continue;
+      }
+      throw err;
+    }
     logs.push(logText);
+  }
+  if (expiredLogCount > 0) {
+    notice(
+      `${expiredLogCount} of ${runs.length} sampled ${workflow} run(s) had an expired/unavailable ` +
+        `"${jobName}" job log (HTTP 404) and were dropped from the sample`,
+      { title: 'chaos-not-applicable-rate' },
+    );
   }
   if (logs.length === 0) {
     throw new Error(
