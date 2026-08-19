@@ -81,15 +81,21 @@ ready`, `signal received, shutting down`, `cerberus stopped`).
 The codebase follows a small set of consistent keys so a future query
 across `otel_logs` can filter without guessing:
 
-| Key                            | Type   | Notes                                                                                                      |
-| ------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------- |
-| `api`                          | string | `prom` / `loki` / `tempo`, set on the per-handler logger via `.With("api", ...)` in `cmd/cerberus/main.go` |
-| `promql` / `logql` / `traceql` | string | The query text as received                                                                                 |
-| `sql`                          | string | The emitted ClickHouse SQL                                                                                 |
-| `args`                         | []any  | Parameterised SQL args                                                                                     |
-| `err`                          | error  | Native `error` value — slog encodes via `.Error()` for json + `%v` for text                                |
-| `trace_id`                     | string | Tempo `traceByID` handler only                                                                             |
-| `tag`                          | string | Tempo tag-values handler                                                                                   |
+| Key                            | Type   | Notes                                                                                                                 |
+| ------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| `api`                          | string | `prom` / `loki` / `tempo`, set on the per-handler logger via `.With("api", ...)` in `cmd/cerberus/main.go`            |
+| `promql` / `logql` / `traceql` | string | The query text as received                                                                                            |
+| `sql`                          | string | The emitted ClickHouse SQL                                                                                            |
+| `args`                         | []any  | Parameterised SQL args                                                                                                |
+| `err`                          | error  | Native `error` value — slog encodes via `.Error()` for json + `%v` for text                                           |
+| `trace_id`                     | string | Tempo `traceByID` handler only                                                                                        |
+| `tag`                          | string | Tempo tag-values handler                                                                                              |
+| `cerberus_ql`                  | string | `promql` / `logql` / `traceql`, on the query-failure log line (§"Query failure log line")                             |
+| `shape_id`                     | string | The literal-free `cerb:<root>[;mod...]` plan shape id (`internal/engine.planShapeID`), same line                      |
+| `decision_reason`              | string | The sharded-pushdown solver's `Reason` for this dispatch, or `""` when no classification ran, same line               |
+| `exit_class`                   | string | The failure class (`timeout` / `oom` / `sample_budget` / `byte_budget` / `breaker` / `canceled` / `error`), same line |
+| `duration_ms`                  | int64  | Wall-clock milliseconds the failing dispatch ran for, same line                                                       |
+| `query_id`                     | string | The ClickHouse `query_id` (the join key into `system.query_log`), same line, empty when dispatch never reached CH     |
 
 Always pass the native `error` as `"err", err` rather than `err.Error()`
 so a future `slog.Handler` middleware can branch on `errors.As` /
@@ -365,6 +371,60 @@ degrading: an export failure means the gateway has lost its OWN
 telemetry, which is precisely what an operator reaches for when
 diagnosing a failure. The fixed message plus the `component` field make
 the rate of these expressible as an alert.
+
+### Query failure log line
+
+Before this, a query that failed against ClickHouse — a timeout, an
+OOM / memory-limit abort, a ClickHouse exception, a caller cancellation,
+or any other non-`ok` exit — left no trace in `kubectl logs` at all. The
+only record was cerberus's own ClickHouse-side performance corpus
+(`internal/optcorpus`, `docs/router-rules.md`), which is off by default
+(`CERBERUS_CH_OPT_CORPUS_ENABLED`) and, even when on, is written on an
+interval into a table an operator troubleshooting "things are slow" has
+no reason to think of querying. A routine incident investigation ended
+up as a multi-hour ClickHouse-side deep-dive instead of a five-minute
+`grep`.
+
+`internal/engine` now logs one `WARN`-level, structured line at every
+seam where a dispatched query's outcome resolves to something other
+than a clean finish — the eager `Query` / `QueryPlan` path (every PromQL
+instant query, every LogQL query, every eager TraceQL query), the
+streaming `QueryCursor` / `QueryPlanCursor` path's open-time and
+mid-drain failures (the Prom `/query_range` matrix path), and the
+dormant sharded-pushdown route-B path. It never fires for a query that
+completes cleanly — logging every successful query would be a
+production log-volume problem, not an observability improvement — and
+it fires unconditionally, independent of whether the corpus reconciler
+is even registered, so the gap does not silently reopen on a deployment
+that never turned the corpus on.
+
+```json
+{"level":"WARN","msg":"cerberus query failed","cerberus_ql":"promql","shape_id":"cerb:project;agg=1;rw","decision_reason":"","exit_class":"timeout","duration_ms":30012,"query_id":"a1b2c3-...-4","err":"engine: execute: query execution timeout exceeded"}
+```
+
+The classification (`exit_class`) reuses the exact same predicates the
+corpus already uses to classify a cerberus-side outcome
+(`sample_budget` / `byte_budget` / `breaker` / `oom`), widened with the
+two classes only a synchronous caller can see (`timeout` / `canceled`)
+and the honest `error` floor for a ClickHouse exception that matches
+none of the above — so the log line and the corpus row for the SAME
+failure can never name a different cause. `shape_id` and
+`decision_reason` are empty rather than fabricated at the one call site
+with no plan/decision in scope (a mid-drain failure reported back from
+the handler, which owns the drain and has no plan reference).
+`duration_ms` and `query_id` are logged because they are already known
+at every call site at zero extra cost; the per-query ClickHouse memory
+usage the corpus's `system.query_log` join eventually learns is
+deliberately NOT fetched here — doing so would mean an extra ClickHouse
+round trip on every failure, which this line exists to avoid, not add.
+
+Deliberately `WARN`, not `ERROR`: most non-`ok` exits here are not
+cerberus defects (a caller cancelling, a query that ran into its own
+configured budget) rather than something "worth a page" the way this
+page's `ERROR` vocabulary above describes. A genuine cerberus defect
+still reaches `ERROR` through its own existing site (the recovered-panic
+log in `telemetry.QueryMiddleware`); this line's job is visibility, not
+alerting.
 
 ### Resource attributes
 

@@ -339,7 +339,7 @@ func TestExecuteRoutedCursor_DrainOutcomeUsesLogicalRouteBRecord(t *testing.T) {
 		t.Fatalf("routed cursor QueryID %q is not one of the logical record's shard ids %v", cr.QueryID, routed[0])
 	}
 
-	eng.ObserveDrainOutcome(cr.QueryID, solver.LangPromQL, chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome(cr.QueryID, solver.LangPromQL, 0, chclient.ErrTooManySamples)
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	if len(obs.outcomes) != 1 {

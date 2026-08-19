@@ -596,6 +596,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	})
 	defer closeOriginal()
 
+	drainStart := time.Now()
 	matrixResult, drainErr := matrixFromCursor(result.Cursor, start, end, step)
 	if drainErr == nil {
 		// The failure-driven route memo's unconditional bookkeeping hook —
@@ -635,7 +636,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	// — surface the ORIGINAL drain error exactly as before this mechanism
 	// existed. See the comment on h.respondRangeRetry's own drain-failure
 	// path for why this is stamped onto the corpus the same way.
-	h.Engine.ObserveDrainOutcome(result.QueryID, "promql", drainErr)
+	h.Engine.ObserveDrainOutcome(result.QueryID, "promql", time.Since(drainStart), drainErr)
 	h.respondError(w, classifyDrainError(drainErr))
 }
 
@@ -686,6 +687,7 @@ func (h *Handler) respondRangeRetry(
 	})
 	defer closeRetry()
 
+	drainStart := time.Now()
 	retryMatrix, retryErr := matrixFromCursor(retryResult.Cursor, start, end, step)
 	if retryErr == nil {
 		if retryResult.ObserveDrainOutcome != nil {
@@ -703,7 +705,7 @@ func (h *Handler) respondRangeRetry(
 	// retained, exit overridden); a memory-cap abort is recorded
 	// terminally so the corpus does not depend on the query_log join
 	// landing a row.
-	h.Engine.ObserveDrainOutcome(retryResult.QueryID, "promql", retryErr)
+	h.Engine.ObserveDrainOutcome(retryResult.QueryID, "promql", time.Since(drainStart), retryErr)
 	h.respondError(w, classifyDrainError(retryErr))
 }
 
