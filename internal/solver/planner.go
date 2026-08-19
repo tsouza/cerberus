@@ -218,16 +218,18 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
 	// (1b) Routable-spine restriction: the routable spine families are the
-	// RangeWindow matrix family, the RangeWindowGridNative timeSeries*ToGrid family
-	// and the RangeLWR bare-selector last-with-respect-to family — ReanchorRange
-	// re-grids all three. Every other [chplan.GridCarrier] kind
-	// (RangeWindowStaleResample, RangeBucketFanout, StepGrid, AbsentOverTime) has its
-	// grid CloneNode'd verbatim, so each shard would emit the original full-grid
-	// bounds; they fail closed to route A. Note the asymmetry this gate exists
-	// to preserve: the extractor MEASURES all seven kinds so the corpus can see
-	// what a refused plan costs, while only the re-anchored families may be
-	// SLICED. Admitting a kind here means teaching ReanchorRange (and the
-	// slicer's UnpinSpine) its grid first, not widening carrierGeometryOf.
+	// RangeWindow matrix family, the RangeWindowGridNative timeSeries*ToGrid family,
+	// the RangeLWR bare-selector last-with-respect-to family, and the
+	// RangeBucketFanout array-aggregate fan-out behind the classic-histogram
+	// families — ReanchorRange re-grids all four. Every other
+	// [chplan.GridCarrier] kind (RangeWindowStaleResample, StepGrid,
+	// AbsentOverTime) has its grid CloneNode'd verbatim, so each shard would
+	// emit the original full-grid bounds; they fail closed to route A. Note
+	// the asymmetry this gate exists to preserve: the extractor MEASURES all
+	// seven kinds so the corpus can see what a refused plan costs, while only
+	// the re-anchored families may be SLICED. Admitting a kind here means
+	// teaching ReanchorRange (and the slicer's UnpinSpine) its grid first, not
+	// widening carrierGeometryOf.
 	if sig.sawNonRangeWindowSpine {
 		return sig, notRouted(ReasonNotSliceable).withGrid(sig, meta), 0, false
 	}
@@ -513,11 +515,12 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// RangeBucketFanout is the array-aggregate sibling of RangeLWR and
 		// is slice-invariant; like Aggregate it carries group keys + agg
 		// args that the spine recursion never sweeps. Cover the same now64
-		// gap. It also carries its own eval grid (Start/End/Step) that
-		// ReanchorRange clones VERBATIM (never re-anchors), so every shard
-		// would emit stale bounds — recordGridCarrier fails it closed to
-		// route A while still measuring the grid it does carry.
+		// gap. It carries its own eval grid (Start/End/Step), re-anchored by
+		// chplan.ReanchorRange the same way RangeLWR is (checkRangeBucketFanoutGrid
+		// runs the same bound-pinning / grid-prediction gates
+		// checkRangeLWRGrid does).
 		p.recordGridCarrier(v, depth, sig)
+		p.checkRangeBucketFanoutGrid(v, predStart, predEnd, depth, sig)
 		for _, e := range v.GroupBy {
 			p.walkExpr(e, predStart, predEnd, v.Step, sig)
 		}
@@ -529,7 +532,11 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 				p.walkExpr(e, predStart, predEnd, v.Step, sig)
 			}
 		}
-		p.walkNode(v.Input, predStart, predEnd, v.Step, depth, sig)
+		// Each anchor's membership window looks back Offset+Lookback (mirrors
+		// the RangeLWR arm above); widen the input spine by that much so the
+		// grid this predicts for the child matches what ReanchorRange actually
+		// produces (see reanchorRangeBucketFanout).
+		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth, sig)
 		return
 
 	case *chplan.StepGrid:
@@ -777,10 +784,13 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		}, true
 
 	case *chplan.RangeBucketFanout:
-		// The array-aggregate fan-out behind the histogram families. Its
-		// per-node shape is slice-invariant, but its grid is cloned verbatim,
-		// which is why measuring it must not be confused with routing it.
-		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: false}, true
+		// The array-aggregate fan-out behind the classic-histogram families:
+		// the RangeLWR sibling that collapses each (series, anchor)'s raw
+		// BucketCounts/ExplicitBounds rows via GROUP BY instead of picking one
+		// last sample. Re-gridded by chplan.ReanchorRange (and zeroed/re-filled
+		// by the slicer's UnpinSpine) the same way RangeLWR is, so it is
+		// routable.
+		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
 
 	case *chplan.AbsentOverTime:
 		// absent_over_time's own grid; Range is the per-anchor window.
@@ -1007,6 +1017,35 @@ func rangeWindowGridMatches(v *chplan.RangeWindow, predStart, predEnd time.Time)
 // rangeLWRGridMatches is rangeWindowGridMatches for a RangeLWR: it carries
 // no separate OuterRange field, so the predicted span is End-Start directly.
 func rangeLWRGridMatches(v *chplan.RangeLWR, predStart, predEnd time.Time) bool {
+	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
+}
+
+// checkRangeBucketFanoutGrid is checkRangeLWRGrid for RangeBucketFanout —
+// same shape (no OuterRange field, a spine leaf whose grid-prediction
+// comparison is meaningful only at depth 0), since RangeBucketFanout carries
+// no StepAlign mode.
+func (p *Planner) checkRangeBucketFanoutGrid(v *chplan.RangeBucketFanout, predStart, predEnd time.Time, depth int, sig *signals) {
+	startZero := v.Start.IsZero()
+	endZero := v.End.IsZero()
+	if depth == 0 {
+		if startZero || endZero {
+			sig.sawUnpinnedBound = true
+		}
+		if !startZero && !endZero && !rangeBucketFanoutGridMatches(v, predStart, predEnd) {
+			sig.sawGridMismatch = true
+		}
+	} else if startZero != endZero {
+		sig.sawUnpinnedBound = true
+	}
+	// A RangeBucketFanout's anchors are generated backward from End with no
+	// epoch snap (mirrors the plain RangeLWR case checkRangeLWRGrid handles),
+	// so a nested one always constrains the slice quantum.
+	if depth > 0 && v.Step > 0 {
+		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
+	}
+}
+
+func rangeBucketFanoutGridMatches(v *chplan.RangeBucketFanout, predStart, predEnd time.Time) bool {
 	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
 }
 

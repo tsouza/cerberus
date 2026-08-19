@@ -22,6 +22,7 @@ func sliceInvariantRegisteredKinds() []chplan.Node {
 		&chplan.RangeWindowGridNative{},
 		&chplan.RangeLWR{},
 		&chplan.RangeBucketFanout{},
+		&chplan.HistogramQuantile{},
 		&chplan.StepGrid{},
 		&chplan.UnionAll{},
 		&chplan.VectorJoin{},

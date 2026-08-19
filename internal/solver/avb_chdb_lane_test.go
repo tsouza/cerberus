@@ -160,6 +160,28 @@ INSERT INTO otel_metrics_sum (MetricName, Attributes, ServiceName, TimeUnix, Val
 SELECT 'http_errors_total', map('job', 'd'), 'svc',
   toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
   toFloat64(100)
+FROM numbers(241);
+CREATE OR REPLACE TABLE otel_metrics_histogram (
+  MetricName String,
+  Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
+  ServiceName LowCardinality(String),
+  AggregationTemporality Int32 DEFAULT 2,
+  TimeUnix DateTime64(9),
+  BucketCounts Array(UInt64),
+  ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram (MetricName, Attributes, ServiceName, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT 'http_latency_seconds', map('job', 'a'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  [number, number * 2, number * 3],
+  [0.1, 0.5]
+FROM numbers(241);
+INSERT INTO otel_metrics_histogram (MetricName, Attributes, ServiceName, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT 'http_latency_seconds', map('job', 'b'), 'svc',
+  toDateTime64('2026-06-13 00:00:00', 9) + toIntervalSecond(number * 15),
+  [number * 2, number * 3, number * 4],
+  [0.1, 0.5]
 FROM numbers(241);`
 
 // laneFixtures are the eligible shapes the lane proves. Each is a real shape
@@ -228,6 +250,17 @@ var laneFixtures = []string{
 	// the ratio fixtures above.
 	"clamp_max(http_requests_total, scalar(http_requests_total{job=\"a\"}))",
 	"clamp_min(http_requests_total, scalar(http_requests_total{job=\"b\"}))",
+	// The classic-histogram production-incident fix: histogram_quantile over
+	// an aggregated rate() of a classic (explicit-bucket) histogram lowers to
+	// HistogramQuantile wrapping a RangeBucketFanout — shape
+	// cerb:project;agg=1;rbf, the exact shape that OOM'd in production at real
+	// cardinality because the Planner refused to slice it (no ReanchorRange
+	// arm). job=a / job=b are dense monotonic bucket-count series (like
+	// http_requests_total above), so every anchor_ts carries both series
+	// pre-quantile, and each shard boundary falls mid-[5m] window — the seam
+	// this shape's per-(series,anchor) window-fold must get right identically
+	// to route A's single pass.
+	"histogram_quantile(0.99, sum by (le, job) (rate(http_latency_seconds_bucket[5m])))",
 }
 
 // TestSolver_AvsB_ChDB_Differential is the per-PR parity workhorse. For each
