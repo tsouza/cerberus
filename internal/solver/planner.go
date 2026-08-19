@@ -535,8 +535,33 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// Each anchor's membership window looks back Offset+Lookback (mirrors
 		// the RangeLWR arm above); widen the input spine by that much so the
 		// grid this predicts for the child matches what ReanchorRange actually
-		// produces (see reanchorRangeBucketFanout).
-		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth, sig)
+		// produces (see reanchorRangeBucketFanout). depth+1 mirrors every
+		// other GridCarrier arm above (RangeWindow / RangeLWR /
+		// RangeWindowGridNative / AbsentOverTime): this node's own grid is a
+		// nesting boundary, so anything a further-nested carrier inside
+		// v.Input predicts a grid against must see itself as nested, not as
+		// depth 0.
+		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth+1, sig)
+		return
+
+	case *chplan.HistogramQuantile:
+		// The classic-histogram quantile interpolation: off-grid immutable
+		// itself (see chplan.reanchor's *HistogramQuantile arm — a
+		// pass-through mirroring *Project), so it carries no own grid to
+		// record or widen by. But GroupBy and PhiExpr are exactly the
+		// unswept-slot hazard walkScalarInterior's own doc already names by
+		// example ("a histogram_quantile's phi... escaped the gate and
+		// routed B") — PhiExpr is typically a ScalarSubquery (see
+		// chplan.HistogramQuantile.PhiExpr's doc), so leaving it unswept here
+		// would let an embedded now64 or scalar-heavy interior escape every
+		// gate now that this kind is registered slice-invariant. Sweep them
+		// explicitly, mirroring the Aggregate arm above, then recurse into
+		// Input at the same depth (this node adds no grid nesting).
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, predStart, predEnd, predStep, sig)
+		}
+		p.walkExpr(v.PhiExpr, predStart, predEnd, predStep, sig)
+		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.StepGrid:
@@ -1218,10 +1243,13 @@ func (p *Planner) checkScalarHeavy(inner chplan.Node, predStart, predEnd time.Ti
 // unboundedly wide scan (an @-pinned interior, an interior whose span or
 // cadence has nothing to do with the outer grid) that really would multiply
 // K× into real extra cost. A RangeBucketFanout is never admitted regardless
-// of its bounds: it is excluded from the routable spine family on the MAIN
-// spine too (signal 1b, carrierGeometry.reanchorable), and this package has
-// no argument that makes it safe here that it does not already have there.
-// RangeWindowStaleResample and AbsentOverTime are absent from
+// of its bounds: unlike the MAIN spine — where it IS now routable (signal
+// 1b, carrierGeometry.reanchorable — the classic-histogram OOM fix) — route
+// B never re-anchors an Expr-embedded interior at all, so admitting it here
+// would replicate its full unsliced grid K× rather than a per-shard slice;
+// no equality argument bounding that replication cost has been built for it
+// here, unlike the RangeWindow / RangeLWR / RangeWindowGridNative arms
+// above. RangeWindowStaleResample and AbsentOverTime are absent from
 // chplan.IsSliceInvariant's registry, so one appearing inside an interior
 // already fails the whole plan via walkScalarInterior's slice-invariance
 // sweep before this function's answer can matter. RangeWindowGridNative IS
