@@ -499,6 +499,12 @@ func TestPlan_RangeBucketFanoutSpineDeclinesIndivisibleGrid(t *testing.T) {
 // failure-driven route memo calls after a real route-A resource failure, and it
 // must still slice this shape — otherwise the classic-histogram OOM #2387 fixed
 // would come back with no way out. Model sets the prior; measurement overrides.
+//
+// It also carries #2387's SLICING invariants. ModeAuto no longer reaches the
+// slicer for this shape, but the memo seam does, so the assertions move here
+// rather than disappearing: the slices span the whole grid
+// (gridStart/gridEnd/gridStep = 1h/15s = 240 anchors), none is left with
+// unpinned bounds, and none loses a non-grid field.
 func TestEligible_SlicesIndivisibleAnchorGrid(t *testing.T) {
 	t.Parallel()
 	p := &Planner{Cfg: autoCfg()}
@@ -508,6 +514,30 @@ func TestEligible_SlicesIndivisibleAnchorGrid(t *testing.T) {
 	}
 	if d == nil || d.K < 2 {
 		t.Fatalf("Eligible K = %v, want >= 2", d)
+	}
+	if d.Strategy != StrategyShardedTimeslice {
+		t.Fatalf("strategy = %q, want %q", d.Strategy, StrategyShardedTimeslice)
+	}
+	if len(d.Slices) != d.K {
+		t.Fatalf("len(Slices) = %d, want K=%d", len(d.Slices), d.K)
+	}
+	oldest := d.Slices[0].Plan.(*chplan.RangeBucketFanout)
+	newest := d.Slices[len(d.Slices)-1].Plan.(*chplan.RangeBucketFanout)
+	if !oldest.Start.Equal(gridStart) {
+		t.Fatalf("oldest slice Start=%v, want grid Start=%v", oldest.Start, gridStart)
+	}
+	if !newest.End.Equal(gridEnd) {
+		t.Fatalf("newest slice End=%v, want grid End=%v", newest.End, gridEnd)
+	}
+	for _, sl := range d.Slices {
+		r := sl.Plan.(*chplan.RangeBucketFanout)
+		if r.Start.IsZero() || r.End.IsZero() {
+			t.Fatalf("slice %d left RangeBucketFanout bounds unpinned: Start=%v End=%v",
+				sl.Index, r.Start, r.End)
+		}
+		if r.Step != gridStep || r.Lookback != 5*time.Minute {
+			t.Fatalf("slice %d RangeBucketFanout lost a non-grid field: %+v", sl.Index, r)
+		}
 	}
 }
 
@@ -551,16 +581,101 @@ func TestPlan_HistogramQuantileOverRangeBucketFanoutDeclinesIndivisibleGrid(t *t
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonAnchorGridIndivisible)
 	}
 	// The memo seam must still be able to slice it — same safety pin as
-	// TestEligible_SlicesIndivisibleAnchorGrid, at the full spine.
-	if _, ok := p.Eligible(plan, oomMeta()); !ok {
+	// TestEligible_SlicesIndivisibleAnchorGrid, at the full spine — and it must
+	// slice it CORRECTLY. This is where #2387's silent-K-duplication hazard
+	// lives: HistogramQuantile is registered slice-invariant, so if
+	// chplan.ReanchorRange ever loses its *HistogramQuantile pass-through arm
+	// its default case returns the node UNRECURSED, handing every shard the
+	// ORIGINAL full-grid RangeBucketFanout — K duplicated copies of the same
+	// rows, not an error. Distinct inner Starts are what a regression breaks.
+	ed, ok := p.Eligible(plan, oomMeta())
+	if !ok {
 		t.Fatal("Eligible must still slice the HistogramQuantile spine")
+	}
+	seen := map[time.Time]bool{}
+	for _, sl := range ed.Slices {
+		hq, ok := sl.Plan.(*chplan.HistogramQuantile)
+		if !ok {
+			t.Fatalf("slice %d plan is %T, want *chplan.HistogramQuantile", sl.Index, sl.Plan)
+		}
+		rbf, ok := hq.Input.(*chplan.RangeBucketFanout)
+		if !ok {
+			t.Fatalf("slice %d HistogramQuantile.Input is %T, want *chplan.RangeBucketFanout", sl.Index, hq.Input)
+		}
+		if rbf.Start.IsZero() || rbf.End.IsZero() {
+			t.Fatalf("slice %d left inner RangeBucketFanout bounds unpinned: Start=%v End=%v",
+				sl.Index, rbf.Start, rbf.End)
+		}
+		if seen[rbf.Start] {
+			t.Fatalf("slice %d inner RangeBucketFanout.Start=%v duplicates an earlier slice — "+
+				"every shard re-gridded to the SAME bounds instead of its own (the silent K-duplication hazard)",
+				sl.Index, rbf.Start)
+		}
+		seen[rbf.Start] = true
+	}
+	oldest := ed.Slices[0].Plan.(*chplan.HistogramQuantile).Input.(*chplan.RangeBucketFanout)
+	newest := ed.Slices[len(ed.Slices)-1].Plan.(*chplan.HistogramQuantile).Input.(*chplan.RangeBucketFanout)
+	if !oldest.Start.Equal(gridStart) {
+		t.Fatalf("oldest slice inner Start=%v, want grid Start=%v", oldest.Start, gridStart)
+	}
+	if !newest.End.Equal(gridEnd) {
+		t.Fatalf("newest slice inner End=%v, want grid End=%v", newest.End, gridEnd)
+	}
+}
+
+// TestPlan_Now64InHistogramQuantilePhiExprRejected pins the walkNode arm
+// HistogramQuantile needs alongside its slice-invariance registration: a
+// computed phi (`histogram_quantile(scalar(x), b)`) lowers PhiExpr to a
+// ScalarSubquery (see chplan.HistogramQuantile.PhiExpr's doc), and
+// walkScalarInterior's own doc already names "a histogram_quantile's phi" as
+// a historically-missed slot that let a now64 escape every gate and route B.
+// Registering HistogramQuantile as slice-invariant (the classic-histogram OOM
+// fix) reopens exactly that hazard at this package's own top-level walk
+// unless walkNode also sweeps GroupBy/PhiExpr the way the Aggregate arm
+// sweeps its own — this test is what a regression in that sweep would break.
+//
+// The now64 rejection is a CORRECTNESS gate inside classify(), so it fires
+// before ModeAuto's anchor-grid cost gate is ever consulted; the reason must
+// stay ReasonNow64 and not drift to ReasonAnchorGridIndivisible, which would
+// mean the sweep had stopped running and the cost gate was masking it.
+func TestPlan_Now64InHistogramQuantilePhiExprRejected(t *testing.T) {
+	t.Parallel()
+	scalarInner := &chplan.Aggregate{
+		Input: leafScan(),
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSum,
+			Args:  []chplan.Expr{&chplan.FuncCall{Fn: chplan.FnNow64, Args: []chplan.Expr{&chplan.LitInt{V: 9}}}},
+			Alias: "v",
+		}},
+	}
+	plan := &chplan.HistogramQuantile{
+		Input:                rangeBucketFanoutSpine(),
+		PhiExpr:              &chplan.ScalarSubquery{Input: scalarInner},
+		BucketCountsColumn:   "BucketCounts",
+		ExplicitBoundsColumn: "ExplicitBounds",
+		MetricNameColumn:     "MetricName",
+		AttributesColumn:     "Attributes",
+		TimestampColumn:      "TimeUnix",
+	}
+	p := &Planner{Cfg: autoCfg()}
+	d, routed := p.Plan(plan, oomMeta())
+	if routed {
+		t.Fatal("now64 in HistogramQuantile.PhiExpr's scalar interior must not route")
+	}
+	if d.Reason != ReasonNow64 {
+		t.Fatalf("reason = %q, want %q", d.Reason, ReasonNow64)
+	}
+	// Eligible() bypasses the COST proxy, never a correctness gate: a now64
+	// interior must stay ineligible at the memo seam too.
+	if _, ok := p.Eligible(plan, oomMeta()); ok {
+		t.Fatal("Eligible must not slice a plan with now64 in HistogramQuantile.PhiExpr")
 	}
 }
 
 // TestPlan_NonRangeWindowSpineRejected pins the residual routable-spine
 // restriction: the routable bound-carriers are *RangeWindow (phase 1),
 // *RangeLWR (phase 3), and *RangeBucketFanout (the classic-histogram
-// OOM fix — see TestPlan_RangeBucketFanoutSpineRoutes for the positive case).
+// OOM fix — see TestEligible_SlicesIndivisibleAnchorGrid for the positive case).
 // A StepGrid spine still carries a grid ReanchorRange leaves un-re-anchored
 // (CloneNode'd verbatim), so it must fail closed to route A with
 // Reason=not-sliceable.
