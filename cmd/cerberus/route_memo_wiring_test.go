@@ -18,39 +18,56 @@ func TestBuildRouteMemo_NilSolverNeverWires(t *testing.T) {
 	}
 }
 
-// TestBuildRouteMemo_DefaultOffLeavesEngineUnwired pins the byte-identical
-// production contract this whole feature depends on: a Solver built from
-// the library default Config (RouteMemoEnabled=false, the resolved value
-// for any deployment that hasn't set CERBERUS_SOLVER_ROUTE_MEMO_ENABLED)
-// must produce a nil route memo — the same "feature off" state
-// engine.Engine.RouteMemo already treats as a complete no-op.
-func TestBuildRouteMemo_DefaultOffLeavesEngineUnwired(t *testing.T) {
+// TestBuildRouteMemo_DisabledLeavesEngineUnwired pins the OFF path: an
+// operator who explicitly sets AdaptiveEnabled=false must get a nil route memo
+// — the same "feature off" state engine.Engine.RouteMemo already treats as a
+// complete no-op. The default itself is now ON (see
+// TestBuildRouteMemo_DefaultOnWiresAMemo below and
+// solver.Config.AdaptiveEnabled's doc), so this asserts the opt-OUT is
+// honoured rather than the default.
+func TestBuildRouteMemo_DisabledLeavesEngineUnwired(t *testing.T) {
 	cfg := solver.DefaultConfig()
-	if cfg.RouteMemoEnabled {
-		t.Fatalf("solver.DefaultConfig().RouteMemoEnabled = true, want false — this test's premise (library default is off) no longer holds")
-	}
+	cfg.AdaptiveEnabled = false
 	sv := &solver.Solver{Cfg: cfg}
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 
 	if memo := buildRouteMemo(sv, logger); memo != nil {
-		t.Fatalf("buildRouteMemo with RouteMemoEnabled=false = %v, want nil", memo)
+		t.Fatalf("buildRouteMemo with AdaptiveEnabled=false = %v, want nil", memo)
 	}
 }
 
-// TestBuildRouteMemo_EnabledWiresAMemo pins the opt-in path: with
-// RouteMemoEnabled=true, buildRouteMemo must return a real, usable
+// TestBuildRouteMemo_DefaultOnWiresAMemo pins the new default. It is the
+// wiring half of solver's TestConfigFromEnv_AdaptiveDefaultsOn: a Solver built
+// from the library default Config must produce a REAL memo, because that is
+// what makes retryOnRouteAResourceFailure reachable at all — with it nil, a
+// route-A resource failure is a 5xx instead of a slower answer.
+func TestBuildRouteMemo_DefaultOnWiresAMemo(t *testing.T) {
+	cfg := solver.DefaultConfig()
+	if !cfg.AdaptiveEnabled {
+		t.Fatalf("solver.DefaultConfig().AdaptiveEnabled = false, want true — this test's premise (library default is on) no longer holds")
+	}
+	sv := &solver.Solver{Cfg: cfg}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+	if memo := buildRouteMemo(sv, logger); memo == nil {
+		t.Fatal("buildRouteMemo with the default config = nil, want a real memo")
+	}
+}
+
+// TestBuildRouteMemo_EnabledWiresAMemo pins the explicit-on path: with
+// AdaptiveEnabled=true, buildRouteMemo must return a real, usable
 // *routememo.Memo — the thing that actually makes engine.Engine.RouteMemo
 // non-nil and the whole mechanism reachable outside a unit test.
 func TestBuildRouteMemo_EnabledWiresAMemo(t *testing.T) {
 	cfg := solver.DefaultConfig()
-	cfg.RouteMemoEnabled = true
+	cfg.AdaptiveEnabled = true
 	sv := &solver.Solver{Cfg: cfg}
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	memo := buildRouteMemo(sv, logger)
 	if memo == nil {
-		t.Fatal("buildRouteMemo with RouteMemoEnabled=true = nil, want a real *routememo.Memo")
+		t.Fatal("buildRouteMemo with AdaptiveEnabled=true = nil, want a real *routememo.Memo")
 	}
 	// A real, usable Memo: Stats() should not panic and should report an
 	// empty resident set for a freshly constructed instance.
@@ -58,6 +75,6 @@ func TestBuildRouteMemo_EnabledWiresAMemo(t *testing.T) {
 		t.Errorf("freshly constructed Memo.Stats().Entries = %d, want 0", stats.Entries)
 	}
 	if logBuf.Len() == 0 {
-		t.Error("buildRouteMemo with RouteMemoEnabled=true logged nothing — an operator enabling a new runtime-behavior-changing feature should see it confirmed at startup")
+		t.Error("buildRouteMemo with AdaptiveEnabled=true logged nothing — an operator enabling a new runtime-behavior-changing feature should see it confirmed at startup")
 	}
 }
