@@ -120,11 +120,22 @@ func guardedValueProjection(
 // Filter and Project are walked through because they only ever re-shape or
 // re-alias columns; the instant seam sits underneath the alias Project that
 // renames `lwr_ts` back to the schema timestamp column.
+//
+// One of those walked-through Projects, though, is doing more than a plain
+// rename: [lowerAggregate]'s range-mode Aggregate injects its per-step group
+// column under the internal [rangeBucketAlias] rather than under
+// s.TimestampColumn — [wrapAggregateForSample] only renames it to the
+// canonical column in the WRAPPING Project's own projection list, one layer
+// above the Aggregate this switch inspects. So for that one shape the raw
+// Aggregate's own GroupByAliases never literally contains s.TimestampColumn
+// even though it is already per-step; isTimestampAlias is what lets this
+// function see through that one known alias without weakening the check
+// for every other shape.
 func guardKeysOnTimestamp(inner chplan.Node, s schema.Metrics) bool {
 	switch v := inner.(type) {
 	case *chplan.Aggregate:
 		for _, alias := range v.GroupByAliases {
-			if alias == s.TimestampColumn {
+			if isTimestampAlias(alias, s) {
 				return true
 			}
 		}
@@ -135,6 +146,18 @@ func guardKeysOnTimestamp(inner chplan.Node, s schema.Metrics) bool {
 		return guardKeysOnTimestamp(v.Input, s)
 	}
 	return true
+}
+
+// isTimestampAlias reports whether alias identifies the per-step timestamp
+// column on a [chplan.Aggregate] that [guardKeysOnTimestamp] is inspecting —
+// either the schema's canonical timestamp column, or [rangeBucketAlias], the
+// internal name [lowerAggregate] gives that same column before
+// [wrapAggregateForSample] renames it one layer up. Recognizing exactly
+// these two spellings (and nothing broader) is what keeps the guard honest:
+// it closes this one known alias gap without ever making the check
+// vacuously true for a genuinely ambiguous shape.
+func isTimestampAlias(alias string, s schema.Metrics) bool {
+	return alias == s.TimestampColumn || alias == rangeBucketAlias
 }
 
 // guardNameDropCollision re-collapses `inner`'s per-(label set, name) rows
