@@ -551,17 +551,9 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		// record or widen by. But GroupBy and PhiExpr are exactly the
 		// unswept-slot hazard walkScalarInterior's own doc already names by
 		// example ("a histogram_quantile's phi... escaped the gate and
-		// routed B") — PhiExpr is typically a ScalarSubquery (see
-		// chplan.HistogramQuantile.PhiExpr's doc), so leaving it unswept here
-		// would let an embedded now64 or scalar-heavy interior escape every
-		// gate now that this kind is registered slice-invariant. Sweep them
-		// explicitly, mirroring the Aggregate arm above, then recurse into
-		// Input at the same depth (this node adds no grid nesting).
-		for _, e := range v.GroupBy {
-			p.walkExpr(e, predStart, predEnd, predStep, sig)
-		}
-		p.walkExpr(v.PhiExpr, predStart, predEnd, predStep, sig)
-		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
+		// routed B") — see walkHistogramQuantile (factored out to keep
+		// walkNode under funlen's statement cap).
+		p.walkHistogramQuantile(v, predStart, predEnd, predStep, depth, sig)
 		return
 
 	case *chplan.StepGrid:
@@ -1043,6 +1035,24 @@ func rangeWindowGridMatches(v *chplan.RangeWindow, predStart, predEnd time.Time)
 // no separate OuterRange field, so the predicted span is End-Start directly.
 func rangeLWRGridMatches(v *chplan.RangeLWR, predStart, predEnd time.Time) bool {
 	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
+}
+
+// walkHistogramQuantile sweeps a HistogramQuantile's GroupBy and PhiExpr for
+// now64 / scalar-heavy hazards, then recurses into Input at the same depth
+// (the node adds no grid nesting of its own — see chplan.reanchor's
+// *HistogramQuantile arm, a pass-through mirroring *Project). PhiExpr is
+// typically a ScalarSubquery for a computed phi (see
+// chplan.HistogramQuantile.PhiExpr's doc), so leaving it unswept would let an
+// embedded now64 or scalar-heavy interior escape every gate now that this
+// kind is registered slice-invariant — mirrors the Aggregate arm's sweep.
+// Factored out of walkNode's switch to keep that function under funlen's
+// statement cap.
+func (p *Planner) walkHistogramQuantile(v *chplan.HistogramQuantile, predStart, predEnd time.Time, predStep time.Duration, depth int, sig *signals) {
+	for _, e := range v.GroupBy {
+		p.walkExpr(e, predStart, predEnd, predStep, sig)
+	}
+	p.walkExpr(v.PhiExpr, predStart, predEnd, predStep, sig)
+	p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 }
 
 // checkRangeBucketFanoutGrid is checkRangeLWRGrid for RangeBucketFanout —
