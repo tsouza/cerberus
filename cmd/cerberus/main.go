@@ -738,11 +738,11 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 }
 
 // buildRouteMemo wires the failure-driven route memo (internal/routememo,
-// docs/solver.md §"Failure-driven route memo") when explicitly enabled via
-// CERBERUS_SOLVER_ROUTE_MEMO_ENABLED (default false — see
-// solver.Config.AdaptiveEnabled's doc for why this is on by default rather than
-// riding along with Mode=auto/sharded automatically). Returns nil (the
-// engine's byte-unchanged, feature-off default) when disabled or when
+// docs/solver.md §"Failure-driven route memo"). It is governed by
+// CERBERUS_SOLVER_ADAPTIVE_ENABLED, which defaults to TRUE — see
+// solver.Config.AdaptiveEnabled's doc for why. CERBERUS_SOLVER_ROUTE_MEMO_ENABLED
+// is the soft-deprecated spelling and still applies. Returns nil (the engine's
+// byte-unchanged, feature-off default) when an operator has opted out or when
 // evalSolver is nil.
 //
 // The pressure damper's correlation window is the solver's OWN effective
@@ -1254,6 +1254,13 @@ func buildSolver(
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	// A soft-deprecated env name still applies, so it changes nothing about
+	// the resolved Config — but a rename nobody is told about is a rename that
+	// rots. Announce it here, at the one place the solver environment is read,
+	// mirroring resolveCHOptimizations' legacy-alias notice.
+	for _, warn := range solver.DeprecatedEnvWarnings() {
+		logger.Warn(warn)
 	}
 
 	// GLOBAL shard gate: MaxOpenConns − reserve, floored at 2 so the

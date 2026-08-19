@@ -453,11 +453,11 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 
 // rangeBucketFanoutSpine builds the array-aggregate fan-out behind the
 // classic-histogram families over the standard 1h/15s grid, mirroring
-// lwrSpine's shape (Lookback 5m, no offset).
-// rangeBucketFanoutSpine is the CLASSIC bucket-ladder fan-out — the shape
-// behind the production APM panel. PeakIndependentOfGrid mirrors what
-// histogram_quantile_range.go's classic lowering sets: route A was measured to
-// fit (2.84 GB), so slicing it is waste.
+// lwrSpine's shape (Lookback 5m, no offset) — the CLASSIC bucket-ladder
+// lowering, the shape behind the APM-style dashboard panel.
+// PeakIndependentOfGrid mirrors what histogram_quantile_range.go's classic
+// lowering sets: route A was measured to fit (2.84 GB), so slicing it is
+// waste.
 func rangeBucketFanoutSpine() *chplan.RangeBucketFanout {
 	return &chplan.RangeBucketFanout{
 		Input:                 leafScan(),
@@ -483,8 +483,8 @@ func rangeBucketFanoutSpine() *chplan.RangeBucketFanout {
 // intermediate is Theta(rows x Lookback/Step) — constant in the grid width — so
 // slicing replicates the per-(series, anchor) fold instead of partitioning it.
 //
-// Same shape and grid as the real production query (1h/15s = 241 anchors,
-// 5m lookback). Measured on production ClickHouse 26.6 at K=12: route B cost
+// Same shape and grid as the real query (1h/15s = 241 anchors,
+// 5m lookback). Measured at realistic scale on ClickHouse 26.6 at K=12: route B cost
 // 23x the ClickHouse work (185,101 ms vs 8,070 ms) and read 36x the rows, to
 // recover 8.7% of a perfectly-divisible peak.
 func TestPlan_RangeBucketFanoutSpineDeclinesIndivisibleGrid(t *testing.T) {
@@ -508,7 +508,7 @@ func TestPlan_RangeBucketFanoutSpineDeclinesIndivisibleGrid(t *testing.T) {
 // It also carries #2387's SLICING invariants. ModeAuto no longer reaches the
 // slicer for this shape, but the memo seam does, so the assertions move here
 // rather than disappearing: the slices span the whole grid
-// (gridStart/gridEnd/gridStep = 1h/15s = 240 anchors), none is left with
+// (gridStart/gridEnd/gridStep = 1h/15s = 241 anchors), none is left with
 // unpinned bounds, and none loses a non-grid field.
 func TestEligible_SlicesIndivisibleAnchorGrid(t *testing.T) {
 	t.Parallel()
@@ -561,11 +561,11 @@ func TestPlan_ShardedModeIgnoresIndivisibleAnchorGrid(t *testing.T) {
 }
 
 // TestPlan_HistogramQuantileOverRangeBucketFanoutDeclinesIndivisibleGrid is the
-// full production spine — histogram_quantile over the classic-bucket fan-out —
-// declining to route predictively for the same reason the bare spine does. This
-// is the exact shape of the APM panel whose p50/p75/p99 columns timed out in
-// production: sharded it issued 12 ClickHouse queries totalling 185,101 ms;
-// unsliced it answers in 8,070 ms.
+// full spine — histogram_quantile over the classic-bucket fan-out — declining
+// to route predictively for the same reason the bare spine does. This is the
+// exact shape of the APM-style dashboard whose p50/p75/p99 columns timed out:
+// sharded it issued 12 ClickHouse queries totalling 185,101 ms; unsliced it
+// answers in 8,070 ms.
 func TestPlan_HistogramQuantileOverRangeBucketFanoutDeclinesIndivisibleGrid(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.HistogramQuantile{
@@ -1132,7 +1132,7 @@ func TestPlan_EpochAlignedNestedSpineRoutes(t *testing.T) {
 // flag rather than a property of the node type.
 //
 // The exponential/native histogram lowerings build the SAME RangeBucketFanout
-// node, but their route A is where issue #2385's 19 production
+// node, but their route A is where issue #2385's 19 observed
 // MEMORY_LIMIT_EXCEEDED failures happened — slicing is what bounds their memory
 // at all. Nothing has measured route A to fit for them, so they must keep
 // routing exactly as they do today. A blanket per-node-kind bit would have

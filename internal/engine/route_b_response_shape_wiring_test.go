@@ -149,14 +149,14 @@ func routeBDispatches() []routeBDispatch {
 				// TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration).
 				if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(
 					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil,
-					chclient.ErrMemoryLimitExceeded,
+					chclient.ErrMemoryLimitExceeded, 0,
 				); retried {
 					t.Fatal("probed on the FIRST route-A resource failure — fixture no longer matches the memo's corroboration rule")
 				}
 
 				cur, _, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(
 					context.Background(), solver.LangPromQL, meta.ResponseShape, plan, seed, nil,
-					chclient.ErrMemoryLimitExceeded,
+					chclient.ErrMemoryLimitExceeded, 0,
 				)
 				if !retried {
 					t.Fatal("retryOnRouteAResourceFailure did not probe route B after a resource failure")

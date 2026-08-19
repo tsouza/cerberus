@@ -1662,7 +1662,9 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		// this returns a routed CursorResult from route B instead; on
 		// failure (including "retry does not apply here") the original
 		// route-A error is what surfaces, unchanged.
-		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err); retried {
+		if cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
+			ctx, lang.Name(), meta.ResponseShape, plan, decision, budget, err, time.Since(dispatchStart),
+		); retried {
 			retryResult := e.buildRoutedCursorResult(meta, plan, lang.Name(), usedDecision, cur, info, "retry")
 			retryResult.ObserveDrainOutcome = observeFn
 			return retryResult, nil
@@ -1686,7 +1688,12 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// declines).
 	if e.routeMemoActive() && decision != nil {
 		result.Retry = func(retryCtx context.Context, drainErr error) (CursorResult, bool) {
-			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr)
+			// dispatchStart is captured, so elapsed spans the open AND the
+			// drain — the full wall time this route-A attempt cost before the
+			// caller saw drainErr, which is what the cancellation floor reads.
+			cur, info, usedDecision, observeFn, retried := e.retryOnRouteAResourceFailure(
+				retryCtx, lang.Name(), meta.ResponseShape, plan, decision, budget, drainErr, time.Since(dispatchStart),
+			)
 			if !retried {
 				return CursorResult{}, false
 			}

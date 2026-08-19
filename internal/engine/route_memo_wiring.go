@@ -212,6 +212,13 @@ func (e *Engine) tryRouteMemoHit(
 // route-B cursors, so it declares the shape through routeBExecCtx. It matters
 // most HERE — the retry runs on a ctx the handler supplies at drain time,
 // which carries nothing the original dispatch stamped.
+//
+// elapsed is how long the route-A dispatch this failure came from had been
+// running. It is what lets a cancellation past costlyCancellationFloor
+// classify as cost evidence rather than "the caller went away" — the failure
+// mode that accounts for nearly every real route-A failure observed, and the
+// reason this parameter is not optional: passing zero here would leave the
+// classifier permanently blind to it.
 func (e *Engine) retryOnRouteAResourceFailure(
 	ctx context.Context,
 	langName string,
@@ -220,20 +227,32 @@ func (e *Engine) retryOnRouteAResourceFailure(
 	seedDecision *solver.Decision,
 	budget *chclient.SampleBudget,
 	err error,
+	elapsed time.Duration,
 ) (cursor chclient.Cursor, info *solver.ExecInfo, usedDecision *solver.Decision, observeFn func(drainErr error), retried bool) {
 	if !e.routeMemoActive() || seedDecision == nil {
 		return nil, nil, nil, nil, false
 	}
-	// A client that is already gone must not trigger a dispatch for nobody
-	// — check before any other work, including before Observe (a
-	// cancellation racing a genuine resource failure carries no reliable
-	// evidence either way, and the cost of skipping bookkeeping on the rare
-	// race is far cheaper than fanning out for a disconnected caller).
+
+	outcome := classifyRouteOutcomeAfter(routememo.RouteA, err, elapsed)
+
+	// A client that is already gone must not trigger a dispatch for nobody:
+	// a retry would run for nobody's benefit, which is the doomed-trial shape
+	// this guard exists to prevent. The EVIDENCE is still worth keeping,
+	// though — and a costly cancellation is precisely the case where the dead
+	// context IS the failure being classified, so returning before Observe
+	// would discard the only signal this mechanism gets from it. Record, never
+	// retry: it teaches the next request instead. Anything short of a resource
+	// failure stays unrecorded exactly as before (Observe is a documented
+	// no-op for OutcomeNoEvidence, and a Success racing a cancellation carries
+	// no reliable evidence either way).
 	if ctx.Err() != nil {
+		if outcome == routememo.OutcomeResourceFailure {
+			dead := e.deriveRouteMemoDispatch(plan, seedDecision, time.Now())
+			e.RouteMemo.Observe(dead.key, routememo.RouteA, outcome)
+		}
 		return nil, nil, nil, nil, false
 	}
 
-	outcome := classifyRouteOutcome(routememo.RouteA, err)
 	d := e.deriveRouteMemoDispatch(plan, seedDecision, time.Now())
 	if outcome != routememo.OutcomeResourceFailure {
 		// Success or NoEvidence: plain Observe (Success drops any recorded
