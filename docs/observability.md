@@ -72,7 +72,11 @@ ready`, `signal received, shutting down`, `cerberus stopped`).
   by the peer in the Loki `/tail` handler), plus degradation of a
   background subsystem — a dropped self-telemetry export, an optcorpus
   sink write that failed. Carries `component` so the subsystem is
-  selectable.
+  selectable. Also every query that did NOT complete cleanly — a
+  timeout, an OOM abort, a ClickHouse exception, a caller cancellation
+  (§"Query failure log line") — even though the request itself failed:
+  most of these are not cerberus defects, so `Error`'s alerting posture
+  would misclassify them.
 - **`Error`** — handler-level failures that produce a 5xx (CH connection
   reset, plan emission internal error). The bridge to alerting.
 
