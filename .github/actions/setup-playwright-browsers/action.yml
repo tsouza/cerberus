@@ -99,6 +99,22 @@ runs:
         Acquire::https::Timeout "15";
         Acquire::Retries "1";' | sudo tee /etc/apt/apt.conf.d/99-ci-fast-mirror-failover >/dev/null
 
+        # The shortened timeout above still pays a per-package retry-then-
+        # fallback cost against azure.archive.ubuntu.com (the runner's
+        # default regional mirror) for every one of chromium's dependency
+        # packages individually - with a genuinely dead mirror and dozens of
+        # packages, that cost compounds past even a shortened attempt budget
+        # (observed directly: two dashboard-lane shards still hit the full
+        # retry budget with the timeout fix alone). GitHub-hosted Ubuntu
+        # runners resolve `mirror://mirrors.ubuntu.com/mirrors.txt`-style
+        # sources through a local mirror list file; strip the known-bad host
+        # from it so apt never attempts it at all, rather than attempting and
+        # failing over on every package. Best-effort and fail-open: if the
+        # file does not exist or the runner image changes its mirror
+        # mechanism, this is a silent no-op and apt falls back to its normal
+        # (slower but working) failover path instead of erroring the job.
+        sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+
     # Cache HIT: browser binaries are already restored; only install the OS
     # shared-library deps. Cache MISS: download chromium AND install OS deps.
     # Both apt-touching branches retry with backoff under a per-attempt
