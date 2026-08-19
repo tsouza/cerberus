@@ -21,9 +21,15 @@ const (
 	EnvParallel           = "CERBERUS_SHARD_PARALLEL"
 	EnvTimeout            = "CERBERUS_SOLVER_TIMEOUT"
 	EnvMaxOutputRows      = "CERBERUS_SHARD_MAX_OUTPUT_ROWS"
-	EnvRouteMemoEnabled   = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
-	EnvRouteMemoEntryTTL  = "CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL"
-	EnvRouteMemoRevalFrac = "CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION"
+	EnvAdaptiveEnabled    = "CERBERUS_SOLVER_ADAPTIVE_ENABLED"
+	// EnvLegacyRouteMemoEnabled is the SOFT-DEPRECATED spelling of
+	// EnvAdaptiveEnabled. It still works; setting it logs a one-time
+	// deprecation warning and the new name wins when both are set. Kept
+	// because an operator who explicitly disabled the feature must not have
+	// it silently re-enabled by an upgrade that only renamed the knob.
+	EnvLegacyRouteMemoEnabled = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
+	EnvRouteMemoEntryTTL      = "CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL"
+	EnvRouteMemoRevalFrac     = "CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION"
 )
 
 // ConfigFromEnv builds a Config from the CERBERUS_* environment, starting
@@ -45,6 +51,23 @@ const (
 // routing entirely. The library default (DefaultConfig, Mode == "single")
 // stays dark so in-process unit/spec tests that build it directly are
 // unaffected; only this env-driven prod path flips to auto.
+// DeprecatedEnvWarnings returns a one-line notice for every soft-deprecated
+// CERBERUS_* solver var that is SET in the environment, for the caller to log
+// at startup. Empty when none are set.
+//
+// Separate from ConfigFromEnv because this package must not choose a logger;
+// cmd/cerberus owns that. Mirrors the CERBERUS_EXPERIMENTAL_TS_GRID_RANGE ->
+// CERBERUS_CH_OPTIMIZATIONS deprecation (internal/chopt/resolve.go).
+func DeprecatedEnvWarnings() []string {
+	var warns []string
+	if _, ok := os.LookupEnv(EnvLegacyRouteMemoEnabled); ok {
+		warns = append(warns, EnvLegacyRouteMemoEnabled+
+			" is deprecated; use "+EnvAdaptiveEnabled+
+			" (the old name still applies, and the new name wins when both are set)")
+	}
+	return warns
+}
+
 func ConfigFromEnv() (Config, error) {
 	cfg := DefaultConfig()
 	// Unset CERBERUS_EVAL_ROUTE means "auto" in production, not the library's
@@ -77,7 +100,14 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.MaxOutputRows, err = envInt64(EnvMaxOutputRows, cfg.MaxOutputRows); err != nil {
 		return Config{}, err
 	}
-	if cfg.RouteMemoEnabled, err = envBool(EnvRouteMemoEnabled, cfg.RouteMemoEnabled); err != nil {
+	// The legacy alias is layered FIRST so an explicit new-name setting wins,
+	// and so "operator explicitly set the old one to false" is distinguishable
+	// from "operator set neither" — a plain bool would conflate them and
+	// silently re-enable a feature somebody deliberately turned off.
+	if cfg.AdaptiveEnabled, err = envBool(EnvLegacyRouteMemoEnabled, cfg.AdaptiveEnabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdaptiveEnabled, err = envBool(EnvAdaptiveEnabled, cfg.AdaptiveEnabled); err != nil {
 		return Config{}, err
 	}
 	if cfg.RouteMemoEntryTTL, err = envDuration(EnvRouteMemoEntryTTL, cfg.RouteMemoEntryTTL); err != nil {

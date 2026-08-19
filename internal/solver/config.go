@@ -87,20 +87,28 @@ type Config struct {
 	// success cannot OOM the shared gateway heap.
 	MaxOutputRows int64
 
-	// RouteMemoEnabled (CERBERUS_SOLVER_ROUTE_MEMO_ENABLED, default false)
-	// wires the failure-driven route memo (internal/routememo,
-	// docs/solver.md §"Failure-driven route memo"): a route-A dispatch that
-	// fails with resource exhaustion is retried once on route B, and the
-	// outcome is remembered so future cost-equivalent traffic can route
-	// directly. Off by default, matching this repo's convention for a new
-	// runtime-behavior-changing feature (CERBERUS_CH_OPT_CORPUS_ENABLED,
-	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) — an operator opts in explicitly
-	// rather than picking up new ClickHouse dispatch/resource behavior on a
-	// routine upgrade. cmd/cerberus reads this field to decide whether to
-	// construct a *routememo.Memo and wire it onto engine.Engine.RouteMemo;
-	// this package itself never imports internal/routememo (see
-	// .go-arch-lint.yml — routememo is importable by engine and cmd only).
-	RouteMemoEnabled bool
+	// AdaptiveEnabled (CERBERUS_SOLVER_ADAPTIVE_ENABLED, default TRUE) wires
+	// the failure-driven route memo (internal/routememo, docs/solver.md
+	// §"Failure-driven route memo"): a route-A dispatch that fails with
+	// resource exhaustion is retried once on route B — transparently, so the
+	// caller still gets an answer — and the outcome is remembered so future
+	// cost-equivalent traffic routes directly.
+	//
+	// It is ON by default because it is the ONLY half of the routing decision
+	// that reacts to what actually happened. ModeAuto's thresholds are a
+	// PREDICTION made once, from plan shape alone; with this off, a wrong
+	// prediction stays wrong forever and a route-A resource failure is a 5xx
+	// rather than a slower answer. Turning it on is what makes ModeAuto mean
+	// "start on route A and escalate on real evidence" rather than "guess up
+	// front and never learn". Default-off was the old convention for a new
+	// runtime-behavior-changing feature; the availability argument outweighs
+	// it here, since the feature only ever turns a FAILURE into an answer.
+	//
+	// cmd/cerberus reads this field to decide whether to construct a
+	// *routememo.Memo and wire it onto engine.Engine.RouteMemo; this package
+	// itself never imports internal/routememo (see .go-arch-lint.yml —
+	// routememo is importable by engine and cmd only).
+	AdaptiveEnabled bool
 
 	// RouteMemoEntryTTL (CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL) overrides how
 	// long the route memo trusts a recorded verdict before it ages out,
@@ -151,7 +159,7 @@ func DefaultConfig() Config {
 		Parallel:           defaultParallel,
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
-		RouteMemoEnabled:   false,
+		AdaptiveEnabled:    true,
 	}
 }
 
