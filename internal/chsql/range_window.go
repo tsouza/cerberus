@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -3214,10 +3215,76 @@ func (k extrapolationKind) isCounter() bool {
 // (only `rate` divides through `r.Range.Seconds()` at the end).
 func (k extrapolationKind) isRate() bool { return k == extrapolationKindRate }
 
+// deltaPrefixLookbackKey is the unexported context key carrying the
+// operator-configured DELTA-temporality prefix-reconstruction lookback bound
+// (config.Config.DeltaPrefixLookback / CERBERUS_DELTA_PREFIX_LOOKBACK) into
+// the emit chokepoint. See deltaPrefixLookbackFromCtx.
+type deltaPrefixLookbackKey struct{}
+
+// defaultDeltaPrefixLookback is the fallback bound instantDeltaPrefixSource /
+// emitWindowedArrayExtrapolatedMatrix apply when the caller never threaded
+// WithDeltaPrefixLookback — the spec/golden lane, property tests, and any
+// other caller of chsql.Emit outside internal/engine's wiring. It is
+// deliberately the SAME value as config.defaultDeltaPrefixLookback (kept as
+// an independent constant: chsql may not import internal/config, see
+// .go-arch-lint.yml) so a plan built outside the engine's config wiring still
+// gets the production-representative bounded scan rather than silently
+// reverting to the pre-fix unbounded read. Production always threads an
+// explicit value via internal/engine (config.Config.DeltaPrefixLookback,
+// itself defaulting to this same 24h) — this constant is what the emitter
+// falls back to only when nothing threaded the context value at all.
+const defaultDeltaPrefixLookback = 24 * time.Hour
+
+// WithDeltaPrefixLookback returns ctx carrying d as the explicit
+// DELTA-temporality prefix-reconstruction lookback bound. Unlike
+// WithSpansTable's empty-string no-op, a zero d IS meaningful here — it is
+// the operator's explicit opt-out (CERBERUS_DELTA_PREFIX_LOOKBACK=0),
+// restoring the exact pre-fix unbounded scan — so this always stamps ctx
+// rather than leaving it unchanged on the zero value.
+func WithDeltaPrefixLookback(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, deltaPrefixLookbackKey{}, d)
+}
+
+// deltaPrefixLookbackFromCtx recovers the bound WithDeltaPrefixLookback set,
+// or defaultDeltaPrefixLookback when the caller never threaded one. The type
+// assertion's ok correctly distinguishes "never set" (falls back to the
+// default) from "explicitly set to the zero value" (an honored 0 —
+// disabled), because context.WithValue was actually called in the latter
+// case.
+func deltaPrefixLookbackFromCtx(ctx context.Context) time.Duration {
+	if d, ok := ctx.Value(deltaPrefixLookbackKey{}).(time.Duration); ok {
+		return d
+	}
+	return defaultDeltaPrefixLookback
+}
+
+// deltaPrefixLowerBoundFrag returns the `<tsCol> > <rangeStart> -
+// toIntervalNanosecond(<lookbackNS>)` predicate that bounds a DELTA-
+// temporality prefix-reconstruction scan, or nil when lookbackNS == 0 (the
+// operator's explicit opt-out — see WithDeltaPrefixLookback), in which case
+// the caller renders the exact pre-fix unbounded scan.
+func deltaPrefixLowerBoundFrag(tsCol, rangeStart Frag, lookbackNS int64) Frag {
+	if lookbackNS == 0 {
+		return nil
+	}
+	return Gt(tsCol, Sub(rangeStart, Call("toIntervalNanosecond", InlineLit(lookbackNS))))
+}
+
 // instantDeltaPrefixSource joins the exactly window-bounded sample aggregate
 // to a separate per-series scalar sum through the range's left edge. Keeping
 // the two aggregates separate preserves the fail-closed groupArray scan bound:
 // only the scalar prefix reads older observations.
+//
+// That scalar prefix's OWN scan is bounded below by e.deltaPrefixLookbackNS:
+// reconstructing a DELTA series' pre-window cumulative level has no
+// natural stopping point short of the series' own first-ever sample, so the
+// unbounded form read a metric's ENTIRE retention on every rate()/increase()
+// query against any Sum-typed counter whose table carries an
+// AggregationTemporality column — Cumulative-temporality series included,
+// even though deltaFirstValFrag only ever consumes the reconstructed value
+// for a genuinely DELTA series. See config.Config.DeltaPrefixLookback's doc
+// for the correctness tradeoff this bound accepts and WithDeltaPrefixLookback
+// for how to disable it.
 func (e *emitter) instantDeltaPrefixSource(
 	r *chplan.RangeWindow,
 	window *QueryBuilder,
@@ -3240,6 +3307,9 @@ func (e *emitter) instantDeltaPrefixSource(
 	}
 	prefix.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixBeforeWindowAlias))
 	prefix.Where(Lte(Col(r.TimestampColumn), rangeStart))
+	if lower := deltaPrefixLowerBoundFrag(Col(r.TimestampColumn), rangeStart, e.deltaPrefixLookbackNS); lower != nil {
+		prefix.Where(lower)
+	}
 	prefix.GroupBy(groupFrags...)
 
 	joined := NewQuery().From(aliasedFrag(window.Frag(), "w"))
@@ -3456,6 +3526,46 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 	return levels.Frag()
 }
 
+// applyMatrixFanoutScanBound restricts fanout's input scan to the
+// offset-shifted (Start - Offset - range, End - Offset] window the anchor
+// grid covers — same pushdown as emitWindowedArrayMatrix, against srcTs (the
+// timestamp column present in fanout's FROM).
+//
+// The needsDeltaFirstLevel branch has a DELTA arm with the identical
+// unbounded-below shape as instantDeltaPrefixSource — a DELTA-temporality row
+// qualifies regardless of how far before the grid it sits, so without a bound
+// this reads a metric's ENTIRE retention. deltaPrefixLowerBoundFrag applies
+// the same operator-configured e.deltaPrefixLookbackNS bound; see
+// instantDeltaPrefixSource's doc for the correctness tradeoff this accepts.
+func (e *emitter) applyMatrixFanoutScanBound(
+	fanout *QueryBuilder,
+	r *chplan.RangeWindow,
+	srcTs string,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+	needsDeltaFirstLevel bool,
+) {
+	if !needsDeltaFirstLevel {
+		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
+		return
+	}
+	earliestAnchor := Sub(
+		end,
+		Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
+	)
+	deltaBranch := Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta))
+	if lower := deltaPrefixLowerBoundFrag(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS), e.deltaPrefixLookbackNS); lower != nil {
+		deltaBranch = And(deltaBranch, lower)
+	}
+	fanout.Where(
+		Lte(Col(srcTs), end),
+		Paren(Or(
+			deltaBranch,
+			Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
+		)),
+	)
+}
+
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
 // emitWindowedArrayExtrapolated. Each series emits one row per anchor
 // (across [End-OuterRange, End] spaced by Step, end-inclusive) whose
@@ -3527,21 +3637,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
 	// (the timestamp column present in the fanout's FROM). See
 	// maybePushInnerScanTimeBounds.
-	if needsDeltaFirstLevel {
-		earliestAnchor := Sub(
-			end,
-			Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)),
-		)
-		fanout.Where(
-			Lte(Col(srcTs), end),
-			Paren(Or(
-				Eq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta)),
-				Gt(Col(srcTs), rangeStartFrag(earliestAnchor, rangeNS)),
-			)),
-		)
-	} else {
-		maybePushInnerScanTimeBounds(fanout, r, srcTs, rangeNS)
-	}
+	e.applyMatrixFanoutScanBound(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
 
 	fanoutSource := fanout.Frag()
 

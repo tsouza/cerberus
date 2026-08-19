@@ -140,7 +140,15 @@ type rangeSeriesOrderer interface {
 // back to its default-OTel-name-keyed static registry (pre-#1703 behaviour,
 // unchanged), and a Lang that doesn't implement rangeSeriesOrderer emits plan
 // exactly as it was optimized (pre-#1442 behaviour, unchanged).
-func emitForHead(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
+//
+// deltaPrefixLookback is always threaded (unlike the two duck-typed hooks
+// above, it is not head-specific — every caller passes its Engine's own
+// DeltaPrefixLookback field directly). It is a table-scoped no-op for LogQL /
+// TraceQL exactly the way spansTable is for PromQL: those heads never lower a
+// chplan.RangeWindow with a TemporalityColumn, so chsql's DELTA-temporality
+// prefix-reconstruction emitters this bounds are simply never reached for
+// them.
+func emitForHead(ctx context.Context, lang Lang, plan chplan.Node, deltaPrefixLookback time.Duration) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
 	}
@@ -151,6 +159,7 @@ func emitForHead(ctx context.Context, lang Lang, plan chplan.Node) (string, []an
 	if ro, ok := lang.(rangeSeriesOrderer); ok {
 		plan = ro.RangeSeriesOrder(plan)
 	}
+	ctx = chsql.WithDeltaPrefixLookback(ctx, deltaPrefixLookback)
 	return chsql.Emit(ctx, plan)
 }
 
@@ -650,6 +659,23 @@ type Engine struct {
 	// audit GAP-2, see requireSubquerySampleBudget). 0 disables the gate.
 	MaxQuerySamples int64
 
+	// DeltaPrefixLookback mirrors config.Config.DeltaPrefixLookback (wired
+	// from the same CERBERUS_DELTA_PREFIX_LOOKBACK in cmd/cerberus, PromQL
+	// head only — TraceQL / LogQL plans never carry a
+	// chplan.RangeWindow.TemporalityColumn, so this is inert dead
+	// configuration for them). emitForHead threads it onto the emit context
+	// via chsql.WithDeltaPrefixLookback so internal/chsql's DELTA-temporality
+	// prefix-reconstruction emitters (instantDeltaPrefixSource /
+	// emitWindowedArrayExtrapolatedMatrix) bound their otherwise-unbounded
+	// pre-window scan. The zero Go value stamps 0 onto the context,
+	// which chsql treats as the explicit "disabled" value, not "unset" — so
+	// an Engine built without this field wired (e.g. by a test that
+	// constructs Engine{} directly) gets the exact pre-fix unbounded scan
+	// rather than a silently different bound. Production callers always set
+	// it from config.Config.DeltaPrefixLookback, which itself resolves to a
+	// non-zero default when unset.
+	DeltaPrefixLookback time.Duration
+
 	// RouteMemo is the OPTIONAL failure-driven route memo (internal/routememo,
 	// docs/solver.md §"Failure-driven route memo"). Nil unless wired from
 	// cmd/cerberus, so the default path is byte-unchanged. When non-nil AND
@@ -921,7 +947,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, err := emitForHead(guardCtx, lang, plan)
+		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
@@ -1059,7 +1085,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, err := emitForHead(ctx, lang, plan)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1134,7 +1160,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1238,11 +1264,22 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // not-sliceable — by the slice-invariance registry on the main spine and by the
 // same registry inside walkScalarInterior for an Expr-embedded one — so no
 // route-B dispatch could carry the family at all.
-func routeBExecCtx(ctx context.Context, langName, responseShape string, decision *solver.Decision) context.Context {
+//
+// It also carries the DELTA-temporality prefix-reconstruction lookback bound
+// across to route B for the same byte-identical-to-route-A reason:
+// solver.Executor's shards emit through engine.ChsqlEmitter, a stateless
+// adapter with no Engine field to read e.DeltaPrefixLookback from (internal/
+// solver cannot import internal/chsql — see ChsqlEmitter's doc), so without
+// this the ctx a shard's chsql.Emit sees would carry no explicit value and
+// silently fall back to chsql's own defaultDeltaPrefixLookback instead of
+// the operator's configured CERBERUS_DELTA_PREFIX_LOOKBACK — still bounded,
+// but not necessarily the SAME bound route A used for the un-sliced plan.
+func routeBExecCtx(ctx context.Context, langName, responseShape string, decision *solver.Decision, deltaPrefixLookback time.Duration) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
+	ctx = chsql.WithDeltaPrefixLookback(ctx, deltaPrefixLookback)
 	return ctx
 }
 
@@ -1282,7 +1319,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -1576,7 +1613,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
@@ -1752,7 +1789,7 @@ func (e *Engine) executeRoutedCursor(
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {

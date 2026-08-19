@@ -71,6 +71,46 @@ type Config struct {
 	// its own fallback horizon; setting this above the real retention
 	// only widens the scan, never drops results.
 	PromMetadataLookback time.Duration
+
+	// DeltaPrefixLookback bounds, via CERBERUS_DELTA_PREFIX_LOOKBACK, how far
+	// before a rate()/increase() window's start a DELTA-temporality OTel Sum
+	// counter's prefix-reconstruction scan is allowed to read. Reconstructing
+	// Prometheus's "cumulative counter level immediately before the window"
+	// for a DELTA-temporality series (chplan.RangeWindow.TemporalityColumn)
+	// has no natural stopping point short of the series' own first-ever
+	// sample, so the unbounded form reads a metric's ENTIRE retention on
+	// every rate()/increase() query against ANY Sum-typed counter whose table
+	// carries an AggregationTemporality column — Cumulative-temporality
+	// series (the overwhelming majority; empirically 99.99%+ of real OTel Sum
+	// data) included, even though the reconstructed value is provably unused
+	// for them (see internal/chsql's deltaFirstValFrag). At real production
+	// retention (weeks) this reads tens of millions of rows and times out —
+	// the incident this default fixes.
+	//
+	// This value ONLY bounds that reconstruction; it never touches the
+	// rate()/increase() VALUE itself (counter_delta), which is always
+	// computed purely from in-window samples. What it CAN affect, for a
+	// genuine DELTA-temporality series whose true accumulation predates the
+	// bound, is Prometheus's counter-reset / extrapolation-BOUNDARY
+	// correction (functions.go's durationToStart clamp) — the reconstructed
+	// "first_val" is approximated from only the last DeltaPrefixLookback of
+	// history instead of the series' full lifetime. This is a real,
+	// fleet-wide semantic approximation, not a free bug fix: an operator who
+	// needs exact boundary correction for long-lived DELTA counters should
+	// raise it (or disable it with `0`, restoring the pre-fix unbounded
+	// scan) rather than assume the default is always precise. The fully
+	// precise fix — a materialized / incrementally maintained running total,
+	// so no query pays an O(retention) scan for this — is tracked separately
+	// (see cerberus issue #2389) and is out of scope here.
+	//
+	// `0` (an explicit setting, not the resolved default) disables the bound
+	// entirely, restoring the exact pre-fix unbounded scan. Unset resolves
+	// to defaultDeltaPrefixLookback (24h): OTel collectors accumulating DELTA
+	// sums typically reset on restart/redeploy, so a day's lookback captures
+	// the overwhelming majority of genuine resets while keeping the scan
+	// retention-independent.
+	DeltaPrefixLookback time.Duration
+
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
 	// env overrides applied.
@@ -628,6 +668,7 @@ const (
 	envHTTPMaxBodyBytes        = "CERBERUS_HTTP_MAX_BODY_BYTES"
 	envLokiTailWriteTO         = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envPromMetadataLookback    = "CERBERUS_PROM_METADATA_LOOKBACK"
+	envDeltaPrefixLookback     = "CERBERUS_DELTA_PREFIX_LOOKBACK"
 	envDebugPProf              = "CERBERUS_DEBUG_PPROF"
 	envTempoStructuralTwoPhase = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
 	envAutoCreateSchema        = "CERBERUS_AUTO_CREATE_SCHEMA"
@@ -862,6 +903,15 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// Unlike envQueryMaxSamples, an explicit 0 here is meaningful (disable —
+	// see Config.DeltaPrefixLookback's doc), not "use the default" — v.SetDefault
+	// below already resolves an UNSET env var to defaultDeltaPrefixLookback, so
+	// no separate resolve-0-to-default step is needed; getNonNegativeDuration's
+	// only job is rejecting a negative value.
+	deltaPrefixLookback, err := getNonNegativeDuration(v, envDeltaPrefixLookback)
+	if err != nil {
+		return Config{}, err
+	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -937,6 +987,7 @@ func FromEnv() (Config, error) {
 		HTTPServer:           surface.httpServer,
 		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
 		PromMetadataLookback: surface.promMetadataLookback,
+		DeltaPrefixLookback:  deltaPrefixLookback,
 		ClickHouse:           chCfg,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
@@ -1014,6 +1065,7 @@ var allEnvKeys = []string{
 	envHTTPMaxBodyBytes,
 	envLokiTailWriteTO,
 	envPromMetadataLookback,
+	envDeltaPrefixLookback,
 	envDebugPProf,
 	envTempoStructuralTwoPhase,
 	envAutoCreateSchema,
@@ -1173,6 +1225,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
+	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
@@ -1391,6 +1444,18 @@ const defaultLokiTailWriteTimeout time.Duration = 10 * time.Second
 // handler's own conservative fallback horizon. A non-zero default here would
 // duplicate that fallback in a second place and drift from it.
 const defaultPromMetadataLookback time.Duration = 0
+
+// defaultDeltaPrefixLookback is the default DELTA-temporality
+// prefix-reconstruction lookback bound (see Config.DeltaPrefixLookback's doc
+// for the full tradeoff). 24h: OTel collectors accumulating DELTA sums
+// typically reset their running total on restart/redeploy, so a day's
+// lookback captures the overwhelming majority of genuine resets while
+// keeping the scan retention-independent rather than O(retention). Unlike
+// defaultPromMetadataLookback, non-zero IS the resolved default here — `0`
+// is reserved for an operator's EXPLICIT opt-out (see FromEnv's
+// deltaPrefixLookback parse for why no separate resolve-to-default step is
+// needed).
+const defaultDeltaPrefixLookback time.Duration = 24 * time.Hour
 
 // defaultCHOptCorpusInterval is how often the query_log performance-corpus
 // reconciler reconciles recently-dispatched query_ids against

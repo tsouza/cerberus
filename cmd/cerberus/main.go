@@ -718,6 +718,12 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		Settings:        settingsRules(cfg, optSet),
 		MaxQuerySamples: client.MaxQuerySamples(),
 		RouteMemo:       buildRouteMemo(evalSolver, logger),
+		// PromQL-only: TraceQL / LogQL plans never carry a
+		// chplan.RangeWindow.TemporalityColumn (the OTel Sum
+		// AggregationTemporality concept), so this is inert for the other
+		// heads and is not wired onto their engines — see
+		// engine.Engine.DeltaPrefixLookback's doc.
+		DeltaPrefixLookback: cfg.DeltaPrefixLookback,
 	}
 	h.Limiter = limiter
 	h.Version = Version
