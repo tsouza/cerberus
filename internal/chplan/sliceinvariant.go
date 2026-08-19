@@ -41,13 +41,16 @@ func IsSliceInvariant(n Node) bool {
 //
 //   - Scan / Filter / Project — pure row-wise passthroughs; no cross-row,
 //     cross-anchor, or scan-order dependence.
+//
 //   - Aggregate — keyed per (series, anchor) (the GroupBy carries the
 //     anchor key in the matrix lowerings), so each output row reduces only
 //     the rows of one anchor's window.
+//
 //   - RangeWindow / RangeLWR / RangeBucketFanout — the windowed-array and
 //     bounded sample-fan-out families: each (series, anchor) value is the
 //     reduce of exactly that anchor's `(anchor - Offset - Range, anchor -
 //     Offset]` window membership, independent of the scan lower bound.
+//
 //   - RangeWindowGridNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
 //     of the SAME window semantics. The aggregate is handed (start, end, step,
 //     window) and evaluates grid point i from exactly the samples inside
@@ -65,9 +68,12 @@ func IsSliceInvariant(n Node) bool {
 //     against the fan-out arm on a 500k-row / 5000-series seed across three
 //     temporality mixes: identical cell key sets, zero missing and zero extra
 //     cells (issue #2117).
+//
 //   - StepGrid — emits the anchor grid itself; a sub-grid is a subset.
+//
 //   - UnionAll — slice-invariant iff every arm is (checked structurally by
 //     the whole-plan walk, since each arm is itself visited).
+//
 //   - VectorJoin — a step-aligned vector-vector binary join. Each output row
 //     is the per-pair binary op of two per-(match-key, anchor) inputs joined
 //     on the match key AND the anchor timestamp (the emitter ANDs
@@ -87,10 +93,28 @@ func IsSliceInvariant(n Node) bool {
 //     route A. VectorSetOp / NaryVectorSetOp (and/or/unless) remain absent —
 //     each is its own PR.
 //
+//   - HistogramQuantile — the classic-histogram bucket-array-to-quantile
+//     interpolation. Its input is RangeBucketFanout, whose GROUP BY carries
+//     the anchor key (AnchorAlias, always prepended), so HistogramQuantile's
+//     own row-wise Project/interpolation reads exactly one (series, anchor)
+//     group's BucketCounts/ExplicitBounds columns — no cross-anchor read, no
+//     scan-order dependence, no window function (the emitter,
+//     internal/chsql/histogram_quantile.go, renders plain arrayMap/arraySort
+//     over one row's array columns). Its per-(series, anchor) output is
+//     therefore exactly as scan-lower-bound-independent as its
+//     RangeBucketFanout input already is. See internal/chplan/reanchor.go's
+//     *HistogramQuantile arm (a pass-through, mirroring *Project) and
+//     internal/solver/avb_chdb_lane_test.go's classic-histogram fixtures for
+//     the differential (route A vs K-sharded route B) proof this registry
+//     entry rests on. HistogramQuantileNative / HistogramProjection (the
+//     native/exponential-histogram siblings) remain DELIBERATELY ABSENT —
+//     same shape family, but no production traffic exists yet to validate
+//     against; a follow-up PR with its own fixtures registers them.
+//
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
-// VectorSetOp, HistogramQuantile{,Native}, AbsentOverTime, RangeWindowStaleResample,
-// the metrics_* TraceQL family, nested spines under the lcm clamp) are
-// DELIBERATELY ABSENT:
+// VectorSetOp, HistogramQuantileNative, HistogramProjection, AbsentOverTime,
+// RangeWindowStaleResample, the metrics_* TraceQL family, nested spines under
+// the lcm clamp) are DELIBERATELY ABSENT:
 // each enters this registry only with its own slice-invariance proof + the
 // reset-at-seam fixture family, one node family per PR. To register a kind,
 // argue its per-(series, anchor) output is scan-lower-bound-independent, add
@@ -106,6 +130,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&RangeWindowGridNative{},
 		&RangeLWR{},
 		&RangeBucketFanout{},
+		&HistogramQuantile{},
 		&StepGrid{},
 		&UnionAll{},
 		&VectorJoin{},
