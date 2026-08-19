@@ -147,10 +147,11 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
 	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
 	e := &emitter{
-		spansTable:      spansTable,
-		ctxSpansTable:   spansTable,
-		ctxLateMatTable: ctxLMTable,
-		ctxLateMatShape: ctxLMShape,
+		spansTable:            spansTable,
+		ctxSpansTable:         spansTable,
+		ctxLateMatTable:       ctxLMTable,
+		ctxLateMatShape:       ctxLMShape,
+		deltaPrefixLookbackNS: deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -272,6 +273,19 @@ type emitter struct {
 	// correctness under an overridden table name.
 	ctxLateMatTable string
 	ctxLateMatShape lateMatShape
+
+	// deltaPrefixLookbackNS bounds, in nanoseconds, how far before a
+	// rate()/increase() window's start instantDeltaPrefixSource /
+	// emitWindowedArrayExtrapolatedMatrix's DELTA-temporality prefix
+	// reconstruction is allowed to read (see WithDeltaPrefixLookback /
+	// deltaPrefixLookbackFromCtx in range_window.go, and
+	// config.Config.DeltaPrefixLookback's doc, for the full tradeoff). Seeded
+	// from the emit context once here so every delta-prefix emitter reads the
+	// same resolved bound without re-deriving it from ctx per call. 0 means
+	// "no lower bound" — the explicit-disable value, not "unset" (the caller
+	// never threading WithDeltaPrefixLookback resolves to
+	// defaultDeltaPrefixLookback via deltaPrefixLookbackFromCtx, not to 0).
+	deltaPrefixLookbackNS int64
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the
