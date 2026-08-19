@@ -66,6 +66,13 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		if k < 2 {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
+		// Last, so a plan that was already below threshold keeps THAT reason
+		// and the shipped route-A analyzer's population does not shift
+		// underneath it: only plans that would genuinely have routed change
+		// verdict here.
+		if sig.sawIndivisibleAnchorGrid {
+			return notRouted(ReasonAnchorGridIndivisible).withGrid(sig, meta), false
+		}
 	}
 	// "sharded": thresholds drop to the floor — every eligible plan routes
 	// at K_min = 2 (k is already clamped to >= 2 by classify when upper >= 2).
@@ -385,6 +392,17 @@ type signals struct {
 	// and a carrier kind added to chplan ahead of carrierGeometryOf would
 	// silently deflate every threshold calibrated off those rows.
 	sawGridCarrier bool
+
+	// sawIndivisibleAnchorGrid records that some routable carrier on this
+	// plan's spine answers false to chplan.GridCarrier.AnchorGridDivides —
+	// its peak intermediate does NOT shrink when the anchor grid is cut.
+	// ModeAuto's thresholds are a PROXY for cost that reads F = lookback/Step
+	// as a divisor; for such a carrier F is a redundancy multiplier instead,
+	// so the proxy's own sign is inverted and clearing it is evidence AGAINST
+	// routing. Recorded here and consulted only in Plan's ModeAuto branch —
+	// Eligible() deliberately ignores it, so a real route-A resource failure
+	// still routes through the failure-driven memo.
+	sawIndivisibleAnchorGrid bool
 
 	// Cost grid, derived from the OUTERMOST windowed node (the spine root).
 	outerN      int           // N = OuterRange/Step + 1
@@ -858,6 +876,14 @@ func (p *Planner) recordGridCarrier(gc chplan.GridCarrier, depth int, sig *signa
 	// does not depend on the shard's bounds.
 	if !geom.reanchorable && step > 0 {
 		sig.sawNonRangeWindowSpine = true
+	}
+
+	// A routable carrier whose peak does not divide with the grid. Gated on
+	// reanchorable so a kind that already fails closed above does not also
+	// claim this reason, and on step > 0 because a gridless broadcast subtree
+	// is shared verbatim rather than sliced.
+	if geom.reanchorable && !gc.AnchorGridDivides() && step > 0 {
+		sig.sawIndivisibleAnchorGrid = true
 	}
 
 	// The instant/degenerate-spine gate polices the ROUTABLE spine: an
