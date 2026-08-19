@@ -49,6 +49,33 @@ type GridCarrier interface {
 	// EvalGrid returns the node's eval grid. See the interface doc for the
 	// Step == 0 contract.
 	EvalGrid() (start, end time.Time, step time.Duration)
+
+	// AnchorGridDivides reports whether slicing the anchor grid K ways
+	// divides this carrier's PEAK intermediate working set by K.
+	//
+	// It answers the question the sharded-pushdown solver's cost proxy
+	// actually needs and cannot otherwise see. That proxy gates on
+	// F = Lookback/Step, treating a large fan-out as evidence that slicing
+	// will pay. For a carrier whose peak is Theta(rows x Lookback/Step) —
+	// CONSTANT IN N, the grid width — F is not a divisor at all but a
+	// REDUNDANCY MULTIPLIER: every shard rebuilds the same per-(series,
+	// anchor) fold over its own window, and adjacent shards' windows overlap
+	// by Lookback. The proxy's sign is inverted for those carriers, so the
+	// very thing that clears the gate is the thing that makes slicing lose.
+	//
+	// Measured on production ClickHouse 26.6 for a classic-histogram
+	// RangeBucketFanout spine (Step=15s, Lookback=5m, OuterRange=1h, K=12):
+	// route A 1 query / 8,070 ms / 93,608 rows / 4.01 GB peak; route B
+	// 12 queries / 185,101 ms / 3,343,211 rows / 3.69 GB peak. Slicing
+	// twelve ways recovered 8.7% of a perfectly-divisible peak while costing
+	// 23x the ClickHouse work.
+	//
+	// This is a policy declaration about the EMITTER's peak locus, in the
+	// same category as IsSliceInvariant — not a measurement, and not a
+	// threshold. It lives on the interface so the compiler forces every
+	// carrier kind to answer, and the completeness ratchet closes the hole
+	// for free rather than needing a parallel list that can drift.
+	AnchorGridDivides() bool
 }
 
 // Compile-time proof that every grid-bearing node in this package implements
@@ -91,3 +118,38 @@ func (r *RangeBucketFanout) EvalGrid() (time.Time, time.Time, time.Duration) {
 func (a *AbsentOverTime) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return a.Start, a.End, a.Step
 }
+
+// AnchorGridDivides: a StepGrid's per-anchor row set is the grid itself, so
+// halving the grid halves the work.
+func (s *StepGrid) AnchorGridDivides() bool { return true }
+
+// AnchorGridDivides: the windowed-array matrix is Theta(rows x N), linear in
+// the grid width, so slicing partitions it.
+func (r *RangeWindow) AnchorGridDivides() bool { return true }
+
+// AnchorGridDivides: the CH-native timeSeries*ToGrid aggregate materialises one
+// grid per series, linear in N.
+func (r *RangeWindowGridNative) AnchorGridDivides() bool { return true }
+
+// AnchorGridDivides: the re-gridding resample carries one row per anchor.
+func (r *RangeWindowStaleResample) AnchorGridDivides() bool { return true }
+
+// AnchorGridDivides: the last-write-wins fan-out keeps one sample per
+// (series, anchor), so its intermediate is linear in N.
+func (r *RangeLWR) AnchorGridDivides() bool { return true }
+
+// AnchorGridDivides reports the negation of PeakIndependentOfGrid — see that
+// field for why this is per-construction-site rather than per node type.
+//
+// The classic bucket-ladder lowering sets the flag: its intermediate is
+// rows x (Lookback/Step), which does NOT shrink when the grid is cut, because
+// each shard rebuilds the whole per-(series, anchor) fold over its own window
+// and neighbouring shards re-read the Lookback overlap (23x the ClickHouse work
+// for 8.7% of the peak — see the interface doc). The exponential/native
+// lowerings deliberately do NOT set it: route A is where #2385's 19 production
+// OOMs happened, so slicing is what bounds their memory, and nothing has
+// measured otherwise.
+func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependentOfGrid }
+
+// AnchorGridDivides: absent_over_time emits one row per anchor.
+func (a *AbsentOverTime) AnchorGridDivides() bool { return true }

@@ -1,9 +1,9 @@
 {
   "query": "histogram_quantile_over_sum_over_time_bucket/native",
   "lowering": "native",
-  "routed": true,
-  "k": 8,
-  "reason": "routed",
+  "routed": false,
+  "k": 0,
+  "reason": "anchor-grid-indivisible",
   "n_anchors": 241,
   "fanout": 20,
   "cumulative_d": "5m0s",
