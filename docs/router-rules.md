@@ -260,9 +260,9 @@ scalar) — context, never a gate, so no inline tolerance number is needed.
 ### decision_reason attributes a finding, and gates the rules whose advice depends on it
 
 `decision_reason` is the shadow-header value the solver records to explain each
-routing decision (`routed`, `below-threshold`, `not-sliceable`, `instant`,
-`instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
-`scalar-heavy`, `routing-disabled`, `extraction-failed`; see
+routing decision (`routed`, `below-threshold`, `anchor-grid-indivisible`,
+`not-sliceable`, `instant`, `instant-join`, `high-D`, `now64`, `grid-mismatch`,
+`incommensurate`, `scalar-heavy`, `routing-disabled`, `extraction-failed`; see
 [`internal/solver/decision.go`](../internal/solver/decision.go)), plus one
 corpus-only token the solver never emits: `non-promql`, stamped by the engine on
 a LogQL / TraceQL row to say the head never entered `Solver.Classify` at all (see
@@ -279,12 +279,19 @@ vs cap vs reject vs rewrite) — the catalog never encodes that branch in a numb
 It is also a legal **condition operand**, because for some rules the reason is
 not colour but correctness. `route_a_high_fanout_should_shard` advises "lower
 the route-B threshold", which can only change the outcome for a plan the solver
-found *eligible* and then declined on cost — `below-threshold` and `high-D`.
-Every other token is a **structural** refusal: route B cannot take an instant
-query, a now64 plan, or a non-slice-invariant plan at *any* threshold, so the
-same advice there is wrong rather than merely weak. The rule states the
-membership positively (`in [below-threshold, high-D]`), so a Reason added to the
-solver later is excluded by default instead of silently joining the population.
+found *eligible* and then declined **by a threshold** — `below-threshold` and
+`high-D`. Most other tokens are a **structural** refusal: route B cannot take an
+instant query, a now64 plan, or a non-slice-invariant plan at *any* threshold,
+so the same advice there is wrong rather than merely weak.
+
+`anchor-grid-indivisible` is the case that shows why the membership is stated as
+a list and not as "declined on cost". It IS a cost verdict, but the plan cleared
+every threshold before the anchor-grid gate turned it away, so lowering a
+threshold cannot change its outcome either — and slicing it would cost more, not
+less. Reading it as a threshold's doing would advise exactly the wrong lever.
+The rule states the membership positively (`in [below-threshold, high-D]`), so
+that token — and any Reason added to the solver later — is excluded by default
+instead of silently joining the population.
 
 That makes the token set a **closed domain**, not free text: the grammar
 classifies `decision_reason` `ColumnEnum` and validates every literal against

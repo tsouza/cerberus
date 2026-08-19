@@ -153,11 +153,32 @@ Under `single` the Planner classifies but never routes, and records
 `routing-disabled` — not `below-threshold`, which would claim a threshold was
 consulted when none was.
 
+`F` is a cost proxy, and for one class of carrier its sign is inverted, so
+`auto` carries one gate the thresholds cannot express. A carrier answers
+`chplan.GridCarrier.AnchorGridDivides` to say whether slicing the anchor grid
+`K` ways actually divides its peak by `K`. Every kind answers yes except the
+classic/native bucket fan-out (`RangeBucketFanout`), whose peak intermediate is
+`Θ(rows × Lookback/Step)` — **constant in `N`** — so each shard rebuilds the
+whole per-`(series, anchor)` bucket-ladder fold over its own window, and
+adjacent shards re-read the `Lookback` of history every anchor needs. For that
+carrier `F` is a redundancy multiplier rather than a divisor: the thresholds
+route hardest exactly where routing hurts most. An `auto` plan above every
+threshold whose spine carries such a carrier therefore stays on route A and
+records `anchor-grid-indivisible`. The gate is consulted **last**, after the
+thresholds, so a plan that was already below threshold keeps that reason and the
+route-A analyzer's population does not shift underneath it.
+
+The gate is a PREDICTION, not a correctness refusal, and it lives in `Plan`'s
+`auto` branch alone. `Eligible` — the re-derivation the failure-driven route
+memo calls after a real route-A resource failure — ignores it, so measured
+evidence still overrides the model and such a plan can escape to route B; and
+`sharded` still routes it, so the force knob keeps its meaning.
+
 Every classification — routed or not — produces a `Decision` carrying the
-reason (`routed`, `below-threshold`, `not-sliceable`, `instant`, `instant-join`,
-`high-D`, `now64`, `grid-mismatch`, `incommensurate`, `scalar-heavy`,
-`routing-disabled`, `extraction-failed`) for the shadow header, alongside the
-plan's cost grid (`N`, `F`, `D`, `OuterRange`, `Step`).
+reason (`routed`, `below-threshold`, `anchor-grid-indivisible`, `not-sliceable`,
+`instant`, `instant-join`, `high-D`, `now64`, `grid-mismatch`, `incommensurate`,
+`scalar-heavy`, `routing-disabled`, `extraction-failed`) for the shadow header,
+alongside the plan's cost grid (`N`, `F`, `D`, `OuterRange`, `Step`).
 
 The grid is populated on **every** Decision, including the refusals. The signal
 walk that derives it makes no routing decision and mutates nothing, so it runs
