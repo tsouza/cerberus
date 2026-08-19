@@ -664,10 +664,10 @@ func TestEngine_ObserveDrainOutcome(t *testing.T) {
 	eng := newEngine(&fakeQuerier{})
 	eng.QueryObserver = obs
 
-	eng.ObserveDrainOutcome("qid-d", "promql", chclient.ErrTooManySamples)
-	eng.ObserveDrainOutcome("qid-d", "promql", nil)                     // no-op
-	eng.ObserveDrainOutcome("", "promql", chclient.ErrTooManySamples)   // no-op
-	eng.ObserveDrainOutcome("qid-d", "promql", errors.New("transport")) // no-op
+	eng.ObserveDrainOutcome("qid-d", "promql", 0, chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome("qid-d", "promql", 0, nil)                     // no-op
+	eng.ObserveDrainOutcome("", "promql", 0, chclient.ErrTooManySamples)   // no-op on the corpus seam (empty id); still logged
+	eng.ObserveDrainOutcome("qid-d", "promql", 0, errors.New("transport")) // no-op on the corpus seam (unclassified error); still logged
 
 	if len(obs.outcomes) != 1 {
 		t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
@@ -681,7 +681,7 @@ func TestEngine_ObserveDrainOutcome(t *testing.T) {
 
 	// A memory-cap abort surfacing mid-drain is recorded as a dispatched
 	// rejection (terminal, zero cost), carrying the language and the query_id.
-	eng.ObserveDrainOutcome("qid-oom", "logql", chclient.ErrMemoryLimitExceeded)
+	eng.ObserveDrainOutcome("qid-oom", "logql", 0, chclient.ErrMemoryLimitExceeded)
 	if len(obs.dispatchedRej) != 1 {
 		t.Fatalf("ObserveDispatchedRejection calls = %d; want 1", len(obs.dispatchedRej))
 	}
@@ -720,7 +720,7 @@ func TestEngine_ObserveDrainOutcome_ByteBudget(t *testing.T) {
 			eng := newEngine(&fakeQuerier{})
 			eng.QueryObserver = obs
 
-			eng.ObserveDrainOutcome("qid-bytes", "promql", tc.err)
+			eng.ObserveDrainOutcome("qid-bytes", "promql", 0, tc.err)
 
 			if len(obs.outcomes) != 1 {
 				t.Fatalf("ObserveOutcome calls = %d; want exactly 1", len(obs.outcomes))
@@ -783,7 +783,7 @@ func TestEngine_NoObserver_OutcomeNoop(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	eng.ObserveCapRejection("promql")
-	eng.ObserveDrainOutcome("x", "promql", chclient.ErrTooManySamples)
+	eng.ObserveDrainOutcome("x", "promql", 0, chclient.ErrTooManySamples)
 }
 
 // scanRewriteRule is a probe rule for the IsTraceByID test: it

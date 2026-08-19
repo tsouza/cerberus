@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -373,7 +374,10 @@ const (
 // path. No-op when no observer is registered (the default hot path is
 // byte-unchanged).
 func (e *Engine) observeOutcomeForErr(queryID, language string, plan chplan.Node, decision *solver.Decision, err error) {
-	if e.QueryObserver == nil || err == nil {
+	if err == nil {
+		return
+	}
+	if e.QueryObserver == nil {
 		return
 	}
 	switch token := outcomeTokenForErr(err); token {
@@ -386,6 +390,108 @@ func (e *Engine) observeOutcomeForErr(queryID, language string, plan chplan.Node
 	case optcorpusExitOOM:
 		e.observeDispatchedRejection(queryID, language, plan, decision, optcorpusExitOOM)
 	}
+}
+
+// Synchronous exit classes logQueryFailure names that outcomeTokenForErr
+// cannot: a caller-visible timeout / cancellation, or the honest floor for a
+// ClickHouse exception (or any other dispatch error) that matches none of
+// outcomeTokenForErr's cerberus-side outcomes. "error" mirrors
+// optcorpus.ExitError's own reading — state that the query failed without
+// inventing a cause — and "timeout" / "canceled" mirror the wire-shape names
+// internal/api/prom's own queryTimeoutAPIError / queryCanceledAPIError use for
+// the same two error classes, so an operator correlating the log line against
+// the HTTP response sees matching vocabulary. Deliberately NOT combined with
+// the optcorpusExit* consts above: those name the corpus's ExitStatus wire
+// contract (a Row field with its own DDL), while these two name only this log
+// line's own attribute, so a future ExitStatus rename cannot silently rename
+// what operators grep for in kubectl logs.
+const (
+	logExitTimeout  = "timeout"
+	logExitCanceled = "canceled"
+	logExitError    = "error"
+)
+
+// queryFailureClass classifies a dispatch error into the small, stable label
+// logQueryFailure attaches to a non-ok-exit log line. It starts from
+// outcomeTokenForErr — the exact same predicates the corpus already uses to
+// classify a cerberus-side outcome (sample_budget / byte_budget / breaker /
+// oom) — so the class a query is logged under can never name a different
+// cause than the corpus row the SAME error produces. It then widens the
+// vocabulary with the classes only a synchronous caller can see: a wall-clock
+// timeout (ClickHouse's own TIMEOUT_EXCEEDED or the handler's context
+// deadline), a caller-initiated cancellation, and the honest "error" floor
+// for a ClickHouse exception that matches none of the above — never
+// invented, exactly the same discipline optcorpus.ExitError documents for
+// the query_log-derived path.
+func queryFailureClass(err error) string {
+	if token := outcomeTokenForErr(err); token != "" {
+		return token
+	}
+	switch {
+	case errors.Is(err, chclient.ErrQueryTimeout), errors.Is(err, context.DeadlineExceeded):
+		return logExitTimeout
+	case errors.Is(err, context.Canceled):
+		return logExitCanceled
+	default:
+		return logExitError
+	}
+}
+
+// logQueryFailureMsg is the fixed message every non-ok-exit log line carries,
+// so `kubectl logs | grep` (or an aggregator query) can find every one of
+// them with one literal string regardless of exit class.
+const logQueryFailureMsg = "cerberus query failed"
+
+// logQueryFailure emits the WARN-level structured log line for a query that
+// did NOT complete cleanly: a timeout, a memory-limit / OOM abort, a
+// ClickHouse exception, a caller cancellation, or any other non-ok exit. It
+// is the fix for a production gap where two live replicas logged eleven
+// INFO-level startup lines across an investigation window that included
+// dozens of failing queries — none of them visible via kubectl logs, because
+// the only record of a failure lived in the OPTIONAL, interval-driven
+// ClickHouse-side corpus (internal/optcorpus, off unless
+// CERBERUS_CH_OPT_CORPUS_ENABLED is set) rather than in the log stream every
+// deployment already collects.
+//
+// It hangs off the exact classification the corpus already computes for the
+// cerberus-side outcomes (queryFailureClass wraps outcomeTokenForErr) so the
+// two can never name a different cause for the same failure, and it fires
+// unconditionally — independent of whether the corpus reconciler is even
+// registered — so the gap it closes does not silently reopen on a deployment
+// that never turned the corpus on.
+//
+// plan is nil at the one call site with no plan in scope (the handler-side
+// cursor-drain seam, see Engine.ObserveDrainOutcome): shapeID is then ""
+// rather than fabricated. decision is nil whenever no routing classification
+// ran (Solver off, or a non-PromQL head); routeFeatures already reports that
+// case as an empty decision_reason rather than guessing.
+//
+// Deliberately WARN, never ERROR: most non-ok exits here are not cerberus
+// defects (a caller cancelling, a query that ran into its own configured
+// budget) and docs/observability.md reserves ERROR for handler-level
+// failures that are themselves "worth a page." A genuine cerberus defect
+// still reaches ERROR via its own existing site (e.g. the recovered-panic
+// log in telemetry.QueryMiddleware); this line's job is visibility, not
+// alerting.
+func (e *Engine) logQueryFailure(language string, plan chplan.Node, decision *solver.Decision, duration time.Duration, queryID string, err error) {
+	if err == nil {
+		return
+	}
+	shapeID := ""
+	if plan != nil {
+		shapeID = planShapeID(plan)
+	}
+	_, _, _, _, _, _, _, _, reason := routeFeatures(language, decision)
+	slog.Default().Warn(
+		logQueryFailureMsg,
+		"cerberus_ql", language,
+		"shape_id", shapeID,
+		"decision_reason", reason,
+		"exit_class", queryFailureClass(err),
+		"duration_ms", duration.Milliseconds(),
+		"query_id", queryID,
+		"err", err,
+	)
 }
 
 // observeRejection records a decision-only corpus row for a request rejected
@@ -1154,6 +1260,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 		// sample-budget 422 (or a breaker fast-fail) surfaces here. Stamp the
 		// cerberus-side outcome onto the corpus before wrapping the error.
 		e.observeOutcomeForErr(queryID, lang.Name(), plan, decision, err)
+		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), queryID, err)
 		return Result{}, fmt.Errorf("engine: execute: %w", err)
 	}
 
@@ -1286,6 +1393,7 @@ func (e *Engine) executeRouted(
 	)
 	if err != nil {
 		execT.Done(ctx)
+		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return Result{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
 	// Record the fan-out at its dispatch seam, symmetrically with route A's
@@ -1301,6 +1409,7 @@ func (e *Engine) executeRouted(
 	}
 	if cerr := cursor.Err(); cerr != nil {
 		execT.Done(ctx)
+		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), routedQueryID(info), cerr)
 		return Result{}, fmt.Errorf("engine: solver drain: %w", cerr)
 	}
 	chMillis := time.Since(start).Milliseconds()
@@ -1504,6 +1613,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		return result, nil
 	}
 
+	dispatchStart := time.Now()
 	result, err := e.dispatchRouteACursor(ctx, lang, meta, plan, decision)
 	if err != nil {
 		return CursorResult{}, err
@@ -1522,8 +1632,12 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 		}
 		// The sample-budget 422 instead surfaces later during the handler's
 		// drain via ObserveDrainOutcome. Stamp any cerberus-side open-time
-		// outcome here.
+		// outcome here. The A->B retry above declined (or wasn't eligible),
+		// so this request will not get a clean answer — log it now rather
+		// than at the retry site, where it would double-count a failure the
+		// retry went on to recover from.
 		e.observeOutcomeForErr(result.queryID, lang.Name(), plan, decision, err)
+		e.logQueryFailure(lang.Name(), plan, decision, time.Since(dispatchStart), result.queryID, err)
 		return CursorResult{}, fmt.Errorf("engine: execute: %w", err)
 	}
 
@@ -1690,19 +1804,28 @@ func routedQueryID(info *solver.ExecInfo) string {
 }
 
 // ObserveDrainOutcome stamps a CERBERUS-side terminal outcome that surfaced
-// while the handler drained a cursor onto the corpus record for queryID. It is
-// the cursor-path sibling of the eager path's in-engine observeOutcomeForErr:
-// the drain happens in the handler, so the handler calls this with the
-// CursorResult.QueryID and the drain error. The sample-budget 422 (fires after a
-// clean CH finish) is stamped via ObserveOutcome so the reconciler keeps the
-// joined cost and overrides exit_status; a memory-cap abort (CH code 241,
-// "oom") surfacing mid-drain is recorded as a dispatched rejection so the row
-// lands even if the query_log join misses. No-op when no observer is registered,
-// the queryID is empty, or the error is not a recorded outcome. The drain site
-// has no plan/decision, so the dispatched-rejection row carries the language but
-// no routing read-out (routePresent=false) — exit_status stays the operator signal.
-func (e *Engine) ObserveDrainOutcome(queryID, language string, err error) {
-	if e.QueryObserver == nil || queryID == "" || err == nil {
+// while the handler drained a cursor onto the corpus record for queryID, and
+// — independently of whether the corpus is even enabled — logs the failure
+// (see logQueryFailure). It is the cursor-path sibling of the eager path's
+// in-engine observeOutcomeForErr: the drain happens in the handler, so the
+// handler calls this with the CursorResult.QueryID, how long the drain ran,
+// and the drain error. The sample-budget 422 (fires after a clean CH finish)
+// is stamped via ObserveOutcome so the reconciler keeps the joined cost and
+// overrides exit_status; a memory-cap abort (CH code 241, "oom") surfacing
+// mid-drain is recorded as a dispatched rejection so the row lands even if
+// the query_log join misses. The corpus stamp is skipped when no observer is
+// registered, the queryID is empty, or the error is not a recorded cerberus-
+// side outcome — the log line has no such gate, since it is not conditioned
+// on the corpus at all. The drain site has no plan/decision, so both the
+// dispatched-rejection row and the log line carry the language but no
+// routing read-out / shape id — exit_status / exit_class stay the operator
+// signal.
+func (e *Engine) ObserveDrainOutcome(queryID, language string, duration time.Duration, err error) {
+	if err == nil {
+		return
+	}
+	e.logQueryFailure(language, nil, nil, duration, queryID, err)
+	if e.QueryObserver == nil || queryID == "" {
 		return
 	}
 	switch token := outcomeTokenForErr(err); token {
@@ -1751,11 +1874,13 @@ func (e *Engine) executeRoutedCursor(
 		return CursorResult{}, fmt.Errorf("engine: solver routed without an Executor")
 	}
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
+	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
 		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {
+		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), "", err)
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
 	// Dispatch seam for the streaming route-B path (the caller owns the drain,
