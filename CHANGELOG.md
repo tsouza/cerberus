@@ -4,6 +4,18 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.15.3] — 2026-08-19
+
+### Fixed
+
+- **solver:** sweep HistogramQuantile's GroupBy/PhiExpr and fix carrier depth (#2392)
+- **chsql:** bound the DELTA-temporality prefix-reconstruction scan (#2390)
+- **solver:** slice RangeBucketFanout, fixing classic-histogram range OOMs (#2387)
+
+### Performance
+
+- **promql:** bind the exponential-histogram merged bucket start once per merge site (#2386)
+
 ## [v1.15.2] — 2026-08-19
 
 ### Added
