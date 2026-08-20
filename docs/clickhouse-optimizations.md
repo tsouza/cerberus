@@ -297,6 +297,42 @@ Notes:
   through the merge rather than skipped. The floor is therefore the same one
   every other family member pins, so one probed capability verdict still
   governs the whole set.
+- **`ts_grid_histogram`** moves the classic-histogram `rate()` window fold
+  behind `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))` from
+  an array expression to an aggregate. The fold it replaces walks the union
+  bucket bounds with `arrayMap(u -> …, U)` over a body that READS the group's
+  bounds / counts `groupArray`s, and ClickHouse materialises a lambda's
+  captured columns once per outer-array element ([ClickHouse
+  #54967](https://github.com/ClickHouse/ClickHouse/issues/54967)), so the fold
+  builds one copy of the whole per-series bucket matrix per rung. Aggregate
+  functions consume rows through `addBatch` and never construct that replica,
+  so the same arithmetic expressed as `timeSeriesRateToGrid` over the UNNESTED
+  ladder — one row per `(series, le)` carrying that rung's cumulative counter,
+  which is exactly what reference Prometheus models `<name>_bucket{le="X"}` as
+  — removes the replication. Measured against a real ClickHouse 26.6 at
+  realistic scale, same rows read (~88-89k), 121 anchors, 5m window: the array
+  fold takes 4,123 ms / 3.411 GB peak / 51.5 CPU-s, the native aggregate
+  148 ms / 0.130 GB peak / 0.4 CPU-s — **28x faster, 26x less memory, 129x
+  less CPU**.
+  Two details carry the semantics the fan-out owns. First, the shape reads
+  `timeSeriesResetsToGrid` alongside the rate purely as a per-grid-point
+  PRESENCE signal: it is NULL for a window holding zero samples, which is how
+  a rung the anchor's window never carried is kept OFF the ladder rather than
+  landing on it with a fabricated `0` that the monotonic-envelope repair would
+  lift into a moved interpolation bound. Second, the `+Inf` rung is reported by
+  every stored row, so its own sample set IS the series' whole in-window sample
+  set and its NULL is exactly the per-series two-sample floor the fan-out
+  spells as `RangeBucketFanout.MinSamples`.
+  DELTA aggregation temporality stays on the fan-out — the native aggregate
+  reads a cumulative counter and has no delta branch — so a schema declaring
+  the column emits a two-arm `UNION ALL` whose arms read complementary row
+  sets, the same split the scalar `ts_grid_range` path already makes.
+  The **25.9** floor is INHERITED from the family rather than independently
+  derived: the shape rides the same `timeSeriesRateToGrid` `ts_grid_range`
+  pins, so it inherits that feature's binding constraint (the left-open /
+  right-closed membership window, upstream PR #86588). The presence aggregate
+  is a `ts_grid_resets` sibling from PR #86010, released in the same 25.9, so
+  the floor is unchanged either way.
 
 ## Runtime version probe
 

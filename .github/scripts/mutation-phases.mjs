@@ -73,7 +73,12 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
     // metrics_compare + prewhere + exemplars + structural_join + late_mat +
-    // range_window_grid_native + range_bucket_fanout + emit + vector_set_op + set_op.
+    // range_window_grid_native + range_bucket_fanout + range_bucket_grid_native +
+    // emit + vector_set_op + set_op. range_bucket_grid_native.go belongs here
+    // with its two declared siblings: it is range_bucket_fanout.go's native
+    // counterpart (same per-(series, anchor) histogram-ladder contract) built
+    // out of the same timeSeries*ToGrid family range_window_grid_native.go
+    // emits, and both siblings are only ever claimed by this leg.
     exclude_files:
       '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
@@ -92,7 +97,7 @@ export const PHASES = [
     // per-row float scale factor (histogram_float_vector_join.go) — and
     // vector_join.go is itself only ever claimed by this leg.
     exclude_files:
-      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_grid_native|range_window_variants|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_window|range_window_fused|range_window_grid_native|range_window_variants|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -115,8 +120,11 @@ export const PHASES = [
     // histogram_float_vector_join.go are vector_join.go's declared siblings
     // (same broadcast + Include-overlay join shape) — all three siblings are
     // themselves only ever claimed by phase2-builder.
+    // range_bucket_grid_native.go is enumerated for the same reason on the
+    // phase2-compare side: it belongs with range_bucket_fanout.go and
+    // range_window_grid_native.go, both claimed only by that leg.
     exclude_files:
-      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',

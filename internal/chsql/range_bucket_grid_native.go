@@ -344,6 +344,15 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 //
 // with `<counts_f> = arrayMap(hc -> toFloat64(hc), <BucketCounts>)`.
 //
+// `arrayCumSum` is the cumulative count at each bound BECAUSE OTLP requires
+// ExplicitBounds to be strictly ascending: under that contract the prefix sum
+// at position i and the fan-out fold's own `arraySum(if(b <= u, c, 0))` over the
+// row are the same number for every bound. The contract is what makes the
+// cheap form exact, so it is stated rather than assumed — a row storing a
+// REPEATED bound would give the two forms different answers at the repeat, and
+// nothing between the OTel writer and here can synthesise one (the `le` matcher
+// restriction filters rungs, it never duplicates them).
+//
 // Both arms are exactly `length(<bounds>) + 1` long — arrayZip rejects a
 // mismatch outright — which is what makes the row shape allowance explicit:
 // the +Inf rung's total comes from `arraySum` over the WHOLE counts array and

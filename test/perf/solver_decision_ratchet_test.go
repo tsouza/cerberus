@@ -216,6 +216,10 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
 		case chopt.FeatureTSGridPredictLinear:
 			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		case chopt.FeatureTSGridHistogram:
+			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
+				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			}
 		case chopt.FeatureTSGridRecollapse:
 			recollapse = true
 		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache:

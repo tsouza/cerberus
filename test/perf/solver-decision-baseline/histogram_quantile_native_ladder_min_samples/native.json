@@ -1,11 +1,11 @@
 {
-  "query": "histogram_quantile_max_by_le/native",
+  "query": "histogram_quantile_native_ladder_min_samples/native",
   "lowering": "native",
   "routed": false,
   "k": 0,
   "reason": "not-sliceable",
   "n_anchors": 241,
-  "fanout": 20,
-  "cumulative_d": "10m0s",
+  "fanout": 4,
+  "cumulative_d": "2m0s",
   "outer_range": "1h0m0s"
 }

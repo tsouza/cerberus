@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"time"
+
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -154,6 +156,13 @@ func (n NativeClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in clas
 //   - a subquery inner's epoch-aligned grid (ctx.stepAligned) is left on the
 //     fan-out: chplan.RangeBucketGridNative carries no StepAlign field, so a
 //     re-anchoring consumer would re-derive the wrong grid for it.
+//   - the grid step, the window and the offset must each be a WHOLE number of
+//     seconds. timeSeriesRateToGrid takes grid_step and window as whole-second
+//     UInt32 parameters and its start/end as whole-second DateTime bounds, so a
+//     sub-second `[500ms]` window would silently truncate to 0 (and a
+//     sub-second step to a grid the aggregate cannot express). The array fold
+//     evaluates those durations at nanosecond precision, so a sub-second shape
+//     stays on it rather than being answered at the wrong resolution.
 func nativeClassicHistogramEligible(in classicHistogramWindowInput) bool {
 	if in.shape.windowFn != rateWindowFn {
 		return false
@@ -164,7 +173,16 @@ func nativeClassicHistogramEligible(in classicHistogramWindowInput) bool {
 	if in.ctx.stepAligned {
 		return false
 	}
-	return in.win.lookback > 0
+	if in.win.lookback <= 0 {
+		return false
+	}
+	return wholeSeconds(in.ctx.step) && wholeSeconds(in.win.lookback) && wholeSeconds(in.win.offset)
+}
+
+// wholeSeconds reports whether d is an exact multiple of one second — the
+// resolution every parameter of the timeSeries*ToGrid family is expressed in.
+func wholeSeconds(d time.Duration) bool {
+	return d%time.Second == 0
 }
 
 // nativeClassicHistogramNode builds the native ladder aggregate over the
