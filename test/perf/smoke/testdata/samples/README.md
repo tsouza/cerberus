@@ -31,24 +31,6 @@ Columns mirror the OTel Collector ClickHouse exporter schema
 (`ServiceName`, `MetricName`, `MetricDescription`, `MetricUnit`, `Attributes`,
 `ResourceAttributes`, `StartTimeUnix`, `TimeUnix`, plus the value columns for each metric type).
 
-## Scrubbing methodology
-
-Every identifier-bearing string value — every value in `Attributes` and `ResourceAttributes`
-(pod names, hostnames, namespaces, route paths, connection strings, everything), plus
-`ServiceName` where it names a specific service rather than an infra category — was replaced
-with a deterministic `HMAC-SHA256`-derived token, keyed by a random salt generated once and
-discarded afterward. The same real value always maps to the same token
-everywhere it appears, so cardinality and `GROUP BY`/label-matching behavior are preserved
-without preserving content. Numeric and structural columns (`Count`, `Sum`, `BucketCounts`,
-`ExplicitBounds`, `Min`, `Max`, timestamps, `Value`, `AggregationTemporality`) are unmodified —
-they carry no identifying content and are exactly the perf-relevant shape data this sample
-exists to provide. `Exemplars` were dropped entirely (they reference trace/span IDs and add
-re-identification risk for no perf value). Any internal naming convention present in
-`MetricName`/`MetricDescription`/`ServiceName` was genericized.
-
-Verified clean against connection-string schemes, IPv4 patterns, email patterns, and internal
-naming conventions, at both the JSON and the final compiled Parquet-binary level.
-
 ## Not yet wired in
 
 These files are not yet consumed by any test — `test/perf/smoke/seed.go`'s sentinel builders
