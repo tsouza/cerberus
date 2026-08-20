@@ -106,7 +106,7 @@ type RangeBucketFanout struct {
 	// type because the two lowerings that build this node have opposite
 	// memory profiles under the same shape. The classic bucket-ladder fold
 	// (histogram_quantile over `<name>_bucket`) fits route A comfortably —
-	// 2.84 GB measured on an APM-style dashboard panel — so slicing it is 23x pure
+	// 2.84 GB measured on an APM-style panel — so slicing it is 23x pure
 	// waste. The exponential/native merge does NOT: it is the shape behind 19
 	// observed MEMORY_LIMIT_EXCEEDED failures (#2385, cause still
 	// unexplained), where slicing is what bounds the memory at all.

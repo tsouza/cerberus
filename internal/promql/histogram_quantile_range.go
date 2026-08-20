@@ -317,7 +317,7 @@ func lowerHistogramQuantileClassicAggRange(
 	// grid is sliced, so ModeAuto must not predictively shard it — see
 	// chplan.RangeBucketFanout.PeakIndependentOfGrid. Set HERE, at the one
 	// lowering whose route-A cost was actually measured (2.84 GB peak on a
-	// APM-style dashboard panel), and deliberately NOT on the exponential/native
+	// APM-style panel), and deliberately NOT on the exponential/native
 	// siblings, whose route A is where #2385's OOMs happen.
 	if f, ok := fanout.(*chplan.RangeBucketFanout); ok {
 		f.PeakIndependentOfGrid = true

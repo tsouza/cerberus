@@ -3286,8 +3286,8 @@ func deltaPrefixLowerBoundFrag(tsCol, rangeStart Frag, lookbackNS int64) Frag {
 // ClickHouse evaluates an uncorrelated scalar subquery once and substitutes the
 // result as a literal, so on a CUMULATIVE-only metric the predicate folds to a
 // constant false and the prefix scan is pruned entirely rather than filtered
-// row-by-row. Measured at realistic scale on ClickHouse 26.6, on a 147M-row
-// counter (44.5k series, 100% CUMULATIVE): 19,427,587 rows /
+// row-by-row. Measured against ClickHouse 26.6 on a 147M-row counter (44.5k
+// series, 100% CUMULATIVE): 19,427,587 rows /
 // 4,009 marks unguarded vs 107,511 rows / 24 marks guarded — a 181x reduction,
 // with the guard's own scan confined to the eval window it already reads.
 //
