@@ -50,7 +50,20 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # `10m` is a runaway-analysis guard, not a contention tripwire — the `lint`
+  # job's own `timeout-minutes` (.github/workflows/ci.yml) is the outer safety
+  # net, so this cap only needs to fire on a genuinely pathological analysis,
+  # not on ordinary shared-runner noise. Measured cold (`golangci-lint cache
+  # clean`, matching CI's `skip-cache: true`) across five consecutive `main`
+  # runs on 2026-08-20, the tagged pass — the more expensive of the two
+  # `run: ./...` invocations this timeout applies to — took 2m46s-3m47s; a
+  # sixth run (#32253179854 attempt 1, same commit that passed at 3m07s on
+  # retry) hit the OLD 5m cap at 5m05s on pure runner contention, confirmed by
+  # near-identical CPU-seconds between the failing and passing attempts
+  # (issue #2388). 10m is >2.6x the worst clean pass observed, comfortably
+  # absorbing that class of contention while still catching an actual
+  # runaway.
+  timeout: 10m
 
   # golangci-lint analyses ONE build configuration per invocation, so a run
   # that sets no tags cannot see a single tagged file — 120 `chdb` files (the
