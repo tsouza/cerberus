@@ -1051,6 +1051,50 @@ what actually runs.
   - Exit (`eol-retire-line`): `0` always (fail-open — a retirement failure must
     never fail an already-published release); `1` only on a gross wiring error
     (missing repo/token) before any publish-affecting work.
+- **`release-source-pr-dashboard-gate.mjs`** — `release.yml`, the `preflight`
+  job, one step after `release-preflight.mjs`. Closes tsouza/cerberus#2361:
+  `dashboard`'s crawl leg (the ~50min k3d Grafana BFS) is dispatched by
+  `dashboard-matrix.mjs`'s `INCLUDE_CRAWL` only for a `release/*`-headed
+  `pull_request`, `schedule`, or manual dispatch — never for a `push` — so the
+  push-triggered `dashboard` check-run `release-preflight.mjs` reads on the
+  merge commit is a smoke-only verdict with zero crawl-coverage evidence for
+  that commit, even when it reports `success`. `dashboard` is also not a
+  native branch-protection required context on `main` (a deliberate trade —
+  see `e2e.yml`'s header), so GitHub's auto-merge never waited for it either:
+  PR #2360 auto-merged to `main` with its own `dashboard` / crawl result
+  FAILURE and nothing before this step would have refused it. Given the merge
+  commit, this resolves the release-staging PR GitHub associates with it
+  (`GET /commits/{sha}/pulls`, filtered to a `release/`-headed `head.ref` —
+  the same signal `dashboard-matrix.mjs` / `e2e.yml`'s `dashboard-setup`
+  already condition the crawl leg on) and re-reads THAT PR's own `dashboard`
+  check-run on its own head commit — the one run that ever actually exercised
+  the crawl leg — instead of trusting the push run's smoke-only proxy. A
+  commit with no associated `release/`-headed PR (an ordinary merge, or a
+  maintenance-line hotfix pushed with no PR at all) is a clean no-op: nothing
+  extra to re-validate, and `release-preflight.mjs`'s existing
+  `RELEASE_REQUIRED_CHECKS` read already covers whatever ran on it. **ABSENCE
+  IS A FAILURE**, the same posture as `release-preflight.mjs`: a release PR
+  whose own head commit never posted a `dashboard` check-run at all (e.g.
+  merged before the k3d lane finished) blocks exactly like a red one.
+  Pure exported `isReleaseStagingPR(pr)` + `releaseStagingSourcePRs(pulls)` +
+  `latestDashboardCheckRun(checkRuns)` + `sourcePRDashboardProblem({pr,
+  checkRuns})` + `evaluateSourcePRs({pulls, checkRunsByPR})` (no network, no
+  `process.exit`) + a `--self-test`.
+  `release-source-pr-dashboard-gate.test.mjs` is the `node --test` sibling
+  wired into the required `lint` lane — `release.yml` has no `pull_request:`
+  trigger, so without it every edit here would be unverified until a release
+  is cut. Its headline case is the exact #2361 incident shape: a release-
+  staging PR whose own `dashboard` check-run is FAILURE blocks the publish.
+  - Env: `GITHUB_TOKEN` (`pull-requests:read` + `checks:read`),
+    `GITHUB_REPOSITORY`, `GITHUB_SHA` (the pushed merge commit),
+    `GITHUB_API_URL` (default `https://api.github.com`).
+  - Args: argv `--self-test` runs the assertion suite; no command re-validates
+    the merge commit's release-staging source PR(s).
+  - Exit: `0` when no `release/`-headed source PR is associated with the
+    commit, or every one found has a completed, successful `dashboard`
+    check-run on its own head commit — or a green self-test; `1` on any
+    absent / still-running / non-`success` `dashboard` result on a source
+    PR's own head commit, or a missing required env var.
 - **`brew-smoke.mjs`** — `release.yml`, the `brew-smoke` job (post-`publish`),
   and `brew-verify.yml`, which re-runs the identical assertions on demand or
   weekly against an ALREADY-published version (the release-run job cannot be
