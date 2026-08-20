@@ -1441,9 +1441,15 @@ a raw tag is pushed (release-please-style). The flow:
    included) does its real work instead of short-circuiting to a no-op, so a
    release PR's green status reflects the *complete* matrix.
 3. **Merge when green.** The maintainer merges once every required check is
-   green on a tree up to date with main. That merge-when-green gate is the only
-   thing standing between a release PR and publication — the commit on main is
-   releasable by construction (its checks ran against the exact merged tree).
+   green on a tree up to date with main. That merge-when-green gate covers
+   only the checks that are native branch-protection required contexts;
+   `compose-smoke` / `dashboard` / `profile` are deliberately not among them
+   (see "Two-tier test fence" above), so GitHub's native auto-merge does not
+   wait for them — a release PR can auto-merge while one of them is still red.
+   `preflight` (below) is what catches that: it re-reads the release-staging
+   PR's own `dashboard` check-run — the one CI run that ever exercises the
+   k3d Grafana crawl against a release commit — directly from the source PR,
+   rather than trusting the weaker push-triggered proxy (tsouza/cerberus#2361).
 4. **`release.yml` publishes on the push to main.** It runs two per-line
    version gates:
    - **app** (`release-version-gate.mjs`): is Chart.yaml `appVersion` newer
@@ -1474,7 +1480,15 @@ Each edge is a gate, not a sequence:
   `migration-e2e` (Layer 14) — are not. So the preflight carries its own
   **expected set** (`RELEASE_REQUIRED_CHECKS`) and refuses to publish when a
   required lane posted *no* check-run on the commit. A lane that did not run has
-  not passed.
+  not passed. It also re-validates `dashboard` a second, more specific way:
+  `dashboard`'s crawl leg never runs on a push (only on a `release/*`-headed
+  PR, schedule, or dispatch), so the push-triggered check-run this step
+  otherwise reads is a smoke-only proxy with no crawl-coverage evidence for
+  the exact commit being published. `release-source-pr-dashboard-gate.mjs`
+  resolves the release-staging PR GitHub associates with the merge commit and
+  re-reads *that* PR's own `dashboard` check-run instead — closing the gap
+  that let PR #2360 auto-merge to main with a red crawl result
+  (tsouza/cerberus#2361).
 - **`goreleaser`** builds and uploads, but leaves the GitHub release a **draft**.
 - **`release-artifact-migration`** re-runs the migration lane
   (`uses: ./.github/workflows/migration-e2e.yml`) against the image that was just
