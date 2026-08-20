@@ -174,6 +174,10 @@ jobs:
       contents: read
       checks: read
       statuses: read
+      # release-source-pr-dashboard-gate.mjs resolves the release-staging PR
+      # associated with this merge commit via GET /commits/{sha}/pulls — see
+      # that job step below.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
 
@@ -182,6 +186,12 @@ jobs:
 
       - name: preflight required-set guard
         run: node --test .github/scripts/release-preflight.test.mjs
+
+      - name: release-source-pr-dashboard-gate self-test
+        run: node .github/scripts/release-source-pr-dashboard-gate.mjs --self-test
+
+      - name: release-source-pr-dashboard-gate guard
+        run: node --test .github/scripts/release-source-pr-dashboard-gate.test.mjs
 
       - name: Verify every required lane ran and the commit is fully green
         env:
@@ -295,6 +305,31 @@ jobs:
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release
         # support window / EOL policy".
         run: node .github/scripts/release-preflight.mjs
+
+      # tsouza/cerberus#2361: `dashboard`'s crawl leg (the ~50min k3d Grafana
+      # BFS) is dispatched by dashboard-matrix.mjs's INCLUDE_CRAWL only for a
+      # `release/*`-headed pull_request, schedule, or manual dispatch — never
+      # for a push. So the RELEASE_REQUIRED_CHECKS read above, which reads the
+      # push-triggered `dashboard` check-run on THIS commit, is a smoke-only
+      # verdict with zero crawl-coverage evidence — even when `dashboard` is
+      # not itself a native branch-protection required context on `main`
+      # (a deliberate trade; see e2e.yml's header and docs/operations.md's
+      # "Two-tier test fence"), so GitHub's auto-merge never waited for it
+      # either. #2360 merged to `main` with its own `dashboard` / crawl result
+      # FAILURE and nothing before this step would have refused it.
+      #
+      # This step resolves the release-staging PR associated with this exact
+      # merge commit and re-reads THAT PR's own `dashboard` check-run — the
+      # one run that ever actually exercised the crawl leg — instead of
+      # trusting the push run's smoke-only proxy. A commit with no associated
+      # `release/*`-headed PR (an ordinary merge, or a maintenance-line hotfix
+      # pushed with no PR at all) is a clean no-op: nothing extra to
+      # re-validate, and the RELEASE_REQUIRED_CHECKS read above already covers
+      # whatever ran on it.
+      - name: Re-validate the release-staging PR's own dashboard/crawl result
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/release-source-pr-dashboard-gate.mjs
 
   # App release — binary archives + multi-arch images (GHCR + Docker Hub) +
   # SLSA provenance. Runs ONLY when the app gate says appVersion is new.

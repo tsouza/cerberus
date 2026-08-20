@@ -479,6 +479,18 @@ jobs:
       - name: release-preflight self-test (required-set guard)
         run: node --test .github/scripts/release-preflight.test.mjs
 
+      # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
+      # release-staging PR's OWN `dashboard` check-run (the only run that ever
+      # exercises the k3d crawl leg for a release commit) instead of trusting
+      # the push-triggered run's smoke-only proxy. Same reasoning as the
+      # preflight suite above — this only ever executes for real while a
+      # release is being cut, so its pure decision logic (the exact #2361
+      # incident shape: a red dashboard result on the source PR's own head
+      # commit must block; a green one must not; a commit with no associated
+      # release-staging PR is a clean no-op) runs here, on every PR.
+      - name: release-source-pr-dashboard-gate self-test (#2361 guard)
+        run: node --test .github/scripts/release-source-pr-dashboard-gate.test.mjs
+
       # Same reasoning one level out: release-gate-drift.yml is schedule-only, so
       # its detector would otherwise go unexercised between weekly runs. The pure
       # half — the release.yml block-scalar parse and the two drift comparisons —
