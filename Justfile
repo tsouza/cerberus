@@ -338,6 +338,22 @@ traces-scan-window-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
 
+# Run the perf-smoke real-ClickHouse sentinel differential (#2370 PR 1): the
+# real-CH memory-bounding guard for the #2364 incident class. PR #2358
+# disabled ClickHouse's query analyzer for native-histogram plan shapes,
+# validated only by a manual timing comparison on CI-fixture-scale data;
+# 6h8m later prod hit MEMORY_LIMIT_EXCEEDED (#2364) because the fix silently
+# removed a CSE fold, invisible at CI scale (fixed in #2366). Drives the
+# mounted production prom + tempo handlers over real HTTP against a REAL
+# ClickHouse (testcontainers-go) seeded at the scale each incident's root
+# cause needs to actually engage, and reads peak per-query memory back from
+# system.query_log via optcorpus.CHQueryLogSource. Requires Docker; gated
+# behind the `integration` build tag. See
+# test/perf/smoke/realch_perfsmoke_integration_test.go and strict-scan.yml.
+perf-smoke-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
+
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is
 # actually honored by a real ClickHouse over clickhouse-go/v2, not just
@@ -735,6 +751,24 @@ update-scale-wall-baseline:
     @echo
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/scale-wall-baseline.json || true
+
+# Regenerate the PERF-SMOKE baseline (#2370 PR 1) — the committed per-sentinel
+# memory ceilings the real-ClickHouse sentinel differential asserts against.
+# Boots a real ClickHouse (testcontainers-go), seeds all three sentinels at
+# their calibrated scale, issues each sentinel-N (max-of-N) times, and writes
+# perf-smoke-baseline.json: for each sentinel the calibration-time
+# max-of-N peak memory_usage plus the headroom-multiplied ceiling
+# (sentinelBaselineHeadroom) the gate actually asserts against. Requires
+# Docker. Run this — and REVIEW THE DIFF — only when a bound move is
+# genuinely intended (a real, justified memory-cost increase); a silent
+# loosen is exactly the regression this lane exists to catch. The gating
+# assertion is TestPerfSmokeRealCH in the required `strict-scan` job.
+update-perf-smoke-baseline:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
+    @echo
+    @echo "Diff of regenerated baseline:"
+    @git --no-pager diff --stat test/perf/perf-smoke-baseline.json || true
 
 # Regenerate the METADATA QUERY-SIZE budget — the perf guard for the rendered
 # SIZE of the combined /api/v1/series query, the axis the cardinality and

@@ -246,3 +246,25 @@ jobs:
       # internal/chclient/conn_teardown_integration_test.go.
       - name: Run chclient connection-teardown differential (real ClickHouse)
         run: just chclient-integration
+
+      # The perf-smoke sentinel differential (#2370 PR 1): the real-CH
+      # memory-bounding guard for the #2364 incident class. PR #2358 disabled
+      # ClickHouse's query analyzer for native-histogram plan shapes to fix a
+      # real timeout (#2355), validated only by a manual 8-run timing
+      # comparison on CI-fixture-scale data. That silently removed a CSE fold
+      # the SQL emitter relied on; 6h8m later, prod hit
+      # MEMORY_LIMIT_EXCEEDED (#2364) — peak memory ranging ~101 MiB to
+      # 6.4+ GiB — because two array-scan quantities were no longer folded
+      # into single scans (fixed in 38 minutes once diagnosed, #2366). The
+      # failure mode (memory, not time) was invisible at CI scale and only
+      # appears at real cardinality on a real ClickHouse server — nothing
+      # else in this lane, or anywhere else in CI, measured real per-query
+      # memory before this step. This step drives the mounted production
+      # prom + tempo handlers over real HTTP against the real ClickHouse this
+      # job already owns, seeded at the scale each incident's own root cause
+      # needs to actually engage, and reads peak memory back from
+      # system.query_log via the same optcorpus.CHQueryLogSource reader the
+      # production async corpus reconciler uses. See
+      # test/perf/smoke/realch_perfsmoke_integration_test.go.
+      - name: Run perf-smoke sentinel differential (real ClickHouse)
+        run: just perf-smoke-integration

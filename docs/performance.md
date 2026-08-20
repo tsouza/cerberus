@@ -201,13 +201,36 @@ every PR) to *broad* (corpus-wide, nightly).
    `has_array_join` (structural identity, no better direction). A new fixture
    must add a baseline shard, so a new construct's absolute fan factor lands in
    the diff as a built-in cost review.
+5. **Real-ClickHouse memory sentinels** — `test/perf/smoke`, in the required
+   `strict-scan` job (real per PR, not a chDB no-op). The four layers above
+   all profile *structural* proxies for cost — fan factor, cardinality,
+   scaling exponents — measured against chDB or in-process. None of them runs
+   a real ClickHouse server and reads back real per-query memory, which is
+   exactly the blind spot that let #2358 ship: a fix validated only by a
+   manual timing comparison on CI-fixture-scale data silently removed a CSE
+   fold the emitter relied on, and 6h8m later prod hit
+   `MEMORY_LIMIT_EXCEEDED` (#2364) — invisible to every layer above because
+   the failure mode was memory, not fan-out shape, and only appeared at real
+   cardinality on a real server. This layer drives the mounted production
+   `prom` + `tempo` handlers over real HTTP against a real ClickHouse
+   (testcontainers-go), seeded at the scale each of #2364's own root-cause
+   mechanisms (the native-histogram analyzer fix, the unconditional spill
+   settings, the TraceQL `compare()` memory bound) needs to actually engage,
+   and reads peak per-query memory back from `system.query_log` via
+   `optcorpus.CHQueryLogSource` — the same reader the async query_log corpus
+   reconciler uses. Two independent bounds per sentinel: an absolute,
+   cap-relative ceiling, and a committed per-sentinel ceiling
+   (`test/perf/perf-smoke-baseline.json`, max-of-N repeats with headroom,
+   `just update-perf-smoke-baseline` to regenerate).
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
 an ordinary PR and run for real through the `perf-guards` chDB lane on
 push-to-main / nightly / dispatch / a `release/*` PR; the profiler is the same
 release-gate posture through the `profile` job, with the nightly run as its
-wide net for the unknown shapes.
+wide net for the unknown shapes; the real-ClickHouse memory sentinels run for
+real on every PR through the required `strict-scan` job, since they measure
+against a real server rather than chDB.
 
 **The ratchet is sharded across runner processes.** It profiles every executable
 fixture one at a time, so its runtime is a straight line in corpus size — and
@@ -372,6 +395,17 @@ ratchet watches — but pay for it in wall, and wall is the axis the user feels.
 why route B exists for it — but it is a memory mechanism, not a wall-time one,
 so it is not the default for the bounded majority.) The fan-out is the right
 default until the arithmetic floor itself moves.
+
+> Every wall/memory number in this section is **prose** — a real benchmark
+> run, hand-transcribed into this file, with no CI gate keeping it honest.
+> That gap is exactly what let #2358 ship unnoticed: a real-CH fix validated
+> only by a manual timing comparison at CI-fixture scale, with nothing
+> re-measuring memory at realistic cardinality, silently regressed peak
+> memory 6h8m later (#2364). `test/perf/smoke` (the assurance framework's
+> [layer 5](#how-fast-is-kept-fast--the-assurance-framework), in the required
+> `strict-scan` job) closes that specific gap for the incident's own three
+> mechanisms: it is a live, per-PR ClickHouse memory measurement, not a
+> point-in-time table like the ones above.
 
 ## Native rate: exactness vs. scale (should I enable it?)
 
