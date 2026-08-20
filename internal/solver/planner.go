@@ -530,36 +530,11 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		return
 
 	case *chplan.RangeBucketFanout:
-		// RangeBucketFanout is the array-aggregate sibling of RangeLWR and
-		// is slice-invariant; like Aggregate it carries group keys + agg
-		// args that the spine recursion never sweeps. Cover the same now64
-		// gap. It carries its own eval grid (Start/End/Step), re-anchored by
-		// chplan.ReanchorRange the same way RangeLWR is (checkRangeBucketFanoutGrid
-		// runs the same bound-pinning / grid-prediction gates
-		// checkRangeLWRGrid does).
-		p.recordGridCarrier(v, depth, sig)
-		p.checkRangeBucketFanoutGrid(v, predStart, predEnd, depth, sig)
-		for _, e := range v.GroupBy {
-			p.walkExpr(e, predStart, predEnd, v.Step, sig)
-		}
-		for _, fn := range v.AggFuncs {
-			for _, e := range fn.Params {
-				p.walkExpr(e, predStart, predEnd, v.Step, sig)
-			}
-			for _, e := range fn.Args {
-				p.walkExpr(e, predStart, predEnd, v.Step, sig)
-			}
-		}
-		// Each anchor's membership window looks back Offset+Lookback (mirrors
-		// the RangeLWR arm above); widen the input spine by that much so the
-		// grid this predicts for the child matches what ReanchorRange actually
-		// produces (see reanchorRangeBucketFanout). depth+1 mirrors every
-		// other GridCarrier arm above (RangeWindow / RangeLWR /
-		// RangeWindowGridNative / AbsentOverTime): this node's own grid is a
-		// nesting boundary, so anything a further-nested carrier inside
-		// v.Input predicts a grid against must see itself as nested, not as
-		// depth 0.
-		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth+1, sig)
+		p.walkRangeBucketFanout(v, predStart, predEnd, depth, sig)
+		return
+
+	case *chplan.RangeBucketGridNative:
+		p.walkRangeBucketGridNative(v, predStart, predEnd, depth, sig)
 		return
 
 	case *chplan.HistogramQuantile:
@@ -789,6 +764,25 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// the deriv / idelta / irate / instant-LWR / negative-offset families
 		// that lower to a bare RangeLWR spine are routable.
 		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
+
+	case *chplan.RangeBucketGridNative:
+		// The native bucket-ladder aggregate: one single-pass grid per
+		// (series, `le` rung) rather than a per-(series, anchor) fan-out, so
+		// singlePass is set for the same reason RangeWindowGridNative sets it.
+		// NOT re-anchorable: chplan.ReanchorRange has no arm that re-grids it,
+		// so a routed shard would evaluate the FULL grid rather than its own
+		// slice. That is the SECOND of the two refusals holding this kind on
+		// route A (the first is its absence from chplan.IsSliceInvariant's
+		// registry), and it is what licences the node's own
+		// AnchorGridDivides() to answer TRUE honestly — see
+		// TestRangeBucketGridNative_SlicingRefusedAtBothGates, which fails if
+		// either refusal is removed.
+		return carrierGeometry{
+			outerRange:   v.End.Sub(v.Start),
+			lookback:     v.Range,
+			singlePass:   true,
+			reanchorable: false,
+		}, true
 
 	case *chplan.RangeWindowGridNative:
 		// timeSeries<fn>ToGrid: the whole rate(m[Range]) collapses into one
@@ -1079,6 +1073,69 @@ func (p *Planner) walkHistogramQuantile(v *chplan.HistogramQuantile, predStart, 
 	}
 	p.walkExpr(v.PhiExpr, predStart, predEnd, predStep, sig)
 	p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
+}
+
+// walkRangeBucketFanout sweeps the array-aggregate fan-out behind the
+// classic-histogram families — the array-aggregate sibling of RangeLWR. Like
+// Aggregate it carries group keys + agg args the spine recursion never sweeps,
+// so it covers the same now64 gap; and it carries its own eval grid
+// (Start/End/Step), re-anchored by chplan.ReanchorRange the same way RangeLWR
+// is (checkRangeBucketFanoutGrid runs the same bound-pinning / grid-prediction
+// gates checkRangeLWRGrid does).
+//
+// Factored out of walkNode's switch — together with its native sibling
+// walkRangeBucketGridNative — to keep that function under funlen's statement
+// cap, mirroring walkHistogramQuantile.
+func (p *Planner) walkRangeBucketFanout(v *chplan.RangeBucketFanout, predStart, predEnd time.Time, depth int, sig *signals) {
+	p.recordGridCarrier(v, depth, sig)
+	p.checkRangeBucketFanoutGrid(v, predStart, predEnd, depth, sig)
+	for _, e := range v.GroupBy {
+		p.walkExpr(e, predStart, predEnd, v.Step, sig)
+	}
+	for _, fn := range v.AggFuncs {
+		for _, e := range fn.Params {
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
+		}
+		for _, e := range fn.Args {
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
+		}
+	}
+	// Each anchor's membership window looks back Offset+Lookback (mirrors
+	// the RangeLWR arm above); widen the input spine by that much so the
+	// grid this predicts for the child matches what ReanchorRange actually
+	// produces (see reanchorRangeBucketFanout). depth+1 mirrors every
+	// other GridCarrier arm above (RangeWindow / RangeLWR /
+	// RangeWindowGridNative / AbsentOverTime): this node's own grid is a
+	// nesting boundary, so anything a further-nested carrier inside
+	// v.Input predicts a grid against must see itself as nested, not as
+	// depth 0.
+	p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth+1, sig)
+}
+
+// walkRangeBucketGridNative sweeps the ClickHouse-native sibling of
+// RangeBucketFanout: same eval grid, same per-anchor membership window, so it
+// is recorded and its input spine widened by Offset+Range exactly as the
+// fan-out arm's is.
+//
+// It carries NO grid-prediction check, unlike checkRangeBucketFanoutGrid. That
+// check asks whether the node's own pinned bounds agree with the grid a shard
+// would predict for it, and this kind is never sharded: it is deliberately
+// absent from chplan.IsSliceInvariant's registry and carrierGeometryOf reports
+// it non-re-anchorable, the two refusals
+// TestRangeBucketGridNative_SlicingRefusedAtBothGates pins. There is therefore
+// no predicted shard grid for its bounds to agree or disagree with.
+//
+// Factored out of walkNode's switch to keep that function under funlen's
+// statement cap, mirroring walkHistogramQuantile.
+func (p *Planner) walkRangeBucketGridNative(v *chplan.RangeBucketGridNative, predStart, predEnd time.Time, depth int, sig *signals) {
+	p.recordGridCarrier(v, depth, sig)
+	for _, e := range v.GroupBy {
+		p.walkExpr(e, predStart, predEnd, v.Step, sig)
+	}
+	// depth+1 mirrors every other GridCarrier arm: this node's own grid is a
+	// nesting boundary, so anything further nested inside v.Input sees itself
+	// as nested rather than as depth 0.
+	p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
 }
 
 // checkRangeBucketFanoutGrid is checkRangeLWRGrid for RangeBucketFanout —

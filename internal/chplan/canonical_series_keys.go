@@ -217,6 +217,8 @@ func seriesIdentityKeys(n Node) []Expr {
 		return v.GroupBy
 	case *RangeBucketFanout:
 		return v.GroupBy
+	case *RangeBucketGridNative:
+		return v.GroupBy
 	case *TopK:
 		return v.By
 	}
@@ -367,6 +369,8 @@ func seriesIdentityKeyAliases(n Node) []string {
 	case *HistogramQuantileNative:
 		return v.GroupByAliases
 	case *RangeBucketFanout:
+		return v.GroupByAliases
+	case *RangeBucketGridNative:
 		return v.GroupByAliases
 	case *RangeWindowGridNative:
 		// Only the deferred-shaping shape aliases its keys; the two-level one

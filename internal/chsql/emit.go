@@ -387,6 +387,8 @@ func (e *emitter) emitMetricNode(n chplan.Node) (bool, error) {
 		return true, e.emitRangeWindowStaleResample(v)
 	case *chplan.RangeBucketFanout:
 		return true, e.emitRangeBucketFanout(v)
+	case *chplan.RangeBucketGridNative:
+		return true, e.emitRangeBucketGridNative(v)
 	case *chplan.AbsentOverTime:
 		return true, e.emitAbsentOverTime(v)
 	case *chplan.HistogramQuantile:

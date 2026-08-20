@@ -126,7 +126,8 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
-		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
+		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram)
 	if set.Has(FeatureColumnarResultDecode) {
 		t.Errorf("auto on 25.9 enabled %q; want it off (opt-in only)", FeatureColumnarResultDecode)
 	}
@@ -147,6 +148,7 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 	for _, off := range []string{
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram,
 	} {
 		if set.Has(off) {
 			t.Errorf("auto on 25.8 enabled %q; want it off (native floor is 25.9)", off)
@@ -161,7 +163,8 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
-		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
+		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram)
 	if set.Has(FeatureTSGridChanges) {
 		t.Errorf("empty-selection-defaults-to-auto enabled %q; want it off (opt-in only, #1721)", FeatureTSGridChanges)
 	}
@@ -208,6 +211,7 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 				FeatureAggregationInOrder, FeatureConditionCache,
 				FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+				FeatureTSGridHistogram,
 			},
 		},
 	}
@@ -351,6 +355,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 		FeatureAggregationInOrder, FeatureConditionCache,
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram,
 		FeatureColumnarResultDecode)
 }
 
@@ -508,7 +513,8 @@ func TestResolve_LegacyUnset_NoEffect(t *testing.T) {
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache,
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridResets,
-		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse)
+		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram)
 	if hasDeprecation(warns) {
 		t.Errorf("unset legacy must not emit deprecation; warns = %v", warns)
 	}
@@ -536,6 +542,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSGridDeriv:          {ID: FeatureTSGridDeriv, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridPredictLinear:  {ID: FeatureTSGridPredictLinear, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridRecollapse:     {ID: FeatureTSGridRecollapse, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridHistogram:      {ID: FeatureTSGridHistogram, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -554,12 +561,12 @@ func TestRegistry_SeededEntries(t *testing.T) {
 
 func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	// A 25.9 server (every native floor met) whose boot verdict is FORBIDDEN:
-	// auto drops all seven native ts_grid_* features and keeps the non-experimental
-	// stable ones (aggregation_in_order, condition_cache). Six of the seven are
+	// auto drops all eight native ts_grid_* features and keeps the non-experimental
+	// stable ones (aggregation_in_order, condition_cache). Seven of the eight are
 	// AutoSelect=true and each emits a boot WARN naming the experimental setting
 	// + the fan-out fallback (auto is silent on version skips, but NOT on a
 	// capability block — the operator should see a working deployment lost the
-	// native path). ts_grid_changes is the seventh: it is AutoSelect=false
+	// native path). ts_grid_changes is the eighth: it is AutoSelect=false
 	// (opt-in only, #1721), so auto never even considers it — it is absent from
 	// the resolved set for that reason alone, independent of the capability
 	// verdict, and produces no WARN of its own.
@@ -571,13 +578,14 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	for _, native := range []string{
 		FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
+		FeatureTSGridHistogram,
 	} {
 		if set.Has(native) {
 			t.Errorf("auto enabled %q on a capability-forbidden server; want it dropped to fan-out", native)
 		}
 	}
-	if len(warns) != 6 {
-		t.Fatalf("want one WARN per capability-dropped AutoSelect=true native feature (6, excludes ts_grid_changes which is opt-in only); got %d: %v", len(warns), warns)
+	if len(warns) != 7 {
+		t.Fatalf("want one WARN per capability-dropped AutoSelect=true native feature (7, excludes ts_grid_changes which is opt-in only); got %d: %v", len(warns), warns)
 	}
 	for _, w := range warns {
 		if !strings.Contains(w, "allow_experimental_time_series_aggregate_functions") || !strings.Contains(w, "fan-out") {

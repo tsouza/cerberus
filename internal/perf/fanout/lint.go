@@ -194,7 +194,8 @@ func sideIsBounded(n chplan.Node) bool {
 // Only StepGrid qualifies: it emits N raw anchor rows with no GROUP BY,
 // so feeding it into a join's side multiplies the other side by N. The
 // windowed-aggregate nodes (RangeWindow / RangeLWR / RangeBucketFanout /
-// MetricsCompare) DO internally arrayJoin, but each immediately collapses
+// RangeBucketGridNative / MetricsCompare) DO internally arrayJoin, but each
+// immediately collapses
 // the explosion with a GROUP BY to one row per (series, anchor) — their
 // OUTPUT is the bounded matrix shape, identical to an Aggregate's, so
 // they are collapse boundaries (see fanoutBeforeCollapse), not raw
@@ -218,6 +219,7 @@ func collapsesFanout(n chplan.Node) bool {
 		*chplan.RangeLWR,
 		*chplan.RangeWindowStaleResample,
 		*chplan.RangeBucketFanout,
+		*chplan.RangeBucketGridNative,
 		*chplan.MetricsCompare,
 		*chplan.MetricsAggregate,
 		*chplan.MetricsHistogramOverTime,
@@ -362,6 +364,8 @@ func nodeExprs(n chplan.Node) []chplan.Expr {
 			es = append(es, f.Params...)
 			es = append(es, f.Args...)
 		}
+	case *chplan.RangeBucketGridNative:
+		es = append(es, v.GroupBy...)
 	case *chplan.OrderBy:
 		for _, k := range v.Keys {
 			es = append(es, k.Expr)

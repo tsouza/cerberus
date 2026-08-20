@@ -174,6 +174,12 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
+	case *RangeBucketGridNative:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *HistogramQuantile:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v

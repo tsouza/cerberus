@@ -292,6 +292,11 @@ func TestHistogramQuantile_QuantileAgg_ReachesHistogramPath(t *testing.T) {
 			start: rangeStart,
 			end:   rangeStart.Add(5 * time.Minute),
 			step:  time.Minute,
+			// The range path dispatches its per-series window stage through the
+			// boot-wired strategy table, which every production entry point
+			// normalises (RangeLowerers.withDefaults). A hand-built ctx must do
+			// the same or the dispatch site reads a nil strategy.
+			lowerers: RangeLowerers{}.withDefaults(),
 		}},
 	}
 	for _, mode := range modes {

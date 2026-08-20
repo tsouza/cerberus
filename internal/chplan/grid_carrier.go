@@ -88,6 +88,7 @@ var _ = []GridCarrier{
 	(*RangeWindowStaleResample)(nil),
 	(*RangeLWR)(nil),
 	(*RangeBucketFanout)(nil),
+	(*RangeBucketGridNative)(nil),
 	(*AbsentOverTime)(nil),
 }
 
@@ -112,6 +113,12 @@ func (r *RangeLWR) EvalGrid() (time.Time, time.Time, time.Duration) {
 }
 
 func (r *RangeBucketFanout) EvalGrid() (time.Time, time.Time, time.Duration) {
+	return r.Start, r.End, r.Step
+}
+
+// EvalGrid: the native bucket-ladder aggregate is handed the same
+// (Start, End, Step) grid its fan-out sibling walks.
+func (r *RangeBucketGridNative) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 
@@ -150,6 +157,24 @@ func (r *RangeLWR) AnchorGridDivides() bool { return true }
 // OOMs happened, so slicing is what bounds their memory, and nothing has
 // measured otherwise.
 func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependentOfGrid }
+
+// AnchorGridDivides: the native aggregate materialises one Array of N grid
+// points per (series, `le` rung), so its intermediate is linear in the grid
+// width exactly as RangeWindowGridNative's is. It is reported honestly even
+// though slicing never reaches this node.
+//
+// TRUE here is the solver's LICENCE TO SHARD, so what keeps the honest answer
+// safe is that two independent refusals stop the plan before any threshold
+// reads it: the kind is deliberately absent from sliceInvariantKinds (no
+// slice-invariance proof has been argued for it), and internal/solver's
+// carrierGeometryOf reports it non-re-anchorable (ReanchorRange has no arm
+// that re-grids it). Neither is left as prose — both, and the routing outcome
+// they produce, are pinned by internal/solver's
+// TestRangeBucketGridNative_SlicingRefusedAtBothGates /
+// _NeverRoutesUnderAuto, which fail if either refusal is removed. Registering
+// this kind as slice-invariant therefore fails loudly rather than silently
+// handing the solver a licence nobody re-derived.
+func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
 func (a *AbsentOverTime) AnchorGridDivides() bool { return true }

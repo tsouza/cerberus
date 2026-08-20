@@ -1,0 +1,207 @@
+# The ClickHouse-native classic-histogram ladder for
+# `histogram_quantile(phi, sum by(le)(rate(<bucket>[range])))` in range mode.
+# The `experimental_ts_grid_histogram` section opts the fixture into
+# LowerOpts{Lowerers.ClassicHistogram = NativeClassicHistogramWindowLowerer},
+# so the per-series window stage lowers to a chplan.RangeBucketGridNative
+# (rendered as the unnest + timeSeriesRateToGrid/timeSeriesResetsToGrid pair +
+# ARRAY JOIN + regroup) instead of the RangeBucketFanout array-expression fold.
+#
+# The seed, the grid and the `expected_rows` are IDENTICAL to
+# histogram_quantile_classic_range_step.txtar, which is enrolled in the
+# Prometheus parity corpus (`oracle: prometheus`). That identity is the
+# assertion: the native ladder answers, byte for byte, what reference
+# Prometheus answers on this seed. Anything else shows up as a diff in this
+# cell, not as a passing test. (Where the two paths' float evaluation orders
+# DO part company they part by at most two ULP, inside the band the parity
+# corpus already documents for this query class — see
+# histogram_quantile_native_ladder_min_samples.txtar, the one fixture of the
+# three where that happens.)
+#
+# The plan is a two-arm UnionAll: the native ladder over the CUMULATIVE (and
+# temporality-unspecified) rows, and the unchanged RangeBucketFanout + array
+# fold over the DELTA ones, which is the only path with delta semantics. This
+# seed carries no DELTA rows, so its DELTA arm is empty; the arm is exercised
+# with data by the chDB dual-emit parity gate
+# (internal/chsql/histogram_quantile_classic_native_chdb_test.go).
+
+-- query.promql --
+histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_histogram --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:30Z", 0.95],
+  ["", {}, "2026-01-01T00:01:00Z", 0.95],
+  ["", {}, "2026-01-01T00:01:30Z", 0.95],
+  ["", {}, "2026-01-01T00:02:00Z", 0.95],
+  ["", {}, "2026-01-01T00:02:30Z", 0.95],
+  ["", {}, "2026-01-01T00:03:00Z", 0.95],
+  ["", {}, "2026-01-01T00:03:30Z", 0.95],
+  ["", {}, "2026-01-01T00:04:00Z", 0.95],
+  ["", {}, "2026-01-01T00:04:30Z", 0.95]
+]
+-- args --
+[0] string = ""
+[1] int64 = 1
+[2] string = "Map(String,String)"
+[3] float64 = 0
+[4] int64 = 1
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "http_server_request_duration"
+[12] string = "http.server.request.duration"
+[13] string = "http.server.request/duration"
+[14] string = "http.server.request_duration"
+[15] string = "http.server/request/duration"
+[16] string = "http.server/request_duration"
+[17] string = "http.server_request.duration"
+[18] string = "http.server_request_duration"
+[19] string = "http/server/request/duration"
+[20] string = "http/server/request_duration"
+[21] string = "http/server_request_duration"
+[22] string = "http_server.request.duration"
+[23] string = "http_server.request_duration"
+[24] string = "http_server_request.duration"
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 1
+[29] int64 = 1
+[30] int64 = 1
+[31] int64 = 0
+[32] int64 = 0
+[33] int64 = 1
+[34] int64 = 0
+[35] int64 = 1
+[36] string = "nanosecond"
+[37] float64 = 1e+09
+[38] float64 = 1.1
+[39] float64 = 2
+[40] string = "nanosecond"
+[41] float64 = 1e+09
+[42] float64 = 1
+[43] int64 = 1
+[44] int64 = 1
+[45] int64 = 1
+[46] int64 = 1
+[47] string = "nanosecond"
+[48] int64 = 300000000000
+[49] int64 = 1
+[50] float64 = 1e+09
+[51] float64 = 1.1
+[52] float64 = 2
+[53] string = "nanosecond"
+[54] int64 = 300000000000
+[55] int64 = 1
+[56] float64 = 1e+09
+[57] int64 = 1
+[58] int64 = 1
+[59] int64 = 1
+[60] string = "nanosecond"
+[61] int64 = 1
+[62] float64 = 1e+09
+[63] int64 = 1
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 1
+[67] float64 = 0
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 1
+[72] int64 = 1
+[73] int64 = 0
+[74] int64 = 0
+[75] int64 = 1
+[76] int64 = 0
+[77] int64 = 1
+[78] string = "nanosecond"
+[79] float64 = 1e+09
+[80] float64 = 1.1
+[81] float64 = 2
+[82] string = "nanosecond"
+[83] float64 = 1e+09
+[84] float64 = 1
+[85] int64 = 1
+[86] int64 = 1
+[87] int64 = 1
+[88] int64 = 1
+[89] string = "nanosecond"
+[90] int64 = 300000000000
+[91] int64 = 1
+[92] float64 = 1e+09
+[93] float64 = 1.1
+[94] float64 = 2
+[95] string = "nanosecond"
+[96] int64 = 300000000000
+[97] int64 = 1
+[98] float64 = 1e+09
+[99] int64 = 1
+[100] int64 = 1
+[101] int64 = 1
+[102] string = "nanosecond"
+[103] int64 = 1
+[104] float64 = 1e+09
+[105] int64 = 1
+[106] int64 = 1
+[107] int64 = 1
+[108] int64 = 1
+[109] int64 = 1
+[110] string = "service.name"
+[111] string = "service_name"
+[112] string = "service.name"
+[113] string = "service_name"
+[114] string = ""
+[115] string = "service_name"
+[116] string = "http_server_request_duration"
+[117] string = "http.server.request.duration"
+[118] string = "http.server.request/duration"
+[119] string = "http.server.request_duration"
+[120] string = "http.server/request/duration"
+[121] string = "http.server/request_duration"
+[122] string = "http.server_request.duration"
+[123] string = "http.server_request_duration"
+[124] string = "http/server/request/duration"
+[125] string = "http/server/request_duration"
+[126] string = "http/server_request_duration"
+[127] string = "http_server.request.duration"
+[128] string = "http_server.request_duration"
+[129] string = "http_server_request.duration"
+[130] int64 = 1
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.95 cumulative groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
+    Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayMap(i -> FnArrayMax(FnArraySlice(_hq_ladder, 1, i)), FnArrayEnumerate(_hq_ladder)) AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Project [anchor_ts AS anchor_ts, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnArrayConcat(FnArrayMap(u -> FnArraySum(FnArrayFilter((v, pbs) -> FnArrayHas(pbs, u), FnArrayMap((bs, cs) -> FnArraySum(FnArrayMap((b, c) -> FnIf((b <= u), FnToFloat64(c), 0), bs, FnArraySlice(cs, 1, FnLength(bs)))), _hq_bounds_list, _hq_counts_list), _hq_bounds_list)), FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list)))), FnArray(FnArraySum(FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list)))) AS _hq_ladder, FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list))) AS ExplicitBounds]
+        Aggregate groupBy=[anchor_ts AS anchor_ts] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list]
+          UnionAll arms=2
+            RangeBucketGridNative step=30s range=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] buckets=BucketCounts bounds=ExplicitBounds start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+              Filter predicate=((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (AggregationTemporality != 1))
+                Scan(otel_metrics_histogram)
+            Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayMap(j -> FnIf((j = 1), _hq_window_ladder[j], (_hq_window_ladder[j] - _hq_window_ladder[(j - 1)])), FnArrayEnumerate(_hq_window_ladder)) AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+              Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayConcat(FnArrayMap(u -> FnArrayMap(wv -> FnArrayMap(wo -> (FnArrayMap(wsr -> FnIf((_hq_temporality = 1), (FnArraySum(wv) - wsr[1]), FnArraySum(FnArrayMap((p, c) -> FnIf((c < p), c, (c - p)), FnArrayPopBack(wsr), FnArrayPopFront(wsr)))), FnArray(FnArraySort((c, t) -> t, wv, wo)))[1] * FnArrayMap(wcv -> FnArrayMap(wso -> FnArrayMap(wsi -> FnArrayMap(wag -> FnArrayMap(wtc -> FnArrayMap(wrc -> FnIf((wsi > 0), (((wsi + FnIf((FnIf((wrc > 0), (wsi * (FnArraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc) < wtc), FnIf((wrc > 0), (wsi * (FnArraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc), wtc)) + FnIf(((FnToFloat64(FnDateDiff("nanosecond", wso[FnLength(wso)], anchor_ts)) / 1e+09) >= (1.1 * wag)), (wag / 2), (FnToFloat64(FnDateDiff("nanosecond", wso[FnLength(wso)], anchor_ts)) / 1e+09))) / wsi), 1), FnArray(FnArrayMap(wsr -> FnIf((_hq_temporality = 1), (FnArraySum(wcv) - wsr[1]), FnArraySum(FnArrayMap((p, c) -> FnIf((c < p), c, (c - p)), FnArrayPopBack(wsr), FnArrayPopFront(wsr)))), FnArray(FnArraySort((c, t) -> t, wcv, wo)))[1]))[1], FnArray(FnIf(((FnToFloat64(FnDateDiff("nanosecond", (anchor_ts - FnToIntervalNanosecond(300000000000)), wso[1])) / 1e+09) >= (1.1 * wag)), (wag / 2), (FnToFloat64(FnDateDiff("nanosecond", (anchor_ts - FnToIntervalNanosecond(300000000000)), wso[1])) / 1e+09))))[1], FnArray((wsi / (FnLength(wo) - 1))))[1], FnArray((FnToFloat64(FnDateDiff("nanosecond", wso[1], wso[FnLength(wso)])) / 1e+09)))[1], FnArray(FnArraySort(wo)))[1], FnArray(wv))[1]), FnArray(FnArrayFilter((t, pbs) -> FnArrayHas(pbs, u), _hq_ts_list, _hq_bounds_list)))[1], FnArray(FnArrayFilter((v, pbs) -> FnArrayHas(pbs, u), FnArrayMap((bs, cs) -> FnArraySum(FnArrayMap((b, c) -> FnIf((b <= u), FnToFloat64(c), 0), bs, FnArraySlice(cs, 1, FnLength(bs)))), _hq_bounds_list, _hq_counts_list), _hq_bounds_list)))[1], FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list)))), FnArray(FnArrayMap(wv -> FnArrayMap(wo -> (FnArrayMap(wsr -> FnIf((_hq_temporality = 1), (FnArraySum(wv) - wsr[1]), FnArraySum(FnArrayMap((p, c) -> FnIf((c < p), c, (c - p)), FnArrayPopBack(wsr), FnArrayPopFront(wsr)))), FnArray(FnArraySort((c, t) -> t, wv, wo)))[1] * FnArrayMap(wcv -> FnArrayMap(wso -> FnArrayMap(wsi -> FnArrayMap(wag -> FnArrayMap(wtc -> FnArrayMap(wrc -> FnIf((wsi > 0), (((wsi + FnIf((FnIf((wrc > 0), (wsi * (FnArraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc) < wtc), FnIf((wrc > 0), (wsi * (FnArraySort((c, t) -> t, wcv, wo)[1] / wrc)), wtc), wtc)) + FnIf(((FnToFloat64(FnDateDiff("nanosecond", wso[FnLength(wso)], anchor_ts)) / 1e+09) >= (1.1 * wag)), (wag / 2), (FnToFloat64(FnDateDiff("nanosecond", wso[FnLength(wso)], anchor_ts)) / 1e+09))) / wsi), 1), FnArray(FnArrayMap(wsr -> FnIf((_hq_temporality = 1), (FnArraySum(wcv) - wsr[1]), FnArraySum(FnArrayMap((p, c) -> FnIf((c < p), c, (c - p)), FnArrayPopBack(wsr), FnArrayPopFront(wsr)))), FnArray(FnArraySort((c, t) -> t, wcv, wo)))[1]))[1], FnArray(FnIf(((FnToFloat64(FnDateDiff("nanosecond", (anchor_ts - FnToIntervalNanosecond(300000000000)), wso[1])) / 1e+09) >= (1.1 * wag)), (wag / 2), (FnToFloat64(FnDateDiff("nanosecond", (anchor_ts - FnToIntervalNanosecond(300000000000)), wso[1])) / 1e+09))))[1], FnArray((wsi / (FnLength(wo) - 1))))[1], FnArray((FnToFloat64(FnDateDiff("nanosecond", wso[1], wso[FnLength(wso)])) / 1e+09)))[1], FnArray(FnArraySort(wo)))[1], FnArray(wv))[1]), FnArray(_hq_ts_list))[1], FnArray(FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list)))[1])) AS _hq_window_ladder, FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list))) AS ExplicitBounds]
+                RangeBucketFanout step=30s lookback=5m0s minSamples=2 groupBy=[FnMapSort(FnMapMerge(FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list, FnGroupArray(TimeUnix) AS _hq_ts_list, FnAny(AggregationTemporality) AS _hq_temporality] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+                  Filter predicate=((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (AggregationTemporality = 1))
+                    Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, if(0.95 < 0, -inf, if(0.95 > 1, inf, if(`_cerb_hqc_idx` = length(`_cerb_hqc_cum`) AND length(`_cerb_hqc_buckets`) != length(`ExplicitBounds`), `_cerb_hqc_bounds`[length(`_cerb_hqc_bounds`)], if(`_cerb_hqc_idx` = 1 AND `_cerb_hqc_bounds`[1] <= 0, `_cerb_hqc_bounds`[1], (if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1]) + (`_cerb_hqc_bounds`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1])) * (((0.95 * `_cerb_hqc_observations`) - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])) / (`_cerb_hqc_cum`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c >= (0.95 * `_cerb_hqc_observations`), `_cerb_hqc_cum`) AS `_cerb_hqc_idx` FROM (SELECT *, `_cerb_hqc_cum`[length(`_cerb_hqc_cum`)] AS `_cerb_hqc_observations` FROM (SELECT *, arrayMap(i -> `ExplicitBounds`[i], `_cerb_hqc_kept_idx`) AS `_cerb_hqc_bounds`, arrayMap(i -> `_cerb_hqc_buckets`[i], arrayConcat(`_cerb_hqc_kept_idx`, range(length(`ExplicitBounds`) + 1, length(`_cerb_hqc_buckets`) + 1))) AS `_cerb_hqc_cum` FROM (SELECT *, arrayFilter(i -> i = 1 OR `ExplicitBounds`[i] != `ExplicitBounds`[i - 1], range(1, length(`ExplicitBounds`) + 1)) AS `_cerb_hqc_kept_idx`, arrayMap(x -> toFloat64(x), `BucketCounts`) AS `_cerb_hqc_buckets` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayMap(i -> arrayMax(arraySlice(`_hq_ladder`, ?, i)), arrayEnumerate(`_hq_ladder`)) AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, arrayConcat(arrayMap(u -> arraySum(arrayFilter((v, pbs) -> has(pbs, u), arrayMap((bs, cs) -> arraySum(arrayMap((b, c) -> if((b <= u), toFloat64(c), toFloat64(?)), bs, arraySlice(cs, ?, length(bs)))), `_hq_bounds_list`, `_hq_counts_list`), `_hq_bounds_list`)), arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`)))), array(arraySum(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`)))) AS `_hq_ladder`, arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`))) AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list` FROM ((SELECT `anchor_ts`, `Attributes`, arrayMap(hj -> if(hj = 1, `_hqn_ladder`[hj], `_hqn_ladder`[hj] - `_hqn_ladder`[hj - 1]), arrayEnumerate(`_hqn_ladder`)) AS `BucketCounts`, `ExplicitBounds` FROM (SELECT `anchor_ts`, `Attributes`, arrayMap(hp -> hp.2, `_hqn_pairs`) AS `_hqn_ladder`, arrayFilter(hb -> isFinite(hb), arrayMap(hp -> hp.1, `_hqn_pairs`)) AS `ExplicitBounds` FROM (SELECT `Attributes`, `anchor_ts`, arraySort(groupArray((`_hqn_le`, `_hqn_v`))) AS `_hqn_pairs` FROM (SELECT `Attributes`, `_hqn_le`, toDateTime64(`_hqn_anchor`, 9) AS `anchor_ts`, ifNull(`_hqn_rate`, 0) * 300 AS `_hqn_v`, `_hqn_rate` IS NULL AND NOT isFinite(`_hqn_le`) AS `_hqn_short` FROM (SELECT `Attributes`, `_hqn_le`, timeSeriesRateToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `_hqn_cum`) AS `_hqn_grid`, timeSeriesResetsToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `_hqn_cum`) AS `_hqn_seen`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `_hqn_gts` FROM (SELECT `Attributes`, `TimeUnix`, `_hqn_rung`.1 AS `_hqn_le`, `_hqn_rung`.2 AS `_hqn_cum` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix`, arrayJoin(arrayZip(arrayPushBack(`ExplicitBounds`, inf), arrayPushBack(arrayCumSum(arraySlice(arrayMap(hc -> toFloat64(hc), `BucketCounts`), 1, length(`ExplicitBounds`))), arraySum(arrayMap(hc -> toFloat64(hc), `BucketCounts`))))) AS `_hqn_rung` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9))) GROUP BY `Attributes`, `_hqn_le`) ARRAY JOIN `_hqn_grid` AS `_hqn_rate`, `_hqn_seen` AS `_hqn_seenv`, `_hqn_gts` AS `_hqn_anchor` WHERE `_hqn_seenv` IS NOT NULL) GROUP BY `Attributes`, `anchor_ts` HAVING max(`_hqn_short`) = 0))) UNION ALL (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayMap(j -> if((j = ?), `_hq_window_ladder`[j], (`_hq_window_ladder`[j] - `_hq_window_ladder`[(j - ?)])), arrayEnumerate(`_hq_window_ladder`)) AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayConcat(arrayMap(u -> arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wv) - wsr[?]), arraySum(arrayMap((p, c) -> if((c < p), c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr)))), array(arraySort((c, t) -> t, wv, wo)))[?] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > ?), (((wsi + if((if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc) < wtc), if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)))) / wsi), toFloat64(?)), array(arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wcv) - wsr[?]), arraySum(arrayMap((p, c) -> if((c < p), c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr)))), array(arraySort((c, t) -> t, wcv, wo)))[?]))[?], array(if(((toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)))))[?], array((wsi / (length(wo) - ?))))[?], array((toFloat64(dateDiff(?, wso[?], wso[length(wso)])) / toFloat64(?))))[?], array(arraySort(wo)))[?], array(wv))[?]), array(arrayFilter((t, pbs) -> has(pbs, u), `_hq_ts_list`, `_hq_bounds_list`)))[?], array(arrayFilter((v, pbs) -> has(pbs, u), arrayMap((bs, cs) -> arraySum(arrayMap((b, c) -> if((b <= u), toFloat64(c), toFloat64(?)), bs, arraySlice(cs, ?, length(bs)))), `_hq_bounds_list`, `_hq_counts_list`), `_hq_bounds_list`)))[?], arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`)))), array(arrayMap(wv -> arrayMap(wo -> (arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wv) - wsr[?]), arraySum(arrayMap((p, c) -> if((c < p), c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr)))), array(arraySort((c, t) -> t, wv, wo)))[?] * arrayMap(wcv -> arrayMap(wso -> arrayMap(wsi -> arrayMap(wag -> arrayMap(wtc -> arrayMap(wrc -> if((wsi > ?), (((wsi + if((if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc) < wtc), if((wrc > ?), (wsi * (arraySort((c, t) -> t, wcv, wo)[?] / wrc)), wtc), wtc)) + if(((toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, wso[length(wso)], `anchor_ts`)) / toFloat64(?)))) / wsi), toFloat64(?)), array(arrayMap(wsr -> if((`_hq_temporality` = ?), (arraySum(wcv) - wsr[?]), arraySum(arrayMap((p, c) -> if((c < p), c, (c - p)), arrayPopBack(wsr), arrayPopFront(wsr)))), array(arraySort((c, t) -> t, wcv, wo)))[?]))[?], array(if(((toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)) >= (toFloat64(?) * wag)), (wag / toFloat64(?)), (toFloat64(dateDiff(?, (`anchor_ts` - toIntervalNanosecond(?)), wso[?])) / toFloat64(?)))))[?], array((wsi / (length(wo) - ?))))[?], array((toFloat64(dateDiff(?, wso[?], wso[length(wso)])) / toFloat64(?))))[?], array(arraySort(wo)))[?], array(wv))[?]), array(`_hq_ts_list`))[?], array(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`)))[?])) AS `_hq_window_ladder`, arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`))) AS `ExplicitBounds` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, groupArray(`TimeUnix`) AS `_hq_ts_list`, any(`AggregationTemporality`) AS `_hq_temporality` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) GROUP BY anchor_ts, `Attributes` HAVING uniqExact(`TimeUnix`) >= 2)))) GROUP BY `anchor_ts`))))))))

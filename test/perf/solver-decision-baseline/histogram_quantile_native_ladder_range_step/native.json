@@ -1,5 +1,5 @@
 {
-  "query": "histogram_quantile_max_by_le/native",
+  "query": "histogram_quantile_native_ladder_range_step/native",
   "lowering": "native",
   "routed": false,
   "k": 0,

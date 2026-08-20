@@ -43,6 +43,8 @@ func stampOffset(n chplan.Node, off time.Duration) bool {
 		v.Offset = off
 	case *chplan.RangeBucketFanout:
 		v.Offset = off
+	case *chplan.RangeBucketGridNative:
+		v.Offset = off
 	case *chplan.AbsentOverTime:
 		v.Offset = off
 	default:

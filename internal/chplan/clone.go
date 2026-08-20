@@ -144,6 +144,12 @@ func cloneRangeNode(n Node) Node {
 		c.GroupByAliases = cloneStrings(v.GroupByAliases)
 		c.AggFuncs = cloneAggFuncs(v.AggFuncs)
 		return &c
+	case *RangeBucketGridNative:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		c.GroupByAliases = cloneStrings(v.GroupByAliases)
+		return &c
 	case *StepGrid:
 		c := *v
 		return &c

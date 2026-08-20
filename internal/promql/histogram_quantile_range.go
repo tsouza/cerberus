@@ -300,47 +300,30 @@ func lowerHistogramQuantileClassicAggRange(
 	// histogram_quantile.go.
 	pred, leMatchers := histogramQuantileMatcherPredicate(vs.LabelMatchers, s)
 
-	// Stage 1: fan each sample over its anchors and reduce each
-	// (series, anchor) window to one row, applying the range-vector
-	// function's reduction and — through the fan-out's own MinSamples —
-	// its per-series sample floor. Keying the fan-out on series identity
-	// rather than the user's `by/without` labels is what gives that floor
-	// something to count within: under `sum by(le)` the user grouping is
-	// EMPTY, so the floor would otherwise ask whether the whole anchor
-	// held two scrapes instead of whether this series did.
-	fanout := buildHistogramBucketFanout(
-		scan, pred, leMatchers, aggWindowFor(shape),
-		[]chplan.Expr{histogramIdentityExpr(s)}, []string{s.AttributesColumn},
-		classicBucketWindowAggs(s, shape.windowFn), s, ctx,
-	)
-	// The classic bucket-ladder fold's peak does not shrink when the anchor
-	// grid is sliced, so ModeAuto must not predictively shard it — see
-	// chplan.RangeBucketFanout.PeakIndependentOfGrid. Set HERE, at the one
-	// lowering whose route-A cost was actually measured (2.84 GB peak on a
-	// APM-style panel), and deliberately NOT on the exponential/native
-	// siblings, whose route A is where #2385's OOMs happen.
-	if f, ok := fanout.(*chplan.RangeBucketFanout); ok {
-		f.PeakIndependentOfGrid = true
-	}
+	// Stage 1: reduce each (series, anchor) window to one row carrying that
+	// series' window-folded bucket ladder, applying the range-vector
+	// function's reduction and its per-series sample floor. Keying the stage
+	// on series identity rather than the user's `by/without` labels is what
+	// gives that floor something to count within: under `sum by(le)` the user
+	// grouping is EMPTY, so the floor would otherwise ask whether the whole
+	// anchor held two scrapes instead of whether this series did.
+	//
+	// WHICH physical shape performs that reduction — the bounded sample-side
+	// fan-out wearing the array-expression ladder fold, or the ClickHouse-
+	// native ladder aggregate — is the boot-wired ctx.lowerers.ClassicHistogram
+	// strategy's decision, taken once from the resolved feature set. There is
+	// no feature-flag or server-version read here; both impls publish the same
+	// `(anchor_ts, Attributes, BucketCounts, ExplicitBounds)` contract.
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
-	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, aggWindowFor(shape))
-	perSeries := classicBucketWindowReshape(
-		fanout,
-		// countValues=nil and resets=nil — see classicBucketWindowStage's
-		// identical call for why the classic caller reads durationToZero
-		// off each rung's own values rather than a separate count series,
-		// and detects each rung's reset on that rung alone.
-		histogramWindowFold(shape.windowFn, histogramWindowInputs{
-			rangeStart:  rangeStart,
-			rangeEnd:    rangeEnd,
-			temporality: classicBucketWindowTemporalityExpr(s, shape.windowFn),
-		}),
-		[]chplan.Projection{
-			{Expr: anchorRef, Alias: stepGridAnchorColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-		},
-		s,
-	)
+	perSeries := ctx.lowerers.ClassicHistogram.LowerClassicHistogramWindow(classicHistogramWindowInput{
+		scan:       scan,
+		pred:       pred,
+		leMatchers: leMatchers,
+		shape:      shape,
+		win:        aggWindowFor(shape),
+		s:          s,
+		ctx:        ctx,
+	})
 
 	// Stage 2: the user's aggregation across those per-series rows,
 	// within each anchor.

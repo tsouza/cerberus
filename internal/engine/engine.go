@@ -641,7 +641,9 @@ func clampU8(v int64) uint8 {
 // timeSeriesChangesToGrid for Func="changes", timeSeriesResetsToGrid for
 // Func="resets", timeSeriesDerivToGrid for Func="deriv",
 // timeSeriesPredictLinearToGrid for Func="predict_linear") or a
-// chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness). All share
+// chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness), or a
+// chplan.RangeBucketGridNative (the classic-histogram ladder, which reads
+// timeSeriesRateToGrid AND timeSeriesResetsToGrid). All share
 // the allow_experimental_time_series_aggregate_functions gate, so the engine
 // stamps the experimental setting on a query carrying ANY such node — the
 // changes / resets / deriv / predict_linear matrix functions ride the
@@ -657,7 +659,8 @@ func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		switch n.(type) {
-		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample:
+		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample,
+			*chplan.RangeBucketGridNative:
 			found = true
 			return false // stop descending this branch
 		}
