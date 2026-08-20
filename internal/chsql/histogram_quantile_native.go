@@ -81,7 +81,7 @@
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
 //     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
 //     walk. (nlen = length(NegativeBucketCounts).)
-//  5. fraction = (target - cum[idx-1]) / bucketCount(valueIdx), where
+//  5. fraction = rebasedRank / bucketCount(valueIdx), where
 //     valueIdx normally equals idx. For a NaN Sum, reference Prometheus
 //     continues the forward iterator to its end to detect NaN skew after
 //     rebasing the rank in idx. That annotation scan leaves `bucket` on
@@ -89,16 +89,23 @@
 //     that bucket's geometry and count. valueIdx reproduces that observable
 //     behavior by selecting the last positive bucket, otherwise the
 //     populated zero bucket, otherwise the last negative bucket.
-//     ClickHouse returns the array element's default (0) for
-//     `cum[0]`, which matches the "no bucket consumed yet" semantics
-//     when idx = 1, so the formula needs no explicit guard.
-//     One formula serves both walk directions. Reference Prometheus
-//     rebases the remaining rank per direction (`rank -= count -
-//     bucket.Count` forward, `rank = count - rank` backward) and then
-//     divides by the bucket's own count; substituting count =
-//     total - cum[idx-1] for the backward arm reduces its expression to
-//     this same (target - cum[idx-1]) / bucketCount, so only the STOP
-//     INDEX differs between the arms, never the interpolation.
+//     rebasedRank is reference's own per-direction rebasing of the
+//     remaining rank, and each arm is written against the running count
+//     THAT arm accumulated (step 4's cum / revCum), clamped to rankBase
+//     the way reference clamps it:
+//     - forward:  rank - (count - buckets[idx]), count = cum[idx].
+//     - backward: count - (1 - phi) * rankBase,  count = revCum[idx].
+//     The two are algebraically interchangeable — substituting
+//     count = total - cum[idx-1] collapses both to
+//     `(phi * rankBase - cum[idx-1])` — and cerberus emitted that single
+//     collapsed form for both arms until issue #2403. It is NOT
+//     interchangeable in floating point: reading the numerator off the
+//     opposite direction's cumulative array cancels away low-order bits,
+//     and once a rate()/increase() window fold has scaled every bucket by
+//     one extrapolation factor those bits decide whether the fraction
+//     lands just inside the stop bucket or just outside it. Reference's
+//     own forms are also structurally bounded to [0, 1], since the walk
+//     broke at this bucket and not at the one before it.
 //  6. Edge cases (Prometheus quantile.go:114-119), tested in THIS order —
 //     out-of-domain phi is checked before the empty-histogram case, so a
 //     `phi` outside [0, 1] answers ±Inf even for an empty histogram
@@ -171,7 +178,9 @@ import (
 const (
 	hqQuantileBucketsColumn        = "_cerb_hq_buckets"
 	hqQuantileCumColumn            = "_cerb_hq_cum"
+	hqQuantileRevCumColumn         = "_cerb_hq_revcum"
 	hqQuantileIdxColumn            = "_cerb_hq_idx"
+	hqQuantileRunningCountColumn   = "_cerb_hq_count"
 	hqQuantileValueIdxColumn       = "_cerb_hq_value_idx"
 	hqQuantileFirstPopulatedColumn = "_cerb_hq_first_populated"
 	hqQuantileLastPopulatedColumn  = "_cerb_hq_last_populated"
@@ -180,7 +189,9 @@ const (
 type hqNativeHelperColumns struct {
 	buckets        string
 	cum            string
+	revCum         string
 	idx            string
+	runningCount   string
 	valueIdx       string
 	firstPopulated string
 	lastPopulated  string
@@ -230,24 +241,47 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	bucketed := NewQuery().
 		Select(Star(), As(rawW.buckets(), hqQuantileBucketsColumn)).
 		From(sub)
+	cumW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets: hqQuantileBucketsColumn,
+	})
 	cumulated := NewQuery().
-		Select(Star(), As(Call("arrayCumSum", Col(hqQuantileBucketsColumn)), hqQuantileCumColumn)).
+		Select(Star(), As(cumW.cum(), hqQuantileCumColumn)).
 		From(Subquery(bucketed))
+	// The top-down running count is materialized only for a plan that can
+	// actually reach the backward arm. A literal phi below reverseWalkPhi
+	// resolves to the forward arm at emit time (see armSelect), so
+	// projecting revCum there would be a second full array walk per row
+	// that nothing reads.
+	if reachesReverseArm(h) {
+		cumulated.Select(As(cumW.revCum(), hqQuantileRevCumColumn))
+	}
 	idxW := newHQNativeWriters(h, hqNativeHelperColumns{
 		buckets: hqQuantileBucketsColumn,
 		cum:     hqQuantileCumColumn,
+		revCum:  hqQuantileRevCumColumn,
 	})
 	indexed := NewQuery().
 		Select(Star(), As(idxW.idx(), hqQuantileIdxColumn)).
 		From(Subquery(cumulated))
-	valueIdxW := newHQNativeWriters(h, hqNativeHelperColumns{
+	countW := newHQNativeWriters(h, hqNativeHelperColumns{
 		buckets: hqQuantileBucketsColumn,
 		cum:     hqQuantileCumColumn,
+		revCum:  hqQuantileRevCumColumn,
 		idx:     hqQuantileIdxColumn,
+	})
+	counted := NewQuery().
+		Select(Star(), As(countW.runningCount(), hqQuantileRunningCountColumn)).
+		From(Subquery(indexed))
+	valueIdxW := newHQNativeWriters(h, hqNativeHelperColumns{
+		buckets:      hqQuantileBucketsColumn,
+		cum:          hqQuantileCumColumn,
+		revCum:       hqQuantileRevCumColumn,
+		idx:          hqQuantileIdxColumn,
+		runningCount: hqQuantileRunningCountColumn,
 	})
 	withValueIdx := NewQuery().
 		Select(Star(), As(valueIdxW.valueIdx(), hqQuantileValueIdxColumn)).
-		From(Subquery(indexed))
+		From(Subquery(counted))
 	popW := newHQNativeWriters(h, hqNativeHelperColumns{
 		buckets: hqQuantileBucketsColumn,
 	})
@@ -259,7 +293,9 @@ func (e *emitter) emitHistogramQuantileNative(h *chplan.HistogramQuantileNative)
 	helpers := hqNativeHelperColumns{
 		buckets:        hqQuantileBucketsColumn,
 		cum:            hqQuantileCumColumn,
+		revCum:         hqQuantileRevCumColumn,
 		idx:            hqQuantileIdxColumn,
+		runningCount:   hqQuantileRunningCountColumn,
 		valueIdx:       hqQuantileValueIdxColumn,
 		firstPopulated: hqQuantileFirstPopulatedColumn,
 		lastPopulated:  hqQuantileLastPopulatedColumn,
@@ -425,8 +461,9 @@ type hqNativeWriters struct {
 	rankBase       func() Frag
 	sumIsNaN       func() Frag
 	idx            func() Frag
+	runningCount   func() Frag
+	rebasedRank    func() Frag
 	valueIdx       func() Frag
-	cumAt          func(offsetMinusOne bool) Frag
 	nLen           func() Frag
 	pLen           func() Frag
 	zt             func() Frag
@@ -462,6 +499,16 @@ func zeroBandOrigin() Frag { return verbatim("0.") }
 // direction choice carries the same Sum-is-NaN override reference
 // applies (cerberus issue #2072).
 const reverseWalkPhi = 0.5
+
+// reachesReverseArm reports whether any row this plan evaluates can take
+// the backward rank walk. A computed phi is unknown until the row is
+// evaluated, and a literal phi at or above reverseWalkPhi still needs the
+// runtime `isNaN(Sum)` dispatch — only a literal phi BELOW it resolves to
+// the forward arm for every row at emit time. Mirrors the arm choice
+// [newHQNativeWriters]'s armSelect makes.
+func reachesReverseArm(h *chplan.HistogramQuantileNative) bool {
+	return h.PhiExpr != nil || h.Phi >= reverseWalkPhi
+}
 
 func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) hqNativeWriters {
 	pbc := h.PositiveBucketCountsColumn
@@ -512,6 +559,9 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 	// matches reference Prometheus's own reverse iterator bit for bit —
 	// see revIdx below.
 	w.revCum = func() Frag {
+		if helpers.revCum != "" {
+			return Col(helpers.revCum)
+		}
 		return Call("arrayReverse", Call("arrayCumSum", Call("arrayReverse", w.buckets())))
 	}
 	// rankBase is the histogram's own stored Count — what reference
@@ -575,38 +625,99 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 		return rankWalk("arrayLastIndex", w.revCum(),
 			Gte(BareIdent("c"), Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase()))))
 	}
-	// idx: the direction-selected stop index (see the file header,
-	// step 4). Reference forces the forward arm whenever Sum is NaN,
-	// regardless of phi, so that override is checked before the
-	// phi-based choice on both the literal and computed paths — a literal
-	// phi >= reverseWalkPhi still needs a runtime branch here because
+	// armSelect picks between the forward arm's and the backward arm's
+	// rendering of one quantity, under exactly the condition reference
+	// Prometheus branches on (`math.IsNaN(h.Sum) || q < 0.5`). Every
+	// per-arm quantity — the stop index, the running count, the rebased
+	// rank — routes through it, so the three can never disagree about
+	// which arm this row is on. Reference forces the forward arm whenever
+	// Sum is NaN regardless of phi, so that override is checked before
+	// the phi-based choice on both the literal and computed paths: a
+	// literal phi >= reverseWalkPhi still needs a runtime branch because
 	// Sum-is-NaN is per-ROW data, not query shape.
+	armSelect := func(fwd, rev Frag) Frag {
+		if h.PhiExpr == nil {
+			if h.Phi < reverseWalkPhi {
+				return fwd
+			}
+			return If(w.sumIsNaN(), fwd, rev)
+		}
+		return If(
+			Or(w.sumIsNaN(), Lt(w.phi(), InlineLit(reverseWalkPhi))),
+			fwd,
+			rev,
+		)
+	}
+	// idx: the direction-selected stop index (see the file header,
+	// step 4).
 	w.idx = func() Frag {
 		if helpers.idx != "" {
 			return Col(helpers.idx)
 		}
-		if h.PhiExpr == nil {
-			if h.Phi < reverseWalkPhi {
-				return fwdIdx()
-			}
-			return If(w.sumIsNaN(), fwdIdx(), revIdx())
-		}
-		return If(
-			Or(w.sumIsNaN(), Lt(w.phi(), InlineLit(reverseWalkPhi))),
-			fwdIdx(),
-			revIdx(),
-		)
+		return armSelect(fwdIdx(), revIdx())
 	}
-	// cum[idx] (offsetMinusOne=false) / cum[idx - 1] (true). idx=1 with
-	// the `- 1` form indexes cum[0], which CH evaluates to the array
-	// element's default (0) — matches the "no bucket consumed yet"
-	// semantics the fraction formula needs.
-	w.cumAt = func(offsetMinusOne bool) Frag {
-		key := w.idx()
-		if offsetMinusOne {
-			key = Sub(w.idx(), InlineLit(1))
+	// runningCount is reference Prometheus's `count` accumulator AT the
+	// bucket its rank walk broke on: the running total the walk had
+	// reached, in the walk's own direction, INCLUDING the stop bucket.
+	// That is cum[idx] on the forward arm and revCum[idx] on the backward
+	// one, each accumulated in reference's own order (see w.revCum).
+	//
+	// `least(..., rankBase)` is reference's own clamp
+	// (quantile.go:286-290, "Due to numerical inaccuracies, we could end
+	// up with a higher count than h.Count"): the accumulated total can
+	// drift a few ULPs above the stored Count once a rate()/increase()
+	// window fold has scaled every bucket, and reference caps it before
+	// rebasing the rank. Skipping the clamp would push the fraction past
+	// 1 for a phi that lands in the topmost bucket.
+	//
+	// The walk's "not found" sentinel idx = 0 indexes element 0 of the
+	// array, which ClickHouse answers with the element type's default,
+	// so this evaluates to 0 there. That row's answer is the outer
+	// chain's idx = 0 -> NaN branch, which never reads the fraction.
+	//
+	// The cast holds the whole rebasing in the Float64 reference does it
+	// in. A bare-selector plan reads the bucket arrays straight off the
+	// table as Array(UInt64), so `count - buckets[idx]` below would be
+	// UInt64 arithmetic — and while the walk's own construction puts
+	// cum[idx] at or above buckets[idx], the clamp above can pull it below
+	// for a row whose stored Count is smaller than one of its own buckets.
+	// UInt64 wraps there; Float64 gives reference's negative.
+	w.runningCount = func() Frag {
+		if helpers.runningCount != "" {
+			return Col(helpers.runningCount)
 		}
-		return Subscript(w.cum(), key)
+		return Call("toFloat64", Call("least",
+			armSelect(Subscript(w.cum(), w.idx()), Subscript(w.revCum(), w.idx())),
+			w.rankBase()))
+	}
+	// rebasedRank is reference's `rank` after it has been rebased into
+	// the stop bucket — the fraction's NUMERATOR (quantile.go:310-314):
+	//
+	//	forward:  rank -= count - bucket.Count
+	//	backward: rank  = count - rank
+	//
+	// Both are written against the running count the walk itself
+	// accumulated, never against the OTHER direction's array. The two
+	// forms are algebraically interchangeable — substituting
+	// count = total - cum[idx-1] turns the backward one into
+	// `phi*total - cum[idx-1]`, which is what cerberus emitted for both
+	// arms until cerberus issue #2403 — but they are NOT interchangeable
+	// in floating point. Deriving the numerator from the opposite
+	// direction's cumulative array cancels away low-order bits, and once
+	// a rate()/increase() window fold has multiplied every bucket by one
+	// extrapolation factor those bits are the difference between a
+	// fraction of 0.9999999999999991 and one of 1.0000000000000004 — a
+	// stop bucket's own edge crossed from the inside or from the outside.
+	// Reference's own two forms also make the fraction structurally
+	// bounded: the walk broke because count >= rank, so the backward
+	// numerator cannot go negative, and it did not break one bucket
+	// earlier, so neither numerator can exceed the stop bucket's count.
+	w.rebasedRank = func() Frag {
+		stopCount := Subscript(w.buckets(), w.idx())
+		return armSelect(
+			Sub(Paren(Mul(w.phi(), w.rankBase())), Paren(Sub(w.runningCount(), stopCount))),
+			Sub(w.runningCount(), Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase()))),
+		)
 	}
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
 	w.pLen = func() Frag { return Call("length", Col(pbc)) }
@@ -693,14 +804,14 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 			w.zt(),
 		)
 	}
-	// fraction = (target - cum[idx-1]) / bucketCount(valueIdx), target =
-	// phi * rankBase. The numerator is rebased in the rank-walk stop bucket,
-	// while the denominator follows valueIdx: for a NaN Sum, reference's
-	// trailing annotation scan leaves `bucket` on the final iterated bucket
-	// before it divides by bucket.Count.
+	// fraction = rebasedRank / bucketCount(valueIdx). The numerator is
+	// rebased in the rank-walk stop bucket, while the denominator follows
+	// valueIdx: for a NaN Sum, reference's trailing annotation scan leaves
+	// `bucket` on the final iterated bucket before it divides by
+	// bucket.Count.
 	w.fraction = func() Frag {
 		return Div(
-			Paren(Sub(Paren(Mul(w.phi(), w.rankBase())), w.cumAt(true))),
+			Paren(w.rebasedRank()),
 			Subscript(w.buckets(), w.valueIdx()),
 		)
 	}
