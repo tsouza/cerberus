@@ -172,7 +172,12 @@ func TestReleasePreflightRequiresTheMigrationLane(t *testing.T) {
 			"unverified. Body:\n%s", releaseWorkflowPath, preflightJob, job)
 	}
 	ci := readFileString(t, "../../.github/workflows/ci.yml")
-	for _, want := range []string{"release-preflight.test.mjs", "brew-smoke.test.mjs"} {
+	// resolve-source-pr.test.mjs (tsouza/cerberus#2394) pins the fail-closed
+	// exact-match contract release-preflight.mjs now uses to credit a required
+	// lane's check-run posted on a resolved source PR's tip sha. Same rationale
+	// as the other two: release.yml has no pull_request trigger, so without
+	// this it is unverified until a real release is cut.
+	for _, want := range []string{"release-preflight.test.mjs", "brew-smoke.test.mjs", "resolve-source-pr.test.mjs"} {
 		if !strings.Contains(ci, want) {
 			t.Fatalf("../../.github/workflows/ci.yml does not run %q. release.yml has no pull_request "+
 				"trigger, so without this step the release gate's unit guards execute only while a "+
