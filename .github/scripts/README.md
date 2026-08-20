@@ -1952,6 +1952,32 @@ what actually runs.
     branch movement, missing/duplicate patches, unexpected paths and unsafe refs
     fail closed before the push.
 
+- **`update-golden-guard.mjs`** — `update-golden-guard.yml`, the required PR
+  check that closes issue #2350: PR #2347 merged (deleting its branch, per this
+  repo's `--delete-branch` convention) while its own `update-golden.yml`
+  dispatch was still regenerating, and the publish job's `assertTargetUnmoved`
+  correctly refused to push into a branch that no longer existed — silently
+  losing the already-computed, correct regenerated diff. This check blocks a
+  PR's merge for exactly as long as an `update-golden.yml` run against its own
+  branch is `queued` or `in_progress`, polling from inside the one job run so
+  the same check clears itself the moment the hazard is gone, with no second
+  push needed to re-trigger it. It never reads the run's CONCLUSION — a
+  dispatch that finished, however it concluded, is no longer a race hazard;
+  a golden that came out stale is what the ordinary golden-drift checks on the
+  resulting push are for.
+  - Finding which branch an in-flight run targets at all needs a workaround:
+    the Actions run-list API never exposes `workflow_dispatch` inputs, only
+    `head_branch` — which for a dispatch is the ref the workflow was
+    triggered FROM (always `main`), never the `-f branch=` target.
+    `update-golden.yml` stamps `run-name: update-golden[${{ inputs.branch }}]`
+    for exactly this reason; the API surfaces that as `display_title`, and
+    `runTargetsBranch()` is the one place that shape is parsed.
+  - Env: `GH_TOKEN`, `REPO`, `BRANCH` (required); `API_URL`,
+    `POLL_INTERVAL_MS`, `MAX_WAIT_MS` (optional).
+  - Exit: `0` once no matching run is `queued`/`in_progress`; `1` if one still
+    is after `MAX_WAIT_MS` (default 60 minutes — `update-golden.yml`'s own
+    regenerate legs are capped at 45), or the API calls themselves failed.
+
 - **`cardinality-baseline-update.mjs`** — no workflow. The second script here a
   contributor runs by hand, through `just update-cardinality-baseline`. It
   regenerates `test/perf/cardinality-baseline/` by fanning the chDB profile pass

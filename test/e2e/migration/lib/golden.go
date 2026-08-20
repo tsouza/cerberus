@@ -17,6 +17,30 @@ const updateGoldensEnv = "MIGRATION_UPDATE_GOLDENS"
 // its own expectations asserts only that the tool still does whatever it does.
 const ciEnv = "CI"
 
+// trustedWorkflowEnv is the ONE narrow exception to ciEnv's refusal:
+// update-golden.yml's own migration-regenerate leg sets it (see
+// .github/workflows/update-golden.yml and Justfile's migration-golden recipe)
+// so this package can tell that lane apart from post-merge-drift.yml, which
+// also runs under CI but must keep refusing.
+//
+// Both lanes set CI — every provider does — so ciEnv alone cannot distinguish
+// them. What differs is the trust model: post-merge-drift.yml regenerates
+// directly on `main`, where no PR check can ever gate the result, so it must
+// keep refusing to rewrite its own expectations. update-golden.yml is a
+// manual dispatch whose regenerate legs run with read-only credentials and
+// upload a patch; a separate trusted publisher step (manual-golden-update.mjs)
+// re-validates that patch and constrains it to only the dispatched shard's
+// declared paths before pushing it into a branch that still goes through a
+// reviewed pull request. Rewriting there is exactly as safe as rewriting
+// off CI — the review gate is just one step later — so it is allowed to
+// combine with updateGoldensEnv here.
+//
+// This is deliberately its OWN variable rather than a value ciEnv could carry:
+// any lane could set CI to whatever it likes, but only update-golden.yml's own
+// workflow file sets trustedWorkflowEnv, and only on the one step that needs
+// it.
+const trustedWorkflowEnv = "UPDATE_GOLDEN_WORKFLOW"
+
 // goldenFileMode / goldenDirMode are the permissions a regenerated golden and
 // its parent directory get.
 const (
@@ -32,10 +56,10 @@ const maxGoldenDiffLines = 20
 // AssertGolden compares actual against the committed golden at path, returning
 // an error naming the first differing lines when they diverge. Under
 // MIGRATION_UPDATE_GOLDENS the golden is rewritten from actual instead — but
-// only off CI.
+// only off CI, or under CI when trustedWorkflowEnv is also set.
 //
-// Under CI the request to regenerate degrades to the COMPARISON, and nothing is
-// ever written. That is not a weakening in either direction:
+// Under plain CI the request to regenerate degrades to the COMPARISON, and
+// nothing is ever written. That is not a weakening in either direction:
 //
 //   - Nothing is rewritten, so the hazard the rule exists for is closed as hard
 //     as before. A CI lane cannot rewrite the expectations it then reports a
@@ -50,9 +74,14 @@ const maxGoldenDiffLines = 20
 // where no PR check can gate it. Refusing on sight made it unconditionally red
 // for every merge that implied this shard, whatever the goldens said, which is
 // the same as having no post-merge check at all.
+//
+// trustedWorkflowEnv narrows that refusal one step further, for the one other
+// lane that ALSO runs under CI but has a genuinely different trust model: see
+// its own doc comment.
 func AssertGolden(path string, actual []byte) error {
 	regenerating := os.Getenv(updateGoldensEnv) != ""
-	if regenerating && os.Getenv(ciEnv) == "" {
+	trustedRewrite := os.Getenv(ciEnv) == "" || os.Getenv(trustedWorkflowEnv) != ""
+	if regenerating && trustedRewrite {
 		return writeGolden(path, actual)
 	}
 
