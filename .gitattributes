@@ -112,6 +112,14 @@ test/perf/solver-decision-baseline/**/*.json -merge
 #   only when a cost increase is genuinely intended.
 test/perf/scale-wall-baseline.json           -merge
 
+# Regenerate: `just update-perf-smoke-baseline`
+#   (UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 15m -tags=integration
+#    -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/... — needs Docker).
+#   NOT chained into `just update-golden`: like the scale-wall bounds it
+#   records a measured per-sentinel memory ceiling, so it moves only when a
+#   memory-cost increase is genuinely intended.
+test/perf/perf-smoke-baseline.json           -merge
+
 # Regenerate: `just update-metadata-query-size-baseline`
 #   (UPDATE_METADATA_QUERY_SIZE_BASELINE=1 go test -count=1
 #    -run TestMetadataQuerySizeRatchet ./test/perf/ — pure Go, no chDB). NOT

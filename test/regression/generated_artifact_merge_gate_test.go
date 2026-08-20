@@ -120,6 +120,7 @@ const parityEnrolmentBaselineRecipe = "just update-golden parity"
 // Every entry must be `-merge` gated and documented in `.gitattributes`.
 var generatedArtifacts = []generatedArtifact{
 	{"test/perf/scale-wall-baseline.json", "just update-scale-wall-baseline"},
+	{"test/perf/perf-smoke-baseline.json", "just update-perf-smoke-baseline"},
 	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
 	{"test/coverage-floor.json", "just update-coverage-floor"},
 

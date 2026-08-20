@@ -73,6 +73,7 @@
   "test/integration/promql": 98.2,
   "test/integration/traceql": 99,
   "test/perf/profile": 82.3,
+  "test/perf/smoke": 61.2,
   "test/property": 81.5,
   "test/property/gen": 94.8,
   "test/property/oracle/logql": 83.8,
