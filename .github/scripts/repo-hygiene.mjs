@@ -14,7 +14,15 @@
 //                         (ELF / Mach-O / PE / WebAssembly / ar archive)
 //                         or when the sniff window contains a NUL byte
 //                         (the same heuristic git itself uses to classify
-//                         a blob as binary).
+//                         a blob as binary). A path tracked through Git LFS
+//                         is exempt in the only way that stays honest: the
+//                         working-tree copy is SMUDGED back into real binary
+//                         content whenever the local git-lfs filter is
+//                         active, so a blob that reads as binary is
+//                         re-checked against the object store (never
+//                         smudged) and cleared only if that copy is itself a
+//                         valid LFS pointer — a binary blob nobody routed
+//                         through LFS still fails exactly as before.
 //
 //   CHECK=root-allowlist  The repository root is a curated surface. Every
 //                         top-level tracked entry must appear in
@@ -149,6 +157,22 @@ export const ROOT_ALLOWLIST = [
   'scripts',
   'test',
 ];
+
+// lfsPointerPreamble — the exact first line of every valid Git LFS pointer
+// file (https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md). A
+// checked-out LFS-tracked path is SMUDGED back into real binary content in
+// the working tree whenever the local git-lfs filter is active, but the git
+// OBJECT itself always holds this pointer text — so scanBinary re-checks a
+// working-tree read that looks binary against the object store before
+// calling it a violation, and only an object that is genuinely not a valid
+// pointer stays one.
+const lfsPointerPreamble = 'version https://git-lfs.github.com/spec/v1\n';
+
+// isLfsPointer — true when `head` opens with the LFS pointer preamble.
+// Exported for the self-test.
+export function isLfsPointer(head) {
+  return head.subarray(0, lfsPointerPreamble.length).toString('utf8') === lfsPointerPreamble;
+}
 
 // classifyBlob — decide whether a sniffed leading block is binary content.
 // Returns { binary, format }: `format` names the magic when one matched and
@@ -313,11 +337,30 @@ function readHead({ sha, path }) {
   return res.stdout.subarray(0, gitBinarySniffBytes);
 }
 
+// readObjectStore — the same bounded read readHead() falls back to, exposed
+// directly so scanBinary can re-check a blob that read as binary from a
+// (possibly LFS-smudged) working tree against what git actually tracks.
+function readObjectStore(sha) {
+  const res = capture('git', ['cat-file', 'blob', sha], { encoding: 'buffer' });
+  if (res.status !== 0) {
+    error(`repo-hygiene: cannot read tracked blob (${sha}) from the object store — refusing to classify it as text`);
+    process.exit(1);
+  }
+  return res.stdout.subarray(0, gitBinarySniffBytes);
+}
+
 function scanBinary() {
   const violations = [];
   for (const entry of blobsInScope()) {
     if (entry.mode !== modeRegularFile && entry.mode !== modeExecutableFile) continue;
-    const { binary, format } = classifyBlob(readHead(entry));
+    let { binary, format } = classifyBlob(readHead(entry));
+    // A working-tree read that looks binary might be an LFS-smudged file —
+    // re-check what git actually tracks (the object store, never smudged)
+    // before calling it a violation. Untracked entries have no object store
+    // copy (`sha: null`) and cannot be LFS-smudged in the first place.
+    if (binary && entry.sha && isLfsPointer(readObjectStore(entry.sha))) {
+      binary = false;
+    }
     if (binary) violations.push({ path: entry.path, format });
   }
   if (violations.length > 0) {

@@ -7,9 +7,8 @@ set.
 
 ## Files
 
-Each file is a [zstd-compressed Parquet](https://parquet.apache.org/) table, base64-encoded as
-plain text so it satisfies this repo's tracked-binary-artefact gate (`repo-hygiene-binary`).
-Decode with `base64 -d <file> > out.parquet` before reading.
+Each file is a [zstd-compressed Parquet](https://parquet.apache.org/) table, stored via Git LFS
+(`.gitattributes`) — `repo-hygiene-binary` recognizes an LFS pointer and does not flag it.
 
 - `svc_http_request_duration_seconds.parquet.b64` — classic-histogram HTTP request duration,
   ~18.2M rows. Primary sample: this is a real-world analog for the classic-histogram `arrayJoin`
