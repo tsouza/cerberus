@@ -1,0 +1,62 @@
+name: update-golden-guard
+
+# Blocks a pull request from merging while an update-golden.yml dispatch
+# against its own branch is still queued or in progress.
+#
+# Issue #2350: PR #2347 dispatched update-golden.yml against its own branch
+# while the PR was open, then merged (deleting its head branch, per this
+# repo's normal `--delete-branch` convention) before the dispatch finished.
+# Every regenerate leg had already succeeded; the publish job's own
+# assertTargetUnmoved correctly refused to push into a branch that no longer
+# existed. The already-computed, correct regenerated diff was simply lost,
+# and the PR's own code — which needed it — landed on `main` with stale
+# goldens. Nothing in the merge path saw the in-flight dispatch coming; this
+# is the thing that does. Required in branch protection, it makes that race
+# structurally impossible rather than merely loud: the PR cannot merge until
+# the dispatch (if any) against its branch has finished, whatever it
+# concludes.
+#
+# See .github/scripts/update-golden-guard.mjs for the polling mechanism and
+# why it does not read the dispatch's own conclusion.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  actions: read
+
+concurrency:
+  # A poll against a superseded head SHA can never gate the CURRENT one, which
+  # is all branch protection ever evaluates — so the newest push should win
+  # outright rather than share the runner with a stale poll.
+  group: update-golden-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  update-golden-guard:
+    name: update-golden-guard
+    runs-on: ubuntu-latest
+    # A little over the 60-minute ceiling update-golden-guard.mjs itself polls
+    # to, so a stuck dispatch is reported by the script's own clear message
+    # rather than by the job runner's generic timeout.
+    timeout-minutes: 65
+    steps:
+      # Checked out at the PR's BASE sha, not the default merge ref: a
+      # pull_request trigger otherwise runs whatever this step contains from
+      # the PR's own head, and a same-repository fork could rewrite this
+      # script to always report clear. Every other trusted step in this
+      # workflow family follows the same rule (see update-golden.yml's own
+      # "Checkout trusted workflow controller" steps).
+      - name: Checkout trusted workflow controller
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Wait for any in-flight update-golden.yml dispatch against this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref }}
+        run: node .github/scripts/update-golden-guard.mjs
