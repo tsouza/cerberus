@@ -51,6 +51,43 @@
 //   ABORTS naming the MISSING and the still-RUNNING lanes separately —
 //   fail-safe, never publish on an unknown/incomplete state.
 //
+// SOURCE-PR CREDIT (tsouza/cerberus#2394): for a squash merge the tree
+// content of `pushedSha` (the new commit on `main`/`release/*.x`) and the
+// merged PR's tip commit (`pull.head.sha`, where `pull_request:`-triggered
+// lanes actually ran) are byte-identical, but GitHub check-runs attach to a
+// SHA, not a tree hash — so historically every lane's `push:` trigger had to
+// re-run on `pushedSha` purely to give this preflight something to read,
+// even though the PR already proved the identical tree green. Before
+// evaluating, the driver resolves the PR that produced `pushedSha` via
+// lib/resolve-source-pr.mjs (`commits/{sha}/pulls`, filtered to an EXACT,
+// UNAMBIGUOUS `merged && merge_commit_sha === pushedSha` match) and, when
+// found, reads that PR's tip-sha check-runs too — a required lane can now be
+// satisfied by a green check-run on EITHER sha. Credit is scoped to
+// RELEASE_REQUIRED_CHECKS names only: the PR posted plenty of other names
+// (PR-only jobs, matrix children, third-party statuses) that are neither
+// required nor de-gated, and crediting those too would let an incidental
+// PR-time red block a release the required-set gate was never asking about.
+// This is additive, not a replacement: `pushedSha`'s own check-runs are
+// always read exactly as before, so a lane whose `push:` trigger still
+// exists (every lane does, today) behaves identically to pre-#2394. It
+// exists so a lane's `push:` trigger CAN be removed later without preflight
+// losing visibility into the validation the source PR already did.
+//
+// FAIL CLOSED: resolution requires an EXACT match — see
+// lib/resolve-source-pr.mjs's own contract. No match, an ambiguous match, or
+// a resolution/network failure all degrade to `sourcePR = null`, at which
+// point the driver reads `pushedSha` alone — i.e. exactly today's behaviour.
+// "Can't resolve a PR" is never read as "nothing to check" (only an EXPECTED
+// required lane can be silently absent, and that is already a blocking
+// problem via RELEASE_REQUIRED_CHECKS — see ABSENCE IS A FAILURE above).
+// This applies uniformly to BOTH modes: on the MAINTENANCE path a hotfix is
+// cherry-picked and pushed directly with no PR at all (confirmed against the
+// live "release maintenance lines" ruleset and the Maintenance lines section
+// of docs/operations.md — there is no `pull_request` rule, only
+// `required_status_checks` gating the push itself), so `commits/{sha}/pulls`
+// resolves nothing there and this is a pure no-op on that path, exactly the
+// fail-closed fallback requires.
+//
 // The rule, with no softening:
 //   1. Every RELEASE_REQUIRED_CHECKS name must have posted a check-run on the
 //      commit. Silence is a failure, not a pass. (Both modes.)
@@ -157,6 +194,8 @@
 // `node .github/scripts/release-preflight.mjs`.
 
 import process from 'node:process';
+
+import { resolveSourcePR } from './lib/resolve-source-pr.mjs';
 
 // A maintenance line is `release/<major>.<minor>.x` — `release/1.4.x`,
 // `release/1.3.x`. It explicitly does NOT match a main release PR branch like
@@ -305,6 +344,36 @@ export function requiredChecksPending(checkRuns, required) {
     if (cr.status !== 'completed') running.push(name);
   }
   return { missing, running };
+}
+
+// scopeToRequired — SOURCE-PR CREDIT (tsouza/cerberus#2394) support. Filters a
+// list of check-runs (`key: 'name'`) or legacy statuses (`key: 'context'`)
+// down to only the entries whose name/context is in `requiredNames`. The
+// source PR posted plenty of other names nobody asked this gate about
+// (PR-only jobs, matrix children, third-party statuses); crediting those too
+// would let an incidental PR-time red block a release for a name the
+// required set never named. Every entry that survives this filter is, by
+// construction, already covered by the wiring checks in `evaluate()` (a
+// required name can never also be a self-job or an informational prefix
+// without `evaluate()` itself reporting that as a wiring error) — so nothing
+// new to reason about once it is merged in.
+export function scopeToRequired(items, requiredNames, key) {
+  const names = new Set(requiredNames ?? []);
+  return (items ?? []).filter((item) => names.has(item?.[key]));
+}
+
+// mergeSourcePRStatuses — the union step for legacy statuses specifically.
+// Check-runs get their "latest wins" collapse for free from `latestByName`
+// (a name present on both pushedSha and the source PR's head sha collapses to
+// the higher check-run id, and a push always happens strictly after its
+// source PR merges, so pushedSha's own run — when it exists — always wins).
+// Legacy statuses have no id to compare, so this dedupes by `context`
+// explicitly: pushedSha's own entry always wins a collision with the source
+// PR's, and only a context absent from pushedSha's own statuses is credited
+// in from the PR.
+export function mergeSourcePRStatuses(ownStatuses, sourcePRStatuses) {
+  const ownContexts = new Set((ownStatuses ?? []).map((s) => s.context));
+  return [...(ownStatuses ?? []), ...(sourcePRStatuses ?? []).filter((s) => !ownContexts.has(s.context))];
 }
 
 // currentMinor — the highest released `<major>.<minor>` from the stable `v*`
@@ -993,13 +1062,14 @@ async function main() {
     return b.commit?.sha ?? null;
   }
 
-  async function allCheckRuns() {
+  // `sha` defaults to `pushedSha` so every existing call site is unchanged;
+  // the source-PR credit below (tsouza/cerberus#2394) is the only caller that
+  // passes an explicit sha (the resolved PR's tip commit).
+  async function allCheckRuns(sha = pushedSha) {
     const out = [];
     let page = 1;
     for (;;) {
-      const data = await getJSON(
-        `${apiBase}/repos/${repo}/commits/${pushedSha}/check-runs?per_page=100&page=${page}`,
-      );
+      const data = await getJSON(`${apiBase}/repos/${repo}/commits/${sha}/check-runs?per_page=100&page=${page}`);
       const runs = data.check_runs ?? [];
       out.push(...runs);
       if (runs.length < 100) break;
@@ -1008,8 +1078,8 @@ async function main() {
     return out;
   }
 
-  async function combinedStatus() {
-    return getJSON(`${apiBase}/repos/${repo}/commits/${pushedSha}/status?per_page=100`);
+  async function combinedStatus(sha = pushedSha) {
+    return getJSON(`${apiBase}/repos/${repo}/commits/${sha}/status?per_page=100`);
   }
 
   // Every tag name — the support-window gate derives the current minor from the
@@ -1079,6 +1149,78 @@ async function main() {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // --- SOURCE-PR CREDIT (tsouza/cerberus#2394) --------------------------------
+  // Resolve the PR that produced pushedSha, if any, BEFORE the wait phase: its
+  // check-runs (if it resolves) are read into every required-lane check below,
+  // including the wait loop's own `requiredChecksPending` polling — a lane
+  // whose `push:` trigger has been removed will otherwise never post on
+  // pushedSha at all and the wait would run out the clock waiting for it.
+  //
+  // Scoped to RELEASE_REQUIRED_CHECKS names ONLY, not every check-run the PR
+  // happens to have posted. The PR ran plenty of names that never post on
+  // pushedSha at all (PR-only jobs, matrix children, third-party bot
+  // statuses) and are neither required nor informational nor a self-job —
+  // crediting those too would let an incidental PR-time red block a release
+  // the required-set gate was never asking about. Filtering to `required`
+  // means every credited entry is, by construction, a name the wiring checks
+  // already cover (a required name can't also be a self-job or an
+  // informational prefix — evaluate() treats that as a wiring error), so
+  // nothing new to reason about downstream.
+  //
+  // Fetched ONCE, not per poll: a merged PR's check-runs are final by the time
+  // its merge commit is pushed, so re-fetching them every 30s would just spend
+  // API budget re-reading data that cannot change. pushedSha's OWN check-runs
+  // are still read fresh on every poll/evaluation exactly as before.
+  //
+  // FAIL CLOSED at every step: a resolution or read failure logs a `::notice::`
+  // (this is enrichment, not a requirement — every required lane still has to
+  // satisfy the gate some way) and leaves `sourcePR` null, which makes every
+  // union helper below a pass-through to pushedSha's own data alone — i.e.
+  // exactly pre-#2394 behaviour.
+  let sourcePR = null;
+  let sourcePRCheckRuns = [];
+  let sourcePRStatuses = [];
+  try {
+    sourcePR = await resolveSourcePR({ repo, sha: pushedSha, apiBase, token });
+  } catch (e) {
+    ghNotice(
+      `${label}: could not resolve a source PR for ${pushedSha.slice(0, 8)} (${e.message}) — ` +
+        `evaluating pushedSha's own check-runs only.`,
+    );
+  }
+  if (sourcePR) {
+    try {
+      sourcePRCheckRuns = scopeToRequired(await allCheckRuns(sourcePR.headSha), required, 'name');
+      const prCombined = await combinedStatus(sourcePR.headSha);
+      sourcePRStatuses = scopeToRequired(prCombined.statuses ?? [], required, 'context');
+      ghNotice(
+        `${label}: ${pushedSha.slice(0, 8)} was produced by PR #${sourcePR.number} ` +
+          `(head ${sourcePR.headSha.slice(0, 8)}) — a required lane may also be satisfied by a green ` +
+          `check-run posted there, not only on pushedSha.`,
+      );
+    } catch (e) {
+      ghNotice(
+        `${label}: resolved PR #${sourcePR.number} for ${pushedSha.slice(0, 8)} but could not read its ` +
+          `head ${sourcePR.headSha.slice(0, 8)}'s check-runs (${e.message}) — evaluating pushedSha's own ` +
+          `check-runs only.`,
+      );
+      sourcePR = null;
+      sourcePRCheckRuns = [];
+      sourcePRStatuses = [];
+    }
+  } else {
+    ghNotice(
+      `${label}: no source PR resolved for ${pushedSha.slice(0, 8)} — evaluating pushedSha's own check-runs ` +
+        `only (this is the normal, expected outcome on the maintenance path, which has no PR at all).`,
+    );
+  }
+  // Check-runs: additive is enough — latestByName (inside requiredChecksPending
+  // / evaluate) already collapses a name present on both shas to the higher
+  // check-run id, and a push happens strictly after its source PR merged, so
+  // pushedSha's own run (when it exists) always wins on a name collision.
+  const unionCheckRuns = (own) => (sourcePR ? [...own, ...sourcePRCheckRuns] : own);
+  const unionStatuses = (own) => (sourcePR ? mergeSourcePRStatuses(own, sourcePRStatuses) : own);
+
   // --- WAIT PHASE: poll until the CI matrix on the commit settles -------------
   // release.yml fires on the same push as CI, so a one-shot snapshot here would
   // see everything queued/in_progress and false-abort. Poll until BOTH every
@@ -1095,7 +1237,7 @@ async function main() {
   for (;;) {
     const suites = await allCheckSuites();
     const { done, pending } = allSuitesSettled(suites, ownId, await workflowNamesBySuite());
-    const { missing, running } = requiredChecksPending(await allCheckRuns(), required);
+    const { missing, running } = requiredChecksPending(unionCheckRuns(await allCheckRuns()), required);
     if (done && missing.length === 0 && running.length === 0) {
       ghNotice(
         `${label}: CI matrix on ${pushedSha.slice(0, 8)} has settled ` +
@@ -1138,9 +1280,9 @@ async function main() {
   }
 
   const head = await branchHead();
-  const checkRuns = await allCheckRuns();
+  const checkRuns = unionCheckRuns(await allCheckRuns());
   const combined = await combinedStatus();
-  const statuses = combined.statuses ?? [];
+  const statuses = unionStatuses(combined.statuses ?? []);
   const tags = await allTags();
 
   const { problems, gated } = evaluate({

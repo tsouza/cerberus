@@ -28,6 +28,8 @@ import {
   parseCheckList,
   requiredChecksPending,
   allSuitesSettled,
+  scopeToRequired,
+  mergeSourcePRStatuses,
   MODE_MAINLINE,
   MODE_MAINTENANCE,
   REUSABLE_JOB_SEPARATOR,
@@ -238,4 +240,76 @@ test('legacy statuses satisfy the required set too, and a red one still blocks',
   const red = evaluate(world({ required, statuses: [{ context: 'GitGuardian', state: 'failure' }] }));
   assert.equal(red.problems.length, 1, `expected exactly one problem, got: ${red.problems.join('; ')}`);
   assert.equal(red.problems[0], 'GitGuardian: status failure');
+});
+
+// --- scopeToRequired / mergeSourcePRStatuses: SOURCE-PR CREDIT (#2394) -----
+//
+// These pin the scoping the source-PR credit relies on to stay safe: a PR ran
+// plenty of check-runs / statuses that are neither required nor de-gated (a
+// docs-only-filter job, a matrix child, a third-party bot status on an
+// unrelated context), and none of those may be credited in — only names the
+// gate is actually asking about via RELEASE_REQUIRED_CHECKS.
+
+test('scopeToRequired keeps only entries whose name is in the required set', () => {
+  const checkRuns = [run('check'), run('lint'), run('some-pr-only-matrix-child')];
+  const scoped = scopeToRequired(checkRuns, ['check', 'lint'], 'name');
+  assert.deepEqual(
+    scoped.map((cr) => cr.name),
+    ['check', 'lint'],
+    'a name outside the required set must not survive the filter',
+  );
+});
+
+test('scopeToRequired reads legacy statuses by "context", not "name"', () => {
+  const statuses = [{ context: 'GitGuardian' }, { context: 'unrelated-bot' }];
+  const scoped = scopeToRequired(statuses, ['GitGuardian'], 'context');
+  assert.deepEqual(scoped, [{ context: 'GitGuardian' }]);
+});
+
+test('scopeToRequired on an empty/undefined required set keeps nothing', () => {
+  assert.deepEqual(scopeToRequired([run('check')], [], 'name'), []);
+  assert.deepEqual(scopeToRequired([run('check')], undefined, 'name'), []);
+});
+
+test('scopeToRequired on empty/undefined items is a clean no-op', () => {
+  assert.deepEqual(scopeToRequired([], ['check'], 'name'), []);
+  assert.deepEqual(scopeToRequired(undefined, ['check'], 'name'), []);
+});
+
+test('mergeSourcePRStatuses: pushedSha own context wins a collision with the source PR', () => {
+  const own = [{ context: 'GitGuardian', state: 'success' }];
+  const pr = [{ context: 'GitGuardian', state: 'failure' }]; // must NOT surface
+  const merged = mergeSourcePRStatuses(own, pr);
+  assert.deepEqual(merged, [{ context: 'GitGuardian', state: 'success' }]);
+});
+
+test('mergeSourcePRStatuses: a context absent from pushedSha is credited in from the PR', () => {
+  const own = [{ context: 'check', state: 'success' }];
+  const pr = [{ context: 'compose-smoke', state: 'success' }];
+  const merged = mergeSourcePRStatuses(own, pr);
+  assert.deepEqual(merged, [
+    { context: 'check', state: 'success' },
+    { context: 'compose-smoke', state: 'success' },
+  ]);
+});
+
+test('mergeSourcePRStatuses on no source-PR statuses is a pass-through', () => {
+  const own = [{ context: 'check', state: 'success' }];
+  assert.deepEqual(mergeSourcePRStatuses(own, []), own);
+  assert.deepEqual(mergeSourcePRStatuses(own, undefined), own);
+});
+
+test('SOURCE-PR CREDIT end-to-end: a required lane missing on pushedSha but green on the source PR head passes', () => {
+  // The headline case #2394 exists for: `compose-smoke` never posted on
+  // pushedSha (its push: trigger was removed in some future world), but the
+  // source PR's own run is scoped-in and green — evaluate() must credit it.
+  const checkRuns = [
+    run('check'),
+    run('lint'),
+    // 'compose-smoke' intentionally absent from pushedSha's own check-runs.
+    run('migration-e2e'),
+    ...scopeToRequired([run('compose-smoke')], REQUIRED, 'name'), // the source-PR credit
+  ];
+  const r = evaluate(world({ checkRuns }));
+  assert.deepEqual(r.problems, [], `expected pass via source-PR credit, got: ${r.problems.join('; ')}`);
 });

@@ -479,6 +479,16 @@ jobs:
       - name: release-preflight self-test (required-set guard)
         run: node --test .github/scripts/release-preflight.test.mjs
 
+      # The source-PR resolver release-preflight.mjs now consults
+      # (tsouza/cerberus#2394) — same "pure logic only ever exercised during
+      # a real release" rationale as the suite above. Its exact-match
+      # (merged + merge_commit_sha) contract is what keeps PR credit FAIL
+      # CLOSED: an ambiguous or partial match must resolve to null, never a
+      # best guess, on the one path (release publishing) where guessing
+      # wrong means shipping without real validation.
+      - name: resolve-source-pr self-test (fail-closed PR-match guard)
+        run: node --test .github/scripts/lib/resolve-source-pr.test.mjs
+
       # tsouza/cerberus#2361's fix: release.yml's preflight re-reads the
       # release-staging PR's OWN `dashboard` check-run (the only run that ever
       # exercises the k3d crawl leg for a release commit) instead of trusting
