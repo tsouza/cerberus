@@ -23,10 +23,11 @@
 //     the histogram's own stored Count column (rankBase), matching
 //     reference Prometheus's `HistogramQuantile`, which ranks against
 //     `h.Count` and never re-derives a total from the bucket array. The
-//     two agree everywhere except when the histogram counted NaN
-//     observations: those inflate stored Count without landing in any
-//     bucket, so Sum comes out NaN (the only way Count can exceed the
-//     bucket-derived total) and rankBase > revCum[1].
+//     two agree everywhere except when the histogram counted an
+//     observation that landed in no bucket, which inflates stored Count
+//     and leaves rankBase > revCum[1]. A NaN observation does that and
+//     makes Sum NaN with it; a ±Inf one does it while leaving Sum
+//     finite-or-infinite (step 6's exhausted-walk branch).
 //     target = phi * rankBase.
 //  4. idx = the 1-based position the rank walk stops on. Reference
 //     Prometheus walks the buckets in one of TWO directions depending
@@ -73,11 +74,13 @@
 //     could stop on an empty bucket, and that is exactly the phi = 0 /
 //     phi = 1 pair the phiLow / phiHigh edges handle explicitly (step 6).
 //     A rank ABOVE every bucket's reach — rankBase > the bucket-derived
-//     total, which only happens when Sum is NaN and the walk is forced
-//     forward — leaves arrayFirstIndex with nothing to stop on; it
-//     returns 0, and the
-//     outer chain (step 6a) answers NaN, matching reference's own
-//     "walk exhausted every bucket without reaching the rank" result.
+//     total — leaves the index function with nothing to stop on; it
+//     returns 0, and the outer chain (step 6) answers from the end of
+//     the walk order the way reference does. Stored Count exceeds the
+//     bucket-derived total whenever an observation was counted without
+//     landing in a bucket: a NaN observation, which also makes Sum NaN
+//     and forces the forward arm, or a ±Inf one, which leaves Sum
+//     finite-or-infinite and so leaves the arm choice to phi.
 //     Regions: idx ∈ [1, nlen] is the negative-side walk;
 //     idx = nlen+1 is the zero bucket; idx > nlen+1 is the positive
 //     walk. (nlen = length(NegativeBucketCounts).)
@@ -125,12 +128,22 @@
 //     fraction = 0 (lower) / 1 (upper), with idx replaced by
 //     `arrayFirstIndex` / `arrayLastIndex` of a non-zero count over
 //     the same concatenated walk order.
-//     - idx = 0 → NaN. Both index functions return 0 when no element of
-//     the running-count array satisfies the walk's comparison — the
-//     "walk exhausted every bucket without reaching the rank" case from
-//     step 4, reachable only when Sum is NaN and rankBase (Count)
-//     exceeds every bucket's reach. Checked after phi == 0 / phi == 1
-//     (step 6a) since those saturate rather than walk.
+//     - idx = 0 → the exhausted-walk fallback. Both index functions
+//     return 0 when no element of the running-count array satisfies the
+//     walk's comparison — the "walk exhausted every bucket without
+//     reaching the rank" case from step 4. Reference answers NaN there
+//     only when Sum is NaN; with a finite Sum it returns the upper bound
+//     of the bucket its iterator was left sitting on
+//     (quantile.go:296-305, prometheus/prometheus#16578), which is the
+//     LAST position that iterator yielded: the top of the walk order on
+//     the forward arm, the bottom of it on the backward one. Those are
+//     the step-7 upper edges read at an array end rather than at the
+//     populated end phi == 1 reads (cerberus issue #2405). An iterator
+//     that yielded no bucket at all — both arrays empty and ZeroCount 0,
+//     which a histogram observing only +Inf produces — leaves
+//     reference's `bucket` at its zero value, whose Upper is 0.
+//     Checked after phi == 0 / phi == 1 (step 6a) since those saturate
+//     rather than walk.
 //  7. Interpolation, by region:
 //     - Negative bucket (idx ≤ nlen). Original-array 0-based index
 //     within Negative is `nlen - idx`; absolute exp-bucket index is
@@ -359,18 +372,26 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.firstPopulated(), w.nLen()), InlineLit(2))))),
 		),
 	)
-	//   phiHigh = if(last <= nlen,    -pow(base, no + (nlen - last)),
-	//               if(last = nlen+1,  zeroBandUpper,
-	//                                  pow(base, po + (last - nlen - 1))))
-	phiHigh := If(
-		Lte(w.lastPopulated(), w.nLen()),
-		Neg(Call("pow", w.base(), Add(Col(no), Paren(Sub(w.nLen(), w.lastPopulated()))))),
-		If(
-			Eq(w.lastPopulated(), Add(w.nLen(), InlineLit(1))),
-			w.zeroBandUpper(),
-			Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(w.lastPopulated(), w.nLen()), InlineLit(1))))),
-		),
-	)
+	// upperEdgeAt is the upper edge of the bucket at a walk position, by
+	// region. Two callers read it at two different positions: phi == 1 at the
+	// highest POPULATED one, the exhausted-walk fallback at whichever array
+	// end its iterator ran off (step 6).
+	//
+	//   upperEdgeAt(p) = if(p <= nlen,    -pow(base, no + (nlen - p)),
+	//                    if(p = nlen+1,    zeroBandUpper,
+	//                                      pow(base, po + (p - nlen - 1))))
+	upperEdgeAt := func(pos func() Frag) Frag {
+		return If(
+			Lte(pos(), w.nLen()),
+			Neg(Call("pow", w.base(), Add(Col(no), Paren(Sub(w.nLen(), pos()))))),
+			If(
+				Eq(pos(), Add(w.nLen(), InlineLit(1))),
+				w.zeroBandUpper(),
+				Call("pow", w.base(), Add(Col(po), Paren(Sub(Sub(pos(), w.nLen()), InlineLit(1))))),
+			),
+		)
+	}
+	phiHigh := upperEdgeAt(w.lastPopulated)
 	// Negative bucket interp (idx <= nlen):
 	//   -pow(base, no + (nlen - idx) + 1 - fraction)
 	negInterp := Neg(Call(
@@ -401,6 +422,23 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 		),
 	)
 
+	// Exhausted walk: no running count ever reached the rank, which the
+	// index functions report with their "not found" sentinel 0. Reference
+	// answers NaN there only when Sum is NaN (quantile.go:296-305, added for
+	// prometheus/prometheus#16578); with a finite Sum it falls back to the
+	// upper bound of the bucket its iterator was left sitting on, which is
+	// the LAST position that iterator yielded — the top of the walk order
+	// going forward, the bottom of it going backward. Cerberus answered NaN
+	// in both cases until issue #2405. An iterator that yielded nothing at
+	// all leaves reference's `bucket` at its zero value, whose Upper is 0.
+	//
+	// The rank the walk failed to reach is phi * rankBase either way, so the
+	// arm is picked by phi alone here: the Sum-is-NaN override that also
+	// forces the forward arm has already been answered above.
+	exhausted := If(w.sumIsNaN(), nan,
+		If(w.emptyWalk(), zeroBandOrigin(),
+			w.armSelectFiniteSum(upperEdgeAt(w.lastIterated), upperEdgeAt(w.firstIterated))))
+
 	// Outer chain (Prometheus quantile.go:222-232, 114-119). Out-of-domain
 	// phi is checked OUTERMOST, above the empty-histogram case, matching
 	// reference's own `q < 0` / `q > 1` / `h.Count == 0` order — cerberus
@@ -408,16 +446,16 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 	// Count rather than the bucket-derived total, so an empty histogram
 	// answers NaN even when Sum is itself NaN (0 == 0). idx = 0 is the
 	// index functions' "not found" sentinel: the walk exhausted every
-	// bucket without reaching the rank, which only happens when Sum is
-	// NaN and the forced-forward rank exceeds the buckets' combined
-	// reach — cerberus issue #2072.
+	// bucket without reaching the rank, which happens whenever the stored
+	// Count exceeds the buckets' combined reach — cerberus issues #2072
+	// and #2405.
 	//
 	//   if(phi < 0, -inf,
 	//     if(phi > 1, inf,
 	//       if(rankBase = 0, nan,
 	//         if(phi = 0, phiLow,
 	//           if(phi = 1, phiHigh,
-	//             if(idx = 0, nan,
+	//             if(idx = 0, exhausted,
 	//               if(idx <= nlen, negInterp,
 	//                 if(idx = nlen + 1, zeroInterp, posInterp))))))))
 	//
@@ -431,7 +469,7 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 			If(Eq(w.rankBase(), InlineLit(0)), nan,
 				If(Eq(w.phi(), InlineLit(0)), phiLow,
 					If(Eq(w.phi(), InlineLit(1)), phiHigh,
-						If(Eq(w.idx(), InlineLit(0)), nan,
+						If(Eq(w.idx(), InlineLit(0)), exhausted,
 							If(Lte(w.valueIdx(), w.nLen()), negInterp,
 								If(Eq(w.valueIdx(), Add(w.nLen(), InlineLit(1))), zeroInterp, posInterp))))))))
 
@@ -453,25 +491,31 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 // re-emits its own `?` placeholders, matching the legacy emitter's
 // per-position re-emission.
 type hqNativeWriters struct {
-	phi            func() Frag
-	base           func() Frag
-	buckets        func() Frag
-	cum            func() Frag
-	revCum         func() Frag
-	rankBase       func() Frag
-	sumIsNaN       func() Frag
-	idx            func() Frag
-	runningCount   func() Frag
-	rebasedRank    func() Frag
-	valueIdx       func() Frag
-	nLen           func() Frag
-	pLen           func() Frag
-	zt             func() Frag
-	zeroBandLower  func() Frag
-	zeroBandUpper  func() Frag
-	fraction       func() Frag
-	firstPopulated func() Frag
-	lastPopulated  func() Frag
+	phi           func() Frag
+	base          func() Frag
+	buckets       func() Frag
+	cum           func() Frag
+	revCum        func() Frag
+	rankBase      func() Frag
+	sumIsNaN      func() Frag
+	idx           func() Frag
+	runningCount  func() Frag
+	rebasedRank   func() Frag
+	valueIdx      func() Frag
+	nLen          func() Frag
+	pLen          func() Frag
+	zt            func() Frag
+	zeroBandLower func() Frag
+	zeroBandUpper func() Frag
+	fraction      func() Frag
+	// armSelectFiniteSum picks between a forward-arm and a backward-arm
+	// rendering for a row whose Sum is already known not to be NaN.
+	armSelectFiniteSum func(fwd, rev Frag) Frag
+	firstPopulated     func() Frag
+	lastPopulated      func() Frag
+	firstIterated      func() Frag
+	lastIterated       func() Frag
+	emptyWalk          func() Frag
 }
 
 // zeroBandOrigin is the float-zero the one-sided zero-band clamp
@@ -591,6 +635,20 @@ func attachHQNativeRankWalk(w *hqNativeWriters, h *chplan.HistogramQuantileNativ
 			rev,
 		)
 	}
+	// armSelectFiniteSum makes the same choice for a row whose Sum is
+	// already known NOT to be NaN, so the Sum-is-NaN half of reference's
+	// condition is settled and only phi decides. Its one caller is the
+	// exhausted-walk fallback, which sits below reference's own
+	// `if count < rank { if math.IsNaN(h.Sum) { return NaN } }` guard.
+	w.armSelectFiniteSum = func(fwd, rev Frag) Frag {
+		if h.PhiExpr == nil {
+			if h.Phi < reverseWalkPhi {
+				return fwd
+			}
+			return rev
+		}
+		return If(Lt(w.phi(), InlineLit(reverseWalkPhi)), fwd, rev)
+	}
 	// idx: the direction-selected stop index (see the file header,
 	// step 4).
 	w.idx = func() Frag {
@@ -615,8 +673,9 @@ func attachHQNativeRankWalk(w *hqNativeWriters, h *chplan.HistogramQuantileNativ
 	//
 	// The walk's "not found" sentinel idx = 0 indexes element 0 of the
 	// array, which ClickHouse answers with the element type's default,
-	// so this evaluates to 0 there. That row's answer is the outer
-	// chain's idx = 0 -> NaN branch, which never reads the fraction.
+	// so this evaluates to 0 there. That row's answer comes from the outer
+	// chain's exhausted-walk branch, which reads a bucket EDGE and never
+	// reads the fraction.
 	//
 	// The cast holds the whole rebasing in the Float64 reference does it
 	// in. A bare-selector plan reads the bucket arrays straight off the
@@ -732,6 +791,44 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 	attachHQNativeRankWalk(&w, h, helpers)
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
 	w.pLen = func() Frag { return Call("length", Col(pbc)) }
+	// first / last position the reference all-bucket iterator YIELDS, in the
+	// same concatenated walk order every index in this file is expressed in.
+	// These are the ARRAY ends, not the populated ones w.firstPopulated /
+	// w.lastPopulated find: reference's iterator yields an explicitly stored
+	// zero-count exponential bucket like any other, and the rank loop's
+	// `if bucket.Count == 0 { continue }` skips it only AFTER assigning it to
+	// `bucket`. The one bucket the iterator can withhold is the zero bucket,
+	// which it emits only when ZeroCount > 0
+	// (histogram.allFloatBucketIterator.Next).
+	w.lastIterated = func() Frag {
+		return If(
+			Gt(w.pLen(), InlineLit(0)),
+			Add(Add(w.nLen(), InlineLit(1)), w.pLen()),
+			If(Gt(Col(zc), InlineLit(0)), Add(w.nLen(), InlineLit(1)), w.nLen()),
+		)
+	}
+	// Position 1 is the most-negative bucket when the histogram has one and
+	// the zero bucket otherwise; with neither, the walk starts at the first
+	// positive bucket, which sits at position 2 since nlen is 0 there.
+	w.firstIterated = func() Frag {
+		return If(
+			Or(Gt(w.nLen(), InlineLit(0)), Gt(Col(zc), InlineLit(0))),
+			InlineLit(1),
+			InlineLit(2),
+		)
+	}
+	// emptyWalk: the iterator yields no bucket at all — both bucket arrays
+	// empty and the zero bucket unpopulated. Reference's `bucket` variable is
+	// then still its zero value, whose Upper is 0. Reachable with a non-zero
+	// Count: a histogram that observed only +Inf counts the observation
+	// without landing it in any bucket.
+	w.emptyWalk = func() Frag {
+		return And(
+			Eq(w.nLen(), InlineLit(0)),
+			Eq(w.pLen(), InlineLit(0)),
+			Eq(Col(zc), InlineLit(0)),
+		)
+	}
 	// valueIdx is the bucket whose geometry and count reference uses for
 	// interpolation. Normally it is the rank walk's stop bucket. With a
 	// NaN Sum, Prometheus continues the forward iterator after rebasing the
@@ -741,12 +838,7 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 		if helpers.valueIdx != "" {
 			return Col(helpers.valueIdx)
 		}
-		lastIterated := If(
-			Gt(w.pLen(), InlineLit(0)),
-			Add(Add(w.nLen(), InlineLit(1)), w.pLen()),
-			If(Gt(Col(zc), InlineLit(0)), Add(w.nLen(), InlineLit(1)), w.nLen()),
-		)
-		return If(w.sumIsNaN(), lastIterated, w.idx())
+		return If(w.sumIsNaN(), w.lastIterated(), w.idx())
 	}
 	// first / last POPULATED position in the same concatenated walk order
 	// `cum` uses, so they index into the identical bucket geometry the
