@@ -12,12 +12,22 @@ plain text so it satisfies this repo's tracked-binary-artefact gate (`repo-hygie
 Decode with `base64 -d <file> > out.parquet` before reading.
 
 - `svc_http_request_duration_seconds.parquet.b64` — classic-histogram HTTP request duration,
-  ~3,400 series, ~12 buckets/series, 20-minute window. Primary sample: this is a real-world
-  analog for the classic-histogram `arrayJoin` fan-out cost investigated in #2408.
-- `svc_http_requests_total.parquet.b64` — matching request-count Sum metric for the same series.
-- `kube_pod_status_reason.parquet.b64` — Kubernetes pod-status Gauge, ~4,800 series, the
-  highest-cardinality sample in this set, drawn entirely from cluster-infrastructure telemetry
-  (kube-state-metrics-style data), not any application-level metric.
+  ~18.2M rows. Primary sample: this is a real-world analog for the classic-histogram `arrayJoin`
+  fan-out cost investigated in #2408.
+- `svc_http_requests_total.parquet.b64` — matching request-count Sum metric for the same series,
+  ~18.6M rows.
+- `kube_pod_status_reason.parquet.b64` — Kubernetes pod-status Gauge, ~22.1M rows, the
+  highest-cardinality metric in this set (up to ~4,800 series in a single window), drawn entirely
+  from cluster-infrastructure telemetry (kube-state-metrics-style data), not any application-level
+  metric.
+
+Each file combines two sampling passes across a 14-day span: a fixed daily 90-minute baseline
+window, plus a second 90-minute window centered on the daily cardinality peak (~2x the baseline
+series count) found while checking whether the baseline window was representative. Within any
+given window, sample density matches the real scrape interval — no temporal downsampling — since
+per-series sample density is the dimension a prior calibration pass found to dominate this
+workload's CPU/memory cost. ~58.9M rows combined, ~72MB as zstd-compressed Parquet (~95MB
+base64-encoded).
 
 Columns mirror the OTel Collector ClickHouse exporter schema
 (`ServiceName`, `MetricName`, `MetricDescription`, `MetricUnit`, `Attributes`,
