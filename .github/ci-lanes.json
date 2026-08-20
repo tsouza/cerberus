@@ -1866,6 +1866,10 @@
     },
     { "workflow": ".github/workflows/release.yml", "reason": "publication" },
     {
+      "workflow": ".github/workflows/update-golden-guard.yml",
+      "reason": "automation"
+    },
+    {
       "workflow": ".github/workflows/update-golden.yml",
       "reason": "automation"
     }

@@ -291,6 +291,60 @@ func TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight(t *testing.T) {
 	}
 }
 
+// TestAssertGoldenTrustedWorkflowRegeneratesUnderCI asserts the one narrow
+// exception to the CI refusal above: update-golden.yml's own
+// migration-regenerate leg sets UPDATE_GOLDEN_WORKFLOW alongside CI, and that
+// combination must regenerate rather than hard-error — otherwise the workflow
+// can never actually produce a migration-shard patch (issue #2368).
+func TestAssertGoldenTrustedWorkflowRegeneratesUnderCI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "golden.sql")
+	if err := os.WriteFile(path, []byte("CREATE TABLE a;\n"), goldenFileMode); err != nil {
+		t.Fatalf("write golden: %v", err)
+	}
+	t.Setenv(updateGoldensEnv, "1")
+	t.Setenv(ciEnv, "true")
+	t.Setenv(trustedWorkflowEnv, "1")
+
+	if err := AssertGolden(path, []byte("CREATE TABLE b;\n")); err != nil {
+		t.Fatalf("AssertGolden under CI with the trusted workflow env set: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read regenerated golden: %v", err)
+	}
+	if string(got) != "CREATE TABLE b;\n" {
+		t.Fatalf("golden = %q, want the regenerated artifact", got)
+	}
+}
+
+// TestAssertGoldenTrustedWorkflowAloneDoesNotBypassComparison asserts
+// UPDATE_GOLDEN_WORKFLOW is not itself a regeneration request — it only
+// widens what MIGRATION_UPDATE_GOLDENS is allowed to do under CI. Without
+// that second env var, post-merge-drift.yml's plain-CI refusal must still
+// hold even if UPDATE_GOLDEN_WORKFLOW were somehow set (it never is, but the
+// gate must not depend on that).
+func TestAssertGoldenTrustedWorkflowAloneDoesNotBypassComparison(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "golden.sql")
+	if err := os.WriteFile(path, []byte("CREATE TABLE a;\n"), goldenFileMode); err != nil {
+		t.Fatalf("write golden: %v", err)
+	}
+	t.Setenv(updateGoldensEnv, "")
+	t.Setenv(ciEnv, "true")
+	t.Setenv(trustedWorkflowEnv, "1")
+
+	err := AssertGolden(path, []byte("CREATE TABLE b;\n"))
+	if err == nil {
+		t.Fatal("AssertGolden accepted a mismatch with no regeneration requested")
+	}
+	got, err2 := os.ReadFile(path)
+	if err2 != nil {
+		t.Fatalf("read golden: %v", err2)
+	}
+	if string(got) != "CREATE TABLE a;\n" {
+		t.Fatalf("golden was rewritten with no regeneration requested: %q", got)
+	}
+}
+
 // writeVersionStub writes an executable that answers `--version` with the given
 // stamp — the smallest stand-in for a cerberus build whose provenance the
 // harness has to decide about.
