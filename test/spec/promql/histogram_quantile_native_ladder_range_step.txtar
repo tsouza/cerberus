@@ -1,0 +1,48 @@
+# The ClickHouse-native classic-histogram ladder for
+# `histogram_quantile(phi, sum by(le)(rate(<bucket>[range])))` in range mode.
+# The `experimental_ts_grid_histogram` section opts the fixture into
+# LowerOpts{Lowerers.ClassicHistogram = NativeClassicHistogramWindowLowerer},
+# so the per-series window stage lowers to a chplan.RangeBucketGridNative
+# (rendered as the unnest + timeSeriesRateToGrid/timeSeriesResetsToGrid pair +
+# ARRAY JOIN + regroup) instead of the RangeBucketFanout array-expression fold.
+#
+# The seed, the grid and the `expected_rows` are IDENTICAL to
+# histogram_quantile_classic_range_step.txtar, which is enrolled in the
+# Prometheus parity corpus (`oracle: prometheus`). That identity is the
+# assertion: the native ladder answers, byte for byte, what reference
+# Prometheus answers on this seed. Anything else shows up as a diff in this
+# cell, not as a passing test.
+#
+# The DELTA-temporality arm of the union is exercised by
+# histogram_quantile_native_ladder_min_samples.txtar's twin seed and by the
+# chDB dual-emit parity gate
+# (internal/chsql/histogram_quantile_classic_native_chdb_test.go).
+
+-- query.promql --
+histogram_quantile(0.95, sum by(le)(rate(http_server_request_duration_bucket[5m])))
+-- range_step --
+30s
+-- experimental_ts_grid_histogram --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:30Z", 0.95],
+  ["", {}, "2026-01-01T00:01:00Z", 0.95],
+  ["", {}, "2026-01-01T00:01:30Z", 0.95],
+  ["", {}, "2026-01-01T00:02:00Z", 0.95],
+  ["", {}, "2026-01-01T00:02:30Z", 0.95],
+  ["", {}, "2026-01-01T00:03:00Z", 0.95],
+  ["", {}, "2026-01-01T00:03:30Z", 0.95],
+  ["", {}, "2026-01-01T00:04:00Z", 0.95],
+  ["", {}, "2026-01-01T00:04:30Z", 0.95]
+]

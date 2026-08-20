@@ -101,6 +101,15 @@ var nativeStrategies = []nativeStrategy{
 			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 		},
 	},
+	{
+		field:   "ClassicHistogram",
+		section: "experimental_ts_grid_histogram",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
+				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			}
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

@@ -786,6 +786,7 @@ func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.M
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
+//	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //
 // The fan-out impl is the concrete DEFAULT (never nil), and the native impl
 // embeds it as the fallback for shapes it cannot handle. The features are
@@ -837,6 +838,13 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridHistogram) {
+		l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
+			Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+		}
+	} else {
+		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
 	}
 	return l
 }

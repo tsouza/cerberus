@@ -181,6 +181,32 @@ func carrierCases() []carrierCase {
 			reanchorable: true,
 		},
 		{
+			// RangeBucketGridNative is the single-pass native sibling: one grid
+			// aggregate per (series, `le` rung), so the fan-out feature is the
+			// single-pass constant rather than the anchor-window ratio. Not
+			// re-anchorable — the kind is absent from chplan.IsSliceInvariant's
+			// registry, so a plan carrying it stays on route A.
+			kind: "RangeBucketGridNative",
+			plan: func() chplan.Node {
+				return &chplan.RangeBucketGridNative{
+					Input:             leafScan(),
+					Start:             gridStart,
+					End:               gridEnd,
+					Step:              gridStep,
+					Range:             geomFanoutLookback,
+					GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+					GroupByAliases:    []string{"Attributes"},
+					AnchorAlias:       "anchor_ts",
+					TimestampCol:      "TimeUnix",
+					BucketCountsCol:   "BucketCounts",
+					ExplicitBoundsCol: "ExplicitBounds",
+				}
+			},
+			wantD:        geomFanoutLookback,
+			wantFanout:   singlePassFanout,
+			reanchorable: false,
+		},
+		{
 			kind: "AbsentOverTime",
 			plan: func() chplan.Node {
 				return &chplan.AbsentOverTime{

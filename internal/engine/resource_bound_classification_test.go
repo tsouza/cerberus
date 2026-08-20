@@ -53,6 +53,7 @@ var resourceBoundClassification = map[string]struct {
 	"RangeWindowStaleResample": {boundGated, "axis 5: native-staleness resample variant; same anchor-grid bound"},
 	"StepGrid":                 {boundStructural, "axis 5: query_range step grid capped at format.MaxResolutionPoints in the head handler"},
 	"RangeBucketFanout":        {boundRuntimeNet, "axis 4/7: histogram bucket fan-out over the scan-bounded window; spill + max_memory_usage"},
+	"RangeBucketGridNative":    {boundRuntimeNet, "axis 4/7: native histogram bucket ladder aggregate over the scan-bounded window; spill + max_memory_usage"},
 	"RangeLWR":                 {boundRuntimeNet, "axis 7: linear-regression-window compute over the scan-bounded window"},
 	"AbsentOverTime":           {boundStructural, "one synthesized row per absent series over the bounded window"},
 

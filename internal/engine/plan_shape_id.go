@@ -55,6 +55,7 @@ func shapeModifiers(plan chplan.Node) []string {
 		hasNative   bool
 		hasResample bool
 		hasFanout   bool
+		hasBucketNv bool
 		hasStepGrid bool
 		hasAbsentOT bool
 	)
@@ -75,6 +76,8 @@ func shapeModifiers(plan chplan.Node) []string {
 			hasLWR = true
 		case *chplan.RangeBucketFanout:
 			hasFanout = true
+		case *chplan.RangeBucketGridNative:
+			hasBucketNv = true
 		case *chplan.StepGrid:
 			hasStepGrid = true
 		case *chplan.AbsentOverTime:
@@ -112,6 +115,9 @@ func shapeModifiers(plan chplan.Node) []string {
 	}
 	if hasFanout {
 		mods = append(mods, "rbf")
+	}
+	if hasBucketNv {
+		mods = append(mods, "rbn")
 	}
 	if hasAbsentOT {
 		mods = append(mods, "aot")
@@ -154,6 +160,8 @@ func nodeKind(n chplan.Node) string {
 		return "lwr"
 	case *chplan.RangeBucketFanout:
 		return "rbf"
+	case *chplan.RangeBucketGridNative:
+		return "rbn"
 	case *chplan.AbsentOverTime:
 		return "aot"
 	case *chplan.StepGrid:

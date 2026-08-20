@@ -129,6 +129,7 @@ table.
 | `ts_grid_deriv`          | 25.9       | experimental | yes        |
 | `ts_grid_predict_linear` | 25.9       | experimental | yes        |
 | `ts_grid_recollapse`     | 25.9       | experimental | yes        |
+| `ts_grid_histogram`      | 25.9       | experimental | yes        |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they

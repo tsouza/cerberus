@@ -186,6 +186,12 @@ type RangeLowerers struct {
 	// timeSeriesPredictLinearToGrid, server >= 25.9). Concrete fan-out impl when
 	// the native path is off; never nil on the lowering path.
 	PredictLinear PredictLinearLowerer
+
+	// ClassicHistogram handles the per-series `rate` window stage under the
+	// range-mode classic-histogram quantile idiom (native ladder aggregate,
+	// server >= 25.9). Concrete fan-out impl when the native path is off;
+	// never nil on the lowering path.
+	ClassicHistogram ClassicHistogramWindowLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -212,6 +218,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.PredictLinear == nil {
 		l.PredictLinear = FanoutPredictLinearLowerer{}
+	}
+	if l.ClassicHistogram == nil {
+		l.ClassicHistogram = FanoutClassicHistogramWindowLowerer{}
 	}
 	return l
 }

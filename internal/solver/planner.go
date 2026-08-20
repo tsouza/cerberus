@@ -562,6 +562,20 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Lookback), predEnd, v.Step, depth+1, sig)
 		return
 
+	case *chplan.RangeBucketGridNative:
+		// The ClickHouse-native sibling of RangeBucketFanout: same eval grid,
+		// same per-anchor membership window, so it is recorded and widened
+		// identically. It carries NO grid-prediction check because the kind is
+		// deliberately absent from chplan.IsSliceInvariant's registry — a plan
+		// carrying one is route-A only, so there is no predicted shard grid for
+		// its own bounds to agree or disagree with.
+		p.recordGridCarrier(v, depth, sig)
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, predStart, predEnd, v.Step, sig)
+		}
+		p.walkNode(v.Input, predStart.Add(-v.Offset-v.Range), predEnd, v.Step, depth+1, sig)
+		return
+
 	case *chplan.HistogramQuantile:
 		// The classic-histogram quantile interpolation: off-grid immutable
 		// itself (see chplan.reanchor's *HistogramQuantile arm — a
@@ -789,6 +803,20 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// the deriv / idelta / irate / instant-LWR / negative-offset families
 		// that lower to a bare RangeLWR spine are routable.
 		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
+
+	case *chplan.RangeBucketGridNative:
+		// The native bucket-ladder aggregate: one single-pass grid per
+		// (series, `le` rung) rather than a per-(series, anchor) fan-out, so
+		// singlePass is set for the same reason RangeWindowGridNative sets it.
+		// NOT re-anchorable: the kind is absent from chplan.IsSliceInvariant's
+		// registry, so a plan carrying it never reaches route B and the flag is
+		// telemetry-only.
+		return carrierGeometry{
+			outerRange:   v.End.Sub(v.Start),
+			lookback:     v.Range,
+			singlePass:   true,
+			reanchorable: false,
+		}, true
 
 	case *chplan.RangeWindowGridNative:
 		// timeSeries<fn>ToGrid: the whole rate(m[Range]) collapses into one

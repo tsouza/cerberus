@@ -1,0 +1,36 @@
+# The native classic-histogram ladder against the per-series two-sample floor
+# `rate` imposes — the semantic the fan-out spells as
+# chplan.RangeBucketFanout.MinSamples (a `HAVING uniqExact(TimeUnix) >= 2`) and
+# the native shape spells as the +Inf rung's own NULL: that rung is reported by
+# every stored row, so its sample set IS the series' whole in-window sample set
+# and timeSeriesRateToGrid NULLs it exactly when the window holds fewer than
+# two samples.
+#
+# The seed, grid and `expected_rows` are IDENTICAL to
+# histogram_quantile_classic_agg_rate_min_samples.txtar, which is enrolled in
+# the Prometheus parity corpus — so the row SET here (four anchors, not eleven)
+# is checked against reference Prometheus, not merely against the fan-out.
+
+-- query.promql --
+histogram_quantile(0.5, sum by(le)(rate(http_server_request_duration_bucket[1m])))
+-- range_step --
+10s
+-- experimental_ts_grid_histogram --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:15', 9), [1, 1, 1], [0.1, 0.5]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:20Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:30Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:40Z", 0.30000000000000004],
+  ["", {}, "2026-01-01T00:00:50Z", 0.30000000000000004]
+]

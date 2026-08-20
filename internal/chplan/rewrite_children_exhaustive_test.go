@@ -98,6 +98,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"TopK", &TopK{Input: sentinelChild(), K: 1, SortExpr: &ColumnRef{Name: "Value"}}, false},
 		{"RangeLWR", &RangeLWR{Input: sentinelChild()}, false},
 		{"RangeBucketFanout", &RangeBucketFanout{Input: sentinelChild()}, false},
+		{"RangeBucketGridNative", &RangeBucketGridNative{Input: sentinelChild()}, false},
 		{"HistogramQuantile", &HistogramQuantile{Input: sentinelChild(), Phi: 0.5}, false},
 		{"HistogramQuantileNative", &HistogramQuantileNative{Input: sentinelChild(), Phi: 0.5}, false},
 		{"HistogramProjection", &HistogramProjection{Input: sentinelChild()}, false},

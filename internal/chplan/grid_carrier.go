@@ -88,6 +88,7 @@ var _ = []GridCarrier{
 	(*RangeWindowStaleResample)(nil),
 	(*RangeLWR)(nil),
 	(*RangeBucketFanout)(nil),
+	(*RangeBucketGridNative)(nil),
 	(*AbsentOverTime)(nil),
 }
 
@@ -112,6 +113,12 @@ func (r *RangeLWR) EvalGrid() (time.Time, time.Time, time.Duration) {
 }
 
 func (r *RangeBucketFanout) EvalGrid() (time.Time, time.Time, time.Duration) {
+	return r.Start, r.End, r.Step
+}
+
+// EvalGrid: the native bucket-ladder aggregate is handed the same
+// (Start, End, Step) grid its fan-out sibling walks.
+func (r *RangeBucketGridNative) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 
@@ -150,6 +157,13 @@ func (r *RangeLWR) AnchorGridDivides() bool { return true }
 // OOMs happened, so slicing is what bounds their memory, and nothing has
 // measured otherwise.
 func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependentOfGrid }
+
+// AnchorGridDivides: the native aggregate materialises one Array of N grid
+// points per (series, `le` rung), so its intermediate is linear in the grid
+// width exactly as RangeWindowGridNative's is. It is reported honestly even
+// though slicing never reaches this node: the kind is deliberately absent
+// from sliceInvariantKinds, so a plan carrying it is route-A only.
+func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
 func (a *AbsentOverTime) AnchorGridDivides() bool { return true }

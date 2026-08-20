@@ -198,6 +198,9 @@ func (w *keyWalker) walk(n chplan.Node) {
 			for _, fn := range v.AggFuncs {
 				w.aggFuncs = append(w.aggFuncs, string(fn.Fn))
 			}
+		case *chplan.RangeBucketGridNative:
+			w.rangeFuncs = append(w.rangeFuncs, "bucketnative@"+strconv.Itoa(bucketLg(int64(v.Range))))
+			w.hasNative = true
 		case *chplan.RangeWindowGridNative:
 			w.rangeFuncs = append(w.rangeFuncs, "native@"+strconv.Itoa(bucketLg(int64(v.Range))))
 			w.hasNative = true

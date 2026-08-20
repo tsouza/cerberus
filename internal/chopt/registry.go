@@ -160,6 +160,43 @@ const (
 	// counter-reset-straddling series regimes (see docs/clickhouse-optimizations.md
 	// for the probe shape and the versions it was executed against).
 	FeatureTSGridRecollapse = "ts_grid_recollapse"
+
+	// FeatureTSGridHistogram opts the per-series `rate` window stage under the
+	// range-mode classic-histogram quantile idiom
+	// `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))` onto a
+	// native timeSeriesRateToGrid ladder, retiring the array-expression fold
+	// (internal/promql.classicBucketWindowLadderExpr).
+	//
+	// The fold it replaces is not merely slow, it is QUADRATIC in a way no
+	// rewrite of the expression can fix: it walks the union bucket bounds with
+	// `arrayMap(u -> …)` over a body that READS the group's bounds / counts
+	// groupArrays, and ClickHouse materialises a lambda's captured columns once
+	// per outer-array element (upstream issue #54967), so the fold builds one
+	// copy of the whole per-series bucket matrix per rung. The
+	// timeSeries*ToGrid family are AGGREGATE functions — they consume rows
+	// through addBatch and never construct that replica — so expressing the
+	// same arithmetic as an aggregate over the UNNESTED ladder (one scalar
+	// counter series per `le` rung, which is exactly what reference Prometheus
+	// models `<name>_bucket{le="X"}` as) removes the replication entirely.
+	// Measured against a real ClickHouse 26.6 at realistic scale, same rows
+	// read (~88-89k), 121 anchors, 5m window: 4,123 ms / 3.411 GB peak /
+	// 51.5 CPU-s for the array fold against 148 ms / 0.130 GB peak / 0.4 CPU-s
+	// for the native aggregate — 28x faster, 26x less memory, 129x less CPU.
+	//
+	// The 25.9 floor is INHERITED from the rest of the timeSeries*ToGrid
+	// family, not independently derived: this shape rides the SAME
+	// timeSeriesRateToGrid FeatureTSGridRange pins, so it inherits that
+	// feature's binding constraint — the left-open / right-closed membership
+	// window (upstream PR #86588, first released in 25.9). Below 25.9 the
+	// window's closed left edge admits the sample sitting exactly on
+	// anchor-window, so every rung would emit where reference Prometheus emits
+	// nothing. It additionally reads timeSeriesResetsToGrid purely as a
+	// per-grid-point PRESENCE signal (see internal/chsql's bucketGridSeenFn),
+	// which is a FeatureTSGridResets sibling from PR #86010 — released in the
+	// same 25.9, so the floor is unchanged either way. Both share the one
+	// allow_experimental_time_series_aggregate_functions gate cerberus already
+	// stamps for this family, so no new experimental setting is introduced.
+	FeatureTSGridHistogram = "ts_grid_histogram"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -312,12 +349,21 @@ var registry = []Feature{
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)",
 	},
+	{
+		ID:                         FeatureTSGridHistogram,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt the classic-histogram rate() window fold behind histogram_quantile onto a native timeSeriesRateToGrid ladder over the unnested le rungs (experimental maturity, auto-enabled on server >= 25.9 — floor inherited from the timeSeries*ToGrid family)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-// ts_grid_predict_linear, ts_grid_recollapse). The copy keeps the
+// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_histogram). The copy
+// keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
