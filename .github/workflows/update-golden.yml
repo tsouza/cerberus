@@ -6,6 +6,16 @@ name: update-golden
 # avoiding both concurrent non-fast-forward pushes and line-merging generated
 # artifacts. RELEASE_PAT is required because GitHub suppresses workflow triggers
 # for pushes made with the default GITHUB_TOKEN.
+#
+# The target branch is not otherwise visible on a run: the Actions API never
+# exposes workflow_dispatch INPUTS outside the run itself (only head_branch,
+# which for a dispatch is the ref the workflow was TRIGGERED from — always
+# main here, never the target). update-golden-guard.yml (issue #2350) has to
+# tell which branch an in-flight run targets from OUTSIDE that run, to block a
+# merge racing it, and this is the one field the list-runs API does expose.
+# Keep the exact `update-golden[<branch>]` shape in sync with that workflow's
+# runTargetsBranch().
+run-name: update-golden[${{ inputs.branch }}]
 on:
   workflow_dispatch:
     inputs:
@@ -85,7 +95,15 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: true
+      # One shard's failure must not cancel every other concurrent shard's
+      # in-progress run: each leg is independent (its own checkout, its own
+      # patch), so cancelling a leg that would otherwise have SUCCEEDED
+      # discards up to this job's whole 45-minute budget for nothing. With
+      # fail-fast off, an unrelated leg still fails on its own merits, but the
+      # rest finish and upload their patches — and a follow-up "re-run failed
+      # jobs" only has to redo the one shard that actually failed, not every
+      # shard in the dispatch (issue #2368).
+      fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout trusted workflow controller
@@ -119,6 +137,15 @@ jobs:
         working-directory: target
         env:
           GOLDEN_UPDATE_BASE_REF: HEAD
+          # test/e2e/migration/lib's AssertGolden refuses to rewrite a golden
+          # under plain CI — the rule post-merge-drift.yml needs, since it
+          # regenerates unreviewed, directly on main. This leg is the other
+          # trust model: read-only credentials, output constrained to this
+          # shard's own declared paths by the "Package" step below, and pushed
+          # only through the publisher job's own revalidation into a branch
+          # that still goes through a reviewed PR. Setting this only here,
+          # never in post-merge-drift.yml, keeps that lane's refusal absolute.
+          UPDATE_GOLDEN_WORKFLOW: '1'
         run: just update-golden ${{ matrix.command_shards }}
 
       - name: Package only this shard's generated paths
