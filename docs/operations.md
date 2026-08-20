@@ -1485,7 +1485,20 @@ Each edge is a gate, not a sequence:
   resolves the release-staging PR GitHub associates with the merge commit and
   re-reads *that* PR's own `dashboard` check-run instead — closing the gap
   that let PR #2360 auto-merge to main with a red crawl result
-  (tsouza/cerberus#2361).
+  (tsouza/cerberus#2361). Separately, before reading `RELEASE_REQUIRED_CHECKS`
+  off the commit, `preflight` also resolves the PR that *produced* the merge
+  commit (`lib/resolve-source-pr.mjs`, same `GET /commits/{sha}/pulls`
+  endpoint, but filtered on an EXACT `merged && merge_commit_sha === sha`
+  match rather than a `release/*` head-ref shape) and credits a required
+  lane's green check-run posted on that PR's own tip commit too, alongside
+  the commit's own. A squash-merged PR's tip tree is byte-identical to the
+  merge commit's, so this lets a lane's `push:`-triggered re-run become
+  provably unnecessary for a future release without `preflight` losing
+  visibility into the validation that already happened on the PR
+  (tsouza/cerberus#2394). It changes nothing about `preflight`'s behaviour
+  today — every lane still posts its own check-run on the push commit, same
+  as before — and resolves to nothing on the maintenance path, which merges
+  no PR at all (see "Maintenance lines" below).
 - **`goreleaser`** builds and uploads, but leaves the GitHub release a **draft**.
 - **`release-artifact-migration`** re-runs the migration lane
   (`uses: ./.github/workflows/migration-e2e.yml`) against the image that was just
