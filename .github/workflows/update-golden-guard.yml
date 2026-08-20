@@ -42,17 +42,18 @@ jobs:
     # rather than by the job runner's generic timeout.
     timeout-minutes: 65
     steps:
-      # Checked out at the PR's BASE sha, not the default merge ref: a
-      # pull_request trigger otherwise runs whatever this step contains from
-      # the PR's own head, and a same-repository fork could rewrite this
-      # script to always report clear. Every other trusted step in this
-      # workflow family follows the same rule (see update-golden.yml's own
-      # "Checkout trusted workflow controller" steps).
-      - name: Checkout trusted workflow controller
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
+      # Plain checkout, matching every other `pull_request`-triggered required
+      # check in this repo (forbid-deferral.yml, pr-hygiene.yml): it runs
+      # whatever this step contains from the PR's own merge ref, same as
+      # every other required gate's own script. update-golden.yml's internal
+      # "Checkout trusted workflow controller" split is a DIFFERENT threat
+      # model — one workflow_dispatch run executing target-branch code with
+      # elevated credentials later in the same run — and does not generalise
+      # here: pinning to the PR's base sha would also make this check
+      # permanently unable to find its own script before its introducing PR
+      # merges, since the base branch cannot contain a script this PR is
+      # still adding.
+      - uses: actions/checkout@v7
 
       - name: Wait for any in-flight update-golden.yml dispatch against this branch
         env:
