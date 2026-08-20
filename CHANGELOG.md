@@ -4,6 +4,23 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.15.4] — 2026-08-20
+
+### Added
+
+- **solver:** make auto start on route A and escalate on real evidence (#2398)
+
+### Fixed
+
+- **chsql:** rebase the native-quantile fraction in the rank walk's own direction (#2404)
+- **engine:** activate the costly-cancellation route evidence and warn on the legacy env name (#2400)
+- **solver:** stop auto-routing carriers whose peak does not divide with the grid (#2396)
+- **chsql:** prune the DELTA prefix scan on a CUMULATIVE-only metric (#2395)
+
+### Documentation
+
+- drop deployment attribution from the solver and chsql comments (#2399)
+
 ## [v1.15.3] — 2026-08-19
 
 ### Fixed
