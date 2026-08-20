@@ -808,9 +808,14 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// The native bucket-ladder aggregate: one single-pass grid per
 		// (series, `le` rung) rather than a per-(series, anchor) fan-out, so
 		// singlePass is set for the same reason RangeWindowGridNative sets it.
-		// NOT re-anchorable: the kind is absent from chplan.IsSliceInvariant's
-		// registry, so a plan carrying it never reaches route B and the flag is
-		// telemetry-only.
+		// NOT re-anchorable: chplan.ReanchorRange has no arm that re-grids it,
+		// so a routed shard would evaluate the FULL grid rather than its own
+		// slice. That is the SECOND of the two refusals holding this kind on
+		// route A (the first is its absence from chplan.IsSliceInvariant's
+		// registry), and it is what licences the node's own
+		// AnchorGridDivides() to answer TRUE honestly — see
+		// TestRangeBucketGridNative_SlicingRefusedAtBothGates, which fails if
+		// either refusal is removed.
 		return carrierGeometry{
 			outerRange:   v.End.Sub(v.Start),
 			lookback:     v.Range,
