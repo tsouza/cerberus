@@ -1,0 +1,31 @@
+-- query.promql --
+histogram_quantile(0.9, http_server_duration_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2405: the same exhausted walk as
+-- histogram_quantile_native_finite_sum_exhausted_forward.txtar, taken from the
+-- other end. phi >= 0.5 with a finite Sum walks BACKWARD from the highest
+-- bucket, so the bucket reference's iterator is left sitting on is the bottom
+-- of the array rather than its top: bucket index 0 at scale 0, upper edge
+-- 2^1 = 2. The fallback is therefore per-direction, and answering it from one
+-- end for both arms would report 4 here.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [2, 3], 0, [], 100, 3);
+-- expected_rows --
+[]

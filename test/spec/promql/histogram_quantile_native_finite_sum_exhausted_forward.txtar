@@ -1,0 +1,34 @@
+-- query.promql --
+histogram_quantile(0.2, http_server_duration_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2405: Count (100) far exceeds the buckets' combined reach
+-- (2 + 3 = 5), so the rank walk runs off the end of the array without ever
+-- reaching phi * Count = 20 — the same exhausted walk as
+-- histogram_quantile_native_nan_sum_exhausted.txtar, but with a FINITE Sum.
+-- Count outruns the buckets whenever an observation was counted without
+-- landing in one, and +Inf is such an observation while leaving Sum
+-- finite. Reference Prometheus reserves the NaN answer for a NaN Sum and
+-- otherwise falls back to the upper bound of the bucket its iterator was
+-- left sitting on, which for phi < 0.5 (the forward walk) is the top of the
+-- positive array: bucket index 1 at scale 0, upper edge 2^2 = 4.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 0, 0, 0, [2, 3], 0, [], 100, 3);
+-- expected_rows --
+[]
