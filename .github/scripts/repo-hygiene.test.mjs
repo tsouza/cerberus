@@ -44,6 +44,7 @@ import {
   classifyBlob,
   diffAllowlist,
   gitBinarySniffBytes,
+  isLfsPointer,
   loginActionUses,
   rootEntriesOf,
 } from './repo-hygiene.mjs';
@@ -118,6 +119,16 @@ test('classifyBlob only sniffs the leading window (the bound is real)', () => {
   assert.equal(classifyBlob(inside).binary, true, 'a NUL at the last sniffed byte must be read');
 });
 
+test('isLfsPointer matches only the exact pointer preamble', () => {
+  assert.equal(
+    isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 4\n')),
+    true,
+  );
+  assert.equal(isLfsPointer(syntheticElf()), false);
+  assert.equal(isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v2\n')), false);
+  assert.equal(isLfsPointer(Buffer.from('')), false);
+});
+
 test('diffAllowlist reports a stray root entry and a rotted allow-list entry', () => {
   const entries = rootEntriesOf(['internal/promql/lower.go', 'docs/engine.md', 'perf-profile']);
   const { unexpected, stale } = diffAllowlist(entries, ['internal', 'docs', 'Justfile']);
@@ -147,6 +158,23 @@ test('the CLI FAILS on a committed binary, naming the file and the format', () =
   assert.notEqual(status, 0, `the binary scan must fail; got:\n${out}`);
   assert.match(out, /::error::/);
   assert.match(out, /perf-profile: ELF executable/);
+});
+
+// An LFS-tracked path is SMUDGED back into real binary content in the
+// working tree whenever the local git-lfs filter is active — the commit
+// itself still holds the pointer text, only the checked-out copy on disk
+// changes. Simulated here without git-lfs installed: stage and commit the
+// pointer text (so the tracked OBJECT is the pointer), then overwrite the
+// working-tree file with binary content afterwards, exactly matching what a
+// real smudge filter produces relative to the object store.
+test('the CLI PASSES on a working-tree-smudged LFS pointer (object store holds the pointer)', () => {
+  const { dir, stage } = newFixtureRepo();
+  const lfsPath = join(dir, 'perf-profile');
+  writeFileSync(lfsPath, 'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 4\n');
+  stage();
+  writeFileSync(lfsPath, syntheticElf());
+  const { status, out } = runGate('binary', dir);
+  assert.equal(status, 0, `an LFS pointer smudged to binary in the working tree must still pass; got:\n${out}`);
 });
 
 // #1938: every scan used to read the tracked INDEX only (`git ls-files`),
