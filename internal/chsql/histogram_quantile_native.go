@@ -510,71 +510,14 @@ func reachesReverseArm(h *chplan.HistogramQuantileNative) bool {
 	return h.PhiExpr != nil || h.Phi >= reverseWalkPhi
 }
 
-func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) hqNativeWriters {
-	pbc := h.PositiveBucketCountsColumn
-	nbc := h.NegativeBucketCountsColumn
-	scale := h.ScaleColumn
-	zc := h.ZeroCountColumn
-	zt := h.ZeroThresholdColumn
-	countCol := h.CountColumn
-	sumCol := h.SumColumn
-	var w hqNativeWriters
-
-	// phi: the computed expression when PhiExpr is set (typically a
-	// scalar subquery — CH folds it as a constant), the inline literal
-	// (InlineLit float == formatFloat) otherwise.
-	w.phi = func() Frag {
-		if h.PhiExpr != nil {
-			return func(b *Builder) { _ = b.Expr(h.PhiExpr) }
-		}
-		return InlineLit(h.Phi)
-	}
-	// base = pow(2, pow(2, -Scale)). Higher scale = finer buckets.
-	w.base = func() Frag {
-		return Call("pow", InlineLit(2), Call("pow", InlineLit(2), Neg(Col(scale))))
-	}
-	// buckets = arrayConcat(
-	//             arrayReverse(NegativeBucketCounts),
-	//             [ZeroCount],
-	//             PositiveBucketCounts).
-	// The single walk order every index in this file is expressed in.
-	// arrayReverse on an empty array yields [], so the walk collapses to
-	// the positive-only shape when NegativeBucketCounts is empty.
-	w.buckets = func() Frag {
-		if helpers.buckets != "" {
-			return Col(helpers.buckets)
-		}
-		return Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc))
-	}
-	w.cum = func() Frag {
-		if helpers.cum != "" {
-			return Col(helpers.cum)
-		}
-		return Call("arrayCumSum", w.buckets())
-	}
-	// revCum is the bucket array accumulated from the TOP:
-	// revCum[i] = sum(buckets[i..n]), the count at or above position i.
-	// It is the backward arm's running count, and it is ACCUMULATED
-	// rather than derived from cum by subtraction so that its rounding
-	// matches reference Prometheus's own reverse iterator bit for bit —
-	// see revIdx below.
-	w.revCum = func() Frag {
-		if helpers.revCum != "" {
-			return Col(helpers.revCum)
-		}
-		return Call("arrayReverse", Call("arrayCumSum", Call("arrayReverse", w.buckets())))
-	}
-	// rankBase is the histogram's own stored Count — what reference
-	// Prometheus's rank walk ranks against (quantile.go), as opposed to
-	// a total re-derived from the bucket arrays. The two agree whenever
-	// Sum is finite; they diverge only for a histogram that counted NaN
-	// observations, which inflate Count without landing in any bucket
-	// (cerberus issue #2072).
-	w.rankBase = func() Frag { return Col(countCol) }
-	// sumIsNaN reports whether this row's stored Sum is NaN — reference's
-	// marker for "counted an observation that fell in no bucket" and the
-	// condition that forces the forward rank walk regardless of phi.
-	w.sumIsNaN = func() Frag { return Call("isNaN", Col(sumCol)) }
+// attachHQNativeRankWalk fills in the rank-walk half of a
+// [hqNativeWriters]: the two directional stop-index searches, the running
+// count each of them accumulates, and the rebased rank that becomes the
+// interpolation fraction's numerator. It is a separate function from
+// [newHQNativeWriters] only because the two halves together outgrow one
+// readable body; every closure here reads the bucket-geometry writers the
+// caller has already set, and the caller reads w.fraction back out.
+func attachHQNativeRankWalk(w *hqNativeWriters, h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) {
 	// rankWalk renders `<fn>(c -> <cmp>, <running>)`, the shape both walk
 	// arms share — they differ only in which running-count array they
 	// scan, from which end, and with which per-element comparison.
@@ -719,6 +662,74 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 			Sub(w.runningCount(), Paren(Mul(Paren(Sub(InlineLit(1), w.phi())), w.rankBase()))),
 		)
 	}
+}
+
+func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelperColumns) hqNativeWriters {
+	pbc := h.PositiveBucketCountsColumn
+	nbc := h.NegativeBucketCountsColumn
+	scale := h.ScaleColumn
+	zc := h.ZeroCountColumn
+	zt := h.ZeroThresholdColumn
+	countCol := h.CountColumn
+	sumCol := h.SumColumn
+	var w hqNativeWriters
+
+	// phi: the computed expression when PhiExpr is set (typically a
+	// scalar subquery — CH folds it as a constant), the inline literal
+	// (InlineLit float == formatFloat) otherwise.
+	w.phi = func() Frag {
+		if h.PhiExpr != nil {
+			return func(b *Builder) { _ = b.Expr(h.PhiExpr) }
+		}
+		return InlineLit(h.Phi)
+	}
+	// base = pow(2, pow(2, -Scale)). Higher scale = finer buckets.
+	w.base = func() Frag {
+		return Call("pow", InlineLit(2), Call("pow", InlineLit(2), Neg(Col(scale))))
+	}
+	// buckets = arrayConcat(
+	//             arrayReverse(NegativeBucketCounts),
+	//             [ZeroCount],
+	//             PositiveBucketCounts).
+	// The single walk order every index in this file is expressed in.
+	// arrayReverse on an empty array yields [], so the walk collapses to
+	// the positive-only shape when NegativeBucketCounts is empty.
+	w.buckets = func() Frag {
+		if helpers.buckets != "" {
+			return Col(helpers.buckets)
+		}
+		return Call("arrayConcat", Call("arrayReverse", Col(nbc)), Array(Col(zc)), Col(pbc))
+	}
+	w.cum = func() Frag {
+		if helpers.cum != "" {
+			return Col(helpers.cum)
+		}
+		return Call("arrayCumSum", w.buckets())
+	}
+	// revCum is the bucket array accumulated from the TOP:
+	// revCum[i] = sum(buckets[i..n]), the count at or above position i.
+	// It is the backward arm's running count, and it is ACCUMULATED
+	// rather than derived from cum by subtraction so that its rounding
+	// matches reference Prometheus's own reverse iterator bit for bit —
+	// see revIdx below.
+	w.revCum = func() Frag {
+		if helpers.revCum != "" {
+			return Col(helpers.revCum)
+		}
+		return Call("arrayReverse", Call("arrayCumSum", Call("arrayReverse", w.buckets())))
+	}
+	// rankBase is the histogram's own stored Count — what reference
+	// Prometheus's rank walk ranks against (quantile.go), as opposed to
+	// a total re-derived from the bucket arrays. The two agree whenever
+	// Sum is finite; they diverge only for a histogram that counted NaN
+	// observations, which inflate Count without landing in any bucket
+	// (cerberus issue #2072).
+	w.rankBase = func() Frag { return Col(countCol) }
+	// sumIsNaN reports whether this row's stored Sum is NaN — reference's
+	// marker for "counted an observation that fell in no bucket" and the
+	// condition that forces the forward rank walk regardless of phi.
+	w.sumIsNaN = func() Frag { return Call("isNaN", Col(sumCol)) }
+	attachHQNativeRankWalk(&w, h, helpers)
 	w.nLen = func() Frag { return Call("length", Col(nbc)) }
 	w.pLen = func() Frag { return Call("length", Col(pbc)) }
 	// valueIdx is the bucket whose geometry and count reference uses for
