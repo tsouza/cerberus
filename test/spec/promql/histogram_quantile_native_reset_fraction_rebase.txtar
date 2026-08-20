@@ -1,0 +1,65 @@
+# `histogram_quantile(0.5, increase(<native hist>[5m]))` where the median
+# lands INSIDE a bucket after the window fold has scaled every count, and the
+# interpolation fraction is what decides which side of that bucket's edge the
+# answer falls on.
+#
+# histogram_quantile_native_rank_tie_window_scaled is the sibling that pins
+# the STOP INDEX half of this class: it proves the backward rank walk
+# accumulates its running count from the top, in reference Prometheus's own
+# direction, rather than reconstructing it as `total - cum[i-1]`. This
+# fixture pins the other half — the FRACTION. Reference rebases the
+# remaining rank per direction (`rank -= count - bucket.Count` forward,
+# `rank = count - rank` backward) against the running count that arm
+# accumulated. Substituting `count = total - cum[idx-1]` collapses both arms
+# to `phi * Count - cum[idx-1]`, which is the same number in exact arithmetic
+# and a different one in floating point, and that is what cerberus emitted
+# for both arms until issue #2403.
+#
+# The seed makes the difference observable. Every one of the four samples
+# drops the count (12 -> 10 -> 8 -> 6), so all three transitions are counter
+# resets and the reset compensation — not a plain last-minus-first — produces
+# the whole distribution; increase() then multiplies it by one extrapolation
+# factor (4/3: four samples spanning 45s of a 300s window, both edges
+# clamping to half an average gap), so every bucket count reaching the
+# quantile walk is Float64. The median stops in the least-negative negative
+# bucket, which spans (-2, -1], and the collapsed numerator put the fraction
+# at 1.0000000000000004 — just PAST the bucket's own upper edge, answering
+# -0.9999999999999997, a value outside the bucket the walk chose. Reference's
+# per-arm rebasing is structurally bounded to [0, 1] instead, because the
+# walk broke at this bucket and not at the one before it, and answers
+# -1.0000000000000007.
+#
+# `expected_rows:` is what pins that: reference Prometheus, run over this
+# seed with its own engine, answers -1.0000000000000007 bit for bit, and the
+# emitter that collapsed the arms answered -0.9999999999999997. The answer
+# sits in a negative bucket rather than the zero band, so parity compares in
+# full.
+-- query.promql --
+histogram_quantile(0.5, increase(http_server_duration_exp_hist[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64),
+    Count UInt64,
+    Sum Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:41', 9), 0, 1, 3, [4, 1], -2, [0, 5, 1], 12, 62.932503525602726),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:56:56', 9), 0, 2, 0, [], 0, [1, 5, 2], 10, -32.24406922210656),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:11', 9), 0, 1, 0, [2, 1], 0, [0, 4], 8, -4.808326112068523),
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2025-12-31 23:57:26', 9), 0, 0, 1, [3, 2, 1], 0, [], 6, 26.44579361637687);
+-- expected_rows --
+-- args --
+-- chplan --
+-- sql --

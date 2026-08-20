@@ -148,7 +148,13 @@ func nativeHistogramQuantileValue(phi float64, h *nativeHistogram) float64 {
 	}
 	if count < rank {
 		// The walk exhausted every bucket without reaching the rank,
-		// which needs Count to exceed the buckets' combined reach.
+		// which needs the stored Count to exceed the buckets' combined
+		// reach — a shape this suite's generator never draws, since it
+		// derives Count from the buckets it drew. NaN is what cerberus's
+		// emitter answers there (its index functions' not-found sentinel
+		// routes to NaN); reference answers NaN only for a NaN Sum and
+		// gives the last iterated bucket's upper bound otherwise, which
+		// is cerberus issue #2405.
 		return math.NaN()
 	}
 
