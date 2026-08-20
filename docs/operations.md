@@ -234,18 +234,21 @@ against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
 spike-class).
 
-**Failure-driven route memo (`CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`, default
-`false`).** The Planner's cost thresholds are static and can misclassify a
-plan whose real, data-dependent cost only shows up at execution time. When
-enabled, `internal/routememo` (see
+**Failure-driven route memo (`CERBERUS_SOLVER_ADAPTIVE_ENABLED`, default
+`true`).** The Planner's cost thresholds are static and can misclassify a
+plan whose real, data-dependent cost only shows up at execution time.
+`internal/routememo` (see
 [`solver.md`](solver.md#failure-driven-route-memo)) retries a route-A
 dispatch that fails on ClickHouse resource exhaustion once on route B, and
 remembers the outcome against a literal-free fingerprint of the plan's cost
 shape so a later cost-equivalent request routes directly instead of paying
-the same failure again. It is opt-in — like `CERBERUS_CH_OPT_CORPUS_ENABLED`
-and `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE` — so upgrading cerberus never
-silently changes ClickHouse dispatch/resource behavior. Two more knobs tune
-it once enabled:
+the same failure again. It is on by default because it only ever turns a
+FAILURE into a slower answer and can never change a result — it is what makes
+`auto` mean "start on route A and escalate on real evidence" rather than
+"guess up front and never learn". Set it `false` to keep dispatch
+byte-unchanged. `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED` is the soft-deprecated
+spelling: it still applies, the new name wins when both are set, and setting
+it logs a deprecation notice at startup. Two more knobs tune it:
 
 - **`CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL`** (duration, default: the
   `internal/routememo` package default of 30 minutes) — how long a recorded

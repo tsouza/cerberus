@@ -23,7 +23,7 @@
 //      the mechanism actually fires against a real cerberus process + real
 //      ClickHouse, closing the "hollow green / inert feature" gap: no
 //      e2e/chaos/compose manifest had ever set
-//      CERBERUS_SOLVER_ROUTE_MEMO_ENABLED before this scenario.
+//      CERBERUS_SOLVER_ADAPTIVE_ENABLED before this scenario.
 //
 // This is an INFORMATIONAL lane (the `chaos` job in e2e.yml; push-to-main +
 // nightly + manual ONLY, never a PR gate). Heavy + chaos flakes, so the
@@ -1142,12 +1142,12 @@ async function scenarioLoadAdmitSaturation() {
 // ---- scenario: route-memo-activation ---------------------------------
 //
 // The failure-driven route memo (internal/routememo, wired via
-// CERBERUS_SOLVER_ROUTE_MEMO_ENABLED in cmd/cerberus/main.go, landed
+// CERBERUS_SOLVER_ADAPTIVE_ENABLED in cmd/cerberus/main.go, landed
 // e01ed68d) has never run end-to-end against a real cerberus process
 // fielding real ClickHouse traffic in any e2e/chaos/compose manifest
 // before this scenario — the classic "hollow green / inert feature"
 // gap (a mechanism that could pass every unit test while never firing in
-// production). CERBERUS_SOLVER_ROUTE_MEMO_ENABLED=true is set by the
+// a live deployment). CERBERUS_SOLVER_ADAPTIVE_ENABLED=true is set by the
 // chaos overlay (test/e2e/chaos/manifests/chaos-overlay.env) applied
 // before any scenario runs, so this is on for the whole lane.
 //

@@ -1,6 +1,7 @@
 package solver
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -86,13 +87,12 @@ func TestConfigFromEnv_RetiredKnobsIgnored(t *testing.T) {
 	}
 }
 
-// TestConfigFromEnv_RouteMemoDefaultsOff pins the OPPOSITE default from
-// Autotune: the failure-driven route memo is a new runtime-behavior-
-// changing feature, so — matching CERBERUS_CH_OPT_CORPUS_ENABLED and
-// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE's precedent — it stays off unless an
-// operator explicitly opts in. An unset env var (a routine upgrade,
-// deploying this binary onto an existing config with no manifest change)
-// must resolve to disabled, not enabled.
+// TestConfigFromEnv_AdaptiveDefaultsOn pins the default that makes ModeAuto
+// mean "start on route A and escalate on real evidence": with neither the new
+// nor the legacy env var set, the failure-driven route memo is ON. It is the
+// only half of the routing decision that reacts to what actually happened, and
+// it can only ever turn a route-A failure into a slower answer — so unlike
+// CERBERUS_CH_OPT_CORPUS_ENABLED, the default-off convention does not apply.
 func TestConfigFromEnv_AdaptiveDefaultsOn(t *testing.T) {
 	t.Setenv(EnvAdaptiveEnabled, "")
 	t.Setenv(EnvLegacyRouteMemoEnabled, "")
@@ -167,7 +167,15 @@ func TestDeprecatedEnvWarnings_FiresOnLegacyName(t *testing.T) {
 }
 
 // TestDeprecatedEnvWarnings_SilentWhenUnset: no warning when nobody set it.
+// The var is explicitly UNSET rather than left to the ambient environment —
+// DeprecatedEnvWarnings keys off LookupEnv, so a developer shell that happens
+// to export the legacy name would otherwise decide this test's outcome.
+// t.Setenv registers the restore; Unsetenv then removes the key entirely.
 func TestDeprecatedEnvWarnings_SilentWhenUnset(t *testing.T) {
+	t.Setenv(EnvLegacyRouteMemoEnabled, "")
+	if err := os.Unsetenv(EnvLegacyRouteMemoEnabled); err != nil {
+		t.Fatalf("unset %s: %v", EnvLegacyRouteMemoEnabled, err)
+	}
 	if w := DeprecatedEnvWarnings(); len(w) != 0 {
 		t.Errorf("unexpected deprecation warnings with nothing set: %v", w)
 	}

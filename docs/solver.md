@@ -429,6 +429,17 @@ never change a result. Wiring lives in
 `internal/engine/route_memo_wiring.go`; the outcome classifier is
 `internal/engine/route_outcome.go`; the memo itself is `internal/routememo`.
 
+"Resource exhaustion" is two things, not one. A ClickHouse memory-limit abort
+is the obvious half. The other is a client cancellation that arrives after the
+dispatch has already been running for `costlyCancellationFloor` (5s): the work
+was committed and the caller gave up waiting for it, which is evidence about
+this route's cost in exactly the way a memory abort is. A cancellation BELOW
+that floor is a caller who navigated away and stays `OutcomeNoEvidence`. A
+costly cancellation is **recorded, never retried** — the caller is already gone,
+so a retry dispatch would run for nobody; it teaches the next request instead.
+That is why `retryOnRouteAResourceFailure` observes before its dead-context
+return rather than after it.
+
 ### Key: a literal-free cost-shape fingerprint
 
 `routememo.Key` (`internal/routememo/key.go`) is a `comparable` struct built
@@ -587,20 +598,24 @@ the Planner's own eligibility signals. Pinned in
 
 ### Configuration
 
-Off by default, matching cerberus's convention for a new
-runtime-behavior-changing feature (alongside `CERBERUS_CH_OPT_CORPUS_ENABLED`,
-`CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`): an operator opts in explicitly rather
-than picking up new ClickHouse dispatch/resource behavior on a routine
-upgrade.
+On by default. It is the only half of the routing decision that reacts to what
+actually happened: with it off, `auto`'s thresholds are a prediction made once
+from plan shape alone, a wrong prediction stays wrong forever, and a route-A
+resource failure is a 5xx rather than a slower answer. The default-off
+convention cerberus applies to a new runtime-behavior-changing feature
+(`CERBERUS_CH_OPT_CORPUS_ENABLED`, `CERBERUS_EXPERIMENTAL_TS_GRID_RANGE`)
+covers behaviour an operator might not want; this one only ever turns a FAILURE
+into an answer, and can never change a result.
 
 | Variable                                           | Type     | Default               | Description                                                                                                                                                                                                                                                          |
 | -------------------------------------------------- | -------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`               | bool     | `false`               | Wires `internal/routememo` onto the engine. Left unset (or `false`), the engine's `RouteMemo` field stays nil and every function in `route_memo_wiring.go` no-ops through its own `routeMemoActive()` guard — dispatch stays byte-unchanged.                         |
+| `CERBERUS_SOLVER_ADAPTIVE_ENABLED`                 | bool     | `true`                | Wires `internal/routememo` onto the engine. Set `false` and the engine's `RouteMemo` field stays nil and every function in `route_memo_wiring.go` no-ops through its own `routeMemoActive()` guard — dispatch stays byte-unchanged.                                  |
+| `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED`               | bool     | (unset)               | Soft-deprecated spelling of the row above. It still applies; `CERBERUS_SOLVER_ADAPTIVE_ENABLED` wins when both are set, and setting it logs a deprecation notice at startup (`solver.DeprecatedEnvWarnings`) so an explicit opt-out survives the rename.             |
 | `CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL`             | duration | package default (30m) | Overrides how long a recorded verdict is trusted before it ages out. Zero/unset means "use the routememo package's own default", not "TTL zero" — `SetEntryTTL` treats a non-positive value as a no-op so a misconfigured value can never silently disable the memo. |
 | `CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION` | int      | package default (2)   | Overrides the divisor that places re-validation at the TTL midpoint. Same non-positive-is-no-op contract as the TTL knob.                                                                                                                                            |
 
 `cmd/cerberus/main.go`'s `buildRouteMemo` is the only constructor: it returns
-nil (feature off) unless `RouteMemoEnabled` is set and a solver is
+nil (feature off) unless `solver.Config.AdaptiveEnabled` is set and a solver is
 configured, and it always applies both setters unconditionally after
 construction — safe because both are no-ops on the Go zero value.
 

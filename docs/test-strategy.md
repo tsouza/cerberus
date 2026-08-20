@@ -700,7 +700,7 @@ What it proves (the contracts, mapped to their landing PRs):
 - **Failure-driven route memo (e01ed68d).** `route-memo-activation` fires
   the pinned 24h/15s aggregating `query_range` shape (the same
   `CERBERUS_CH_QUERY_MAX_MEMORY`-crossing tuple `iterate-time-ranges.spec.ts`
-  already pins) with `CERBERUS_SOLVER_ROUTE_MEMO_ENABLED=true` (chaos
+  already pins) with `CERBERUS_SOLVER_ADAPTIVE_ENABLED=true` (chaos
   overlay). A route-A dispatch that trips ClickHouse's
   `MEMORY_LIMIT_EXCEEDED` (code 241, breaker-neutral) is retried once on
   route B; a successful retry both returns the client a 200 (instead of

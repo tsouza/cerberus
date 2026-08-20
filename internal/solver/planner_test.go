@@ -453,11 +453,11 @@ func TestPlan_Now64InScalarInteriorAggregateRejected(t *testing.T) {
 
 // rangeBucketFanoutSpine builds the array-aggregate fan-out behind the
 // classic-histogram families over the standard 1h/15s grid, mirroring
-// lwrSpine's shape (Lookback 5m, no offset).
-// rangeBucketFanoutSpine is the CLASSIC bucket-ladder fan-out — the shape
-// behind the APM-style panel. PeakIndependentOfGrid mirrors what
-// histogram_quantile_range.go's classic lowering sets: route A was measured to
-// fit (2.84 GB), so slicing it is waste.
+// lwrSpine's shape (Lookback 5m, no offset) — the CLASSIC bucket-ladder
+// lowering, the shape behind the APM-style panel.
+// PeakIndependentOfGrid mirrors what histogram_quantile_range.go's classic
+// lowering sets: route A was measured to fit (2.84 GB), so slicing it is
+// waste.
 func rangeBucketFanoutSpine() *chplan.RangeBucketFanout {
 	return &chplan.RangeBucketFanout{
 		Input:                 leafScan(),
@@ -508,7 +508,7 @@ func TestPlan_RangeBucketFanoutSpineDeclinesIndivisibleGrid(t *testing.T) {
 // It also carries #2387's SLICING invariants. ModeAuto no longer reaches the
 // slicer for this shape, but the memo seam does, so the assertions move here
 // rather than disappearing: the slices span the whole grid
-// (gridStart/gridEnd/gridStep = 1h/15s = 240 anchors), none is left with
+// (gridStart/gridEnd/gridStep = 1h/15s = 241 anchors), none is left with
 // unpinned bounds, and none loses a non-grid field.
 func TestEligible_SlicesIndivisibleAnchorGrid(t *testing.T) {
 	t.Parallel()

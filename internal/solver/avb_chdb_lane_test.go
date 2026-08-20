@@ -250,10 +250,10 @@ var laneFixtures = []string{
 	// the ratio fixtures above.
 	"clamp_max(http_requests_total, scalar(http_requests_total{job=\"a\"}))",
 	"clamp_min(http_requests_total, scalar(http_requests_total{job=\"b\"}))",
-	// The classic-histogram production-incident fix: histogram_quantile over
+	// The classic-histogram incident fix: histogram_quantile over
 	// an aggregated rate() of a classic (explicit-bucket) histogram lowers to
 	// HistogramQuantile wrapping a RangeBucketFanout — shape
-	// cerb:project;agg=1;rbf, the exact shape that OOM'd in production at real
+	// cerb:project;agg=1;rbf, the exact shape that OOM'd at real
 	// cardinality because the Planner refused to slice it (no ReanchorRange
 	// arm). job=a / job=b are dense monotonic bucket-count series (like
 	// http_requests_total above), so every anchor_ts carries both series

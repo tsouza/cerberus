@@ -68,11 +68,11 @@ func (e errWrapper) Error() string { return "wrapped: " + e.inner.Error() }
 func (e errWrapper) Unwrap() error { return e.inner }
 
 // TestClassifyRouteOutcome_CostlyCancellationIsEvidence pins the change that
-// makes the failure-driven memo able to see the failure mode production
-// actually exhibits.
+// makes the failure-driven memo able to see the failure mode that real
+// traffic actually exhibits.
 //
 // Before this, ONLY a ClickHouse memory-limit abort counted as evidence. On the
-// classic-histogram APM panel that missed 15 of 16 real failures: they arrived
+// classic-histogram APM-style dashboard that missed 15 of 16 real failures: they arrived
 // as client cancellations (CH code 735) at ~30 s, which classified NoEvidence,
 // so the memo learned nothing no matter how many times the panel failed.
 //

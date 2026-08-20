@@ -471,7 +471,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 		// First resource failure on a fresh Unknown key: corroboration=1,
 		// below minCorroboratingFailures — ObserveRouteAFailureAndMaybeBeginProbe
 		// itself refuses, for a reason OTHER than cluster-wide pressure.
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0); retried {
 			t.Fatal("retried on the first route-A resource failure")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineProbeNotAdmitted]
@@ -502,7 +502,7 @@ func TestRetryOnRouteAResourceFailure_RecordsProbeDeclineReasons(t *testing.T) {
 			t.Fatalf("fixture failed to establish UnderPressure()==true")
 		}
 		before := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineUnderPressure]
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0); retried {
 			t.Fatal("retried while the memo is under cluster-wide pressure")
 		}
 		after := routeMemoHitSkippedByReason(t, reader)[telemetry.RouteMemoDeclineUnderPressure]
@@ -533,7 +533,7 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	// corroboration=1: below threshold, no dispatch, no inflight movement.
-	if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+	if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0); retried {
 		t.Fatal("retried on the first route-A resource failure")
 	}
 	if got := routedDispatchInflightValue(t, reader); got != 0 {
@@ -541,7 +541,7 @@ func TestRetryOnRouteAResourceFailure_RoutedDispatchInflight(t *testing.T) {
 	}
 
 	// corroboration=2: probe admitted, dispatch begins.
-	_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
 	if !retried {
 		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 	}
@@ -570,7 +570,7 @@ func TestRouteABSuccessTotal(t *testing.T) {
 		eng, _ := newMemoWiringEngine(t, cq)
 		seed := memoWiringNotRoutedDecision(t)
 		before := routeABSuccessByRoute(t, reader)[telemetry.RouteChoiceA]
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, nil); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(t.Context(), "promql", memoWiringResponseShape, plan, seed, nil, nil, 0); retried {
 			t.Fatal("a Success classification must never itself trigger a retry dispatch")
 		}
 		after := routeABSuccessByRoute(t, reader)[telemetry.RouteChoiceA]
@@ -584,10 +584,10 @@ func TestRouteABSuccessTotal(t *testing.T) {
 		eng, _ := newMemoWiringEngine(t, cq)
 		seed := memoWiringNotRoutedDecision(t)
 		ctx := t.Context()
-		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); retried {
+		if _, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0); retried {
 			t.Fatal("retried on the first route-A resource failure")
 		}
-		_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+		_, _, _, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
 		if !retried {
 			t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 		}
@@ -844,7 +844,7 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 
 	// First resource failure: corroboration=1, below the threshold — must
 	// NOT retry.
-	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
 	if retried {
 		t.Fatal("retried on the FIRST route-A resource failure — corroboration requires more than one")
 	}
@@ -855,7 +855,7 @@ func TestRetryOnRouteAResourceFailure_ProbesAfterCorroboration(t *testing.T) {
 	// Second consecutive resource failure, same key, no intervening
 	// success: corroboration=2 (the default minCorroboratingFailures) —
 	// NOW a probe is admitted and route B dispatches.
-	cur, info, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	cur, info, usedDecision, observeFn, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
 	if !retried {
 		t.Fatal("did not retry on the 2nd consecutive route-A resource failure")
 	}
@@ -898,7 +898,7 @@ func TestRetryOnRouteAResourceFailure_NonResourceErrorNeverRetried(t *testing.T)
 
 	timeoutErr := &solver.SolverTimeoutError{Timeout: "60s"}
 	for i := 0; i < 5; i++ {
-		_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, timeoutErr)
+		_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, timeoutErr, 0)
 		if retried {
 			t.Fatalf("iteration %d: retried on a NoEvidence-class error (solver timeout)", i)
 		}
@@ -921,12 +921,71 @@ func TestRetryOnRouteAResourceFailure_ClientGoneNeverRetried(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded)
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(ctx, "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0)
 	if retried {
 		t.Fatal("retried on a cancelled context — no client is there to receive the retry's answer")
 	}
 	if cq.opens.Load() != 0 {
 		t.Errorf("Executor cursor opens = %d, want 0", cq.opens.Load())
+	}
+}
+
+// TestRetryOnRouteAResourceFailure_CostlyCancellationRecordedNeverRetried is
+// the ACTIVATION pin for the costly-cancellation rule. A cancellation is the
+// one failure whose evidence necessarily arrives on an ALREADY-DEAD context,
+// so a guard that returned before Observe would make the rule unreachable in
+// the shipped binary no matter how often a dashboard timed out — a mechanism
+// that passes its own unit test while never firing.
+//
+// Record, never retry: the memo must gain an entry for the key (the evidence
+// that teaches the NEXT request), and the executor must never open a cursor
+// for a caller who is already gone.
+func TestRetryOnRouteAResourceFailure_CostlyCancellationRecordedNeverRetried(t *testing.T) {
+	t.Parallel()
+	cq := &fakeSolverCursorClient{rows: 2}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(
+		ctx, "promql", memoWiringResponseShape, plan, seed, nil, context.Canceled, costlyCancellationFloor,
+	)
+	if retried {
+		t.Fatal("retried a dead context — a retry dispatch would run for nobody")
+	}
+	if cq.opens.Load() != 0 {
+		t.Errorf("Executor cursor opens = %d, want 0", cq.opens.Load())
+	}
+	if got := memo.Stats().Entries; got != 1 {
+		t.Fatalf("memo entries = %d, want 1 — a cancellation past costlyCancellationFloor is cost evidence and must be RECORDED", got)
+	}
+}
+
+// TestRetryOnRouteAResourceFailure_EarlyCancellationNotRecorded is the other
+// half of the floor: a caller who navigated away in 200 ms says nothing about
+// route cost and must leave the memo untouched. Without it the rule above
+// would degrade into "every disconnect is a resource failure".
+func TestRetryOnRouteAResourceFailure_EarlyCancellationNotRecorded(t *testing.T) {
+	t.Parallel()
+	cq := &fakeSolverCursorClient{rows: 2}
+	eng, memo := newMemoWiringEngine(t, cq)
+	plan := memoWiringEligiblePlan()
+	seed := memoWiringNotRoutedDecision(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, _, retried := eng.retryOnRouteAResourceFailure(
+		ctx, "promql", memoWiringResponseShape, plan, seed, nil, context.Canceled, 200*time.Millisecond,
+	)
+	if retried {
+		t.Fatal("retried a dead context")
+	}
+	if got := memo.Stats().Entries; got != 0 {
+		t.Fatalf("memo entries = %d, want 0 — an early cancellation is not evidence about route cost", got)
 	}
 }
 
@@ -946,7 +1005,7 @@ func TestRouteMemoWiring_InactiveWhenRouteMemoNil(t *testing.T) {
 	if _, _, _, _, ok := eng.tryRouteMemoHit(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil); ok {
 		t.Fatal("tryRouteMemoHit dispatched with RouteMemo nil")
 	}
-	if _, _, _, _, ok := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded); ok {
+	if _, _, _, _, ok := eng.retryOnRouteAResourceFailure(context.Background(), "promql", memoWiringResponseShape, plan, seed, nil, chclient.ErrMemoryLimitExceeded, 0); ok {
 		t.Fatal("retryOnRouteAResourceFailure dispatched with RouteMemo nil")
 	}
 	if cq.opens.Load() != 0 {
