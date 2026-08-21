@@ -821,6 +821,24 @@ what actually runs.
   - Exit: `0` always in `emit` mode (a resolution failure fails SAFE to
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
+- **`property-run-heavy.mjs`** — `property.yml`, the `decide run_heavy` step.
+  A straight port of `coverage-run-heavy.mjs`'s #2416 fix to a second lane
+  (tsouza/cerberus#2426): skips property.yml's push-to-main run ONLY when it
+  is redundant with a resolved, `release/*`-headed source PR that already ran
+  the heavy rapid sweep and posted the check-run release-preflight.mjs's
+  SOURCE-PR CREDIT will find. Same decision table, same fail-safe default —
+  see that module's own header, and `coverage-run-heavy.mjs`'s above, for the
+  full rationale. `property-run-heavy.test.mjs` pins the decision table; it
+  runs inside `property.yml`'s own always-on "Test property gates" step.
+  - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
+    `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
+    `push` event).
+  - Env: `MODE` (also argv[2]), `EVENT_NAME`, `HEAD_REF` (pull_request /
+    merge_group only), `GITHUB_SHA` / `GITHUB_REPOSITORY` / `GITHUB_TOKEN` /
+    `GITHUB_API_URL` (push only), `GITHUB_OUTPUT`.
+  - Exit: `0` always in `emit` mode (a resolution failure fails SAFE to
+    `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
+    unrecognised `MODE`.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).

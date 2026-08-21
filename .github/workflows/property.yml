@@ -52,6 +52,16 @@ name: property
 # single term — see test/regression/lint_build_tags_test.go — so it can't
 # spell `chdb && agpl_oracle` directly). The step below passes all three
 # tags for every property test in one invocation.
+#
+# tsouza/cerberus#2426: a push-to-main produced by a release/*-headed PR
+# merging is REDUNDANT — that PR's own pull_request run already ran the rapid
+# sweep on the identical tree and posted this job's required check-run on its
+# own tip commit. .github/scripts/property-run-heavy.mjs (a straight port of
+# coverage.yml's #2416 fix) resolves the PR that produced the pushed commit
+# and skips the heavy run ONLY in that one provable case; every other push —
+# an ordinary-PR merge, an unresolved source PR, or a maintenance-line hotfix
+# with no PR at all — still runs heavy. See the script's own header for the
+# full decision table.
 
 on:
   pull_request:
@@ -77,6 +87,10 @@ env:
 
 permissions:
   contents: read
+  # property-run-heavy.mjs resolves the PR that produced a pushed commit via
+  # GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs) — read-only, and only
+  # exercised on a `push` event.
+  pull-requests: read
 
 concurrency:
   # Main pushes and matching cron schedules replace only their own modes. PR,
@@ -93,42 +107,61 @@ jobs:
     # see that constant's comment for the real measured per-check cost this
     # is derived from, and why 30 was too tight in practice.
     timeout-minutes: 40
-    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
-    # a release PR (head branch release/*). On a regular PR every heavy step is
-    # skipped and the job reports green without work — so `property …` can be a
-    # required check that gates release PRs but never blocks ordinary PRs.
+    # RUN_HEAVY gates the real work: true on push / schedule / dispatch (unless
+    # a resolved source PR proves this push redundant — see the `decide
+    # run_heavy` step below), and on a release PR (head branch release/*). On a
+    # regular PR every heavy step is skipped and the job reports green without
+    # work — so `property …` can be a required check that gates release PRs
+    # but never blocks ordinary PRs.
     #
     # A merge-queue entry is held to the PR posture, not the push posture: the
     # queue answers the same contexts branch protection asks a PR for, and a
     # queue that runs work the PR never ran can dequeue a PR that was green. The
     # rapid sweep is not lost — `main` advances to the merge group's own head
     # SHA and the push trigger above runs it there.
-    env:
-      RUN_HEAVY: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
-      - if: env.RUN_HEAVY == 'true'
+      - name: Test property gates
+        run: node --test .github/scripts/property-run-heavy.test.mjs
+
+      # Computed as a step output rather than a static job-level `env:` GHA
+      # expression: a `push` event needs a network call (resolve the source PR
+      # that produced the pushed commit) to know whether it is redundant with
+      # that PR's own run, and job-level `env:` has no `steps` context to read
+      # such a call's result from. See property-run-heavy.mjs's header for the
+      # full decision table; GITHUB_TOKEN is used read-only and only reached on
+      # a `push` event.
+      - id: run_heavy
+        name: decide run_heavy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: node .github/scripts/property-run-heavy.mjs
+
+      - if: steps.run_heavy.outputs.run_heavy == 'true'
         uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - if: env.RUN_HEAVY == 'true'
+      - if: steps.run_heavy.outputs.run_heavy == 'true'
         uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
       - name: Install libchdb.so
-        if: env.RUN_HEAVY == 'true'
+        if: steps.run_heavy.outputs.run_heavy == 'true'
         run: just chdb-install
 
       - name: No-op (non-release PR)
-        if: env.RUN_HEAVY != 'true'
+        if: steps.run_heavy.outputs.run_heavy != 'true'
         run: echo "property is a green no-op on non-release PRs (real run on push/nightly/dispatch + release/* PRs)."
 
       - name: Run property tests (rapid N=500)
-        if: env.RUN_HEAVY == 'true'
+        if: steps.run_heavy.outputs.run_heavy == 'true'
         # `-tags chdb,agpl_oracle,chdb_agpl_oracle` enables the chdb-tagged
         # property entry points AND the LogQL property test's from-scratch
         # oracle (which additionally needs `agpl_oracle`) AND
