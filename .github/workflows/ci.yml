@@ -752,6 +752,15 @@ jobs:
           node --test .github/scripts/crawl-budget.test.mjs
           node --test .github/scripts/assert-crawl-terminal.test.mjs
 
+      # #1861 acceptance criterion #2: reaching a real terminal result is not
+      # the same as anyone SEEING it — the nightly `schedule` trigger has no
+      # PR, no reviewer, nothing watching it by default. Pure in-process test
+      # over the roll-up + tracking-issue-dedup logic (no `gh` calls
+      # exercised), so it runs on the PR path even though the notify job
+      # itself only ever runs on `schedule`.
+      - name: Assert the nightly-health notifier cannot go silently hollow
+        run: node --test .github/scripts/notify-nightly-failure.test.mjs
+
       # Pins e2e.yml's dashboard-crawl-merge wiring: the required `dashboard`
       # aggregator must depend on it (so a merge failure can gate a release),
       # and the release/dispatch trigger conditions that decide when the

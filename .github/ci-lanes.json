@@ -1189,6 +1189,35 @@
       "accountable_owner": "system-quality"
     },
     {
+      "id": "e2e.nightly-health-notify",
+      "description": "Roll up the nightly's terminal jobs and file/refresh a tracking issue on any non-success (#1861).",
+      "owner": {
+        "workflow": ".github/workflows/e2e.yml",
+        "jobs": ["nightly-health-notify"],
+        "producer_jobs": [],
+        "context_job": "nightly-health-notify"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "nightly-health-notify", "protected": false },
+      "purpose": "quality",
+      "layers": ["13", "14"],
+      "oracle_class": "monitor",
+      "recipes": [],
+      "command": "node .github/scripts/notify-nightly-failure.mjs",
+      "build_tags": [],
+      "package_globs": ["test/e2e/**"],
+      "substrate": "github-api",
+      "risk_domains": ["observability"],
+      "merge_posture": "never",
+      "main_posture": "never",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 5,
+      "slo_minutes": 5,
+      "accountable_owner": "system-quality"
+    },
+    {
       "id": "e2e.quickstart",
       "description": "Required one-stack proof of the repository-root README quickstart.",
       "owner": {

@@ -1795,3 +1795,56 @@ jobs:
       - name: Tear down
         if: always()
         run: just e2e-bwc-down
+
+  # #1861 acceptance criterion #2. Reaching a real terminal `failure` instead
+  # of `cancelled` (crawl-terminal / dashboard-crawl-terminal, above) is not
+  # the same as anyone SEEING that failure: the `schedule` trigger has no PR,
+  # no reviewer, nothing watching it by default — e2e.yml's two exhaustive
+  # lanes are release gates, not PR gates (see the file header). The nightly
+  # ran a genuine `failure` for FOUR consecutive nights (2026-08-15 ..
+  # 2026-08-18) before anyone noticed, and it was noticed by accident: a
+  # release-staging PR happened to be the first `release/*` PR since the
+  # regression, and that PR's own required check is what surfaced it (#1861's
+  # reopening comment). A `failure` reporting into a place nobody looks is as
+  # silent as a `cancelled` reporting nowhere.
+  #
+  # This job is the "somebody looks": on a `schedule` run only, roll every
+  # terminal job this lane produces up with notify-nightly-failure.mjs and
+  # file (or refresh) a single tracking issue when any of them is not a clean
+  # `success` — closing it automatically on the next clean night so it can
+  # never rot into a permanent false alarm. `needs` lists every job whose
+  # result actually matters for "did the nightly pass": the two required
+  # aggregates (`compose-smoke`, `dashboard`), the two crawl-terminality
+  # readers, and the three informational-but-schedule-run leaf jobs. `always()`
+  # so it still runs (and can still notify) when an upstream job failed rather
+  # than being skipped by GitHub's default `success()` gate.
+  nightly-health-notify:
+    name: nightly-health-notify
+    needs:
+      [compose-smoke, crawl-terminal, dashboard, dashboard-crawl-terminal, startup-bench, chaos, bwc-minio]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level permissions REPLACE the workflow-level block (see
+    # dashboard-crawl-merge's own note) — contents: read has to be restated
+    # for checkout, and issues: write is what lets this file/comment/close the
+    # tracking issue.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: roll up the nightly's terminal jobs and notify on non-success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT_COMPOSE_SMOKE: ${{ needs.compose-smoke.result }}
+          RESULT_CRAWL_TERMINAL: ${{ needs.crawl-terminal.result }}
+          RESULT_DASHBOARD: ${{ needs.dashboard.result }}
+          RESULT_DASHBOARD_CRAWL_TERMINAL: ${{ needs.dashboard-crawl-terminal.result }}
+          RESULT_STARTUP_BENCH: ${{ needs.startup-bench.result }}
+          RESULT_CHAOS: ${{ needs.chaos.result }}
+          RESULT_BWC_MINIO: ${{ needs.bwc-minio.result }}
+        run: node .github/scripts/notify-nightly-failure.mjs
