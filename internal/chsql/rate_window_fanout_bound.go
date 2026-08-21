@@ -210,14 +210,3 @@ func rateWindowFanoutGuardFrag(probeCount *QueryBuilder) Frag {
 		InlineLit(int64(0)),
 	)
 }
-
-// IsRateWindowFanoutBudgetError reports whether err is the deliberate query
-// abort rateWindowFanoutGuardFrag plants, rather than a backend failure —
-// the sibling of IsHistogramMergeBudgetError / IsManyToManyMatchError /
-// IsInfoConflictingLabelError / IsDuplicateLabelsetError, and exists for
-// the same reason: the HTTP layer must classify the abort as a deliberate,
-// query-shape-fault rejection (422 execution error), not the 502 bucket
-// every other ClickHouse execute failure falls into.
-func IsRateWindowFanoutBudgetError(err error) bool {
-	return isThrowIfError(err, RateWindowFanoutBudgetMessage)
-}

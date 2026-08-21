@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -13,56 +12,6 @@ import (
 // series keeps its own `__name__` (PromQL's info() preserves the base
 // sample's identity and only grows its data labels).
 const infoMetricNameLabel = "__name__"
-
-// chExceptionPrefixes anchors a throwIf message inside the error text
-// cerberus's two ClickHouse execution paths each actually produce — they do
-// NOT agree on one format, so a throwIf-guard classifier has to check both:
-//
-//   - chdb-go (the embedded engine cerberus's own chdb-tagged tests run
-//     against) renders it CLI-style: "Code: 395. DB::Exception: <message>:
-//     while executing …".
-//   - clickhouse-go/v2's native TCP protocol driver (what chclient uses in
-//     production) decodes the bare wire-protocol Exception and renders it
-//     as "code: %d, message: %s" (proto.Exception.Error()) — no
-//     "DB::Exception: " anywhere.
-//
-// Every one of these budget-guard classifiers was written and tested only
-// against the chdb format, so every one was silently unmatchable in
-// production against real, native-driver traffic — a query hitting any of
-// these guards fell through to the generic 502 bucket instead of the
-// intended 422. Caught investigating #2429 by reproducing the guard against
-// a real testcontainers ClickHouse (native driver) rather than chdb.
-var chExceptionPrefixes = [...]string{"DB::Exception: ", "message: "}
-
-// isThrowIfError reports whether err's text contains msg immediately
-// preceded by either of chExceptionPrefixes — i.e. is genuinely the server
-// having thrown msg via `throwIf`, under either execution path — rather
-// than a query that merely mentions the phrase elsewhere (e.g. in a label
-// value).
-func isThrowIfError(err error, msg string) bool {
-	if err == nil {
-		return false
-	}
-	text := err.Error()
-	for _, prefix := range chExceptionPrefixes {
-		if strings.Contains(text, prefix+msg) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsInfoConflictingLabelError reports whether err is the deliberate query
-// abort infoConflictGuardFrag plants, rather than a backend failure.
-//
-// It exists so the HTTP layer can classify the abort the way the
-// reference engine classifies its own: a 422 execution error naming the
-// query as at fault, not a 5xx blaming the backend. The prefix is matched
-// alongside the message so a query that merely mentions the phrase in a
-// label value cannot be mistaken for one.
-func IsInfoConflictingLabelError(err error) bool {
-	return isThrowIfError(err, chplan.InfoConflictingLabelMessage)
-}
 
 // infoExtrasKeyElement / infoExtrasValueElement are the 1-based tuple
 // positions of the key and the value in the (key, value) pairs the extras

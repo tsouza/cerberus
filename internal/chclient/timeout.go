@@ -185,19 +185,20 @@ func QueryTimeoutFromContext(ctx context.Context) (time.Duration, bool) {
 
 // classifyDriverErr maps a raw clickhouse-go driver error onto the typed
 // per-query resource rejections chclient surfaces — *MemoryLimitError
-// (code 241) and *QueryTimeoutError (code 159) — so the API heads can
-// map each onto its head-idiomatic wire shape. Any other error (or nil)
-// passes through untouched. The two codes are mutually exclusive, so the
-// order of the checks does not matter; the timeout wrapper is given the
-// effective per-query cap (ctx override min'd with the configured
-// default) so its message names the real budget the query ran under.
+// (code 241), *ThrowIfError (code 395), and *QueryTimeoutError (code 159)
+// — so the API heads can map each onto its head-idiomatic wire shape. Any
+// other error (or nil) passes through untouched. The three codes are
+// mutually exclusive, so the order of the checks does not matter; the
+// timeout wrapper is given the effective per-query cap (ctx override
+// min'd with the configured default) so its message names the real
+// budget the query ran under.
 //
 // It is the single wrap site every data-plane query method routes its
 // open-time and drain-time errors through, replacing the bare
-// wrapMemoryLimit call so the memory + timeout classifications stay in
-// lock-step across all of them.
+// wrapMemoryLimit call so the memory + throwIf + timeout classifications
+// stay in lock-step across all of them.
 func (c *Client) classifyDriverErr(ctx context.Context, err error) error {
-	return wrapQueryTimeout(wrapMemoryLimit(err, c.maxMemory), c.effectiveQueryTimeout(ctx))
+	return wrapQueryTimeout(wrapThrowIf(wrapMemoryLimit(err, c.maxMemory)), c.effectiveQueryTimeout(ctx))
 }
 
 // hiddenDeadlineContext hides ctx's own Deadline() from anything reading it

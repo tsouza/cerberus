@@ -144,11 +144,16 @@ func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the merge budget guard to abort the query (merged width 20001 > 16384), got no error")
 	}
-	if !chsql.IsHistogramMergeBudgetError(err) {
-		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
-	}
+	// This test drives chdb-go's raw driver handle directly (see
+	// runHistogramMergeBoundQuery), never through chclient — the typed
+	// *chclient.ThrowIfError chsql's production HTTP-facing classifiers use
+	// only wraps errors that pass through chclient.Client's own driver-error
+	// classification, so it doesn't apply here. A raw substring check
+	// against chdb-go's own exception text is what this test actually needs:
+	// proof the emitted SQL's throwIf fires at real ClickHouse execution,
+	// carrying the right message.
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
-		t.Fatalf("error %v does not carry chplan.HistogramMergeBudgetMessage", err)
+		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
 	}
 }
 
@@ -174,7 +179,7 @@ func TestHistogramMergeBudget_ChDB_SeriesCountExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the merge budget guard to abort the query (4097 series > 4096 cap), got no error")
 	}
-	if !chsql.IsHistogramMergeBudgetError(err) {
+	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
 	}
 }
