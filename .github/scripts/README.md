@@ -1523,6 +1523,32 @@ what actually runs.
   - Exit: `0` clean / matrix emitted, `1` on any coverage violation or bad
     `MODE`.
 
+- **`notify-nightly-failure.mjs`** — `e2e.yml`, the `nightly-health-notify`
+  job (`schedule` trigger only). Reaching a real terminal `failure` instead of
+  `cancelled` (the job above) is not the same as anyone SEEING that failure —
+  the nightly trigger has no PR, no reviewer, nothing watching it by default,
+  and a real nightly `failure` ran FOUR consecutive nights before anyone
+  noticed, by accident (#1861's reopening comment). This rolls every terminal
+  job the nightly produces (`compose-smoke`, `crawl-terminal`, `dashboard`,
+  `dashboard-crawl-terminal`, `startup-bench`, `chaos`, `bwc-minio`) up with
+  the same strict `!== 'success'` rule the aggregators use, and files (or
+  comments on) a single tracking issue — matched by an exact, stable title so
+  consecutive bad nights update the same issue instead of piling up
+  duplicates — labelled `automated` + `area/ci` (both pre-existing labels; no
+  new label to provision). A clean night with a tracking issue still open
+  closes it, so a stale issue can't be mistaken for a live incident.
+  `notify-nightly-failure.test.mjs` is the `node --test` guard (run on
+  `ci.yml`'s scripts lane, even though the job itself only runs on
+  `schedule`) — the roll-up/dedup logic is pure and unit-tested; a few
+  regex-over-source cases additionally pin the job's `needs:` list and its
+  `if: … && github.event_name == 'schedule'` guard, mirroring
+  `crawl-frontier-workflow.test.mjs`.
+  - Env: `REPO`, `RUN_ID`, `RUN_URL`, and one `RESULT_*` var per terminal job
+    (`needs.<job>.result`).
+  - Exit: `0` on a clean night (whether or not it closed a stale tracking
+    issue), `1` when any job was not a clean `success`, or when a `gh` call
+    itself fails.
+
 - **`perf-guards-aggregate.mjs`** — `chdb.yml`, the `perf-guards` job. Rolls the
   sharded `perf-guards-shard` matrix up into the single status check branch
   protection and `release.yml`'s `RELEASE_REQUIRED_CHECKS` both resolve by exact
