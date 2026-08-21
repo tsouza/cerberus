@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1093,6 +1094,46 @@ func classifyDrainError(err error) error {
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
 }
 
+// throwIfMessageMatches reports whether err carries msg as a throwIf guard's
+// message — checked two ways, in order of trust:
+//
+//  1. Typed: errors.As against *chclient.ThrowIfError, which itself only
+//     wraps an error chain carrying a genuine ClickHouse code-395 exception
+//     (errors.As against *clickhouse.Exception). This is what a real,
+//     production data-plane query — anything through chclient.Client and
+//     the native TCP driver — always produces, and it is strictly
+//     trustworthy: the code already confirms this is a deliberate throwIf
+//     abort before the text is even inspected, so HasPrefix on the
+//     driver-decoded Message cannot be fooled by ambient formatting.
+//  2. Fallback: a raw substring check on err.Error(). This exists only for
+//     internal/chclienttest's chDB-backed handler tests — chdb-go returns
+//     errors through Go's generic database/sql/driver interface with no
+//     structured exception type at all (confirmed: it is a different
+//     driver library from clickhouse-go/v2, and errors.As against
+//     *clickhouse.Exception never matches a chdb-go error), so no typed
+//     signal exists to check there. The messages this project uses are
+//     specific enough (e.g. "range window sample fanout exceeds the
+//     series-times-anchors resource bound") that a plain substring match
+//     is not meaningfully riskier in a test-only, non-production path.
+//
+// An earlier version of this file string-matched a single GUESSED prefix
+// ("DB::Exception: " or "message: ") directly against err.Error() with no
+// typed path at all, and that guess silently differed between chdb's
+// CLI-style rendering and the native driver's bare "code: %d, message: %s"
+// — every one of these guards, including #2385's pre-existing histogram
+// merge budget, was unmatchable against real production traffic until this
+// was caught investigating #2429.
+func throwIfMessageMatches(err error, msg string) bool {
+	if err == nil {
+		return false
+	}
+	var tie *chclient.ThrowIfError
+	if errors.As(err, &tie) {
+		return strings.HasPrefix(tie.Message, msg)
+	}
+	return strings.Contains(err.Error(), msg)
+}
+
 // classifyThrowIfGuardError checks err against every deliberate,
 // emitter-planted `throwIf` resource/shape guard cerberus's own SQL can
 // raise, returning the shared 422 errorType=execution apiError shape for
@@ -1100,47 +1141,45 @@ func classifyDrainError(err error) error {
 // (the instant-query / cursor-open path) and classifyDrainError (the
 // range-query / cursor-drain path) so the two cannot silently drift on
 // which guards each one recognises — see classifyDrainError's own comment
-// for the drift #2429 found before this was factored out.
+// for the drift #2429 found before this was factored out. See
+// throwIfMessageMatches for how each case is actually detected.
 func classifyThrowIfGuardError(err error) *apiError {
-	// A `throwIf` the emitter planted deliberately is a fault in the
-	// QUERY, not in the backend. info()'s conflicting-label abort is the
-	// reference engine's own execution error, so it lands where upstream
-	// puts it — 422 errorType=execution — rather than in the 502 bucket
-	// every other ClickHouse execute failure falls into. The message is
-	// restated rather than forwarded so the client reads the PromQL-level
-	// reason instead of a ClickHouse stack frame.
-	if chsql.IsInfoConflictingLabelError(err) {
+	switch {
+	// info()'s conflicting-label abort is the reference engine's own
+	// execution error, so it lands where upstream puts it — 422
+	// errorType=execution — rather than in the 502 bucket every other
+	// ClickHouse execute failure falls into. The message is restated
+	// rather than forwarded so the client reads the PromQL-level reason
+	// instead of a ClickHouse stack frame.
+	case throwIfMessageMatches(err, chplan.InfoConflictingLabelMessage):
 		return &apiError{
 			Kind:   ErrExecution,
 			Err:    errors.New(chplan.InfoConflictingLabelMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	}
 	// Same class, different guard: a name-dropping range function collapsed
 	// two series onto one label set. Upstream raises this from
 	// Matrix.ContainsSameLabelset() as a plain evaluation error, so it is a
 	// 422 errorType=execution here too — and the restated message is
 	// upstream's verbatim, which is what makes the rejection-parity
 	// comparison against reference Prometheus meaningful.
-	if chsql.IsDuplicateLabelsetError(err) {
+	case throwIfMessageMatches(err, chplan.DuplicateLabelsetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
 			Err:    errors.New(chplan.DuplicateLabelsetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	}
 	// Same class again: a vector-vector binary operator found more than one
 	// series per matching key on the side that must carry exactly one.
 	// Upstream raises it while building its match groups, refusing to pick a
 	// winner, so it is a 422 errorType=execution here too with upstream's
 	// verbatim wording.
-	if chsql.IsManyToManyMatchError(err) {
+	case throwIfMessageMatches(err, chplan.ManyToManyMatchMessage):
 		return &apiError{
 			Kind:   ErrExecution,
 			Err:    errors.New(chplan.ManyToManyMatchMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	}
 	// A different family, same shape of guard: the native-histogram
 	// across-series merge (#2385) planted its OWN throwIf rather than
 	// relying on ClickHouse's per-query memory cap to abort after it has
@@ -1149,19 +1188,18 @@ func classifyThrowIfGuardError(err error) *apiError {
 	// the same 422 errorType=execution "resource exhausted" shape as
 	// memoryLimitAPIError / tooManySamplesAPIError instead of restating
 	// upstream wording that does not exist for a server-side SQL engine.
-	if chsql.IsHistogramMergeBudgetError(err) {
+	case throwIfMessageMatches(err, chplan.HistogramMergeBudgetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
 			Err:    errors.New(chplan.HistogramMergeBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	}
 	// Same family again: a range-window matrix query's sample fanout (#2429)
 	// planted its own throwIf, upstream of the blocking per-(series, anchor)
 	// regroup GROUP BY that would otherwise OOM before ClickHouse's memory
 	// cap gets a chance to abort cleanly. Same 422 errorType=execution
 	// "resource exhausted" shape as the histogram merge guard above.
-	if chsql.IsRateWindowFanoutBudgetError(err) {
+	case throwIfMessageMatches(err, chsql.RateWindowFanoutBudgetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
 			Err:    errors.New(chsql.RateWindowFanoutBudgetMessage),
