@@ -1990,6 +1990,14 @@ what actually runs.
   a matrix leg publish or letting duplicate predecessor output enter its patch.
   The workflow rejects the default branch and requires `RELEASE_PAT`: a push
   made with the default `GITHUB_TOKEN` would not trigger the target PR's checks.
+  `cardinality` is the one exception to "one shard, one matrix row" (#2341):
+  `buildPlan` excludes it from `matrix.include` and reports it separately (which
+  OTHER selected shards its legs need regenerated first), because its own
+  regeneration is CI-matrix-sharded across `cardinality-leg` / `cardinality-seal`
+  jobs rather than run as a single row — see those jobs' comments in
+  `update-golden.yml` and `cardinality-baseline-update.mjs`'s header. Those jobs
+  still finish by calling this same controller's ordinary `MODE=package`
+  (`SHARD=cardinality`), so `publish` needed no cardinality-specific code at all.
   - Env: `MODE` (`plan`, `package`, `apply-push`) plus the mode-specific inputs
     documented at the top of the script.
   - Exit: `0` only for a valid plan, a shard-owned patch, or an atomic publish;
@@ -2022,27 +2030,44 @@ what actually runs.
     is after `MAX_WAIT_MS` (default 60 minutes — `update-golden.yml`'s own
     regenerate legs are capped at 45), or the API calls themselves failed.
 
-- **`cardinality-baseline-update.mjs`** — no workflow. The second script here a
-  contributor runs by hand, through `just update-cardinality-baseline`. It
-  regenerates `test/perf/cardinality-baseline/` by fanning the chDB profile pass
-  out across the same 8 legs `perf-guards-shard` uses for the gating pass, each
-  leg owning a disjoint slice of the corpus, then runs a closing step that
-  asserts the slices together covered it. The fan-out is only safe because
+- **`cardinality-baseline-update.mjs`** — two callers. Unmoded (default), it is
+  the script a contributor runs by hand, through `just update-cardinality-
+  baseline`: it regenerates `test/perf/cardinality-baseline/` by fanning the
+  chDB profile pass out across the same 8 legs `perf-guards-shard` uses for the
+  gating pass — LOCAL PROCESSES within this one invocation — each leg owning a
+  disjoint slice of the corpus, then runs a closing step that asserts the
+  slices together covered it. The fan-out is only safe because
   `baselineShards.writeShard` scopes each leg's prune to its own slice, so a leg
   cannot delete a sibling's rows — before #2122 it could, which is why the
   regeneration was a single serial pass over ~950 fixtures.
+  `MODE=leg`/`MODE=seal` (#2341) is the second caller: `update-golden.yml`'s
+  `cardinality-leg`/`cardinality-seal` jobs invoke this same script to run the
+  IDENTICAL partition across separate CI MATRIX JOBS instead — one process per
+  job rather than N processes in one job, so the split buys N runners' worth of
+  wall-clock instead of capping out at one job's core count. `MODE=leg` runs
+  exactly one leg's `TestCardinalityRatchet` (env-supplied `PERF_SHARD_INDEX`/
+  `PERF_SHARD_COUNT`, no local GOMAXPROCS division — a CI runner owns its cores
+  outright); `MODE=seal` runs `TestCardinalityBaselineCoversTheCorpus` once,
+  against whatever every leg's downloaded-and-applied patch already put on
+  disk — the cross-JOB analogue of the local closing step.
   - Env: `CHDB_INSTALL_PATH`, `CARDINALITY_BASELINE_TIMEOUT` (per leg),
-    `CARDINALITY_BASELINE_FANOUT` (optional; for measuring the split on a
-    differently shaped machine — the plan printed WITHOUT it is what the
-    regression pin reads), `CARDINALITY_UPDATE_PRINT_PLAN`.
-  - Exit: `0` on a clean regeneration; `1` on a missing `libchdb.so`, any leg
-    failing, or the closing step reporting a tree that does not match the corpus.
-  - `test/regression/cardinality_baseline_fanout_test.go` pins the plan: a
+    `CARDINALITY_BASELINE_FANOUT` (optional, local mode only; for measuring the
+    split on a differently shaped machine — the plan printed WITHOUT it is what
+    the regression pin reads), `CARDINALITY_UPDATE_PRINT_PLAN`, `MODE`
+    (`leg`/`seal`; unset runs the local default), `PERF_SHARD_INDEX` /
+    `PERF_SHARD_COUNT` (required for `MODE=leg`).
+  - Exit: `0` on a clean regeneration/leg/seal; `1` on a missing `libchdb.so`,
+    any leg failing, or a seal reporting a tree that does not match the corpus.
+  - `test/regression/cardinality_baseline_fanout_test.go` pins the LOCAL plan: a
     fan-out that collapsed to one command, a leg list that is not the contiguous
     `1..N` the partition divides by, a leg that lost its `UPDATE_*` marker (and
     so asserts instead of rewriting), a missing closing step, and the leg count
     drifting from the count `test/perf/profile/shard_test.go` asserts the
-    partition's cover and balance at.
+    partition's cover and balance at. `test/regression/cardinality_ci_matrix_
+    test.go` pins the CI-matrix side the same way: the `cardinality-leg`/
+    `cardinality-seal` jobs exist and are wired into `publish`, the leg matrix
+    is a contiguous `1..N` at that same partition count, and the `MODE=leg`/
+    `MODE=seal` env contract with this script matches.
   - `lib/spawn-tagged.mjs` holds the child-process runners this and
     `golden-update.mjs` fan out with (line-tagged, streamed output; every leg
     allowed to finish before the group's verdict), plus `runLegBuffered`, the
