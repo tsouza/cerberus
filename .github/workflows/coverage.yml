@@ -20,6 +20,18 @@ name: coverage
 # release PRs additionally run full coverage, so their green status includes
 # the measured floor comparison.
 #
+# tsouza/cerberus#2416 (part 2 of #2394): a push-to-main produced by a
+# release/*-headed PR merging is REDUNDANT — that PR's own pull_request run
+# already measured coverage on the identical tree and posted this job's
+# required check-run on its own tip commit. .github/scripts/coverage-run-heavy.mjs
+# resolves the PR that produced the pushed commit (lib/resolve-source-pr.mjs's
+# exact-match contract) and skips the heavy run ONLY in that one provable
+# case; release-preflight.mjs's SOURCE-PR CREDIT already knows to read the
+# check-run off that PR's tip instead of demanding a fresh one here. Every
+# other push — an ordinary-PR merge (the FIRST real run for that tree), an
+# unresolved source PR, or a maintenance-line hotfix pushed with no PR at all
+# — still runs heavy; see the script's own header for the full decision table.
+#
 # Triggers: pull_request + push-to-main + nightly + manual dispatch.
 
 on:
@@ -39,6 +51,10 @@ on:
 
 permissions:
   contents: read
+  # coverage-run-heavy.mjs resolves the PR that produced a pushed commit via
+  # GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs) — read-only, and only
+  # exercised on a `push` event.
+  pull-requests: read
 
 concurrency:
   # Main pushes and matching cron schedules replace only their own modes. PR,
@@ -58,11 +74,12 @@ jobs:
     # nothing on the PR path — and a timeout here lands red on main, where
     # nobody's PR was ever asked to catch it.
     timeout-minutes: 60
-    # RUN_HEAVY gates the measured profile: true on push / schedule / dispatch,
-    # and on a release PR (head branch release/*). Every event still runs the
-    # structural enrollment check over both build configurations, so an
-    # ordinary PR cannot add code the first post-merge profile discovers has no
-    # floor.
+    # RUN_HEAVY gates the measured profile: true on push / schedule / dispatch
+    # (unless a resolved source PR proves this push redundant — see the
+    # `decide run_heavy` step below), and on a release PR (head branch
+    # release/*). Every event still runs the structural enrollment check over
+    # both build configurations, so an ordinary PR cannot add code the first
+    # post-merge profile discovers has no floor.
     #
     # A merge-queue entry is held to the PR posture, not the push posture. The
     # queue validates the projected trunk against the SAME contexts branch
@@ -70,8 +87,6 @@ jobs:
     # dequeue a PR that was green, which is the livelock the queue exists to
     # remove. The real run is not lost — `main` advances to the merge group's
     # own head SHA, and the push trigger above sweeps coverage on that commit.
-    env:
-      RUN_HEAVY: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -84,17 +99,34 @@ jobs:
         run: |
           node --test .github/scripts/coverage-summary.test.mjs
           node --test .github/scripts/coverage-package-floor.test.mjs
+          node --test .github/scripts/coverage-run-heavy.test.mjs
 
       - name: Verify package floor enrollment
         run: node .github/scripts/coverage-package-floor.mjs
 
-      - if: env.RUN_HEAVY == 'true'
+      # Computed as a step output rather than a static job-level `env:` GHA
+      # expression: a `push` event needs a network call (resolve the source PR
+      # that produced the pushed commit) to know whether it is redundant with
+      # that PR's own run, and job-level `env:` has no `steps` context to read
+      # such a call's result from. See coverage-run-heavy.mjs's header for the
+      # full decision table; GITHUB_TOKEN is used read-only and only reached on
+      # a `push` event.
+      - id: run_heavy
+        name: decide run_heavy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: node .github/scripts/coverage-run-heavy.mjs
+
+      - if: steps.run_heavy.outputs.run_heavy == 'true'
         uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
         with:
           tool: just
 
       - name: Install libchdb.so
-        if: env.RUN_HEAVY == 'true'
+        if: steps.run_heavy.outputs.run_heavy == 'true'
         run: just chdb-install
 
       # `just coverage` ends by running .github/scripts/coverage-summary.mjs,
@@ -105,17 +137,17 @@ jobs:
       # comparing a narrower profile — so it skips the comparison, and the lane
       # reports green having gated nothing.
       - name: Run coverage
-        if: env.RUN_HEAVY == 'true'
+        if: steps.run_heavy.outputs.run_heavy == 'true'
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
         run: just coverage
 
-      - name: Full coverage deferred (ordinary PR)
-        if: env.RUN_HEAVY != 'true'
-        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs."
+      - name: Full coverage deferred (ordinary PR / redundant push)
+        if: steps.run_heavy.outputs.run_heavy != 'true'
+        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs (skipped here — see the 'decide run_heavy' step log for why)."
 
       - name: Upload coverage profile
-        if: always() && env.RUN_HEAVY == 'true'
+        if: always() && steps.run_heavy.outputs.run_heavy == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-profile

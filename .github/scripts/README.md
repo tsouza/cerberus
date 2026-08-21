@@ -794,6 +794,33 @@ what actually runs.
   - Exit: `0` when every statement-carrying full-lane package has a
     positive floor and every floor names a live package, `1` on
     listing/instrumentation/input failure or structural drift.
+- **`coverage-run-heavy.mjs`** — `coverage.yml`, the `decide run_heavy` step.
+  Decides whether the job's heavy lane (`just coverage`: the full instrumented
+  test run + chdb install) does real work for this event
+  (tsouza/cerberus#2416, part 2 of #2394). `pull_request` / `merge_group` /
+  `schedule` / `workflow_dispatch` are unchanged from the old inline GHA
+  expression — delegated to `lib/scope-gate.mjs`'s `runsFullLane`, the same
+  helper `mutation.yml` and `compose-smoke-scope.mjs` share. A `push` gets an
+  ADDITIONAL check: it resolves the PR that produced the pushed commit
+  (`lib/resolve-source-pr.mjs`'s exact `merged && merge_commit_sha` match) and
+  skips the heavy run ONLY when that PR resolved AND its own head ref started
+  with `release/` — i.e. only when the identical tree already ran heavy and
+  posted `coverage`'s check-run somewhere `release-preflight.mjs`'s SOURCE-PR
+  CREDIT will find it. Every other push (an ordinary-PR merge, an unresolved
+  match, a maintenance-line hotfix with no PR at all) still runs heavy —
+  fail-safe by construction. `coverage-run-heavy.test.mjs` pins the decision
+  table; it runs inside `coverage.yml`'s own always-on "Test coverage gates"
+  step (that workflow has a `pull_request:` trigger, unlike release.yml, so it
+  needs no separate ci.yml wiring).
+  - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
+    `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
+    `push` event).
+  - Env: `MODE` (also argv[2]), `EVENT_NAME`, `HEAD_REF` (pull_request /
+    merge_group only), `GITHUB_SHA` / `GITHUB_REPOSITORY` / `GITHUB_TOKEN` /
+    `GITHUB_API_URL` (push only), `GITHUB_OUTPUT`.
+  - Exit: `0` always in `emit` mode (a resolution failure fails SAFE to
+    `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
+    unrecognised `MODE`.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
   `enforce efficacy threshold` step.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
