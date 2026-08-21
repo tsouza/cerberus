@@ -1628,6 +1628,30 @@ what actually runs.
   - Exit: `0` when the shards rolled up the way RUN_HEAVY says they should,
     `1` otherwise.
 
+- **`chdb-run-heavy.mjs`** — `chdb.yml`, the `changes` job's `decide run_heavy`
+  step. A port of `coverage-run-heavy.mjs`'s #2416 fix to a fourth lane
+  (tsouza/cerberus#2426), replacing the inline shell branch the `compute`
+  step used to compute `run_heavy` in (semantically identical to
+  `scope-gate.mjs`'s `runsFullLane`, just hand-duplicated in shell). Skips
+  chdb.yml's push-to-main run — for ALL six lanes `run_heavy` gates
+  (`chdb-build`, `roundtrip` ×3, `perf-guards`/`perf-guards-shard`,
+  `integration-<ql>` ×3) at once, since they all read the SAME `changes`
+  output — ONLY when it is redundant with a resolved, `release/*`-headed
+  source PR that already ran them heavy and posted their check-runs on its
+  tip commit. Same decision table, same fail-safe default as every other
+  #2416/#2426 lane; `docs_only` (computed in the same job) is untouched.
+  `chdb-run-heavy.test.mjs` pins the decision table; it runs inside
+  `changes`'s own always-on "Test chdb run_heavy gate" step.
+  - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
+    `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
+    `push` event).
+  - Env: `MODE` (also argv[2]), `EVENT_NAME`, `HEAD_REF` (pull_request /
+    merge_group only), `GITHUB_SHA` / `GITHUB_REPOSITORY` / `GITHUB_TOKEN` /
+    `GITHUB_API_URL` (push only), `GITHUB_OUTPUT`.
+  - Exit: `0` always in `emit` mode (a resolution failure fails SAFE to
+    `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
+    unrecognised `MODE`.
+
 - **`chdb-roundtrip.mjs`** — `chdb.yml`, the `roundtrip (<ql>)` matrix job. Runs
   one head's chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
   `./internal/<ql>/` (post-optimizer plus the reference-engine parity). It
