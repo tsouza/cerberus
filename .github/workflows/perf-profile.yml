@@ -64,6 +64,19 @@ name: perf-profile
 # PERF_PROFILE_SHARD_COUNT below for the leg count.
 #
 # Triggers: pull_request (release/* only) + push-to-main + nightly + dispatch.
+#
+# tsouza/cerberus#2426: a push-to-main produced by a release/*-headed PR
+# merging is REDUNDANT — that PR's own pull_request run already profiled the
+# identical tree and posted `profile`'s required check-run on its own tip
+# commit. `decide-run-heavy` (.github/scripts/perf-profile-run-heavy.mjs, a
+# port of coverage.yml's #2416 fix) resolves the PR that produced the pushed
+# commit and skips the heavy run ONLY in that one provable case; every other
+# push — an ordinary-PR merge, an unresolved source PR, or a maintenance-line
+# hotfix with no PR at all — still runs heavy. It is its OWN leading job,
+# unlike coverage.yml/property.yml's single-job shape, because
+# `profile-shard`'s job-level `if:` (which skips the WHOLE 8-leg matrix, not
+# just its steps) can only read a `needs` output, never a `steps` output from
+# within its own job — see the script's own header for the full account.
 
 on:
   pull_request:
@@ -79,6 +92,10 @@ on:
 
 permissions:
   contents: read
+  # perf-profile-run-heavy.mjs resolves the PR that produced a pushed commit
+  # via GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs) — read-only, and
+  # only exercised on a `push` event.
+  pull-requests: read
 
 concurrency:
   # Main pushes and matching cron schedules replace only their own modes.
@@ -87,6 +104,33 @@ concurrency:
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
+  # decide-run-heavy — computes the RUN_HEAVY decision ONCE, ahead of both
+  # `profile-shard` (whose job-level `if:` needs it before the matrix can
+  # even spin up) and `profile` (whose steps need the identical answer, fed
+  # through perf-profile-aggregate.mjs's drift check). See the workflow-level
+  # comment above and perf-profile-run-heavy.mjs's own header for why this
+  # lane needs a dedicated leading job where coverage.yml/property.yml do not.
+  decide-run-heavy:
+    name: decide-run-heavy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_heavy: ${{ steps.run_heavy.outputs.run_heavy }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test perf-profile run_heavy gate
+        run: node --test .github/scripts/perf-profile-run-heavy.test.mjs
+
+      - id: run_heavy
+        name: decide run_heavy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: node .github/scripts/perf-profile-run-heavy.mjs
+
   # `profile-shard` — the matrix; each leg profiles ONLY the corpus slice its
   # PERF_SHARD_INDEX names, via the same cmd/perf-profile binary the old
   # single-job lane ran, unchanged apart from reading the shard from env
@@ -98,14 +142,16 @@ jobs:
   # itself and no baseline or check name moves.
   profile-shard:
     name: profile-shard
+    needs: decide-run-heavy
     runs-on: ubuntu-latest
     # Job-level, not step-level: `env` context is not available in a job
-    # `if:`, so this repeats (rather than reads) the same RUN_HEAVY condition
-    # the `profile` aggregator's own `env.RUN_HEAVY` uses for its steps.
-    # Skipping the WHOLE matrix — not just its steps — on an ordinary PR
-    # avoids spinning up 8 legs that would each immediately no-op; mirrors
-    # mutation.yml's has_phases short-circuit.
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
+    # `if:`, so this reads decide-run-heavy's OUTPUT — computed once there and
+    # shared with the `profile` aggregator below, rather than each job
+    # re-deriving its own answer (tsouza/cerberus#2426). Skipping the WHOLE
+    # matrix — not just its steps — on an ordinary PR avoids spinning up 8
+    # legs that would each immediately no-op; mirrors mutation.yml's
+    # has_phases short-circuit.
+    if: needs.decide-run-heavy.outputs.run_heavy == 'true'
     # A leg profiles ~1/8 of the corpus that used to take 22-29 minutes
     # serially — a few minutes of real work plus setup. 20m leaves a wide
     # margin over that while still catching a genuine hang well inside the
@@ -191,18 +237,20 @@ jobs:
   # `just chdb-install` nor the `chdb` build tag.
   profile:
     name: profile
-    needs: profile-shard
+    needs: [decide-run-heavy, profile-shard]
     # always() so it still runs — and still reports the required release
     # check — when profile-shard was skipped on an ordinary PR. A required
     # context that goes missing is indistinguishable from one still running.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Same RUN_HEAVY condition profile-shard's job-level `if:` inlines; here
-    # it can live in `env` because step `if:`s (unlike a job `if:`) can read
-    # the `env` context.
+    # The SAME decide-run-heavy output profile-shard's job-level `if:` reads —
+    # here it can live in `env` because step `if:`s (unlike a job `if:`) can
+    # read the `env` context, and perf-profile-aggregate.mjs's drift check
+    # below needs it verbatim to confirm the matrix rolled up consistently
+    # with this job's own answer.
     env:
-      RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
+      RUN_HEAVY: ${{ needs.decide-run-heavy.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v7
 
@@ -215,6 +263,7 @@ jobs:
       - name: Verify the profile-shard matrix rolled up cleanly
         run: node .github/scripts/perf-profile-aggregate.mjs
         env:
+          DECIDE_RESULT: ${{ needs.decide-run-heavy.result }}
           SHARDS_RESULT: ${{ needs.profile-shard.result }}
 
       - if: env.RUN_HEAVY == 'true'

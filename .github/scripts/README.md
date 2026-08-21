@@ -1639,12 +1639,41 @@ what actually runs.
   `go run ./cmd/perf-profile -merge '<dir>/*.json' ...` (see
   `cmd/perf-profile/report.go`) to fold the shards' JSON outputs into the one
   combined report + step summary the lane always produced.
+  tsouza/cerberus#2426 added a THIRD input: `decide-run-heavy` (below) is now
+  its own leading job, and a hard failure there (a real bug, not the
+  gracefully-handled "source PR did not resolve" case) leaves RUN_HEAVY unset
+  and `profile-shard` skipped — indistinguishable from an ordinary PR's
+  legitimate no-op without checking `decide-run-heavy`'s own result first.
   `perf-profile-aggregate.test.mjs` is the `node --test` guard (run on
   `ci.yml`'s scripts lane) that pins both directions.
-  - Env: `RUN_HEAVY` (this job's own env value), `SHARDS_RESULT` (the
-    matrix's rolled-up result).
-  - Exit: `0` when the shards rolled up the way RUN_HEAVY says they should,
-    `1` otherwise.
+  - Env: `DECIDE_RESULT` (`needs.decide-run-heavy.result`), `RUN_HEAVY` (this
+    job's own env value, sourced from `decide-run-heavy`'s output),
+    `SHARDS_RESULT` (the matrix's rolled-up result).
+  - Exit: `0` when decide-run-heavy succeeded and the shards rolled up the
+    way RUN_HEAVY says they should, `1` otherwise.
+- **`perf-profile-run-heavy.mjs`** — `perf-profile.yml`, the `decide-run-heavy`
+  job's `decide run_heavy` step. A port of `coverage-run-heavy.mjs`'s #2416
+  fix to a third lane (tsouza/cerberus#2426): skips perf-profile.yml's
+  push-to-main run ONLY when it is redundant with a resolved, `release/*`-
+  headed source PR that already ran the heavy profile and posted the
+  `profile` check-run release-preflight.mjs's SOURCE-PR CREDIT will find.
+  Runs as its OWN leading job (unlike `coverage-run-heavy.mjs`/
+  `property-run-heavy.mjs`'s single-job shape) because `profile-shard`'s
+  job-level `if:` — which skips the WHOLE 8-leg matrix, not just its steps —
+  can only read a `needs` output, never a `steps` output from within its own
+  job; see the script's own header for the full account.
+  `perf-profile-run-heavy.test.mjs` pins the decision table; it runs inside
+  `decide-run-heavy`'s own always-on "Test perf-profile run_heavy gate" step.
+  - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
+    `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
+    `push` event).
+  - Env: `MODE` (also argv[2]), `EVENT_NAME`, `HEAD_REF` (pull_request only —
+    perf-profile.yml carries no merge_group trigger), `GITHUB_SHA` /
+    `GITHUB_REPOSITORY` / `GITHUB_TOKEN` / `GITHUB_API_URL` (push only),
+    `GITHUB_OUTPUT`.
+  - Exit: `0` always in `emit` mode (a resolution failure fails SAFE to
+    `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
+    unrecognised `MODE`.
 
 - **`chdb-roundtrip.mjs`** — `chdb.yml`, the `roundtrip (<ql>)` matrix job. Runs
   one head's chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
