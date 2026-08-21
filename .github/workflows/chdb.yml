@@ -37,6 +37,17 @@ name: chdb
 #
 # If you widen `probe`'s trigger scope, audit the required-checks list at
 # the same time — a context that never runs blocks every PR.
+#
+# tsouza/cerberus#2426: a push-to-main produced by a release/*-headed PR
+# merging is REDUNDANT for every run_heavy-gated lane above (chdb-build,
+# roundtrip, perf-guards, integration-<ql>) — that PR's own pull_request run
+# already ran them heavy and posted their check-runs on its own tip commit.
+# `changes`'s `decide run_heavy` step (.github/scripts/chdb-run-heavy.mjs, a
+# port of coverage.yml's #2416 fix) resolves the PR that produced the pushed
+# commit and skips the heavy run ONLY in that one provable case; every other
+# push — an ordinary-PR merge, an unresolved source PR, or a maintenance-line
+# hotfix with no PR at all — still runs heavy. See the script's own header
+# for the full decision table.
 
 on:
   push:
@@ -76,6 +87,10 @@ env:
 
 permissions:
   contents: read
+  # chdb-run-heavy.mjs resolves the PR that produced a pushed commit via
+  # GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs) — read-only, and
+  # only exercised on a `push` event.
+  pull-requests: read
 
 concurrency:
   # Main pushes replace only older main pushes; matching cron schedules replace
@@ -94,15 +109,18 @@ jobs:
       # run_heavy — the merge/release two-tier split (#2230). `roundtrip`,
       # `integration-*`, `chdb-build` and `perf-guards` are release-gate lanes,
       # not merge-gate ones: they do their real (chDB-heavy) work on push /
-      # schedule / dispatch and on a `release/*` head-branch PR, and short-
-      # circuit to a fast no-op everywhere else (an ordinary PR, or a
-      # merge-group entry, which is held to the PR posture — see coverage.yml /
-      # property.yml for the same pattern). `probe` is NOT gated on this: it
-      # stays a normal, always-real PR check.
-      run_heavy: ${{ steps.compute.outputs.run_heavy }}
+      # schedule / dispatch and on a `release/*` head-branch PR (unless a
+      # resolved source PR proves a push redundant — see the `decide
+      # run_heavy` step below), and short-circuit to a fast no-op everywhere
+      # else (an ordinary PR, or a merge-group entry, which is held to the PR
+      # posture — see coverage.yml / property.yml for the same pattern).
+      # `probe` is NOT gated on this: it stays a normal, always-real PR check.
+      run_heavy: ${{ steps.run_heavy.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
+
+      - name: Test chdb run_heavy gate
+        run: node --test .github/scripts/chdb-run-heavy.test.mjs
 
       - id: filter
         if: github.event_name == 'pull_request'
@@ -125,13 +143,6 @@ jobs:
               - '!README*'
 
       - id: compute
-        # HEAD_REF is passed through the environment, never interpolated
-        # directly into the script: github.head_ref is attacker-controlled on
-        # a fork PR (it is a branch name), and a raw `${{ github.head_ref }}`
-        # in a `run:` block is a script-injection hazard. github.event_name is
-        # server-controlled and safe to interpolate directly.
-        env:
-          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             if [ "${{ steps.filter.outputs.code }}" = "false" ]; then
@@ -143,13 +154,20 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "${{ github.event_name }}" != "pull_request" ] && [ "${{ github.event_name }}" != "merge_group" ]; then
-            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$HEAD_REF" == release/* ]]; then
-            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
-          fi
+      # Computed as a step output rather than inline in the `compute` step
+      # above: a `push` event needs a network call (resolve the source PR
+      # that produced the pushed commit) to know whether it is redundant with
+      # that PR's own run. See chdb-run-heavy.mjs's header for the full
+      # decision table; GITHUB_TOKEN is used read-only and only reached on a
+      # `push` event.
+      - id: run_heavy
+        name: decide run_heavy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: emit
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: node .github/scripts/chdb-run-heavy.mjs
 
   # `chdb-build` is a FAST, PR-visible compile gate over the entire
   # chdb-tagged tree. It does NOT run any tests — `go build` + `go vet`
