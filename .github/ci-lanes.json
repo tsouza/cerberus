@@ -1573,7 +1573,7 @@
       "description": "Corpus-wide deterministic compute fan-out profile, sharded across profile-shard legs.",
       "owner": {
         "workflow": ".github/workflows/perf-profile.yml",
-        "jobs": ["profile-shard", "profile"],
+        "jobs": ["decide-run-heavy", "profile-shard", "profile"],
         "producer_jobs": ["profile-shard"],
         "context_job": "profile"
       },

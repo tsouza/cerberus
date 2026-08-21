@@ -15,7 +15,7 @@ import { test } from 'node:test';
 import { classifyPerfProfile } from './perf-profile-aggregate.mjs';
 
 test('a heavy run where every shard succeeded merges', () => {
-  const v = classifyPerfProfile({ runHeavy: 'true', shardsResult: 'success' });
+  const v = classifyPerfProfile({ decideResult: 'success', runHeavy: 'true', shardsResult: 'success' });
   assert.equal(v.ok, true);
   assert.equal(v.shouldMerge, true);
 });
@@ -26,28 +26,47 @@ test('a heavy run where the matrix rolled up to anything but success fails, what
   // let through, and it is exactly how a `timeout-minutes` kill on a leg is
   // recorded.
   for (const result of ['failure', 'cancelled', '']) {
-    const v = classifyPerfProfile({ runHeavy: 'true', shardsResult: result });
+    const v = classifyPerfProfile({ decideResult: 'success', runHeavy: 'true', shardsResult: result });
     assert.equal(v.ok, false, `shardsResult=${result} must not pass`);
     assert.equal(v.shouldMerge, false);
   }
 });
 
 test('a heavy run whose matrix never ran (gate drift) fails', () => {
-  const v = classifyPerfProfile({ runHeavy: 'true', shardsResult: 'skipped' });
+  const v = classifyPerfProfile({ decideResult: 'success', runHeavy: 'true', shardsResult: 'skipped' });
   assert.equal(v.ok, false);
   assert.match(v.message, /never ran/);
 });
 
 test('an ordinary PR with the matrix correctly skipped is a green no-op', () => {
-  const v = classifyPerfProfile({ runHeavy: 'false', shardsResult: 'skipped' });
+  const v = classifyPerfProfile({ decideResult: 'success', runHeavy: 'false', shardsResult: 'skipped' });
   assert.equal(v.ok, true);
   assert.equal(v.shouldMerge, false);
 });
 
 test('an ordinary PR whose matrix somehow ran anyway (gate drift) fails', () => {
   for (const result of ['success', 'failure', 'cancelled']) {
-    const v = classifyPerfProfile({ runHeavy: 'false', shardsResult: result });
+    const v = classifyPerfProfile({ decideResult: 'success', runHeavy: 'false', shardsResult: result });
     assert.equal(v.ok, false, `shardsResult=${result} on a non-heavy run must not pass`);
     assert.match(v.message, /drifted/);
+  }
+});
+
+// tsouza/cerberus#2426: decide-run-heavy is now its own leading job. A hard
+// failure there (not the gracefully-handled "source PR did not resolve"
+// case, which decide() itself fails safe on — a genuine bug in the script or
+// its test) must be caught explicitly, since profile-shard's `if:` reading
+// an unset output would otherwise skip the matrix and read identically to an
+// ordinary PR's legitimate no-op.
+test('decide-run-heavy not succeeding is its own hard failure, regardless of the other two facts', () => {
+  for (const decideResult of ['failure', 'cancelled', 'skipped', '']) {
+    for (const runHeavy of ['true', 'false']) {
+      for (const shardsResult of ['success', 'skipped', 'failure']) {
+        const v = classifyPerfProfile({ decideResult, runHeavy, shardsResult });
+        assert.equal(v.ok, false, `decideResult=${decideResult} must not pass`);
+        assert.equal(v.shouldMerge, false);
+        assert.match(v.message, /decide-run-heavy/);
+      }
+    }
   }
 });

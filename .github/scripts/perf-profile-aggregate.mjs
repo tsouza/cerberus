@@ -38,7 +38,21 @@
 // imate ones (heavy run whose matrix never ran; heavy run where a leg failed
 // or was cancelled by ITS OWN timeout).
 //
+// tsouza/cerberus#2426 added a THIRD fact this now checks first: RUN_HEAVY
+// is no longer a static GHA expression, it is `decide-run-heavy`'s own job
+// output (perf-profile-run-heavy.mjs). If that job hard-fails (a genuine bug
+// in the script or its test, not the gracefully-handled "source PR did not
+// resolve" case decide() already fails safe on), its output is unset,
+// RUN_HEAVY reads as the empty string, `profile-shard`'s `if:` evaluates
+// false, and — without this check — the matrix's "skipped" result would read
+// as indistinguishable from an ordinary PR's legitimate no-op, silently
+// masking a real failure behind a green `profile` check. `DECIDE_RESULT` (`
+// needs.decide-run-heavy.result`) closes that gap: anything other than
+// `success` there is reported as its own hard failure, before the
+// RUN_HEAVY/SHARDS_RESULT cross-check even runs.
+//
 // Env:
+//   DECIDE_RESULT  `needs.decide-run-heavy.result`.
 //   RUN_HEAVY      the job's own RUN_HEAVY env value ('true' | 'false').
 //   SHARDS_RESULT  `needs.profile-shard.result`.
 //
@@ -51,12 +65,23 @@ import process from 'node:process';
 import { error, notice } from './lib/gh.mjs';
 
 /**
- * Pure decision over the two `needs`/env facts. Returns `{ ok, shouldMerge,
+ * Pure decision over the three `needs`/env facts. Returns `{ ok, shouldMerge,
  * message }` — `shouldMerge` tells the caller whether to run the merge step;
  * `ok`/`message` become the `::notice::`/`::error::` and exit code. Kept pure
  * so the test can drive every branch without a workflow run.
  */
-export function classifyPerfProfile({ runHeavy, shardsResult }) {
+export function classifyPerfProfile({ decideResult, runHeavy, shardsResult }) {
+  if (decideResult !== 'success') {
+    return {
+      ok: false,
+      shouldMerge: false,
+      message:
+        `decide-run-heavy reported "${decideResult}" instead of "success" — its RUN_HEAVY output cannot be ` +
+        'trusted, so profile-shard\'s skip (if any) cannot be told apart from a real failure. Open the red ' +
+        '`decide-run-heavy` check.',
+    };
+  }
+
   const heavy = runHeavy === 'true';
 
   if (!heavy) {
@@ -106,6 +131,7 @@ export function classifyPerfProfile({ runHeavy, shardsResult }) {
 
 function main() {
   const verdict = classifyPerfProfile({
+    decideResult: process.env.DECIDE_RESULT ?? '',
     runHeavy: process.env.RUN_HEAVY ?? '',
     shardsResult: process.env.SHARDS_RESULT ?? '',
   });
