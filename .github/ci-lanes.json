@@ -1470,6 +1470,35 @@
       "accountable_owner": "release-engineering"
     },
     {
+      "id": "perf-nightly.perf-nightly",
+      "description": "#2370 nightly real-data measurement harness: loads the real, trimmed production sample into a real ClickHouse and logs sentinel peak_memory_usage/duration. PR A — no baseline/gate yet.",
+      "owner": {
+        "workflow": ".github/workflows/perf-nightly.yml",
+        "jobs": ["perf-nightly"],
+        "producer_jobs": [],
+        "context_job": "perf-nightly"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "perf-nightly", "protected": false },
+      "purpose": "performance",
+      "layers": ["11"],
+      "oracle_class": "performance",
+      "recipes": ["perf-nightly-integration"],
+      "command": "go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...",
+      "build_tags": ["integration"],
+      "package_globs": ["test/perf/nightly/**"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["performance"],
+      "merge_posture": "never",
+      "main_posture": "never",
+      "release_posture": "advisory",
+      "determinism": "observational",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 20,
+      "slo_minutes": 20,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "performance.benchmark",
       "description": "Benchstat wall-clock comparison against a resolved baseline.",
       "owner": {

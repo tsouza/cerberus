@@ -362,6 +362,19 @@ perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
+# Run the #2370 nightly measurement harness: loads the real, trimmed
+# production sample (test/perf/nightly/testdata/samples/*.parquet, LFS —
+# needs `git lfs pull` first if not already fetched) into a real ClickHouse
+# and issues a curated sentinel corpus, logging real
+# peak_memory_usage/duration numbers. No baseline/gate yet (PR A of #2370 —
+# "prove the mechanism, print the numbers"). Requires Docker; gated behind
+# the `integration` build tag. See
+# test/perf/nightly/realch_perfnightly_integration_test.go and
+# .github/workflows/perf-nightly.yml.
+perf-nightly-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is
 # actually honored by a real ClickHouse over clickhouse-go/v2, not just

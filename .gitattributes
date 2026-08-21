@@ -309,3 +309,4 @@ test/e2e/playwright/crawl/grafana-surface-inventory.k3d.json      -merge
 #     has a CI drift gate that re-renders and diffs, so staleness cannot survive
 #     a merge unnoticed.
 test/perf/smoke/testdata/samples/*.parquet filter=lfs diff=lfs merge=lfs -text
+test/perf/nightly/testdata/samples/*.parquet filter=lfs diff=lfs merge=lfs -text
