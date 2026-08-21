@@ -767,6 +767,20 @@ jobs:
       - name: Assert the perf-nightly-health notifier cannot go silently hollow
         run: node --test .github/scripts/notify-perf-nightly-failure.test.mjs
 
+      # Third consumer (#2437's periodic self-check) — same reason.
+      - name: Assert the perf-nightly-selfcheck-health notifier cannot go silently hollow
+        run: node --test .github/scripts/notify-perf-nightly-selfcheck-failure.test.mjs
+
+      # perf-nightly-selfcheck.yml has no pull_request trigger at all (only
+      # schedule/dispatch, like the notify scripts above), so its own "Test"
+      # step inside `just perf-nightly-selfcheck` never runs on the PR path
+      # either — same gap, same fix: run the fast, no-Docker unit suite
+      # (MUTATIONS well-formed, drift detection) here too. The real
+      # mutate-and-assert-caught run against a live ClickHouse stays
+      # exclusive to the weekly workflow.
+      - name: Assert #2437's self-check mutations are well-formed
+        run: node --test .github/scripts/perf-nightly-selfcheck.test.mjs
+
       # Pins e2e.yml's dashboard-crawl-merge wiring: the required `dashboard`
       # aggregator must depend on it (so a merge failure can gate a release),
       # and the release/dispatch trigger conditions that decide when the

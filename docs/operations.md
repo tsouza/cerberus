@@ -1340,7 +1340,10 @@ carries as much weight as the steps themselves:
    own trend across the cycle's runs, not just its latest pass/fail: the gate
    catches a single run regressing past its committed ceiling, but a slow,
    multi-cycle creep that stays under headroom on every individual night is
-   exactly the shape it cannot see by design.
+   exactly the shape it cannot see by design. And glance at
+   `perf-nightly-selfcheck`'s weekly runs (#2437): a red run there means the
+   nightly gate itself stopped catching an injected regression, which is a
+   worse, quieter failure than the gate itself going red.
 4. **Backport everything to every line that stays supported.** Every fix that
    landed on `main` since the previous release goes onto every
    `release/<major>.<minor>.x` line that is still supported once this cycle

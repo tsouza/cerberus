@@ -1,0 +1,116 @@
+name: perf-nightly-selfcheck
+
+# #2437's periodic mutation-style self-check: proves the #2370 nightly perf
+# gate (perf-nightly.yml, test/perf/nightly/) still catches a real
+# regression by deliberately breaking two real memory-bounding mechanisms —
+# the #2429 fanout resource bound and the spill safety net — one at a time,
+# and asserting `just perf-nightly-integration` actually fails under each.
+# See .github/scripts/perf-nightly-selfcheck.mjs's own header for the full
+# mechanism and why these two mutations were chosen.
+#
+# This is #2370's own "Bit-rot risk" paragraph's third named mitigation —
+# alerting and the release-ritual glance shipped in PR B (#2436); this is
+# the one that stayed design prose until now.
+#
+# NOT a merge or release gate — no `pull_request:`, no `push:`. A red run
+# here does not mean a real regression shipped; it means the nightly gate
+# ITSELF stopped catching one, which is a distinct, worse signal (silent
+# coverage loss) that gets its own tracking issue (#2437) rather than
+# blocking anything. Weekly, not nightly: this needs the same real Docker +
+# real ClickHouse substrate as perf-nightly.yml itself, twice per run (one
+# `just perf-nightly-integration` invocation per mutation), so running it as
+# often as the lane it checks would roughly double that lane's own nightly
+# cost for a self-check that does not need to be that fresh — mirrors
+# mutation.yml's "regularly, not every push" cadence without stacking onto
+# perf-nightly.yml's own nightly cost.
+
+on:
+  schedule:
+    # Sundays at 06:00 UTC — clear of every other nightly cron in this repo
+    # (chdb/compatibility at 04:00, perf-profile at 05:00, perf-nightly at
+    # 05:17, coverage at 05:30), and weekly rather than nightly per the
+    # workflow-level comment above.
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  # A single lane, no push trigger to coalesce against — this only exists to
+  # stop a manual dispatch from racing an in-flight scheduled run (each
+  # mutates its own ephemeral checkout, so there is no correctness hazard,
+  # only wasted Docker pulls and double alerting). Never cancelled: an
+  # in-flight self-check is evidence, not disposable work.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Same reason strict-scan.yml/perf-nightly.yml need it: pulling this
+  # project's mirrored copy of the ClickHouse image out of ghcr.io (private
+  # package).
+  packages: read
+
+jobs:
+  perf-nightly-selfcheck:
+    name: perf-nightly-selfcheck
+    runs-on: ubuntu-latest
+    # Two full `just perf-nightly-integration` runs (one per mutation, see
+    # the script's MUTATIONS) plus setup — generous headroom over the
+    # ~1-2min-each measured locally.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Same reason perf-nightly.yml needs it: the trimmed sample
+          # parquet files are LFS-tracked, and this job loads them via the
+          # SAME `just perf-nightly-integration` recipe.
+          lfs: true
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        with:
+          tool: just
+
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run #2437's periodic mutation self-check (real ClickHouse)
+        run: just perf-nightly-selfcheck
+
+  # Files/refreshes a single tracking issue when the SCHEDULE run does not
+  # reach a clean pass, closes it on the next clean night. Third consumer of
+  # lib/nightly-health-notify.mjs — see
+  # notify-perf-nightly-selfcheck-failure.mjs's own header for the fuller
+  # "why", and how its tracking issue differs from perf-nightly's own.
+  #
+  # Scoped to `github.event_name == 'schedule'` only, mirroring
+  # perf-nightly.yml's own job: workflow_dispatch is a manual, already-
+  # attended action, and there is no push trigger here at all.
+  perf-nightly-selfcheck-health-notify:
+    name: perf-nightly-selfcheck-health-notify
+    needs: [perf-nightly-selfcheck]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level permissions REPLACE the workflow-level block (see e2e.yml's
+    # nightly-health-notify for the same note) — contents: read has to be
+    # restated for checkout, and issues: write is what lets this
+    # file/comment/close the tracking issue.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: roll up the self-check run and notify on non-success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT_PERF_NIGHTLY_SELFCHECK: ${{ needs.perf-nightly-selfcheck.result }}
+        run: node .github/scripts/notify-perf-nightly-selfcheck-failure.mjs
