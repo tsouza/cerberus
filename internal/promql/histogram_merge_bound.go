@@ -95,6 +95,14 @@ const (
 // render of that subtree must be one of that helper's own hqLet bindings.
 // Going through it here keeps the guard from becoming a second, unbound
 // occurrence of the very hazard the merge site was already fixed for.
+//
+// Reused by [histogramBinopBucketWidthBudgetGuardExpr]
+// (histogram_native_binop.go, cerberus issue #2428): the two-operand
+// binop merge (histogramBinopMergedBucketsExpr) renders the identical
+// unbounded arrayMap-over-mergedLength shape this file's own
+// [histogramMergeBudgetGuardExpr] bounds for the cross-series merge, so
+// the same fully-bound length rendering closes that narrower instance of
+// the same bug class without a second, divergent implementation.
 func mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan.Expr {
 	return expHistogramOverMergedBucketRangeExpr(
 		scalesArr, offArr, bucArr, mergedScale,
