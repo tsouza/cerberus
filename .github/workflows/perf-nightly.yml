@@ -1,0 +1,57 @@
+name: perf-nightly
+
+# The #2370 nightly, real-data measurement harness (PR A): loads the real,
+# trimmed production sample (test/perf/nightly/testdata/samples/*.parquet)
+# into a real ClickHouse and runs a curated PromQL sentinel corpus, logging
+# real peak_memory_usage/duration numbers. See
+# test/perf/nightly/realch_perfnightly_integration_test.go's doc comment for
+# the full "why".
+#
+# workflow_dispatch only for now — PR A's own scope is "prove the mechanism,
+# print the numbers," not gate anything yet. A follow-up PR adds the nightly
+# `schedule:` cron, release-gate mode, a committed statistical baseline, and
+# alerting on failure (reusing notify-nightly-failure.mjs's stable-title
+# issue lifecycle) once this harness's own numbers have calibrated one.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Same reason strict-scan.yml needs it: pulling this project's mirrored
+  # copy of the ClickHouse image out of ghcr.io (private package).
+  packages: read
+
+jobs:
+  perf-nightly:
+    name: perf-nightly
+    runs-on: ubuntu-latest
+    # Generous: pulls one ClickHouse image, loads ~4.3M real rows across 3
+    # tables, and issues 4 sentinel queries.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The trimmed sample parquet files are LFS-tracked; a plain
+          # checkout only pulls the LFS pointer text, never the actual
+          # bytes. This is the only job in the repo that needs real LFS
+          # content, so the fetch is explicit here rather than a repo-wide
+          # `lfs: true` on every checkout.
+          lfs: true
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        with:
+          tool: just
+
+      - uses: ./.github/actions/registry-login
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
+
+      - name: Run the #2370 nightly measurement harness (real ClickHouse)
+        run: just perf-nightly-integration
