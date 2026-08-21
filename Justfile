@@ -262,16 +262,24 @@ property:
 perf-chdb:
     go test -timeout 27m -tags chdb -count=1 ./test/perf/...
 
-# Profile the WHOLE TXTAR corpus for compute fan-out (perf-assessment
-# Component B). Walks every executable fixture under test/spec/** (those
-# with `seed:` + `expected_rows:` + `sql:`) and, per fixture, runs
-# EXPLAIN PLAN actions=1 (CROSS JOIN / ARRAY JOIN / recursive-CTE
-# detection) + a per-subquery-level count() decomposition (peak
-# intermediate cardinality vs leaf scan rows) in-process via chDB.
-# Writes a JSON profile array and prints the top fan_factor fixtures.
-# Requires libchdb.so (see `just chdb-install`). Drives the nightly
-# perf-profile.yml lane — NOT a per-PR gate (corpus-wide breadth over
-# ~640 fixtures is too heavy for every PR). Override OUT / TOP to taste.
+# Profile the TXTAR corpus for compute fan-out (perf-assessment Component B).
+# Walks every executable fixture under test/spec/** (those with `seed:` +
+# `expected_rows:` + `sql:`) and, per fixture, runs EXPLAIN PLAN actions=1
+# (CROSS JOIN / ARRAY JOIN / recursive-CTE detection) + a per-subquery-level
+# count() decomposition (peak intermediate cardinality vs leaf scan rows) in
+# process via chDB. Writes a JSON profile array and prints the top fan_factor
+# fixtures. Requires libchdb.so (see `just chdb-install`).
+#
+# Like `perf-chdb`, this recipe runs the corpus slice named by
+# PERF_SHARD_INDEX / PERF_SHARD_COUNT (test/perf/profile/shard.go) — both
+# unset, the local default, is the WHOLE corpus. perf-profile.yml's
+# `profile-shard` matrix sets both, one leg per slice, and its `profile`
+# aggregator then runs `go run ./cmd/perf-profile -merge '<dir>/*.json' ...`
+# (no chDB, no `chdb` tag — see cmd/perf-profile/report.go) to fold the legs'
+# JSON outputs back into one combined report — the same shape the lane
+# produced before sharding existed (tsouza/cerberus#2375). NOT a per-PR gate:
+# corpus-wide breadth over ~950 fixtures is too heavy for every PR. Override
+# OUT / TOP to taste.
 perf-profile OUT="perf-profile.json" TOP="40":
     go run -tags chdb ./cmd/perf-profile -spec test/spec -out {{OUT}} -top {{TOP}}
 

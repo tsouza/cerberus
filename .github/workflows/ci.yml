@@ -771,6 +771,14 @@ jobs:
       - name: Assert the perf-guards shard roll-up cannot report a hollow green
         run: node --test .github/scripts/perf-guards-aggregate.test.mjs
 
+      # Same shape, different lane: `profile` is the required-by-release
+      # aggregator that rolls perf-profile.yml's sharded `profile-shard`
+      # matrix up under the name release.yml's RELEASE_REQUIRED_CHECKS
+      # resolves (tsouza/cerberus#2375). Pure in-process test over the
+      # module, ~100ms.
+      - name: Assert the perf-profile shard roll-up cannot report a hollow green
+        run: node --test .github/scripts/perf-profile-aggregate.test.mjs
+
       # The `roundtrip (<ql>)` leg runner. Two of its properties are invisible
       # in the chDB lane itself until they fail 10-20 minutes in: that every leg
       # declares an explicit `go test -timeout` (without one the leg runs under

@@ -1483,11 +1483,11 @@
     },
     {
       "id": "performance.profile",
-      "description": "Corpus-wide deterministic compute fan-out profile.",
+      "description": "Corpus-wide deterministic compute fan-out profile, sharded across profile-shard legs.",
       "owner": {
         "workflow": ".github/workflows/perf-profile.yml",
-        "jobs": ["profile"],
-        "producer_jobs": [],
+        "jobs": ["profile-shard", "profile"],
+        "producer_jobs": ["profile-shard"],
         "context_job": "profile"
       },
       "executions": ["default"],
@@ -1495,10 +1495,10 @@
       "purpose": "performance",
       "layers": ["12"],
       "oracle_class": "performance",
-      "recipes": ["perf-chdb"],
-      "command": "corpus-wide EXPLAIN and count() fan-out profile",
+      "recipes": ["perf-profile"],
+      "command": "corpus-wide EXPLAIN and count() fan-out profile, sharded",
       "build_tags": ["chdb"],
-      "package_globs": ["internal/**", "test/perf/**", "test/spec/**"],
+      "package_globs": ["cmd/perf-profile/**", "internal/**", "test/perf/**", "test/spec/**"],
       "substrate": "chdb",
       "risk_domains": ["cardinality", "performance", "sql"],
       "merge_posture": "never",

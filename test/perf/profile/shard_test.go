@@ -21,10 +21,15 @@ import (
 // than against synthetic ids that would balance by construction.
 const corpusRosterDir = "../cardinality-baseline"
 
-// productionShardCount is the number of legs `perf-guards-shard` fans out to in
-// .github/workflows/chdb.yml. The balance assertion below is only meaningful at
-// the count CI actually runs, and test/regression/perf_guards_gate_test.go pins
-// the workflow to the same number from the other side.
+// productionShardCount is the number of legs BOTH sharded CI consumers of this
+// package's partition fan out to: `perf-guards-shard` in
+// .github/workflows/chdb.yml (the pass/fail cardinality ratchet), and
+// `profile-shard` in .github/workflows/perf-profile.yml (the breadth report,
+// tsouza/cerberus#2375). They share one partition function (ShardOf) and one
+// corpus, so one count serves both. The balance assertion below is only
+// meaningful at the count CI actually runs, and
+// test/regression/perf_guards_gate_test.go + perf_profile_gate_test.go each
+// pin their own workflow to this same number from the other side.
 const productionShardCount = 8
 
 // maxShardImbalance is how far the biggest shard may exceed the smallest, as a
