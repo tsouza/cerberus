@@ -1078,7 +1078,97 @@ func classifyDrainError(err error) error {
 	if isQueryCanceled(err) {
 		return queryCanceledAPIError()
 	}
+	// query_range's cursor drain is where every throwIf-planted guard
+	// (info() conflicting labels, duplicate labelset, many-to-many match,
+	// histogram merge budget, rate-window fanout budget) actually surfaces
+	// for a RANGE query — ClickHouse raises them while streaming rows back
+	// through the open cursor, not while opening it. Discovered missing
+	// investigating #2429: every one of these guards was already wired into
+	// classifyEngineError (the instant-query path) but never here, so a
+	// range query hitting any of them fell through to the generic 502
+	// below instead of the intended 422.
+	if ae := classifyThrowIfGuardError(err); ae != nil {
+		return ae
+	}
 	return &apiError{Kind: ErrInternal, Err: err, Status: http.StatusBadGateway}
+}
+
+// classifyThrowIfGuardError checks err against every deliberate,
+// emitter-planted `throwIf` resource/shape guard cerberus's own SQL can
+// raise, returning the shared 422 errorType=execution apiError shape for
+// whichever one matches, or nil if none does. Shared by classifyEngineError
+// (the instant-query / cursor-open path) and classifyDrainError (the
+// range-query / cursor-drain path) so the two cannot silently drift on
+// which guards each one recognises — see classifyDrainError's own comment
+// for the drift #2429 found before this was factored out.
+func classifyThrowIfGuardError(err error) *apiError {
+	// A `throwIf` the emitter planted deliberately is a fault in the
+	// QUERY, not in the backend. info()'s conflicting-label abort is the
+	// reference engine's own execution error, so it lands where upstream
+	// puts it — 422 errorType=execution — rather than in the 502 bucket
+	// every other ClickHouse execute failure falls into. The message is
+	// restated rather than forwarded so the client reads the PromQL-level
+	// reason instead of a ClickHouse stack frame.
+	if chsql.IsInfoConflictingLabelError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.InfoConflictingLabelMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
+	// Same class, different guard: a name-dropping range function collapsed
+	// two series onto one label set. Upstream raises this from
+	// Matrix.ContainsSameLabelset() as a plain evaluation error, so it is a
+	// 422 errorType=execution here too — and the restated message is
+	// upstream's verbatim, which is what makes the rejection-parity
+	// comparison against reference Prometheus meaningful.
+	if chsql.IsDuplicateLabelsetError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.DuplicateLabelsetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
+	// Same class again: a vector-vector binary operator found more than one
+	// series per matching key on the side that must carry exactly one.
+	// Upstream raises it while building its match groups, refusing to pick a
+	// winner, so it is a 422 errorType=execution here too with upstream's
+	// verbatim wording.
+	if chsql.IsManyToManyMatchError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ManyToManyMatchMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
+	// A different family, same shape of guard: the native-histogram
+	// across-series merge (#2385) planted its OWN throwIf rather than
+	// relying on ClickHouse's per-query memory cap to abort after it has
+	// already allocated for a pathological shape. It is cerberus's own
+	// resource bound rather than an upstream-parity rejection, so it takes
+	// the same 422 errorType=execution "resource exhausted" shape as
+	// memoryLimitAPIError / tooManySamplesAPIError instead of restating
+	// upstream wording that does not exist for a server-side SQL engine.
+	if chsql.IsHistogramMergeBudgetError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.HistogramMergeBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
+	// Same family again: a range-window matrix query's sample fanout (#2429)
+	// planted its own throwIf, upstream of the blocking per-(series, anchor)
+	// regroup GROUP BY that would otherwise OOM before ClickHouse's memory
+	// cap gets a chance to abort cleanly. Same 422 errorType=execution
+	// "resource exhausted" shape as the histogram merge guard above.
+	if chsql.IsRateWindowFanoutBudgetError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.RateWindowFanoutBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
+	return nil
 }
 
 // classifyEngineError maps engine.Query / engine.QueryCursor errors to
@@ -1164,59 +1254,8 @@ func classifyEngineError(err error) error {
 	if errors.As(err, &ge) {
 		return &apiError{Kind: ErrExecution, Err: errors.New(ge.Error()), Status: http.StatusUnprocessableEntity}
 	}
-	// A `throwIf` the emitter planted deliberately is a fault in the
-	// QUERY, not in the backend. info()'s conflicting-label abort is the
-	// reference engine's own execution error, so it lands where upstream
-	// puts it — 422 errorType=execution — rather than in the 502 bucket
-	// every other ClickHouse execute failure falls into. The message is
-	// restated rather than forwarded so the client reads the PromQL-level
-	// reason instead of a ClickHouse stack frame.
-	if chsql.IsInfoConflictingLabelError(err) {
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.InfoConflictingLabelMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
-	}
-	// Same class, different guard: a name-dropping range function collapsed
-	// two series onto one label set. Upstream raises this from
-	// Matrix.ContainsSameLabelset() as a plain evaluation error, so it is a
-	// 422 errorType=execution here too — and the restated message is
-	// upstream's verbatim, which is what makes the rejection-parity
-	// comparison against reference Prometheus meaningful.
-	if chsql.IsDuplicateLabelsetError(err) {
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.DuplicateLabelsetMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
-	}
-	// Same class again: a vector-vector binary operator found more than one
-	// series per matching key on the side that must carry exactly one.
-	// Upstream raises it while building its match groups, refusing to pick a
-	// winner, so it is a 422 errorType=execution here too with upstream's
-	// verbatim wording.
-	if chsql.IsManyToManyMatchError(err) {
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.ManyToManyMatchMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
-	}
-	// A different family, same shape of guard: the native-histogram
-	// across-series merge (#2385) planted its OWN throwIf rather than
-	// relying on ClickHouse's per-query memory cap to abort after it has
-	// already allocated for a pathological shape. It is cerberus's own
-	// resource bound rather than an upstream-parity rejection, so it takes
-	// the same 422 errorType=execution "resource exhausted" shape as
-	// memoryLimitAPIError / tooManySamplesAPIError instead of restating
-	// upstream wording that does not exist for a server-side SQL engine.
-	if chsql.IsHistogramMergeBudgetError(err) {
-		return &apiError{
-			Kind:   ErrExecution,
-			Err:    errors.New(chplan.HistogramMergeBudgetMessage),
-			Status: http.StatusUnprocessableEntity,
-		}
+	if ae := classifyThrowIfGuardError(err); ae != nil {
+		return ae
 	}
 	msg := err.Error()
 	switch {

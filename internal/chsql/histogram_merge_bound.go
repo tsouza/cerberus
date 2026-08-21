@@ -1,8 +1,6 @@
 package chsql
 
 import (
-	"strings"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -17,5 +15,5 @@ import (
 // exception prefix is matched alongside the message so a query that merely
 // mentions the phrase in a label value cannot be mistaken for one.
 func IsHistogramMergeBudgetError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+chplan.HistogramMergeBudgetMessage)
+	return isThrowIfError(err, chplan.HistogramMergeBudgetMessage)
 }

@@ -3693,6 +3693,17 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	e.applyMatrixFanoutScanBound(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
 
 	fanoutSource := fanout.Frag()
+	// #2429: cap how many (series, anchor) fanout rows can ever reach the
+	// regroup GROUP BY below via a genuine LIMIT — that GROUP BY is a
+	// blocking operator (it cannot emit any group until it has consumed
+	// the entire fanned-out input), so this is the last point upstream of
+	// it where a LIMIT still acts as a real pipeline short-circuit rather
+	// than racing a value-check against an already-blocking stage. See
+	// rateWindowFanoutBoundedSourceFrag's own doc comment for the full
+	// history of designs that guarded the wrong (downstream) stage first.
+	fanoutSource = rateWindowFanoutBoundedSourceFrag(
+		fanoutSource, groupFrags, srcTs, r.ValueColumn, r.TemporalityColumn, hasTemporality,
+	)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
 	// the Input carries a TemporalityColumn, also read the series' single

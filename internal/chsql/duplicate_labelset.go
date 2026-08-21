@@ -1,8 +1,6 @@
 package chsql
 
 import (
-	"strings"
-
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
@@ -17,5 +15,5 @@ import (
 // message so a query that merely mentions the phrase in a label value cannot be
 // mistaken for one.
 func IsDuplicateLabelsetError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+chplan.DuplicateLabelsetMessage)
+	return isThrowIfError(err, chplan.DuplicateLabelsetMessage)
 }
