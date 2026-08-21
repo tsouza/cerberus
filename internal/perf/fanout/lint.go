@@ -145,11 +145,12 @@ func lintCrossJoins(plan chplan.Node) []Violation {
 // sideIsBounded reports whether a CROSS JOIN side is statically safe:
 // either provably ≤1 row, or already reduced by an Aggregate (its row
 // count is series cardinality, the unavoidable output shape — not raw
-// scan rows). The check peels every ROW-PRESERVING wrapper the lowerings
-// put above the collapsing node: the alias/reshape ones (Project, OrderBy,
-// Limit) and the value-computing ones (HistogramQuantile /
-// HistogramQuantileNative), which emit exactly one row per input row and
-// therefore cannot turn a bounded input into an unbounded side.
+// scan rows). The check peels every ROW-COUNT-NON-INCREASING wrapper the
+// lowerings put above the collapsing node: the alias/reshape ones (Project,
+// OrderBy, Limit), the value-computing ones (HistogramQuantile /
+// HistogramQuantileNative), which emit exactly one row per input row, and
+// Filter, which can only keep or drop rows — none of these can turn a
+// bounded input into an unbounded side.
 func sideIsBounded(n chplan.Node) bool {
 	for {
 		if collapsesFanout(n) {
@@ -174,6 +175,13 @@ func sideIsBounded(n chplan.Node) bool {
 		case *chplan.HistogramQuantile:
 			n = v.Input
 		case *chplan.HistogramQuantileNative:
+			n = v.Input
+		case *chplan.Filter:
+			// e.g. histogramMergeBudgetGuardExpr's throwIf(...) = 0 guard
+			// (#2385) wraps the merge Aggregate in a Filter before the
+			// value-computing wrapper — a Filter can only keep or remove
+			// rows, never multiply them, so the side stays exactly as
+			// bounded as the Aggregate beneath it.
 			n = v.Input
 		default:
 			return false

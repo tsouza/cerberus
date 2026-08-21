@@ -1203,6 +1203,21 @@ func classifyEngineError(err error) error {
 			Status: http.StatusUnprocessableEntity,
 		}
 	}
+	// A different family, same shape of guard: the native-histogram
+	// across-series merge (#2385) planted its OWN throwIf rather than
+	// relying on ClickHouse's per-query memory cap to abort after it has
+	// already allocated for a pathological shape. It is cerberus's own
+	// resource bound rather than an upstream-parity rejection, so it takes
+	// the same 422 errorType=execution "resource exhausted" shape as
+	// memoryLimitAPIError / tooManySamplesAPIError instead of restating
+	// upstream wording that does not exist for a server-side SQL engine.
+	if chsql.IsHistogramMergeBudgetError(err) {
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.HistogramMergeBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	}
 	msg := err.Error()
 	switch {
 	case errContainsStage(msg, "emit"):

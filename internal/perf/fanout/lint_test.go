@@ -141,6 +141,31 @@ func TestRule1_HistogramQuantileOverRawScan_Trips(t *testing.T) {
 	}
 }
 
+// TestRule1_FilterOverAggregate_OK pins #2385's fix to sideIsBounded:
+// wrapping a collapsed Aggregate in a Filter (histogramMergeBudgetGuardExpr's
+// throwIf(...) = 0 guard) must not turn a bounded side unbounded — Filter
+// can only keep or drop rows, never multiply them. (The other half — a
+// Filter over an UN-collapsed relation still tripping — is already covered
+// by TestRule1_UnboundedCrossJoin_Trips, since rawScan() is itself a Filter
+// over a bare Scan.)
+func TestRule1_FilterOverAggregate_OK(t *testing.T) {
+	t.Parallel()
+	right := &chplan.Project{
+		Input: &chplan.HistogramQuantileNative{
+			Input: &chplan.Filter{
+				Input:     collapsed(rawScan()),
+				Predicate: &chplan.LitBool{V: true},
+			},
+			Phi: 0.95,
+		},
+		Projections: []chplan.Projection{{Expr: &chplan.ColumnRef{Name: "Value"}, Alias: "Value"}},
+	}
+	plan := &chplan.CrossJoin{Left: stepGrid(), Right: right}
+	if vs := fanout.Lint(plan, ""); hasRule(vs, fanout.RuleUnboundedCrossJoin) {
+		t.Fatalf("a Filter wrapping a collapsed Aggregate must NOT be flagged, got %v", vs)
+	}
+}
+
 // TestRule2_FanoutFeedingJoin_Trips proves a raw StepGrid feeding a JOIN
 // side without an intervening collapse is flagged.
 func TestRule2_FanoutFeedingJoin_Trips(t *testing.T) {
