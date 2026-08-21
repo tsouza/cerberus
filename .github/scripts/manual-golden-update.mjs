@@ -5,6 +5,20 @@
 // only their shard's generated paths. The final job executes this controller
 // from the workflow ref, validates every patch again, and performs one push.
 //
+// The `cardinality` shard is the one exception to "one shard, one matrix row"
+// (#2341): its own regeneration is CI-matrix-sharded across `cardinality-leg`
+// jobs plus a `cardinality-seal` job (update-golden.yml), mirroring how
+// mutation.yml splits gremlins into `phase*` jobs rather than N processes
+// inside one job. `buildPlan` therefore excludes it from `matrix.include` —
+// the ordinary per-shard `regenerate` matrix — and reports it separately
+// under the `cardinality` key, naming which OTHER selected shards its legs
+// need regenerated first (its data dependency: it profiles the TXTAR corpus's
+// `-- sql --` sections, which only the STAGE_PRE/STAGE_BODY shards write).
+// `cardinality-seal` still ends by calling THIS controller's ordinary
+// MODE=package (SHARD=cardinality) to produce the one `golden-patch-
+// cardinality` artifact the `publish` job already expects — so `publish`
+// itself needs no cardinality-specific code at all.
+//
 // Modes and environment:
 //
 //   node manual-golden-update.mjs dump
@@ -39,6 +53,9 @@ import { fileURLToPath } from 'node:url';
 import { SHARDS, needsChdb, resolveRequested } from './lib/golden-shards.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
+
+/** The one shard whose own regeneration is CI-matrix-sharded — see the header. */
+const CARDINALITY_SHARD = 'cardinality';
 
 function fail(message) {
   process.stderr.write(`::error::${message}\n`);
@@ -84,19 +101,32 @@ export function buildPlan(raw) {
   return {
     selected,
     matrix: {
-      include: selected.map((shard) => {
-        const commandShards = selected.filter(
-          (candidate) => SHARDS[candidate].stage < SHARDS[shard].stage,
-        );
-        commandShards.push(shard);
-        return {
-          shard,
-          command_shards: commandShards.join(' '),
-          allowed_shards: commandShards.join(' '),
-          needs_chdb: needsChdb(commandShards),
-        };
-      }),
+      include: selected
+        .filter((shard) => shard !== CARDINALITY_SHARD)
+        .map((shard) => {
+          const commandShards = selected.filter(
+            (candidate) => SHARDS[candidate].stage < SHARDS[shard].stage,
+          );
+          commandShards.push(shard);
+          return {
+            shard,
+            command_shards: commandShards.join(' '),
+            allowed_shards: commandShards.join(' '),
+            needs_chdb: needsChdb(commandShards),
+          };
+        }),
     },
+    // null when cardinality was not requested. Otherwise, the OTHER selected
+    // shards cardinality's legs need regenerated first — every selected shard
+    // that runs in an earlier stage, exactly the predecessor set a `cardinality`
+    // matrix row would have named as its own `command_shards` before it.
+    cardinality: selected.includes(CARDINALITY_SHARD)
+      ? {
+          predecessors: selected.filter(
+            (candidate) => SHARDS[candidate].stage < SHARDS[CARDINALITY_SHARD].stage,
+          ),
+        }
+      : null,
   };
 }
 
@@ -218,6 +248,18 @@ function plan(env) {
   writeOutput('matrix', JSON.stringify(result.matrix), env.GITHUB_OUTPUT);
   writeOutput('shards', result.selected.join(' '), env.GITHUB_OUTPUT);
   writeOutput('target_sha', targetSha, env.GITHUB_OUTPUT);
+  // Both booleans exist so a job whose own matrix/selection can legitimately be
+  // EMPTY (a dispatch that selected only `cardinality`, or one that selected
+  // no other shard) can tell "correctly skipped" apart from "never ran" without
+  // guessing from a bare `needs.<job>.result == 'skipped'` — the same
+  // ambiguity mutation.yml's `has_phases` output exists to remove.
+  writeOutput('has_regenerate_rows', String(result.matrix.include.length > 0), env.GITHUB_OUTPUT);
+  writeOutput('cardinality_selected', String(result.cardinality !== null), env.GITHUB_OUTPUT);
+  writeOutput(
+    'cardinality_predecessors',
+    (result.cardinality?.predecessors ?? []).join(' '),
+    env.GITHUB_OUTPUT,
+  );
 }
 
 function packagePatch(env) {

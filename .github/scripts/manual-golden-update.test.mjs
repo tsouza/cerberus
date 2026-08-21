@@ -42,10 +42,15 @@ function write(root, relative, body) {
   writeFileSync(target, body);
 }
 
-test('plan expands all into one matrix row per concrete shard', () => {
+test('plan expands all into one matrix row per concrete shard except cardinality', () => {
   const plan = buildPlan('all');
-  assert.equal(plan.matrix.include.length, 10);
+  // 10 concrete shards total (SHARD_NAMES); cardinality is excluded from the
+  // ordinary per-shard matrix because its own regeneration is CI-matrix-sharded
+  // separately (update-golden.yml's cardinality-leg/cardinality-seal jobs, #2341).
+  assert.equal(plan.matrix.include.length, 9);
   assert.ok(plan.matrix.include.every((row) => row.shard !== 'all'));
+  assert.ok(plan.matrix.include.every((row) => row.shard !== 'cardinality'));
+  assert.ok(plan.cardinality !== null);
 });
 
 test('later-stage rows regenerate selected predecessors as context', () => {
@@ -64,13 +69,17 @@ test('later-stage rows regenerate selected predecessors as context', () => {
       allowed_shards: 'solver promql',
       needs_chdb: true,
     },
-    {
-      shard: 'cardinality',
-      command_shards: 'solver promql cardinality',
-      allowed_shards: 'solver promql cardinality',
-      needs_chdb: true,
-    },
   ]);
+});
+
+test('cardinality is reported separately from the matrix, with its selected predecessors', () => {
+  assert.equal(buildPlan('promql').cardinality, null);
+  assert.deepEqual(buildPlan('solver,promql cardinality').cardinality, {
+    predecessors: ['solver', 'promql'],
+  });
+  // cardinality alone: no predecessor shard was also selected, so its legs
+  // regenerate against the corpus as committed rather than re-deriving it.
+  assert.deepEqual(buildPlan('cardinality').cardinality, { predecessors: [] });
 });
 
 test('branch validation rejects the protected branch and ref-shaped input', () => {

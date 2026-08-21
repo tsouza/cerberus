@@ -62,7 +62,39 @@
 //
 // Exits 1 on a missing libchdb.so, on any leg failing, or on the seal step
 // reporting a tree that does not match the corpus.
+//
+// # MODE — CI matrix jobs, not local processes
+//
+// Everything above is the LOCAL entrypoint behind `just update-cardinality-
+// baseline`: N processes fanned out on one machine, in one job. #2341 adds a
+// second entrypoint that runs the identical partition across separate CI
+// MATRIX JOBS (their own runner each), because a process fan-out inside one
+// job still pays that job's wall-clock as ONE number — mirroring how
+// mutation.yml splits gremlins into `phase*` matrix jobs rather than N
+// processes inside one `mutate` job.
+//
+//   MODE=leg   run exactly ONE leg — the same `go test -run TestCardinality
+//              Ratchet` a local process leg runs, with
+//              UPDATE_CARDINALITY_BASELINE=1 — against a CI-supplied
+//              PERF_SHARD_INDEX / PERF_SHARD_COUNT (required). Unlike a local
+//              leg, GOMAXPROCS is left untouched: the CI runner is dedicated
+//              to this one process, so there is no sibling to divide cores
+//              against (perLegGOMAXPROCS is a LOCAL multi-process concern).
+//
+//   MODE=seal  run TestCardinalityBaselineCoversTheCorpus once — the same
+//              closing assertion the local seal step runs — against whatever
+//              is already on disk. In CI this is the tree produced by
+//              downloading and applying every leg's own patch first (see
+//              update-golden.yml's `cardinality-seal` job): no single leg can
+//              see whether its siblings ran, so this is what turns "every
+//              matrix job exited 0" into "the legs together covered the
+//              corpus" — the cross-JOB analogue of the local seal step, and
+//              the thing #2341 asked to relocate.
+//
+// Both modes inherit stdio (one process, one runner, nothing to tag) and exit
+// with the `go test` child's own status code.
 
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import process from 'node:process';
@@ -112,6 +144,94 @@ const UPDATE_ENV = 'UPDATE_CARDINALITY_BASELINE';
 const RATCHET_TEST = '^TestCardinalityRatchet$';
 const SEAL_TEST = '^TestCardinalityBaselineCoversTheCorpus$';
 const PERF_PKG = './test/perf/';
+
+/** True when `n` is a positive integer written as a base-10 string. */
+function isPositiveIntegerString(n) {
+  return /^[1-9][0-9]*$/.test(String(n ?? ''));
+}
+
+/** Reads and validates one required positive-integer env var for MODE=leg. */
+function requiredPositiveInt(name) {
+  const raw = process.env[name];
+  if (!isPositiveIntegerString(raw)) {
+    error(`${name}=${JSON.stringify(raw)} must be a positive integer`);
+    process.exit(1);
+  }
+  return Number.parseInt(raw, 10);
+}
+
+/**
+ * Runs one `go test` invocation to completion with inherited stdio, and exits
+ * this process with its status. There is exactly one child and nothing else
+ * running concurrently on this runner, so there is nothing to tag or buffer —
+ * unlike runAllTagged's local multi-process fan-out, streaming straight
+ * through is both simpler and loses nothing.
+ */
+function runToCompletion(argv, env, timeout) {
+  const chdb = process.env.CHDB_INSTALL_PATH;
+  if (chdb && !existsSync(chdb)) {
+    error(
+      `${chdb} not found — run 'just chdb-install' first; the cardinality package is chdb-tagged ` +
+        'and its test binary cannot even start without the shared library on the runner.',
+    );
+    process.exit(1);
+  }
+  log(`==> ${Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ')} ${argv.join(' ')}`.replace(/\s+/g, ' '));
+  const result = spawnSync(argv[0], argv.slice(1), {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: { ...process.env, ...env },
+  });
+  if (result.error) {
+    error(`cannot execute ${argv.join(' ')}: ${result.error.message}`);
+    process.exit(1);
+  }
+  process.exit(result.status === null ? 1 : result.status);
+}
+
+/**
+ * MODE=leg — one CI matrix job's slice of the profiling pass.
+ *
+ * PERF_SHARD_INDEX / PERF_SHARD_COUNT come from the caller (a matrix entry
+ * and `strategy.job-total` in update-golden.yml's `cardinality-leg` job),
+ * not from CARDINALITY_BASELINE_FANOUT — that env var is the LOCAL override,
+ * and the two are validated against each other only through the Go-side pin
+ * (test/regression), never merged into one input here.
+ *
+ * GOMAXPROCS is deliberately left alone: perLegGOMAXPROCS divides the host's
+ * core count across N SIBLING processes sharing one machine, which is exactly
+ * what a CI matrix job does NOT have — it owns its runner outright.
+ */
+function runCiLeg() {
+  const index = requiredPositiveInt(PERF_SHARD_INDEX_ENV);
+  const count = requiredPositiveInt(PERF_SHARD_COUNT_ENV);
+  if (index > count) {
+    error(`${PERF_SHARD_INDEX_ENV}=${index} exceeds ${PERF_SHARD_COUNT_ENV}=${count}`);
+    process.exit(1);
+  }
+  const timeout = process.env.CARDINALITY_BASELINE_TIMEOUT || DEFAULT_LEG_TIMEOUT;
+  runToCompletion(goTest(RATCHET_TEST, timeout), {
+    [UPDATE_ENV]: '1',
+    [PERF_SHARD_INDEX_ENV]: String(index),
+    [PERF_SHARD_COUNT_ENV]: String(count),
+  });
+}
+
+/**
+ * MODE=seal — the cross-job coverage closure. Run once, after every leg's
+ * patch has been downloaded and applied to this checkout (update-golden.yml's
+ * `cardinality-seal` job) — the exact assertion the local seal step runs, just
+ * relocated from "after every sibling PROCESS finished" to "after every
+ * sibling JOB finished". Asserts against the corpus roster alone (no chDB
+ * session, though the package still needs the chdb tag to compile at all), so
+ * it does not need UPDATE_CARDINALITY_BASELINE — it only ever reads.
+ */
+function runCiSeal() {
+  const timeout = process.env.CARDINALITY_BASELINE_TIMEOUT || DEFAULT_LEG_TIMEOUT;
+  runToCompletion(goTest(SEAL_TEST, timeout), {});
+}
 
 const repoRoot = process.cwd();
 
@@ -191,6 +311,14 @@ function planLine({ label, argv, env }) {
 }
 
 async function main() {
+  const mode = (process.env.MODE || '').trim();
+  if (mode === 'leg') return runCiLeg();
+  if (mode === 'seal') return runCiSeal();
+  if (mode !== '') {
+    error(`cardinality-baseline-update: MODE must be "leg", "seal", or unset (got ${JSON.stringify(mode)})`);
+    process.exit(1);
+  }
+
   const timeout = process.env.CARDINALITY_BASELINE_TIMEOUT || DEFAULT_LEG_TIMEOUT;
   const { legs, seal } = plan(fanOut(), timeout);
 
