@@ -1471,7 +1471,7 @@
     },
     {
       "id": "perf-nightly.perf-nightly",
-      "description": "#2370 nightly real-data measurement harness: loads the real, trimmed production sample into a real ClickHouse and logs sentinel peak_memory_usage/duration. PR A — no baseline/gate yet.",
+      "description": "#2370 nightly real-data regression gate: loads the real, trimmed production sample into a real ClickHouse and asserts each sentinel's max-of-5 peak memory (and expected HTTP outcome) against a committed baseline plus an absolute cap-relative ceiling (PR B).",
       "owner": {
         "workflow": ".github/workflows/perf-nightly.yml",
         "jobs": ["perf-nightly"],
@@ -1490,12 +1490,41 @@
       "substrate": "real-clickhouse",
       "risk_domains": ["performance"],
       "merge_posture": "never",
-      "main_posture": "never",
-      "release_posture": "advisory",
-      "determinism": "observational",
+      "main_posture": "coalesced",
+      "release_posture": "required",
+      "determinism": "deterministic",
       "applicability": { "source": true, "artifact": false },
       "timeout_minutes": 20,
       "slo_minutes": 20,
+      "accountable_owner": "query-quality"
+    },
+    {
+      "id": "perf-nightly.perf-nightly-health-notify",
+      "description": "Roll up the perf-nightly schedule run and file/refresh a tracking issue on any non-success (#1861's mechanism, second consumer).",
+      "owner": {
+        "workflow": ".github/workflows/perf-nightly.yml",
+        "jobs": ["perf-nightly-health-notify"],
+        "producer_jobs": [],
+        "context_job": "perf-nightly-health-notify"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "perf-nightly-health-notify", "protected": false },
+      "purpose": "quality",
+      "layers": ["11"],
+      "oracle_class": "monitor",
+      "recipes": [],
+      "command": "node .github/scripts/notify-perf-nightly-failure.mjs",
+      "build_tags": [],
+      "package_globs": ["test/perf/nightly/**"],
+      "substrate": "github-api",
+      "risk_domains": ["observability"],
+      "merge_posture": "never",
+      "main_posture": "never",
+      "release_posture": "advisory",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 5,
+      "slo_minutes": 5,
       "accountable_owner": "query-quality"
     },
     {

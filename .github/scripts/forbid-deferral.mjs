@@ -766,7 +766,7 @@ export function resolveRange({ baseSha, headSha }) {
 
 // commitsIn — every commit in base..head as { sha, message }. `git log -z`
 // separates records with NUL, so a message containing blank lines survives.
-function commitsIn(base, head) {
+export function commitsIn(base, head) {
   const res = git(['log', '-z', '--format=%H%n%B', `${base}..${head}`]);
   if (res.status !== 0) {
     throw new Error(`git log ${base}..${head} failed: ${res.stderr.trim()}`);
@@ -784,7 +784,7 @@ function commitsIn(base, head) {
     .filter((c) => c.sha !== '');
 }
 
-function diffOf(base, head) {
+export function diffOf(base, head) {
   const res = git(['diff', `--unified=${CITATION_WINDOW_LINES}`, `${base}...${head}`]);
   if (res.status !== 0) {
     throw new Error(`git diff ${base}...${head} failed: ${res.stderr.trim()}`);
@@ -807,7 +807,7 @@ async function probeStatus(url, token) {
   return { ok: res.ok, status: res.status, statusText: res.statusText };
 }
 
-async function apiJson(url, token, what) {
+export async function apiJson(url, token, what) {
   const res = await fetch(url, { headers: apiHeaders(token) });
   if (res.status === HTTP_NOT_FOUND) return null;
   if (!res.ok) {
@@ -890,7 +890,13 @@ export async function descriptionSurface({ eventName, repo, head, token, apiBase
   };
 }
 
-async function resolveRefs(numbers, { repo, token, apiBase }) {
+// resolveRefs (and commitsIn / diffOf / apiJson above it) are exported for
+// perf-sentinel-obligation.mjs, which reuses this exact citation-resolution
+// machinery — the same issuesReadability() 404-ambiguity guard included —
+// rather than re-deriving it for its own, narrower "one specific waiver
+// citation" obligation. Nothing here changed to accommodate that reuse;
+// these are the same functions this file's own main() has always called.
+export async function resolveRefs(numbers, { repo, token, apiBase }) {
   const resolved = new Map();
   // The capability probe runs at most once per run, and only once a lookup has
   // actually come back empty: a run whose every citation resolves has nothing

@@ -1,0 +1,28 @@
+{
+  "sentinels": [
+    {
+      "name": "classic_histogram_quantile_by_route",
+      "expected_status": 200,
+      "max_of_n_bytes": 9726370,
+      "ceiling_bytes": 14589555
+    },
+    {
+      "name": "request_rate_by_method",
+      "expected_status": 422,
+      "max_of_n_bytes": 278242204,
+      "ceiling_bytes": 417363306
+    },
+    {
+      "name": "pod_status_reason_gauge",
+      "expected_status": 200,
+      "max_of_n_bytes": 817730723,
+      "ceiling_bytes": 912680550
+    },
+    {
+      "name": "error_ratio_by_namespace",
+      "expected_status": 422,
+      "max_of_n_bytes": 296620019,
+      "ceiling_bytes": 444930028
+    }
+  ]
+}

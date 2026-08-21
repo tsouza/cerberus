@@ -362,18 +362,37 @@ perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
-# Run the #2370 nightly measurement harness: loads the real, trimmed
-# production sample (test/perf/nightly/testdata/samples/*.parquet, LFS —
-# needs `git lfs pull` first if not already fetched) into a real ClickHouse
-# and issues a curated sentinel corpus, logging real
-# peak_memory_usage/duration numbers. No baseline/gate yet (PR A of #2370 —
-# "prove the mechanism, print the numbers"). Requires Docker; gated behind
-# the `integration` build tag. See
+# Run the #2370 nightly measurement + regression gate: loads the real,
+# trimmed production sample (test/perf/nightly/testdata/samples/*.parquet,
+# LFS — needs `git lfs pull` first if not already fetched) into a real
+# ClickHouse and issues a curated sentinel corpus, gating each one's
+# max-of-N peak memory against a committed baseline (nightly-baseline.json)
+# plus an absolute cap-relative ceiling, and its HTTP status against the
+# outcome each sentinel was calibrated to expect (PR B of #2370). Requires
+# Docker; gated behind the `integration` build tag. See
 # test/perf/nightly/realch_perfnightly_integration_test.go and
 # .github/workflows/perf-nightly.yml.
 perf-nightly-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+
+# Regenerate nightly-baseline.json: for each #2370 nightly sentinel the
+# calibration-time max-of-N peak memory_usage plus the headroom-multiplied
+# ceiling (nightlyBaselineHeadroom) the gate actually asserts against, and
+# the HTTP status it was calibrated to expect. Requires Docker and (once,
+# if not already fetched) `git lfs pull` for the trimmed sample parquet
+# files. Run this — and REVIEW THE DIFF — only when a bound move is
+# genuinely intended (a real, justified memory-cost increase, or a
+# deliberate change to which sentinels are expected to be rejected by a
+# resource bound); a silent loosen is exactly the regression this lane
+# exists to catch. The gating assertion is TestPerfNightlyRealCH, wired
+# into .github/workflows/perf-nightly.yml.
+update-nightly-perf-baseline:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    UPDATE_NIGHTLY_PERF_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
+    @echo
+    @echo "Diff of regenerated baseline:"
+    @git --no-pager diff --stat test/perf/nightly-baseline.json || true
 
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is

@@ -44,6 +44,7 @@ export const COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/migration-e2e.yml',
   '.github/workflows/mutation.yml',
   '.github/workflows/perf-benchmark.yml',
+  '.github/workflows/perf-nightly.yml',
   '.github/workflows/perf-profile.yml',
   '.github/workflows/property.yml',
   '.github/workflows/schema-integration.yml',
@@ -71,6 +72,18 @@ export const NEVER_COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/release-gate-drift.yml',
   '.github/workflows/release.yml',
 ]);
+
+// Per-LANE exclusion, finer than NEVER_COALESCED_WORKFLOWS: perf-nightly.yml
+// is genuinely mixed — its `perf-nightly` job needs coalescing (a real,
+// expensive ClickHouse run that a rapid main push should replace, not
+// queue behind), but `perf-nightly-health-notify` runs only on
+// `schedule` (`if: github.event_name == 'schedule'`) and never on the
+// push-to-main trigger the workflow otherwise coalesces for, so its own
+// lane posture correctly stays `never` even though its owning workflow is
+// coalesced-enrolled. A whole-workflow exclusion (the perf-benchmark
+// pattern below) does not fit here because the OTHER lane in the same
+// workflow does need coalescing.
+export const NEVER_COALESCED_LANES = Object.freeze(new Set(['perf-nightly.perf-nightly-health-notify']));
 
 export const QUICKSTART_GROUP_EXPRESSION =
   "quickstart-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}";
@@ -354,6 +367,7 @@ export function auditMainCoalescing(root = process.cwd()) {
       continue;
     }
     for (const lane of lanes) {
+      if (NEVER_COALESCED_LANES.has(lane.id)) continue;
       if (lane.main_posture !== 'coalesced') {
         problems.push(
           `${lane.id}: owner ${workflow} is latest-main enrolled but lane posture is ${lane.main_posture}`,
@@ -368,6 +382,15 @@ export function auditMainCoalescing(root = process.cwd()) {
   if (benchmark.length === 0 || benchmark.some((lane) => lane.main_posture !== 'never')) {
     problems.push(
       'perf-benchmark schedule is coalesced, but its no-push main posture must remain never',
+    );
+  }
+
+  const nightlyNotify = registry.lanes.find((lane) => lane.id === 'perf-nightly.perf-nightly-health-notify');
+  if (!nightlyNotify || nightlyNotify.main_posture !== 'never') {
+    problems.push(
+      'perf-nightly.perf-nightly-health-notify must remain main-never — it runs only on schedule ' +
+        "(if: github.event_name == 'schedule'), never on the push-to-main trigger the rest of its " +
+        'owning workflow coalesces for',
     );
   }
 

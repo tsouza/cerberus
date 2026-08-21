@@ -114,3 +114,21 @@ jobs:
         run: node .github/scripts/rejection-parity-divergence-liveness.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # #2370's same-PR obligation gate: a change to a memory-bounding
+      # settings file (internal/engine/query_settings_rules.go,
+      # internal/engine/spill.go) must add sentinel coverage or cite an
+      # open-issue waiver — the same #2364 postmortem this whole lane
+      # traces back to. Reuses forbid-deferral.mjs's own citation-
+      # resolution machinery, so it rides this same job/workflow rather
+      # than re-deriving the PR-description-as-a-surface trigger setup
+      # above (the `edited` type is exactly as load-bearing for a
+      # waiver-in-the-body fix as it is for a deferral-marker one).
+      - name: Assert the perf-sentinel obligation scanner matches
+        run: node --test .github/scripts/perf-sentinel-obligation.test.mjs
+      - name: Reject a settings-file change with no sentinel coverage or waiver
+        run: node .github/scripts/perf-sentinel-obligation.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

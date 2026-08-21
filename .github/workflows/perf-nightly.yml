@@ -1,20 +1,38 @@
 name: perf-nightly
 
-# The #2370 nightly, real-data measurement harness (PR A): loads the real,
-# trimmed production sample (test/perf/nightly/testdata/samples/*.parquet)
-# into a real ClickHouse and runs a curated PromQL sentinel corpus, logging
-# real peak_memory_usage/duration numbers. See
-# test/perf/nightly/realch_perfnightly_integration_test.go's doc comment for
-# the full "why".
+# The #2370 nightly, real-data measurement + regression gate: loads the
+# real, trimmed production sample (test/perf/nightly/testdata/samples/*.parquet)
+# into a real ClickHouse and asserts a curated PromQL sentinel corpus's
+# max-of-5 peak memory (and expected HTTP outcome) against a committed
+# baseline (test/perf/nightly-baseline.json) plus an absolute cap-relative
+# ceiling. See test/perf/nightly/realch_perfnightly_integration_test.go's
+# doc comment for the full "why" and gate mechanics.
 #
-# workflow_dispatch only for now — PR A's own scope is "prove the mechanism,
-# print the numbers," not gate anything yet. A follow-up PR adds the nightly
-# `schedule:` cron, release-gate mode, a committed statistical baseline, and
-# alerting on failure (reusing notify-nightly-failure.mjs's stable-title
-# issue lifecycle) once this harness's own numbers have calibrated one.
+# There is deliberately NO `pull_request:` trigger — same posture and same
+# reasoning as migration-e2e.yml: this workflow can never become a
+# branch-protection (merge-gate) check, only a RELEASE-gate one
+# (release.yml's RELEASE_REQUIRED_CHECKS), so it never adds latency or cost
+# to an ordinary PR. `push: branches: [main, 'release/*.x']` exists so the
+# maintenance publish path (a direct push to a release/*.x line, no PR)
+# still gets a real check-run for release.yml's preflight to wait on —
+# without it, a required check named in RELEASE_REQUIRED_CHECKS but never
+# posting there blocks every maintenance release forever.
 
 on:
+  push:
+    branches: [main, 'release/*.x']
+  schedule:
+    # 05:17 UTC — offset from perf-profile.yml's 05:00 nightly cron.
+    - cron: '17 5 * * *'
   workflow_dispatch:
+
+concurrency:
+  # Main pushes and matching cron schedules replace only their own modes.
+  # A release/*.x push or a manual dispatch uses a unique run-id group and
+  # can neither queue behind nor cancel source work. See
+  # main-coalescing.mjs (this workflow is enrolled in COALESCED_WORKFLOWS).
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 permissions:
   contents: read
@@ -55,3 +73,38 @@ jobs:
 
       - name: Run the #2370 nightly measurement harness (real ClickHouse)
         run: just perf-nightly-integration
+
+  # Files/refreshes a single tracking issue when the SCHEDULE run does not
+  # reach a clean pass, closes it on the next clean night. Same mechanism
+  # e2e.yml's nightly-health-notify job uses (notify-nightly-failure.mjs,
+  # #1861) via the shared lib/nightly-health-notify.mjs — see
+  # notify-perf-nightly-failure.mjs's own header for the fuller "why".
+  #
+  # Scoped to `github.event_name == 'schedule'` only: a push-triggered run
+  # (main / release/*.x) already has a visible required check-run for
+  # release.yml's preflight to react to, and workflow_dispatch is a manual,
+  # already-attended action — the silent-red gap this exists to close is
+  # specifically the unattended cron trigger.
+  perf-nightly-health-notify:
+    name: perf-nightly-health-notify
+    needs: [perf-nightly]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level permissions REPLACE the workflow-level block (see e2e.yml's
+    # nightly-health-notify for the same note) — contents: read has to be
+    # restated for checkout, and issues: write is what lets this
+    # file/comment/close the tracking issue.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: roll up the nightly run and notify on non-success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT_PERF_NIGHTLY: ${{ needs.perf-nightly.result }}
+        run: node .github/scripts/notify-perf-nightly-failure.mjs
