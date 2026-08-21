@@ -38,6 +38,31 @@ name: perf-profile
 # always-on lane; this one stays breadth-coverage. Mirrors chart-ci.yml's no-op
 # pattern.
 #
+# # Sharding (tsouza/cerberus#2375)
+#
+# This used to be ONE job walking the whole corpus serially. Job history
+# showed the real (RUN_HEAVY) run creeping toward and then past its 30-minute
+# budget as test/spec grew: 9 of the 11 most recent non-PR runs before a
+# stopgap timeout doubling (30m -> 60m, since superseded by this sharded
+# design) were killed by the timeout with no error of their own — the walk
+# was still working, just not finished; the two that completed took 22m21s
+# and 28m58s at the job level, both close to the old ceiling. That is a
+# capacity problem, not a flake: doubling the timeout again on the next
+# regrowth is not a sustainable pattern.
+#
+# The durable fix mirrors `perf-guards-shard` / `perf-guards` in chdb.yml,
+# which already shards this EXACT corpus walk (both lanes call
+# test/perf/profile.ProfileCorpusShard — perf-guards-shard for
+# TestCardinalityRatchet's pass/fail assertion, profile-shard here for the
+# breadth report) across PERF_SHARD_INDEX / PERF_SHARD_COUNT
+# (test/perf/profile/shard.go). `profile-shard` is the matrix, one leg per
+# corpus slice; `profile` is the AGGREGATOR, kept at exactly that name
+# because release.yml's RELEASE_REQUIRED_CHECKS resolves `profile` by exact
+# text (matrix children report as `profile-shard (n)`, never `profile`) — a
+# required context that a renamed job stops posting sits "Expected" forever.
+# See .github/scripts/perf-profile-aggregate.mjs for the roll-up logic and
+# PERF_PROFILE_SHARD_COUNT below for the leg count.
+#
 # Triggers: pull_request (release/* only) + push-to-main + nightly + dispatch.
 
 on:
@@ -62,34 +87,135 @@ concurrency:
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
+  # `profile-shard` — the matrix; each leg profiles ONLY the corpus slice its
+  # PERF_SHARD_INDEX names, via the same cmd/perf-profile binary the old
+  # single-job lane ran, unchanged apart from reading the shard from env
+  # (test/perf/profile.ShardFromEnv). No matrix-generator script: the
+  # partition is computed at RUN TIME from the fixture id, exactly as
+  # perf-guards-shard's is, so the matrix carries no membership information —
+  # only how many legs there are. Changing PERF_PROFILE_SHARD_COUNT below and
+  # the `shard:` list together is the whole knob; the partition rebalances
+  # itself and no baseline or check name moves.
+  profile-shard:
+    name: profile-shard
+    runs-on: ubuntu-latest
+    # Job-level, not step-level: `env` context is not available in a job
+    # `if:`, so this repeats (rather than reads) the same RUN_HEAVY condition
+    # the `profile` aggregator's own `env.RUN_HEAVY` uses for its steps.
+    # Skipping the WHOLE matrix — not just its steps — on an ordinary PR
+    # avoids spinning up 8 legs that would each immediately no-op; mirrors
+    # mutation.yml's has_phases short-circuit.
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
+    # A leg profiles ~1/8 of the corpus that used to take 22-29 minutes
+    # serially — a few minutes of real work plus setup. 20m leaves a wide
+    # margin over that while still catching a genuine hang well inside the
+    # aggregator's own budget; it is a hang detector, not an estimate.
+    timeout-minutes: 20
+    strategy:
+      # MANDATORY: one shard's failure must not cancel its siblings — the
+      # default (true) would cancel in-flight legs into the ambiguous
+      # `cancelled` rollup and hide whether the others would also have
+      # failed, and for a corpus-wide fan-out sweep a regression typically
+      # shows up in several slices at once.
+      fail-fast: false
+      matrix:
+        # PERF_PROFILE_SHARD_COUNT. The corpus (test/spec/**) held 963
+        # executable fixtures when this was written; the unsharded walk
+        # measured 22m21s-28m58s at the job level on an isolated GH runner
+        # (tsouza/cerberus#2375). 8 legs — the same count `perf-guards-shard`
+        # in chdb.yml already uses to shard THIS EXACT walk (both lanes call
+        # test/perf/profile.ProfileCorpusShard over the same corpus) — puts
+        # each leg's own profiling work at roughly (22-29 min)/8 ≈ 3-4
+        # minutes on CI-grade hardware. A local run of a 1/8 slice (133
+        # fixtures) measured 4m50s of pure profiling time on a machine
+        # shared with other concurrent chdb-tagged processes — see the
+        # `perf-chdb` recipe's own caveat in Justfile about why a local
+        # figure taken under contention runs high; the issue's own CI
+        # figures are the trustworthy baseline here. Either number leaves
+        # wide headroom under this job's 20-minute ceiling, let alone the
+        # 60-minute one the old serial job used. Even after the corpus
+        # roughly triples, a leg stays comfortably inside that ceiling.
+        # Changing the leg count is just editing this list — the partition
+        # in test/perf/profile/shard.go rebalances itself, no baseline
+        # to regenerate.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      # PERF_SHARD_COUNT comes from `strategy.job-total`, NOT a second
+      # literal: it is the number of legs this matrix actually fans out to,
+      # so the count the partition divides by cannot drift from the count
+      # that runs. A hand-written 8 left behind after the list changed would
+      # silently leave a slice of the corpus profiled by nobody.
+      - name: Profile corpus fan-out — shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: |
+          go run -tags chdb ./cmd/perf-profile \
+            -spec test/spec \
+            -out perf-profile-shard-${{ matrix.shard }}.json \
+            -top 0
+        env:
+          PERF_SHARD_INDEX: ${{ matrix.shard }}
+          PERF_SHARD_COUNT: ${{ strategy.job-total }}
+
+      - name: Upload shard profile artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-profile-shard-${{ matrix.shard }}
+          path: perf-profile-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The AGGREGATOR — named EXACTLY `profile` because that is the name
+  # release.yml's RELEASE_REQUIRED_CHECKS resolves by text (see the
+  # workflow-level comment above). It merges the profile-shard matrix's
+  # per-leg JSON into the SAME single combined artifact + step-summary table
+  # the old unsharded job produced, so the sharded lane still leaves one
+  # place to look rather than 8 disconnected partial reports.
+  #
+  # This job runs the DEFAULT (non-chdb-tagged) build of cmd/perf-profile:
+  # `-merge` only reads/ranks JSON someone else already collected (see
+  # cmd/perf-profile/report.go), so the aggregator needs neither
+  # `just chdb-install` nor the `chdb` build tag.
   profile:
     name: profile
+    needs: profile-shard
+    # always() so it still runs — and still reports the required release
+    # check — when profile-shard was skipped on an ordinary PR. A required
+    # context that goes missing is indistinguishable from one still running.
+    if: always()
     runs-on: ubuntu-latest
-    # The corpus-wide walk's cost tracks the size of test/spec, which has been
-    # growing. Job history shows the real (RUN_HEAVY) run now sits close to
-    # or past a 30-minute budget even when it completes cleanly (two recent
-    # successes: 22m21s and 28m58s at the job level), and 9 of the 11 most
-    # recent non-PR runs before this change were killed by that timeout with
-    # no error of their own - the step was still working, just not finished.
-    # Confirmed by direct log comparison: a genuinely successful run has the
-    # exact same multi-minute silent gap (no stdout between the last `go:
-    # downloading` line and the final results table) that the killed runs
-    # show right up to the point they get cut off - the silence is normal
-    # output shape for this step, not evidence of a stall. Double the budget
-    # for real headroom rather than retrying an operation that was never
-    # stuck. cerberus issue #2375 tracks reducing the step's own cost (e.g.
-    # sharding the corpus walk the way the e2e crawl lanes already do) as the
-    # more durable fix; this bump is what actually restores a working gate
-    # today.
-    timeout-minutes: 60
-    # RUN_HEAVY gates the real work: true on push / schedule / dispatch, and on
-    # a release PR (head branch release/*). On a regular PR every heavy step is
-    # skipped and the job reports green without work — so `profile` gates the
-    # release and release PRs, and never blocks an ordinary PR.
+    timeout-minutes: 10
+    # Same RUN_HEAVY condition profile-shard's job-level `if:` inlines; here
+    # it can live in `env` because step `if:`s (unlike a job `if:`) can read
+    # the `env` context.
     env:
       RUN_HEAVY: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/') }}
     steps:
       - uses: actions/checkout@v7
+
+      # Fails the job — before anything else runs — unless the shard matrix
+      # rolled up exactly the way this run's RUN_HEAVY says it should:
+      # skipped on an ordinary PR, all-success on a heavy run. See the
+      # script for the full decision table (a skipped-but-heavy or
+      # ran-but-not-heavy result means the two jobs' gates drifted apart;
+      # `failure`/`cancelled` means a leg genuinely broke or hung).
+      - name: Verify the profile-shard matrix rolled up cleanly
+        run: node .github/scripts/perf-profile-aggregate.mjs
+        env:
+          SHARDS_RESULT: ${{ needs.profile-shard.result }}
 
       - if: env.RUN_HEAVY == 'true'
         uses: actions/setup-go@v7
@@ -97,20 +223,29 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - if: env.RUN_HEAVY == 'true'
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1  # v2.85.13
-        with:
-          tool: just
-
-      - name: Install libchdb.so
+      - name: Download shard profiles
         if: env.RUN_HEAVY == 'true'
-        run: just chdb-install
+        uses: actions/download-artifact@v8
+        with:
+          pattern: perf-profile-shard-*
+          path: shards
+          merge-multiple: true
 
-      - name: Profile corpus fan-out
+      # No `-expect-shards`: that would mean a second literal repeating
+      # profile-shard's matrix length here, exactly the kind of copy that
+      # drifts silently when the shard list changes (mirrors chdb.yml's
+      # `perf-guards` aggregator, which for the same reason never passes
+      # `strategy.job-total` across jobs either). Completeness is proven
+      # upstream instead: the "rolled up cleanly" step above already refused
+      # to reach this point unless EVERY profile-shard leg succeeded — i.e.
+      # every leg uploaded its artifact — and mergeRecords' own duplicate-
+      # fixture check (report.go) still catches a partition that somehow
+      # stopped being disjoint.
+      - name: Merge shard profiles into one report
         if: env.RUN_HEAVY == 'true'
         run: |
-          go run -tags chdb ./cmd/perf-profile \
-            -spec test/spec \
+          go run ./cmd/perf-profile \
+            -merge 'shards/*.json' \
             -out perf-profile.json \
             -md "$GITHUB_STEP_SUMMARY" \
             -top 40

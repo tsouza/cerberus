@@ -1550,6 +1550,31 @@ what actually runs.
   - Exit: `0` when every shard passed or the lane was correctly
     short-circuited, `1` otherwise.
 
+- **`perf-profile-aggregate.mjs`** — `perf-profile.yml`, the `profile` job. Same
+  shape as `perf-guards-aggregate.mjs`, one level simpler: the corpus-wide
+  fan-out PROFILE (breadth report, not a pass/fail assertion) was one job
+  walking the whole TXTAR corpus serially, and 9 of the 11 most recent non-PR
+  runs before a stopgap timeout doubling were killed by the job's own timeout
+  as `test/spec` kept growing, with no error of their own (tsouza/cerberus#2375).
+  It shards the SAME corpus through the SAME partition
+  (`test/perf/profile.ProfileCorpusShard`) `perf-guards-shard` already uses, so
+  `profile-shard (n)` — never `profile` — is what GitHub actually posts, and
+  this aggregator keeps the required name. It has no `changes`/`docs_only`
+  input (this lane is release-gated, not PR-gated, so its skip condition is
+  simpler): a heavy run (push / schedule / dispatch / release PR) must see the
+  matrix roll up to `success`, and an ordinary PR must see it `skipped`; any
+  other combination means the two jobs' RUN_HEAVY gates drifted apart. On a
+  green verdict the `profile` job goes on to run
+  `go run ./cmd/perf-profile -merge '<dir>/*.json' ...` (see
+  `cmd/perf-profile/report.go`) to fold the shards' JSON outputs into the one
+  combined report + step summary the lane always produced.
+  `perf-profile-aggregate.test.mjs` is the `node --test` guard (run on
+  `ci.yml`'s scripts lane) that pins both directions.
+  - Env: `RUN_HEAVY` (this job's own env value), `SHARDS_RESULT` (the
+    matrix's rolled-up result).
+  - Exit: `0` when the shards rolled up the way RUN_HEAVY says they should,
+    `1` otherwise.
+
 - **`chdb-roundtrip.mjs`** — `chdb.yml`, the `roundtrip (<ql>)` matrix job. Runs
   one head's chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
   `./internal/<ql>/` (post-optimizer plus the reference-engine parity). It
