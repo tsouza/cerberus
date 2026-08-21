@@ -84,7 +84,14 @@ func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*
 // sum/avg on that side composes identically); the float-valued side
 // defers to the ordinary [lower]. Both are then widened to the shared
 // fourteen-column Mixed contract by the chsql emitter — this function
-// only builds the [chplan.VectorSetOp] naming which side is which.
+// only builds the [chplan.VectorSetOp] naming which side is which. The
+// float side may be any of the three row shapes
+// internal/chsql's vectorSetOpCanonicalArmFrag doc comment names —
+// canonical-shape, matrix RangeWindow, or instant derived-shape
+// (cerberus issue #2333) — because that package's
+// mixedVectorSetOpArmFrag canonicalises the float arm through the exact
+// same vectorSetOpCanonicalQuartetFrags helper the plain-VectorSetOp
+// path uses; see this function's shape guard below.
 func lowerMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
@@ -104,20 +111,27 @@ func lowerMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx low
 	if err != nil {
 		return nil, err
 	}
-	// The float side must publish the plain canonical quartet: a
-	// windowed / already-derived float shape (a matrix rate(), a
-	// reduced instant aggregation) needs its OWN reconciliation against
-	// the histogram side's row shape that this file does not attempt —
-	// scoped out deliberately rather than silently mis-projected. Every
-	// shape this rejects today was ALREADY rejected before this file
-	// existed (the histogram side hit expHistogramSelectorRouting), so
-	// this is not a regression, only a narrower acceptance than the
-	// eventual general case.
-	if shape := chplan.RowShapeOf(floatNode); shape != chplan.SampleRowShape {
+	// The float side must publish one of the three row shapes
+	// internal/chsql's vectorSetOpCanonicalQuartetFrags already knows how
+	// to canonicalise to the plain four-column quartet — the plain
+	// canonical shape, a matrix RangeWindow (rate(...) etc. at range-query
+	// step), or an instant derived shape (a reduced _over_time /
+	// aggregation) — because mixedVectorSetOpArmFrag widens the float arm
+	// through that exact helper (cerberus issue #2333). HistogramRowShape
+	// and MixedRowShape are refused defensively: floatExpr already failed
+	// isExpHistogramValuedShape above, so lower(floatExpr, ...) should
+	// never hand back either, but a stray future histogram-aware float
+	// lowering must not silently mis-project through this path if it
+	// ever does.
+	switch shape := chplan.RowShapeOf(floatNode); shape {
+	case chplan.SampleRowShape, chplan.GridWindowRowShape, chplan.ReducedWindowRowShape:
+		// Supported — vectorSetOpCanonicalQuartetFrags canonicalises all
+		// three to the plain quartet.
+	default:
 		return nil, fmt.Errorf(
-			"promql: 'or' between a float-valued and a histogram-valued operand only "+
-				"supports a plain (non-windowed) float side today; got a %s-shaped float "+
-				"operand, which cerberus issue #2330 does not yet cover",
+			"promql: 'or' between a float-valued and a histogram-valued operand does not "+
+				"support a %s-shaped float operand, which cerberus issue #2333 does not "+
+				"cover",
 			shape,
 		)
 	}
