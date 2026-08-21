@@ -1336,7 +1336,11 @@ carries as much weight as the steps themselves:
 3. **Audit the delta.** One last pass over the complete diff since the previous
    release: code against comments against docs, DRY, KISS, soundness. This is
    the final gate — findings are fixed and merged onto `main` here, before any
-   line is backported and before any tag exists.
+   line is backported and before any tag exists. Also glance at `perf-nightly`'s
+   own trend across the cycle's runs, not just its latest pass/fail: the gate
+   catches a single run regressing past its committed ceiling, but a slow,
+   multi-cycle creep that stays under headroom on every individual night is
+   exactly the shape it cannot see by design.
 4. **Backport everything to every line that stays supported.** Every fix that
    landed on `main` since the previous release goes onto every
    `release/<major>.<minor>.x` line that is still supported once this cycle
@@ -1399,8 +1403,11 @@ selection between them:
   cost-dominating lanes an ordinary PR does not need to wait on —
   `perf-guards` and `benchstat diff`, the chDB `roundtrip` / `integration` /
   `chdb-build` lanes, `gremlins` mutation testing, all six `compatibility/*`
-  differential heads, `migration-e2e`, and the substrate smoke lanes
-  `compose-smoke` / `dashboard` (never a branch-protection required context
+  differential heads, `migration-e2e`, `perf-nightly` (the #2370 real-data
+  regression gate — like `migration-e2e` it has no `pull_request:` trigger
+  at all, only `push: [main, release/*.x]` + `schedule` + manual dispatch,
+  so it never runs on an ordinary PR, heavy or otherwise), and the substrate
+  smoke lanes `compose-smoke` / `dashboard` (never a branch-protection required context
   on `main` — `release.yml`'s preflight is their only reader; see
   `e2e.yml`'s header). Each of those lanes still triggers on every
   `pull_request` (so its check-run stays visible for author feedback), but

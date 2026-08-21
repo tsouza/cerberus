@@ -26,21 +26,11 @@
 // What this does
 // ---------------
 // Runs as the last job of a `schedule`-triggered e2e.yml run, downstream of
-// every terminal aggregator/leaf job the lane has. Rolls their `needs.*.result`
-// facts up with the same strict `!== 'success'` rule the aggregators
-// themselves use (catches `failure` AND `cancelled` AND an unexpected
-// `skipped` in one comparison — see perf-guards-aggregate.mjs / dashboard's
-// own gate step for the same rule applied one level up):
-//
-//   - not all clean -> open or update the ONE nightly-health tracking issue
-//     (matched by an exact, stable title so consecutive bad nights update the
-//     same issue instead of piling up duplicates) and exit 1, so the job
-//     itself is loud too.
-//   - all clean, and a tracking issue is open -> comment + close it. A
-//     tracking issue nobody ever closes is its own kind of noise: the next
-//     person to look would not be able to tell a live incident from a stale
-//     one.
-//   - all clean, no tracking issue -> nothing to do.
+// every terminal aggregator/leaf job the lane has. The actual create/
+// comment/close/noop lifecycle lives in lib/nightly-health-notify.mjs,
+// shared with #2370's perf-nightly lane (notify-perf-nightly-failure.mjs) —
+// this file supplies only what's specific to e2e: which jobs matter, the
+// stable tracking title, and the labels.
 //
 // Uses the existing `automated` + `area/ci` labels (both already exist in the
 // repo) rather than a new label, so there is no separate label-provisioning
@@ -63,7 +53,16 @@
 // by the workflow's GH_TOKEN.
 
 import process from 'node:process';
-import { capture, error, notice } from './lib/gh.mjs';
+import {
+  classifyNightlyHealth,
+  findTrackingIssue,
+  decideNotifyAction,
+  buildFailureBody as libBuildFailureBody,
+  buildRecoveryBody as libBuildRecoveryBody,
+  runNotifyMain,
+} from './lib/nightly-health-notify.mjs';
+
+export { classifyNightlyHealth, findTrackingIssue, decideNotifyAction };
 
 /** The one label pair used to find (and file) the tracking issue. Both
  * already exist as repo labels; `gh issue list --label` ANDs multiple
@@ -75,67 +74,12 @@ export const NIGHTLY_TRACKING_LABELS = ['automated', 'area/ci'];
  * refreshing the one that already tracks the incident. */
 export const NIGHTLY_TRACKING_TITLE = 'nightly e2e run did not reach a clean pass';
 
-/**
- * Pure roll-up over the terminal job results a schedule run produces.
- * Mirrors the aggregators' own rule: anything other than `success` — a real
- * `failure`, a `cancelled` kill, or an unexpected `skipped` — counts against
- * a clean night. Every job named here is unconditional on `schedule` (see
- * each job's own `if:` in e2e.yml), so `skipped` is never the benign case it
- * would be on another trigger.
- */
-export function classifyNightlyHealth(jobResults) {
-  const failed = Object.entries(jobResults)
-    .filter(([, result]) => result !== 'success')
-    .map(([name, result]) => `${name}: ${result || '(missing)'}`);
-  return { ok: failed.length === 0, failed };
-}
-
-/** Find the open tracking issue, if any, by its exact stable title. Pure so
- * the dedup logic is tested without a `gh` round-trip. */
-export function findTrackingIssue(issues, title) {
-  const match = (issues || []).find((issue) => issue.title === title);
-  return match ? match.number : null;
-}
-
-/**
- * Pure decision over (current health) x (an existing tracking issue or not).
- * Four cells, all named explicitly rather than derived, so a guard test can
- * drive every one directly.
- */
-export function decideNotifyAction({ ok, existingIssueNumber }) {
-  const hasExisting = existingIssueNumber !== null && existingIssueNumber !== undefined;
-  if (!ok) {
-    return hasExisting ? { action: 'comment', number: existingIssueNumber } : { action: 'create' };
-  }
-  return hasExisting ? { action: 'close', number: existingIssueNumber } : { action: 'noop' };
-}
-
 export function buildFailureBody({ failed, runUrl, runId }) {
-  const list = failed.map((f) => `- \`${f}\``).join('\n');
-  return [
-    'The nightly `e2e` schedule run did not reach a clean pass.',
-    '',
-    `Run: ${runUrl} (id ${runId})`,
-    '',
-    'Non-success jobs (anything but `success` — a real failure, a `cancelled`',
-    'kill, or an unexpected `skipped`):',
-    list,
-    '',
-    'Filed/updated automatically by `.github/scripts/notify-nightly-failure.mjs`' +
-      ' — see tsouza/cerberus#1861 for why this exists: a nightly that reports' +
-      ' red into a place nobody looks is as silent as one that never reports at' +
-      ' all. This issue closes itself on the next clean nightly.',
-  ].join('\n');
+  return libBuildFailureBody({ laneLabel: 'e2e', failed, runUrl, runId, issueRef: 'tsouza/cerberus#1861' });
 }
 
 export function buildRecoveryBody({ runUrl, runId }) {
-  return [
-    'The nightly `e2e` schedule run reached a clean pass.',
-    '',
-    `Run: ${runUrl} (id ${runId})`,
-    '',
-    'Closing automatically — see `.github/scripts/notify-nightly-failure.mjs`.',
-  ].join('\n');
+  return libBuildRecoveryBody({ laneLabel: 'e2e', runUrl, runId });
 }
 
 function readJobResults(env) {
@@ -150,88 +94,19 @@ function readJobResults(env) {
   };
 }
 
-function ghOrDie(args, failMessage) {
-  const res = capture('gh', args);
-  if (res.status !== 0) {
-    error(`${failMessage}: ${res.stderr.trim() || res.stdout.trim()}`, { title: 'nightly-health-notify' });
-    process.exit(1);
-  }
-  return res.stdout;
-}
-
 function main() {
-  const repo = process.env.REPO ?? '';
-  const runId = process.env.RUN_ID ?? '';
-  const runUrl = process.env.RUN_URL ?? '';
-  const jobResults = readJobResults(process.env);
-
-  const health = classifyNightlyHealth(jobResults);
-
-  const labelArgs = NIGHTLY_TRACKING_LABELS.flatMap((l) => ['--label', l]);
-  const listOut = ghOrDie(
-    ['issue', 'list', '--repo', repo, '--state', 'open', ...labelArgs, '--json', 'number,title', '--limit', '30'],
-    'gh issue list failed',
-  );
-  let issues;
-  try {
-    issues = JSON.parse(listOut);
-  } catch (err) {
-    error(`gh issue list returned unparsable JSON: ${err.message}`, { title: 'nightly-health-notify' });
-    process.exit(1);
-  }
-  const existingIssueNumber = findTrackingIssue(issues, NIGHTLY_TRACKING_TITLE);
-  const decision = decideNotifyAction({ ok: health.ok, existingIssueNumber });
-
-  switch (decision.action) {
-    case 'create': {
-      const body = buildFailureBody({ failed: health.failed, runUrl, runId });
-      const out = ghOrDie(
-        [
-          'issue',
-          'create',
-          '--repo',
-          repo,
-          '--title',
-          NIGHTLY_TRACKING_TITLE,
-          '--body',
-          body,
-          ...labelArgs,
-        ],
-        'gh issue create failed',
-      );
-      error(`nightly e2e run did not reach a clean pass (${health.failed.join('; ')}); filed ${out.trim()}`, {
-        title: 'nightly e2e run failed',
-      });
-      process.exit(1);
-      break;
-    }
-    case 'comment': {
-      const body = buildFailureBody({ failed: health.failed, runUrl, runId });
-      ghOrDie(
-        ['issue', 'comment', String(decision.number), '--repo', repo, '--body', body],
-        'gh issue comment failed',
-      );
-      error(
-        `nightly e2e run did not reach a clean pass (${health.failed.join('; ')}); updated #${decision.number}`,
-        { title: 'nightly e2e run failed' },
-      );
-      process.exit(1);
-      break;
-    }
-    case 'close': {
-      const body = buildRecoveryBody({ runUrl, runId });
-      ghOrDie(
-        ['issue', 'close', String(decision.number), '--repo', repo, '--comment', body],
-        'gh issue close failed',
-      );
-      notice(`nightly e2e run reached a clean pass; closed tracking issue #${decision.number}.`);
-      break;
-    }
-    case 'noop':
-    default:
-      notice('nightly e2e run reached a clean pass; no tracking issue open.');
-      break;
-  }
+  runNotifyMain({
+    repo: process.env.REPO ?? '',
+    runId: process.env.RUN_ID ?? '',
+    runUrl: process.env.RUN_URL ?? '',
+    jobResults: readJobResults(process.env),
+    trackingLabels: NIGHTLY_TRACKING_LABELS,
+    trackingTitle: NIGHTLY_TRACKING_TITLE,
+    laneLabel: 'e2e',
+    issueRef: 'tsouza/cerberus#1861',
+    contextTitle: 'nightly-health-notify',
+    failureNoticeTitle: 'nightly e2e run failed',
+  });
 }
 
 // Only dispatch when run as a script — importing for the unit test must not

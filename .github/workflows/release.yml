@@ -264,6 +264,7 @@ jobs:
             profile
             property (PromQL + LogQL + TraceQL, rapid N=500)
             migration-e2e
+            perf-nightly
             CodeQL
           # De-gated INFORMATIONAL lanes, matched by name prefix (matrix children
           # carry a "(shard-…)" suffix). The required `compose-smoke` aggregate

@@ -761,6 +761,12 @@ jobs:
       - name: Assert the nightly-health notifier cannot go silently hollow
         run: node --test .github/scripts/notify-nightly-failure.test.mjs
 
+      # Same #1861 mechanism, second consumer (#2370's perf-nightly lane) —
+      # asserts the shared lib/nightly-health-notify.mjs generalisation and
+      # perf-nightly's own wiring didn't silently drift from e2e's.
+      - name: Assert the perf-nightly-health notifier cannot go silently hollow
+        run: node --test .github/scripts/notify-perf-nightly-failure.test.mjs
+
       # Pins e2e.yml's dashboard-crawl-merge wiring: the required `dashboard`
       # aggregator must depend on it (so a merge failure can gate a release),
       # and the release/dispatch trigger conditions that decide when the

@@ -121,6 +121,7 @@ const parityEnrolmentBaselineRecipe = "just update-golden parity"
 var generatedArtifacts = []generatedArtifact{
 	{"test/perf/scale-wall-baseline.json", "just update-scale-wall-baseline"},
 	{"test/perf/perf-smoke-baseline.json", "just update-perf-smoke-baseline"},
+	{"test/perf/nightly-baseline.json", "just update-nightly-perf-baseline"},
 	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
 	{"test/coverage-floor.json", "just update-coverage-floor"},
 

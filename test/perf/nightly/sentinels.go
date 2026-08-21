@@ -1,8 +1,11 @@
 package nightly
 
 import (
+	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/chsql"
 )
 
 // Metric names as they appear in testdata/samples/*.parquet's MetricName
@@ -46,6 +49,23 @@ type Sentinel struct {
 	Family string
 	Path   string
 	Params func(start, end time.Time) url.Values
+	// ExpectedStatus is the HTTP status this sentinel's query is expected
+	// to return at real production cardinality. http.StatusOK for every
+	// sentinel except the two #2429 found: at this sample's real series
+	// count and the shared anchor grid below, a plain
+	// `sum by()(rate(...))`-shaped query genuinely exceeds
+	// internal/chsql's rate-window fanout resource bound by design — the
+	// fix's own point was turning that from a silent OOM into a clean,
+	// deliberate rejection, not making the underlying cost disappear. The
+	// gate (PR B) asserts on THIS field so a status-class change either
+	// direction — the bound silently breaking (OOM risk returns) or
+	// silently over-broadening (a legitimate query starts being rejected)
+	// — is itself the regression signal, not just a missed memory ceiling.
+	ExpectedStatus int
+	// ExpectedErrorSubstring, populated only when ExpectedStatus != 200,
+	// is the response body substring proving THIS SPECIFIC guard fired —
+	// not some unrelated failure that happens to share the status code.
+	ExpectedErrorSubstring string
 }
 
 // Sentinels is PR A's "prove the mechanism, print the numbers" corpus — no
@@ -54,9 +74,10 @@ type Sentinel struct {
 // produce, the same task-4 methodology test/perf/smoke's own PR followed.
 var Sentinels = []Sentinel{
 	{
-		Name:   "classic_histogram_quantile_by_route",
-		Family: "histogram_quantile over a classic (bucket/bounds) histogram — issue #2408's arrayJoin bucket-rate fan-out",
-		Path:   "/api/v1/query_range",
+		Name:           "classic_histogram_quantile_by_route",
+		Family:         "histogram_quantile over a classic (bucket/bounds) histogram — issue #2408's arrayJoin bucket-rate fan-out",
+		Path:           "/api/v1/query_range",
+		ExpectedStatus: http.StatusOK,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`histogram_quantile(0.95, sum by (http_route) (rate(` + histogramMetric + `[5m])))`},
@@ -65,14 +86,22 @@ var Sentinels = []Sentinel{
 	},
 	{
 		// Real numbers from this exact sentinel against the committed sample
-		// data: 99.8% of the 1 GiB cap at 3,741 series / 260 steps — despite
-		// applySpillSettings' always-on spill, which should have converted
-		// this into a slower disk spill rather than an OOM abort. Filed as
-		// issue #2429 (needs investigation, not a quick fix from this one
-		// data point) rather than silently accepted.
-		Name:   "request_rate_by_method",
-		Family: "plain counter rate() + sum by() — baseline construct, no histogram/gauge machinery",
-		Path:   "/api/v1/query_range",
+		// data: 99.8% of the 1 GiB cap at 3,741 series / 260 steps under the
+		// original (unfixed) engine — despite applySpillSettings' always-on
+		// spill, which should have converted this into a slower disk spill
+		// rather than an OOM abort. Filed and fixed as issue #2429: at this
+		// scale the query is genuinely too expensive to serve safely, so
+		// internal/chsql's rate-window fanout resource bound now rejects it
+		// cleanly (422) rather than letting ClickHouse OOM. That rejection
+		// IS this sentinel's expected, correct outcome at real production
+		// cardinality — a regression here is either the bound silently
+		// breaking (status flips back toward an OOM) or the query starting
+		// to succeed at a genuinely unsafe scale, not "still 422".
+		Name:                   "request_rate_by_method",
+		Family:                 "plain counter rate() + sum by() — baseline construct, no histogram/gauge machinery",
+		Path:                   "/api/v1/query_range",
+		ExpectedStatus:         http.StatusUnprocessableEntity,
+		ExpectedErrorSubstring: chsql.RateWindowFanoutBudgetMessage,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (method) (rate(` + sumMetric + `[5m]))`},
@@ -80,9 +109,10 @@ var Sentinels = []Sentinel{
 		},
 	},
 	{
-		Name:   "pod_status_reason_gauge",
-		Family: "Gauge aggregation — signal type the smoke tier has zero coverage of",
-		Path:   "/api/v1/query_range",
+		Name:           "pod_status_reason_gauge",
+		Family:         "Gauge aggregation — signal type the smoke tier has zero coverage of",
+		Path:           "/api/v1/query_range",
+		ExpectedStatus: http.StatusOK,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (reason) (` + gaugeMetric + `)`},
@@ -96,11 +126,14 @@ var Sentinels = []Sentinel{
 		// VALUE, not just identifier-bearing keys, so "5xx"-style literal
 		// filtering is not meaningful against this data; any real distinct
 		// value exercises the identical filtered-numerator-over-denominator
-		// construct this sentinel targets. Also hits issue #2429: 100.0% of
-		// the 1 GiB cap at this cardinality.
-		Name:   "error_ratio_by_namespace",
-		Family: "cross-series ratio (error-rate shape) — two independent rate() aggregations divided, a common real-world PromQL construct absent from the smoke tier entirely",
-		Path:   "/api/v1/query_range",
+		// construct this sentinel targets. Also hits (and, post-#2429-fix,
+		// is correctly rejected by) the same rate-window fanout bound as
+		// request_rate_by_method above — see its comment.
+		Name:                   "error_ratio_by_namespace",
+		Family:                 "cross-series ratio (error-rate shape) — two independent rate() aggregations divided, a common real-world PromQL construct absent from the smoke tier entirely",
+		Path:                   "/api/v1/query_range",
+		ExpectedStatus:         http.StatusUnprocessableEntity,
+		ExpectedErrorSubstring: chsql.RateWindowFanoutBudgetMessage,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {
