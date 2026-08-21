@@ -3,15 +3,17 @@ package gen
 type ShapeID string
 
 const (
-	promQLSelectorShape ShapeID = "promql.instant.selector"
-	promQLSumShape      ShapeID = "promql.instant.sum"
-	promQLSumByShape    ShapeID = "promql.instant.sum-by"
-	promQLRateShape     ShapeID = "promql.instant.rate"
-	promQLSumRateShape  ShapeID = "promql.instant.sum-rate"
+	promQLSelectorShape     ShapeID = "promql.instant.selector"
+	promQLSumShape          ShapeID = "promql.instant.sum"
+	promQLSumByShape        ShapeID = "promql.instant.sum-by"
+	promQLRateShape         ShapeID = "promql.instant.rate"
+	promQLSumRateShape      ShapeID = "promql.instant.sum-rate"
+	promQLLabelReplaceShape ShapeID = "promql.instant.label-replace"
 
-	promQLRangeSelectorShape ShapeID = "promql.range.selector"
-	promQLRangeSumByShape    ShapeID = "promql.range.sum-by"
-	promQLRangeRateShape     ShapeID = "promql.range.rate"
+	promQLRangeSelectorShape     ShapeID = "promql.range.selector"
+	promQLRangeSumByShape        ShapeID = "promql.range.sum-by"
+	promQLRangeRateShape         ShapeID = "promql.range.rate"
+	promQLRangeLabelReplaceShape ShapeID = "promql.range.label-replace"
 
 	expHistogramCountFunctionShape         ShapeID = "promql.native-histogram.function.count"
 	expHistogramSumFunctionShape           ShapeID = "promql.native-histogram.function.sum"
@@ -97,12 +99,14 @@ var promQLShapeRoster = [...]ShapeID{
 	promQLSumByShape,
 	promQLRateShape,
 	promQLSumRateShape,
+	promQLLabelReplaceShape,
 }
 
 var promQLRangeShapeRoster = [...]ShapeID{
 	promQLRangeSelectorShape,
 	promQLRangeSumByShape,
 	promQLRangeRateShape,
+	promQLRangeLabelReplaceShape,
 }
 
 var expHistogramShapeRoster = [...]ShapeID{

@@ -70,7 +70,7 @@ func drawPromQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Q
 	matchers := drawMatchers(t, name, d.Metrics)
 	groupLabels := mapKeys(d.Metrics.LabelsPresentFor(name))
 
-	expr := drawExpr(t, name, matchers, groupLabels, shapeID)
+	expr := drawExpr(t, name, matchers, groupLabels, shapeID, maxComposableWrapDepth)
 
 	// EvalTs: pick a timestamp AFTER every dataset sample but
 	// well within the 5-minute LookbackDelta (Prom's default,
@@ -90,8 +90,36 @@ func drawPromQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Q
 	}
 }
 
-// drawExpr picks the random expression shape per the PR 2 accept-set.
-// Each draw is uniform over the candidate shapes; the breakdown:
+// maxComposableWrapDepth bounds how many composable wrapper shapes (today
+// just promQLLabelReplaceShape / promQLRangeLabelReplaceShape) drawExpr and
+// drawRangeExpr may nest before they must fall back to drawing a base
+// (non-wrapping) shape. The generator has exactly one wrapper case today, so
+// a single unit of budget already guarantees termination on its own; the
+// constant exists — and is threaded through as an explicit parameter rather
+// than left implicit — so a second wrapper shape added later inherits the
+// same bound instead of the recursion silently becoming unbounded (and, with
+// it, the per-iteration generated-expression size and rapid draw count
+// blowing up).
+const maxComposableWrapDepth = 1
+
+// promQLBaseShapeRoster is the non-wrapping subset of promQLShapeRoster
+// (gen/shapes.go): every shape drawLabelReplaceWrap may pick as the inner
+// expression it wraps in label_replace(...). Kept as its own slice, rather
+// than filtering promQLShapeRoster at call time, so "these are the shapes a
+// wrapper can wrap" is visible at a glance and a future wrapper shape isn't
+// forgotten from the exclusion the way a filter predicate could silently
+// miss it.
+var promQLBaseShapeRoster = []ShapeID{
+	promQLSelectorShape,
+	promQLSumShape,
+	promQLSumByShape,
+	promQLRateShape,
+	promQLSumRateShape,
+}
+
+// drawExpr picks the random expression shape per the PR 2 accept-set, plus
+// the composable label_replace wrapper added for #2383. Each draw is uniform
+// over the candidate shapes; the breakdown:
 //
 //   - bare vector selector             — exercises the LWR rule
 //   - sum(selector)                    — exercises aggregation + LWR
@@ -101,15 +129,27 @@ func drawPromQLQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) property.Q
 //     (positive, zero, and negative) so the offset output-timestamp labeling
 //     is exercised against the oracle, not just window membership.
 //   - sum(rate(selector[60s] offset <d>)) — exercises composition + offset
+//   - label_replace(<any of the above>, ...) — exercises compositionality:
+//     an arbitrary already-generated expression wrapped in another
+//     construct, the exact "guard × aggregation" shape #2383 documents
+//     (`label_replace(sum by (uri)(rate(X[5m])), ...)`) was unreachable
+//     without.
 //
 // Aggregations strip __name__; the bare selector keeps it. Both
 // shapes are valid Prom queries.
+//
+// wrapBudget is the remaining [maxComposableWrapDepth] budget: drawExpr
+// decrements it by one on every wrapper draw and panics rather than
+// recursing once it's exhausted, so a generator defect that somehow routed a
+// wrapper shape into its own inner-shape pool fails loudly instead of
+// looping.
 func drawExpr(
 	t *rapid.T,
 	name string,
 	matchers []*labels.Matcher,
 	groupLabels []string,
 	shapeID ShapeID,
+	wrapBudget int,
 ) parser.Expr {
 	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
 	switch shapeID {
@@ -136,8 +176,62 @@ func drawExpr(
 				Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 			},
 		}
+	case promQLLabelReplaceShape:
+		if wrapBudget <= 0 {
+			panic("gen/promql: label-replace shape exceeded maxComposableWrapDepth")
+		}
+		innerShape := rapid.SampledFrom(promQLBaseShapeRoster).Draw(t, "labelReplaceInnerShape")
+		inner := drawExpr(t, name, matchers, groupLabels, innerShape, wrapBudget-1)
+		return drawLabelReplaceWrap(t, inner, groupLabels)
 	}
 	panic("gen/promql: unhandled shape " + string(shapeID))
+}
+
+// labelReplaceWrap is one (dst, replacement, regex) trio drawLabelReplaceWrap
+// draws from. Both entries in labelReplaceWrapPool are pure copy-or-tag
+// rewrites — neither depends on the source value's content beyond whether it
+// is empty — so every draw is guaranteed to produce a valid, deterministic
+// label_replace call regardless of which src label ends up selected.
+type labelReplaceWrap struct {
+	dst, replacement, regex string
+}
+
+// labelReplaceWrapPool covers both branches evalLabelReplace
+// (test/property/oracle/promql/label_transform.go) implements: a regex that
+// matches any non-empty value and copies it verbatim to dst (the exact
+// "endpoint" rename shape from #2383's own reproducer,
+// `label_replace(sum by (uri)(rate(X[5m])), "endpoint", "$1", "uri",
+// "(.+)")`), and a regex that matches only an ABSENT src label, tagging dst
+// with a fixed sentinel — exercising label_replace's pass-through path when
+// the wrapped inner expression's shape drops the src label entirely (e.g.
+// promQLSumShape, which strips every label).
+var labelReplaceWrapPool = []labelReplaceWrap{
+	{dst: "endpoint", replacement: "$1", regex: "(.+)"},
+	{dst: "region_missing", replacement: "unknown", regex: "^$"},
+}
+
+// drawLabelReplaceWrap wraps inner in label_replace(inner, dst, replacement,
+// src, regex). src is drawn from groupLabels when the metric has any
+// observed labels (so the "copy an existing label" branch has real data to
+// match); when the metric carries none, src falls back to "__name__" — a
+// label every selector-derived series always carries — so the wrap never
+// panics on an empty label pool the way promQLSumByShape's inner draw would.
+func drawLabelReplaceWrap(t *rapid.T, inner parser.Expr, groupLabels []string) parser.Expr {
+	src := "__name__"
+	if len(groupLabels) > 0 {
+		src = rapid.SampledFrom(groupLabels).Draw(t, "labelReplaceSrc")
+	}
+	wrap := rapid.SampledFrom(labelReplaceWrapPool).Draw(t, "labelReplaceWrap")
+	return &parser.Call{
+		Func: parser.Functions["label_replace"],
+		Args: parser.Expressions{
+			inner,
+			&parser.StringLiteral{Val: wrap.dst},
+			&parser.StringLiteral{Val: wrap.replacement},
+			&parser.StringLiteral{Val: src},
+			&parser.StringLiteral{Val: wrap.regex},
+		},
+	}
 }
 
 // rangeSelectorWindow is the fixed `[range]` span attached to every
