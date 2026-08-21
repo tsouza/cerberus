@@ -11,7 +11,7 @@ const (
 	coverageGateTest     = "node --test .github/scripts/coverage-package-floor.test.mjs"
 	coverageGateRun      = "node .github/scripts/coverage-package-floor.mjs"
 	coverageSetupGo      = "uses: actions/setup-go@v7"
-	coverageHeavyGuard   = "if: env.RUN_HEAVY == 'true'"
+	coverageHeavyGuard   = "if: steps.run_heavy.outputs.run_heavy == 'true'"
 )
 
 // TestCoveragePRGateIsNotConditionedOnHeavyCoverage pins the ordinary-PR path
