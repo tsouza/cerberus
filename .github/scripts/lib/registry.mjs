@@ -247,6 +247,16 @@ const transientRegistryFailurePatterns = [
   /temporary failure in name resolution/i,
   /no such host/i,
   /server misbehaving/i,
+  // proxy.golang.org occasionally answers a shared CI IP range with a 403
+  // (edge/abuse-protection throttling, not a real per-module refusal) — seen
+  // on a `go mod download` inside a build stage: `go: <module>@<version>:
+  // reading https://proxy.golang.org/.../@v/<version>.zip: 403 Forbidden`.
+  // Confirmed transient, not a genuinely missing/blocked module: the exact
+  // same URL served the file cleanly moments later from an unrelated
+  // network, and re-running the identical CI job with no code change
+  // succeeded. Scoped to proxy.golang.org specifically — a bare "any 403"
+  // pattern would also swallow a real auth/permission refusal elsewhere.
+  /proxy\.golang\.org\/\S*: 403 Forbidden/i,
 ];
 
 // A rate-limited fetch is reported by BuildKit as `unexpected status from HEAD

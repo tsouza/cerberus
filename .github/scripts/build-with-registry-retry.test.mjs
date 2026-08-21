@@ -63,3 +63,29 @@ test('a genuine failure with no registry/network signal in its output fails on t
   // error() (lib/gh.mjs) writes the ::error:: workflow-command line to stdout.
   assert.match(res.stdout, /failed with status 3.*no registry or network fault/s);
 });
+
+test('a proxy.golang.org 403 (edge/abuse-protection throttling, not a real refusal) is retried, not failed on the first attempt', () => {
+  // Confirmed transient on main's own CI: the same URL served the file
+  // cleanly moments later from an unrelated network, and re-running the
+  // identical job (no code change) succeeded. IMAGE_BUILD_RETRY_BACKOFF_SECONDS=0
+  // keeps the exhausted-budget path (this command never succeeds) fast.
+  const res = spawnSync(
+    'node',
+    [
+      SCRIPT,
+      'bash',
+      '-c',
+      'echo "go: github.com/grafana/loki/v3@v3.7.1: reading https://proxy.golang.org/github.com/grafana/loki/v3/@v/v3.7.1.zip: 403 Forbidden"; exit 1',
+    ],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, GO_IMAGE: 'golang:1.26', IMAGE_BUILD_RETRY_BACKOFF_SECONDS: '0' },
+    },
+  );
+  assert.equal(res.status, 1);
+  // Reached the exhausted-budget message (every attempt spent, never the
+  // "no registry or network fault" first-attempt bail-out) — proof the 403
+  // was classified as a transient transport fault and actually retried.
+  assert.doesNotMatch(res.stdout, /no registry or network fault/);
+  assert.match(res.stdout, /failed 5 times, every one of them on a transport fault/);
+});
