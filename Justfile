@@ -394,6 +394,20 @@ update-nightly-perf-baseline:
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/nightly-baseline.json || true
 
+# Run #2437's periodic self-check: deliberately breaks two real
+# memory-bounding mechanisms (the #2429 fanout resource bound, the spill
+# safety net) one at a time and asserts `just perf-nightly-integration`
+# actually fails under each — proving the nightly gate is still armed rather
+# than having silently bit-rotted since the last real regression tripped it.
+# Reverts every mutation via `git checkout --` even on failure; never
+# commits or pushes anything. Requires Docker and a clean working tree (it
+# refuses to mutate on top of unrelated uncommitted changes). Weekly, not
+# nightly — see .github/workflows/perf-nightly-selfcheck.yml.
+perf-nightly-selfcheck:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    node --test .github/scripts/perf-nightly-selfcheck.test.mjs
+    node .github/scripts/perf-nightly-selfcheck.mjs
+
 # Run the solver's mandatory per-shard memory-apportionment real-CH guard:
 # proves Executor.runShard's max_memory_usage WithQuerySetting override is
 # actually honored by a real ClickHouse over clickhouse-go/v2, not just

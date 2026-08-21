@@ -1621,6 +1621,52 @@ what actually runs.
   - Exit: `0` when every shard passed or the lane was correctly
     short-circuited, `1` otherwise.
 
+- **`perf-nightly-selfcheck.mjs`** — `perf-nightly-selfcheck.yml`, the
+  `perf-nightly-selfcheck` job. #2437's periodic mutation-style self-check
+  that the #2370 nightly perf gate (`perf-nightly.yml`) still catches a real
+  regression: deliberately breaks two orthogonal memory-bounding mechanisms
+  one at a time — `internal/chsql/rate_window_fanout_bound.go`'s
+  `maxRateWindowFanoutRows` (1000x wider, defeating #2429's resource bound)
+  and `internal/engine/spill.go`'s `spillThreshold` (inflated, disabling the
+  external-group-by/sort spill safety net) — and asserts `just
+  perf-nightly-integration` actually FAILS under each, via an exact-string
+  replacement that throws if the target text has drifted rather than
+  silently mutating nothing. Reverts every mutation via `git checkout --`
+  from a `finally` block, even on a crash; never commits or pushes. A gate
+  that stays green through an injected regression is worse than no gate — it
+  reads as coverage that is not there. `perf-nightly-selfcheck.test.mjs` is
+  the `node --test` guard (run both inside the workflow's own recipe AND on
+  `ci.yml`'s scripts lane, since this workflow has no `pull_request:`
+  trigger at all): MUTATIONS is well-formed and its `find` text currently
+  matches the checked-in source exactly once (the same drift check the
+  script itself enforces, run here as a fast unit test rather than the next
+  expensive real-ClickHouse self-check run), and `applyMutation`'s
+  zero-or-multiple-occurrences drift detection is pinned against a temp
+  file. The actual mutate-and-assert-caught path (needs Docker + real
+  ClickHouse) is exercised only by the weekly workflow itself.
+  - Exit: `0` when every mutation was caught, `1` when the working tree
+    wasn't clean at the start, a mutation's target text was not found, or
+    any mutation was not caught (the real bit-rot signal).
+
+- **`notify-perf-nightly-selfcheck-failure.mjs`** — `perf-nightly-
+  selfcheck.yml`, the `perf-nightly-selfcheck-health-notify` job (`schedule`
+  trigger only). Third consumer of `lib/nightly-health-notify.mjs` (after
+  `notify-nightly-failure.mjs` and `notify-perf-nightly-failure.mjs`) — same
+  create/comment/close/no-op lifecycle, a third distinct stable title
+  (`perf-nightly self-check found an injected regression was not caught`)
+  and a distinct tracking issue (#2437, not #2370): a red run here means the
+  self-check found the nightly gate silently stopped catching a regression,
+  a strictly worse signal than perf-nightly's own tracking issue (a real
+  regression the gate correctly caught) and never confused with it.
+  `notify-perf-nightly-selfcheck-failure.test.mjs` is the `node --test`
+  guard (run on `ci.yml`'s scripts lane, even though the job itself only
+  runs on `schedule`), mirroring `notify-perf-nightly-failure.test.mjs`'s
+  own shape.
+  - Env: `REPO`, `RUN_ID`, `RUN_URL`, `RESULT_PERF_NIGHTLY_SELFCHECK`
+    (`needs.perf-nightly-selfcheck.result`).
+  - Exit: `0` when every mutation was caught (whether or not it closed a
+    stale tracking issue), `1` otherwise, or when a `gh` call itself fails.
+
 - **`perf-profile-aggregate.mjs`** — `perf-profile.yml`, the `profile` job. Same
   shape as `perf-guards-aggregate.mjs`, one level simpler: the corpus-wide
   fan-out PROFILE (breadth report, not a pass/fail assertion) was one job
