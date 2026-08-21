@@ -95,3 +95,26 @@ func TestMutation_ArrayJoin_CommaSeparator(t *testing.T) {
 		t.Fatalf("expected SQL to contain %q, got %q", want, sql)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// builder.go writeCTEs' INVERT_LOOPCTRL (`break` -> `continue`) is EQUIVALENT.
+// The loop it terminates is a pure boolean latch:
+//
+//	recursive := false
+//	for _, c := range s.ctes {
+//	    if c.Anchor != nil || c.Recursive != nil {
+//	        recursive = true
+//	        break
+//	    }
+//	}
+//
+// The body has no effect other than assigning the CONSTANT true to a variable
+// that starts false and is never assigned anything else, and the loop's
+// condition reads nothing the body writes. Running the remaining iterations
+// under `continue` can therefore only re-assign true over true; the post-loop
+// value of `recursive` — the loop's sole output — is
+// `any(Anchor != nil || Recursive != nil)` either way. The two forms differ
+// only in iteration count, which no observable-behaviour test can
+// distinguish. (The condition INSIDE the loop is killable and is killed by the
+// two writeCTEs tests above.)

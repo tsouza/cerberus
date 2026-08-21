@@ -1,6 +1,9 @@
 package chsql
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestMutation_RegisterLateMatShape_RequiresBothHalves pins that late
 // materialisation is only offered for a table whose schema supplies BOTH the
@@ -60,5 +63,57 @@ func TestMutation_RegisterLateMatShape_CarriesSchemaColumns(t *testing.T) {
 	}
 	if len(got.rowKey) != 2 || got.rowKey[1] != "SpanId" {
 		t.Errorf("row key not carried through: %v", got.rowKey)
+	}
+}
+
+// TestMutation_WithLateMatShape_RequiresEveryPart defends late_mat.go:114
+// (`if table == "" || len(wide) == 0 || len(rowKey) == 0`), the same coupled-pair
+// gate registerLateMatShape applies, enforced on the request-threaded shape.
+//
+// Mutation INVERT_LOGICAL flips ONE of the two `||` to `&&`, and Go's tighter
+// `&&` binding regroups the chain rather than negating it:
+//
+//   - col 17 (first `||`) parses as `(table == "" && len(wide) == 0) || len(rowKey) == 0`,
+//     so a nameless table carrying both column lists is WAIVED through and
+//     wedged into the context under the "" key.
+//   - col 35 (second `||`) parses as `table == "" || (len(wide) == 0 && len(rowKey) == 0)`,
+//     so a table missing exactly ONE list — no wide column to defer, or no row
+//     key to join back on — is waived through the same way.
+//
+// Either half-shape reaches resolveLateMatShape as a usable entry and the
+// rewrite then defers nothing (no wide column) or joins on nothing (no row
+// key). The unusable-half rows below are what separate the mutants: they must
+// leave the context untouched.
+func TestMutation_WithLateMatShape_RequiresEveryPart(t *testing.T) {
+	t.Parallel()
+
+	const table = "otel_logs"
+	wide := []string{"Body"}
+	rowKey := []string{"Timestamp", "TraceId"}
+
+	for _, tc := range []struct {
+		name   string
+		table  string
+		wide   []string
+		rowKey []string
+		want   bool
+	}{
+		{name: "every part present", table: table, wide: wide, rowKey: rowKey, want: true},
+		{name: "no table name", wide: wide, rowKey: rowKey},
+		{name: "no wide column", table: table, rowKey: rowKey},
+		{name: "no row key", table: table, wide: wide},
+	} {
+		ctx := WithLateMatShape(context.Background(), tc.table, tc.wide, tc.rowKey)
+		gotTable, gotShape, ok := lateMatShapeFromCtx(ctx)
+		if ok != tc.want {
+			t.Errorf("%s: threaded=%v, want %v", tc.name, ok, tc.want)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if gotTable != tc.table || len(gotShape.wide) != len(tc.wide) || len(gotShape.rowKey) != len(tc.rowKey) {
+			t.Errorf("%s: threaded shape (%q, %v, %v) does not match the input", tc.name, gotTable, gotShape.wide, gotShape.rowKey)
+		}
 	}
 }

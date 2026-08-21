@@ -130,3 +130,63 @@ func TestSortRankForMinimum(t *testing.T) {
 		t.Errorf("sortRankFor([non-sort]) = %d, want -1", got)
 	}
 }
+
+// TestIsNarrowIntegerDiscriminatorFinalReturnLogical defends
+// isNarrowIntegerDiscriminator's final return (prewhere.go:287): the chain
+// `columnOK && literalOK && column.Qualifier == "" && shape.IsInteger...
+// && sortRankFor(...) < 0`.
+//
+// Mutation INVERT_LOGICAL turns the FIRST `&&` (between columnOK and
+// literalOK) into `||`. Go's `&&` binds tighter than `||`, so the mutant
+// parses as `columnOK || (literalOK && qualifier=="" && isDiscriminator &&
+// rank<0)`: any predicate whose left/right operand resolves to a bare
+// ColumnRef — columnOK true — would report true regardless of whether the
+// OTHER operand is even an integer literal. We feed a column-to-column
+// equality (`ServiceName = OtherCol`): columnOK becomes true (one side is a
+// ColumnRef) but literalOK is false (neither side is a LitInt), so the
+// correct answer is false. The `||` mutant would return true.
+func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
+	t.Parallel()
+	shape := TableShape{
+		WideColumns:                 []string{"Body"},
+		IntegerDiscriminatorColumns: []string{"ServiceName"},
+	}
+	colEqCol := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "ServiceName"},
+		Right: &chplan.ColumnRef{Name: "OtherCol"},
+	}
+	if isNarrowIntegerDiscriminator(colEqCol, shape) {
+		t.Errorf("isNarrowIntegerDiscriminator(ServiceName = OtherCol) = true, want false (neither operand is a LitInt)")
+	}
+
+	// Sanity: the genuine narrow-integer-discriminator shape is still true.
+	colEqInt := &chplan.Binary{
+		Op:    chplan.OpEq,
+		Left:  &chplan.ColumnRef{Name: "ServiceName"},
+		Right: &chplan.LitInt{V: 3},
+	}
+	if !isNarrowIntegerDiscriminator(colEqInt, shape) {
+		t.Errorf("isNarrowIntegerDiscriminator(ServiceName = 3) = false, want true")
+	}
+}
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// prewhere.go:131:4, :187:5 and :207:4 (INVERT_LOOPCTRL) each swap a
+// terminal `break` for `continue` guarding a "found it, stop" boolean latch
+// (touchesWide / hitsSkip) or the stable-insertion-sort early exit. In
+// every case the flag is set exactly once and never reset, or (for the
+// sort) the insertion-sort invariant guarantees every comparison below the
+// break point is already in order, so scanning further with `continue`
+// instead of `break` can never change the final return value — only the
+// iteration count. No observable-behaviour test can distinguish them.
+//
+// prewhere.go:283:15 (INVERT_LOGICAL, `||`→`&&` in
+// isNarrowIntegerDiscriminator's swap guard) is equivalent for the same
+// structural reason as the min-tracking boundary above: a chplan.Expr value
+// has exactly one concrete type, so whichever of columnOK/literalOK is
+// already true from the direct (Left, Right) orientation is provably
+// unreachable from the swapped (Right, Left) orientation, and vice versa —
+// the branch this condition guards can only ever produce the SAME final
+// (columnOK, literalOK) pair whether or not the swap runs.

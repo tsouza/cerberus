@@ -11,16 +11,17 @@ import (
 	"github.com/tsouza/cerberus/internal/chsql"
 )
 
-// TestExemplarsMaxPerSeriesZeroNoLimit kills the CONDITIONALS_BOUNDARY
-// mutant at exemplars.go:259 (`if maxPerSeries > 0` -> `>= 0`).
+// TestExemplarsMaxPerSeriesZeroNoLimit pins the uncapped contract of
+// EmitMetricsExemplars' maxPerSeries parameter: a value of 0 means "every
+// span in every bucket window flows through", so the statement must carry
+// no `LIMIT N BY` cap at all, while a positive value must carry exactly
+// that cap.
 //
-// With maxPerSeries == 0 the original guard is false, so the exemplars
-// SQL emits NO `LIMIT N BY` cap (value 0 means "uncapped", per the
-// EmitMetricsExemplars doc). Flip `>` to `>=` and the boundary value 0
-// passes the guard, so the mutant emits `LIMIT 0 BY ...` — which both
-// adds a LIMIT clause and (worse) caps every bucket to zero rows. We
-// pin the original by asserting the emitted SQL contains no `LIMIT`
-// token at all when maxPerSeries == 0.
+// It does NOT kill the CONDITIONALS_BOUNDARY mutant on the guard it
+// exercises (exemplars.go:292, `if maxPerSeries > 0` -> `>= 0`); see the
+// NOT KILLABLE note at the foot of this file for why that mutant is
+// equivalent. The contract is worth pinning regardless — it is the
+// difference between "uncapped" and "every bucket capped to zero rows".
 func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 	t.Parallel()
 
@@ -48,7 +49,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 		t.Fatalf("EmitMetricsExemplars: %v", err)
 	}
 	if strings.Contains(sql, "LIMIT") {
-		t.Errorf("maxPerSeries==0 must emit no LIMIT cap, but SQL contains LIMIT (boundary mutant `>=0` would emit `LIMIT 0 BY`):\n%s", sql)
+		t.Errorf("maxPerSeries==0 means uncapped, but the SQL carries a LIMIT:\n%s", sql)
 	}
 
 	// Sanity counter-case: a positive cap DOES emit the LIMIT BY, proving
@@ -160,3 +161,22 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 		t.Errorf("scan bound MUST be pushed with both Start and End set:\n%s", sqlBoth)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// exemplars.go:292:18 (CONDITIONALS_BOUNDARY, `if maxPerSeries > 0` ->
+// `>= 0`). The two forms differ only at maxPerSeries == 0, where the mutant
+// enters the block and calls `outerSb.Limit(0)` followed by
+// `outerSb.LimitBy(...)`. QueryBuilder.Limit records `hasLimit = n > 0`, so
+// Limit(0) leaves hasLimit false, and the renderer emits the whole LIMIT /
+// LIMIT BY tail only under `if s.hasLimit` — the LimitBy Frags are never
+// invoked, so they bind no args either. The mutant therefore produces a
+// byte-identical statement and an identical args slice; only two dead
+// allocations differ. (A negative maxPerSeries fails both forms alike.)
+//
+// exemplars.go:228:51 (ARITHMETIC_BASE, `make([]Frag, 0,
+// len(groupAliases)*2+6)` -> `len(groupAliases)/2+6`). The mutated operand
+// is the Attributes-map slice's capacity HINT, which append grows on
+// demand; `len/2 + 6` is non-negative for every input, so it cannot even
+// panic the way the sibling `+6` -> `-6` mutant does. Capacity is
+// unobservable from the emitted SQL, the args, or any exported surface.

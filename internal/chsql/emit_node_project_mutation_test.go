@@ -47,3 +47,23 @@ func TestMutation_EmitProject_ReplacementsOnlyRenderStarReplace(t *testing.T) {
 		t.Fatalf("replacements-only Project must render `* REPLACE (… AS `name`)`: %q", sql)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// emit_node.go:504:52 (CONDITIONALS_BOUNDARY, `len(p.Replacements) > 0` ->
+// `>= 0`) is EQUIVALENT. The two guards can only disagree on a Project with
+// NO projections and NO replacements, and there both renderings are the same
+// bytes:
+//
+//   - original: the star-replace branch is skipped, so the QueryBuilder's
+//     selectList stays empty and QueryBuilder.writeInto's `len(selectList) == 0`
+//     arm writes the bare `SELECT *`;
+//   - mutant: the branch runs over an empty Replacements slice, so
+//     StarReplace's own `len(replacements) == 0` early return writes exactly
+//     `*` as the single SELECT entry, which writeInto emits after `SELECT `
+//     with no separator (a one-element list never reaches the ", " arm).
+//
+// QueryBuilder.Select's only effect is appending to selectList, and selectList
+// is read nowhere but writeInto — so `SELECT *` versus `SELECT *` is the whole
+// of the observable difference. The other two mutators on this line ARE
+// killable and are killed by the two tests above.

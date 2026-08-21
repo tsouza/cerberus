@@ -144,3 +144,25 @@ func TestEmitStructuralRecursive_InverseAnchorUnrestrictedHasNoSeedWhere(t *test
 		t.Fatalf("plan set no pruning bound, yet the inverse anchor seed carries a WHERE:\n%s", sql)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// structural_join.go:738:69 (CONDITIONALS_BOUNDARY, `if seedWhere :=
+// structuralAnchorWhere(j, rightSub); len(seedWhere) > 0` -> `>= 0`). The
+// forms differ only when seedWhere is empty, where the mutant runs
+// `anchor = anchor.Where()`. QueryBuilder.Where is variadic and its body is
+// `s.where = append(s.where, conds...)`, so a zero-argument call appends
+// nothing and returns the same builder — the WHERE slot stays empty and the
+// renderer emits no clause. Byte-identical SQL. (The CONDITIONALS_NEGATION
+// mutant on this same comparison is a real defect, and the three tests
+// above kill it.)
+//
+// structural_join.go:525:53 (CONDITIONALS_BOUNDARY, `if cols :=
+// structuralUnionOutputCols(j); len(cols) > 0` -> `>= 0` in
+// emitStructuralSpanUnion). structuralUnionOutputCols returns either nil or
+// the three join keys plus the extra projection columns, so len(cols) is
+// either 0 or at least 3 and the forms can differ only at 0. There the
+// original keeps `proj = []Frag{verbatim("*")}` while the mutant rebuilds
+// proj as an EMPTY slice and passes it to Select — and QueryBuilder's
+// renderer writes a bare `*` for an empty SELECT list. Both spellings
+// render `SELECT *`, so the statement is byte-identical.
