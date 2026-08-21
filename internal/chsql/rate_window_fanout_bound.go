@@ -36,68 +36,87 @@ package chsql
 // reading as genuinely safe (63.5% of cap, unguarded). Anyone recalibrating
 // this bound should mint a unique query_id per run for exactly this reason.
 //
-// Three prior designs were tried and each was empirically disproven against
-// the real query before landing on this one — all three guarded the WRONG
-// stage, downstream of the GROUP BY described above rather than upstream of
-// it, so by the time each guard's own count could see the data, the
-// GROUP BY had already paid the memory cost the guard existed to prevent:
+// Four designs were tried, in order, before landing on this one:
 //
 //  1. throwIf gated on a global, unpartitioned `count() OVER ()` placed
-//     after the regrouped window pass. Aborted a small toy case, but let
+//     AFTER the regrouped window pass. Aborted a small toy case, but let
 //     the real query OOM — a global window can't emit until it has seen
 //     the whole (already-materialised) input.
-//  2. throwIf gated on an ORDERED RUNNING `count() OVER (ORDER BY
-//     anchor_ts ROWS UNBOUNDED PRECEDING)` in the same downstream position,
-//     on the theory that a monotonic running count could fire earlier.
-//     Still let the real query OOM, and made an intermediate case worse.
-//  3. A genuine `LIMIT` placed after the regrouped window pass (same
-//     downstream position as 1 and 2, just with a real pipeline
-//     short-circuit instead of a throwIf race). Verified against an
-//     isolated 20M-row/100,000-partition synthetic dataset with NO spill
-//     settings (which OOMs unguarded) — worked there. Still let the real
-//     query OOM: the synthetic test had no blocking aggregation upstream
-//     of the LIMIT, so the LIMIT could short-circuit the scan feeding it;
-//     the real query's LIMIT sat downstream of the fanout→regroup GROUP BY
-//     described above, which is itself blocking and had already
-//     materialised every group's array before the LIMIT ever ran.
 //
-// The fix that actually targets the expensive stage: place the `LIMIT`
-// directly on `fanoutSource` — the sample-side fanout, upstream of the
-// GROUP BY, where nothing blocking sits between it and the underlying
-// scan — so the LIMIT is a genuine pipeline short-circuit exactly as it was
-// in the synthetic test. A cheap post-LIMIT `count() OVER ()` (cheap
-// because the LIMIT has already bounded its input) then detects truncation
-// — count landing on maxRateWindowFanoutRows+1 can only happen if the true
-// fanned-out row count was at least that large — and a `throwIf` on that
-// count aborts the query BEFORE the expensive GROUP BY runs, rather than
-// after.
+//  2. throwIf gated on an ORDERED RUNNING `count() OVER (ORDER BY
+//     anchor_ts ROWS UNBOUNDED PRECEDING)`, same downstream position, on
+//     the theory that a monotonic running count could fire earlier. Still
+//     let the real query OOM, and made an intermediate case worse.
+//
+//  3. A genuine `LIMIT` placed BEFORE the regroup GROUP BY (upstream of it,
+//     unlike 1 and 2), immediately followed by a `count() OVER ()` reading
+//     that LIMIT-bounded input to detect truncation. The LIMIT itself
+//     correctly bounded the real query's OOM — but the `count() OVER ()`
+//     right after it reintroduced design 1's exact problem one layer down:
+//     a global window function still has to fully materialise its ENTIRE
+//     input (all maxRows+1 of it) before it can annotate a single row,
+//     regardless of how that input arrived. Caught not by the OOM case but
+//     by a REGRESSION on a previously-safe query: test/perf/smoke's
+//     spill_high_cardinality_groupby sentinel (10,000 series, 241 anchors,
+//     small per-row payload) never came close to the LIMIT, yet its own
+//     peak memory rose from ~61% to ~87% of cap purely from this design's
+//     presence — the buffering cost of the window function, not the guard
+//     firing, was the regression.
+//
+//  4. keep design 3's LIMIT (still the correct, genuine short-circuit),
+//     but move the truncation-detecting count() OFF the LIMIT-bounded
+//     result and onto an independent SECOND read: a plain, unwindowed
+//     `count()` over its own separate LIMIT-bounded copy of fanoutSource,
+//     rather than a window function annotating `bounded` itself. A window
+//     function — global OR ordered-running, tried both — has to fully
+//     materialise its entire input before it can annotate a single row,
+//     and that alone (independent of whether the guard ever fires)
+//     defeats the bound at the scale this file needs to admit: caught not
+//     by the OOM case but by a regression on a previously-safe query,
+//     test/perf/smoke's spill_high_cardinality_groupby sentinel (10,000
+//     series, small per-row payload, true fanout ~2.8M rows, never close
+//     to truncating) — its own peak memory rose from ~61% to ~87-91% of
+//     cap purely from the window function's buffering cost. A plain
+//     count() is a streaming running total with no such requirement, so
+//     this second read costs at most one more ordinary pass over the same
+//     already time-bounded window
+//     (TestExtrapolatedMatrixDeltaPrefixUsesOneScanAndWindowedLevels was
+//     updated from one scan to two for exactly this reason — see its own
+//     comment for why this is not the retention-wide rescan that test
+//     originally guarded against).
+//
+//     Re-measuring the real production query under this design turned up
+//     a second, welcome effect: the mere PRESENCE of a LIMIT clause on the
+//     fanout — independent of whether it ever truncates — measurably
+//     improves ClickHouse's own memory behaviour for this plan shape (the
+//     real 60-anchor case, which OOM'd outright with no guard at all, now
+//     completes safely at ~39% of cap once wrapped in a LIMIT comfortably
+//     above its own true row count). Plausibly a planner/streaming side
+//     effect of a LIMIT being present at all, not specifically caused by
+//     hitting it — not depended upon for correctness (the throwIf is what
+//     actually bounds the unsafe cases), but it is what makes a single
+//     threshold work for both the real production shape and the smoke
+//     tier's synthetic shape at once; see maxRateWindowFanoutRows's own
+//     comment for the measured numbers.
 const (
 	// maxRateWindowFanoutRows caps the total number of pre-GROUP-BY fanout
 	// rows (one per (sample, covered anchor)) that may enter
 	// emitWindowedArrayExtrapolatedMatrix's regroup GROUP BY in one query.
-	// Calibrated by binary search against the same real, corrected
-	// (unique-query-id) testcontainers dataset described above: the
-	// genuinely safe 30-anchor case's true fanout row count sits between
-	// 1,000,000 and 1,250,000 (its own natural, unguarded cost is 63.5% of
-	// the 1 GiB cap — already tight, since this metric's cardinality alone
-	// leaves little headroom); the OOMing 60-anchor case's fanout count is
-	// well above 2,000,000. 1,600,000 sits above the 30-anchor point (so
-	// that sentinel, and any query of similar shape, is never touched) with
-	// margin for natural per-query variance, while every larger case tried
-	// (60/120/180/260 anchors) is rejected with peak memory bounded to
-	// 68-72% of cap regardless of how much larger the true, unguarded fanout
-	// would have been — proof the LIMIT itself, not just the throwIf, is
-	// what bounds worst-case memory here.
-	maxRateWindowFanoutRows = 1_600_000
-
-	// rateWindowFanoutCountAlias names the `count() OVER ()` column the
-	// guard reads. A plain SELECT-list expression nothing downstream
-	// references gets pruned by ClickHouse's analyzer before it can have
-	// any effect — the exact trap vector_join.go's matchCheckGuardFrag
-	// already documents for an identical throwIf shape — so this alias
-	// exists purely to be read back by a WHERE clause in the very next
-	// query layer, guaranteeing it survives.
-	rateWindowFanoutCountAlias = "rate_window_fanout_total_rows"
+	// Calibrated against two real testcontainers datasets: #2411's real
+	// single-day production sample (3,740 series, wide merged Attributes),
+	// and test/perf/smoke's own spill_high_cardinality_groupby fixture
+	// (10,000 series, 241-anchor grid, narrow single-key Attributes — its
+	// own true fanout row count sits close to 2.8M). At 2,800,000: the real
+	// production dataset is safe through 60 anchors (417MB / 38.8% of the
+	// 1 GiB cap) and cleanly, cheaply rejected from 120 anchors on (peak
+	// memory bounded to 1-12% of cap, since the LIMIT-then-scalar-count
+	// probe short-circuits almost immediately once truncated); the smoke
+	// fixture's own legitimate query passes. Recalibrate by binary search
+	// against both datasets if either shape's own numbers drift — see the
+	// file doc comment for the harness pitfall (unique query_id per run)
+	// and design rationale (why a plain scalar count(), not count() OVER
+	// ()) to avoid when doing so.
+	maxRateWindowFanoutRows = 2_800_000
 )
 
 // RateWindowFanoutBudgetMessage is the throwIf message
@@ -118,7 +137,7 @@ const RateWindowFanoutBudgetMessage = "range window sample fanout exceeds the se
 // temporalityColumn are exactly fanoutSource's own per-row columns, plus
 // the anchor_ts column the fanout itself produces; this must project the
 // identical set through every layer below or a column goes missing by the
-// time regroup needs it (this function's first version dropped
+// time regroup needs it (an earlier version of this function dropped
 // delta_prefix_pairs at a different call site the same way and broke every
 // query hitting that path with a code 47 "unknown identifier").
 func rateWindowFanoutBoundedSourceFrag(
@@ -134,43 +153,58 @@ func rateWindowFanoutBoundedSourceFrag(
 		q.Select(Col("anchor_ts"))
 	}
 
-	// Stage 1: the real short-circuit. No blocking operator sits between
-	// this LIMIT and the underlying scan/arrayJoin, so ClickHouse stops
-	// pulling upstream data once maxRateWindowFanoutRows+1 rows are
-	// produced.
+	// The real short-circuit. No blocking operator sits between this LIMIT
+	// and the underlying scan/arrayJoin, so ClickHouse stops pulling
+	// upstream data once maxRateWindowFanoutRows+1 rows are produced.
 	bounded := NewQuery().From(fanoutSource)
 	selectFanoutCols(bounded)
 	bounded.Limit(maxRateWindowFanoutRows + 1)
 
-	// Stage 2: cheap now that the input is LIMIT-bounded — this can never
-	// see more than maxRateWindowFanoutRows+1 rows.
-	counted := NewQuery().From(bounded.Frag())
-	selectFanoutCols(counted)
-	counted.Select(As(Window(Call("count"), nil, nil), rateWindowFanoutCountAlias))
+	// A second read of fanoutSource, independently bounded by the SAME
+	// LIMIT and the SAME pushed-down time-window WHERE clause as `bounded`
+	// — not a retention-wide rescan, the thing
+	// TestExtrapolatedMatrixDeltaPrefixUsesOneScanAndWindowedLevels exists
+	// to prevent (see its own history, #2240) — reduced to a single scalar
+	// count(). Deliberately NOT a window function on `bounded` itself: see
+	// the file doc comment's design-3/4 notes for why every window-function
+	// variant tried (global, and ordered-running) forces full
+	// materialisation of the whole LIMIT-bounded set before it can annotate
+	// even one row, and why that alone — independent of whether the guard
+	// ever fires — reintroduces enough memory pressure to defeat the bound
+	// for a real, wide-payload production row at the scale this bound must
+	// admit. A plain, unwindowed count() is a streaming running total with
+	// no such requirement, so this second read costs at most one more
+	// ordinary pass over the same already-bounded time window — the
+	// cheapest mechanism that actually protects the real query rather than
+	// merely appearing to.
+	probe := NewQuery().From(fanoutSource)
+	probe.Select(Col(srcTs))
+	probe.Limit(maxRateWindowFanoutRows + 1)
+	probeCount := NewQuery().From(probe.Frag())
+	probeCount.Select(As(Call("count"), "n"))
 
-	// Stage 3: the guard, evaluated before regroup's GROUP BY ever runs.
-	guarded := NewQuery().From(counted.Frag())
+	guarded := NewQuery().From(bounded.Frag())
 	selectFanoutCols(guarded)
-	guarded.Where(rateWindowFanoutGuardFrag(rateWindowFanoutCountAlias))
+	guarded.Where(rateWindowFanoutGuardFrag(probeCount))
 
 	return guarded.Frag()
 }
 
 // rateWindowFanoutGuardFrag renders the WHERE predicate that aborts the
-// query when rateWindowFanoutCountAlias shows the LIMIT truncated the
-// input — i.e. the count landed exactly on maxRateWindowFanoutRows+1,
-// which can only happen if the true fanned-out row count was at least that
-// large:
+// query when probeCount — a scalar subquery counting an independent
+// LIMIT-bounded copy of the same fanout — shows the LIMIT truncated the
+// input: the count landing on maxRateWindowFanoutRows+1 can only happen if
+// the true fanned-out row count was at least that large.
 //
-//	throwIf(<countCol> > maxRateWindowFanoutRows, RateWindowFanoutBudgetMessage) = 0
+//	throwIf((<probeCount>) > maxRateWindowFanoutRows, RateWindowFanoutBudgetMessage) = 0
 //
 // `throwIf` returns 0 when it does not fire, so `= 0` keeps every row once
 // the guard has passed.
-func rateWindowFanoutGuardFrag(countCol string) Frag {
+func rateWindowFanoutGuardFrag(probeCount *QueryBuilder) Frag {
 	return Eq(
 		Call(
 			"throwIf",
-			Gt(Col(countCol), InlineLit(int64(maxRateWindowFanoutRows))),
+			Gt(Subquery(probeCount), InlineLit(int64(maxRateWindowFanoutRows))),
 			InlineLit(RateWindowFanoutBudgetMessage),
 		),
 		InlineLit(int64(0)),

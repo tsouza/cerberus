@@ -105,7 +105,19 @@ func TestExtrapolatedMatrixDeltaPrefixUsesOneScanAndWindowedLevels(t *testing.T)
 			t.Errorf("temporality-aware matrix SQL contains obsolete split cost %q\nSQL: %s", forbidden, sql)
 		}
 	}
-	if got := strings.Count(sql, "FROM `otel_metrics_sum`"); got != 1 {
-		t.Errorf("temporality-aware matrix scans otel_metrics_sum %d times, want one scan\nSQL: %s", got, sql)
+	// #2429's rateWindowFanoutBoundedSourceFrag adds a SECOND, independently
+	// LIMIT-bounded read of the same time-pushed-down scan to detect fanout
+	// truncation cheaply (see its own doc comment for why a window-function
+	// count on the FIRST read isn't a substitute — it forces full
+	// materialisation of the whole LIMIT-bounded set, which alone can
+	// exceed the memory cap for a real, wide-payload row before the guard
+	// ever gets a chance to fire). This is NOT the retention-wide rescan
+	// this test originally guarded against (#2240) — both reads share the
+	// identical, already-bounded time window; neither reads the series'
+	// full matched history. Two is the deliberate, minimum count for a
+	// guard that must read a genuine second sample of the same bounded
+	// data to stay both single-pass-safe and truncation-aware.
+	if got := strings.Count(sql, "FROM `otel_metrics_sum`"); got != 2 {
+		t.Errorf("temporality-aware matrix scans otel_metrics_sum %d times, want two (main + #2429 fanout-bound probe)\nSQL: %s", got, sql)
 	}
 }
