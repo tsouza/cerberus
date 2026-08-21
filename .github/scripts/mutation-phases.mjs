@@ -80,7 +80,7 @@ export const PHASES = [
     // out of the same timeSeries*ToGrid family range_window_grid_native.go
     // emits, and both siblings are only ever claimed by this leg.
     exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_float_vector_join|histogram_merge_bound|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit_node|fnresolution|histogram_float_vector_join|histogram_merge_bound|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -97,7 +97,7 @@ export const PHASES = [
     // per-row float scale factor (histogram_float_vector_join.go) — and
     // vector_join.go is itself only ever claimed by this leg.
     exclude_files:
-      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_merge_bound|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_window|range_window_fused|range_window_grid_native|range_window_variants|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|duplicate_labelset|emit|exemplars|fnresolution|histogram_merge_bound|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -127,6 +127,8 @@ export const PHASES = [
     // scan_resource_bound.go does: it is a standalone resource-bound guard
     // (cerberus issue #2385) with no declared sibling in either leg above,
     // so it is excluded from both rather than enumerated in either.
+    // rate_window_fanout_bound.go (cerberus issue #2429) is the same shape
+    // of standalone guard and falls here for the same reason.
     exclude_files:
       '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },

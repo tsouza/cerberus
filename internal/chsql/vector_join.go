@@ -2,7 +2,6 @@ package chsql
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 )
@@ -468,7 +467,7 @@ func matchCheckGuardFrag(attrsCol string) Frag {
 // ClickHouse. The exception prefix is matched alongside the message so a query
 // that merely mentions the phrase in a label value cannot be mistaken for one.
 func IsManyToManyMatchError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), chExceptionPrefix+chplan.ManyToManyMatchMessage)
+	return isThrowIfError(err, chplan.ManyToManyMatchMessage)
 }
 
 // setOpMatchKeyFrags returns the key a vector set operator matches
