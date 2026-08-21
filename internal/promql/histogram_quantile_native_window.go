@@ -562,7 +562,17 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 // expHistogramMergeOffsetExpr's arrayMin call, which is order-invariant
 // either way — sorting it once is strictly cheaper than the alternative
 // of carrying two differently-ordered copies of the same column.
+//
+// agg is routed through [wrapExpHistogramMergeBudgetGuard] FIRST — see that
+// function's doc (cerberus issue #2385) — so a group whose series-per-cell
+// or merged-bucket-width fan-out crosses its resource bound is refused
+// before paying for the three arraySort calls below, let alone the
+// per-target-bucket row-sum expHistogramMergeBucketsExpr builds on top of
+// this stage's output. Every caller of this function inherits the guard for
+// free; there is nowhere left for a new across-series merge site to forget
+// it.
 func expHistogramMergeSortStage(agg chplan.Node) chplan.Node {
+	guarded := wrapExpHistogramMergeBudgetGuard(agg)
 	orderKey := &chplan.ColumnRef{Name: hqAggSeriesOrderKeyAlias}
 	sorted := func(arrAlias string) chplan.Projection {
 		return chplan.Projection{
@@ -571,7 +581,7 @@ func expHistogramMergeSortStage(agg chplan.Node) chplan.Node {
 		}
 	}
 	return &chplan.Project{
-		Input: agg,
+		Input: guarded,
 		Replacements: []chplan.Projection{
 			sorted(hqAggScalesArrayAlias),
 			sorted(hqAggPosOffsetsArrayAlias),
