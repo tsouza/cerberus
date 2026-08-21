@@ -70,6 +70,50 @@ func TestLower_ExpHistogram_FloatOnlyFunctionsDropSamples(t *testing.T) {
 	}
 }
 
+// TestLower_ExpHistogram_ClampFamilyDropsSamples pins issue #2345: reference
+// Prometheus's shared clamp() helper (promql/functions.go) skips every
+// sample whose H field is set — the same "process only float samples" rule
+// simpleFloatFunc applies for abs/ceil/floor/round/etc — so clamp_max,
+// clamp_min and the 3-arg clamp must drop a histogram-valued argument to an
+// empty float vector rather than hard-reject it. Before the fix, the clamp
+// family's vector arg never went through lowerExpHistogramValuedShape, so a
+// histogram selector fell through to the generic lower() dispatch and hit
+// expHistogramSelectorRouting's catch-all rejection.
+func TestLower_ExpHistogram_ClampFamilyDropsSamples(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{})
+	at := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+
+	queries := []string{
+		`clamp_max(latency_exp_hist, 5)`,
+		`clamp_min(latency_exp_hist, 0)`,
+		`clamp(latency_exp_hist, 0, 5)`,
+
+		// The consumer sees histogram-valued results, not only selectors.
+		`clamp_max(sum(latency_exp_hist), 5)`,
+		`clamp_max(rate(latency_exp_hist[5m]), 5)`,
+	}
+
+	for _, query := range queries {
+		query := query
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): %v", query, err)
+			}
+			assertEmptyFloatProjection(t, plan)
+		})
+	}
+}
+
 func TestLower_ExpHistogram_FloatOnlyFunctionRangeDropsSamples(t *testing.T) {
 	t.Parallel()
 
