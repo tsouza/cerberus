@@ -456,20 +456,6 @@ func matchCheckGuardFrag(attrsCol string) Frag {
 	)
 }
 
-// IsManyToManyMatchError reports whether err is the deliberate query abort
-// matchCheckGuardFrag plants (see [chplan.ManyToManyMatchMessage]) rather than
-// a backend failure.
-//
-// It is the sibling of [IsInfoConflictingLabelError] and
-// [IsDuplicateLabelsetError] and exists for the same reason: the HTTP layer
-// must classify the abort the way the reference engine classifies its own — a
-// 422 execution error naming the query as at fault, not a 5xx blaming
-// ClickHouse. The exception prefix is matched alongside the message so a query
-// that merely mentions the phrase in a label value cannot be mistaken for one.
-func IsManyToManyMatchError(err error) bool {
-	return isThrowIfError(err, chplan.ManyToManyMatchMessage)
-}
-
 // setOpMatchKeyFrags returns the key a vector set operator matches
 // on: the label signature alone in instant mode, extended with the
 // evaluation-timestamp column in range mode, where every arm
