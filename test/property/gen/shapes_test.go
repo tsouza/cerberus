@@ -26,6 +26,7 @@ func TestShapeRostersAreExact(t *testing.T) {
 				"promql.instant.sum-by",
 				"promql.instant.rate",
 				"promql.instant.sum-rate",
+				"promql.instant.label-replace",
 			},
 		},
 		{
@@ -35,6 +36,7 @@ func TestShapeRostersAreExact(t *testing.T) {
 				"promql.range.selector",
 				"promql.range.sum-by",
 				"promql.range.rate",
+				"promql.range.label-replace",
 			},
 		},
 		{
@@ -396,8 +398,11 @@ func classifyPromQLInstant(query string) (ShapeID, error) {
 	case *parser.VectorSelector:
 		return promQLSelectorShape, nil
 	case *parser.Call:
-		if node.Func.Name == "rate" {
+		switch node.Func.Name {
+		case "rate":
 			return promQLRateShape, nil
+		case "label_replace":
+			return promQLLabelReplaceShape, nil
 		}
 	case *parser.AggregateExpr:
 		if len(node.Grouping) > 0 {
@@ -426,8 +431,11 @@ func classifyPromQLRange(query string) (ShapeID, error) {
 		}
 		return promQLRangeSumByShape, nil
 	case *parser.Call:
-		if node.Func.Name == "rate" {
+		switch node.Func.Name {
+		case "rate":
 			return promQLRangeRateShape, nil
+		case "label_replace":
+			return promQLRangeLabelReplaceShape, nil
 		}
 	}
 	return "", fmt.Errorf("unrecognized PromQL range AST %T", expr)

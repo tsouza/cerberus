@@ -94,7 +94,7 @@ func drawPromQLRangeQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) Range
 	name := rapid.SampledFrom(names).Draw(t, "metric")
 	matchers := drawMatchers(t, name, d.Metrics)
 	groupLabels := mapKeys(d.Metrics.LabelsPresentFor(name))
-	expr := drawRangeExpr(t, name, matchers, groupLabels, shapeID)
+	expr := drawRangeExpr(t, name, matchers, groupLabels, shapeID, maxComposableWrapDepth)
 
 	startOffset := rapid.SampledFrom(RangeGridStartOffsets).Draw(t, "startOffset")
 	step := rapid.SampledFrom(RangeGridSteps).Draw(t, "step")
@@ -111,17 +111,41 @@ func drawPromQLRangeQuery(t *rapid.T, d property.Dataset, shapeID ShapeID) Range
 	}
 }
 
+// promQLRangeBaseShapeRoster is the non-wrapping subset of
+// promQLRangeShapeRoster (gen/shapes.go): every shape drawRangeExpr's
+// promQLRangeLabelReplaceShape case may pick as the inner expression it
+// wraps in label_replace(...). Mirrors promQLBaseShapeRoster's role for the
+// instant generator (promql.go).
+var promQLRangeBaseShapeRoster = []ShapeID{
+	promQLRangeSelectorShape,
+	promQLRangeSumByShape,
+	promQLRangeRateShape,
+}
+
 // drawRangeExpr picks a restricted expression shape for the range-
-// query generator: bare selector, ALWAYS-grouped sum-by, or bare
-// rate(). Deliberately excludes the ungrouped `sum(...)` and
-// `sum(rate(...))` shapes drawExpr draws for the instant-query
-// generator (see PromQLRangeQuery's doc comment for why).
+// query generator: bare selector, ALWAYS-grouped sum-by, bare
+// rate(), or label_replace(...) wrapping any of the three. Deliberately
+// excludes the ungrouped `sum(...)` and `sum(rate(...))` shapes drawExpr
+// draws for the instant-query generator (see PromQLRangeQuery's doc comment
+// for why).
+//
+// The label_replace wrapper is what makes this generator able to reach
+// #2383's reproducer shape (`label_replace(sum by (uri)(rate(X[5m])), ...)`
+// under /api/v1/query_range) — the range-mode `bucket_ts` alias
+// guardKeysOnTimestamp had to learn to recognize
+// (internal/promql/duplicate_labelset_guard.go) only matters once a
+// label-set-rewriting operation sits ABOVE a range-bucketed Aggregate, which
+// no shape in this file's roster could produce before.
+//
+// wrapBudget mirrors drawExpr's: see [maxComposableWrapDepth]'s doc comment
+// in promql.go for why it's threaded explicitly rather than left implicit.
 func drawRangeExpr(
 	t *rapid.T,
 	name string,
 	matchers []*labels.Matcher,
 	groupLabels []string,
 	shapeID ShapeID,
+	wrapBudget int,
 ) parser.Expr {
 	sel := &parser.VectorSelector{Name: name, LabelMatchers: matchers}
 	switch shapeID {
@@ -140,6 +164,13 @@ func drawRangeExpr(
 			Func: parser.Functions["rate"],
 			Args: []parser.Expr{drawRangeSelector(t, name, matchers)},
 		}
+	case promQLRangeLabelReplaceShape:
+		if wrapBudget <= 0 {
+			panic("gen/promql-range: label-replace shape exceeded maxComposableWrapDepth")
+		}
+		innerShape := rapid.SampledFrom(promQLRangeBaseShapeRoster).Draw(t, "rangeLabelReplaceInnerShape")
+		inner := drawRangeExpr(t, name, matchers, groupLabels, innerShape, wrapBudget-1)
+		return drawLabelReplaceWrap(t, inner, groupLabels)
 	}
 	panic("gen/promql-range: unhandled shape " + string(shapeID))
 }
