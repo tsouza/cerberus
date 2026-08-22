@@ -1207,6 +1207,18 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RateWindowFanoutBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// Same family again: a histogram_quantile range-vector or bare-selector
+	// range query's sample fanout (#2447) planted its own throwIf, upstream
+	// of RangeBucketFanout's / RangeLWR's blocking per-(series, anchor)
+	// collapse GROUP BY — the identical mechanism #2429's guard above
+	// bounds, shared via lwrAnchorFanoutFrag. Same 422 errorType=execution
+	// "resource exhausted" shape.
+	case throwIfMessageMatches(err, chsql.LWRAnchorFanoutBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.LWRAnchorFanoutBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }

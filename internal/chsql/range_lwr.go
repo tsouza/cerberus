@@ -119,7 +119,11 @@ const rangeLWRValueAlias = "lwr_value"
 // not require picking WHICH of X's samples landed there, only whether
 // any fanned row for X exists. See that file's doc comment for the full
 // soundness argument.
-func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (*QueryBuilder, error) {
+//
+// The returned Frag is already wrapped by lwrFanoutBoundedSourceFrag
+// (#2447) — both callers read the bounded, guarded source, never the raw
+// arrayJoin fan-out, so neither can forget to opt into the resource bound.
+func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	if r.Step <= 0 {
 		return nil, fmt.Errorf("%w: RangeLWR requires Step > 0", ErrUnsupported)
 	}
@@ -183,7 +187,8 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (*QueryBuilder, error) 
 	// byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
-	return fanout, nil
+	// #2447: see lwrFanoutBoundedSourceFrag's own doc comment.
+	return lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol), nil
 }
 
 // rangeLWRCollapseFrag renders RangeLWR's fan-out + per-series collapse
@@ -218,7 +223,7 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 	// SELECT would shadow the argMax's TimeUnix argument with the constant
 	// per-group anchor, collapsing argMax to an arbitrary sample. The
 	// re-alias happens in the outer Project above instead.)
-	collapse := NewQuery().From(fanout.Frag())
+	collapse := NewQuery().From(fanout)
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
 	collapse.Select(Col(rangeLWRAnchorColumn))
