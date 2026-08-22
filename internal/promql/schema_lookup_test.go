@@ -283,9 +283,14 @@ func TestAugmentSelectorAttributes_DedicatedColumnSurvivesResourceOptOut(t *test
 // by-clause the label vanished from every plain `up` the collector wrote.
 //
 // The expected shape is
-// `mapConcat(mapUpdate(sanitize(RA), sanitize(Attributes)),
+// `mapConcat(mapFilter(k NOT IN ('service_name'), mapUpdate(sanitize(RA),
+// sanitize(Attributes))),
 //
-//	mapFilter(v != ”, map('service_name', toString(ServiceName))))`.
+//	mapFilter(v != ”, map('service_name', toString(ServiceName))))`
+//
+// — see [TestAugmentSelectorAttributes_OverlayDropsBaseKeyStructurally]
+// for why the base is wrapped in a mapFilter that structurally excludes
+// the overlaid key(s) rather than relying on mapConcat's (non-)ordering.
 func TestAugmentSelectorAttributes_BareSelectorCarriesServiceName(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
@@ -306,15 +311,104 @@ func TestAugmentSelectorAttributes_BareSelectorCarriesServiceName(t *testing.T) 
 	if len(mapConcat.Args) != 2 {
 		t.Fatalf("mapConcat args: got %d, want 2", len(mapConcat.Args))
 	}
-	base, ok := mapConcat.Args[0].(*chplan.FuncCall)
+	baseFilter, ok := mapConcat.Args[0].(*chplan.FuncCall)
+	if !ok || baseFilter.Fn != chplan.FnMapFilter {
+		t.Fatalf("overlay base: got %#v, want mapFilter(k NOT IN (...), <resource merge>) stripping the overlaid key", mapConcat.Args[0])
+	}
+	if len(baseFilter.Args) != 2 {
+		t.Fatalf("base mapFilter args: got %d, want 2 (lambda, source map)", len(baseFilter.Args))
+	}
+	base, ok := baseFilter.Args[1].(*chplan.FuncCall)
 	if !ok || base.Fn != chplan.FnMapUpdate {
-		t.Errorf("overlay base: got %v, want the mapUpdate resource merge", mapConcat.Args[0])
+		t.Errorf("base mapFilter source: got %v, want the mapUpdate resource merge", baseFilter.Args[1])
+	}
+	lambda, ok := baseFilter.Args[0].(*chplan.Lambda)
+	if !ok {
+		t.Fatalf("base mapFilter predicate: got %#v, want *chplan.Lambda", baseFilter.Args[0])
+	}
+	inList, ok := lambda.Body.(*chplan.InList)
+	if !ok || !inList.Negated {
+		t.Fatalf("base mapFilter predicate body: got %#v, want a NEGATED InList (k NOT IN (...))", lambda.Body)
+	}
+	var excludesServiceName bool
+	for _, e := range inList.List {
+		if lit, ok := e.(*chplan.LitString); ok && lit.V == "service_name" {
+			excludesServiceName = true
+		}
+	}
+	if !excludesServiceName {
+		t.Errorf("base mapFilter predicate does not exclude service_name: %#v", inList.List)
 	}
 	if !exprMentions(mapConcat.Args[1], s.ServiceNameColumn) {
 		t.Errorf("overlay does not read %s: %#v", s.ServiceNameColumn, mapConcat.Args[1])
 	}
 	if !exprMentions(mapConcat.Args[1], "service_name") {
 		t.Errorf("overlay does not synthesise the service_name key: %#v", mapConcat.Args[1])
+	}
+}
+
+// TestAugmentSelectorAttributes_OverlayDropsBaseKeyStructurally is the
+// regression pin for #2467: ClickHouse's mapConcat does NOT collapse a
+// duplicate key — it concatenates both sides' key/value arrays, leaving
+// BOTH entries in the resulting Map. "Later-key-wins" only holds for a
+// subscript read (`m['k']`); cerberus's series identity is the whole map,
+// so relying on mapConcat ordering alone would let a base-carried
+// `service_name` key (from a datapoint Attributes key spelled exactly
+// `service_name`, or a ResourceAttributes key that sanitises to it) leave
+// TWO `service_name` entries in the projected map instead of the
+// dedicated column winning structurally.
+//
+// This asserts the STRUCTURAL shape directly: the base map is passed
+// through `mapFilter((k, v) -> k NOT IN (<overlaid keys>), base)` before
+// the mapConcat, so the overlaid key can never survive from the base
+// side — mirroring [internal/chsql/info_join.go]'s infoExtrasFrag, which
+// solves the identical hazard for the mirror-image precedence (there the
+// base wins structurally; here the overlay does).
+func TestAugmentSelectorAttributes_OverlayDropsBaseKeyStructurally(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelMetrics()
+	base := &chplan.ColumnRef{Name: s.AttributesColumn}
+
+	got := augmentAttributesForTopLevelExpr(s, base)
+	mapConcat, ok := got.(*chplan.FuncCall)
+	if !ok || mapConcat.Fn != chplan.FnMapMerge {
+		t.Fatalf("got %#v, want mapConcat(...)", got)
+	}
+	if len(mapConcat.Args) != 2 {
+		t.Fatalf("mapConcat args: got %d, want 2", len(mapConcat.Args))
+	}
+	baseFilter, ok := mapConcat.Args[0].(*chplan.FuncCall)
+	if !ok || baseFilter.Fn != chplan.FnMapFilter {
+		t.Fatalf("mapConcat arg0: got %#v, want mapFilter(k NOT IN (...), <base>) — the base must NOT be the raw column ref, or a duplicate service_name key survives the concat", mapConcat.Args[0])
+	}
+	if len(baseFilter.Args) != 2 {
+		t.Fatalf("base mapFilter args: got %d, want 2", len(baseFilter.Args))
+	}
+	// The source the mapFilter reads must be exactly the caller-supplied
+	// base expression — the exclusion wraps it rather than replacing it.
+	if !base.Equal(baseFilter.Args[1]) {
+		t.Errorf("base mapFilter source: got %#v, want the caller-supplied base %#v", baseFilter.Args[1], base)
+	}
+	lambda, ok := baseFilter.Args[0].(*chplan.Lambda)
+	if !ok {
+		t.Fatalf("base mapFilter predicate: got %#v, want *chplan.Lambda", baseFilter.Args[0])
+	}
+	inList, ok := lambda.Body.(*chplan.InList)
+	if !ok {
+		t.Fatalf("base mapFilter predicate body: got %#v, want *chplan.InList", lambda.Body)
+	}
+	if !inList.Negated {
+		t.Errorf("base mapFilter predicate: got a non-negated InList, want NOT IN — otherwise it would keep ONLY the overlaid key and drop everything else")
+	}
+	left, ok := inList.Left.(*chplan.BareIdent)
+	if !ok || left.Name != "k" {
+		t.Errorf("InList.Left: got %#v, want BareIdent(\"k\")", inList.Left)
+	}
+	if len(inList.List) != 1 {
+		t.Fatalf("InList.List: got %d entries, want 1 (service_name)", len(inList.List))
+	}
+	if lit, ok := inList.List[0].(*chplan.LitString); !ok || lit.V != "service_name" {
+		t.Errorf("InList.List[0]: got %#v, want LitString(\"service_name\")", inList.List[0])
 	}
 }
 
