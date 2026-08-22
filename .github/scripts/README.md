@@ -2174,6 +2174,20 @@ what actually runs.
     Neither relation is written down as a table of paths;
     `test/regression/golden_shard_coverage_test.go` pins that, along with the
     check firing in both directions.
+  - Before running the LOCAL `just update-golden <shard>...` recipe by hand,
+    `GOLDEN_UPDATE_CHECK_ONLY=1 GOLDEN_SHARDS=<any one shard name> node
+    .github/scripts/golden-update.mjs` is a seconds-long, chDB-free dry run of
+    this same check, and a failure's `run: ...` line is the exact command to
+    retype. A single `internal/promql` or `internal/chplan` change routinely
+    implies most or all of the other shards; verified directly (`go list
+    -deps -test`), that is real coupling — `internal/chplan` is the shared IR
+    nearly every generator's package closure reaches, and several generators'
+    own test files import `internal/promql` directly — not this check
+    over-firing. There is no need to run this before dispatching
+    `update-golden.yml`, though: that workflow's own `plan` job (see
+    `manual-golden-update.mjs` below) computes and merges in the same implied
+    set automatically, so a narrow `-f shards=` guess there no longer costs a
+    round trip to correct.
 
 - **`manual-golden-update.mjs`** — `update-golden.yml`, the trusted controller
   for manually regenerating selected shards on an existing same-repository PR
@@ -2185,6 +2199,17 @@ what actually runs.
   a matrix leg publish or letting duplicate predecessor output enter its patch.
   The workflow rejects the default branch and requires `RELEASE_PAT`: a push
   made with the default `GITHUB_TOKEN` would not trigger the target PR's checks.
+  `buildPlan` treats the dispatched `shards` as a FLOOR, not the final answer:
+  it merges in whatever `impliedShards` (`lib/golden-shards.mjs`) says the
+  target branch's own diff needs before building the matrix, so a dispatch
+  that under-names the shard set still regenerates everything on the first
+  try — a `::notice::` names what got added. This is the opposite choice from
+  `golden-update.mjs`'s LOCAL recipe (which still refuses and prints the exact
+  command instead of silently doing more): there, a contributor is standing by
+  to read a refusal and retype it in seconds; here, a CI dispatch that fails
+  the old coverage check three stages downstream, after the matrix already
+  ran short, cost a ~15-minute round trip for an answer the dependency graph
+  already had.
   `cardinality` is the one exception to "one shard, one matrix row" (#2341):
   `buildPlan` excludes it from `matrix.include` and reports it separately (which
   OTHER selected shards its legs need regenerated first), because its own

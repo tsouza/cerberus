@@ -638,6 +638,19 @@ update-parity-enrolment-baseline:
 # it produces a zero diff (#1898), and chDB is single-threaded per process, so
 # nobody should pay for the heads they did not touch by accident.
 #
+# A REMOTE `gh workflow run update-golden.yml -f shards=...` dispatch does not
+# need a precisely-guessed list: its `plan` job (manual-golden-update.mjs's
+# `buildPlan`) merges in whatever the target branch's own diff implies is
+# stale — the same derivation this recipe runs locally — BEFORE building the
+# regeneration matrix, and logs a `::notice::` naming what it added. A change
+# touching `internal/promql` or `internal/chplan` routinely implies most or
+# all of the other shards, because the coupling is REAL (`internal/chplan` is
+# the shared plan IR every head lowers to and nearly every generator's package
+# closure imports it; `internal/chsql`'s own generator test files import
+# `internal/promql` directly), so a narrow `-f shards=` guess there now
+# self-corrects on the first dispatch instead of failing a downstream CI step
+# and costing a round trip.
+#
 # The obvious hazard is that naming a shard reintroduces the trap the recipe's
 # unconditional chaining was built to close (#1573; hit by #1571 and again by
 # #1592): a contributor regenerates one artefact, sees zero remaining churn,
