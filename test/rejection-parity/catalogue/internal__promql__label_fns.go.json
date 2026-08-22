@@ -5,13 +5,20 @@
       "site": "internal/promql/label_fns.go:labelJoinAttributes#c71ab88a",
       "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: label_join requires at least the vector, destination label, and separator arguments",
+      "rationale": "parser-enforced arity: label_join requires at least the vector, destination label, and separator arguments. Since cerberus issue #2449, lowerLabelCallOverMixedExpHistogramSetOp joins lowerLabelCallOverExpHistogram and lowerLabelJoin as a third caller, but its own labelCallOverMixedExpHistogramSetOp recognizer re-runs the identical `len(call.Args) \u003c 3` check on the same parser Call before ever calling this function, so the claim is unaffected by the new caller.",
       "evidence": {
         "guard": [
           "if len(c.Args) \u003c 3"
         ],
         "callers": [
           "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin"
+        ],
+        "cited": [
+          "labelCallOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerLabelJoin"
         ]
       }
@@ -21,17 +28,22 @@
       "site": "internal/promql/label_fns.go:labelReplaceAttributes#8c37a823",
       "message": "promql: label_replace expects 5 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: label_replace requires exactly five arguments; labelReplaceAttributes is called only after the parser Call has been identified",
+      "rationale": "parser-enforced arity: label_replace requires exactly five arguments; labelReplaceAttributes is called only after the parser Call has been identified. Since cerberus issue #2449, lowerLabelCallOverMixedExpHistogramSetOp joins lowerLabelCallOverExpHistogram and lowerLabelReplace as a third caller, but its own labelCallOverMixedExpHistogramSetOp recognizer re-runs the identical `len(call.Args) != 5` check on the same parser Call before ever calling this function, so the claim is unaffected by the new caller.",
       "evidence": {
         "guard": [
           "if len(c.Args) != 5"
         ],
         "callers": [
           "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerLabelReplace"
         ],
         "cited": [
-          "labelReplaceAttributes"
+          "labelCallOverMixedExpHistogramSetOp",
+          "labelReplaceAttributes",
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelReplace"
         ]
       }
     },
@@ -53,6 +65,7 @@
         ],
         "callers": [
           "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerLabelReplace"
         ]
       },

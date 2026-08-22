@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_label.go:lowerLabelCallOverMixedExpHistogramSetOp#82719db8",
+      "message": "promql: internal invariant violated: %s is not a label-only mixed set-op consumer",
+      "class": "internal",
+      "rationale": "labelCallOverMixedExpHistogramSetOp admits only label_replace and label_join before calling lowerLabelCallOverMixedExpHistogramSetOp, the same arity/name gate histogram_native_label_replace.go's identical labelCallOverExpHistogram/lowerLabelCallOverExpHistogram pair carries for the pure-histogram case",
+      "evidence": {
+        "guard": [
+          "default of switch call.Func.Name over [case \"label_replace\"; case \"label_join\"; default]"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "labelCallOverExpHistogram",
+          "labelCallOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

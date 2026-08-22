@@ -190,6 +190,16 @@ func stringArg(e parser.Expr, fnName, paramName string) (string, error) {
 // the same derive-don't-declare question [chplan.IsDerivedShape] answers
 // for the emitter and the HTTP layer.
 func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chplan.Expr) *chplan.Project {
+	// MixedRowShape (cerberus issue #2449): checked BEFORE
+	// assertValueShapedInput, which still panics on this shape for every
+	// OTHER caller (see histogram_shape_guard.go's doc comment). A label
+	// rewrite touches only Attributes, so it needs no per-payload branch
+	// at all — [mixedSampleProjections] forwards the other thirteen
+	// columns (the quartet's MetricName/Timestamp/Value, the nine
+	// Histogram*Column outputs, and the trailing discriminator) unchanged.
+	if chplan.RowShapeOf(inner) == chplan.MixedRowShape {
+		return &chplan.Project{Input: inner, Projections: mixedSampleProjections(s, attrs)}
+	}
 	assertValueShapedInput(inner, "projectAttributesOverInner")
 	if shape := chplan.RowShapeOf(inner); shape != chplan.SampleRowShape {
 		projections := []chplan.Projection{{Expr: attrs, Alias: s.AttributesColumn}}
@@ -215,4 +225,30 @@ func projectAttributesOverInner(inner chplan.Node, s schema.Metrics, attrs chpla
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
 		},
 	}
+}
+
+// mixedSampleProjections builds the fourteen-column projection list a
+// [chplan.MixedRowShape] node's SELECT publishes (cerberus issue #2449):
+// MetricName, attrs (Attributes, rewritten or forwarded verbatim), the
+// schema Timestamp, Value, the nine Histogram*Column outputs, and the
+// trailing [mixedDiscriminatorColumn]. Shared by
+// [projectAttributesOverInner]'s MixedRowShape branch (attrs is the
+// caller's rewrite expression) and [guardLabelRewriteCollision]'s
+// canonical re-projection (duplicate_labelset_guard.go; attrs is a plain
+// `Attributes` column reference forwarding the ALREADY-rewritten column
+// the guard's Aggregate exposes) — both need byte-identical column names
+// and order, since internal/chclient's cursor decodes a Mixed result by
+// probing the FINAL SELECT's column names, not by node type.
+func mixedSampleProjections(s schema.Metrics, attrs chplan.Expr) []chplan.Projection {
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
+		{Expr: attrs, Alias: s.AttributesColumn},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+	}
+	for _, name := range histogramProjectionOutputColumns() {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
+	}
+	projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: mixedDiscriminatorColumn}})
+	return projections
 }

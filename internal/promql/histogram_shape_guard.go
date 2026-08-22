@@ -6,6 +6,18 @@ import (
 	"github.com/tsouza/cerberus/internal/chplan"
 )
 
+// mixedDiscriminatorColumn is internal/promql's own name for
+// [chplan.MixedDiscriminatorColumn] — internal/promql may depend on
+// chplan (.go-arch-lint.yml), so this aliases the single definition
+// rather than duplicating the literal the way internal/chclient's
+// decode-side probe has to. [projectAttributesOverInner] (label_fns.go)
+// and [guardLabelRewriteCollision] (duplicate_labelset_guard.go) both
+// reference it by name to forward the column unchanged through a
+// `label_replace`/`label_join` rewrite over a mixed `or` (cerberus issue
+// #2449); [chplan.RowShapeOf]'s own [*chplan.Project] case reads it back
+// to recognise the result as still [chplan.MixedRowShape].
+const mixedDiscriminatorColumn = chplan.MixedDiscriminatorColumn
+
 // histogram_shape_guard.go — the structural assertion that keeps the two
 // canonical-column forwarders from silently mis-projecting a
 // histogram-valued row.
@@ -56,13 +68,15 @@ import (
 // [chplan.MixedRowShape] (cerberus issue #2330, histogram_native_mixed_or.go)
 // earns the identical structural guarantee the same way: its lowering
 // (lowerMixedExpHistogramSetOp) is registered only at the query ROOT, never
-// inside [lowerExpHistogramValuedShape]'s recursive dispatch table, so
-// nothing composes a further GENERIC wrapper around a Mixed node — a query
-// that tries `abs(a or b)` for a mixed `a`/`b` keeps falling through to
-// [expHistogramSelectorRouting]'s existing rejection, exactly as it did
-// before this file learned the Mixed shape.
+// inside [lowerExpHistogramValuedShape]'s recursive dispatch table, so no
+// wrapper OTHER than the two exceptions below ever reaches a generic
+// forwarder with a Mixed node — a query that tries `abs(a or b)` for a
+// mixed `a`/`b` keeps falling through to [expHistogramSelectorRouting]'s
+// existing rejection, exactly as it did before this file learned the
+// Mixed shape (cerberus issue #2449 tracks the remaining wrapper
+// families as an open divergence in test/rejection-parity/catalogue).
 //
-// `sum(a or b)` / `avg(a or b)` for a mixed `a`/`b` is the one exception,
+// `sum(a or b)` / `avg(a or b)` for a mixed `a`/`b` is one exception,
 // and a deliberate one (cerberus issue #2346,
 // histogram_native_mixed_or_aggregate.go): its own root-only recognizer
 // ([sumOrAvgOverMixedExpHistogramSetOp]) builds a dedicated reduction —
@@ -70,7 +84,22 @@ import (
 // machinery this guard protects, one through the ordinary float aggregate
 // path) recombined with reference's own "drop a mixed-type output group"
 // rule — instead of ever routing a Mixed node through a generic forwarder.
-// The panic below still holds for every OTHER wrapper.
+//
+// `label_replace(a or b, ...)` / `label_join(a or b, ...)` for a mixed
+// `a`/`b` are the SECOND exception, since cerberus issue #2449:
+// histogram_native_mixed_or_label.go's own root-only recognizer
+// ([labelCallOverMixedExpHistogramSetOp]) routes the SAME Mixed node the
+// leaf case builds through [projectAttributesOverInner] itself — unlike
+// the sum/avg case, this one DOES hand a Mixed node to a generic
+// forwarder, because a label rewrite touches only Attributes and needs
+// no per-payload branching: [projectAttributesOverInner] carries its own
+// [chplan.MixedRowShape] branch (see that function's doc comment,
+// label_fns.go) instead of taking the panic below.
+// [projectValueOverInner] has grown no such branch — a value transform
+// genuinely differs by payload and would need a discriminator-keyed
+// `chplan.Case`/CH `if()` this issue's PR did not build — so the panic
+// below still holds for it, and for every wrapper family neither
+// exception recognises.
 
 // assertValueShapedInput panics when inner publishes
 // [chplan.HistogramRowShape] or [chplan.MixedRowShape] — the two shapes
@@ -87,9 +116,16 @@ import (
 // histogramSampleValuePlaceholder a pure [chplan.HistogramProjection]
 // carries. internal/promql's lowerMixedExpHistogramSetOp only ever builds
 // a Mixed node at the query ROOT (see that function's doc comment for
-// why), so — like the pure-histogram case — no generic forwarder should
-// ever actually receive one; this assertion is the same "impossible state,
-// asserted anyway" contract as the HistogramRowShape case below.
+// why), so this assertion is the same "impossible state, asserted
+// anyway" contract as the HistogramRowShape case below for
+// [projectValueOverInner] — Value genuinely IS unsafe to forward
+// unconditionally for that caller. [projectAttributesOverInner]
+// (cerberus issue #2449, label_fns.go) is the one caller this is no
+// longer true for: it checks [chplan.RowShapeOf] itself and takes a
+// dedicated MixedRowShape branch BEFORE ever reaching this function, so
+// this panic still fires only when some future caller of
+// [projectAttributesOverInner] finds a way to bypass that branch, not on
+// the ordinary `label_replace`/`label_join`-over-mixed-`or` path.
 func assertValueShapedInput(inner chplan.Node, forwarder string) {
 	shape := chplan.RowShapeOf(inner)
 	if shape != chplan.HistogramRowShape && shape != chplan.MixedRowShape {

@@ -1,5 +1,23 @@
 package chplan
 
+// MixedDiscriminatorColumn is the trailing per-row discriminator column
+// name a Mixed [VectorSetOp]'s SELECT carries (cerberus issue #2330):
+// 1 on a row that came from the histogram-shaped arm (its nine
+// Histogram*Column outputs are real, Value is the [HistogramProjection]
+// placeholder), 0 on a row from the float-shaped arm (the mirror image).
+// internal/chsql/vector_set_op.go's emitter is the one place that writes
+// it; [RowShapeOf]'s [*Project] case reads it back to recognise a
+// PromQL wrapper's re-projection of a Mixed node as still MixedRowShape
+// (internal/promql's `label_replace`/`label_join` composition, cerberus
+// issue #2449) without walking into the Project's input.
+//
+// chclient may not import chplan (see .go-arch-lint.yml: chclient
+// declares no internal dependencies), so internal/chclient/cursor.go's
+// decode-side probe duplicates this exact string literal locally rather
+// than importing this symbol — the same pairing the Histogram*Column
+// constants already have with that file's histogramLastColumn.
+const MixedDiscriminatorColumn = "_setop_is_histogram"
+
 // VectorSetOpKind identifies a PromQL vector set-operator: `and` (semi-
 // join over label signatures), `or` (union with anti-right), and
 // `unless` (anti-join). Parameterising the node by kind keeps the
