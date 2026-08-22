@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import { buildPlan, main, pathOwnedBy, validateBranch } from './manual-golden-update.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./manual-golden-update.mjs', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 function command(name, args, options = {}) {
   const result = spawnSync(name, args, { encoding: 'utf8', ...options });
@@ -71,6 +72,36 @@ test('later-stage rows regenerate selected predecessors as context', () => {
       needs_chdb: true,
     },
   ]);
+});
+
+test('buildPlan merges the diff-implied shards into the requested set', () => {
+  // Mirrors test/regression/golden_shard_coverage_test.go's own "fires on an
+  // under-covering set" fixture: a PromQL fixture change feeds the solver
+  // decision baseline and the cardinality baseline, and its own fixture goes
+  // through the parity ledgers — so `promql` alone under-covers it. Here that
+  // must MERGE those shards in rather than fail.
+  const plan = buildPlan('promql', {
+    repoRoot: REPO_ROOT,
+    changedFiles: ['test/spec/promql/fixture_under_test.txtar'],
+  });
+  assert.deepEqual(plan.requested, ['promql']);
+  assert.deepEqual(plan.added, ['parity', 'solver', 'cardinality']);
+  assert.deepEqual(plan.selected, ['parity', 'solver', 'promql', 'cardinality']);
+});
+
+test('buildPlan adds nothing once the requested set already covers the diff', () => {
+  const plan = buildPlan('parity solver promql cardinality', {
+    repoRoot: REPO_ROOT,
+    changedFiles: ['test/spec/promql/fixture_under_test.txtar'],
+  });
+  assert.deepEqual(plan.added, []);
+  assert.deepEqual(plan.selected, ['parity', 'solver', 'promql', 'cardinality']);
+});
+
+test('buildPlan implies nothing without a repoRoot, matching the static dump catalogue', () => {
+  const plan = buildPlan('promql', { changedFiles: ['test/spec/promql/fixture_under_test.txtar'] });
+  assert.deepEqual(plan.added, []);
+  assert.deepEqual(plan.selected, ['promql']);
 });
 
 test('branch validation rejects the protected branch and ref-shaped input', () => {

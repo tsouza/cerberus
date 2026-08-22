@@ -5,6 +5,20 @@
 // only their shard's generated paths. The final job executes this controller
 // from the workflow ref, validates every patch again, and performs one push.
 //
+// `buildPlan` MERGES in whatever `impliedShards` (golden-shards.mjs) says the
+// target branch's own diff needs, flat, on top of whatever `SHARDS_INPUT`
+// named — the caller's request is a FLOOR, not the final answer. Before this,
+// a dispatch that named too few shards sailed through `plan`, built an
+// under-covering matrix, and only failed several minutes later in the
+// "Verify requested shards cover the target branch diff" step — a
+// guess-and-wait round trip the dependency graph could have avoided outright,
+// since `plan` already has the target branch checked out with full history.
+// Unlike `golden-update.mjs`'s LOCAL recipe (which still refuses and prints
+// the exact command — a contributor typing a narrow list is standing right
+// there to read it and retry in seconds), a CI dispatch has nobody watching
+// to react to a refusal; merging the true set in up front is what makes the
+// first dispatch also the last one.
+//
 // Modes and environment:
 //
 //   node manual-golden-update.mjs dump
@@ -36,7 +50,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { SHARDS, needsChdb, resolveRequested } from './lib/golden-shards.mjs';
+import {
+  SHARDS,
+  changedFilesFrom,
+  impliedShards,
+  needsChdb,
+  orderShards,
+  resolveRequested,
+} from './lib/golden-shards.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 
@@ -78,10 +99,38 @@ export function validateBranch(branch, defaultBranch) {
   return branch;
 }
 
-/** A matrix row gets every selected predecessor as regeneration context. */
-export function buildPlan(raw) {
-  const selected = parseShards(raw);
+/**
+ * The shards a dispatch's diff implies are stale, beyond whatever the caller
+ * requested — empty when `repoRoot` is omitted (the static `dump` catalogue
+ * has no branch to diff) or when nothing about the diff implies more than
+ * what was already requested. `changedFiles`, when given, REPLACES the
+ * git-derived diff outright — the same synthetic-diff escape hatch
+ * `golden-update.mjs`'s own `GOLDEN_UPDATE_CHANGED_FILES` gives its coverage
+ * check, so a test can drive this over a fixed diff without a real branch.
+ */
+function impliedBeyond(requested, { repoRoot, defaultBranchRef, changedFiles } = {}) {
+  if (!repoRoot) return [];
+  const changed = changedFiles ?? changedFilesFrom(repoRoot, { defaultBranchRef });
+  const implied = impliedShards(changed, { repoRoot });
+  return orderShards([...implied.keys()]).filter((name) => !requested.includes(name));
+}
+
+/**
+ * A matrix row gets every selected predecessor as regeneration context.
+ *
+ * `requested` is a FLOOR: `selected` is `requested` merged flat with whatever
+ * the target branch's own diff implies (see this file's header), so a caller
+ * that under-names the shard set still gets a complete regeneration on the
+ * first dispatch. `added` names exactly what the merge contributed, for the
+ * caller to log.
+ */
+export function buildPlan(raw, opts = {}) {
+  const requested = parseShards(raw);
+  const added = impliedBeyond(requested, opts);
+  const selected = orderShards([...requested, ...added]);
   return {
+    requested,
+    added,
     selected,
     matrix: {
       include: selected.map((shard) => {
@@ -212,8 +261,19 @@ function plan(env) {
     fail('RELEASE_PAT is required so the generated push triggers pull-request checks');
   }
 
-  const result = buildPlan(required(env, 'SHARDS_INPUT'));
+  const shardsInput = required(env, 'SHARDS_INPUT');
+  const result = buildPlan(shardsInput, {
+    repoRoot: targetRoot,
+    defaultBranchRef: `refs/remotes/origin/${env.DEFAULT_BRANCH}`,
+  });
   const targetSha = git(targetRoot, ['rev-parse', 'HEAD']).stdout.trim();
+
+  if (result.added.length > 0) {
+    process.stdout.write(
+      `::notice::requested shards (${shardsInput}) did not cover this branch's own diff; ` +
+        `auto-expanded to include: ${result.added.join(' ')}. Full set: ${result.selected.join(' ')}\n`,
+    );
+  }
 
   writeOutput('matrix', JSON.stringify(result.matrix), env.GITHUB_OUTPUT);
   writeOutput('shards', result.selected.join(' '), env.GITHUB_OUTPUT);
