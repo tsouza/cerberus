@@ -269,60 +269,6 @@
     },
     {
       "head": "promql",
-      "site": "internal/promql/lower.go:lowerRangeVectorCall#064574ba",
-      "message": "promql: %s expects exactly 1 argument, got %d",
-      "class": "internal",
-      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions",
-      "evidence": {
-        "guard": [
-          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
-          "if len(c.Args) != 1"
-        ],
-        "callers": [
-          "lowerCall"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerRangeVectorCall#5fccc59e",
-      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
-      "class": "internal",
-      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
-      "evidence": {
-        "guard": [
-          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
-          "past returning if len(c.Args) != 1",
-          "past returning if !ok",
-          "if !ok"
-        ],
-        "callers": [
-          "lowerCall"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/lower.go:lowerRangeVectorCall#ccda8b22",
-      "message": "promql: %s argument must be a range-vector selector, got %T",
-      "class": "internal",
-      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
-      "evidence": {
-        "guard": [
-          "past exhaustive switch c.Func.Name over [case \"predict_linear\"; case \"holt_winters\", \"double_exponential_smoothing\"; case \"absent_over_time\"]",
-          "past returning if len(c.Args) != 1",
-          "if !ok"
-        ],
-        "callers": [
-          "lowerCall"
-        ],
-        "cited": [
-          "lowerOuterRangeFnOverSubquery"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/lower.go:lowerRoot#53e0f9b3",
       "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
       "class": "internal",
@@ -397,6 +343,57 @@
           "mixedExpHistogramSetOp",
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#064574ba",
+      "message": "promql: %s expects exactly 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#ccda8b22",
+      "message": "promql: %s argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
         ]
       }
     },
