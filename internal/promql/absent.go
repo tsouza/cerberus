@@ -43,6 +43,15 @@ import (
 // window the bare-selector LWR wrap uses. For the compatibility-harness
 // fixtures and the OTel-CH gauge tables, "metric has zero rows in the
 // table" is the signal that matters.
+//
+// A bare `v` never reads a sample's value — reference's own funcAbsent
+// only asks `len(vectorVals[0]) > 0`, so it answers just as readily over
+// an exponential-histogram selector as over a float one. The
+// VectorSelector arm below therefore routes through
+// lowerAbsencePresenceSelector rather than lowerVectorSelector directly:
+// the latter would hit expHistogramSelectorRouting's rejection for a
+// selector shape absent() never actually needed a Value column from
+// (cerberus issue #2443).
 func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: absent() expects 1 argument, got %d", len(c.Args))
@@ -58,11 +67,10 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		err   error
 	)
 	if vs, ok := arg.(*parser.VectorSelector); ok {
-		// Build the inner filtered Scan via the standard selector
-		// lowering with the range-vector flag set: that path skips the
-		// LWR wrap and only applies the matchers (plus the @/offset time
-		// bound when present). The wrapping Aggregate doesn't need a
-		// per-series collapse — it just counts rows.
+		// Build the inner filtered Scan via lowerAbsencePresenceSelector,
+		// which skips the LWR wrap and only applies the matchers (plus the
+		// @/offset time bound when present). The wrapping Aggregate
+		// doesn't need a per-series collapse — it just counts rows.
 		//
 		// Strip the modifier so the inner Filter doesn't carry a
 		// duplicate time-bound predicate; absent() doesn't currently
@@ -76,7 +84,7 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		vsNoMod.StartOrEnd = 0
 		rangeCtx := ctx
 		rangeCtx.inRangeVector = true
-		inner, err = lowerVectorSelector(&vsNoMod, s, rangeCtx)
+		inner, err = lowerAbsencePresenceSelector(&vsNoMod, s, rangeCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +243,7 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	vsNoMod.StartOrEnd = 0
 	rangeCtx := ctx
 	rangeCtx.inRangeVector = true
-	inner, err := lowerAbsentOverTimeSelector(&vsNoMod, s, rangeCtx)
+	inner, err := lowerAbsencePresenceSelector(&vsNoMod, s, rangeCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -281,19 +289,25 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	return a, nil
 }
 
-// lowerAbsentOverTimeSelector builds the matcher-filtered presence stream
-// consumed by [chplan.AbsentOverTime]. Exponential-histogram rows do not
-// carry the scalar Value column expected by the ordinary selector pipeline,
-// but absence is value-agnostic: the dedicated node only needs timestamps
-// from rows that satisfy the selector's label predicates.
+// lowerAbsencePresenceSelector builds the matcher-filtered presence stream
+// shared by instant `absent(<selector>)` (lowerAbsent, above) and
+// `absent_over_time(<selector>[range])` (lowerAbsentOverTime, below), both of
+// which only need to know whether ANY row matches the selector's label
+// predicates — never a sample's value. Exponential-histogram rows do not
+// carry the scalar Value column the ordinary selector pipeline expects, so
+// routing either function through the standard lowerVectorSelector path hits
+// expHistogramSelectorRouting's rejection for a shape neither caller actually
+// needs (cerberus issue #2443, the absent() sibling of #2226's
+// absent_over_time() fix).
 //
 // Keep the ordinary path for every non-native selector so its established
 // table unions and label routing remain unchanged. A pinned native-histogram
 // selector instead scans the exponential-histogram table directly, applies
 // its predicates while all raw label/resource columns are still in scope,
-// and projects only the timestamp needed by the absence emitter. In
+// and projects only the timestamp column — enough for absent_over_time's
+// per-anchor lookback check and for absent's plain row count alike. In
 // particular, this path must never synthesize or reference s.ValueColumn.
-func lowerAbsentOverTimeSelector(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerAbsencePresenceSelector(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(vs.LabelMatchers)
 	if s.ExpHistogramTable == "" || !s.IsExpHistogramMetric(metricName) {
 		return lowerVectorSelector(vs, s, ctx)

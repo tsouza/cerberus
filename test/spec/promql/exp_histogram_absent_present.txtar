@@ -1,0 +1,67 @@
+# absent() over a native-histogram selector whose table DOES contain a
+# matching row (cerberus issue #2443). Reference Prometheus's funcAbsent
+# never reads a sample's H/F field — it only asks whether the input
+# vector is non-empty — so a bare exponential-histogram selector answers
+# exactly like a float selector would: the inner presence Scan counts
+# the matching row, the outer `_cerb_n = 0` filter drops the candidate
+# sample, and the surrounding Project produces zero output rows.
+#
+# The presence Scan reads otel_metrics_exponential_histogram directly
+# (lowerAbsencePresenceSelector) rather than routing through the ordinary
+# float selector pipeline, which has no Value column for this table and
+# would otherwise reject the query at expHistogramSelectorRouting.
+
+-- query.promql --
+absent(latency_exp_hist{job="api"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('job', 'api', 'instance', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1, 0, 0, 0, [1], 0, []);
+-- expected_rows --
+[]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "api"
+[3] string = "2026-01-01 00:00:01.000000000"
+[4] int64 = 9
+[5] float64 = 1
+[6] string = "latency_exp_hist"
+[7] string = "latency.exp.hist"
+[8] string = "latency.exp/hist"
+[9] string = "latency.exp_hist"
+[10] string = "latency/exp/hist"
+[11] string = "latency/exp_hist"
+[12] string = "latency_exp.hist"
+[13] string = "job"
+[14] string = ""
+[15] string = "job"
+[16] string = ""
+[17] string = ""
+[18] string = "api"
+[19] int64 = 0
+-- chplan --
+Project ["" AS MetricName, FnMap("job", "api") AS Attributes, FnToDateTime64("2026-01-01 00:00:01.000000000", 9) AS TimeUnix, 1 AS Value]
+  Filter predicate=(_cerb_n = 0)
+    Aggregate groupBy=[] funcs=[FnCount() AS _cerb_n]
+      Project [TimeUnix AS TimeUnix]
+        Filter predicate=((FnCoalesce(FnNullIf(Attributes["job"], ""), FnNullIf(ResourceAttributes["job"], ""), "") = "api") AND (MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist")))
+          Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, map(?, ?) AS `Attributes`, toDateTime64(?, ?) AS `TimeUnix`, toFloat64(?) AS `Value` FROM (SELECT * FROM (SELECT toFloat64(count()) AS `_cerb_n` FROM (SELECT `TimeUnix` AS `TimeUnix` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)))) WHERE (`_cerb_n` = ?))
