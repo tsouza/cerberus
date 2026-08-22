@@ -217,7 +217,7 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 	// column of the same name; aliasing anchor_ts → TimeUnix in this
 	// SELECT would shadow the argMax's TimeUnix argument with the constant
 	// per-group anchor, collapsing argMax to an arbitrary sample. The
-	// re-alias is deferred to the outer Project above.)
+	// re-alias happens in the outer Project above instead.)
 	collapse := NewQuery().From(fanout.Frag())
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
