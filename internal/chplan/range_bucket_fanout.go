@@ -121,6 +121,36 @@ func (*RangeBucketFanout) planNode() {}
 
 func (r *RangeBucketFanout) Children() []Node { return []Node{r.Input} }
 
+// NumAnchors is the number of grid anchor points this fan-out materialises:
+// one row per Step across [Start, End] (end-inclusive), i.e.
+// (End-Start)/Step + 1 — mirrors the chsql emitter's own `span/stepNS + 1`
+// (internal/chsql/range_bucket_fanout.go) so the budget gate and the emit
+// agree on the count, and mirrors [RangeWindow.NumAnchors]'s role for the
+// identical resource axis on this node's own grid.
+//
+// Zero when Start/End are both unset (the now64() fixture shape, where the
+// emitter substitutes a single anchor) or Step <= 0 — there is no
+// materialised grid to charge in either case.
+//
+// This is the per-series intermediate row count [requireSubquerySampleBudget]
+// exists to bound (docs/resource-bound-audit): when this node lowers a
+// histogram range function whose Start/End/Step come from a PromQL subquery
+// grid (`histogram_quantile(...)[OuterRange:Step]` nested inside an outer
+// `<reducer>_over_time(...)`), NOTHING else in the plan carries that grid's
+// width — the histogram lowering (internal/promql) absorbs the subquery's
+// own materialisation into THIS node directly rather than wrapping it in an
+// OuterRange-bearing [RangeWindow], unlike a bare-selector subquery. Before
+// this method existed, [requireSubquerySampleBudget]'s
+// *chplan.RangeWindow-only type switch could not see this axis at all, so a
+// histogram-quantile-as-subquery-inner query with a divergent [range:step]
+// escaped the same protection its scalar sibling already had.
+func (r *RangeBucketFanout) NumAnchors() int64 {
+	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
+		return 0
+	}
+	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
+}
+
 func (r *RangeBucketFanout) Equal(other Node) bool {
 	o, ok := other.(*RangeBucketFanout)
 	if !ok {
