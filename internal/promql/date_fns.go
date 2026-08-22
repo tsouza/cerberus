@@ -62,6 +62,21 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		return lowerDateFnNoArg(c.Func.Name, s, ctx)
 	}
 
+	// `timestamp(v)` is defined for a histogram-VALUED argument exactly as
+	// it is for a float-valued one — reference reads only Point.T, never
+	// Point.H/Point.F (see this file's package doc). Every other
+	// date-component function's argument is genuinely FLOAT-only (its
+	// value math divides/casts the sample's own Value), so this check is
+	// scoped to `timestamp` alone. See histogram_native_timestamp.go for
+	// why the generic `lower()` call below cannot answer it: an
+	// exp-histogram-valued argument falls through to
+	// expHistogramSelectorRouting's catch-all rejection without this.
+	if c.Func.Name == "timestamp" {
+		if node, ok, err := lowerTimestampOverExpHistogram(c.Args[0], s, ctx); ok {
+			return node, err
+		}
+	}
+
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's
 	// own, because `timestamp(<vector-selector>)` needs the selector seam to
 	// publish a column no other consumer asks for. Every other function/shape
