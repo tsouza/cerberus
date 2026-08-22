@@ -1697,12 +1697,17 @@ func TestConformance_ServiceNameMatcherRoutesToTopLevelColumn(t *testing.T) {
 // returns the empty string for OTel-collector-routed rows.
 //
 // The assertion targets the captured SQL: the outer-by overlay
-// `mapConcat(<base>, mapFilter(...))` + `toString(`ServiceName`)` must
-// appear in the inner subquery so the augmenting Project lands above the
-// Scan. Since rc.5 the overlay's `<base>` is the resource-attribute merge
+// `mapConcat(mapFilter(...), mapFilter(...))` + `toString(`ServiceName`)`
+// must appear in the inner subquery so the augmenting Project lands above
+// the Scan. Since rc.5 the overlay's base is the resource-attribute merge
 // (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) rather than a
-// bare `Attributes` column ref, so the assertion targets the `mapConcat(`
-// + `mapFilter(` overlay shape and the merge base independently.
+// bare `Attributes` column ref; since issue #2467 that merge base is itself
+// wrapped in `mapFilter((k, v) -> k NOT IN (...), ...)` so the dedicated
+// ServiceName overlay wins STRUCTURALLY rather than by mapConcat's
+// later-key-wins ordering (which ClickHouse's mapConcat does not actually
+// provide for the Map value itself — see schema_lookup.go's own doc
+// comment). The assertion targets the `mapConcat(mapFilter(` overlay shape
+// and the merge base independently.
 func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
 	t.Parallel()
 
@@ -1722,8 +1727,11 @@ func TestConformance_ServiceNameByClauseAugmentsAttributes(t *testing.T) {
 	if stub.lastSQL == "" {
 		t.Fatalf("stub.lastSQL is empty; expected handler to have invoked the CH client")
 	}
-	if !strings.Contains(stub.lastSQL, "mapConcat(mapUpdate(") {
-		t.Errorf("SQL is missing the `mapConcat(mapUpdate(...), mapFilter(...))` outer-by overlay over the resource-merge base for the service_name by-clause\nSQL: %s", stub.lastSQL)
+	if !strings.Contains(stub.lastSQL, "mapConcat(mapFilter(") {
+		t.Errorf("SQL is missing the `mapConcat(mapFilter(...), mapFilter(...))` outer-by overlay over the resource-merge base for the service_name by-clause\nSQL: %s", stub.lastSQL)
+	}
+	if !strings.Contains(stub.lastSQL, "mapUpdate(") {
+		t.Errorf("SQL is missing the resource-attribute merge base under the overlay\nSQL: %s", stub.lastSQL)
 	}
 	if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
 		t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the service_name by-clause\nSQL: %s", stub.lastSQL)
@@ -1795,8 +1803,11 @@ func TestConformance_ServiceNameMatcherWithByClauseCrossProduct(t *testing.T) {
 			if !strings.Contains(stub.lastSQL, "coalesce(nullIf(`ServiceName`") {
 				t.Errorf("SQL is missing the `coalesce(nullIf(ServiceName, ''), ...)` matcher routing\nSQL: %s", stub.lastSQL)
 			}
-			if !strings.Contains(stub.lastSQL, "mapConcat(mapUpdate(") {
-				t.Errorf("SQL is missing the `mapConcat(mapUpdate(...), mapFilter(...))` by-clause overlay over the resource-merge base\nSQL: %s", stub.lastSQL)
+			if !strings.Contains(stub.lastSQL, "mapConcat(mapFilter(") {
+				t.Errorf("SQL is missing the `mapConcat(mapFilter(...), mapFilter(...))` by-clause overlay over the resource-merge base\nSQL: %s", stub.lastSQL)
+			}
+			if !strings.Contains(stub.lastSQL, "mapUpdate(") {
+				t.Errorf("SQL is missing the resource-attribute merge base under the overlay\nSQL: %s", stub.lastSQL)
 			}
 			if !strings.Contains(stub.lastSQL, "toString(`ServiceName`)") {
 				t.Errorf("SQL is missing the `toString(ServiceName)` synthesised key for the by-clause\nSQL: %s", stub.lastSQL)
