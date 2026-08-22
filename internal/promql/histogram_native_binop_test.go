@@ -243,18 +243,33 @@ func TestLower_ExpHistogram_HistogramBinopMergesViaUnionAllAndCountGuard(t *test
 				t.Fatalf("lower(%q): reshape.Input is %T, want *chplan.Aggregate", tc.query, reshape.Input)
 			}
 			if agg.Having == nil {
-				t.Fatalf("lower(%q): Aggregate.Having is nil, want the both-sides-matched count() = 2 guard", tc.query)
+				t.Fatalf("lower(%q): Aggregate.Having is nil, want the both-sides-matched count() = 2 guard AND the bucket-width budget guard", tc.query)
 			}
-			having, ok := agg.Having.(*chplan.Binary)
-			if !ok || having.Op != chplan.OpEq {
-				t.Fatalf("lower(%q): Aggregate.Having = %#v, want an Eq Binary", tc.query, agg.Having)
+			// Having is `count() = 2 AND <bucket-width budget guard>`
+			// (cerberus issue #2428) — see
+			// histogramBinopBothSidesMatchedGuard's doc.
+			conjunction, ok := agg.Having.(*chplan.Binary)
+			if !ok || conjunction.Op != chplan.OpAnd {
+				t.Fatalf("lower(%q): Aggregate.Having = %#v, want an And Binary", tc.query, agg.Having)
 			}
-			if _, ok := having.Left.(*chplan.FuncCall); !ok {
-				t.Fatalf("lower(%q): Aggregate.Having.Left = %#v, want a count() FuncCall", tc.query, having.Left)
+			matched, ok := conjunction.Left.(*chplan.Binary)
+			if !ok || matched.Op != chplan.OpEq {
+				t.Fatalf("lower(%q): Aggregate.Having.Left = %#v, want an Eq Binary", tc.query, conjunction.Left)
 			}
-			lit, ok := having.Right.(*chplan.LitInt)
+			if _, ok := matched.Left.(*chplan.FuncCall); !ok {
+				t.Fatalf("lower(%q): Aggregate.Having.Left.Left = %#v, want a count() FuncCall", tc.query, matched.Left)
+			}
+			lit, ok := matched.Right.(*chplan.LitInt)
 			if !ok || lit.V != 2 {
-				t.Fatalf("lower(%q): Aggregate.Having.Right = %#v, want LitInt(2)", tc.query, having.Right)
+				t.Fatalf("lower(%q): Aggregate.Having.Left.Right = %#v, want LitInt(2)", tc.query, matched.Right)
+			}
+			budgetGuard, ok := conjunction.Right.(*chplan.Binary)
+			if !ok || budgetGuard.Op != chplan.OpEq {
+				t.Fatalf("lower(%q): Aggregate.Having.Right = %#v, want an Eq Binary (the throwIf(...) = 0 budget guard)", tc.query, conjunction.Right)
+			}
+			throwIfCall, ok := budgetGuard.Left.(*chplan.FuncCall)
+			if !ok || throwIfCall.Fn != chplan.FnThrowIf {
+				t.Fatalf("lower(%q): Aggregate.Having.Right.Left = %#v, want a throwIf FuncCall", tc.query, budgetGuard.Left)
 			}
 
 			union, ok := agg.Input.(*chplan.UnionAll)
