@@ -187,8 +187,8 @@ func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (Frag, error) {
 	// byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
-	// #2447: see lwrFanoutBoundedSourceFrag's own doc comment.
-	return lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol), nil
+	// #2447/#2470: see lwrFanoutBoundedSourceFrag's own doc comment.
+	return lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, maxRangeLWRFanoutRows, RangeLWRFanoutBudgetMessage), nil
 }
 
 // rangeLWRCollapseFrag renders RangeLWR's fan-out + per-series collapse
