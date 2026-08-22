@@ -1,0 +1,94 @@
+-- query.promql --
+timestamp(demo_latency_exp_hist{service="api"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:00Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:00:30Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:01:00Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:01:30Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:02:00Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:02:30Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:03:00Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:03:30Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:04:00Z", 1767225600],
+  ["", {"service": "api"}, "2026-01-01T00:04:30Z", 1767225600]
+]
+-- args --
+[0] string = ""
+[1] float64 = 1e+09
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "demo_latency_exp_hist"
+[10] string = "demo.latency.exp.hist"
+[11] string = "demo.latency.exp/hist"
+[12] string = "demo.latency.exp_hist"
+[13] string = "demo.latency/exp/hist"
+[14] string = "demo.latency/exp_hist"
+[15] string = "demo.latency_exp.hist"
+[16] string = "demo.latency_exp_hist"
+[17] string = "demo/latency/exp/hist"
+[18] string = "demo/latency/exp_hist"
+[19] string = "demo/latency_exp_hist"
+[20] string = "demo_latency.exp.hist"
+[21] string = "demo_latency.exp_hist"
+[22] string = "demo_latency_exp.hist"
+[23] string = "service"
+[24] string = ""
+[25] string = "service"
+[26] string = ""
+[27] string = ""
+[28] string = "api"
+[29] string = "demo_latency_exp_hist"
+[30] string = "demo.latency.exp.hist"
+[31] string = "demo.latency.exp/hist"
+[32] string = "demo.latency.exp_hist"
+[33] string = "demo.latency/exp/hist"
+[34] string = "demo.latency/exp_hist"
+[35] string = "demo.latency_exp.hist"
+[36] string = "demo.latency_exp_hist"
+[37] string = "demo/latency/exp/hist"
+[38] string = "demo/latency/exp_hist"
+[39] string = "demo/latency_exp_hist"
+[40] string = "demo_latency.exp.hist"
+[41] string = "demo_latency.exp_hist"
+[42] string = "demo_latency_exp.hist"
+[43] string = "service"
+[44] string = ""
+[45] string = "service"
+[46] string = ""
+[47] string = ""
+[48] string = "api"
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, FnToFloat64((FnToUnixNanos(exp_hist_sample_ts) / 1e+09)) AS Value]
+  RangeBucketFanout step=30s lookback=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnMax(TimeUnix) AS exp_hist_sample_ts] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+    Filter predicate=((FnCoalesce(FnNullIf(Attributes["service"], ""), FnNullIf(ResourceAttributes["service"], ""), "") = "api") AND (MetricName IN ("demo_latency_exp_hist", "demo.latency.exp.hist", "demo.latency.exp/hist", "demo.latency.exp_hist", "demo.latency/exp/hist", "demo.latency/exp_hist", "demo.latency_exp.hist", "demo.latency_exp_hist", "demo/latency/exp/hist", "demo/latency/exp_hist", "demo/latency_exp_hist", "demo_latency.exp.hist", "demo_latency.exp_hist", "demo_latency_exp.hist")))
+      Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, toFloat64((toUnixTimestamp64Nano(`exp_hist_sample_ts`) / toFloat64(?))) AS `Value` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, max(`TimeUnix`) AS `exp_hist_sample_ts` FROM (SELECT * FROM (SELECT * FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (coalesce(nullIf(`Attributes`[?], ?), nullIf(`ResourceAttributes`[?], ?), ?) = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001)) > 4000000, 'histogram/LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY anchor_ts, `Attributes`)
