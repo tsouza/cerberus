@@ -1,0 +1,33 @@
+# min_over_time() over a bare exp-histogram selector whose window holds
+# ONLY histogram samples (cerberus issue #2480). Reference Prometheus's
+# compareOverTime (funcMinOverTime / funcMaxOverTime) checks
+# `len(samples.Floats) == 0` BEFORE it ever reads samples.Histograms and
+# answers an empty vector — no error, no annotation — matching the
+# rangeVectorFloatOnlyDropFuncs drop class #2477 built and #2480 extended
+# min_over_time / max_over_time into. Before this fix cerberus hard-rejected
+# this shape at expHistogramSelectorRouting instead of lowering it at all.
+
+-- query.promql --
+min_over_time(demo_latency_exp_hist[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]
