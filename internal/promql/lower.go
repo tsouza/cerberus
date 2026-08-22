@@ -2376,6 +2376,22 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T",
 			ms.VectorSelector)
 	}
+	// deriv / mad_over_time / stddev_over_time / stdvar_over_time read
+	// only the window's float samples in reference Prometheus and answer
+	// an empty vector — no error — when the window holds exclusively
+	// histogram samples; see [rangeVectorFloatOnlyDropFuncs] and
+	// [dropExpHistogramSamplesForRangeVector]. Every other function
+	// reaching this generic fallthrough either never sees a histogram
+	// selector here (rate/increase/delta/... are claimed upstream by
+	// lowerRoot's histogram-valued recognisers) or must PRESERVE the
+	// histogram sample rather than drop it (last_over_time /
+	// first_over_time), so the check is keyed on the function name
+	// rather than applied unconditionally.
+	if rangeVectorFloatOnlyDropFuncs[c.Func.Name] {
+		if node, matched, err := dropExpHistogramSamplesForRangeVector(ms, s, ctx); matched {
+			return node, err
+		}
+	}
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {

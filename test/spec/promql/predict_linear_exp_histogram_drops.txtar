@@ -1,0 +1,36 @@
+# predict_linear() over a bare exp-histogram selector whose window holds
+# ONLY histogram samples (cerberus issue #2477). Reference Prometheus's
+# funcPredictLinear reads only Point.F from the window
+# (tsouza/prometheus's promql/functions.go) and, with zero float points in
+# range, answers an empty vector — no error, no annotation. Before #2477
+# cerberus hard-rejected this shape at expHistogramSelectorRouting instead
+# of lowering it at all; dropExpHistogramSamplesForRangeVector now
+# recognises the bare exp-histogram matrix-selector argument up front and
+# answers the same drop-to-empty plan sort()/sort_desc() (#2456) and the
+# instant math functions (#2221) already produce for their own
+# histogram-only inputs.
+
+-- query.promql --
+predict_linear(demo_latency_exp_hist[5m], 60)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]
