@@ -24,7 +24,12 @@ const (
 	// histogram columns are placeholders). internal/chclient/cursor.go's
 	// shapeSampleMixed probes for this exact trailing alias, the same
 	// way shapeSampleHistogram probes for histogramLastColumn.
-	setOpMixedIsHistogramCol = "_setop_is_histogram"
+	// chsql may (and does) import chplan, so this aliases
+	// [chplan.MixedDiscriminatorColumn] — the single definition
+	// [chplan.RowShapeOf]'s own [*chplan.Project] case reads back — rather
+	// than duplicating the literal the way chclient's decode-side probe
+	// has to.
+	setOpMixedIsHistogramCol = chplan.MixedDiscriminatorColumn
 )
 
 // emitVectorSetOp renders a PromQL vector set operator (`and`, `or`,

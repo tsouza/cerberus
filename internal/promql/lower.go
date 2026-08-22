@@ -246,8 +246,12 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // recognised by [mixedExpHistogramSetOp] (histogram_native_mixed_or.go)
 // — but registered as its OWN direct dispatch just below, not inside
 // [lowerExpHistogramValuedShape]: unlike the both-histogram case, its
-// result does NOT compose (see that recognizer's own doc comment for
-// why), so it deliberately does not get the same recursive reach.
+// result does not get the same GENERAL recursive reach — every wrapper
+// OTHER than the two sibling recognizers just below it (`sum`/`avg`,
+// cerberus issue #2346; `label_replace`/`label_join`, cerberus issue
+// #2449) still falls through to internal/promql/binary.go's
+// lowerVectorSetOp rejection, tracked as an open divergence in
+// test/rejection-parity/catalogue under #2449.
 //
 // Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
 // through here: it enumerates series and labels rather than evaluating an
@@ -279,6 +283,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// valued, so nothing above this line can have consumed the shape yet.
 	if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
+	}
+	// `label_replace`/`label_join` wrapping that same mixed shape (cerberus
+	// issue #2449 — the generic-forwarder follow-on to #2346's sum/avg
+	// composition just above). Checked here for the identical reason: a
+	// mixed `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_label.go has the composition's own doc
+	// comment for why it needs no bespoke reduction the way sum/avg did.
+	if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
 	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
