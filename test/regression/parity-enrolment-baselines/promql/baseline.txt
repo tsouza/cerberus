@@ -129,6 +129,8 @@ edge_sqrt_over_aggregate.txtar
 edge_subquery_nested.txtar
 empty_ignoring_join.txtar
 empty_on_join.txtar
+exp_histogram_absent_missing.txtar
+exp_histogram_absent_present.txtar
 exp_histogram_avg.txtar
 exp_histogram_avg_by.txtar
 exp_histogram_avg_over_time.txtar
