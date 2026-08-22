@@ -2,20 +2,20 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#38b18b37",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#38b18b37",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand only supports a plain (non-windowed) float side today; got a %s-shaped float operand, which cerberus issue #2330 does not yet cover",
       "class": "divergence",
       "trigger_query": "rate(up[5m]) or demo_latency_exp_hist",
       "tracking_issue": 2333,
       "evidence": {
         "guard": [
-          "past returning if b.ReturnBool",
           "past returning if err != nil",
           "past returning if err != nil",
           "if shape := chplan.RowShapeOf(floatNode); shape != chplan.SampleRowShape"
         ],
         "callers": [
-          "lowerRoot"
+          "lowerMixedExpHistogramSetOp",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ]
       },
       "since": "2026-08-17"

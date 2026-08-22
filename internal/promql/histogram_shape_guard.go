@@ -57,10 +57,20 @@ import (
 // earns the identical structural guarantee the same way: its lowering
 // (lowerMixedExpHistogramSetOp) is registered only at the query ROOT, never
 // inside [lowerExpHistogramValuedShape]'s recursive dispatch table, so
-// nothing composes a further wrapper around a Mixed node — a query that
-// tries (`abs(a or b)`, `sum(a or b)` for a mixed `a`/`b`) keeps falling
-// through to [expHistogramSelectorRouting]'s existing rejection, exactly as
-// it did before this file learned the Mixed shape.
+// nothing composes a further GENERIC wrapper around a Mixed node — a query
+// that tries `abs(a or b)` for a mixed `a`/`b` keeps falling through to
+// [expHistogramSelectorRouting]'s existing rejection, exactly as it did
+// before this file learned the Mixed shape.
+//
+// `sum(a or b)` / `avg(a or b)` for a mixed `a`/`b` is the one exception,
+// and a deliberate one (cerberus issue #2346,
+// histogram_native_mixed_or_aggregate.go): its own root-only recognizer
+// ([sumOrAvgOverMixedExpHistogramSetOp]) builds a dedicated reduction —
+// two independent SUM/AVG branches (one through the SAME histogram-valued
+// machinery this guard protects, one through the ordinary float aggregate
+// path) recombined with reference's own "drop a mixed-type output group"
+// rule — instead of ever routing a Mixed node through a generic forwarder.
+// The panic below still holds for every OTHER wrapper.
 
 // assertValueShapedInput panics when inner publishes
 // [chplan.HistogramRowShape] or [chplan.MixedRowShape] — the two shapes
