@@ -125,6 +125,10 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
+	// #2447: bound the sample-side fan-out before it feeds the collapse
+	// GROUP BY below — see lwrFanoutBoundedSourceFrag's own doc comment.
+	boundedFanout := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol)
+
 	// Collapse SELECT: collapse each (series, anchor) bucket to its newest
 	// in-window sample via argMax(Value, TimeUnix). The anchor stays under
 	// its own `anchor_ts` alias here — NOT re-aliased to TimeUnix — so the
@@ -136,7 +140,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// per-group anchor, collapsing argMax to an arbitrary sample. The
 	// re-alias is deferred to the outer Project below.)
 	const lwrValueAlias = "lwr_value"
-	collapse := NewQuery().From(fanout.Frag())
+	collapse := NewQuery().From(boundedFanout)
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
 	collapse.Select(Col("anchor_ts"))

@@ -74,8 +74,13 @@ export const PHASES = [
     workers: DEFAULT_WORKERS,
     // metrics_compare + prewhere + exemplars + structural_join + late_mat +
     // range_window_grid_native + range_bucket_fanout + emit + vector_set_op + set_op.
+    // lwr_fanout_bound.go (cerberus issue #2447) falls to the phase2-other
+    // catch-all: it is a standalone RangeBucketFanout/RangeLWR sample-count
+    // guard with no declared sibling in either leg above — the same
+    // reasoning rate_window_fanout_bound.go and scan_resource_bound.go
+    // already document below.
     exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -91,8 +96,10 @@ export const PHASES = [
     // carry a histogram payload per side (histogram_vector_join.go) or a
     // per-row float scale factor (histogram_float_vector_join.go) — and
     // vector_join.go is itself only ever claimed by this leg.
+    // lwr_fanout_bound.go also falls to phase2-other's catch-all — see
+    // that leg's own exclude list.
     exclude_files:
-      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -119,7 +126,9 @@ export const PHASES = [
     // catch-all the same way scan_resource_bound.go does: it is a
     // standalone resource-bound guard with no declared sibling in either
     // leg above, so it is excluded from both rather than enumerated in
-    // either.
+    // either. lwr_fanout_bound.go (issue #2447) falls here for the same
+    // reason: a standalone RangeBucketFanout/RangeLWR sample-count guard,
+    // excluded from both legs above rather than enumerated in either.
     exclude_files:
       '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },

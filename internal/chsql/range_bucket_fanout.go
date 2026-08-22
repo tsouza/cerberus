@@ -120,13 +120,23 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// now64()/@-pinned/zero-grid fixtures stay byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
+	// #2447: cap how many (series, anchor) fanout rows can ever reach the
+	// collapse GROUP BY below via a genuine LIMIT + truncation probe — that
+	// GROUP BY is a blocking operator (it cannot emit any group until it
+	// has consumed the entire fanned-out input), which some callers'
+	// AggFuncs (classicBucketWindowAggs' groupArray trio, in particular)
+	// accumulate over rather than reduce to a fixed size. See
+	// lwr_fanout_bound.go's own doc comment for the full history and the
+	// real calibration numbers.
+	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol)
+
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their
 	// aliases) then the anchor, matching the column order the replaced
 	// Aggregate node emitted (anchor_ts came first there, but the
 	// downstream reshape Project references every column by name, not
 	// position, so the surface order is observationally identical).
-	collapse := NewQuery().From(fanout.Frag())
+	collapse := NewQuery().From(fanoutSource)
 	collapse.Select(As(verbatim(r.AnchorAlias), r.AnchorAlias))
 	for i, g := range r.GroupBy {
 		expr := g
