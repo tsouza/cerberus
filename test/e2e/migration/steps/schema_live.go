@@ -44,13 +44,22 @@ var nonColumnElementRe = regexp.MustCompile(`(?is)^(INDEX|CONSTRAINT|PROJECTION|
 // ClickHouse materialises as dotted sibling columns.
 var nestedTypeRe = regexp.MustCompile(`(?is)^NESTED\s*\(`)
 
-// alterProjectionRe captures the target table and the projection name of the
-// one non-CREATE shape the renderer emits. schema.go's addProjectionRe only
-// recognises the shape; the live diff needs both halves, because the ALTER
-// names a table the live database must already hold for the operator to be
-// able to apply it at all.
+// alterProjectionRe captures the target table and the projection name of one
+// non-CREATE shape the renderer emits. schema.go's idempotentAdditiveAlterRe
+// only recognises the shape; the live diff needs both halves, because the
+// ALTER names a table the live database must already hold for the operator
+// to be able to apply it at all.
 var alterProjectionRe = regexp.MustCompile(
 	`(?is)^ALTER\s+TABLE\s+(\S+)\s+ADD\s+PROJECTION\s+IF\s+NOT\s+EXISTS\s+(\S+)`,
+)
+
+// alterIndexRe is alterProjectionRe's sibling for the other non-CREATE shape
+// the renderer emits: `ALTER TABLE … ADD INDEX IF NOT EXISTS <name> …` (the
+// index's own expression/TYPE/GRANULARITY clause trails the captured name,
+// unlike a projection's parenthesised body, so the regex does not need to
+// match past it).
+var alterIndexRe = regexp.MustCompile(
+	`(?is)^ALTER\s+TABLE\s+(\S+)\s+ADD\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\S+)`,
 )
 
 // renderedColumn is one column a rendered CREATE TABLE declares.
@@ -93,12 +102,26 @@ type renderedProjection struct {
 	name     string
 }
 
+// renderedIndex is one `ALTER TABLE … ADD INDEX IF NOT EXISTS` the renderer
+// emits (issue #2458's AggregationTemporality skip index today). Only the
+// ALTER's HEADER is diffable against a collector-provisioned stack, for the
+// same reason renderedProjection's is: the index is a cerberus-side read
+// accelerator the OTel exporter never creates, so what IS asserted is that
+// the ALTER targets the live tenant database and names a table that is
+// really there.
+type renderedIndex struct {
+	database string
+	table    string
+	name     string
+}
+
 // renderedSchema is everything the render declares, split by what each half
 // can be diffed against. Keeping the projections rather than dropping them is
 // what stops a parser change from silently shrinking the diff's input.
 type renderedSchema struct {
 	objects     []renderedObject
 	projections []renderedProjection
+	indexes     []renderedIndex
 }
 
 // readColumn is one column cerberus's read-side schema config addresses on one
@@ -149,6 +172,9 @@ type schemaLiveDiff struct {
 	// no column list: a parser that stopped recognising the ALTERs would
 	// otherwise leave their target-table check trivially satisfied.
 	projections int
+	// indexes is projections' sibling for the ADD INDEX ALTERs the diff
+	// reached (issue #2458's AggregationTemporality skip index today).
+	indexes int
 	// readMissing names, per table cerberus reads, the columns its
 	// env-resolved READ-side schema config addresses that the live table does
 	// not carry. The rendered diff above covers what the DDL declares; this
@@ -213,8 +239,8 @@ func (w *World) givenLiveSchemaEnvironment() error {
 // diffing structured names sidesteps the formatting, CODEC and TTL noise that
 // a text diff of two independently-formatted CREATE statements would drown in.
 //
-// The ADD PROJECTION ALTERs are diffed on their TARGET only; see
-// renderedProjection for why their bodies cannot be.
+// The ADD PROJECTION / ADD INDEX ALTERs are diffed on their TARGET only; see
+// renderedProjection / renderedIndex for why their bodies cannot be.
 func (w *World) whenDiffSchemaAgainstLive() error {
 	stmts, err := w.renderedStatements()
 	if err != nil {
@@ -237,6 +263,11 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 		return fmt.Errorf("the rendered schema adds no projection at all; the renderer emits one per catalog " +
 			"table, so an empty set means the parse stopped reading them and their targets go unchecked")
 	}
+	if len(rendered.indexes) == 0 {
+		return fmt.Errorf("the rendered schema adds no index at all; the renderer emits the AggregationTemporality " +
+			"skip index on the sum and histogram tables, so an empty set means the parse stopped reading them " +
+			"and their targets go unchecked")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), livePollBudget)
 	defer cancel()
@@ -253,6 +284,7 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 		readMissing:       map[string][]string{},
 		unresolvedColumns: map[string][]string{},
 		projections:       len(rendered.projections),
+		indexes:           len(rendered.indexes),
 	}
 	// liveCols caches one system.columns read per table, so the read-side leg
 	// below reuses what the rendered leg already fetched.
@@ -301,6 +333,23 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 		if !exists {
 			diff.missingTables = append(diff.missingTables,
 				fmt.Sprintf("%s (target of projection %s)", proj.table, proj.name))
+		}
+	}
+
+	for _, idx := range rendered.indexes {
+		if idx.database != w.live.CHDatabase {
+			diff.misqualified = append(diff.misqualified,
+				fmt.Sprintf("%s.%s's index %s (live tenant database is %s)",
+					idx.database, idx.table, idx.name, w.live.CHDatabase))
+			continue
+		}
+		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, idx.table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			diff.missingTables = append(diff.missingTables,
+				fmt.Sprintf("%s (target of index %s)", idx.table, idx.name))
 		}
 	}
 
@@ -451,15 +500,19 @@ func (w *World) thenDiffCoversEveryReadTable() error {
 // thenNoTableMissingLive asserts every object the render declares exists in
 // the live, collector-created database — and that the render targeted that
 // database in the first place, since DDL aimed elsewhere provisions a stack
-// other than the one under test. Each ADD PROJECTION ALTER is held to the same
-// two claims about its target table; its projection BODY is deliberately out
-// of scope (see renderedProjection).
+// other than the one under test. Each ADD PROJECTION / ADD INDEX ALTER is
+// held to the same two claims about its target table; its projection BODY /
+// index expression is deliberately out of scope (see renderedProjection /
+// renderedIndex).
 func (w *World) thenNoTableMissingLive() error {
 	if !w.schemaLive.ran {
 		return fmt.Errorf("the schema has not been diffed against the live database")
 	}
 	if w.schemaLive.projections == 0 {
 		return fmt.Errorf("the diff reached no ADD PROJECTION ALTER, so no projection target was checked")
+	}
+	if w.schemaLive.indexes == 0 {
+		return fmt.Errorf("the diff reached no ADD INDEX ALTER, so no index target was checked")
 	}
 	if len(w.schemaLive.misqualified) > 0 {
 		return fmt.Errorf("the rendered schema targets objects outside the live tenant database: %v",
@@ -748,11 +801,25 @@ func parseRenderedSchema(stmts []string) (renderedSchema, error) {
 	for _, stmt := range stmts {
 		m := createObjectKindRe.FindStringSubmatchIndex(stmt)
 		if m == nil {
-			proj, err := parseAddProjection(stmt)
-			if err != nil {
-				return renderedSchema{}, err
+			switch {
+			case alterProjectionRe.MatchString(stmt):
+				proj, err := parseAddProjection(stmt)
+				if err != nil {
+					return renderedSchema{}, err
+				}
+				out.projections = append(out.projections, proj)
+			case alterIndexRe.MatchString(stmt):
+				idx, err := parseAddIndex(stmt)
+				if err != nil {
+					return renderedSchema{}, err
+				}
+				out.indexes = append(out.indexes, idx)
+			default:
+				return renderedSchema{}, fmt.Errorf(
+					"the rendered schema carries a statement that is neither a CREATE nor an ADD PROJECTION/INDEX, "+
+						"so the diff would pass over it unchecked: %s", firstLine(stmt),
+				)
 			}
-			out.projections = append(out.projections, proj)
 			continue
 		}
 		kind := strings.ToUpper(strings.Join(strings.Fields(stmt[m[2]:m[3]]), " "))
@@ -786,20 +853,37 @@ func parseRenderedSchema(stmts []string) (renderedSchema, error) {
 }
 
 // parseAddProjection reads one `ALTER TABLE … ADD PROJECTION IF NOT EXISTS …`
-// into the target it names, failing on any other non-CREATE statement.
+// into the target it names. Callers match alterProjectionRe first, so a
+// non-match here would be a caller bug rather than a genuinely different
+// statement shape.
 func parseAddProjection(stmt string) (renderedProjection, error) {
 	m := alterProjectionRe.FindStringSubmatch(stmt)
 	if m == nil {
-		return renderedProjection{}, fmt.Errorf(
-			"the rendered schema carries a statement that is neither a CREATE nor an ADD PROJECTION, "+
-				"so the diff would pass over it unchecked: %s", firstLine(stmt),
-		)
+		return renderedProjection{}, fmt.Errorf("parseAddProjection called on a statement alterProjectionRe does not match: %s",
+			firstLine(stmt))
 	}
 	database, table, err := splitQualifiedName(m[1])
 	if err != nil {
 		return renderedProjection{}, fmt.Errorf("the rendered projection ALTER %s: %w", firstLine(stmt), err)
 	}
 	return renderedProjection{database: database, table: table, name: strings.Trim(m[2], "`\"")}, nil
+}
+
+// parseAddIndex is parseAddProjection's sibling for
+// `ALTER TABLE … ADD INDEX IF NOT EXISTS …`. Callers match alterIndexRe
+// first, so a non-match here would be a caller bug rather than a genuinely
+// different statement shape.
+func parseAddIndex(stmt string) (renderedIndex, error) {
+	m := alterIndexRe.FindStringSubmatch(stmt)
+	if m == nil {
+		return renderedIndex{}, fmt.Errorf("parseAddIndex called on a statement alterIndexRe does not match: %s",
+			firstLine(stmt))
+	}
+	database, table, err := splitQualifiedName(m[1])
+	if err != nil {
+		return renderedIndex{}, fmt.Errorf("the rendered index ALTER %s: %w", firstLine(stmt), err)
+	}
+	return renderedIndex{database: database, table: table, name: strings.Trim(m[2], "`\"")}, nil
 }
 
 // splitQualifiedName unquotes a rendered `"db"."table"` / “ `db`.`table` “

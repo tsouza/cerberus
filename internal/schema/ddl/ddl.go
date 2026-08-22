@@ -579,6 +579,17 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 				stmts = append(stmts, renderAddMetricProjection(cfg, table, p, hasMonotonic))
 			}
 		}
+		// The AggregationTemporality skip index applies only to the two
+		// tables that carry the column AND that a rate()/increase() range
+		// window can route to natively (see
+		// internal/promql.rangeVectorCounterTemporalityColumn) — the sum and
+		// histogram tables. Gauge never carries AggregationTemporality;
+		// exp_histogram carries it but sits outside every temporality-aware
+		// native/fan-out routing path today (see #1628's scope note), so
+		// indexing it would add write-path cost the read side never spends.
+		for _, table := range []string{cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
+			stmts = append(stmts, renderAddTemporalityIndex(cfg, table))
+		}
 		return stmts, nil
 	case Logs:
 		logs, err := renderLogsTable(cfg)
@@ -636,6 +647,10 @@ const (
 	metricAttributesColumn  = "Attributes"
 	metricDescriptionColumn = "MetricDescription"
 	metricUnitColumn        = "MetricUnit"
+	// aggregationTemporalityColumn is the OTel-CH exporter's fixed
+	// AggregationTemporality column on the sum and histogram tables — see
+	// renderAddTemporalityIndex.
+	aggregationTemporalityColumn = "AggregationTemporality"
 	// isMonotonicColumn is the sum table's fixed OTel-CH exporter column
 	// distinguishing monotonic Sums (Prom counters) from non-monotonic Sums /
 	// UpDownCounters (Prom gauges — see internal/api/prom/metadata.go). It
@@ -710,6 +725,64 @@ var metricCatalogProjections = []metricProjection{
 // both freshly-created and pre-existing tables.
 func renderAddMetricProjection(cfg Config, table string, p metricProjection, hasMonotonic bool) string {
 	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body(hasMonotonic))
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+const (
+	// temporalityIndexName is the ALTER TABLE ADD INDEX identifier for the
+	// AggregationTemporality skip index — see renderAddTemporalityIndex.
+	temporalityIndexName = "idx_agg_temporality"
+	// temporalityIndexGranularity is the number of index-granule marks per
+	// skip-index block: GRANULARITY 1 gives the finest possible skip
+	// resolution (one mark per table index_granularity, 8192 rows by
+	// default), maximising the odds that a granule ClickHouse can prove is
+	// single-temporality gets skipped. A coarser granularity would only
+	// widen each mark's [min,max] range across more granules, making a
+	// skip less likely without saving anything else — minmax marks cost
+	// bytes, not read time, so there is no tradeoff pushing the other way.
+	temporalityIndexGranularity = 1
+)
+
+// renderAddTemporalityIndex builds the idempotent ADD INDEX ALTER installing
+// a minmax skip index on the AggregationTemporality column of one metrics
+// fact table.
+//
+// Issue #2458: NativeRateLowerer.LowerRate splits a temporality-bearing
+// rate()/increase() range window into a CUMULATIVE arm (the native
+// timeSeriesRateToGrid aggregate, fed only non-DELTA rows) and a DELTA arm
+// (the fan-out emitter, fed only DELTA rows) — chplan.UnionAll{
+// RangeWindowGridNative, RangeWindow}, the exact shape #2114/#2117/#2120's
+// solver routing was built to slice and re-anchor. Both arms scan the SAME
+// base table with the SAME MetricName/Attributes predicate, differing only
+// in a trailing AggregationTemporality conjunct — a column absent from the
+// table's ORDER BY, so ClickHouse cannot use the primary key to skip
+// granules on it and reads every matching row from BOTH arms (a confirmed,
+// reproducible 2.00x read_rows ratio on real production-shaped data). This
+// is what a minmax skip index fixes: real OTel deployments set
+// AggregationTemporality once per exporter configuration, so a given
+// series' samples land in temporality-homogeneous runs almost always
+// (confirmed empirically against ClickHouse 25.8 — an all-CUMULATIVE
+// table's `AggregationTemporality = <DELTA>` scan skips every one of its
+// granules once this index exists). The plan-level split's EXISTENCE is
+// deliberately left unchanged (see the issue's own scope note): only the
+// redundant physical read shrinks, addressed entirely at the schema layer
+// with no chplan/chsql/promql change and hence no risk to the solver
+// routing tests that depend on the split's shape.
+//
+// Adding a skip index is metadata-only for NEW parts — unlike ADD
+// PROJECTION it does not store a second physical copy of the table — but
+// EXISTING parts need a one-time `ALTER TABLE ... MATERIALIZE INDEX
+// idx_agg_temporality` backfill to benefit retroactively; see
+// docs/operations.md. ON CLUSTER is threaded so the ALTER replicates the
+// same way the CREATE statements do. ADD INDEX IF NOT EXISTS is idempotent,
+// so the same Apply path covers both freshly-created and pre-existing
+// tables.
+func renderAddTemporalityIndex(cfg Config, table string) string {
+	stmt := chsql.AlterTableAddIndex(cfg.Database, table, temporalityIndexName,
+		chsql.Col(aggregationTemporalityColumn), "minmax", temporalityIndexGranularity)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)
 	}

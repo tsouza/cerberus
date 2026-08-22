@@ -165,6 +165,34 @@ func TestParseRenderedSchemaReadsEveryAddProjection(t *testing.T) {
 	}
 }
 
+// TestParseRenderedSchemaReadsEveryAddIndex is
+// TestParseRenderedSchemaReadsEveryAddProjection's sibling for the
+// AggregationTemporality skip index issue #2458 adds: the sum and histogram
+// tables only (see internal/schema/ddl's renderAddTemporalityIndex doc
+// comment for why gauge and exp_histogram are excluded).
+func TestParseRenderedSchemaReadsEveryAddIndex(t *testing.T) {
+	t.Parallel()
+
+	metrics := schema.DefaultOTelMetrics()
+	want := []string{
+		metrics.SumTable + "/idx_agg_temporality",
+		metrics.HistogramTable + "/idx_agg_temporality",
+	}
+	sort.Strings(want)
+
+	var got []string
+	for _, idx := range readDefaultSchemaGolden(t).indexes {
+		if idx.database == "" {
+			t.Fatalf("the rendered ADD INDEX for %s.%s carries no database qualifier", idx.table, idx.name)
+		}
+		got = append(got, idx.table+"/"+idx.name)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the parser read indexes %v off the rendered schema, want %v", got, want)
+	}
+}
+
 // TestParseRenderedSchemaRejectsAnUnknownStatement proves a rendered statement
 // the parser does not recognise fails the parse rather than being passed over.
 // Passing over it is what would let a whole new statement kind enter the

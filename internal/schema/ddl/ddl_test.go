@@ -9,7 +9,9 @@ import (
 // TestRenderSignal_Metrics checks all five metrics templates render with
 // the right table names + engine + database substituted in, followed by the
 // curated registry's idempotent ADD PROJECTION ALTERs — proj_series +
-// proj_metric_metadata on each of the gauge/sum/histogram catalog tables.
+// proj_metric_metadata on each of the gauge/sum/histogram catalog tables —
+// and the AggregationTemporality skip-index ALTERs on the sum/histogram
+// tables (see renderAddTemporalityIndex, issue #2458).
 func TestRenderSignal_Metrics(t *testing.T) {
 	cfg := Config{}.withDefaults()
 
@@ -17,10 +19,12 @@ func TestRenderSignal_Metrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	// 5 CREATE TABLE + (3 catalog tables × 2 curated projections) ADD PROJECTION.
+	// 5 CREATE TABLE + (3 catalog tables × 2 curated projections) ADD
+	// PROJECTION + (2 temporality-bearing tables) ADD INDEX.
 	const wantCreates = 5
+	const wantTemporalityIndex = 2
 	wantProj := 3 * len(metricCatalogProjections)
-	if got, want := len(stmts), wantCreates+wantProj; got != want {
+	if got, want := len(stmts), wantCreates+wantProj+wantTemporalityIndex; got != want {
 		t.Fatalf("metrics: got %d statements, want %d", got, want)
 	}
 	wantTables := []string{
@@ -107,6 +111,21 @@ func TestRenderSignal_Metrics(t *testing.T) {
 	histAll := strings.Join(proj[histIdx:histIdx+len(metricCatalogProjections)], "\n")
 	if strings.Contains(histAll, "IsMonotonic") {
 		t.Errorf("otel_metrics_histogram projections must not reference IsMonotonic (no such column):\n%s", histAll)
+	}
+
+	// The temporality skip-index ALTERs trail the projection ALTERs, one per
+	// temporality-bearing table in sum-then-histogram order — see #2458.
+	tempIdx := stmts[wantCreates+wantProj:]
+	if len(tempIdx) != wantTemporalityIndex {
+		t.Fatalf("metrics temporality index: got %d statements, want %d", len(tempIdx), wantTemporalityIndex)
+	}
+	wantTempTables := []string{"otel_metrics_sum", "otel_metrics_histogram"}
+	for i, table := range wantTempTables {
+		want := "ALTER TABLE default." + table +
+			" ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1"
+		if tempIdx[i] != want {
+			t.Errorf("metrics temporality index[%d]: got %q, want %q", i, tempIdx[i], want)
+		}
 	}
 }
 

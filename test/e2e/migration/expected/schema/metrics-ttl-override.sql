@@ -212,6 +212,10 @@ ALTER TABLE default.otel_metrics_histogram ADD PROJECTION IF NOT EXISTS proj_ser
 
 ALTER TABLE default.otel_metrics_histogram ADD PROJECTION IF NOT EXISTS proj_metric_metadata (SELECT `MetricName`, any(`MetricDescription`), any(`MetricUnit`), max(`TimeUnix`) GROUP BY `MetricName`);
 
+ALTER TABLE default.otel_metrics_sum ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1;
+
+ALTER TABLE default.otel_metrics_histogram ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1;
+
 CREATE TABLE IF NOT EXISTS `default`.`otel_logs`  (
     `Timestamp` DateTime64(9) CODEC(Delta(8), ZSTD(1)),
     `TraceId` String CODEC(ZSTD(1)),

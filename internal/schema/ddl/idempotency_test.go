@@ -273,15 +273,17 @@ func TestRenderSignal_TracesOnlySubset(t *testing.T) {
 
 // TestRenderSignal_MetricsOnlySubset confirms the five metrics CREATE
 // statements (plus the curated registry's ADD PROJECTION ALTERs on the three
-// catalog tables) render without leaking logs or traces tables.
+// catalog tables and the AggregationTemporality ADD INDEX ALTERs on the two
+// temporality-bearing tables) render without leaking logs or traces tables.
 func TestRenderSignal_MetricsOnlySubset(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Metrics)
 	if err != nil {
 		t.Fatalf("renderSignal(Metrics): %v", err)
 	}
-	// 5 CREATE TABLE + (3 catalog tables × len(registry)) ADD PROJECTION.
-	wantStmts := 5 + 3*len(metricCatalogProjections)
+	// 5 CREATE TABLE + (3 catalog tables × len(registry)) ADD PROJECTION +
+	// 2 temporality-bearing tables ADD INDEX.
+	wantStmts := 5 + 3*len(metricCatalogProjections) + 2
 	if len(stmts) != wantStmts {
 		t.Fatalf("metrics subset: got %d statements; want %d", len(stmts), wantStmts)
 	}
