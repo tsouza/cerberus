@@ -71,7 +71,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
-      - name: Run the #2370 nightly measurement harness (real ClickHouse)
+      - name: "Run the #2370 nightly measurement harness (real ClickHouse)"
         run: just perf-nightly-integration
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
