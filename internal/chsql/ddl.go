@@ -694,3 +694,82 @@ func (a *AddColumnBuilder) frag() Frag {
 func (a *AddColumnBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
+
+// --- ALTER TABLE ... ADD INDEX surface ---
+//
+// AddIndexBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] ADD INDEX IF NOT EXISTS <name>
+// <expr> TYPE <type> GRANULARITY <n>`, the statement that installs a
+// ClickHouse data-skipping index on a column already present on a table
+// cerberus does not otherwise own the CREATE TABLE body of (the upstream
+// OTel exporter template — see the package doc comment). Adding a skip
+// index is metadata-only for NEW parts; it does not reorder or duplicate
+// existing data (unlike a PROJECTION, which stores a second physical copy),
+// but existing parts need a separate `ALTER TABLE ... MATERIALIZE INDEX`
+// backfill to benefit retroactively — see docs/operations.md.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// AddIndexBuilder builds an ALTER TABLE ADD INDEX statement.
+type AddIndexBuilder struct {
+	database    string // "" => unqualified table reference
+	table       string
+	name        string
+	cluster     string // "" => no ON CLUSTER clause
+	expr        Frag
+	indexType   string
+	granularity int
+}
+
+// AlterTableAddIndex starts an ADD INDEX builder installing a data-skipping
+// index named <name> over expr on [<database>.]<table>, of the given
+// ClickHouse index type ("minmax", "set(N)", "bloom_filter", …) and
+// GRANULARITY. An empty database emits no qualifier, so a table the
+// connection's own database owns is referenced bare.
+func AlterTableAddIndex(database, table, name string, expr Frag, indexType string, granularity int) *AddIndexBuilder {
+	return &AddIndexBuilder{database: database, table: table, name: name, expr: expr, indexType: indexType, granularity: granularity}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *AddIndexBuilder) OnCluster(name string) *AddIndexBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table/index identifiers via BareIdent, the
+// indexed expression via the caller's Frag, the index type via BareIdent
+// (a fixed ClickHouse type keyword, never data), the GRANULARITY value via
+// InlineLit, and the optional ON CLUSTER clause via the typed constructor —
+// no raw token is written here.
+func (a *AddIndexBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" ADD INDEX IF NOT EXISTS ")(b)
+		BareIdent(a.name)(b)
+		ddlToken(" ")(b)
+		a.expr(b)
+		ddlToken(" TYPE ")(b)
+		BareIdent(a.indexType)(b)
+		ddlToken(" GRANULARITY ")(b)
+		InlineLit(a.granularity)(b)
+	}
+}
+
+// SQL renders the ALTER TABLE ADD INDEX statement to ClickHouse text via
+// RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *AddIndexBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}

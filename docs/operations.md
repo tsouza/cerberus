@@ -1054,6 +1054,63 @@ costs — on a wide-`Attributes` table the read side dominates. Materialize one
 projection at a time and watch `system.mutations` before starting the next so
 a maintenance window isn't saturated by both at once.
 
+### AggregationTemporality skip index
+
+Auto-create also installs a small **data-skipping index** on the sum and
+histogram fact tables:
+
+```sql
+ALTER TABLE <db>.otel_metrics_sum       ADD INDEX IF NOT EXISTS idx_agg_temporality AggregationTemporality TYPE minmax GRANULARITY 1
+ALTER TABLE <db>.otel_metrics_histogram ADD INDEX IF NOT EXISTS idx_agg_temporality AggregationTemporality TYPE minmax GRANULARITY 1
+```
+
+Unlike the metadata projections above, this is a `minmax` **skip index**, not
+a stored second copy of the table — it costs a small amount of per-granule
+`[min, max]` metadata, not additional table storage.
+
+**Why it exists (issue #2458).** A range-mode `rate()`/`increase()` window
+over a temporality-bearing counter can split into a native
+`timeSeriesRateToGrid` arm (fed only non-DELTA rows) and a fan-out arm (fed
+only DELTA rows) — see `NativeRateLowerer.LowerRate` in
+`internal/promql/lower_strategy.go`. Both arms scan the SAME base table with
+the SAME `MetricName`/`Attributes` predicate, differing only in a trailing
+`AggregationTemporality` conjunct. That column is not part of the table's
+`ORDER BY` (`MetricName, Attributes, ServiceName, TimeUnix`), so without a
+skip index ClickHouse cannot prune a single granule on it and reads every
+matching row from BOTH arms — a confirmed, reproducible 2.00x `read_rows`
+ratio against table size, measured on real production-shaped data. Real OTel
+deployments set `AggregationTemporality` once per exporter configuration, so
+a given series' samples land in temporality-homogeneous runs almost always;
+the minmax index lets ClickHouse recognize a homogeneous granule and skip it
+entirely for whichever arm's predicate does not match, without requiring any
+change to the plan shape or the table's `ORDER BY`. The same index also
+prunes the ordinary single-arm case: any plain scan carrying an
+`AggregationTemporality` predicate (the fan-out emitter's own per-row branch,
+or a future consumer) benefits identically.
+
+`ADD INDEX IF NOT EXISTS` is metadata-only and idempotent, so the auto-create
+hook (re)applies it safely on every boot, covering both freshly-created and
+pre-existing tables. **New parts written after the ALTER carry the index
+automatically; existing parts are not back-filled by `ADD INDEX` alone.**
+
+#### One-time `MATERIALIZE INDEX` back-fill runbook
+
+To back-fill existing parts immediately on a deployment that predates the
+index, run the one-time materialize per table (a background mutation,
+non-blocking for reads):
+
+```sql
+ALTER TABLE <db>.otel_metrics_sum       MATERIALIZE INDEX idx_agg_temporality;
+ALTER TABLE <db>.otel_metrics_histogram MATERIALIZE INDEX idx_agg_temporality;
+```
+
+`MATERIALIZE` is intentionally **not** issued by the auto-create hook — it
+rewrites index metadata for every existing part and belongs in a deliberate
+maintenance window, not the boot path. Track progress in `system.mutations`
+(the `is_done` / `parts_to_do` columns). A `MATERIALIZE INDEX` mutation only
+reads and rewrites the indexed column's marks, not the whole part, so it is
+far cheaper than a `MATERIALIZE PROJECTION` over the same table.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time

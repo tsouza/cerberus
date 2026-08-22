@@ -355,6 +355,47 @@ func TestAlterTableAddColumn(t *testing.T) {
 	}
 }
 
+// TestAlterTableAddIndex pins the ADD INDEX statement: the fully-qualified
+// (or bare) <db>.<table>, the idempotent IF NOT EXISTS guard, the indexed
+// expression, the TYPE and GRANULARITY clauses, and the optional ON CLUSTER
+// clause. The statement carries no positional args.
+func TestAlterTableAddIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *AddIndexBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableAddIndex("", "otel_metrics_sum", "idx_agg_temporality", Col("AggregationTemporality"), "minmax", 1),
+			"ALTER TABLE otel_metrics_sum ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1",
+		},
+		{
+			"qualified_table",
+			AlterTableAddIndex("otel", "otel_metrics_histogram", "idx_agg_temporality", Col("AggregationTemporality"), "minmax", 1),
+			"ALTER TABLE otel.otel_metrics_histogram ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1",
+		},
+		{
+			"on_cluster",
+			AlterTableAddIndex("otel", "otel_metrics_sum", "idx_agg_temporality", Col("AggregationTemporality"), "minmax", 1).OnCluster("prod"),
+			"ALTER TABLE otel.otel_metrics_sum ON CLUSTER `prod` " +
+				"ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 1",
+		},
+		{
+			"different_granularity",
+			AlterTableAddIndex("", "otel_metrics_sum", "idx_agg_temporality", Col("AggregationTemporality"), "minmax", 4),
+			"ALTER TABLE otel_metrics_sum ADD INDEX IF NOT EXISTS idx_agg_temporality `AggregationTemporality` TYPE minmax GRANULARITY 4",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
 // precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
 // what lets the metric-name enumeration route to the aggregating projection.
