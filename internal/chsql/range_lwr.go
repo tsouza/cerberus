@@ -125,9 +125,11 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
-	// #2447: bound the sample-side fan-out before it feeds the collapse
-	// GROUP BY below — see lwrFanoutBoundedSourceFrag's own doc comment.
-	boundedFanout := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol)
+	// #2447/#2470: bound the sample-side fan-out before it feeds the
+	// collapse GROUP BY below, at RangeLWR's OWN threshold (separate from
+	// RangeBucketFanout's) — see lwrFanoutBoundedSourceFrag's own doc
+	// comment.
+	boundedFanout := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, maxRangeLWRFanoutRows, RangeLWRFanoutBudgetMessage)
 
 	// Collapse SELECT: collapse each (series, anchor) bucket to its newest
 	// in-window sample via argMax(Value, TimeUnix). The anchor stays under

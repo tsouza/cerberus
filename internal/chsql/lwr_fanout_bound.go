@@ -98,27 +98,86 @@ package chsql
 // INDEPENDENT unwindowed count() on a second read rather than a window
 // function annotating the bounded result directly).
 const (
-	// maxLWRAnchorFanoutRows caps the total number of pre-GROUP-BY fanout
+	// maxRangeBucketFanoutRows caps the total number of pre-GROUP-BY fanout
 	// rows (one per (sample, covered anchor)) that may enter
-	// RangeBucketFanout's or RangeLWR's collapse GROUP BY in one query.
-	// Calibrated against a real testcontainers ClickHouse dataset shaped
-	// after the #2396 production route-A grid (Step=15s, Lookback=5m,
-	// classic-histogram BucketCounts/ExplicitBounds payload — see the file
-	// doc comment for the full sweep): the real OOM boundary sits between
-	// 800 series (still completes, 85.6-88.9% of the 1 GiB cap) and 900-950
-	// series (99.0%, then a genuine ClickHouse code-241
-	// MEMORY_LIMIT_EXCEEDED abort). Post-fix, 700-800 series still complete
-	// unaffected while 1,000+ series now get a clean, cheap 422 instead of
-	// the OOM. Recalibrate by binary search against a real ClickHouse if
-	// this drifts — see the file doc comment for the harness pitfall
-	// (unique query_id per run) and design rationale to preserve when
-	// doing so.
-	maxLWRAnchorFanoutRows = 4_000_000
+	// RangeBucketFanout's collapse GROUP BY in one query. Calibrated against
+	// a real testcontainers ClickHouse dataset shaped after the #2396
+	// production route-A grid (Step=15s, Lookback=5m, classic-histogram
+	// BucketCounts/ExplicitBounds payload — see the file doc comment for the
+	// full sweep): the real OOM boundary sits between 800 series (still
+	// completes, 85.6-88.9% of the 1 GiB cap) and 900-950 series (99.0%,
+	// then a genuine ClickHouse code-241 MEMORY_LIMIT_EXCEEDED abort).
+	// Post-fix, 700-800 series still complete unaffected while 1,000+ series
+	// now get a clean, cheap 422 instead of the OOM. Recalibrate by binary
+	// search against a real ClickHouse if this drifts — see the file doc
+	// comment for the harness pitfall (unique query_id per run) and design
+	// rationale to preserve when doing so.
+	//
+	// This bound is specific to RangeBucketFanout's classicBucketWindowAggs
+	// collapse (the groupArray-trio accumulator that grows with in-window
+	// row count — see the file doc comment). RangeLWR's own collapse
+	// (argMax, a fixed-size accumulator) does NOT share this bound — see
+	// maxRangeLWRFanoutRows — because sharing one number picked for the
+	// dangerous path against the cheap one is exactly the miscalibration
+	// issue #2470 fixed: a real nightly sentinel (a plain gauge selector
+	// queried as a range vector, no rate()/increase() wrapper, 7,024 real
+	// series over a 4h20m/1m-step window) fans out to 7,762,072 rows —
+	// comfortably real and comfortably safe for RangeLWR's own accumulator
+	// (measured: 70.3% of cap, see maxRangeLWRFanoutRows), but well past
+	// this constant, and got rejected by it before #2470.
+	maxRangeBucketFanoutRows = 4_000_000
+
+	// maxRangeLWRFanoutRows is RangeLWR's own bound, separate from
+	// maxRangeBucketFanoutRows (issue #2470) because RangeLWR's argMax-based
+	// per-series collapse is a FIXED-size accumulator — total memory tracks
+	// GROUP cardinality (series x anchors), not raw fanned-in row count —
+	// unlike RangeBucketFanout's groupArray trio, which accumulates over
+	// every row in a group. Real testcontainers ClickHouse 25.8-alpine
+	// calibration (1 GiB cap), using this repo's own real nightly gauge
+	// sample (test/perf/nightly/testdata/samples/kube_pod_status_reason.
+	// parquet — 1,676,160 rows, 7,024 real series) against the EXACT query
+	// shape that surfaced this gap (`sum by (reason) (kube_pod_status_
+	// reason)`, a bare gauge selector over a query_range with no rate()/
+	// increase() wrapper, Step=1m, Lookback=5m [Prometheus default], real
+	// captured window 2026-08-18 09:05:00-13:25:00 UTC — sentinels.go's own
+	// pod_status_reason_gauge):
+	//
+	//	fanned rows (real)   peak memory (post-#2470 fix)
+	//	     7,762,072         754 MB (70.3% of cap)   — the real sample, unmodified
+	//	    31,048,288         693 MB (64.6% of cap)   — same sample, ~4x row-duplicated
+	//	    62,096,576         REJECTED (guard fired)  — same sample, ~8x row-duplicated
+	//
+	// (fanned row count read via a raw probe mirroring lwrAnchorFanoutFrag's
+	// own arrayJoin formula; peak memory via system.query_log against the
+	// real HTTP handler; row-duplication holds series count, window and
+	// step — and therefore GROUP cardinality — constant while scaling only
+	// the raw sample density, to isolate row-count sensitivity from group-
+	// cardinality sensitivity). The 31M point using LESS memory than the
+	// 7.8M point, not more, is the real confirmation of the fixed-size-
+	// accumulator theory above: this query shape's memory cost does not
+	// scale with fanned row count in the range measured. 40,000,000 sits
+	// comfortably above every point actually measured passing (the 8x/62M
+	// point never got a real memory reading — the guard rejected it before
+	// the query ran, which is its job) with real, not assumed, headroom;
+	// recalibrate by binary search against a real ClickHouse if this drifts
+	// — same harness-pitfall caveat (unique query_id per run) as
+	// maxRangeBucketFanoutRows. The calibration test itself
+	// (TestCalibrateRangeLWRThreshold) was deleted before this fix merged,
+	// per rate_window_fanout_bound.go's own established precedent — this
+	// doc comment is the retained record.
+	maxRangeLWRFanoutRows = 40_000_000
 )
 
-// LWRAnchorFanoutBudgetMessage is the throwIf message
-// lwrFanoutGuardFrag raises.
-const LWRAnchorFanoutBudgetMessage = "histogram/LWR sample fanout exceeds the series-times-anchors resource bound"
+// RangeBucketFanoutBudgetMessage is the throwIf message
+// lwrFanoutGuardFrag raises for RangeBucketFanout's collapse.
+const RangeBucketFanoutBudgetMessage = "histogram/LWR sample fanout exceeds the series-times-anchors resource bound"
+
+// RangeLWRFanoutBudgetMessage is the throwIf message lwrFanoutGuardFrag
+// raises for RangeLWR's collapse. Distinct text from
+// RangeBucketFanoutBudgetMessage so a rejection's error message alone says
+// which bound fired, for classifyThrowIfGuardError and for a human reading
+// a query_log entry.
+const RangeLWRFanoutBudgetMessage = "range LWR sample fanout exceeds the series-times-anchors resource bound"
 
 // lwrFanoutBoundedSourceFrag wraps fanoutSource — the sample-side
 // LWR-style anchor fan-out SELECT shared by RangeBucketFanout and
@@ -142,13 +201,16 @@ const LWRAnchorFanoutBudgetMessage = "histogram/LWR sample fanout exceeds the se
 // fanoutSource emits through unchanged — the same passthrough
 // `emitRangeBucketFanout` itself already relies on for its own first fan-out
 // layer.
-func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string) Frag {
+// maxRows is the caller's own bound (maxRangeBucketFanoutRows or
+// maxRangeLWRFanoutRows — issue #2470) and message is the throwIf text that
+// names which one fired.
+func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string, maxRows int64, message string) Frag {
 	// The real short-circuit. No blocking operator sits between this LIMIT
 	// and the underlying scan/arrayJoin, so ClickHouse stops pulling
-	// upstream data once maxLWRAnchorFanoutRows+1 rows are produced.
+	// upstream data once maxRows+1 rows are produced.
 	bounded := NewQuery().From(fanoutSource)
 	bounded.Select(Star())
-	bounded.Limit(maxLWRAnchorFanoutRows + 1)
+	bounded.Limit(maxRows + 1)
 
 	// A second, independently LIMIT-bounded read of fanoutSource, reduced
 	// to a single scalar count() — deliberately NOT a window function on
@@ -159,13 +221,13 @@ func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string) Frag {
 	// file needs to admit.
 	probe := NewQuery().From(fanoutSource)
 	probe.Select(Col(probeColumn))
-	probe.Limit(maxLWRAnchorFanoutRows + 1)
+	probe.Limit(maxRows + 1)
 	probeCount := NewQuery().From(probe.Frag())
 	probeCount.Select(As(Call("count"), "n"))
 
 	guarded := NewQuery().From(bounded.Frag())
 	guarded.Select(Star())
-	guarded.Where(lwrFanoutGuardFrag(probeCount))
+	guarded.Where(lwrFanoutGuardFrag(probeCount, maxRows, message))
 
 	return guarded.Frag()
 }
@@ -173,19 +235,19 @@ func lwrFanoutBoundedSourceFrag(fanoutSource Frag, probeColumn string) Frag {
 // lwrFanoutGuardFrag renders the WHERE predicate that aborts the query
 // when probeCount — a scalar subquery counting an independent
 // LIMIT-bounded copy of the same fan-out — shows the LIMIT truncated the
-// input: the count landing on maxLWRAnchorFanoutRows+1 can only happen if
-// the true fanned-out row count was at least that large.
+// input: the count landing on maxRows+1 can only happen if the true
+// fanned-out row count was at least that large.
 //
-//	throwIf((<probeCount>) > maxLWRAnchorFanoutRows, LWRAnchorFanoutBudgetMessage) = 0
+//	throwIf((<probeCount>) > maxRows, message) = 0
 //
 // `throwIf` returns 0 when it does not fire, so `= 0` keeps every row once
 // the guard has passed. Mirrors rateWindowFanoutGuardFrag exactly.
-func lwrFanoutGuardFrag(probeCount *QueryBuilder) Frag {
+func lwrFanoutGuardFrag(probeCount *QueryBuilder, maxRows int64, message string) Frag {
 	return Eq(
 		Call(
 			"throwIf",
-			Gt(Subquery(probeCount), InlineLit(int64(maxLWRAnchorFanoutRows))),
-			InlineLit(LWRAnchorFanoutBudgetMessage),
+			Gt(Subquery(probeCount), InlineLit(maxRows)),
+			InlineLit(message),
 		),
 		InlineLit(int64(0)),
 	)
