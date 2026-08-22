@@ -295,6 +295,7 @@
           "LowerAtRangeOpts"
         ],
         "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "countValuesOverExpHistogramValue",
           "expHistogramAggOpIsMergeable",
           "isExpHistogramValuedShape",
@@ -304,7 +305,8 @@
           "mathFnOverMixedExpHistogramSetOp",
           "mixedExpHistogramSetOp",
           "peelWrappers",
-          "sumOrAvgOverMixedExpHistogramSetOp"
+          "sumOrAvgOverMixedExpHistogramSetOp",
+          "unwrapBinaryExpr"
         ]
       }
     },
@@ -335,6 +337,7 @@
           "LowerAtRangeOpts"
         ],
         "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "countOrGroupOverExpHistogramValue",
           "expHistogramAggOpIsMergeable",
           "isExpHistogramValuedShape",
@@ -344,7 +347,8 @@
           "mathFnOverMixedExpHistogramSetOp",
           "mixedExpHistogramSetOp",
           "peelWrappers",
-          "sumOrAvgOverMixedExpHistogramSetOp"
+          "sumOrAvgOverMixedExpHistogramSetOp",
+          "unwrapBinaryExpr"
         ]
       }
     },
