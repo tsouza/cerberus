@@ -1,0 +1,34 @@
+# absent() over a native-histogram selector whose table exists but has
+# no row matching the selector's matchers (cerberus issue #2443). The
+# seeded row belongs to a different `job`, so the presence Scan's
+# filtered count is 0, the outer `_cerb_n = 0` filter passes the
+# candidate sample through, and the Project synthesises the absent row
+# with the equality matcher (`job=api`) lifted onto it — the same output
+# label rule a float-metric absent() applies (createLabelsForAbsentFunction).
+
+-- query.promql --
+absent(latency_exp_hist{job="api"})
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('job', 'db', 'instance', 'c'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1, 0, 0, 0, [1], 0, []);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 1.0]
+]
