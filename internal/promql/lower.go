@@ -312,6 +312,23 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
 	}
+	// count_over_time() / present_over_time() (cerberus issue #2480): the
+	// window-counting sibling of sum_over_time / avg_over_time just above
+	// — see histogram_native_count_present_over_time.go's own doc for why
+	// they need a windowed COUNT rather than either the drop treatment
+	// (rangeVectorFloatOnlyDropFuncs) or the fold treatment
+	// (overTimeOverExpHistogram) applies.
+	if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok {
+		return lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+	}
+	// last_over_time() / first_over_time() (cerberus issue #2480): the
+	// histogram-PRESERVING sibling of count_over_time / present_over_time
+	// just above — see histogram_native_last_first_over_time.go's own doc
+	// for why reference selects (rather than drops or counts) the
+	// window's newest/oldest sample.
+	if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
+		return lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
+	}
 	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramCount(agg, vs, s, ctx)
 	}
