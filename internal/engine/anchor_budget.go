@@ -72,20 +72,38 @@ func requireSubquerySampleBudget(plan chplan.Node, maxSamples int64) error {
 // input subtree does. Saturates at math.MaxInt64 so a deeply nested product can
 // never wrap negative and slip under the budget.
 //
-// Plan subtrees that hang off an Expr slot (a chplan.ScalarSubquery binding a
-// per-step scalar parameter, a chplan.InSubquery cohort) are counted too:
-// Children() does not report them, so before they were swept a subquery grid
-// buried in `scalar(<subquery>)` escaped the budget completely and materialised
-// its anchor rows unbounded. They contribute as a PEER maximum rather than a
-// multiplicand — ClickHouse evaluates such a subquery once, independent of the
-// outer anchor grid, so multiplying would reject shapes that never stack.
+// [chplan.RangeBucketFanout], [chplan.RangeLWR] and [chplan.RangeBucketGridNative]
+// contribute their own NumAnchors the same way (#2408): each materialises
+// exactly the same "one row per Step across [Start, End]" per-series
+// intermediate RangeWindow does, and the histogram range-function lowerings
+// (internal/promql) build one of these DIRECTLY off a subquery's own
+// [OuterRange:Step] grid — `histogram_quantile(...)[range:step]` nested
+// inside an outer `<reducer>_over_time(...)` — without ever wrapping that
+// grid in an OuterRange-bearing RangeWindow (the histogram lowering absorbs
+// the subquery's materialisation into the fan-out node itself). Before this
+// case existed, that grid was invisible to this walk: a bare-selector
+// subquery `<reducer>_over_time(m[range:step])` was rejected once its inner
+// grid crossed the budget, but the histogram-valued analogue
+// `<reducer>_over_time(histogram_quantile(...)[range:step])` was not,
+// despite materialising the identical per-series row count. Because these
+// nodes are the SOLE representation of their own subquery grid — no
+// RangeWindow duplicates it above or below them — adding them here cannot
+// double-count an already-counted grid; it only closes the gap for the one
+// grid shape nothing else on this walk could see.
 func subqueryAnchorLoad(n chplan.Node) int64 {
 	if n == nil {
 		return 0
 	}
 	var self int64
-	if rw, ok := n.(*chplan.RangeWindow); ok {
-		self = rw.NumAnchors()
+	switch v := n.(type) {
+	case *chplan.RangeWindow:
+		self = v.NumAnchors()
+	case *chplan.RangeBucketFanout:
+		self = v.NumAnchors()
+	case *chplan.RangeLWR:
+		self = v.NumAnchors()
+	case *chplan.RangeBucketGridNative:
+		self = v.NumAnchors()
 	}
 	// The heaviest nested load among the input subtree(s).
 	var childLoad int64
