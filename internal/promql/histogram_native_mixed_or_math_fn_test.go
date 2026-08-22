@@ -104,29 +104,18 @@ func TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestStillRejects(t *testing.T
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_ArithmeticBinopStillRejects pins
-// that plain arithmetic over a mixed `or` (`(a or b) + 1`) is a
-// DIFFERENT wrapper family this issue's PR did not attempt — it still
-// falls through to lowerVectorSetOp's pre-existing rejection, tracked as
-// the catalogue's rotated trigger query.
-func TestLower_ExpHistogram_MixedSetOpOr_ArithmeticBinopStillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	query := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) + 1`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-	if err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
-	}
-	const want = "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them"
-	if err.Error() != want {
-		t.Fatalf("lower(%q): error = %q, want %q", query, err.Error(), want)
-	}
-}
+// Plain arithmetic over a mixed `or` (`(a or b) + 1`) was pinned as
+// staying out of scope here by this file's own
+// ArithmeticBinopStillRejects test. Cerberus issue #2449's fourth pass
+// (PR that added histogram_native_mixed_or_arithmetic.go) closed that
+// gap for the drop-family arithmetic ops (`+`, `-`, `%`, `^`, `atan2`,
+// and scalar-left `/`): they now compose over this shape instead of
+// rejecting. That behaviour is pinned by
+// TestLower_ExpHistogram_MixedSetOpOr_ArithmeticWrapped in
+// histogram_native_mixed_or_arithmetic_test.go, which covers this file's
+// identical query shape (`(<hist> or histogram_quantile(...)) + 1`), so
+// the superseded rejection assertion is removed rather than kept
+// alongside a contradictory claim. `*` and histogram-left `/` (which
+// SCALE rather than drop) and comparison ops (a structurally different
+// Filter/bool-Project lowering) still reject — see that new file's own
+// StillRejects tests.
