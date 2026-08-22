@@ -143,24 +143,14 @@ func TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSide(t *testing
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_AbsWrappedStillRejects pins that
-// this file's new recognizer is scoped to `sum`/`avg` only: any OTHER
-// wrapper around a mixed `or` (cerberus issue #2346 names `abs(a or b)`
-// explicitly as staying out of scope) keeps falling through to the
-// pre-existing rejection, unchanged.
-func TestLower_ExpHistogram_MixedSetOpOr_AbsWrappedStillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	query := `abs(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist))`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
-	}
-}
+// abs(a or b) wrapping the mixed float/histogram `or` shape was pinned
+// as staying out of scope here by cerberus issue #2346's own
+// AbsWrappedStillRejects test. Cerberus issue #2449 (PR that added
+// histogram_native_mixed_or_math_fn.go) closed that gap: abs() and every
+// other single-arg instant math function now compose over this shape
+// instead of rejecting. That behaviour is pinned by
+// TestLower_ExpHistogram_MixedSetOpOr_MathFnWrapped in
+// histogram_native_mixed_or_math_fn_test.go, which covers this file's
+// identical query shape (`abs(<hist> or histogram_quantile(...))`), so
+// the superseded rejection assertion is removed rather than kept
+// alongside a contradictory claim.

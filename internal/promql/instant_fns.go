@@ -85,19 +85,29 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 		return nil, err
 	}
 
+	newValue := mathFnValueExpr(chFn, &chplan.ColumnRef{Name: s.ValueColumn})
+	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+}
+
+// mathFnValueExpr wraps valueExpr with the CH function instantFnCH maps
+// chFn to, applying the one dtype fixup the table needs: CH's sign()
+// returns Int8, while every other entry in instantFnCH is
+// Float64-in/Float64-out, and the wire scanner reads Value as *float64 —
+// an unwrapped sign() 502s with "converting Int8 to *float64 is
+// unsupported" (surfaced by the showcase-promql sgn() panel). Shared by
+// [lowerInstantFn] (a bare/derived float input) and
+// histogram_native_mixed_or_math_fn.go's mixed-`or` composition (cerberus
+// issue #2449), which needs the identical chFn(Value) rewrite over a
+// differently-shaped input.
+func mathFnValueExpr(chFn chplan.Fn, valueExpr chplan.Expr) chplan.Expr {
 	var newValue chplan.Expr = &chplan.FuncCall{
 		Fn:   chFn,
-		Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+		Args: []chplan.Expr{valueExpr},
 	}
 	if chFn == chplan.FnSign {
-		// CH's sign() returns Int8; every other function in
-		// instantFnCH is Float64-in/Float64-out. The wire scanner
-		// reads Value as *float64, so an unwrapped sign() 502s with
-		// "converting Int8 to *float64 is unsupported" — surfaced by
-		// the showcase-promql sgn() panel.
 		newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{newValue}}
 	}
-	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+	return newValue
 }
 
 // lowerRoundToNearest implements PromQL `round(v, to_nearest)` as
