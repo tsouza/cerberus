@@ -632,14 +632,17 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 // set — for the metric tables in use today only the count() family
 // breaks the scan.
 //
-// FnUniqExact joined this set alongside FnCount for the same reason:
-// aggregate_range_lwr_fusion.go's count()-fusion emits
-// `uniqExact(tuple(MetricName, Attributes))` in place of a plain
-// count() — also a CH UInt64 return — as the distinct-series-count
-// PromQL count() lowers to over a fused RangeLWR fan-out.
+// FnUniqExact is deliberately NOT in this set even though it also
+// returns UInt64: histogram_quantile_window.go's windowSampleCountAgg
+// already uses `AggFunc{Fn: FnUniqExact}` for an internal
+// minSamplesFilter column that is never scanned into
+// chclient.Sample.Value, so adding it here would change that unrelated
+// call site's emitted SQL as a side effect. aggregate_range_lwr_fusion.go's
+// count()-fusion — the one uniqExact use that DOES feed the Value
+// column — applies its own toFloat64 wrap locally instead (see
+// emitAggregateRangeLWRFusedDistinctCount).
 var intReturningAggregates = map[chplan.Fn]bool{
-	chplan.FnCount:     true,
-	chplan.FnUniqExact: true,
+	chplan.FnCount: true,
 }
 
 // aggFuncFrag returns a Frag rendering `<name>[(<params>)](<args>) [AS <alias>]`

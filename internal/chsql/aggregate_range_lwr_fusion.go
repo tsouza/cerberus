@@ -300,11 +300,16 @@ func (e *emitter) emitAggregateRangeLWRFusedCollapse(a *chplan.Aggregate, lwr *c
 // anchor_ts)"), so this fusion counts precisely the same set of series
 // the unfused path would have.
 //
-// uniqExact returns UInt64; chplan.intReturningAggregates lists
-// chplan.FnUniqExact alongside FnCount so aggFuncFrag wraps it in
-// toFloat64(...) the same way it already wraps count() — without that,
-// the driver's `*float64` Scan on chclient.Sample.Value fails exactly
-// the way the plain count() path used to before that wrap existed.
+// uniqExact returns UInt64; the driver's `*float64` Scan on
+// chclient.Sample.Value fails on an unwrapped UInt64 exactly the way the
+// plain count() path used to before intReturningAggregates existed (see
+// that map's doc comment). This renderer applies its own toFloat64(...)
+// wrap directly — deliberately NOT by adding FnUniqExact to the shared
+// intReturningAggregates map, which aggFuncFrag also serves for
+// histogram_quantile_window.go's unrelated windowSampleCountAgg (an
+// internal minSamplesFilter column that is never scanned into
+// Sample.Value and so must NOT pick up the wrap as a side effect of a
+// change scoped to this fusion).
 func (e *emitter) emitAggregateRangeLWRFusedDistinctCount(a *chplan.Aggregate, lwr *chplan.RangeLWR) error {
 	fanout, err := e.rangeLWRFanoutFrag(lwr)
 	if err != nil {
@@ -313,6 +318,11 @@ func (e *emitter) emitAggregateRangeLWRFusedDistinctCount(a *chplan.Aggregate, l
 	sb := NewQuery().From(fanout.Frag())
 	groupBySelectFrags(sb, a, lwr)
 
+	// Alias left empty so aggFuncFrag renders the bare
+	// `uniqExact(tuple(...))` call with no `AS` clause — the toFloat64
+	// wrap and the real alias are applied here instead, outside
+	// aggFuncFrag, precisely so this local wrap never touches the shared
+	// intReturningAggregates table (see the doc comment above).
 	distinctSeries := chplan.AggFunc{
 		Fn: chplan.FnUniqExact,
 		Args: []chplan.Expr{
@@ -324,9 +334,8 @@ func (e *emitter) emitAggregateRangeLWRFusedDistinctCount(a *chplan.Aggregate, l
 				},
 			},
 		},
-		Alias: a.AggFuncs[0].Alias,
 	}
-	sb.Select(aggFuncFrag(distinctSeries))
+	sb.Select(As(Call("toFloat64", aggFuncFrag(distinctSeries)), a.AggFuncs[0].Alias))
 
 	sb.GroupBy(groupKeyFrags(a.GroupBy, a.GroupByAliases)...)
 	return e.emitSelect(sb)
