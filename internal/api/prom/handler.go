@@ -1207,16 +1207,27 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RateWindowFanoutBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
-	// Same family again: a histogram_quantile range-vector or bare-selector
-	// range query's sample fanout (#2447) planted its own throwIf, upstream
-	// of RangeBucketFanout's / RangeLWR's blocking per-(series, anchor)
-	// collapse GROUP BY — the identical mechanism #2429's guard above
-	// bounds, shared via lwrAnchorFanoutFrag. Same 422 errorType=execution
+	// Same family again: a histogram_quantile range-vector query's sample
+	// fanout (#2447) planted its own throwIf, upstream of RangeBucketFanout's
+	// blocking per-(series, anchor) collapse GROUP BY — the identical
+	// mechanism #2429's guard above bounds. Same 422 errorType=execution
 	// "resource exhausted" shape.
-	case throwIfMessageMatches(err, chsql.LWRAnchorFanoutBudgetMessage):
+	case throwIfMessageMatches(err, chsql.RangeBucketFanoutBudgetMessage):
 		return &apiError{
 			Kind:   ErrExecution,
-			Err:    errors.New(chsql.LWRAnchorFanoutBudgetMessage),
+			Err:    errors.New(chsql.RangeBucketFanoutBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
+	// Same family again, RangeLWR's OWN bound (#2470) rather than
+	// RangeBucketFanout's: a bare-selector range query's sample fanout,
+	// guarded at a separately-calibrated threshold because RangeLWR's
+	// argMax collapse is a fixed-size accumulator and does not carry
+	// RangeBucketFanout's groupArray-trio risk at the same row count — see
+	// lwr_fanout_bound.go's doc comment. Same 422 shape.
+	case throwIfMessageMatches(err, chsql.RangeLWRFanoutBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.RangeLWRFanoutBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
 	}
