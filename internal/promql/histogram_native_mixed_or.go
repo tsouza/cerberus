@@ -45,18 +45,25 @@ import (
 // Deliberately root-only. [mixedExpHistogramSetOp] is registered in
 // [lowerRoot] directly — NOT inside [lowerExpHistogramValuedShape]'s
 // recursive dispatch table the way [expHistogramSetOp] is — so THIS
-// recognizer's own Mixed node is only ever the WHOLE query's plan, never
-// composed under a further label-rewrite/arithmetic wrapper. That is a
+// recognizer's own Mixed node is only ever the WHOLE query's plan; it
+// never composes under a further wrapper simply by NESTING (the way a
+// histogram-valued shape composes through [lowerExpHistogramValuedShape]'s
+// recursion). Any wrapper that DOES compose over a mixed `or` (the two
+// exceptions immediately below) needs its OWN sibling root-only
+// recognizer, registered in [lowerRoot] next to this one, rather than
+// falling out of this recognizer's registration for free. That is a
 // deliberate scope line, not an oversight: every generic forwarder
-// (projectValueOverInner, projectAttributesOverInner) reads `Value`
-// unconditionally, which is only a placeholder on a Mixed result's
-// histogram-shaped rows — see [assertValueShapedInput]
-// (histogram_shape_guard.go), which panics if a Mixed node ever DOES
-// reach one of those forwarders. Keeping THIS recognizer root-only is
-// what keeps that an impossible state instead of a live hazard: `abs(a
-// or b)` for a mixed `a or b` still falls through to
-// [expHistogramSelectorRouting]'s pre-existing rejection, exactly as it
-// did before this file existed.
+// (projectValueOverInner, projectAttributesOverInner) that reads `Value`
+// unconditionally would silently drop the histogram on a Mixed result's
+// histogram-shaped rows, where Value is only ever the placeholder — see
+// [assertValueShapedInput] (histogram_shape_guard.go), which panics if a
+// Mixed node reaches [projectValueOverInner] or bypasses
+// [projectAttributesOverInner]'s own MixedRowShape branch. `abs(a or b)`
+// for a mixed `a or b` still falls through to
+// [expHistogramSelectorRouting]'s pre-existing rejection — tracked as an
+// open divergence under cerberus issue #2449 in
+// test/rejection-parity/catalogue — exactly as it did before this file
+// existed.
 //
 // `sum`/`avg` [by/without] wrapping a mixed `or` DOES compose, since
 // cerberus issue #2346: histogram_native_mixed_or_aggregate.go's own
@@ -69,6 +76,16 @@ import (
 // group whose members mix float and histogram samples — this
 // recognizer's [mixedExpHistogramMatch] doc reuse covers the shadow
 // resolution the wrapped case still needs first).
+//
+// `label_replace`/`label_join` wrapping a mixed `or` ALSO compose, since
+// cerberus issue #2449: histogram_native_mixed_or_label.go's own
+// root-only recognizer ([labelCallOverMixedExpHistogramSetOp]) DOES route
+// through THIS function's own [lowerMixedExpHistogramSetOp] for the two
+// operands, then hands the resulting Mixed node to
+// [projectAttributesOverInner] directly — the one generic forwarder that
+// has grown a MixedRowShape branch, because a label rewrite touches only
+// Attributes and needs no per-payload conditional the way a value
+// transform would.
 func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, false

@@ -1,0 +1,33 @@
+-- query.promql --
+label_replace(histogram_quantile(0.5, http_server_duration_exp_hist) or http_client_duration_exp_hist, "region", "east", "service", ".*")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `label_replace(histogram_quantile(0.5, <selector A>) or <selector B>, "region", "east", "service", ".*")`
+-- (cerberus issue #2449, the first non-aggregation wrapper family to compose
+-- over a mixed float/histogram `or` since issue #2346 taught `sum`/`avg` to):
+-- the LHS reduces every `A` series to a FLOAT quantile, the RHS is a raw
+-- histogram-valued selector over a disjoint metric, and `label_replace` adds
+-- a `region` label to every surviving row of the resulting Mixed union —
+-- forwarding the float row's real Value and the histogram row's real
+-- histogram payload unchanged, since a label rewrite never reads either.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('http_server_duration_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('http_client_duration_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0,  0, 0, 0, [9],           0, []);
+-- expected_rows --
+[]

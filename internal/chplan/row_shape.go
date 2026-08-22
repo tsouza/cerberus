@@ -179,9 +179,28 @@ func (s RowShape) String() string {
 //
 // The classifier deliberately does NOT walk into children: its callers
 // project directly over n, so the shape that matters is the one n's own
-// SELECT exposes.
+// SELECT exposes. The one apparent exception, [*Project], is not a
+// walk-into-children case either — it reads only the Project's OWN
+// projection list (never its Input) to see whether n's own SELECT
+// republishes [MixedDiscriminatorColumn] as an output, the same
+// derive-from-what-this-node-actually-selects approach every other case
+// here uses. internal/promql's `label_replace`/`label_join` composition
+// over a mixed `or` (cerberus issue #2449) is the one lowering that ends
+// in a Project forwarding that column: [projectAttributesOverInner]'s
+// MixedRowShape branch and [guardLabelRewriteCollision]'s matching
+// re-projection (both label_fns.go / duplicate_labelset_guard.go) always
+// carry it through by construction, so a Project publishing it really is
+// still Mixed-shaped, not merely built from one. No other lowering in
+// the tree ever names an output [MixedDiscriminatorColumn], so this
+// cannot misclassify a Project nothing here wrote.
 func RowShapeOf(n Node) RowShape {
 	switch v := n.(type) {
+	case *Project:
+		for _, proj := range v.Projections {
+			if ProjectionOutputsColumn(proj, MixedDiscriminatorColumn) {
+				return MixedRowShape
+			}
+		}
 	case *RangeWindow:
 		if v.OuterRange > 0 {
 			return GridWindowRowShape
