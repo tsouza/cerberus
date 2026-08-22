@@ -306,6 +306,18 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
 	}
+	// A scalar arithmetic binop (`+`, `-`, `*`, `/`, `%`, `^`, `atan2`)
+	// wrapping that same mixed shape (cerberus issue #2449 — the fourth
+	// wrapper family, and the issue's own originally-named example,
+	// `(a or b) + 1`). Checked here for the identical reason: a mixed
+	// `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_arithmetic.go has the composition's own
+	// doc comment for why only the DROP-family ops (not MUL / histogram-
+	// left DIV, and not comparisons) are recognised here.
+	if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}

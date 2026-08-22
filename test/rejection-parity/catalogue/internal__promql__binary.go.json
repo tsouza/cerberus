@@ -24,7 +24,7 @@
       "site": "internal/promql/binary.go:lowerVectorSetOp#4924e0ba",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them",
       "class": "divergence",
-      "trigger_query": "(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) + 1",
+      "trigger_query": "(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) * 2",
       "tracking_issue": 2449,
       "evidence": {
         "guard": [
@@ -134,19 +134,21 @@
       "site": "internal/promql/binary.go:promBinaryOp#2d85dac3",
       "message": "promql: vector set op %s should route through lowerVectorSetOp",
       "class": "internal",
-      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping, for every caller — lowerBinary and lowerScalarArg route a parser.BinaryExpr's own set-operator check first, and expHistogramScalarBinop (cerberus issue #2087) never reaches this function with a set-operator op at all: it calls promBinaryOp only after confirming b.Op is MUL or DIV. expHistogramFloatVectorScalingBinop (cerberus issue #2339) is the newest caller and holds to the same constraint: it guards `b.Op != parser.MUL \u0026\u0026 b.Op != parser.DIV` before ever reaching the promBinaryOp call, so it cannot pass a set-operator op either.",
+      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping, for every caller — lowerBinary and lowerScalarArg route a parser.BinaryExpr's own set-operator check first, and expHistogramScalarBinop (cerberus issue #2087) never reaches this function with a set-operator op at all: it calls promBinaryOp only after confirming b.Op is MUL or DIV. expHistogramFloatVectorScalingBinop (cerberus issue #2339) holds to the same constraint: it guards `b.Op != parser.MUL \u0026\u0026 b.Op != parser.DIV` before ever reaching the promBinaryOp call, so it cannot pass a set-operator op either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) is the newest caller and holds the identical constraint: it returns early on `b.Op.IsSetOperator()` before its own promBinaryOp call, so it too can never pass a set-operator op through.",
       "evidence": {
         "guard": [
           "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
           "if op.IsSetOperator()"
         ],
         "callers": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "expHistogramFloatVectorScalingBinop",
           "expHistogramScalarBinop",
           "lowerBinary",
           "lowerScalarArg"
         ],
         "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "expHistogramFloatVectorScalingBinop",
           "expHistogramScalarBinop",
           "lowerBinary",
@@ -161,19 +163,21 @@
       "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
       "message": "promql: binary op %s unsupported",
       "class": "internal",
-      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm. expHistogramScalarBinop (cerberus issue #2087) narrows further still: it only ever calls promBinaryOp with MUL or DIV, both already covered by the switch above. expHistogramFloatVectorScalingBinop (cerberus issue #2339) is the newest caller and holds the identical narrowing: its own MUL/DIV guard runs before the promBinaryOp call, so it too only ever supplies an operator the switch already covers.",
+      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm. expHistogramScalarBinop (cerberus issue #2087) narrows further still: it only ever calls promBinaryOp with MUL or DIV, both already covered by the switch above. expHistogramFloatVectorScalingBinop (cerberus issue #2339) holds the identical narrowing: its own MUL/DIV guard runs before the promBinaryOp call, so it too only ever supplies an operator the switch already covers. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) is the newest caller and only ever calls promBinaryOp with an operator promBinaryOp's own switch above already maps — it rejects comparison ops and set ops before reaching that call, and every arithmetic op it forwards (ADD, SUB, MUL, DIV, MOD, POW, ATAN2) is already covered.",
       "evidence": {
         "guard": [
           "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
           "past returning if op.IsSetOperator()"
         ],
         "callers": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "expHistogramFloatVectorScalingBinop",
           "expHistogramScalarBinop",
           "lowerBinary",
           "lowerScalarArg"
         ],
         "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
           "expHistogramFloatVectorScalingBinop",
           "expHistogramScalarBinop",
           "lowerVectorSetOp",
