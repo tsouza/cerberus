@@ -2174,6 +2174,17 @@ what actually runs.
     Neither relation is written down as a table of paths;
     `test/regression/golden_shard_coverage_test.go` pins that, along with the
     check firing in both directions.
+  - Before dispatching `update-golden.yml` on a pushed branch, run this same
+    check locally instead of guessing a shard list: `GOLDEN_UPDATE_CHECK_ONLY=1
+    GOLDEN_SHARDS=<any one shard name> node .github/scripts/golden-update.mjs`
+    is a seconds-long, chDB-free `node` call — the exact check the workflow's
+    `plan` job runs — and a failure's `run: ...` line is the definitive shard
+    set to pass as `-f shards=`, no CI round trip needed to find it. A single
+    `internal/promql` or `internal/chplan` change routinely implies most or all
+    of the other shards; verified directly (`go list -deps -test`), that is
+    real coupling — `internal/chplan` is the shared IR nearly every generator's
+    package closure reaches, and several generators' own test files import
+    `internal/promql` directly — not this check over-firing.
 
 - **`manual-golden-update.mjs`** — `update-golden.yml`, the trusted controller
   for manually regenerating selected shards on an existing same-repository PR

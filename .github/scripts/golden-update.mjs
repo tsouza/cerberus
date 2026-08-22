@@ -73,6 +73,22 @@
 // shard's siblings still finish (they were already running concurrently) so
 // one invocation surfaces every failure in that stage rather than just the
 // first; a later stage never starts once its predecessor reports a failure.
+//
+// Discovering the correct shard set WITHOUT a CI round trip: update-golden.yml
+// dispatches this exact same coverage check (GOLDEN_UPDATE_CHECK_ONLY=1) as its
+// "plan golden shards" step, against the target branch's diff against
+// origin/main. Running it here first is seconds, needs no chDB and no test
+// execution, and gives the definitive answer instead of a guess — pass any
+// single shard name as a seed (it does not have to be the right one) and read
+// the `run: ...` line the failure prints:
+//
+//   GOLDEN_UPDATE_CHECK_ONLY=1 GOLDEN_SHARDS=promql node .github/scripts/golden-update.mjs
+//
+// A wide implied set for one small `internal/promql` or `internal/chplan`
+// change is not this script over-firing: `go list -deps -test` finds real
+// imports (chplan is the shared IR nearly every generator's package closure
+// reaches; several generators' own test files import promql directly), so the
+// wide list is the honest answer, not a bug to route around.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
