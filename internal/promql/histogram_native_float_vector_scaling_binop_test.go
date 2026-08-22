@@ -13,10 +13,12 @@ import (
 )
 
 // TestLower_ExpHistogram_FloatVectorScalingBinopAnswersScaledHistogram
-// pins cerberus issue #2339: MUL (either operand order) and
+// pins cerberus issues #2339 and #2342: MUL (either operand order) and
 // histogram-left DIV between a histogram-valued operand and a genuine
-// (non-literal) float-VECTOR operand, under default (full-Attributes)
-// one-to-one vector matching, now answer a scaled histogram — a
+// (non-literal) float-VECTOR operand — under default (full-Attributes)
+// one-to-one matching, on()/ignoring() reduced-key one-to-one matching,
+// and the "histogram is the many side" group_left()/group_right()
+// broadcast — now answer a scaled histogram — a
 // *chplan.HistogramProjection rooted in a *chplan.HistogramFloatVectorJoin
 // — rather than the pre-existing catch-all rejection
 // TestLower_ExpHistogram_FloatVectorScalingShapesStillRejected used to
@@ -60,6 +62,53 @@ func TestLower_ExpHistogram_FloatVectorScalingBinopAnswersScaledHistogram(t *tes
 			query: `latency_exp_hist * histogram_quantile(0.5, latency_exp_hist)`,
 			lower: func(e parser.Expr) (chplan.Node, error) {
 				return promql.LowerAtRange(context.Background(), e, s, start, end, 30*time.Second)
+			},
+		},
+		{
+			// cerberus issue #2342: on() reduced-key one-to-one
+			// matching, histogram on the syntactic LHS.
+			name:  "histogram times float vector, on()",
+			query: `latency_exp_hist * on(service) histogram_quantile(0.5, latency_exp_hist)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			// cerberus issue #2342: ignoring() reduced-key one-to-one
+			// matching, histogram on the syntactic LHS.
+			name:  "histogram times float vector, ignoring()",
+			query: `latency_exp_hist * ignoring(service) histogram_quantile(0.5, latency_exp_hist)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			// cerberus issue #2342: group_left() broadcast, histogram
+			// on the syntactic LHS (the "many" side under group_left).
+			name:  "histogram times float vector, group_left()",
+			query: `latency_exp_hist * on(service) group_left() histogram_quantile(0.5, latency_exp_hist)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			// cerberus issue #2342: group_right() broadcast,
+			// mirror-image operand order — histogram on the syntactic
+			// RHS (the "many" side under group_right).
+			name:  "float vector times histogram, group_right()",
+			query: `histogram_quantile(0.5, latency_exp_hist) * on(service) group_right() latency_exp_hist`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			// cerberus issue #2342: histogram-left DIV + group_left(),
+			// histogram on the syntactic LHS (the only DIV shape this
+			// recognizer answers, per its own header doc).
+			name:  "histogram divided by float vector, group_left()",
+			query: `latency_exp_hist / on(service) group_left() histogram_quantile(0.5, latency_exp_hist)`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
 			},
 		},
 	}
@@ -112,13 +161,14 @@ func planContainsHistogramFloatVectorJoin(n chplan.Node) bool {
 }
 
 // TestLower_ExpHistogram_FloatVectorScalingBinopStillRejected pins the
-// residual boundary this file's header doc leaves in place: on()/
-// ignoring() reduced-key matching and group_left()/group_right()
-// many-to-one broadcast are NOT supported for the histogram/float-vector
-// scaling shape — only default (full-Attributes) one-to-one matching is
-// — so those still hit expHistogramSelectorRouting's pre-existing
-// catch-all rejection, same as every MUL/histogram-left-DIV float-vector
-// scaling shape did before cerberus issue #2339.
+// residual boundary this file's header doc leaves in place now that
+// cerberus issue #2342 has widened on()/ignoring()/group_left()/
+// group_right() support: chplan.HistogramFloatVectorJoin.Left is ALWAYS
+// the histogram operand, so a cardinality/matching shape that would
+// require the histogram side to play the "one" role — broadcasting
+// against many float rows, or reducing an on()/ignoring() key off the
+// FLOAT operand's own Attributes rather than the histogram's — is not
+// supported and still hits the pre-existing catch-all rejection.
 func TestLower_ExpHistogram_FloatVectorScalingBinopStillRejected(t *testing.T) {
 	t.Parallel()
 
@@ -127,11 +177,21 @@ func TestLower_ExpHistogram_FloatVectorScalingBinopStillRejected(t *testing.T) {
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
 	queries := []string{
-		`latency_exp_hist * on(service) histogram_quantile(0.5, latency_exp_hist)`,
-		`latency_exp_hist * ignoring(service) histogram_quantile(0.5, latency_exp_hist)`,
-		`latency_exp_hist * on(service) group_left() histogram_quantile(0.5, latency_exp_hist)`,
-		`histogram_quantile(0.5, latency_exp_hist) * on(service) group_right() latency_exp_hist`,
-		`latency_exp_hist / on(service) group_left() histogram_quantile(0.5, latency_exp_hist)`,
+		// CardOneToOne + on() with the histogram on the syntactic RHS:
+		// Prometheus's resultMetric reduces the syntactic LHS (here the
+		// float operand)'s own labels, which this recognizer does not
+		// support (see this file's header doc).
+		`histogram_quantile(0.5, latency_exp_hist) * on(service) latency_exp_hist`,
+		// group_right() keeps the syntactic RHS many; the histogram
+		// operand is on the LHS here, so it would play the "one" role.
+		`latency_exp_hist * on(service) group_right() histogram_quantile(0.5, latency_exp_hist)`,
+		// group_left() keeps the syntactic LHS many; the histogram
+		// operand is on the RHS here, so it would play the "one" role.
+		`histogram_quantile(0.5, latency_exp_hist) * on(service) group_left() latency_exp_hist`,
+		// DIV only recognises the histogram-left shape, so the
+		// histogram operand is always the syntactic LHS; group_right()
+		// here would make the histogram side the "one".
+		`latency_exp_hist / on(service) group_right() histogram_quantile(0.5, latency_exp_hist)`,
 	}
 	for _, q := range queries {
 		t.Run(q, func(t *testing.T) {
