@@ -2,22 +2,23 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#3e91de20",
-      "message": "promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection",
+      "site": "internal/promql/histogram_native_label_replace.go:lowerLabelCallOverExpHistogram#c58ba760",
+      "message": "promql: internal invariant violated: exp-histogram label_replace input publishes %s row shape (%T), want %s",
       "class": "internal",
-      "rationale": "every matched lowerExpHistogramValuedShape producer caps its public thirteen-column result with HistogramProjection",
+      "rationale": "every matched lowerExpHistogramValuedShape producer publishes chplan.HistogramRowShape, either literally as a HistogramProjection or as a Histogram-flagged VectorSetOp built by lowerExpHistogramSetOp, so this check can only ever hold",
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if err != nil",
           "past returning if !ok",
-          "if !ok"
+          "if shape := chplan.RowShapeOf(inner); shape != chplan.HistogramRowShape"
         ],
         "callers": [
           "lowerExpHistogramValuedShape",
           "lowerLabelReplaceOverExpHistogram"
         ],
         "cited": [
+          "lowerExpHistogramSetOp",
           "lowerExpHistogramValuedShape"
         ]
       }
