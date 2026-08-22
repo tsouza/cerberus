@@ -597,6 +597,9 @@ time_eq_bool_time_range.txtar
 time_minus_time_range.txtar
 time_plus_time_range.txtar
 time_returns_eval_ts.txtar
+timestamp_of_exp_histogram_bare_selector.txtar
+timestamp_of_exp_histogram_bare_selector_range.txtar
+timestamp_of_exp_histogram_sum.txtar
 timestamp_of_metric.txtar
 timestamp_of_metric_range_step.txtar
 timestamp_of_metric_range_step_native_resample.txtar
