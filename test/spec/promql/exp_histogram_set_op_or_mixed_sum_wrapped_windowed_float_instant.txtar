@@ -1,0 +1,50 @@
+-- query.promql --
+sum by (job) (rate(http_requests_a_total[5m]) or latency_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    AggregationTemporality UInt8
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Cerberus issue #2453: the INTERSECTION of #2333 (a windowed/derived
+-- float side in a mixed float/histogram `or`) and #2346 (that mixed
+-- `or` wrapped in `sum`/`avg`) — the one combination neither of those
+-- two issues covered, since #2346's own recognizer fed the float arm
+-- into its own aggregation reduction without the matrix/derived-shape
+-- canonicalisation the root-only leaf path gets for free from chsql.
+-- `rate(...)` reduces to ONE row per series with no per-row timestamp
+-- (chplan.ReducedWindowRowShape) in this instant-query fixture; the
+-- fix canonicalises it onto the aggregate's own Timestamp contract via
+-- a synthesised anchor. Reused seed data and disjoint label sets from
+-- exp_histogram_set_op_or_mixed_float_windowed_instant.txtar (the ROOT
+-- -only fixture this composes on top of, now wrapped in `sum by (job)`),
+-- so the float side keeps its own `job=api` group and the histogram
+-- side its own (empty, since `job` is absent) group — no group mixes
+-- float and histogram samples, so reference Prometheus's mixed-group
+-- drop rule never triggers and both branches survive independently.
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_a_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:31', 9), 10.0, 1),
+    ('http_requests_a_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 40.0, 1);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0, 0, 0, 0, [9], 0, []);
+-- expected_rows --
+[]

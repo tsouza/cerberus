@@ -1,0 +1,48 @@
+-- query.promql --
+sum by (job) (rate(http_requests_a_total[5m]) or latency_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+1m
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    AggregationTemporality UInt8
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Cerberus issue #2453's range-query (matrix) sibling of
+-- exp_histogram_set_op_or_mixed_sum_wrapped_windowed_float_instant.txtar:
+-- a query_range `rate(...)` publishes chplan.GridWindowRowShape — one
+-- row per (series, grid anchor) — instead of the instant reduce's
+-- single row, so the fix must canonicalise this shape too, not only
+-- ReducedWindowRowShape (the matrix shape already exposes its anchor
+-- under the canonical TimeUnix alias, so no synthesis is needed here —
+-- only the guard that used to reject it outright is gone). Same seed
+-- data and disjoint label sets as the instant fixture, reused from
+-- exp_histogram_set_op_or_mixed_float_windowed_range.txtar and wrapped
+-- in `sum by (job)`.
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_a_total', map('job', 'api'), toDateTime64('2025-12-31 23:55:31', 9), 10.0, 1),
+    ('http_requests_a_total', map('job', 'api'), toDateTime64('2025-12-31 23:59:31', 9), 40.0, 1),
+    ('http_requests_a_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:31', 9), 70.0, 1);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0, 0, 0, 0, [9], 0, []);
+-- expected_rows --
+[]
