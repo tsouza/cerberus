@@ -90,7 +90,7 @@ func promCanonicalTopLevelLabel(label string) string {
 // dedicated top-level OTel-CH column configured in s. The shape is
 //
 //	mapConcat(
-//	    <base>,
+//	    mapFilter((k, v) -> k NOT IN ('<promLabel0>', ...), <base>),
 //	    mapFilter((k, v) -> v != '',
 //	        map('<promLabel0>', toString(<col0>),
 //	            '<promLabel1>', toString(<col1>),
@@ -107,10 +107,20 @@ func promCanonicalTopLevelLabel(label string) string {
 // column rows so a row with `ServiceName=”` doesn't gain a spurious
 // `{service_name:”}` key — matching Prom's "absent label" semantics.
 //
-// `mapConcat` is later-key-wins, so the synthesised ServiceName key
-// still overrides whatever `base` carried for that key — preserving the
-// #232 precedence (dedicated column wins) regardless of what the base
-// merge produced.
+// ClickHouse's `mapConcat` does NOT collapse duplicate keys — it
+// concatenates both sides' key/value arrays, leaving both entries in the
+// resulting Map. "Later-key-wins" holds only for a *subscript* read
+// (`m['k']`); cerberus's series identity is the whole map, so relying on
+// mapConcat ordering alone would let two datapoints that should fold into
+// one series (dedicated column wins, #232) stay split, and would let the
+// wire-rendered label ([internal/chclient]'s `buildLabelMap`, which
+// collapses last-wins after `mapSort`) contradict the grouping key that
+// saw the first-occurrence value (#2467). So the overlaid keys are
+// stripped out of `base` BEFORE the concat, making the dedicated column
+// win STRUCTURALLY rather than by mapConcat ordering — the exact shape
+// [internal/chsql/info_join.go]'s `infoExtrasFrag` already uses for the
+// mirror-image hazard (there the base wins structurally; here the overlay
+// does).
 //
 // Returns nil when s configures no dedicated top-level column — callers
 // fold a nil augmentation into "no Project wrap" rather than emitting a
@@ -121,6 +131,7 @@ func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan
 		return nil
 	}
 	args := make([]chplan.Expr, 0, len(pairs)*2)
+	excluded := make([]chplan.Expr, 0, len(pairs))
 	for _, p := range pairs {
 		args = append(
 			args,
@@ -130,6 +141,7 @@ func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan
 				Args: []chplan.Expr{&chplan.ColumnRef{Name: p[1]}},
 			},
 		)
+		excluded = append(excluded, &chplan.LitString{V: p[0]})
 	}
 	synth := &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	filtered := &chplan.FuncCall{
@@ -146,8 +158,22 @@ func augmentAttributesForTopLevelExpr(s schema.Metrics, base chplan.Expr) chplan
 			synth,
 		},
 	}
+	baseWithoutOverlaidKeys := &chplan.FuncCall{
+		Fn: chplan.FnMapFilter,
+		Args: []chplan.Expr{
+			&chplan.Lambda{
+				Params: []string{"k", "v"},
+				Body: &chplan.InList{
+					Left:    &chplan.BareIdent{Name: "k"},
+					List:    excluded,
+					Negated: true,
+				},
+			},
+			base,
+		},
+	}
 	return &chplan.FuncCall{
 		Fn:   chplan.FnMapMerge,
-		Args: []chplan.Expr{base, filtered},
+		Args: []chplan.Expr{baseWithoutOverlaidKeys, filtered},
 	}
 }
