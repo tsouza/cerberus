@@ -520,6 +520,19 @@ func (e *emitter) emitAggregate(a *chplan.Aggregate) error {
 		return fmt.Errorf("%w: Aggregate.Having combined with DropEmptyOnNoGroup", ErrUnsupported)
 	}
 
+	// RangeLWR fusion fast path (aggregate_range_lwr_fusion.go, issue
+	// #2442): a `sum by (...)`/`count by (...)` aggregation directly over
+	// a bare-selector range query's RangeLWR fan-out avoids paying for
+	// RangeLWR's own rename-only outer SELECT wrapped in ANOTHER opaque
+	// subquery layer (sum), or skips RangeLWR's per-series argMax collapse
+	// entirely (count) — see that file's header comment for the
+	// correctness argument each shape relies on. Declining (the common
+	// case for every other Aggregate shape in the tree) falls through to
+	// the unconditionally-correct path below unchanged.
+	if lwr, kind := matchRangeLWRFusion(a); kind != rangeLWRFusionNone {
+		return e.emitAggregateRangeLWRFused(a, lwr, kind)
+	}
+
 	sub, err := e.subqueryFrag(a.Input)
 	if err != nil {
 		return err
@@ -618,8 +631,15 @@ func (e *emitter) emitAggregateNoGroup(a *chplan.Aggregate, sub Frag) error {
 // projects `sum(Duration)` (an Int64 column) we'd need to expand this
 // set — for the metric tables in use today only the count() family
 // breaks the scan.
+//
+// FnUniqExact joined this set alongside FnCount for the same reason:
+// aggregate_range_lwr_fusion.go's count()-fusion emits
+// `uniqExact(tuple(MetricName, Attributes))` in place of a plain
+// count() — also a CH UInt64 return — as the distinct-series-count
+// PromQL count() lowers to over a fused RangeLWR fan-out.
 var intReturningAggregates = map[chplan.Fn]bool{
-	chplan.FnCount: true,
+	chplan.FnCount:     true,
+	chplan.FnUniqExact: true,
 }
 
 // aggFuncFrag returns a Frag rendering `<name>[(<params>)](<args>) [AS <alias>]`
