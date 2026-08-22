@@ -119,5 +119,5 @@ func writeResultsJSON(results []SentinelResult) error {
 		return err
 	}
 	buf = append(buf, '\n')
-	return os.WriteFile(nightlyResultsPath(), buf, 0o644)
+	return os.WriteFile(nightlyResultsPath(), buf, 0o644) //nolint:gosec // per-run scratch artifact, world-readable is fine
 }
