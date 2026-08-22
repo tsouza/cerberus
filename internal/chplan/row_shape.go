@@ -238,6 +238,21 @@ func RowShapeOf(n Node) RowShape {
 		// letting it fall through would leave that looking like an
 		// oversight.
 		return SampleRowShape
+	case *OrderBy:
+		// emitOrderBy renders `SELECT * FROM (<input>) ORDER BY ...` — a
+		// genuine passthrough of every column its input publishes, sort
+		// keys included. Its own SELECT therefore exposes exactly the
+		// shape its input does, whichever one that is (a plain sample
+		// selector's OrderBy, PromQL `sort_by_label()`'s ordinary case,
+		// stays SampleRowShape through the default branch below; wrapping
+		// a [HistogramProjection] — PromQL `sort_by_label()` /
+		// `sort_by_label_desc()` over an exp-histogram-valued vector,
+		// cerberus issue #2462 — must report HistogramRowShape or the
+		// wire layer's wrapWithSampleProjection re-projects only the
+		// canonical quartet and silently drops the nine histogram
+		// columns). Forwarding is recursive so a further OrderBy over an
+		// OrderBy (never built today) still resolves correctly.
+		return RowShapeOf(v.Input)
 	}
 	return SampleRowShape
 }

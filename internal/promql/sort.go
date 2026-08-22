@@ -108,13 +108,43 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 // order. Cerberus reproduces that by returning the lowered input
 // untouched — no OrderBy node, which is precisely the "existing order"
 // an unsorted instant vector already has.
+//
+// UNLIKE `sort`/`sort_desc` (#2456), reference Prometheus's
+// funcSortByLabel/funcSortByLabelDesc (promql/functions.go) do NOT start
+// from filterFloats: they sort `vectorVals[0]` in place with
+// `slices.SortFunc` over the named labels' VALUES alone, never touching
+// `.H`/`.F`, so a histogram sample sorts (and survives) right alongside
+// float samples — confirmed against the vendored reference engine
+// (github.com/tsouza/prometheus's promql/promqltest,
+// `sort_by_label(<native-histogram-series>, "job")` answers the sample
+// unchanged, not empty). `lowerSortByLabel` still needs the
+// [lowerExpHistogramValuedShape] check `sort`/`sort_desc` added, but for
+// the OPPOSITE reason: an exp-histogram-valued argument must be
+// recognised and PRESERVED, not dropped, because it fell through the
+// generic [lower] dispatch and hit [expHistogramSelectorRouting]'s
+// catch-all rejection instead of ever reaching label-sort logic at all
+// (#2462). Once recognised, the histogram-valued plan is ordered by the
+// exact same natural-sort-key machinery the float arm uses — the row
+// shape underneath the sort keys never enters the comparison — and
+// [chplan.RowShapeOf]'s OrderBy arm forwards [chplan.HistogramRowShape]
+// through unchanged so the wire layer keeps every histogram column
+// instead of re-projecting down to the canonical float quartet.
 func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) < 1 {
 		return nil, fmt.Errorf("promql: %s expects at least 1 argument (vector[, label…]), got %d", c.Func.Name, len(c.Args))
 	}
-	inner, err := lower(c.Args[0], s, ctx)
-	if err != nil {
-		return nil, err
+	var inner chplan.Node
+	if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		inner = hist
+	} else {
+		lowered, err := lower(c.Args[0], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		inner = lowered
 	}
 	if len(c.Args) == 1 {
 		// No sort key: identity ordering, per funcSortByLabel's
