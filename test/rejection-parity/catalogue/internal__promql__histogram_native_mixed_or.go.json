@@ -5,20 +5,45 @@
       "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#38b18b37",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand only supports a plain (non-windowed) float side today; got a %s-shaped float operand, which cerberus issue #2330 does not yet cover",
       "class": "divergence",
-      "trigger_query": "rate(up[5m]) or demo_latency_exp_hist",
-      "tracking_issue": 2333,
+      "trigger_query": "sum(rate(up[5m]) or demo_latency_exp_hist)",
+      "tracking_issue": 2453,
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if err != nil",
-          "if shape := chplan.RowShapeOf(floatNode); shape != chplan.SampleRowShape"
+          "if !accepted",
+          "past returning if allowWindowedFloatSide"
         ],
         "callers": [
           "lowerMixedExpHistogramSetOp",
           "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ]
       },
-      "since": "2026-08-17"
+      "since": "2026-08-22"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramOperands#52f51634",
+      "message": "promql: 'or' between a float-valued and a histogram-valued operand does not support a %s-shaped float operand, which cerberus issue #2333 does not cover",
+      "class": "internal",
+      "rationale": "the root-only leaf recognizer (lowerMixedExpHistogramSetOp) passes allowWindowedFloatSide=true, so this branch only fires on a float side whose RowShapeOf is neither SampleRowShape nor GridWindowRowShape/ReducedWindowRowShape (i.e. HistogramRowShape/MixedRowShape) — believed unreachable through any parseable query today, since the float side already failed isExpHistogramValuedShape before lower() is called on it. A defensive guard against a future histogram-aware float lowering silently mis-projecting through this path, not a live divergence.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if !accepted",
+          "if allowWindowedFloatSide"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramSetOp",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "lower",
+          "lowerMixedExpHistogramSetOp"
+        ]
+      }
     },
     {
       "head": "promql",
