@@ -281,7 +281,7 @@ func mergeTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, s schema
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
 		AggFuncs:           histogramBinopMergeAggs(histSchema),
-		Having:             histogramBinopBothSidesMatchedGuard(),
+		Having:             histogramBinopMergeHavingGuard(),
 		DropEmptyOnNoGroup: true,
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
@@ -298,11 +298,96 @@ func mergeTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, s schema
 // histogramBinopBothSidesMatchedGuard renders `count() = 2` — see this
 // file's doc comment for why that alone implements default one-to-one
 // V-V matching's INNER JOIN semantics here.
+//
+// This is reused, UNCHANGED, by the `==`/`!=` structural-compare path
+// (histogram_native_binop_eq.go's compareTwoHistogramProjections, its
+// `returnBool` arm) as well as by [mergeTwoHistogramProjections]'s own
+// Having below — deliberately just the bare guard, not
+// [histogramBinopMergeHavingGuard]'s wider one: the compare path's own
+// Aggregate collects a completely different set of groupArray aliases
+// (histogramCompareMergeAggs, keyed by histCompareFieldAlias) and never
+// builds the unbounded merged-bucket-ladder shape
+// [histogramBinopBucketWidthBudgetGuardExpr] bounds, so folding that
+// guard's column references in here would reference aliases that
+// Aggregate never projects.
 func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.FuncCall{Fn: chplan.FnCount},
 		Right: &chplan.LitInt{V: 2},
+	}
+}
+
+// histogramBinopMergeHavingGuard renders `count() = 2 AND <bucket-width
+// budget guard>` — [histogramBinopBothSidesMatchedGuard]'s `count() = 2`
+// conjunct (see its doc for why that alone implements default
+// one-to-one V-V matching's INNER JOIN semantics here) ANDed with
+// [histogramBinopBucketWidthBudgetGuardExpr]'s bound on
+// [histogramBinopMergedBucketsExpr]'s merged bucket ladder width
+// (cerberus issue #2428). Wired ONLY into
+// [mergeTwoHistogramProjections]'s Having, the one Aggregate whose
+// groupArrays ([histogramBinopMergeAggs], via [expHistogramMergeAggs])
+// actually carry the columns the budget guard reads — see
+// [histogramBinopBothSidesMatchedGuard]'s doc for why the `==`/`!=`
+// compare path must NOT share this wider guard.
+func histogramBinopMergeHavingGuard() chplan.Expr {
+	return andExpr(histogramBinopBothSidesMatchedGuard(), histogramBinopBucketWidthBudgetGuardExpr())
+}
+
+// histogramBinopBucketWidthBudgetGuardExpr renders the `throwIf(...) = 0`
+// predicate bounding [histogramBinopMergedBucketsExpr]'s merged bucket
+// ladder width — the same cap
+// (histogram_merge_bound.go's maxHistogramMergeBucketWidth) and the same
+// bound-once-per-site helper (mergedLengthExpr) the cross-series merge's
+// own budget guard (histogramMergeBudgetGuardExpr) uses, reused verbatim
+// here rather than duplicated.
+//
+// histogramBinopMergedBucketsExpr renders the identical unbounded
+// `arrayMap(t -> ..., range(mergedLength))` shape
+// [expHistogramMergeBucketsExpr] renders for the cross-series merge, so
+// two histograms whose Scale/Offset diverge enough still produce an
+// unbounded merged ladder here too, with nothing capping it before
+// #2428's fix. Unlike the cross-series merge, the series-per-group axis
+// needs no analogous check: [histogramBinopBothSidesMatchedGuard]'s own
+// `count() = 2` conjunct already caps it at exactly 2 by construction —
+// see this file's header doc ("Why this is narrower than #2385") — so
+// only the bucket-width axis (mergedLengthExpr, for BOTH the positive
+// and the negative ladder) is open here.
+//
+// This reads the SAME groupArray aliases [histogramBinopMergeAggs]
+// collects via [expHistogramMergeAggs] (hqAggScalesArrayAlias plus the
+// four offset/bucket array aliases), so — like
+// [histogramMergeBudgetGuardExpr] — it must be attached directly to the
+// Aggregate producing them. Unlike the cross-series merge's Filter-based
+// wiring ([wrapExpHistogramMergeBudgetGuard]), this Aggregate's GroupBy
+// is never empty (histogramAggGroupBy(nil, ...) always yields the
+// single-element series-identity key), so DropEmptyOnNoGroup never takes
+// effect here and folding straight into the existing Having carries no
+// risk of the empty-GroupBy/Having conflict [chplan.Aggregate.Having]'s
+// doc warns about.
+func histogramBinopBucketWidthBudgetGuardExpr() chplan.Expr {
+	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
+	mergedScale := &chplan.ColumnRef{Name: hqAggMergedScaleAlias}
+	posOff := &chplan.ColumnRef{Name: hqAggPosOffsetsArrayAlias}
+	posBuc := &chplan.ColumnRef{Name: hqAggPosBucketsArrayAlias}
+	negOff := &chplan.ColumnRef{Name: hqAggNegOffsetsArrayAlias}
+	negBuc := &chplan.ColumnRef{Name: hqAggNegBucketsArrayAlias}
+
+	overBudget := orExpr(
+		gtLit(mergedLengthExpr(scalesArr, posOff, posBuc, mergedScale), maxHistogramMergeBucketWidth),
+		gtLit(mergedLengthExpr(scalesArr, negOff, negBuc, mergedScale), maxHistogramMergeBucketWidth),
+	)
+
+	return &chplan.Binary{
+		Op: chplan.OpEq,
+		Left: &chplan.FuncCall{
+			Fn: chplan.FnThrowIf,
+			Args: []chplan.Expr{
+				overBudget,
+				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
+			},
+		},
+		Right: &chplan.LitInt{V: 0},
 	}
 }
 

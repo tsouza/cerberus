@@ -84,6 +84,14 @@ const (
 // mergedLengthExpr returns one signed ladder's merged bucket-range length,
 // via the same expHistogramMergeBucketsBoundsExpr helper the real merge site
 // (expHistogramMergeBucketsExpr) uses to compute it.
+//
+// Reused by [histogramBinopBucketWidthBudgetGuardExpr]
+// (histogram_native_binop.go, cerberus issue #2428): the two-operand
+// binop merge (histogramBinopMergedBucketsExpr) renders the identical
+// unbounded arrayMap-over-mergedLength shape this file's own
+// [histogramMergeBudgetGuardExpr] bounds for the cross-series merge, so
+// the same length rendering closes that narrower instance of the same bug
+// class without a second, divergent implementation.
 func mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan.Expr {
 	_, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
 	return mergedLength
