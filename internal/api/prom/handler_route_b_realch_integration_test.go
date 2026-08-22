@@ -87,7 +87,7 @@ import (
 // routeBCHImage matches the other real-CH integration lanes (strict-scan,
 // router-rules, solver-memory-apportion, chclient) so every real-CH lane
 // exercises the same server version.
-const routeBCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const routeBCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // routeBMetric is the counter series both handlers query. Named away from
 // any reserved suffix (_bucket / _count / _sum / _exp_hist) so it is read as

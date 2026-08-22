@@ -94,7 +94,7 @@ const realCHStartTimeout = 5 * time.Minute
 
 // realCHImage pins the ClickHouse server image, matching the chclient + strict-
 // scan integration lanes so all real-CH lanes exercise the same server version.
-const realCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const realCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // TestCorpusWriteReadRealClickHouse is the real-CH end-to-end guard for the
 // router-corpus WRITE (optcorpus.CHTableSink) and READ (chCorpusSource) paths.

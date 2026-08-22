@@ -81,7 +81,7 @@ import (
 
 // scanBoundCHImage pins the same ClickHouse server image the other real-CH
 // lanes (strict-scan, chclient integration) use.
-const scanBoundCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const scanBoundCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // scanBoundDB is the connection's default database. The lowered SQL references
 // otel_traces unqualified, so the table must live in the connection's database.

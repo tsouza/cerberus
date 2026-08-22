@@ -18,7 +18,7 @@
 //
 // This test drives the mounted PRODUCTION prom + tempo handlers over real
 // HTTP against a real ClickHouse (testcontainers-go,
-// clickhouse/clickhouse-server:25.8-alpine — the same tag every other
+// clickhouse/clickhouse-server:25.9-alpine — the same tag every other
 // strict-scan real-CH lane uses), seeded at the scale each incident's own
 // root-cause mechanism needs to actually engage (see sentinels.go's
 // Sentinels and seed.go's builders), and reads peak per-query memory back
@@ -55,7 +55,7 @@ import (
 // strict-scan real-CH lane uses (traces_scan_window_integration_test.go
 // etc.) — testcontainers' own wait-strategy against this alpine tag doesn't
 // hit the healthcheck race docker-compose's Ubuntu-base image does.
-const perfSmokeCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const perfSmokeCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 const perfSmokeDB = "default"
 

@@ -25,17 +25,17 @@ import (
 // to fan-out. The fix projects a String column (`SELECT '1'`) that QueryStrings
 // decodes cleanly, so a healthy server reads as the Available verdict it is.
 //
-// This stands up a real, unconstrained ClickHouse on the 25.8 line (which has
-// the experimental setting) and asserts the verdict is Available -- the assertion
-// that fails on the pre-fix `SELECT 1` body. Gated by the `integration` build
-// tag (requires Docker); the E2E workflow runs it, regular CI doesn't.
+// This stands up a real, unconstrained ClickHouse (which has the experimental
+// setting) and asserts the verdict is Available -- the assertion that fails on
+// the pre-fix `SELECT 1` body. Gated by the `integration` build tag (requires
+// Docker); the E2E workflow runs it, regular CI doesn't.
 func TestProbeTSGridCapability_HealthyServerIsAvailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:25.8-alpine",
+		"clickhouse/clickhouse-server:25.9-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 	)
@@ -77,7 +77,7 @@ func TestProbeTSGridCapability_HealthyServerIsAvailable(t *testing.T) {
 
 	got := client.ProbeTSGridCapability(ctx)
 	if got != chopt.CapabilityAvailable {
-		t.Fatalf("ProbeTSGridCapability on a healthy, unconstrained 25.8 server = %v; want %v "+
+		t.Fatalf("ProbeTSGridCapability on a healthy, unconstrained server = %v; want %v "+
 			"(a UInt8 probe body that QueryStrings cannot scan misclassifies this as Unreachable)",
 			got, chopt.CapabilityAvailable)
 	}

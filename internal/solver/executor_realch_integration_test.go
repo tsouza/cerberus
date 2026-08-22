@@ -90,7 +90,7 @@ import (
 // memProbeCHImage pins the ClickHouse server image, matching the other
 // real-CH integration lanes (strict-scan, router-rules, chclient) so every
 // real-CH lane exercises the same server version.
-const memProbeCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const memProbeCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // memProbeStartTimeout bounds container pull + start + both Executor runs.
 const memProbeStartTimeout = 5 * time.Minute

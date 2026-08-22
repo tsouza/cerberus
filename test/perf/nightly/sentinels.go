@@ -66,6 +66,14 @@ type Sentinel struct {
 	// is the response body substring proving THIS SPECIFIC guard fired —
 	// not some unrelated failure that happens to share the status code.
 	ExpectedErrorSubstring string
+	// WindowStart / WindowEnd / Step, when WindowStart is non-zero,
+	// override the shared sampleWindowStart / sampleWindowEnd / sentinelStep
+	// for THIS sentinel only — see classic_histogram_quantile_by_route's own
+	// comment for why one sentinel needs a narrower window than the other
+	// three's shared production-representative one.
+	WindowStart time.Time
+	WindowEnd   time.Time
+	Step        time.Duration
 }
 
 // Sentinels is PR A's "prove the mechanism, print the numbers" corpus — no
@@ -74,13 +82,55 @@ type Sentinel struct {
 // produce, the same task-4 methodology test/perf/smoke's own PR followed.
 var Sentinels = []Sentinel{
 	{
+		// Params MUST include `le` in the by(...) clause and query the
+		// `_bucket` series — histogramAggShapeLowerable (internal/promql/
+		// histogram_quantile.go) only recognizes the classic-bucket
+		// aggregation shape `<agg> by (le, ...) (<fn>(<bucket_selector>
+		// [range]))`; a by-clause omitting `le`, or a selector missing the
+		// `_bucket` suffix, resolves to an entirely different (and here,
+		// unintended) ordinary-float-bucket/Gauge-Sum companion-column
+		// fallback instead — silently never reaching RangeBucketFanout /
+		// RangeBucketGridNative at all, which defeated this sentinel's whole
+		// purpose until this fix (see the PR that added this comment).
+		//
+		// WindowStart/WindowEnd/Step deliberately narrow this ONE sentinel's
+		// window instead of sharing the other three's ~4h20m/1m production
+		// window: at that full window this query genuinely reaches
+		// chplan.RangeBucketGridNative (confirmed via this harness's own
+		// "ts_grid_histogram enabled=true" boot log against a real
+		// ClickHouse 25.9+) but runs all the way to a genuine ClickHouse
+		// MEMORY_LIMIT_EXCEEDED abort at ~99.9% of the memory cap — unlike
+		// RangeBucketFanout, the native path has no resource-bound guard of
+		// its own yet (internal/chsql/lwr_fanout_bound.go's guard is wired
+		// only into RangeBucketFanout's collapse; tracked as issue #2486).
+		// A near-cap abort is real signal but a DIFFERENT one than this
+		// sentinel exists to produce: #2408's own cost story is 71% of
+		// ClickHouse CPU on a query that SUCCEEDS, and #2429/error_ratio's
+		// own precedent for an "expected 422" sentinel is a CHEAP guard
+		// rejection (~2s at 16-22% of cap), not a near-cap abort — baking a
+		// near-cap OOM in as "the expected, passing behavior" here would
+		// mask #2486 rather than measure #2408.
+		//
+		// The window below (5 anchors) is the calibration sweep's safest
+		// pick, not merely the largest that happens to succeed: memory grows
+		// steeply non-linearly with anchor count for this shape (real,
+		// same-series-cardinality measurements against this sample: 5
+		// anchors -> 43.1% of cap, 10 -> 53.9%, 20 -> 72.4%, 60 -> genuine
+		// MEMORY_LIMIT_EXCEEDED) — itself further evidence for #2486, since
+		// even a modest ~20-minute panel already sits uncomfortably close to
+		// the cap. 5 anchors leaves ~20 points of margin under
+		// nightlyMemoryCapFraction even after the committed baseline's own
+		// 1.5x headroom, which the 10- and 20-anchor points do not.
 		Name:           "classic_histogram_quantile_by_route",
 		Family:         "histogram_quantile over a classic (bucket/bounds) histogram — issue #2408's arrayJoin bucket-rate fan-out",
 		Path:           "/api/v1/query_range",
 		ExpectedStatus: http.StatusOK,
+		WindowStart:    time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
+		WindowEnd:      time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
+		Step:           time.Minute,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
-				"query": {`histogram_quantile(0.95, sum by (http_route) (rate(` + histogramMetric + `[5m])))`},
+				"query": {`histogram_quantile(0.95, sum by (http_route, le) (rate(` + histogramMetric + `_bucket[5m])))`},
 			}
 		},
 	},

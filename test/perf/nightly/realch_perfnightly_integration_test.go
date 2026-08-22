@@ -97,14 +97,16 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/optcorpus"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
 // perfNightlyCHImage matches every other strict-scan/perf real-CH lane's
 // pinned tag (test/perf/smoke's own perfSmokeCHImage).
-const perfNightlyCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const perfNightlyCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 const perfNightlyDB = "default"
 
@@ -181,6 +183,13 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 
 	metricsHandler := prom.New(client, schema.DefaultOTelMetrics(), nil)
+	// Wire the SAME classic-histogram native/fan-out decision cmd/cerberus's
+	// own boot path makes (nativeRangeLowerers, main.go), scoped to just this
+	// one field — see nightlyClassicHistogramLowerer's own doc comment for
+	// why prom.New's zero-value Lowerers table alone would leave
+	// chplan.RangeBucketGridNative permanently unreachable here regardless of
+	// perfNightlyCHImage's pinned version.
+	metricsHandler.Lowerers.ClassicHistogram = nightlyClassicHistogramLowerer(ctx, t, client)
 	mux := http.NewServeMux()
 	metricsHandler.Mount(mux)
 
@@ -359,10 +368,14 @@ func TestPerfNightlyRealCH(t *testing.T) {
 // confirm the RIGHT guard fired.
 func runSentinelOnce(t *testing.T, mux *http.ServeMux, sentinel Sentinel, queryID string) (int, string) {
 	t.Helper()
-	params := sentinel.Params(sampleWindowStart, sampleWindowEnd)
-	params.Set("start", formatPromTime(sampleWindowStart))
-	params.Set("end", formatPromTime(sampleWindowEnd))
-	params.Set("step", sentinelStep.String())
+	start, end, step := sampleWindowStart, sampleWindowEnd, sentinelStep
+	if !sentinel.WindowStart.IsZero() {
+		start, end, step = sentinel.WindowStart, sentinel.WindowEnd, sentinel.Step
+	}
+	params := sentinel.Params(start, end)
+	params.Set("start", formatPromTime(start))
+	params.Set("end", formatPromTime(end))
+	params.Set("step", step.String())
 
 	req := httptest.NewRequest(http.MethodGet, sentinel.Path+"?"+params.Encode(), nil)
 	req = req.WithContext(chclient.WithQueryID(req.Context(), queryID))
@@ -381,6 +394,56 @@ func formatPromTime(t time.Time) string {
 func sampleParquetPath(t *testing.T, name string) string {
 	t.Helper()
 	return filepath.Join("testdata", "samples", name)
+}
+
+// nightlyClassicHistogramLowerer probes the live container's ClickHouse
+// version and experimental-setting capability and resolves the SAME
+// chopt.FeatureTSGridHistogram decision cmd/cerberus's own boot wiring
+// (nativeRangeLowerers, main.go) makes, returning just the one
+// promql.ClassicHistogramWindowLowerer classic_histogram_quantile_by_route
+// needs.
+//
+// Without this, metricsHandler.Lowerers stays at prom.New's zero value:
+// promql.RangeLowerers.withDefaults normalizes every nil field to its
+// concrete FAN-OUT impl at the lowering entry, so a bare prom.New handler is
+// permanently fan-out-only regardless of the connected server's version —
+// bumping perfNightlyCHImage past the 25.9 floor alone would never make
+// chplan.RangeBucketGridNative fire in this harness. That gap is real and
+// repo-wide (test/perf/smoke and internal/api/prom's own real-CH integration
+// tests build their handlers the identical zero-Lowerers way), so this fix
+// is deliberately scoped to just the ONE field this lane's histogram
+// sentinel needs, not a general native-lowerers-in-tests refactor — see
+// issue #2487, which tracks wiring the other six native ts_grid families
+// (rate/staleness/changes/resets/deriv/predict_linear) across the other
+// lanes.
+func nightlyClassicHistogramLowerer(ctx context.Context, t *testing.T, client *chclient.Client) promql.ClassicHistogramWindowLowerer {
+	t.Helper()
+	version, err := client.ProbeVersion(ctx)
+	if err != nil {
+		t.Fatalf("probe clickhouse version: %v", err)
+	}
+	capability := client.ProbeTSGridCapability(ctx)
+	set, warnings, err := chopt.Resolve(chopt.Config{
+		Optimizations: "auto",
+		Mode:          chopt.Enforcing,
+		Capability:    capability,
+	}, version)
+	if err != nil {
+		t.Fatalf("resolve clickhouse optimizations: %v", err)
+	}
+	for _, w := range warnings {
+		t.Logf("ch_opt: %s", w)
+	}
+	enabled := set.Has(chopt.FeatureTSGridHistogram)
+	t.Logf("probed clickhouse %s, ts_grid capability %s, ts_grid_histogram enabled=%v",
+		version.String(), capability.String(), enabled)
+
+	if enabled {
+		return promql.NativeClassicHistogramWindowLowerer{
+			Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+		}
+	}
+	return promql.FanoutClassicHistogramWindowLowerer{}
 }
 
 func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickHouseContainer, *chclient.Client) {

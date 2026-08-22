@@ -147,7 +147,7 @@ func startColumnarCH(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:25.8-alpine",
+		"clickhouse/clickhouse-server:25.9-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),

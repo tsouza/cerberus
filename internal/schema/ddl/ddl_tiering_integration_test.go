@@ -74,7 +74,7 @@ func startClickHouseTiered(t *testing.T) driver.Conn {
 
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:25.8-alpine",
+		"clickhouse/clickhouse-server:25.9-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase("otel"),
