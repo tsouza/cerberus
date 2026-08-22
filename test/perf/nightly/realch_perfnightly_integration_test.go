@@ -64,6 +64,20 @@
 // .github/workflows/perf-nightly.yml via `just perf-nightly-integration`.
 // Regenerate the baseline via `just update-nightly-perf-baseline`
 // (UPDATE_NIGHTLY_PERF_BASELINE=1) — never hand-edited (invariant 9).
+//
+// # Reporting
+//
+// Every sentinel's final verdict (status-class match, both memory prongs,
+// and the single overall Pass) is also captured into a results.go
+// SentinelResult and written, at the end of a non-calibration run, to
+// PERF_NIGHTLY_RESULTS_JSON — see results.go's own doc comment for why:
+// two of the four sentinels above are SUPPOSED to be rejected, and
+// cerberus's own engine.go correctly logs a WARN line for every rejected
+// query unconditionally, so the raw `go test -v` log alone cannot tell a
+// human apart "expected rejection" from "real regression" without manually
+// cross-referencing sentinels.go. perf-nightly-step-summary.mjs renders
+// that JSON into perf-nightly.yml's own $GITHUB_STEP_SUMMARY as an
+// unambiguous verdict table, ahead of the raw log.
 package nightly
 
 import (
@@ -176,16 +190,49 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	update := os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1"
 	updated := make(map[string]nightlyBound, len(Sentinels))
 
+	// results accumulates one SentinelResult per sentinel regardless of
+	// pass/fail — a subtest's t.Errorf/t.Fatalf aborts only that subtest's
+	// own goroutine (see results.go's doc comment), so this loop always
+	// runs to completion and the write below always has something to
+	// render, even on a real regression. Skipped entirely in calibration
+	// mode (update=true): there is no committed baseline to compare
+	// against yet, so "pass/fail" is not a meaningful concept for that run.
+	results := make([]SentinelResult, 0, len(Sentinels))
+
 	for _, sentinel := range Sentinels {
 		t.Run(sentinel.Name, func(t *testing.T) {
+			// result accumulates this sentinel's outcome as the subtest
+			// progresses; Pass defaults to false and is only ever flipped to
+			// true once every check below has actually succeeded, so a
+			// t.Fatalf anywhere in this closure (which aborts the goroutine
+			// via runtime.Goexit, skipping everything textually after it)
+			// still leaves an honest, correctly-failing result behind for
+			// the Cleanup below to capture.
+			result := SentinelResult{
+				Name:           sentinel.Name,
+				Family:         sentinel.Family,
+				ExpectedStatus: sentinel.ExpectedStatus,
+				Rejected:       sentinel.ExpectedStatus != http.StatusOK,
+			}
+			if !update {
+				// t.Cleanup (unlike code textually after a t.Fatalf) always
+				// runs, including after the Goexit a fatal assertion
+				// triggers — this is what lets a genuinely regressed
+				// sentinel still show up in the step summary as a clear
+				// FAIL instead of silently vanishing from the report.
+				t.Cleanup(func() { results = append(results, result) })
+			}
+
 			// One untimed, unmeasured warm-up — mirrors test/perf/smoke's own
 			// rationale: the OPTIMIZE ... FINAL pass above leaves this
 			// sentinel's tables cold, and the first query after that pays a
 			// real extra allocation this warm-up absorbs.
 			warmupID := fmt.Sprintf("perfnightly-%s-warmup", sentinel.Name)
 			if code, body := runSentinelOnce(t, mux, sentinel, warmupID); code != sentinel.ExpectedStatus {
+				result.ActualStatus = code
 				t.Fatalf("%s warm-up: HTTP %d (want %d): %s", sentinel.Name, code, sentinel.ExpectedStatus, body)
 			} else if sentinel.ExpectedStatus != http.StatusOK && !strings.Contains(body, sentinel.ExpectedErrorSubstring) {
+				result.ActualStatus = code
 				t.Fatalf("%s warm-up: HTTP %d body does not carry %q: %s", sentinel.Name, code, sentinel.ExpectedErrorSubstring, body)
 			}
 
@@ -193,6 +240,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			for i := 0; i < nightlySentinelRepeats; i++ {
 				queryID := fmt.Sprintf("perfnightly-%s-%d", sentinel.Name, i)
 				code, body := runSentinelOnce(t, mux, sentinel, queryID)
+				result.ActualStatus = code
 				// The status-class check comes first and is fatal, not just a
 				// logged finding: for the two ExpectedStatus=422 sentinels this
 				// IS the #2429 regression signal (the bound silently breaking
@@ -221,6 +269,9 @@ func TestPerfNightlyRealCH(t *testing.T) {
 					maxBytes = rows[0].MemoryUsage
 				}
 			}
+			// Every repeat above matched sentinel.ExpectedStatus exactly, or
+			// this point is never reached (a mismatch is fatal).
+			result.StatusOK = true
 
 			// math.Round forces this through runtime float64 arithmetic rather
 			// than Go's exact-rational constant folding — (1<<30)*0.85 is not
@@ -231,6 +282,11 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			t.Logf("%s (%s): max-of-%d peak memory_usage = %d bytes (%.1f%% of %d-byte cap; absolute ceiling %d), expected status %d",
 				sentinel.Name, sentinel.Family, nightlySentinelRepeats, maxBytes,
 				100*float64(maxBytes)/float64(perfNightlyMemoryCapBytes), perfNightlyMemoryCapBytes, capCeiling, sentinel.ExpectedStatus)
+
+			result.MaxOfNBytes = maxBytes
+			result.CapCeilingBytes = capCeiling
+			result.CapFractionPct = 100 * float64(maxBytes) / float64(perfNightlyMemoryCapBytes)
+			result.CapOK = maxBytes <= capCeiling
 
 			if update {
 				// Clamp to capCeiling: for a sentinel already close to the
@@ -261,18 +317,32 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s: no committed bound in nightly-baseline.json — run `just update-nightly-perf-baseline`", sentinel.Name)
 			}
+			result.HasBaseline = true
 			if bound.ExpectedStatus != sentinel.ExpectedStatus {
 				t.Fatalf("%s: committed baseline expects status %d but the sentinel now expects %d — "+
 					"run `just update-nightly-perf-baseline` if this change is genuinely intended",
 					sentinel.Name, bound.ExpectedStatus, sentinel.ExpectedStatus)
 			}
+			result.BaselineCeilingBytes = bound.CeilingBytes
+			result.BaselineOK = maxBytes <= bound.CeilingBytes
 			if maxBytes > bound.CeilingBytes {
 				t.Errorf("%s: peak memory %d bytes exceeds the committed ceiling %d bytes (measured max-of-N was "+
 					"%d at calibration time, %.2fx headroom) — %s may have regressed; only run "+
 					"`just update-nightly-perf-baseline` if the increase is genuinely intended",
 					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, nightlyBaselineHeadroom, sentinel.Family)
 			}
+
+			// Every check above passed — this is the ONLY place Pass is set
+			// true, so any earlier t.Fatalf/t.Errorf leaves it at its zero
+			// value (false).
+			result.Pass = result.StatusOK && result.CapOK && result.BaselineOK
 		})
+	}
+
+	if !update {
+		if err := writeResultsJSON(results); err != nil {
+			t.Fatalf("write nightly results JSON: %v", err)
+		}
 	}
 
 	if update {

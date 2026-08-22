@@ -564,6 +564,16 @@ jobs:
       - name: migration-artifact self-test (build-once seam guard)
         run: node --test .github/scripts/migration-artifact.test.mjs
 
+      # perf-nightly.yml's step-summary rendering is a pure function of the
+      # JSON test/perf/nightly's results.go writes (see its own doc
+      # comment): a wrong verdictCell()/renderSummary() would silently
+      # misreport a real regression as an expected rejection, or vice
+      # versa, with nothing in perf-nightly.yml itself able to catch that —
+      # it's a Docker-gated nightly/release lane, never a PR check. This
+      # self-test pins the discrimination offline.
+      - name: perf-nightly-step-summary self-test
+        run: node --test .github/scripts/perf-nightly-step-summary.test.mjs
+
   # `forbid-skip` is the GA test-discipline gate. The maintainer's
   # NON-NEGOTIABLE rule is "no t.Skip in test files — fix the bug, do
   # not skip." Greps `*_test.go` for `t.Skip` / `t.Skipf` / `t.SkipNow`

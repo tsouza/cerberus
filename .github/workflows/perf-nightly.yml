@@ -47,6 +47,15 @@ jobs:
     # Generous: pulls one ClickHouse image, loads ~4.3M real rows across 3
     # tables, and issues 4 sentinel queries.
     timeout-minutes: 20
+    env:
+      # Read by results.go's writeResultsJSON (the test step) and by
+      # perf-nightly-step-summary.mjs (the summary step below) — same
+      # variable name, same literal value, so the two steps can never point
+      # at different files. A plain literal (not a `${{ runner.temp }}`
+      # expression: job-level `env:` does not have the `runner` context
+      # available) under /tmp — a per-run scratch path on the ephemeral
+      # `ubuntu-latest` runner, never committed to the checkout.
+      PERF_NIGHTLY_RESULTS_JSON: /tmp/perf-nightly-results.json
     steps:
       - uses: actions/checkout@v7
         with:
@@ -73,6 +82,18 @@ jobs:
 
       - name: Run the #2370 nightly measurement harness (real ClickHouse)
         run: just perf-nightly-integration
+
+      # Renders the per-sentinel verdict as a clear table in the job's
+      # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's
+      # own doc comment for why this exists (a wall of raw WARN log lines
+      # with no synthesis at the top makes an intentionally-rejected
+      # sentinel indistinguishable from a real regression at a glance).
+      # `if: always()` so a verdict table (and, on a real failure, the
+      # specific reason) still renders even when the test step above
+      # failed — that is exactly the case a clear summary matters most for.
+      - name: Render the nightly verdict summary
+        if: always()
+        run: node .github/scripts/perf-nightly-step-summary.mjs
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
   # reach a clean pass, closes it on the next clean night. Same mechanism
