@@ -1,0 +1,76 @@
+# last_over_time() over a bare exp-histogram selector whose window holds
+# ONLY histogram samples (cerberus issue #2480). Reference Prometheus's
+# funcLastOverTime reads the window's raw H/F Point directly and, over an
+# all-histogram window, answers `Sample{Metric: el.Metric, H: h.H.Copy()}`
+# — the source series' own `__name__` PRESERVED and its selected
+# histogram sample PRESERVED, never dropped and never emptied (unlike
+# min_over_time / max_over_time's drop class, or count_over_time /
+# present_over_time's value-blind float class). Before this fix cerberus
+# hard-rejected this shape at expHistogramSelectorRouting instead of
+# lowering it at all; lowerLastFirstOverExpHistogram now answers the
+# actual selected histogram via the same HistogramProjection shape a bare
+# selector already publishes, windowed by the matched `[range]` instead of
+# the fixed staleness lookback.
+
+-- query.promql --
+last_over_time(demo_latency_exp_hist[5m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[
+  ["demo_latency_exp_hist", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, []]
+]
+-- args --
+[0] int64 = 9
+[1] float64 = 0
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "demo_latency_exp_hist"
+[10] string = "demo.latency.exp.hist"
+[11] string = "demo.latency.exp/hist"
+[12] string = "demo.latency.exp_hist"
+[13] string = "demo.latency/exp/hist"
+[14] string = "demo.latency/exp_hist"
+[15] string = "demo.latency_exp.hist"
+[16] string = "demo.latency_exp_hist"
+[17] string = "demo/latency/exp/hist"
+[18] string = "demo/latency/exp_hist"
+[19] string = "demo/latency_exp_hist"
+[20] string = "demo_latency.exp.hist"
+[21] string = "demo_latency.exp_hist"
+[22] string = "demo_latency_exp.hist"
+[23] string = "2026-01-01 00:00:01.000000000"
+[24] int64 = 9
+[25] string = "2026-01-01 00:00:01.000000000"
+[26] int64 = 9
+[27] int64 = 300000000000
+-- chplan --
+HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
+  Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(MetricName, TimeUnix) AS MetricName, FnArgMax(Count, TimeUnix) AS Count, FnArgMax(Sum, TimeUnix) AS Sum, FnArgMax(Scale, TimeUnix) AS Scale, FnArgMax(ZeroCount, TimeUnix) AS ZeroCount, FnArgMax(PositiveOffset, TimeUnix) AS PositiveOffset, FnArgMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, FnArgMax(NegativeOffset, TimeUnix) AS NegativeOffset, FnArgMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+    Filter predicate=(((MetricName IN ("demo_latency_exp_hist", "demo.latency.exp.hist", "demo.latency.exp/hist", "demo.latency.exp_hist", "demo.latency/exp/hist", "demo.latency/exp_hist", "demo.latency_exp.hist", "demo.latency_exp_hist", "demo/latency/exp/hist", "demo/latency/exp_hist", "demo/latency_exp_hist", "demo_latency.exp.hist", "demo_latency.exp_hist", "demo_latency_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+      Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)

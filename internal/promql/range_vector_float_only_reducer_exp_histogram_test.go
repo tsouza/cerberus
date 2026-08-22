@@ -24,6 +24,17 @@ import (
 // selector fell through to expHistogramSelectorRouting's catch-all
 // rejection instead of Prom's drop-and-answer-empty semantics.
 //
+// min_over_time() / max_over_time() (compareOverTime) join the same drop
+// class here per cerberus issue #2480: `if len(samples.Floats) == 0 {
+// return enh.Out, nil }` runs before compareOverTime ever reads
+// samples.Histograms, so an all-histogram window answers empty exactly
+// like the other five. #2480's own filing verified this directly against
+// tsouza/prometheus's promql/functions.go rather than assuming it from
+// the shared aggrOverTime plumbing — count_over_time / present_over_time
+// use that same plumbing but do NOT guard on Floats, so they deliberately
+// get their own lowering (histogram_native_count_present_over_time.go)
+// instead of joining this list.
+//
 // mad_over_time / double_exponential_smoothing / holt_winters are
 // experimental functions in the reference parser, so every query here
 // parses through [parseExprExp] (defined in sort_by_label_test.go) rather
@@ -50,6 +61,8 @@ func TestLower_ExpHistogram_FloatOnlyRangeVectorReducersDropSamples(t *testing.T
 		`quantile_over_time(0.5, latency_exp_hist[5m])`,
 		`stddev_over_time(latency_exp_hist[5m])`,
 		`stdvar_over_time(latency_exp_hist[5m])`,
+		`min_over_time(latency_exp_hist[5m])`,
+		`max_over_time(latency_exp_hist[5m])`,
 
 		// A computed (non-literal) parameter must not bypass the check:
 		// the drop happens before the parameter is even resolved.
@@ -98,6 +111,8 @@ func TestLower_ExpHistogram_FloatOnlyRangeVectorReducersRangeMode(t *testing.T) 
 		`quantile_over_time(0.5, latency_exp_hist[5m])`,
 		`stddev_over_time(latency_exp_hist[5m])`,
 		`stdvar_over_time(latency_exp_hist[5m])`,
+		`min_over_time(latency_exp_hist[5m])`,
+		`max_over_time(latency_exp_hist[5m])`,
 	}
 
 	for _, query := range queries {

@@ -490,27 +490,37 @@ func matrixAndSelector(c *parser.Call, arg parser.Expr) (*parser.MatrixSelector,
 // varianceOverTime (stddev_over_time / stdvar_over_time, via
 // funcStddevOverTime / funcStdvarOverTime) both early-return `enh.Out, nil`
 // on `len(samples.Floats) == 0`. mad_over_time's funcMadOverTime does the
-// identical `len(samples.Floats) == 0` early return.
+// identical `len(samples.Floats) == 0` early return. compareOverTime
+// (min_over_time / max_over_time) does too — verified directly against
+// tsouza/prometheus's promql/functions.go (cerberus issue #2480): `if
+// len(samples.Floats) == 0 { return enh.Out, nil }` runs before it ever
+// looks at samples.Histograms, so an all-histogram window answers empty
+// exactly like the other five here.
 //
 // last_over_time / first_over_time are deliberately EXCLUDED: reference
 // Prometheus (funcLastOverTime / funcFirstOverTime) reads the window's
 // raw H/F Point directly and PRESERVES a histogram sample rather than
 // dropping it, so admitting them here would silently discard a value
-// Prom actually returns — they need their own histogram-passthrough
-// lowering, not this drop treatment. rate / increase / delta / irate /
-// idelta / changes / resets / sum_over_time / avg_over_time never reach
-// this generic path for a histogram selector at all: lowerRoot's earlier
-// histogram-valued recognisers (histogram_native_range_fn.go,
-// histogram_native_over_time.go, histogram_native_resets.go) claim those
-// shapes first. min_over_time / max_over_time / count_over_time /
-// present_over_time are left untouched — cerberus issue #2477 tracks
-// exactly the seven reducers enumerated here plus predict_linear /
-// holt_winters / quantile_over_time, not the full float-only surface.
+// Prom actually returns — they get their own histogram-passthrough
+// lowering in histogram_native_last_first_over_time.go instead. rate /
+// increase / delta / irate / idelta / changes / resets / sum_over_time /
+// avg_over_time never reach this generic path for a histogram selector at
+// all: lowerRoot's earlier histogram-valued recognisers
+// (histogram_native_range_fn.go, histogram_native_over_time.go,
+// histogram_native_resets.go) claim those shapes first. count_over_time /
+// present_over_time are ALSO excluded — reference's funcCountOverTime /
+// funcPresentOverTime (aggrOverTime) never guard on
+// `len(samples.Floats) == 0` at all, so an all-histogram window answers a
+// non-empty count / presence value, not empty; the DROP treatment here
+// would be wrong for them, so they get their own windowed-count lowering
+// in histogram_native_count_present_over_time.go (cerberus issue #2480).
 var rangeVectorFloatOnlyDropFuncs = map[string]bool{
 	"deriv":            true,
 	"mad_over_time":    true,
 	"stddev_over_time": true,
 	"stdvar_over_time": true,
+	"min_over_time":    true,
+	"max_over_time":    true,
 }
 
 // dropExpHistogramSamplesForRangeVector recognises a range-vector
