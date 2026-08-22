@@ -27,8 +27,10 @@ import (
 // nests under anything (its doc comment's "impossible state" argument
 // for [assertValueShapedInput] stays true), and every wrapper OTHER than
 // a direct `sum`/`avg` around a mixed `or` (`abs(a or b)`, a further
-// binop, a windowed float arm per cerberus issue #2333) keeps falling
-// through to the pre-existing rejection unchanged.
+// binop) keeps falling through to the pre-existing rejection unchanged.
+// A windowed/derived float arm (cerberus issue #2333's own axis) DOES
+// compose here too as of cerberus issue #2453 — see
+// [canonicalizeMixedFloatArmForAgg] below.
 //
 // Reference Prometheus semantics (promql/engine.go's aggregation()):
 // `sum()`/`avg()` group their input by the `by`/`without` clause (the
@@ -42,15 +44,22 @@ import (
 //
 //  1. [lowerMixedExpHistogramOperands] lowers the `or`'s two operands
 //     exactly as the leaf recognizer does — one histogram-valued, one
-//     plain float-valued (issue #2330's shape restriction still
-//     applies: a windowed float arm is issue #2333's separate axis, not
-//     this file's).
+//     plain float-valued, now including a windowed/derived float arm
+//     (issue #2453 lifted the shape restriction this file used to pin
+//     with its own now-widened
+//     TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSide
+//     test).
 //  2. The `or`'s OWN shadow rule (every row of the side that's LHS in
 //     the source AST, plus only the RHS rows whose label signature is
 //     absent from LHS) is resolved with a [chplan.VectorSetOp] UNLESS —
 //     the identical mixed-type semi/anti-join #2337 already ships for
 //     `and`/`unless` between a histogram-valued and a float-valued
-//     operand, reused here rather than re-derived.
+//     operand, reused here rather than re-derived. Note this ONLY runs
+//     on the source-AST RHS side (mixedOrShadowUnless's single call
+//     site below); the LHS side is forwarded verbatim, so when the
+//     float arm is the source-AST LHS it reaches step 3 un-canonicalised
+//     by this step — which is exactly why step 3's float branch needs
+//     its own canonicalisation, see [canonicalizeMixedFloatArmForAgg].
 //  3. Each of the two shadow-resolved arms is reduced independently by
 //     its own existing SUM/AVG machinery: the histogram arm through
 //     [lowerExpHistogramSumOrAvgOverPlan] (the SAME reduction
@@ -58,7 +67,9 @@ import (
 //     [lowerPlainAggOverMixedFloatArm] (this file — the CH-native
 //     `sum`/`avg` an ordinary float aggregation already uses, applied to
 //     an arbitrary already-lowered plan instead of a freshly lowered
-//     selector).
+//     selector, after [canonicalizeMixedFloatArmForAgg] widens it onto
+//     the canonical Timestamp contract the aggregate's own GroupBy
+//     needs).
 //  4. The two per-group reductions are combined with the reference
 //     "drop a group present on both sides" rule via TWO MORE VectorSetOp
 //     UNLESSes (histogram-only groups, float-only groups) and a final
@@ -101,11 +112,13 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	// false: the sum/avg-wrapped path does not yet accept a windowed float
-	// side — see lowerMixedExpHistogramOperands's own doc comment for why
-	// this is NOT the same acceptance the root-only leaf recognizer
-	// (issue #2333) gets.
-	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx, false)
+	// cerberus issue #2453 taught lowerPlainAggOverMixedFloatArm (this
+	// file, below) the matrix/derived-shape canonicalisation
+	// [canonicalizeMixedFloatArmForAgg] gives it, so the sum/avg-wrapped
+	// path now accepts a windowed float side exactly like the root-only
+	// leaf recognizer (issue #2333) does — see
+	// lowerMixedExpHistogramOperands's own doc comment.
+	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -201,19 +214,24 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // aggregate an ordinary (non-histogram) PromQL aggregation uses
 // ([aggregateGroupBy], [buildAggFunc], [promAggregateAttributesExpr]),
 // grouped by the evaluation Timestamp in addition to the user's
-// `by`/`without` labels.
+// `by`/`without` labels. [canonicalizeMixedFloatArmForAgg] runs first so
+// this GroupBy's `ColumnRef{Name: s.TimestampColumn}` resolves against
+// input's own SELECT regardless of which of the three RowShapes
+// [lowerMixedExpHistogramOperands] accepted for it.
 //
 // Grouping by Timestamp unconditionally (not only when ctx.step > 0)
 // mirrors [lowerExpHistogramSumOrAvgOverPlan]'s identical choice for the
 // histogram sibling this function's output is matched against in
 // [combineMixedAggregateBranches]: cerberus's canonical TimeUnix column
-// is already a synthesised, per-step-uniform anchor rather than a raw
-// per-row sample timestamp (see chplan.RangeLWRSampleTimestampColumn's
-// doc comment — the raw timestamp is a distinct, opt-in column no PromQL
-// lowering in this family requests), so grouping by it is a no-op in
-// instant mode and the correct per-step key in range mode, on both
-// branches identically.
+// is, after canonicalisation, either a real per-step anchor (matrix
+// input, one value per grid row — the correct per-step key in range
+// mode) or a synthesised, per-query-uniform anchor (canonical-shape or
+// reduced/derived input, which [chplan.RowShapeOf] only reports for an
+// instant-mode arm — see [rangeGridShapeFor]'s gridSingleAnchor case —
+// so grouping by it is a no-op there), on both branches identically.
 func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	input = canonicalizeMixedFloatArmForAgg(input, s)
+
 	labelGroupBy, err := aggregateGroupBy(agg, s)
 	if err != nil {
 		return nil, err
@@ -244,4 +262,72 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// canonicalizeMixedFloatArmForAgg widens input — the (possibly still raw,
+// un-shadow-resolved) float-valued arm [lowerMixedExpHistogramOperands]
+// accepted — onto the Timestamp contract
+// [lowerPlainAggOverMixedFloatArm]'s own GroupBy needs, cerberus issue
+// #2453's fix for the gap this file used to leave uncovered: the
+// ROOT-only leaf recognizer
+// (histogram_native_mixed_or.go, issue #2333) gets this canonicalisation
+// for free from internal/chsql's mixedVectorSetOpArmFrag /
+// vectorSetOpCanonicalQuartetFrags at SQL-emission time, but
+// internal/promql cannot import internal/chsql (see .go-arch-lint.yml's
+// layering — chsql depends on chplan, and QL packages depend on chplan,
+// never on chsql), so this function re-derives the one piece of that
+// canonicalisation lowerPlainAggOverMixedFloatArm's own Aggregate
+// actually needs, expressed as a [chplan.Project] instead of a chsql
+// Frag.
+//
+// Attributes and Value need no widening: every [chplan.RowShape] a mixed
+// `or`'s float arm can carry publishes both under their canonical schema
+// names already — vectorSetOpCanonicalQuartetFrags references
+// `Col(s.AttributesColumn)` and `Col(s.ValueColumn)` unconditionally for
+// every shape, and [chplan.RangeWindow] (the only node
+// [chplan.GridWindowRowShape] / [chplan.ReducedWindowRowShape] name) is
+// always built with `GroupBy: [ColumnRef{Name: s.AttributesColumn}]`
+// (internal/promql/lower.go) — so [aggregateGroupBy] /
+// [promAggregateAttributesExpr]'s existing `s.AttributesColumn`
+// references and [buildAggFunc]'s existing `s.ValueColumn` reference
+// already resolve correctly against any of the three shapes without
+// modification.
+//
+// Timestamp is the one column that genuinely differs by shape:
+//
+//   - [chplan.SampleRowShape] already exposes it under `s.TimestampColumn`
+//     by construction — nothing to do.
+//   - [chplan.GridWindowRowShape] — a matrix-mode [chplan.RangeWindow]
+//     (`OuterRange > 0`) — also already exposes it there: the matrix
+//     emitter aliases its per-row grid anchor to the node's OWN
+//     TimestampColumn field, which every PromQL construction site sets to
+//     `s.TimestampColumn` (see internal/chsql's vectorSetOpArmTimestampCol
+//     doc comment for the general rule this is a specific case of), so
+//     the alias target already matches what this function's caller
+//     references — nothing to do.
+//   - [chplan.ReducedWindowRowShape] — an instant-mode [chplan.RangeWindow]
+//     (`OuterRange == 0`, only reachable when the query itself is instant;
+//     see modifiers.go's rangeGridShapeFor gridSingleAnchor case) — has no
+//     timestamp column of any kind: `rate(x[5m])` reduces every series to
+//     one row with no per-row time left to report. A [chplan.Project]
+//     synthesises the identical "5 seconds before CH-now" anchor
+//     internal/chsql's vectorSetOpSynthesizedAnchorFrag stamps on the
+//     SAME shape for the root-only leaf recognizer's canonical-shape
+//     projection (both spellings of `now64(9) -
+//     toIntervalNanosecond(5e9)` share the one chplan-level builder,
+//     [chplan.NowNanoMinusStaleness], that internal/api/prom/handler.go's
+//     synthesizedAnchor also calls), keeping the two mixed-or lowerings'
+//     instant-mode anchors identical.
+func canonicalizeMixedFloatArmForAgg(input chplan.Node, s schema.Metrics) chplan.Node {
+	if chplan.RowShapeOf(input) != chplan.ReducedWindowRowShape {
+		return input
+	}
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: chplan.NowNanoMinusStaleness(), Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
