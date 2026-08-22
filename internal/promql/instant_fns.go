@@ -160,7 +160,27 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 //     `NOT (max < min)` Filter (NaN bounds compare false, so they
 //     keep the rows and resolve to NaN values — exactly Prom's
 //     behaviour).
+//
+// Prom's shared clamp() helper (promql/functions.go) skips every sample
+// whose H field is set before applying math.Max/math.Min — the exact
+// "process only float samples" rule simpleFloatFunc applies for
+// abs/ceil/floor/round/etc. Unlike those, the clamp family didn't route
+// its vector arg through lowerExpHistogramValuedShape, so a histogram
+// selector fell through to lower()'s generic dispatch and hit
+// expHistogramSelectorRouting's catch-all rejection instead of Prom's
+// drop-and-answer-empty semantics (cerberus issue #2345). Checking it
+// here, before the literal/computed bound split below, makes all three
+// clamp forms answer an empty float vector for a histogram-valued arg
+// exactly as dropExpHistogramSamples does for the unary math functions.
 func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if len(c.Args) >= 1 {
+		if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+			if err != nil {
+				return nil, err
+			}
+			return dropExpHistogramSamples(hist, s), nil
+		}
+	}
 	switch c.Func.Name {
 	case "clamp_max", "clamp_min":
 		if len(c.Args) != 2 {
