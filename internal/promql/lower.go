@@ -294,6 +294,18 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
 	}
+	// A single-arg instant math function (abs(), ceil(), sqrt(), ...)
+	// wrapping that same mixed shape (cerberus issue #2449 — the third
+	// wrapper family, and the first to genuinely read the payload rather
+	// than just forward it). Checked here for the identical reason: a
+	// mixed `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_math_fn.go has the composition's own doc
+	// comment for why reference's drop semantics (not a per-payload
+	// chplan.Case) is the correct answer here.
+	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}
