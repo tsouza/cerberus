@@ -79,7 +79,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           docker-hub-pat: ${{ secrets.DOCKER_HUB_PAT }}
 
-      - name: Run #2437's periodic mutation self-check (real ClickHouse)
+      - name: "Run #2437's periodic mutation self-check (real ClickHouse)"
         run: just perf-nightly-selfcheck
 
   # Files/refreshes a single tracking issue when the SCHEDULE run does not
