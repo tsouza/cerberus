@@ -47,6 +47,13 @@ func lowerPredictLinear(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err != nil {
 		return nil, err
 	}
+	// Reference Prometheus's funcPredictLinear reads only the window's
+	// float samples (`samples.Floats`) and answers an empty vector — no
+	// error — when the window holds exclusively histogram samples; see
+	// [dropExpHistogramSamplesForRangeVector].
+	if node, matched, err := dropExpHistogramSamplesForRangeVector(ms, s, ctx); matched {
+		return node, err
+	}
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
@@ -141,6 +148,13 @@ func lowerHoltWinters(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 	ms, vs, err := matrixAndSelector(c, c.Args[0])
 	if err != nil {
 		return nil, err
+	}
+	// Reference Prometheus's funcDoubleExponentialSmoothing reads only the
+	// window's float samples and answers an empty vector — no error —
+	// when the window holds exclusively histogram samples; see
+	// [dropExpHistogramSamplesForRangeVector].
+	if node, matched, err := dropExpHistogramSamplesForRangeVector(ms, s, ctx); matched {
+		return node, err
 	}
 
 	anchor, err := anchorFromSelector(vs, ctx)
@@ -322,6 +336,14 @@ func lowerQuantileOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	if err != nil {
 		return nil, err
 	}
+	// Reference Prometheus's funcQuantileOverTime checks the window's
+	// float-sample count BEFORE it even looks at phi, and answers an
+	// empty vector — no error, no out-of-range-phi annotation — when the
+	// window holds exclusively histogram samples; see
+	// [dropExpHistogramSamplesForRangeVector].
+	if node, matched, err := dropExpHistogramSamplesForRangeVector(ms, s, ctx); matched {
+		return node, err
+	}
 
 	anchor, err := anchorFromSelector(vs, ctx)
 	if err != nil {
@@ -456,4 +478,61 @@ func matrixAndSelector(c *parser.Call, arg parser.Expr) (*parser.MatrixSelector,
 			ms.VectorSelector)
 	}
 	return ms, vs, nil
+}
+
+// rangeVectorFloatOnlyDropFuncs is the subset of range-vector reducers
+// dispatched through lowerRangeVectorCall's GENERIC fallthrough (i.e. not
+// predict_linear / holt_winters / quantile_over_time, which each resolve
+// their MatrixSelector argument at their own call site) whose reference
+// window walk (tsouza/prometheus's promql/functions.go) reads Point.F
+// exclusively and answers an empty vector — no error, no annotation —
+// when the lookback window holds only histogram samples: funcDeriv and
+// varianceOverTime (stddev_over_time / stdvar_over_time, via
+// funcStddevOverTime / funcStdvarOverTime) both early-return `enh.Out, nil`
+// on `len(samples.Floats) == 0`. mad_over_time's funcMadOverTime does the
+// identical `len(samples.Floats) == 0` early return.
+//
+// last_over_time / first_over_time are deliberately EXCLUDED: reference
+// Prometheus (funcLastOverTime / funcFirstOverTime) reads the window's
+// raw H/F Point directly and PRESERVES a histogram sample rather than
+// dropping it, so admitting them here would silently discard a value
+// Prom actually returns — they need their own histogram-passthrough
+// lowering, not this drop treatment. rate / increase / delta / irate /
+// idelta / changes / resets / sum_over_time / avg_over_time never reach
+// this generic path for a histogram selector at all: lowerRoot's earlier
+// histogram-valued recognisers (histogram_native_range_fn.go,
+// histogram_native_over_time.go, histogram_native_resets.go) claim those
+// shapes first. min_over_time / max_over_time / count_over_time /
+// present_over_time are left untouched — cerberus issue #2477 tracks
+// exactly the seven reducers enumerated here plus predict_linear /
+// holt_winters / quantile_over_time, not the full float-only surface.
+var rangeVectorFloatOnlyDropFuncs = map[string]bool{
+	"deriv":            true,
+	"mad_over_time":    true,
+	"stddev_over_time": true,
+	"stdvar_over_time": true,
+}
+
+// dropExpHistogramSamplesForRangeVector recognises a range-vector
+// reducer's MatrixSelector argument as a bare exp-histogram selector and,
+// if so, answers the canonical drop-and-empty plan
+// [dropExpHistogramSamples] wraps: reference Prometheus's float-only
+// range-vector reducers read only the window's float samples and answer
+// an empty vector — never an error — when the window holds exclusively
+// histogram samples (see [rangeVectorFloatOnlyDropFuncs] and the
+// predict_linear / double_exponential_smoothing / quantile_over_time
+// call sites in this file for the per-function evidence).
+//
+// matched is false whenever ms's inner selector is not itself an
+// exp-histogram-valued shape, in which case callers fall through to
+// their ordinary lowering unchanged.
+func dropExpHistogramSamplesForRangeVector(ms *parser.MatrixSelector, s schema.Metrics, ctx lowerCtx) (node chplan.Node, matched bool, err error) {
+	hist, ok, err := lowerExpHistogramValuedShape(ms.VectorSelector, s, ctx)
+	if !ok {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	return dropExpHistogramSamples(hist, s), true, nil
 }
