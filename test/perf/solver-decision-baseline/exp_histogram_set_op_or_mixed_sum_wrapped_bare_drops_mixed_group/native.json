@@ -1,0 +1,11 @@
+{
+  "query": "exp_histogram_set_op_or_mixed_sum_wrapped_bare_drops_mixed_group/native",
+  "lowering": "native",
+  "routed": false,
+  "k": 0,
+  "reason": "not-sliceable",
+  "n_anchors": 241,
+  "fanout": 20,
+  "cumulative_d": "30m0s",
+  "outer_range": "1h0m0s"
+}
