@@ -1,0 +1,83 @@
+-- query.promql --
+latency_exp_hist * on(job) scale_factor
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('job', 'api', 'zone', 'us-east'), toDateTime64('2026-01-01 00:00:00', 9), 13, 30, 0, 1, 0, [3, 5, 2], 1, [2]);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('scale_factor', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 2.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:01Z", 0, 26, 60, 0, 0, 2, 0, [6,10,4], 1, [4]]
+]
+-- args --
+[0] string = ""
+[1] float64 = 0
+[2] string = "job"
+[3] int64 = 9
+[4] float64 = 0
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "latency_exp_hist"
+[12] string = "latency.exp.hist"
+[13] string = "latency.exp/hist"
+[14] string = "latency.exp_hist"
+[15] string = "latency/exp/hist"
+[16] string = "latency/exp_hist"
+[17] string = "latency_exp.hist"
+[18] string = "2026-01-01 00:00:01.000000000"
+[19] int64 = 9
+[20] string = "2026-01-01 00:00:01.000000000"
+[21] int64 = 9
+[22] int64 = 300000000000
+[23] string = "job"
+[24] string = ""
+[25] string = "service.name"
+[26] string = "service_name"
+[27] string = "service.name"
+[28] string = "service_name"
+[29] string = ""
+[30] string = "service_name"
+[31] string = "scale_factor"
+[32] string = "scale.factor"
+[33] string = "scale/factor"
+[34] string = "2026-01-01 00:00:01.000000000"
+[35] int64 = 9
+[36] string = "2026-01-01 00:00:01.000000000"
+[37] int64 = 9
+[38] int64 = 300000000000
+[39] string = "job"
+[40] string = "job"
+[41] string = "job"
+-- chplan --
+HistogramProjection project=["" AS MetricName, Attributes AS Attributes, TimeUnix AS TimeUnix, 0 AS Value]
+  Project [Attributes AS Attributes, TimeUnix AS TimeUnix, HistogramScale AS HistogramScale, HistogramZeroThreshold AS HistogramZeroThreshold, HistogramPositiveOffset AS HistogramPositiveOffset, HistogramNegativeOffset AS HistogramNegativeOffset, (HistogramCount * Value) AS HistogramCount, (HistogramSum * Value) AS HistogramSum, (HistogramZeroCount * Value) AS HistogramZeroCount, FnArrayMap(b -> (b * Value), HistogramPositiveBucketCounts) AS HistogramPositiveBucketCounts, FnArrayMap(b -> (b * Value), HistogramNegativeBucketCounts) AS HistogramNegativeBucketCounts]
+    <unknown:*chplan.HistogramFloatVectorJoin>
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`HistogramCount`) AS `HistogramCount`, toFloat64(`HistogramSum`) AS `HistogramSum`, toInt32(`HistogramScale`) AS `HistogramScale`, toFloat64(`HistogramZeroThreshold`) AS `HistogramZeroThreshold`, toFloat64(`HistogramZeroCount`) AS `HistogramZeroCount`, toInt32(`HistogramPositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `HistogramPositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`HistogramNegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `HistogramNegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT `Attributes` AS `Attributes`, `TimeUnix` AS `TimeUnix`, `HistogramScale` AS `HistogramScale`, `HistogramZeroThreshold` AS `HistogramZeroThreshold`, `HistogramPositiveOffset` AS `HistogramPositiveOffset`, `HistogramNegativeOffset` AS `HistogramNegativeOffset`, (`HistogramCount` * `Value`) AS `HistogramCount`, (`HistogramSum` * `Value`) AS `HistogramSum`, (`HistogramZeroCount` * `Value`) AS `HistogramZeroCount`, arrayMap(b -> (b * `Value`), `HistogramPositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, arrayMap(b -> (b * `Value`), `HistogramNegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT L.`MetricName` AS `MetricName`, mapFilter((k, v) -> k IN (?), L.`Attributes`) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, L.`HistogramScale` AS `HistogramScale`, L.`HistogramCount` AS `HistogramCount`, L.`HistogramSum` AS `HistogramSum`, L.`HistogramZeroCount` AS `HistogramZeroCount`, L.`HistogramZeroThreshold` AS `HistogramZeroThreshold`, L.`HistogramPositiveOffset` AS `HistogramPositiveOffset`, L.`HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, L.`HistogramNegativeOffset` AS `HistogramNegativeOffset`, L.`HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts`, R.`Value` AS `Value` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_HistogramScale` AS `HistogramScale`, `_join_HistogramCount` AS `HistogramCount`, `_join_HistogramSum` AS `HistogramSum`, `_join_HistogramZeroCount` AS `HistogramZeroCount`, `_join_HistogramZeroThreshold` AS `HistogramZeroThreshold`, `_join_HistogramPositiveOffset` AS `HistogramPositiveOffset`, `_join_HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `_join_HistogramNegativeOffset` AS `HistogramNegativeOffset`, `_join_HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts` FROM (SELECT any(`MetricName`) AS `_join_MetricName`, any(`Attributes`) AS `_join_Attributes`, any(`TimeUnix`) AS `_join_TimeUnix`, any(`HistogramScale`) AS `_join_HistogramScale`, any(`HistogramCount`) AS `_join_HistogramCount`, any(`HistogramSum`) AS `_join_HistogramSum`, any(`HistogramZeroCount`) AS `_join_HistogramZeroCount`, any(`HistogramZeroThreshold`) AS `_join_HistogramZeroThreshold`, any(`HistogramPositiveOffset`) AS `_join_HistogramPositiveOffset`, any(`HistogramPositiveBucketCounts`) AS `_join_HistogramPositiveBucketCounts`, any(`HistogramNegativeOffset`) AS `_join_HistogramNegativeOffset`, any(`HistogramNegativeBucketCounts`) AS `_join_HistogramNegativeBucketCounts` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)) GROUP BY mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) HAVING throwIf(uniqExact(mapSort(`Attributes`)) > 1, 'many-to-many matching not allowed: matching labels must be unique on one side') = 0)) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value` FROM (SELECT ? AS `_join_MetricName`, argMax(mapSort(`Attributes`), `TimeUnix`) AS `_join_Attributes`, max(`TimeUnix`) AS `_join_TimeUnix`, argMax(`Value`, `TimeUnix`) AS `_join_Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY mapSort(mapFilter((k, v) -> k IN (?), `Attributes`)) HAVING throwIf(uniqExact(mapSort(`Attributes`)) > 1, 'many-to-many matching not allowed: matching labels must be unique on one side') = 0)) AS R ON L.`Attributes`[?] = R.`Attributes`[?]))

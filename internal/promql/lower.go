@@ -308,8 +308,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
 	}
-	if histSide, floatSide, op, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
-		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, s, ctx)
+	if histSide, floatSide, op, match, card, include, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
+		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, match, card, include, s, ctx)
 	}
 	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
