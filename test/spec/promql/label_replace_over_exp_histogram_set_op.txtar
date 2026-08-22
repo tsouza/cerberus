@@ -1,0 +1,37 @@
+-- query.promql --
+label_replace(latency_exp_hist or other_exp_hist, "series_copy", "$1", "series", "(.*)")
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2468: label_replace() wrapping a both-histogram `or`
+-- set-op (cerberus issue #2324) used to fail at lowering time with an
+-- internal-invariant panic — the label-rewrite machinery hard-asserted
+-- its histogram-valued input was a *chplan.HistogramProjection, but
+-- #2324's both-histogram set-op lowering builds a *chplan.VectorSetOp
+-- instead. Reference Prometheus's evalLabelReplace rewrites only the
+-- series labels and carries the matched sample (float OR histogram)
+-- through unchanged, so the expected output here is the SAME rows the
+-- plain `or` (exp_histogram_set_op_or.txtar) produces, each with a new
+-- `series_copy` label copied from `series` via the regex capture group.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []),
+    ('latency_exp_hist', map('series', 'server_only'), toDateTime64('2026-01-01 00:00:00', 9), 4, 10.0, 0, 0, 0, [7],        0, []),
+    ('other_exp_hist',   map('series', 'shared'),      toDateTime64('2026-01-01 00:00:00', 9), 9, 99.0, 0, 0, 0, [5, 10],     0, []),
+    ('other_exp_hist',   map('series', 'client_only'), toDateTime64('2026-01-01 00:00:00', 9), 3, 3.0,  0, 0, 0, [9],         0, []);
+-- expected_rows --
+[]

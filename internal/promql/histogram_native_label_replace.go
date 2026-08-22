@@ -63,11 +63,21 @@ func lowerLabelCallOverExpHistogram(call *parser.Call, s schema.Metrics, ctx low
 	if !ok {
 		return nil, fmt.Errorf("promql: internal invariant violated: expression is not a known histogram-valued shape: %v", call.Args[0])
 	}
-	hp, ok := inner.(*chplan.HistogramProjection)
-	if !ok {
-		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input is %T, want *chplan.HistogramProjection", inner)
+	// inner is either a bare *chplan.HistogramProjection (a selector,
+	// sum()/avg(), or a histogram-valued range function) or a
+	// *chplan.VectorSetOp with Histogram set — histogram_native_set_op.go's
+	// lowerExpHistogramSetOp builds the latter for a both-histogram
+	// `and`/`or`/`unless` (cerberus issue #2324), and [isExpHistogramValuedShape]
+	// recognises it too, so [labelCallOverExpHistogram] matches an outer
+	// label_replace/label_join around one. Both shapes publish the exact same
+	// thirteen-column contract under the fixed Histogram*Column aliases (see
+	// [chplan.RowShapeOf]), so any node answering [chplan.HistogramRowShape]
+	// here is a valid input to [rewriteHistogramProjectionAttributes] — a
+	// stricter Go-type assertion is what issue #2468 reports as the bug.
+	if shape := chplan.RowShapeOf(inner); shape != chplan.HistogramRowShape {
+		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram label_replace input publishes %s row shape (%T), want %s", shape, inner, chplan.HistogramRowShape)
 	}
-	return rewriteHistogramProjectionAttributes(hp, attrs, s), nil
+	return rewriteHistogramProjectionAttributes(inner, attrs, s), nil
 }
 
 func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
@@ -75,13 +85,20 @@ func lowerLabelReplaceOverExpHistogram(call *parser.Call, s schema.Metrics, ctx 
 }
 
 // rewriteHistogramProjectionAttributes applies a label rewrite without
-// converting a histogram row into an ordinary Value-shaped row. The inner
-// HistogramProjection first gives the payload stable output aliases; a
-// Project rewrites Attributes while forwarding all thirteen columns; the
-// Aggregate enforces Prometheus's duplicate-labelset rule per evaluation
-// step and carries the nine histogram fields through; the outer
-// HistogramProjection restores HistogramRowShape for the wire decoder.
-func rewriteHistogramProjectionAttributes(hp *chplan.HistogramProjection, attrs chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
+// converting a histogram row into an ordinary Value-shaped row. inner must
+// publish [chplan.HistogramRowShape] — a bare *chplan.HistogramProjection
+// (a selector, sum()/avg(), or a histogram-valued range function) or a
+// *chplan.VectorSetOp with Histogram set (a both-histogram `and`/`or`/
+// `unless`, cerberus issue #2324): both publish the identical thirteen-
+// column contract (the canonical quartet plus the nine fixed
+// Histogram*Column aliases), so this rewrite treats them identically and
+// never inspects inner's own Go type. A Project first gives that payload
+// stable output aliases while rewriting Attributes and forwarding all
+// thirteen columns; the Aggregate enforces Prometheus's duplicate-labelset
+// rule per evaluation step and carries the nine histogram fields through;
+// the outer HistogramProjection restores HistogramRowShape for the wire
+// decoder.
+func rewriteHistogramProjectionAttributes(inner chplan.Node, attrs chplan.Expr, s schema.Metrics) *chplan.HistogramProjection {
 	projections := []chplan.Projection{
 		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}},
 		{Expr: attrs, Alias: s.AttributesColumn},
@@ -91,7 +108,7 @@ func rewriteHistogramProjectionAttributes(hp *chplan.HistogramProjection, attrs 
 	for _, name := range histogramProjectionOutputColumns() {
 		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
 	}
-	rewritten := &chplan.Project{Input: hp, Projections: projections}
+	rewritten := &chplan.Project{Input: inner, Projections: projections}
 
 	aggs := []chplan.AggFunc{
 		{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
