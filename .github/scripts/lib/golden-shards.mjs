@@ -32,15 +32,54 @@
 //      every spec shard; a change to `internal/logql` reaches only its own.
 //      The import graph draws that line, not a comment.
 //
-// Consumed by `.github/scripts/golden-update.mjs` (the runner behind
-// `just update-golden`) and pinned by `test/regression/golden_shard_coverage_test.go`.
+// Consumed two ways, over the same `impliedShards`/`coverageViolations` pair:
+//
+//   - `.github/scripts/golden-update.mjs` (the runner behind the LOCAL
+//     `just update-golden <shard>...`) REFUSES an under-covering set and
+//     prints the exact command to run instead — pinned by
+//     `test/regression/golden_shard_coverage_test.go`. Refusing here, rather
+//     than silently doing more than asked, keeps a contributor from being
+//     surprised by a regeneration diff wider than the shards they typed.
+//   - `.github/scripts/manual-golden-update.mjs` (`update-golden.yml`'s CI
+//     dispatch plan step) instead MERGES the implied set into the requested
+//     one before building the regeneration matrix, because there a narrow
+//     `-f shards=` guess has no contributor standing by to read a refusal and
+//     retry — it is a ~15-minute CI round trip for an answer the dependency
+//     graph already knows. `changedFilesFrom` is the "what changed" half
+//     both callers share.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /** The Go module path every first-party package import starts with. */
 const MODULE_PATH = 'github.com/tsouza/cerberus';
+
+function gitLines(repoRoot, args) {
+  const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  return r.stdout.split('\n').filter(Boolean);
+}
+
+/**
+ * Every file `repoRoot`'s current branch has changed relative to `baseRef`
+ * (or, when omitted, its merge-base with `defaultBranchRef`, falling back to
+ * HEAD when that merge-base cannot be resolved), working tree included.
+ *
+ * Shared by `golden-update.mjs` (the local `just update-golden` recipe) and
+ * `manual-golden-update.mjs` (the `update-golden.yml` CI dispatch's plan
+ * step) so both compute "what changed" identically — the base must be the
+ * merge-base rather than HEAD because the #1573 trap does not require the
+ * change to be uncommitted: a contributor who commits a new fixture and only
+ * then plans a regeneration has a clean `git diff HEAD` and would sail past a
+ * working-tree-only check.
+ */
+export function changedFilesFrom(repoRoot, { baseRef, defaultBranchRef = 'origin/main' } = {}) {
+  const base = baseRef || (gitLines(repoRoot, ['merge-base', 'HEAD', defaultBranchRef]) ?? ['HEAD'])[0] || 'HEAD';
+  const tracked = gitLines(repoRoot, ['diff', '--name-only', base]) ?? [];
+  const untracked = gitLines(repoRoot, ['ls-files', '--others', '--exclude-standard']) ?? [];
+  return [...tracked, ...untracked];
+}
 
 /** The TXTAR corpus root every per-fixture shard id resolves against. */
 export const SPEC_CORPUS = 'test/spec';

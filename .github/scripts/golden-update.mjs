@@ -74,13 +74,10 @@
 // one invocation surfaces every failure in that stage rather than just the
 // first; a later stage never starts once its predecessor reports a failure.
 //
-// Discovering the correct shard set WITHOUT a CI round trip: update-golden.yml
-// dispatches this exact same coverage check (GOLDEN_UPDATE_CHECK_ONLY=1) as its
-// "plan golden shards" step, against the target branch's diff against
-// origin/main. Running it here first is seconds, needs no chDB and no test
-// execution, and gives the definitive answer instead of a guess — pass any
-// single shard name as a seed (it does not have to be the right one) and read
-// the `run: ...` line the failure prints:
+// Discovering the correct shard set for the LOCAL recipe, in seconds, with no
+// chDB and no test execution: pass any single shard name as a seed (it does
+// not have to be the right one) and read the `run: ...` line the failure
+// prints:
 //
 //   GOLDEN_UPDATE_CHECK_ONLY=1 GOLDEN_SHARDS=promql node .github/scripts/golden-update.mjs
 //
@@ -89,6 +86,14 @@
 // imports (chplan is the shared IR nearly every generator's package closure
 // reaches; several generators' own test files import promql directly), so the
 // wide list is the honest answer, not a bug to route around.
+//
+// update-golden.yml's own "Verify requested shards cover the target branch
+// diff" step still runs this exact check (GOLDEN_UPDATE_CHECK_ONLY=1) against
+// `steps.plan.outputs.shards` — but that value is no longer the raw dispatch
+// input verbatim. manual-golden-update.mjs's `buildPlan` merges the same
+// implied set in BEFORE building the regeneration matrix, so a narrow
+// `-f shards=` dispatch there self-corrects on the first run instead of
+// failing this check and costing a retry.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -98,6 +103,7 @@ import { error, log } from './lib/gh.mjs';
 import { runTagged } from './lib/spawn-tagged.mjs';
 import {
   SHARDS,
+  changedFilesFrom,
   commandsFor,
   coverageViolations,
   flattenSteps,
@@ -115,31 +121,11 @@ function splitList(raw) {
     .filter(Boolean);
 }
 
-function git(args) {
-  const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
-  if (r.status !== 0) return null;
-  return r.stdout.split('\n').filter(Boolean);
-}
-
-/**
- * Every file this branch changed, working tree included.
- *
- * The base is the merge-base with origin/main rather than HEAD, because the
- * #1573 trap does not require the change to be uncommitted: a contributor who
- * commits a new fixture and only then runs the recipe has a clean `git diff
- * HEAD` and would sail past a working-tree-only check.
- */
+/** Every file this branch changed, working tree included. */
 function changedFiles() {
   const override = process.env.GOLDEN_UPDATE_CHANGED_FILES;
   if (override !== undefined && override !== '') return splitList(override);
-
-  const explicitBase = process.env.GOLDEN_UPDATE_BASE_REF;
-  const base =
-    explicitBase || (git(['merge-base', 'HEAD', 'origin/main']) ?? ['HEAD'])[0] || 'HEAD';
-
-  const tracked = git(['diff', '--name-only', base]) ?? [];
-  const untracked = git(['ls-files', '--others', '--exclude-standard']) ?? [];
-  return [...tracked, ...untracked];
+  return changedFilesFrom(repoRoot, { baseRef: process.env.GOLDEN_UPDATE_BASE_REF });
 }
 
 /** git-diff pathspecs for a shard's goldens (glob tails trimmed off). */
