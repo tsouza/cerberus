@@ -62,14 +62,72 @@ import (
 // discards. The four canonical columns are untouched: TimeUnix remains the
 // step anchor.
 func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
+	collapse, err := e.rangeLWRCollapseFrag(r)
+	if err != nil {
+		return err
+	}
+
+	// Outer SELECT: re-alias anchor_ts → TimeUnix and lwr_value → Value so
+	// the canonical 4-column Sample contract holds for downstream
+	// consumers. Splitting the re-alias into its own SELECT keeps the
+	// collapse SELECT's argMax(Value, TimeUnix) reference unshadowed.
+	outer := NewQuery().From(collapse)
+	outer.Select(As(Col(r.MetricNameCol), r.MetricNameCol))
+	outer.Select(As(Col(r.AttributesCol), r.AttributesCol))
+	outer.Select(As(verbatim(rangeLWRAnchorColumn), r.TimestampCol))
+	outer.Select(As(verbatim(rangeLWRValueAlias), r.ValueCol))
+	// The requested fifth column rides through under its own name — it is
+	// NOT re-aliased over TimestampCol, which stays the step anchor.
+	if r.SampleTimestamp {
+		outer.Select(As(
+			verbatim(chplan.RangeLWRSampleTimestampColumn),
+			chplan.RangeLWRSampleTimestampColumn,
+		))
+	}
+
+	return e.emitSelect(outer)
+}
+
+// rangeLWRAnchorColumn is the fan-out stage's synthetic per-sample anchor
+// column — the `arrayJoin` output every fanned row carries under this
+// bare name before [emitRangeLWR]'s outer SELECT re-aliases it onto the
+// canonical TimestampCol. Exported at package scope (rather than a
+// string literal repeated at each call site) because
+// emitAggregateRangeLWRFused (aggregate_range_lwr_fusion.go) reads it
+// directly off both the fan-out and collapse Frags it reuses from
+// [emitter.rangeLWRFanoutFrag] / [emitter.rangeLWRCollapseFrag].
+const rangeLWRAnchorColumn = "anchor_ts"
+
+// rangeLWRValueAlias is the collapse stage's synthetic argMax-picked
+// value column — see rangeLWRAnchorColumn's doc for why this is a named
+// package constant rather than a repeated literal.
+const rangeLWRValueAlias = "lwr_value"
+
+// rangeLWRFanoutFrag renders RangeLWR's sample-side fan-out stage ONLY —
+// the SELECT that projects the series-identity columns plus the raw
+// (TimestampCol, ValueCol) pair and fans each sample across the bounded
+// set of anchors whose staleness window contains it (see
+// [lwrAnchorFanoutFrag]'s doc for the index math). Each fanned row still
+// carries its OWN per-sample TimestampCol untouched, alongside the
+// synthetic [rangeLWRAnchorColumn] the fan-out computed.
+//
+// Shared by [emitter.rangeLWRCollapseFrag] (which layers the argMax
+// per-series collapse on top) and emitAggregateRangeLWRFused's count()
+// fusion fast path (aggregate_range_lwr_fusion.go), which reads the
+// fan-out rows DIRECTLY — bypassing the per-series collapse entirely,
+// because "does series X have >=1 sample in this anchor's window" does
+// not require picking WHICH of X's samples landed there, only whether
+// any fanned row for X exists. See that file's doc comment for the full
+// soundness argument.
+func (e *emitter) rangeLWRFanoutFrag(r *chplan.RangeLWR) (*QueryBuilder, error) {
 	if r.Step <= 0 {
-		return fmt.Errorf("%w: RangeLWR requires Step > 0", ErrUnsupported)
+		return nil, fmt.Errorf("%w: RangeLWR requires Step > 0", ErrUnsupported)
 	}
 	if r.Input == nil {
-		return fmt.Errorf("%w: RangeLWR.Input is nil", ErrUnsupported)
+		return nil, fmt.Errorf("%w: RangeLWR.Input is nil", ErrUnsupported)
 	}
 	if r.TimestampCol == "" || r.ValueCol == "" || r.MetricNameCol == "" || r.AttributesCol == "" {
-		return fmt.Errorf("%w: RangeLWR requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
+		return nil, fmt.Errorf("%w: RangeLWR requires MetricName/Attributes/Timestamp/Value column names", ErrUnsupported)
 	}
 
 	stepNS := r.Step.Nanoseconds()
@@ -82,7 +140,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	if !r.Start.IsZero() && !r.End.IsZero() {
 		span := r.End.Sub(r.Start).Nanoseconds()
 		if span < 0 {
-			return fmt.Errorf("%w: RangeLWR.Start > End", ErrUnsupported)
+			return nil, fmt.Errorf("%w: RangeLWR.Start > End", ErrUnsupported)
 		}
 		numAnchors = span/stepNS + 1
 	}
@@ -94,7 +152,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 
 	inner, err := e.subqueryFrag(r.Input)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	tsIdent := func(b *Builder) { b.Ident(r.TimestampCol) }
@@ -111,7 +169,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	fanout.Select(Col(r.ValueCol))
 	fanout.Select(RawAs(
 		lwrAnchorFanoutFrag(gridBase, shiftBase, tsIdent, stepNS, lookbackNS, numAnchors),
-		"anchor_ts",
+		rangeLWRAnchorColumn,
 	))
 
 	// Prune the inner scan to the offset-shifted half-open grid span
@@ -125,6 +183,31 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// byte-identical.
 	maybePushRangeScanTimeBound(fanout, r.TimestampCol, r.Start, r.End, r.Offset.Nanoseconds(), lookbackNS)
 
+	return fanout, nil
+}
+
+// rangeLWRCollapseFrag renders RangeLWR's fan-out + per-series collapse
+// stages — the [Frag] up through the `argMax(Value, TimeUnix) GROUP BY
+// (MetricName, Attributes, anchor_ts)` that picks each (series, anchor)
+// bucket's newest in-window sample — WITHOUT the trailing re-alias
+// SELECT [emitRangeLWR] layers on top to publish the canonical Sample
+// contract.
+//
+// Two callers share it: emitRangeLWR itself (which still needs the
+// re-alias to publish MetricName/Attributes/TimeUnix/Value under their
+// canonical names) and emitAggregateRangeLWRFused's sum()/count()-Value
+// fusion fast path (aggregate_range_lwr_fusion.go), which reads the
+// collapse stage's OWN column names — MetricNameCol/AttributesCol
+// unchanged, [rangeLWRAnchorColumn], [rangeLWRValueAlias] — directly, so
+// the outer aggregation's GROUP BY + reducer land in the SAME SELECT that
+// does the re-alias, instead of paying for a whole extra opaque-subquery
+// pass over the already-collapsed rows just to rename two columns.
+func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
+	fanout, err := e.rangeLWRFanoutFrag(r)
+	if err != nil {
+		return nil, err
+	}
+
 	// Collapse SELECT: collapse each (series, anchor) bucket to its newest
 	// in-window sample via argMax(Value, TimeUnix). The anchor stays under
 	// its own `anchor_ts` alias here — NOT re-aliased to TimeUnix — so the
@@ -134,12 +217,11 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	// column of the same name; aliasing anchor_ts → TimeUnix in this
 	// SELECT would shadow the argMax's TimeUnix argument with the constant
 	// per-group anchor, collapsing argMax to an arbitrary sample. The
-	// re-alias is deferred to the outer Project below.)
-	const lwrValueAlias = "lwr_value"
+	// re-alias happens in the outer Project above instead.)
 	collapse := NewQuery().From(fanout.Frag())
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
-	collapse.Select(Col("anchor_ts"))
+	collapse.Select(Col(rangeLWRAnchorColumn))
 	collapse.Select(RawAs(
 		aggFuncFrag(chplan.AggFunc{
 			Fn: chplan.FnArgMax,
@@ -148,7 +230,7 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 				&chplan.ColumnRef{Name: r.TimestampCol},
 			},
 		}),
-		lwrValueAlias,
+		rangeLWRValueAlias,
 	))
 	// The selecting sample's OWN timestamp, on request. `argMax(Value,
 	// TimeUnix)` above keeps the value and throws the timestamp that picked
@@ -168,27 +250,9 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 			chplan.RangeLWRSampleTimestampColumn,
 		))
 	}
-	collapse.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol), Col("anchor_ts"))
+	collapse.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol), Col(rangeLWRAnchorColumn))
 
-	// Outer SELECT: re-alias anchor_ts → TimeUnix and lwr_value → Value so
-	// the canonical 4-column Sample contract holds for downstream
-	// consumers. Splitting the re-alias into its own SELECT keeps the
-	// collapse SELECT's argMax(Value, TimeUnix) reference unshadowed.
-	outer := NewQuery().From(collapse.Frag())
-	outer.Select(As(Col(r.MetricNameCol), r.MetricNameCol))
-	outer.Select(As(Col(r.AttributesCol), r.AttributesCol))
-	outer.Select(As(verbatim("anchor_ts"), r.TimestampCol))
-	outer.Select(As(verbatim(lwrValueAlias), r.ValueCol))
-	// The requested fifth column rides through under its own name — it is
-	// NOT re-aliased over TimestampCol, which stays the step anchor.
-	if r.SampleTimestamp {
-		outer.Select(As(
-			verbatim(chplan.RangeLWRSampleTimestampColumn),
-			chplan.RangeLWRSampleTimestampColumn,
-		))
-	}
-
-	return e.emitSelect(outer)
+	return collapse.Frag(), nil
 }
 
 // lwrAnchorFanoutFrag renders the LWR sample-side anchor fan-out:
