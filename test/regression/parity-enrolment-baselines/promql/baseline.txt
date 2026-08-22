@@ -69,6 +69,7 @@ clamp_scalar_min_literal_max.txtar
 comparison_arithmetic.txtar
 count_agg_returns_float.txtar
 count_no_group.txtar
+count_over_time_exp_histogram.txtar
 count_values_basic.txtar
 count_values_without.txtar
 count_values_without_empty.txtar
@@ -359,6 +360,7 @@ label_replace_probed_shared_capture_name.txtar
 label_replace_regex_capture.txtar
 label_replace_shared_capture_name.txtar
 label_replace_truncated_shared_capture_name.txtar
+last_over_time_exp_histogram_preserves.txtar
 last_over_time_regex_name.txtar
 limit_ratio_complement.txtar
 limit_ratio_half.txtar
@@ -390,6 +392,7 @@ matcher_and_agg_by_service_name.txtar
 matcher_dotted_source.txtar
 matcher_service_name.txtar
 matrix_selector_top_level.txtar
+min_over_time_exp_histogram_drops.txtar
 minute_default.txtar
 minute_of_vector.txtar
 mod_arithmetic.txtar
@@ -433,6 +436,7 @@ predict_linear_exp_histogram_drops.txtar
 predict_linear_scalar_horizon.txtar
 predict_linear_simple.txtar
 predict_linear_subscrape_drops.txtar
+present_over_time_exp_histogram.txtar
 present_over_time_with_data.txtar
 quantile_by_job.txtar
 quantile_over_time_p95.txtar
