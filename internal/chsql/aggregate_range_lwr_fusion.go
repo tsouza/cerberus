@@ -315,7 +315,7 @@ func (e *emitter) emitAggregateRangeLWRFusedDistinctCount(a *chplan.Aggregate, l
 	if err != nil {
 		return err
 	}
-	sb := NewQuery().From(fanout.Frag())
+	sb := NewQuery().From(fanout)
 	groupBySelectFrags(sb, a, lwr)
 
 	// Alias left empty so aggFuncFrag renders the bare
