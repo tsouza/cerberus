@@ -185,6 +185,11 @@ func TestThenRendererAppliesNothingRejectsAMutation(t *testing.T) {
 				"ALTER TABLE a ADD PROJECTION IF NOT EXISTS proj (SELECT x);\n",
 			wantOK: true,
 		},
+		"declarations with an index": {
+			render: "CREATE TABLE a (x String) ENGINE = MergeTree();\n" +
+				"ALTER TABLE a ADD INDEX IF NOT EXISTS idx x TYPE minmax GRANULARITY 1;\n",
+			wantOK: true,
+		},
 		"a dropped table": {
 			render: "CREATE TABLE a (x String) ENGINE = MergeTree();\nDROP TABLE a;\n",
 		},

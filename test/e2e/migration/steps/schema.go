@@ -42,10 +42,14 @@ var createObjectRe = regexp.MustCompile(`(?is)^CREATE\s+(?:DATABASE|TABLE|MATERI
 // leadingVerbRe captures a statement's leading SQL verb.
 var leadingVerbRe = regexp.MustCompile(`(?is)^([A-Za-z]+)`)
 
-// addProjectionRe matches the one non-CREATE shape the renderer emits: an
-// idempotent projection addition on a table it just declared. Any other ALTER
-// would be a schema mutation the operator did not ask to review.
-var addProjectionRe = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+\S+\s+ADD\s+PROJECTION\s+IF\s+NOT\s+EXISTS\s+`)
+// idempotentAdditiveAlterRe matches the non-CREATE shapes the renderer
+// emits: an idempotent PROJECTION or INDEX addition on a table it just
+// declared — both are metadata-only ADD ... IF NOT EXISTS statements that
+// never rewrite or destroy existing data (see internal/schema/ddl's curated
+// projection registry and, since issue #2458, its AggregationTemporality
+// skip index). Any other ALTER would be a schema mutation the operator did
+// not ask to review.
+var idempotentAdditiveAlterRe = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+\S+\s+ADD\s+(?:PROJECTION|INDEX)\s+IF\s+NOT\s+EXISTS\s+`)
 
 // destructiveRe matches a statement that would destroy or rewrite data. The
 // rendered schema is a provisioning preview an operator pipes into a client by
@@ -160,8 +164,8 @@ func (w *World) thenRendererSucceededOffline() error {
 
 // thenRendererAppliesNothing asserts every rendered statement is a schema
 // declaration the operator applies by hand — a CREATE, or the idempotent
-// projection addition on a table the same render declares — and that none of
-// them destroys or rewrites data.
+// projection/index addition on a table the same render declares — and that
+// none of them destroys or rewrites data.
 func (w *World) thenRendererAppliesNothing() error {
 	stmts, err := w.renderedStatements()
 	if err != nil {
@@ -172,8 +176,8 @@ func (w *World) thenRendererAppliesNothing() error {
 		switch verb {
 		case "CREATE":
 		case "ALTER":
-			if !addProjectionRe.MatchString(stmt) {
-				return fmt.Errorf("the %s case renders an ALTER that is not an idempotent projection addition: %s",
+			if !idempotentAdditiveAlterRe.MatchString(stmt) {
+				return fmt.Errorf("the %s case renders an ALTER that is not an idempotent projection/index addition: %s",
 					w.schema.caseName, firstLine(stmt))
 			}
 		default:
