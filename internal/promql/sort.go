@@ -36,9 +36,27 @@ const naturalSortKeyPadWidth = 20
 // sample, they reorder existing ones — so no MetricName rewrite applies
 // (unlike the instant-math fns); the inner plan's columns flow through
 // the OrderBy unchanged.
+//
+// Prom's shared entry point (prometheus/promql/functions.go::funcSort /
+// funcSortDesc) starts from `filterFloats(vectorVals[0])`, which drops
+// every sample whose `.H` field is set before sorting the remainder —
+// the same "process only float samples" rule the instant-math functions
+// (#2221) and the clamp family (#2345) apply. `sort`/`sort_desc` never
+// got the same treatment, so a bare exp-histogram selector argument fell
+// through to the generic dispatch and hit the catch-all rejection
+// instead of Prom's drop-and-answer-empty semantics (#2456). Checking
+// [lowerExpHistogramValuedShape] first and answering via
+// [dropExpHistogramSamples] closes that gap: an all-histogram input
+// sorts to an (correctly empty) float vector rather than erroring.
 func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) != 1 {
 		return nil, fmt.Errorf("promql: %s expects 1 argument, got %d", c.Func.Name, len(c.Args))
+	}
+	if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropExpHistogramSamples(hist, s), nil
 	}
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
