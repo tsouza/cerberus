@@ -82,27 +82,64 @@ func TestLower_ExpHistogram_MixedSetOpOr_SumWrapped(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSideRejects
-// pins that wrapping the mixed `or` in `sum(...)` does not widen
-// histogram_native_mixed_or.go's pre-existing float-side shape
-// restriction (cerberus issue #2330/#2333): a windowed float arm
-// combined with the nested `sum(...)` composition this file adds
-// (cerberus issue #2346) is explicitly out of scope for both issues, so
-// the query is still rejected with a clear error.
-func TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSideRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSide pins
+// cerberus issue #2453: the INTERSECTION of #2333 (a windowed/derived
+// float side in a mixed `or`) and #2346 (that mixed `or` wrapped in
+// `sum`/`avg`) now lowers successfully, in both source orders and both
+// instant and range-query (step > 0) mode — mirroring
+// TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSide
+// (histogram_native_mixed_or_test.go) one layer up, through the
+// sum/avg-wrapped recognizer instead of the root-only leaf one. Before
+// this fix every one of these cases was rejected by
+// lowerMixedExpHistogramOperands's float-side shape guard (this test
+// used to pin that rejection, under the name
+// …WindowedFloatSideRejects).
+func TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSide(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	const rangeStep = time.Minute
 
-	query := `sum(rate(up[5m]) or latency_exp_hist)`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
+	cases := []struct {
+		name  string
+		query string
+		step  time.Duration
+	}{
+		{name: "float left, instant", query: `sum(rate(up[5m]) or latency_exp_hist)`, step: 0},
+		{name: "histogram left, instant", query: `sum(latency_exp_hist or rate(up[5m]))`, step: 0},
+		{name: "float left, range", query: `sum(rate(up[5m]) or latency_exp_hist)`, step: rangeStep},
+		{name: "histogram left, range", query: `sum(latency_exp_hist or rate(up[5m]))`, step: rangeStep},
+		{name: "avg, float left, instant", query: `avg(rate(up[5m]) or latency_exp_hist)`, step: 0},
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, tc.step)
+			if err != nil {
+				t.Fatalf("LowerAtRange(%q, step=%s): unexpected error: %v", tc.query, tc.step, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.MixedRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s", tc.query, shape, chplan.MixedRowShape)
+			}
+			setOp, ok := plan.(*chplan.VectorSetOp)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.VectorSetOp", tc.query, plan)
+			}
+			if !setOp.Mixed {
+				t.Fatalf("lower(%q): VectorSetOp.Mixed = false, want true", tc.query)
+			}
+			if setOp.Op != chplan.VectorSetOr {
+				t.Fatalf("lower(%q): VectorSetOp.Op = %v, want %v", tc.query, setOp.Op, chplan.VectorSetOr)
+			}
+		})
 	}
 }
 
