@@ -5,17 +5,21 @@
       "site": "internal/promql/histogram_native_sum.go:lowerExpHistogramSumOrAvgOverPlan#7a3163a0",
       "message": "promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape",
       "class": "internal",
-      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits this consumer only over the HistogramRowShape returned by lowerExpHistogramValuedShape",
+      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits lowerExpHistogramValuedShape's call only over the HistogramRowShape it itself returned. lowerSumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller: it passes either histNode directly — lowerExpHistogramSetOpOperand's own postcondition already guarantees HistogramRowShape — or mixedOrShadowUnless's chplan.VectorSetOp{Histogram: true} wrapping it, which chplan.RowShapeOf also reports as HistogramRowShape, so this guard stays unreachable via that path too",
       "evidence": {
         "guard": [
           "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
         ],
         "callers": [
-          "lowerExpHistogramValuedShape"
+          "lowerExpHistogramValuedShape",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ],
         "cited": [
+          "lowerExpHistogramSetOpOperand",
           "lowerExpHistogramValuedShape",
-          "mergeableExpHistogramAggregate"
+          "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "mergeableExpHistogramAggregate",
+          "mixedOrShadowUnless"
         ]
       }
     }
