@@ -31,6 +31,7 @@
   "internal/chsql": 93,
   "internal/chsqltest": 70.4,
   "internal/config": 91.3,
+  "internal/deltaprefix": 94.6,
   "internal/dispatchscan": 91.6,
   "internal/drain": 90,
   "internal/engine": 88.2,
