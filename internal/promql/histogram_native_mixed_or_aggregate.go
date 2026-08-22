@@ -42,9 +42,12 @@ import (
 //
 //  1. [lowerMixedExpHistogramOperands] lowers the `or`'s two operands
 //     exactly as the leaf recognizer does — one histogram-valued, one
-//     plain float-valued (issue #2330's shape restriction still
-//     applies: a windowed float arm is issue #2333's separate axis, not
-//     this file's).
+//     plain float-valued, now including a windowed/derived float side
+//     (cerberus issue #2453 taught [canonicalizeFloatArmForAgg] the
+//     matrix/derived-shape canonicalisation
+//     [lowerPlainAggOverMixedFloatArm] needs to reduce one; issue #2333
+//     shipped the identical acceptance for the root-only leaf recognizer
+//     first).
 //  2. The `or`'s OWN shadow rule (every row of the side that's LHS in
 //     the source AST, plus only the RHS rows whose label signature is
 //     absent from LHS) is resolved with a [chplan.VectorSetOp] UNLESS —
@@ -101,11 +104,18 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	// false: the sum/avg-wrapped path does not yet accept a windowed float
-	// side — see lowerMixedExpHistogramOperands's own doc comment for why
-	// this is NOT the same acceptance the root-only leaf recognizer
-	// (issue #2333) gets.
-	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx, false)
+	// A windowed float side (cerberus issue #2453) is safe here because
+	// every floatForAgg branch below is canonicalised to
+	// chplan.SampleRowShape before it reaches
+	// [lowerPlainAggOverMixedFloatArm]: the mixedOrShadowUnless-wrapped
+	// branch gets it as a side effect of that VectorSetOp's own arm
+	// canonicalisation (vectorSetOpCanonicalArmFrag /
+	// vectorSetOpCanonicalQuartetFrags, internal/chsql), and the
+	// unwrapped branch (float side kept unconditionally per the `or`
+	// shadow rule) gets it explicitly from [canonicalizeFloatArmForAgg]
+	// below, this file's own promql-level mirror of that same
+	// canonicalisation.
+	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -116,12 +126,21 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 	// This is the identical mixed-type UNLESS #2337 already ships for
 	// `and`/`unless` between a histogram-valued and a float-valued
 	// operand — reused verbatim rather than re-derived.
+	//
+	// Only the FILTERED side passes through mixedOrShadowUnless's own
+	// VectorSetOp, which canonicalises it to chplan.SampleRowShape as a
+	// side effect (see this function's own doc comment above). The side
+	// kept unconditionally never goes through that node, so a windowed
+	// float arm on THAT side needs [canonicalizeFloatArmForAgg] applied
+	// explicitly before lowerPlainAggOverMixedFloatArm's Aggregate can
+	// reference its Timestamp/Attributes columns by name.
 	orMatch := mixedExpHistogramMatch(b)
 	histForAgg, floatForAgg := histNode, floatNode
 	if histOnLeft {
 		floatForAgg = mixedOrShadowUnless(floatNode, histNode, false, orMatch, s, ctx)
 	} else {
 		histForAgg = mixedOrShadowUnless(histNode, floatNode, true, orMatch, s, ctx)
+		floatForAgg = canonicalizeFloatArmForAgg(floatNode, s)
 	}
 
 	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(agg, histForAgg, s)
@@ -196,12 +215,80 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 	}
 }
 
+// canonicalizeFloatArmForAgg widens arm — the "keep unconditionally"
+// side of a mixed `or`'s own shadow rule, i.e. the side
+// [lowerSumOrAvgOverMixedExpHistogramSetOp] never passes through
+// [mixedOrShadowUnless]'s own VectorSetOp — to the canonical
+// chplan.SampleRowShape quartet (MetricName, Attributes, Timestamp,
+// Value), so [lowerPlainAggOverMixedFloatArm]'s Aggregate can reference
+// s.TimestampColumn / s.AttributesColumn by name regardless of whether
+// arm is a raw windowed/derived shape.
+//
+// This is the promql-level mirror of internal/chsql's
+// vectorSetOpCanonicalArmFrag / vectorSetOpCanonicalQuartetFrags — the
+// exact canonicalisation the root-only leaf recognizer
+// ([lowerMixedExpHistogramSetOp], issue #2333) gets for free from the
+// chsql emitter of its own VectorSetOp, and the SAME one the OTHER
+// (filtered) arm here gets for free from mixedOrShadowUnless's own
+// VectorSetOp. Split out as its own chplan.Project — rather than
+// re-deriving that chsql logic — because this arm never passes through
+// any VectorSetOp at all, so nothing else canonicalises it. Two of the
+// three cases that helper distinguishes apply here:
+//
+//   - chplan.SampleRowShape (already canonical — a plain selector, or
+//     anything wrapAggregateForSample already re-projected) — returned
+//     unchanged.
+//   - chplan.GridWindowRowShape (a matrix RangeWindow / RangeWindowGridNative,
+//     e.g. `rate(m[5m])` in range mode) — its own SELECT already
+//     exposes the grid anchor under the schema's TimestampColumn name
+//     directly (chplan.RowShapeOf's own doc comment), so Timestamp is a
+//     passthrough reference, matching vectorSetOpArmTimestampCol's
+//     identical no-alias-needed case for an arm whose own TimestampColumn
+//     field is the same schema name.
+//   - chplan.ReducedWindowRowShape (an instant-reduced window, e.g.
+//     `rate(m[5m])` in instant mode) — no per-row timestamp exists at
+//     all, so Timestamp is synthesised via chplan.NowNanoMinusStaleness,
+//     byte-for-byte the same synthesized anchor
+//     vectorSetOpSynthesizedAnchorFrag renders for the identical case.
+//
+// Attributes and Value are always passed through unchanged: every
+// windowed/derived shape this family of lowerings produces preserves the
+// full Attributes map under the schema's own column name as its GroupBy
+// key (the same assumption vectorSetOpCanonicalQuartetFrags's
+// unconditional `Col(s.AttributesColumn)` already relies on), and Value
+// is the schema-named reduced/per-row value column on every shape alike.
+func canonicalizeFloatArmForAgg(arm chplan.Node, s schema.Metrics) chplan.Node {
+	if chplan.RowShapeOf(arm) == chplan.SampleRowShape {
+		return arm
+	}
+
+	tsExpr := chplan.NowNanoMinusStaleness()
+	if chplan.RowShapeOf(arm) == chplan.GridWindowRowShape {
+		tsExpr = &chplan.ColumnRef{Name: s.TimestampColumn}
+	}
+
+	return &chplan.Project{
+		Input: arm,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
+}
+
 // lowerPlainAggOverMixedFloatArm reduces input — the shadow-resolved
 // float-valued arm of a mixed `or` — with the SAME `sum`/`avg` CH-native
 // aggregate an ordinary (non-histogram) PromQL aggregation uses
 // ([aggregateGroupBy], [buildAggFunc], [promAggregateAttributesExpr]),
 // grouped by the evaluation Timestamp in addition to the user's
-// `by`/`without` labels.
+// `by`/`without` labels. Callers must canonicalise input to
+// chplan.SampleRowShape first (via mixedOrShadowUnless's own VectorSetOp
+// or, for the arm that skips it, [canonicalizeFloatArmForAgg]) — this
+// function's GroupBy/Projections reference s.TimestampColumn and
+// s.AttributesColumn by name, which only a canonical-shape input
+// exposes.
 //
 // Grouping by Timestamp unconditionally (not only when ctx.step > 0)
 // mirrors [lowerExpHistogramSumOrAvgOverPlan]'s identical choice for the
