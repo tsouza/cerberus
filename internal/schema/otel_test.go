@@ -334,6 +334,32 @@ func TestDefaultOTelMetricsRollups(t *testing.T) {
 	}
 }
 
+// TestDefaultOTelMetricsDeltaPrefixEmptyByDefault pins that
+// DefaultOTelMetrics() — the plain, no-env-resolution constructor — leaves
+// DeltaPrefixTable / DeltaPrefixBucketColumn / DeltaPrefixSumColumn empty
+// (cerberus issue #2389). Unlike every other table on Metrics, this one is
+// cerberus-provisioned and entirely opt-in: naming a stock table here
+// regardless of whether the operator opted in would falsely claim "this
+// deployment's schema declares a DELTA-prefix table" for every deployment,
+// including the overwhelming majority that never will. See
+// TestDefaultOTelMetricsFromEnv_DeltaPrefix (env_test.go) for the populated
+// case, and internal/schema/ddl for the DDL rendering tests (which default
+// the table name independently, regardless of what this struct resolves to).
+func TestDefaultOTelMetricsDeltaPrefixEmptyByDefault(t *testing.T) {
+	t.Parallel()
+	m := DefaultOTelMetrics()
+
+	if m.DeltaPrefixTable != "" {
+		t.Errorf("DeltaPrefixTable: got %q, want empty", m.DeltaPrefixTable)
+	}
+	if m.DeltaPrefixBucketColumn != "" {
+		t.Errorf("DeltaPrefixBucketColumn: got %q, want empty", m.DeltaPrefixBucketColumn)
+	}
+	if m.DeltaPrefixSumColumn != "" {
+		t.Errorf("DeltaPrefixSumColumn: got %q, want empty", m.DeltaPrefixSumColumn)
+	}
+}
+
 // TestExemplarSources pins the candidate (table, row key) pairs the
 // `/api/v1/query_exemplars` fan-out reads. Three properties matter, and
 // each is a bug the single-table predecessor shipped:

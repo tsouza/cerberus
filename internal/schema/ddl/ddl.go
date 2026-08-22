@@ -116,6 +116,28 @@ type Config struct {
 	// tables carry a SETTINGS tail; the traces materialized view has none, so
 	// Settings does not apply to it.
 	Settings []schema.KV
+
+	// DeltaPrefixEnabled gates provisioning the DELTA-temporality
+	// prefix-reconstruction aggregate table + its materialized view
+	// (Tables.MetricsDeltaPrefix; cerberus issue #2389) alongside the five
+	// upstream metrics tables. False (the default, matching
+	// config.SchemaProvisioning.DeltaPrefixEnabled) renders no DELTA-prefix
+	// statements at all — an operator on today's schema sees byte-identical
+	// DDL. Unlike the five upstream tables this one is entirely
+	// cerberus-authored (see renderDeltaPrefixTable / renderDeltaPrefixView),
+	// so it does not need the upstream sqltemplates fork.
+	DeltaPrefixEnabled bool
+
+	// DeltaPrefixBucketColumn / DeltaPrefixSumColumn name
+	// Tables.MetricsDeltaPrefix's two cerberus-invented columns (the base
+	// tables' column names are fixed upstream constants — see
+	// metricNameColumn and friends — because auto-create always renders the
+	// canonical upstream shape; these two have no upstream template to
+	// fix them, so they come from schema.Metrics.DeltaPrefixBucketColumn /
+	// DeltaPrefixSumColumn via internal/schemaboot). Empty falls back to
+	// "BucketStart" / "PartialSum" (see withDefaults).
+	DeltaPrefixBucketColumn string
+	DeltaPrefixSumColumn    string
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -218,6 +240,10 @@ type Tables struct {
 	MetricsHistogram    string
 	MetricsExpHistogram string
 	MetricsSummary      string
+	// MetricsDeltaPrefix names the DELTA-temporality prefix-reconstruction
+	// aggregate table (cerberus issue #2389). Unlike every other field on
+	// this struct it has no upstream template — see DeltaPrefixEnabled.
+	MetricsDeltaPrefix string
 }
 
 // Defaults mirror the upstream OTel ClickHouse Exporter's table names. They
@@ -241,6 +267,15 @@ const (
 	defaultMetricsHistogramTable    = "otel_metrics_histogram"
 	defaultMetricsExpHistogramTable = "otel_metrics_exponential_histogram"
 	defaultMetricsSummaryTable      = "otel_metrics_summary"
+
+	// defaultMetricsDeltaPrefixTable / defaultDeltaPrefixBucketColumn /
+	// defaultDeltaPrefixSumColumn mirror schema.DefaultOTelMetrics()'s
+	// DeltaPrefixTable / DeltaPrefixBucketColumn / DeltaPrefixSumColumn
+	// defaults (cerberus issue #2389) — kept in lockstep by
+	// TestDeltaPrefixDefaultsMatchSchemaPackage.
+	defaultMetricsDeltaPrefixTable = "otel_metrics_sum_delta_prefix"
+	defaultDeltaPrefixBucketColumn = "BucketStart"
+	defaultDeltaPrefixSumColumn    = "PartialSum"
 )
 
 // withDefaults returns a copy of cfg with empty string fields filled in
@@ -273,6 +308,15 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Tables.MetricsSummary == "" {
 		c.Tables.MetricsSummary = defaultMetricsSummaryTable
+	}
+	if c.Tables.MetricsDeltaPrefix == "" {
+		c.Tables.MetricsDeltaPrefix = defaultMetricsDeltaPrefixTable
+	}
+	if c.DeltaPrefixBucketColumn == "" {
+		c.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
+	}
+	if c.DeltaPrefixSumColumn == "" {
+		c.DeltaPrefixSumColumn = defaultDeltaPrefixSumColumn
 	}
 	if c.DatabaseEngine.Replicated {
 		if c.DatabaseEngine.ReplicatedShard == "" {
@@ -590,6 +634,18 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		for _, table := range []string{cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
 			stmts = append(stmts, renderAddTemporalityIndex(cfg, table))
 		}
+		// The DELTA-prefix aggregate table + its materialized view (cerberus
+		// issue #2389) are entirely opt-in and entirely cerberus-authored — no
+		// upstream template backs either statement, unlike every CREATE above.
+		// CREATE precedes the MV (which references it in its TO clause) the
+		// same way the traces lookup table precedes its own MV.
+		if cfg.DeltaPrefixEnabled {
+			stmts = append(
+				stmts,
+				renderDeltaPrefixTable(cfg),
+				renderDeltaPrefixView(cfg),
+			)
+		}
 		return stmts, nil
 	case Logs:
 		logs, err := renderLogsTable(cfg)
@@ -657,6 +713,14 @@ const (
 	// exists ONLY on the sum table, so metadataProjection's body widens for
 	// that one table only (see metricCatalogProjections / hasMonotonic).
 	isMonotonicColumn = "IsMonotonic"
+	// metricResourceAttributesColumn / metricServiceNameColumn /
+	// metricValueColumn round out the sum table's identity + value columns
+	// the DELTA-prefix table's CREATE + MV reference (renderDeltaPrefixTable
+	// / renderDeltaPrefixView) — fixed OTel-CH exporter names, like every
+	// other metricXxxColumn constant above.
+	metricResourceAttributesColumn = "ResourceAttributes"
+	metricServiceNameColumn        = "ServiceName"
+	metricValueColumn              = "Value"
 )
 
 // metricProjection is one curated aggregating projection the DDL apply path
@@ -783,6 +847,95 @@ const (
 func renderAddTemporalityIndex(cfg Config, table string) string {
 	stmt := chsql.AlterTableAddIndex(cfg.Database, table, temporalityIndexName,
 		chsql.Col(aggregationTemporalityColumn), "minmax", temporalityIndexGranularity)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// deltaPrefixViewSuffix is appended to Tables.MetricsDeltaPrefix to name its
+// materialized view — matches the upstream traces lookup table's own
+// `<table>_mv` convention (renderTracesCreateTsView), even though this MV
+// is entirely cerberus-authored.
+const deltaPrefixViewSuffix = "_mv"
+
+// renderDeltaPrefixTable renders the CREATE TABLE for the DELTA-temporality
+// prefix-reconstruction aggregate table (cerberus issue #2389, plan §4.1,
+// ORDER BY revised per the plan's follow-up "Cost 2" measurement: BucketStart
+// moves to position 2, immediately after MetricName, so a query bounded to
+// one metric + a date range prunes on the primary key instead of scanning
+// every bucket of every series for that metric — measured 34% of the table
+// read with this order vs 71% with BucketStart last).
+//
+// SimpleAggregateFunction(sum, Float64) on AggregatingMergeTree is what
+// makes a plain `sum(PartialSum)` read correct regardless of how much
+// background merging has happened — no FINAL, no staleness window (unlike
+// ReplacingMergeTree, which would need one). The engine is ALWAYS
+// AggregatingMergeTree / ReplicatedAggregatingMergeTree — never cfg.Engine's
+// operator override, which targets the five upstream MergeTree-family
+// tables. A SimpleAggregateFunction column requires the Aggregating family
+// specifically: swapping engine families here is this table's own
+// correctness requirement, not a deployment preference cfg.Engine can
+// override.
+func renderDeltaPrefixTable(cfg Config) string {
+	lcString := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+	mapType := chsql.Call("Map", lcString, chsql.TypeRaw("String"))
+	engine := chsql.EngineAggregatingMergeTree()
+	if cfg.DatabaseEngine.Replicated {
+		engine = chsql.EngineReplicatedAggregatingMergeTree()
+	}
+	return chsql.CreateTable(cfg.Tables.MetricsDeltaPrefix).
+		Database(cfg.Database).
+		IfNotExists().
+		Columns(
+			chsql.ColumnDef{Name: metricNameColumn, Type: lcString},
+			chsql.ColumnDef{Name: metricAttributesColumn, Type: mapType},
+			chsql.ColumnDef{Name: metricResourceAttributesColumn, Type: mapType},
+			chsql.ColumnDef{Name: metricServiceNameColumn, Type: lcString},
+			chsql.ColumnDef{Name: cfg.DeltaPrefixBucketColumn, Type: chsql.Call("DateTime64", chsql.InlineLit(int64(9)))},
+			chsql.ColumnDef{
+				Name: cfg.DeltaPrefixSumColumn,
+				Type: chsql.Call("SimpleAggregateFunction", chsql.BareIdent("sum"), chsql.TypeRaw("Float64")),
+			},
+		).
+		Engine(engine).
+		OrderBy(metricNameColumn, cfg.DeltaPrefixBucketColumn, metricAttributesColumn, metricResourceAttributesColumn, metricServiceNameColumn).
+		TTL(chsql.TableTTLTiered(cfg.DeltaPrefixBucketColumn, cfg.TTL.Metrics, cfg.Tiering.Metrics, cfg.Tiering.Volume)).
+		SQL()
+}
+
+// renderDeltaPrefixView renders the CREATE MATERIALIZED VIEW feeding
+// renderDeltaPrefixTable from the sum table (plan §4.1): every
+// DELTA-temporality row, bucketed to its calendar day. It captures only
+// rows inserted from the moment this statement runs onward — ClickHouse
+// does NOT retroactively process existing rows — so pre-existing history
+// needs the separate `cerberus schema delta-prefix-backfill` one-time
+// pass (see docs/operations.md and internal/deltaprefix).
+func renderDeltaPrefixView(cfg Config) string {
+	bucket := chsql.Call("toStartOfDay", chsql.Col(metricTimeColumn))
+	body := chsql.NewQuery().
+		Select(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			chsql.As(bucket, cfg.DeltaPrefixBucketColumn),
+			chsql.As(chsql.Call("sum", chsql.Col(metricValueColumn)), cfg.DeltaPrefixSumColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsSum)).
+		Where(chsql.Eq(chsql.Col(aggregationTemporalityColumn), chsql.InlineLit(schema.AggregationTemporalityDelta))).
+		GroupBy(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			bucket,
+		)
+	stmt := chsql.CreateMaterializedView(cfg.Tables.MetricsDeltaPrefix+deltaPrefixViewSuffix).
+		Database(cfg.Database).
+		IfNotExists().
+		To(cfg.Database, cfg.Tables.MetricsDeltaPrefix).
+		As(body)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)
 	}

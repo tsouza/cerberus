@@ -475,6 +475,22 @@ type SchemaProvisioning struct {
 	// `min_bytes_for_wide_part=0`). Order is preserved for deterministic DDL.
 	// Empty (the default) appends nothing — strict backward compatibility.
 	Settings []schema.KV
+
+	// DeltaPrefixEnabled (CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED) opts into
+	// provisioning the DELTA-temporality prefix-reconstruction aggregate
+	// table + its materialized view (schema.Metrics.DeltaPrefixTable, see
+	// internal/schema/ddl; cerberus issue #2389). Like every other knob on
+	// this struct it is a no-op unless AutoCreateSchema is ALSO true — the
+	// two gates are independent because this is new, unproven machinery: an
+	// operator who has auto-create on for the five upstream tables does not
+	// get this one for free. Default false. Provisioning the table is only
+	// half the story — its materialized view captures new rows from its
+	// creation moment onward, so pre-existing history still needs the
+	// one-time `cerberus schema delta-prefix-backfill` pass (see
+	// docs/operations.md), and cerberus's own query answering does not yet
+	// consume the table regardless of this flag (the read-side emitter
+	// change is tracked separately under #2389).
+	DeltaPrefixEnabled bool
 }
 
 // AdmitConfig holds the per-handler admission-control concurrency caps.
@@ -621,98 +637,99 @@ type OTLPConfig struct {
 // strings — the CERBERUS_* contract is load-bearing (docs + surface
 // tests pin these names).
 const (
-	envHTTPAddr                = "CERBERUS_HTTP_ADDR"
-	envCHAddr                  = "CERBERUS_CH_ADDR"
-	envCHDatabase              = "CERBERUS_CH_DATABASE"
-	envCHUsername              = "CERBERUS_CH_USERNAME"
-	envCHPassword              = "CERBERUS_CH_PASSWORD"
-	envCHDialTimeout           = "CERBERUS_CH_DIAL_TIMEOUT"
-	envCHMaxOpenConns          = "CERBERUS_CH_MAX_OPEN_CONNS"
-	envCHMaxIdleConns          = "CERBERUS_CH_MAX_IDLE_CONNS"
-	envCHConnMaxLifetime       = "CERBERUS_CH_CONN_MAX_LIFETIME"
-	envCHKeepAliveEnabled      = "CERBERUS_CH_KEEPALIVE_ENABLED"
-	envCHKeepAliveIdle         = "CERBERUS_CH_KEEPALIVE_IDLE"
-	envCHKeepAliveInterval     = "CERBERUS_CH_KEEPALIVE_INTERVAL"
-	envCHKeepAliveCount        = "CERBERUS_CH_KEEPALIVE_COUNT"
-	envQueryMaxSamples         = "CERBERUS_QUERY_MAX_SAMPLES"
-	envQueryTimeout            = "CERBERUS_QUERY_TIMEOUT"
-	envCHQueryMaxMemory        = "CERBERUS_CH_QUERY_MAX_MEMORY"
-	envCHBreakerEnabled        = "CERBERUS_CH_BREAKER_ENABLED"
-	envCHBreakerThreshold      = "CERBERUS_CH_BREAKER_THRESHOLD"
-	envCHBreakerWindow         = "CERBERUS_CH_BREAKER_WINDOW"
-	envCHBreakerOpenIntrvl     = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
-	envCHProtocol              = "CERBERUS_CH_PROTOCOL"
-	envCHConnOpenStrategy      = "CERBERUS_CH_CONN_OPEN_STRATEGY"
-	envCHReadTimeout           = "CERBERUS_CH_READ_TIMEOUT"
-	envCHCompression           = "CERBERUS_CH_COMPRESSION"
-	envCHCompressionLevel      = "CERBERUS_CH_COMPRESSION_LEVEL"
-	envCHBlockBufferSize       = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
-	envCHMaxComprBuffer        = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
-	envCHFreeBufOnRelease      = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
-	envCHDebug                 = "CERBERUS_CH_DEBUG"
-	envCHTLSEnabled            = "CERBERUS_CH_TLS_ENABLED"
-	envCHTLSCAFile             = "CERBERUS_CH_TLS_CA_FILE"
-	envCHTLSCertFile           = "CERBERUS_CH_TLS_CERT_FILE"
-	envCHTLSKeyFile            = "CERBERUS_CH_TLS_KEY_FILE"
-	envCHTLSServerName         = "CERBERUS_CH_TLS_SERVER_NAME"
-	envCHTLSSkipVerify         = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
-	envCHHTTPHeaders           = "CERBERUS_CH_HTTP_HEADERS"
-	envCHHTTPURLPath           = "CERBERUS_CH_HTTP_URL_PATH"
-	envCHHTTPMaxConns          = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
-	envCHHTTPProxyURL          = "CERBERUS_CH_HTTP_PROXY_URL"
-	envHTTPReadTimeout         = "CERBERUS_HTTP_READ_TIMEOUT"
-	envHTTPReadHdrTimeout      = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
-	envHTTPWriteTimeout        = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
-	envHTTPIdleTimeout         = "CERBERUS_HTTP_IDLE_TIMEOUT"
-	envHTTPMaxHeaderBytes      = "CERBERUS_HTTP_MAX_HEADER_BYTES"
-	envHTTPMaxBodyBytes        = "CERBERUS_HTTP_MAX_BODY_BYTES"
-	envLokiTailWriteTO         = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
-	envPromMetadataLookback    = "CERBERUS_PROM_METADATA_LOOKBACK"
-	envDeltaPrefixLookback     = "CERBERUS_DELTA_PREFIX_LOOKBACK"
-	envDebugPProf              = "CERBERUS_DEBUG_PPROF"
-	envTempoStructuralTwoPhase = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
-	envAutoCreateSchema        = "CERBERUS_AUTO_CREATE_SCHEMA"
-	envAutoCreateDatabase      = "CERBERUS_AUTO_CREATE_DATABASE"
-	envSchemaCluster           = "CERBERUS_SCHEMA_CLUSTER"
-	envSchemaTableEngine       = "CERBERUS_SCHEMA_TABLE_ENGINE"
-	envSchemaTTL               = "CERBERUS_SCHEMA_TTL"
-	envSchemaTTLMetrics        = "CERBERUS_SCHEMA_TTL_METRICS"
-	envSchemaTTLLogs           = "CERBERUS_SCHEMA_TTL_LOGS"
-	envSchemaTTLTraces         = "CERBERUS_SCHEMA_TTL_TRACES"
-	envSchemaDBReplicated      = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
-	envSchemaDBReplPath        = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
-	envSchemaDBReplShard       = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
-	envSchemaDBReplReplica     = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
-	envSchemaStoragePolicy     = "CERBERUS_SCHEMA_STORAGE_POLICY"
-	envSchemaTierVolume        = "CERBERUS_SCHEMA_TIER_VOLUME"
-	envSchemaTierAfter         = "CERBERUS_SCHEMA_TIER_AFTER"
-	envSchemaTierAfterMetrics  = "CERBERUS_SCHEMA_TIER_AFTER_METRICS"
-	envSchemaTierAfterLogs     = "CERBERUS_SCHEMA_TIER_AFTER_LOGS"
-	envSchemaTierAfterTraces   = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
-	envSchemaSettings          = "CERBERUS_SCHEMA_SETTINGS"
-	envRequirementsCheck       = "CERBERUS_REQUIREMENTS_CHECK"
-	envExperimentalTSGrid      = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envLogCommentShape         = "CERBERUS_LOG_COMMENT_SHAPE"
-	envCHOptimizations         = "CERBERUS_CH_OPTIMIZATIONS"
-	envCHOptimizationsMode     = "CERBERUS_CH_OPTIMIZATIONS_MODE"
-	envCHOptCorpusEnabled      = "CERBERUS_CH_OPT_CORPUS_ENABLED"
-	envCHOptCorpusInterval     = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
-	envCHOptCorpusSinkPath     = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
-	envCHOptCorpusRing         = "CERBERUS_CH_OPT_CORPUS_RING"
-	envCHOptCorpusSinkMode     = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
-	envLogFormat               = "CERBERUS_LOG_FORMAT"
-	envLogLevel                = "CERBERUS_LOG_LEVEL"
-	envOTLPEndpoint            = "CERBERUS_OTLP_ENDPOINT"
-	envOTLPInsecure            = "CERBERUS_OTLP_INSECURE"
-	envOTLPHeaders             = "CERBERUS_OTLP_HEADERS"
-	envOTLPTimeout             = "CERBERUS_OTLP_TIMEOUT"
-	envOTLPExportInterval      = "CERBERUS_OTLP_EXPORT_INTERVAL"
-	envAdmitDisabled           = "CERBERUS_ADMIT_DISABLED"
-	envAdmitProm               = "CERBERUS_ADMIT_PROM"
-	envAdmitLoki               = "CERBERUS_ADMIT_LOKI"
-	envAdmitTempo              = "CERBERUS_ADMIT_TEMPO"
-	envAdmitTail               = "CERBERUS_ADMIT_TAIL"
-	envEnabledHeads            = "CERBERUS_ENABLED_HEADS"
+	envHTTPAddr                 = "CERBERUS_HTTP_ADDR"
+	envCHAddr                   = "CERBERUS_CH_ADDR"
+	envCHDatabase               = "CERBERUS_CH_DATABASE"
+	envCHUsername               = "CERBERUS_CH_USERNAME"
+	envCHPassword               = "CERBERUS_CH_PASSWORD"
+	envCHDialTimeout            = "CERBERUS_CH_DIAL_TIMEOUT"
+	envCHMaxOpenConns           = "CERBERUS_CH_MAX_OPEN_CONNS"
+	envCHMaxIdleConns           = "CERBERUS_CH_MAX_IDLE_CONNS"
+	envCHConnMaxLifetime        = "CERBERUS_CH_CONN_MAX_LIFETIME"
+	envCHKeepAliveEnabled       = "CERBERUS_CH_KEEPALIVE_ENABLED"
+	envCHKeepAliveIdle          = "CERBERUS_CH_KEEPALIVE_IDLE"
+	envCHKeepAliveInterval      = "CERBERUS_CH_KEEPALIVE_INTERVAL"
+	envCHKeepAliveCount         = "CERBERUS_CH_KEEPALIVE_COUNT"
+	envQueryMaxSamples          = "CERBERUS_QUERY_MAX_SAMPLES"
+	envQueryTimeout             = "CERBERUS_QUERY_TIMEOUT"
+	envCHQueryMaxMemory         = "CERBERUS_CH_QUERY_MAX_MEMORY"
+	envCHBreakerEnabled         = "CERBERUS_CH_BREAKER_ENABLED"
+	envCHBreakerThreshold       = "CERBERUS_CH_BREAKER_THRESHOLD"
+	envCHBreakerWindow          = "CERBERUS_CH_BREAKER_WINDOW"
+	envCHBreakerOpenIntrvl      = "CERBERUS_CH_BREAKER_OPEN_INTERVAL"
+	envCHProtocol               = "CERBERUS_CH_PROTOCOL"
+	envCHConnOpenStrategy       = "CERBERUS_CH_CONN_OPEN_STRATEGY"
+	envCHReadTimeout            = "CERBERUS_CH_READ_TIMEOUT"
+	envCHCompression            = "CERBERUS_CH_COMPRESSION"
+	envCHCompressionLevel       = "CERBERUS_CH_COMPRESSION_LEVEL"
+	envCHBlockBufferSize        = "CERBERUS_CH_BLOCK_BUFFER_SIZE"
+	envCHMaxComprBuffer         = "CERBERUS_CH_MAX_COMPRESSION_BUFFER"
+	envCHFreeBufOnRelease       = "CERBERUS_CH_FREE_BUF_ON_CONN_RELEASE"
+	envCHDebug                  = "CERBERUS_CH_DEBUG"
+	envCHTLSEnabled             = "CERBERUS_CH_TLS_ENABLED"
+	envCHTLSCAFile              = "CERBERUS_CH_TLS_CA_FILE"
+	envCHTLSCertFile            = "CERBERUS_CH_TLS_CERT_FILE"
+	envCHTLSKeyFile             = "CERBERUS_CH_TLS_KEY_FILE"
+	envCHTLSServerName          = "CERBERUS_CH_TLS_SERVER_NAME"
+	envCHTLSSkipVerify          = "CERBERUS_CH_TLS_INSECURE_SKIP_VERIFY"
+	envCHHTTPHeaders            = "CERBERUS_CH_HTTP_HEADERS"
+	envCHHTTPURLPath            = "CERBERUS_CH_HTTP_URL_PATH"
+	envCHHTTPMaxConns           = "CERBERUS_CH_HTTP_MAX_CONNS_PER_HOST"
+	envCHHTTPProxyURL           = "CERBERUS_CH_HTTP_PROXY_URL"
+	envHTTPReadTimeout          = "CERBERUS_HTTP_READ_TIMEOUT"
+	envHTTPReadHdrTimeout       = "CERBERUS_HTTP_READ_HEADER_TIMEOUT"
+	envHTTPWriteTimeout         = "CERBERUS_HTTP_WRITE_TIMEOUT" //nolint:gosec // env-var name, not a credential
+	envHTTPIdleTimeout          = "CERBERUS_HTTP_IDLE_TIMEOUT"
+	envHTTPMaxHeaderBytes       = "CERBERUS_HTTP_MAX_HEADER_BYTES"
+	envHTTPMaxBodyBytes         = "CERBERUS_HTTP_MAX_BODY_BYTES"
+	envLokiTailWriteTO          = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
+	envPromMetadataLookback     = "CERBERUS_PROM_METADATA_LOOKBACK"
+	envDeltaPrefixLookback      = "CERBERUS_DELTA_PREFIX_LOOKBACK"
+	envDebugPProf               = "CERBERUS_DEBUG_PPROF"
+	envTempoStructuralTwoPhase  = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
+	envAutoCreateSchema         = "CERBERUS_AUTO_CREATE_SCHEMA"
+	envAutoCreateDatabase       = "CERBERUS_AUTO_CREATE_DATABASE"
+	envSchemaCluster            = "CERBERUS_SCHEMA_CLUSTER"
+	envSchemaTableEngine        = "CERBERUS_SCHEMA_TABLE_ENGINE"
+	envSchemaTTL                = "CERBERUS_SCHEMA_TTL"
+	envSchemaTTLMetrics         = "CERBERUS_SCHEMA_TTL_METRICS"
+	envSchemaTTLLogs            = "CERBERUS_SCHEMA_TTL_LOGS"
+	envSchemaTTLTraces          = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaDBReplicated       = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
+	envSchemaDBReplPath         = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
+	envSchemaDBReplShard        = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
+	envSchemaDBReplReplica      = "CERBERUS_SCHEMA_DATABASE_REPLICATED_REPLICA"
+	envSchemaStoragePolicy      = "CERBERUS_SCHEMA_STORAGE_POLICY"
+	envSchemaTierVolume         = "CERBERUS_SCHEMA_TIER_VOLUME"
+	envSchemaTierAfter          = "CERBERUS_SCHEMA_TIER_AFTER"
+	envSchemaTierAfterMetrics   = "CERBERUS_SCHEMA_TIER_AFTER_METRICS"
+	envSchemaTierAfterLogs      = "CERBERUS_SCHEMA_TIER_AFTER_LOGS"
+	envSchemaTierAfterTraces    = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
+	envSchemaSettings           = "CERBERUS_SCHEMA_SETTINGS"
+	envSchemaDeltaPrefixEnabled = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
+	envRequirementsCheck        = "CERBERUS_REQUIREMENTS_CHECK"
+	envExperimentalTSGrid       = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envLogCommentShape          = "CERBERUS_LOG_COMMENT_SHAPE"
+	envCHOptimizations          = "CERBERUS_CH_OPTIMIZATIONS"
+	envCHOptimizationsMode      = "CERBERUS_CH_OPTIMIZATIONS_MODE"
+	envCHOptCorpusEnabled       = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+	envCHOptCorpusInterval      = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	envCHOptCorpusSinkPath      = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing          = "CERBERUS_CH_OPT_CORPUS_RING"
+	envCHOptCorpusSinkMode      = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
+	envLogFormat                = "CERBERUS_LOG_FORMAT"
+	envLogLevel                 = "CERBERUS_LOG_LEVEL"
+	envOTLPEndpoint             = "CERBERUS_OTLP_ENDPOINT"
+	envOTLPInsecure             = "CERBERUS_OTLP_INSECURE"
+	envOTLPHeaders              = "CERBERUS_OTLP_HEADERS"
+	envOTLPTimeout              = "CERBERUS_OTLP_TIMEOUT"
+	envOTLPExportInterval       = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envAdmitDisabled            = "CERBERUS_ADMIT_DISABLED"
+	envAdmitProm                = "CERBERUS_ADMIT_PROM"
+	envAdmitLoki                = "CERBERUS_ADMIT_LOKI"
+	envAdmitTempo               = "CERBERUS_ADMIT_TEMPO"
+	envAdmitTail                = "CERBERUS_ADMIT_TAIL"
+	envEnabledHeads             = "CERBERUS_ENABLED_HEADS"
 )
 
 // configFileBaseName is the base name (without extension) viper looks
@@ -1087,6 +1104,7 @@ var allEnvKeys = []string{
 	envSchemaTierAfterLogs,
 	envSchemaTierAfterTraces,
 	envSchemaSettings,
+	envSchemaDeltaPrefixEnabled,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogCommentShape,
@@ -1245,6 +1263,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTierAfterMetrics, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterTraces, defaultSchemaTierAfter)
+	v.SetDefault(envSchemaDeltaPrefixEnabled, defaultSchemaDeltaPrefixEnabled)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
@@ -1295,18 +1314,19 @@ func setAdmitDefaults(v *viper.Viper) {
 // no other natural home live here; the int / duration budget defaults
 // keep their original homes below (they carry longer rationale comments).
 const (
-	defaultHTTPAddr           = ":8080"
-	defaultCHAddr             = "localhost:9000"
-	defaultCHDatabase         = "default"
-	defaultCHUsername         = "default"
-	defaultCHPassword         = ""
-	defaultAutoCreateSchema   = false
-	defaultSchemaDBReplicated = false
-	defaultSchemaTTL          = "0s"
-	defaultSchemaTierAfter    = "0s"
-	defaultRequirementsCheck  = true
-	defaultExperimentalTSGrid = false
-	defaultLogCommentShape    = false
+	defaultHTTPAddr                 = ":8080"
+	defaultCHAddr                   = "localhost:9000"
+	defaultCHDatabase               = "default"
+	defaultCHUsername               = "default"
+	defaultCHPassword               = ""
+	defaultAutoCreateSchema         = false
+	defaultSchemaDBReplicated       = false
+	defaultSchemaTTL                = "0s"
+	defaultSchemaTierAfter          = "0s"
+	defaultSchemaDeltaPrefixEnabled = false
+	defaultRequirementsCheck        = true
+	defaultExperimentalTSGrid       = false
+	defaultLogCommentShape          = false
 	// defaultCHOptimizations is "auto": enable every auto-eligible feature the
 	// connected server supports. Auto-eligibility (Feature.AutoSelect) is a
 	// separate axis from maturity (Feature.Stability) — `auto` turns on the
@@ -2274,6 +2294,10 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	deltaPrefixEnabled, err := getBool(v, envSchemaDeltaPrefixEnabled)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
 	return SchemaProvisioning{
 		Cluster:                   getString(v, envSchemaCluster),
 		TableEngine:               getString(v, envSchemaTableEngine),
@@ -2292,6 +2316,7 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 		TierAfterLogs:             tierAfterLogs,
 		TierAfterTraces:           tierAfterTraces,
 		Settings:                  settings,
+		DeltaPrefixEnabled:        deltaPrefixEnabled,
 	}, nil
 }
 

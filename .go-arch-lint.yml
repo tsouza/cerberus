@@ -193,6 +193,14 @@ components:
   # narrow CHConn + column contract rather than importing optcorpus/chclient, so
   # it depends only on chsql for typed SQL composition.
   routerrules:    { in: routerrules }
+  # Backfills + verifies the DELTA-temporality prefix-reconstruction
+  # aggregate table (cerberus issue #2389). Composes its INSERT ... SELECT /
+  # SELECT queries via the typed chsql Frag API, so it depends on chsql
+  # (chsql -> chplan, no cycle) and schema (a commonComponent, for
+  # schema.Metrics column names + AggregationTemporalityDelta). Re-declares
+  # its own narrow Conn contract rather than importing chclient, mirroring
+  # routerrules. Wired from cmd/cerberus only.
+  deltaprefix:    { in: deltaprefix }
   # Offline migration preview support: harvests a PromQL corpus from rule files
   # (promrules) and assembles the explain report over the chplan IR. Wired from
   # cmd/cerberus only.
@@ -332,6 +340,16 @@ deps:
   # supplies the resolved config + the narrow CHConn at boot, so routerrules
   # takes only values, not those layers.
   routerrules:
+    mayDependOn:
+      - chsql
+
+  # deltaprefix composes its backfill/verify SQL via the typed chsql Frag
+  # API, so it depends on chsql (chsql → chplan, no cycle). schema is
+  # available via commonComponents for schema.Metrics column names +
+  # AggregationTemporalityDelta. It must NOT depend on engine or chclient —
+  # the CLI (cmd/cerberus, arch-lint-exempt) supplies the resolved config +
+  # the narrow Conn at boot, mirroring routerrules.
+  deltaprefix:
     mayDependOn:
       - chsql
 

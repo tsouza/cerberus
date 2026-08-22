@@ -607,3 +607,138 @@ func TestSignalString(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSignal_MetricsDeltaPrefixDisabledByDefault pins that
+// Config.DeltaPrefixEnabled's zero value (false) renders NO DELTA-prefix
+// statements at all — cerberus issue #2389's new, unproven machinery must be
+// byte-identical opt-out for every deployment that never sets
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED. TestRenderSignal_Metrics already
+// pins the exact statement COUNT for the disabled default; this test pins
+// the same fact by content, so a future change to either check can't
+// silently drift the other's assumption apart.
+func TestRenderSignal_MetricsDeltaPrefixDisabledByDefault(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	for i, stmt := range stmts {
+		if strings.Contains(stmt, "delta_prefix") || strings.Contains(stmt, "MATERIALIZED VIEW") {
+			t.Errorf("metrics[%d]: DELTA-prefix statement rendered despite DeltaPrefixEnabled=false:\n%s", i, stmt)
+		}
+	}
+}
+
+// TestRenderSignal_MetricsDeltaPrefixEnabled pins the CREATE TABLE + CREATE
+// MATERIALIZED VIEW pair rendered when Config.DeltaPrefixEnabled is true:
+// the table's AggregatingMergeTree engine, its ORDER BY column order (
+// MetricName, BucketStart, Attributes, ResourceAttributes, ServiceName —
+// per the plan's revised "Cost 2" pruning measurement), its
+// SimpleAggregateFunction(sum, Float64) column, and the MV's DELTA-only
+// filter + day-bucket GROUP BY. Both statements are appended AFTER the five
+// upstream CREATEs + the projection/index ALTERs, and the table CREATE
+// precedes the MV (which references it in TO).
+func TestRenderSignal_MetricsDeltaPrefixEnabled(t *testing.T) {
+	cfg := Config{DeltaPrefixEnabled: true}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	if len(stmts) < 2 {
+		t.Fatalf("expected at least 2 DELTA-prefix statements appended, got %d total: %v", len(stmts), stmts)
+	}
+	table := stmts[len(stmts)-2]
+	view := stmts[len(stmts)-1]
+
+	wantTable := "CREATE TABLE IF NOT EXISTS default.otel_metrics_sum_delta_prefix " +
+		"(`MetricName` LowCardinality(String), `Attributes` Map(LowCardinality(String), String), " +
+		"`ResourceAttributes` Map(LowCardinality(String), String), `ServiceName` LowCardinality(String), " +
+		"`BucketStart` DateTime64(9), `PartialSum` SimpleAggregateFunction(sum, Float64)) " +
+		"ENGINE = AggregatingMergeTree " +
+		"ORDER BY (`MetricName`, `BucketStart`, `Attributes`, `ResourceAttributes`, `ServiceName`)"
+	if table != wantTable {
+		t.Errorf("delta-prefix CREATE TABLE =\n%s\nwant\n%s", table, wantTable)
+	}
+
+	wantView := "CREATE MATERIALIZED VIEW IF NOT EXISTS default.otel_metrics_sum_delta_prefix_mv " +
+		"TO default.otel_metrics_sum_delta_prefix AS " +
+		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
+		"toStartOfDay(`TimeUnix`) AS `BucketStart`, sum(`Value`) AS `PartialSum` " +
+		"FROM `default`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 " +
+		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, toStartOfDay(`TimeUnix`)"
+	if view != wantView {
+		t.Errorf("delta-prefix CREATE MATERIALIZED VIEW =\n%s\nwant\n%s", view, wantView)
+	}
+}
+
+// TestRenderSignal_MetricsDeltaPrefixReplicated pins that a Replicated
+// database renders the bare ReplicatedAggregatingMergeTree engine (no
+// positional args — the database supplies the Keeper coordinates) for the
+// DELTA-prefix table, mirroring TestRenderSignal_ReplicatedDatabaseDefaultsToReplicatedMergeTree's
+// contract for the five upstream tables — and, critically, that this holds
+// regardless of what cfg.Engine resolves to for those other tables: the
+// DELTA-prefix table's engine FAMILY is fixed by its own
+// SimpleAggregateFunction column, never inherited from Config.Engine.
+func TestRenderSignal_MetricsDeltaPrefixReplicated(t *testing.T) {
+	cfg := Config{
+		DeltaPrefixEnabled: true,
+		DatabaseEngine: DatabaseEngine{
+			Replicated:        true,
+			ReplicatedZooPath: "/clickhouse/databases/otel",
+		},
+	}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	table := stmts[len(stmts)-2]
+	if !strings.Contains(table, "ENGINE = ReplicatedAggregatingMergeTree") {
+		t.Errorf("delta-prefix CREATE TABLE under a Replicated database must use the bare "+
+			"ReplicatedAggregatingMergeTree engine:\n%s", table)
+	}
+	if strings.Contains(table, "ReplicatedAggregatingMergeTree(") {
+		t.Errorf("ReplicatedAggregatingMergeTree must take NO arguments (Replicated database supplies "+
+			"Keeper coordinates; explicit args are rejected with code 36):\n%s", table)
+	}
+}
+
+// TestRenderSignal_MetricsDeltaPrefixCustomColumns pins that a custom
+// Tables.MetricsDeltaPrefix / DeltaPrefixBucketColumn / DeltaPrefixSumColumn
+// render everywhere the defaults would — the CREATE TABLE's column list +
+// ORDER BY, the CREATE MATERIALIZED VIEW's name, TO target, SELECT aliases
+// and GROUP BY.
+func TestRenderSignal_MetricsDeltaPrefixCustomColumns(t *testing.T) {
+	cfg := Config{
+		DeltaPrefixEnabled:      true,
+		Tables:                  Tables{MetricsDeltaPrefix: "custom_delta_prefix"},
+		DeltaPrefixBucketColumn: "Bucket",
+		DeltaPrefixSumColumn:    "Partial",
+	}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	table := stmts[len(stmts)-2]
+	view := stmts[len(stmts)-1]
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS default.custom_delta_prefix",
+		"`Bucket` DateTime64(9)",
+		"`Partial` SimpleAggregateFunction(sum, Float64)",
+		"ORDER BY (`MetricName`, `Bucket`, `Attributes`, `ResourceAttributes`, `ServiceName`)",
+	} {
+		if !strings.Contains(table, want) {
+			t.Errorf("delta-prefix CREATE TABLE missing %q:\n%s", want, table)
+		}
+	}
+	for _, want := range []string{
+		"CREATE MATERIALIZED VIEW IF NOT EXISTS default.custom_delta_prefix_mv",
+		"TO default.custom_delta_prefix",
+		"AS `Bucket`",
+		"AS `Partial`",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("delta-prefix CREATE MATERIALIZED VIEW missing %q:\n%s", want, view)
+		}
+	}
+}

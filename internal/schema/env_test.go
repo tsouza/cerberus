@@ -224,6 +224,50 @@ func TestDefaultOTelMetricsFromEnv_PromResourceLabels(t *testing.T) {
 	}
 }
 
+// TestDefaultOTelMetricsFromEnv_DeltaPrefix pins that
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED (cerberus issue #2389) is the ONLY
+// thing that populates DeltaPrefixTable / DeltaPrefixBucketColumn /
+// DeltaPrefixSumColumn — unset/empty/falsey leaves all three "" (matching
+// DefaultOTelMetrics()'s own empty defaults, per
+// TestDefaultOTelMetricsDeltaPrefixEmptyByDefault), a truthy value
+// populates all three with their stock names together.
+func TestDefaultOTelMetricsFromEnv_DeltaPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{"unset", "", false},
+		{"false", "false", false},
+		{"garbage", "nope", false},
+		{"true", "true", true},
+		{"one", "1", true},
+		{"yes", "yes", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvMetricsDeltaPrefixEnabled, tc.val)
+			m := DefaultOTelMetricsFromEnv()
+			if tc.want {
+				if m.DeltaPrefixTable != "otel_metrics_sum_delta_prefix" {
+					t.Errorf("DeltaPrefixTable: got %q, want otel_metrics_sum_delta_prefix", m.DeltaPrefixTable)
+				}
+				if m.DeltaPrefixBucketColumn != "BucketStart" {
+					t.Errorf("DeltaPrefixBucketColumn: got %q, want BucketStart", m.DeltaPrefixBucketColumn)
+				}
+				if m.DeltaPrefixSumColumn != "PartialSum" {
+					t.Errorf("DeltaPrefixSumColumn: got %q, want PartialSum", m.DeltaPrefixSumColumn)
+				}
+				return
+			}
+			if m.DeltaPrefixTable != "" || m.DeltaPrefixBucketColumn != "" || m.DeltaPrefixSumColumn != "" {
+				t.Errorf("expected all three fields empty, got Table=%q Bucket=%q Sum=%q",
+					m.DeltaPrefixTable, m.DeltaPrefixBucketColumn, m.DeltaPrefixSumColumn)
+			}
+		})
+	}
+}
+
 // TestDefaultOTelLogsFromEnv_Unset / _Override mirror the metrics
 // coverage for the logs surface.
 func TestDefaultOTelLogsFromEnv_Unset(t *testing.T) {
