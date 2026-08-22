@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate.go:lowerSumOrAvgOverMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerMixedExpHistogramSetOp's identical check for the leaf mixed-or case (histogram_native_mixed_or.go), lowerVectorSetOp's identical check for the float case, and lowerExpHistogramSetOp's identical check for the both-histogram case",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerRoot"
+        ],
+        "cited": [
+          "lowerExpHistogramSetOp",
+          "lowerMixedExpHistogramSetOp",
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}

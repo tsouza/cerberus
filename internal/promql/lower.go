@@ -270,6 +270,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerMixedExpHistogramSetOp(b, s, ctx)
 	}
+	// `sum`/`avg` [by/without] wrapping that same mixed shape (cerberus
+	// issue #2346 — the WHERE-recognized follow-on this file's own
+	// [mixedExpHistogramSetOp] doc comment named as deliberately
+	// unattempted). Checked right after the leaf case for the same
+	// reason: [lowerExpHistogramValuedShape] above already tried and
+	// failed to resolve a mixed `or` aggregand as purely histogram-
+	// valued, so nothing above this line can have consumed the shape yet.
+	if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}
@@ -308,8 +318,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
 	}
-	if histSide, floatSide, op, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
-		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, s, ctx)
+	if histSide, floatSide, op, match, card, include, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
+		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, match, card, include, s, ctx)
 	}
 	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
@@ -4353,14 +4363,38 @@ func groupKeyAliases(n int) []string {
 // TimeUnix slot references the bucket alias the Aggregate exposed so
 // per-step aggregation rows propagate onto the canonical column shape.
 func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s schema.Metrics, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
-	var attrs chplan.Expr
+	tsExpr := chplan.NowNano()
+	if rangeBucketed {
+		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
+	}
+
+	return &chplan.Project{
+		Input: agg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: promAggregateAttributesExpr(a, aliases), Alias: s.AttributesColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
+}
+
+// promAggregateAttributesExpr rebuilds the Attributes map a PromQL
+// aggregation's `by`/`without` clause implies, from the group-key
+// aliases the underlying [chplan.Aggregate] projected them under. Split
+// out of [wrapAggregateForSample] so
+// histogram_native_mixed_or_aggregate.go's plain (float-side) branch of
+// a `sum`/`avg`-wrapped mixed `or` (cerberus issue #2346) rebuilds
+// Attributes identically to every other plain PromQL aggregation,
+// instead of drifting with its own copy.
+func promAggregateAttributesExpr(a *parser.AggregateExpr, aliases []string) chplan.Expr {
 	switch {
 	case len(aliases) == 0:
 		// No grouping — emit an empty Map(String, String).
-		attrs = emptyAttrsMap()
+		return emptyAttrsMap()
 	case a.Without:
 		// Single mapFilter-derived attribute column; the gkey IS the map.
-		attrs = &chplan.ColumnRef{Name: aliases[0]}
+		return &chplan.ColumnRef{Name: aliases[0]}
 	default:
 		// `sum by (job, instance) (...)` over series whose `job` label is
 		// absent produces a gkey with the CH-Map default empty string
@@ -4375,24 +4409,9 @@ func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s sc
 		for i, label := range a.Grouping {
 			args = append(args, &chplan.LitString{V: label}, &chplan.ColumnRef{Name: aliases[i]})
 		}
-		attrs = &chplan.MapWithoutEmptyValues{
+		return &chplan.MapWithoutEmptyValues{
 			Map: &chplan.FuncCall{Fn: chplan.FnMap, Args: args},
 		}
-	}
-
-	tsExpr := chplan.NowNano()
-	if rangeBucketed {
-		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
-	}
-
-	return &chplan.Project{
-		Input: agg,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: attrs, Alias: s.AttributesColumn},
-			{Expr: tsExpr, Alias: s.TimestampColumn},
-			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
-		},
 	}
 }
 

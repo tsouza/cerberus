@@ -81,6 +81,23 @@ func (*RangeBucketGridNative) planNode() {}
 
 func (r *RangeBucketGridNative) Children() []Node { return []Node{r.Input} }
 
+// NumAnchors is the number of grid anchor points this native aggregate
+// materialises: one row per Step across [Start, End] (end-inclusive), i.e.
+// (End-Start)/Step + 1. Unlike [RangeBucketFanout] and [RangeLWR] this node
+// is only ever built with a pinned, non-zero Start/End (range mode is a
+// precondition — see emitRangeBucketGridNative's own validation), but the
+// zero-grid guard is kept for the same defence-in-depth reason
+// [RangeBucketFanout.NumAnchors] keeps it: a caller of this method should
+// never have to also know this node's own construction invariants hold.
+// Same rationale as [RangeBucketFanout.NumAnchors] for why this axis needs
+// its own charge in [requireSubquerySampleBudget].
+func (r *RangeBucketGridNative) NumAnchors() int64 {
+	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
+		return 0
+	}
+	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
+}
+
 func (r *RangeBucketGridNative) Equal(other Node) bool {
 	o, ok := other.(*RangeBucketGridNative)
 	if !ok {

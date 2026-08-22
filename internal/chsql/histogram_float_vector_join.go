@@ -7,10 +7,10 @@ import (
 )
 
 // histogram_float_vector_join.go emits chplan.HistogramFloatVectorJoin
-// (cerberus issue #2339): a real INNER JOIN between a histogram-valued
+// (cerberus issue #2339, widened to on()/ignoring()/group_left()/
+// group_right() by #2342): a real INNER JOIN between a histogram-valued
 // operand (Left, a *chplan.HistogramProjection) and a plain float-valued
-// operand (Right), keyed on Attributes under DEFAULT one-to-one vector
-// matching only.
+// operand (Right), keyed on Match.
 //
 // Unlike emitHistogramVectorJoin, the two sides are NOT symmetric: only
 // Left carries the nine histogram fields, and they ride through under
@@ -21,23 +21,37 @@ import (
 // per-bucket scale-fold literal-scalar scaling uses
 // (internal/promql/histogram_native_scalar_binop.go's
 // scaleHistogramProjection), reading the scale factor off the joined
-// Value column instead of a compile-time constant. Right contributes
-// only that single Value column, reusing [emitter.joinSideFrag] — the
-// exact per-side "latest sample" argMax / derived-shape / step-aligned
-// logic emitVectorJoin's own Right arm already exercises — so this file
-// adds no new per-side join mechanics of its own, only the histogram
-// Left arm and the outer SELECT/JOIN shape.
+// Value column instead of a compile-time constant.
+//
+// The per-side role split mirrors emitVectorJoin's own
+// [vectorJoinRoles] / emitHistogramVectorJoin's [histogramVectorJoinRoles]
+// (see [histogramFloatVectorJoinRoles]): default (full-Attributes)
+// CardOneToOne keeps both sides at roleMany (each already unique on the
+// full key by construction); an on()/ignoring() reduced key makes both
+// sides roleOne (collapse + ambiguity guard); CardManyToOne keeps Left
+// (the histogram side, always the "many" under the only cardinality this
+// node supports) at roleMany and collapses Right to roleOne. Left reuses
+// [emitter.histogramFieldsJoinSideFrag] — the exact collapse-and-guard
+// logic emitHistogramVectorJoin's own roleOne arm already exercises.
+// Right reuses [emitter.joinSideFrag] — the exact per-side "latest
+// sample" argMax / derived-shape / step-aligned logic emitVectorJoin's
+// own Right arm already exercises — so this file adds no new per-side
+// join mechanics of its own, only the histogram Left arm's field list,
+// the output-Attributes fold (CardOneToOne Keep/Del or CardManyToOne
+// Include overlay — [histogramFloatVectorJoinOutputAttributesFrag]), and
+// the outer SELECT/JOIN shape.
 func (e *emitter) emitHistogramFloatVectorJoin(j *chplan.HistogramFloatVectorJoin) error {
 	if err := e.validateHistogramFloatVectorJoinCols(j); err != nil {
 		return err
 	}
+	leftRole, rightRole := histogramFloatVectorJoinRoles(j)
 
-	leftFrag, err := e.histogramFloatVectorJoinHistSideFrag(j)
+	leftFrag, err := e.histogramFloatVectorJoinHistSideFrag(j, leftRole)
 	if err != nil {
 		return err
 	}
 	rightFrag, err := e.joinSideFrag(
-		j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, j.Right, roleMany,
+		j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, j.Right, rightRole,
 	)
 	if err != nil {
 		return err
@@ -46,6 +60,10 @@ func (e *emitter) emitHistogramFloatVectorJoin(j *chplan.HistogramFloatVectorJoi
 	cols := histogramFloatVectorJoinHistCols(j)
 	selects := make([]Frag, 0, len(cols)+1)
 	for _, col := range cols {
+		if col == j.AttributesColumn {
+			selects = append(selects, As(histogramFloatVectorJoinOutputAttributesFrag(j), col))
+			continue
+		}
 		selects = append(selects, As(qualColFrag("L", col), col))
 	}
 	selects = append(selects, As(qualColFrag("R", j.ValueColumn), j.ValueColumn))
@@ -67,14 +85,72 @@ func (e *emitter) validateHistogramFloatVectorJoinCols(j *chplan.HistogramFloatV
 		return fmt.Errorf("%w: HistogramFloatVectorJoin.TimestampColumn unset", ErrUnsupported)
 	case j.ValueColumn == "":
 		return fmt.Errorf("%w: HistogramFloatVectorJoin.ValueColumn unset", ErrUnsupported)
-	case len(j.Match.Labels) != 0 || j.Match.On:
-		// on()/ignoring() reduced-key matching for this histogram/
-		// float-vector scaling shape is tracked as follow-up work (see
-		// the node's own doc comment) — reject outright rather than
-		// silently mis-joining on the wrong key.
-		return fmt.Errorf("%w: HistogramFloatVectorJoin only supports default (full-Attributes) vector matching", ErrUnsupported)
+	case j.Card != chplan.CardOneToOne && j.Card != chplan.CardManyToOne:
+		// CardOneToMany would mean the histogram side plays the "one"
+		// role, broadcasting a single histogram across many float rows —
+		// not a shape this node supports (see its own doc comment).
+		// Reject outright rather than silently mis-joining.
+		return fmt.Errorf("%w: HistogramFloatVectorJoin.Card must be CardOneToOne or CardManyToOne", ErrUnsupported)
 	}
 	return nil
+}
+
+// histogramFloatVectorJoinRoles resolves the per-side aggregation roles,
+// mirroring [vectorJoinRoles] / [histogramVectorJoinRoles]:
+//
+//   - CardManyToOne → Left (histogram) is many, Right (float) is one —
+//     the only broadcast direction this node supports.
+//   - CardOneToOne with full-Attributes match → both sides are "many";
+//     the per-series aggregation already guarantees one row per
+//     matching key.
+//   - CardOneToOne with a subset (on()/ignoring()) match → both sides
+//     are "one" (uniqueness enforced at runtime on both).
+func histogramFloatVectorJoinRoles(j *chplan.HistogramFloatVectorJoin) (sideRole, sideRole) {
+	if j.Card == chplan.CardManyToOne {
+		return roleMany, roleOne
+	}
+	if len(j.Match.Labels) == 0 && !j.Match.On {
+		return roleMany, roleMany
+	}
+	return roleOne, roleOne
+}
+
+// histogramFloatVectorJoinOutputAttributesFrag returns the join's output
+// Attributes expression:
+//
+//   - CardOneToOne: the histogram (Left) side's own Attributes, reduced
+//     to the matching label set per Prometheus's resultMetric Keep/Del
+//     rule — [outputMatchSetFrag], the exact same reduction
+//     emitVectorJoin's own CardOneToOne output applies. Default matching
+//     is a no-op reduction, so this renders the identical bare `L.
+//     Attributes` the pre-#2342 code always emitted — byte-stable for
+//     every existing default-matching fixture.
+//   - CardManyToOne: the "many" side's (Left, the histogram operand)
+//     full Attributes, optionally overlaid with the "one" side's
+//     (Right, the float operand) Include labels via `mapConcat` — CH's
+//     later-argument-wins map merge, mirroring [outputAttributesFrag]'s
+//     identical group_left/right overlay for plain VectorJoin. Bare
+//     group_left/right (no Include labels) leaves Left's Attributes
+//     unchanged: Prometheus's CardOneToOne Keep/Del reduction does not
+//     apply to a many-to-one cardinality.
+func histogramFloatVectorJoinOutputAttributesFrag(j *chplan.HistogramFloatVectorJoin) Frag {
+	attrs := j.AttributesColumn
+	if j.Card != chplan.CardManyToOne {
+		return outputMatchSetFrag(j.Match, "L", attrs)
+	}
+	if len(j.Include) == 0 {
+		return qualColFrag("L", attrs)
+	}
+	includes := make([]Frag, len(j.Include))
+	for i, lbl := range j.Include {
+		includes[i] = Lit(lbl)
+	}
+	overlay := Call(
+		"mapFilter",
+		Lambda2("k", "v", In(BareIdent("k"), includes...)),
+		qualColFrag("R", attrs),
+	)
+	return Call("mapConcat", qualColFrag("L", attrs), overlay)
 }
 
 // histogramFloatVectorJoinHistCols lists every field the join's Left
@@ -94,38 +170,19 @@ func histogramFloatVectorJoinHistCols(j *chplan.HistogramFloatVectorJoin) []stri
 }
 
 // histogramFloatVectorJoinHistSideFrag renders the join's Left
-// (histogram) arm as a Frag emitting a parenthesised SELECT subquery. A
-// *chplan.HistogramProjection input already carries at most one row per
-// (series, anchor) by construction — the same "many" guarantee
-// histogramVectorJoinSideFrag's own roleMany branch relies on — so this
-// is a straight passthrough of the nine histogram fields plus
-// MetricName/Attributes/TimeUnix, no aggregation needed: default
-// (full-Attributes) matching is the only shape
-// [validateHistogramFloatVectorJoinCols] admits, and a HistogramProjection
-// row is already unique on that exact key.
-//
-// Field columns route through the shared `_join_*`-alias-then-outer-
-// rename pattern vectorJoinSideFrag documents (breaks CH's alias-chain
-// trace through the aggregation subquery, avoiding a false
-// ILLEGAL_AGGREGATION) — joinAlias is reused verbatim from vector_join.go.
-func (e *emitter) histogramFloatVectorJoinHistSideFrag(j *chplan.HistogramFloatVectorJoin) (Frag, error) {
-	sub, err := e.subqueryFrag(j.Left)
-	if err != nil {
-		return nil, err
-	}
-	cols := histogramFloatVectorJoinHistCols(j)
-
-	inner := NewQuery().From(sub)
-	innerProjs := make([]Frag, 0, len(cols))
-	for _, col := range cols {
-		innerProjs = append(innerProjs, As(Col(col), joinAlias(col)))
-	}
-	inner.Select(innerProjs...)
-
-	outerProjs := make([]Frag, 0, len(cols))
-	for _, col := range cols {
-		outerProjs = append(outerProjs, As(Col(joinAlias(col)), col))
-	}
-	outer := NewQuery().Select(outerProjs...).From(inner.Frag())
-	return outer.Frag(), nil
+// (histogram) arm as a Frag emitting a parenthesised SELECT subquery —
+// a thin wrapper over [emitter.histogramFieldsJoinSideFrag] (shared with
+// [emitter.histogramVectorJoinSideFrag], internal/chsql/
+// histogram_vector_join.go). roleMany (default matching, or CardManyToOne
+// where the histogram side is always the "many") is a straight
+// passthrough of the nine histogram fields plus MetricName/Attributes/
+// TimeUnix — a *chplan.HistogramProjection input already carries at most
+// one row per (series, anchor) by construction, which for default
+// matching already IS the matching key. roleOne (an on()/ignoring()
+// reduced key under CardOneToOne) collapses to one row per Match-reduced
+// key via `any()` per field, guarded by the same
+// `throwIf(uniqExact(...) > 1, ...)` ambiguity check plain VectorJoin's
+// roleOne uses.
+func (e *emitter) histogramFloatVectorJoinHistSideFrag(j *chplan.HistogramFloatVectorJoin, role sideRole) (Frag, error) {
+	return e.histogramFieldsJoinSideFrag(j.Match, j.AttributesColumn, j.TimestampColumn, j.StepAligned, histogramFloatVectorJoinHistCols(j), j.Left, role)
 }

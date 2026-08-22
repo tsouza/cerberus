@@ -75,3 +75,63 @@ func TestQuery_SubqueryWithinBudget_NotGated(t *testing.T) {
 		t.Fatal("within-budget subquery never reached execution; the anchor gate over-rejected")
 	}
 }
+
+// TestQuery_HistogramSubqueryAnchorBudget422 — #2408 regression pin. A
+// classic-histogram `histogram_quantile(...)` used as a SUBQUERY INNER
+// materialises its own [chplan.RangeBucketFanout] directly off the
+// subquery's [OuterRange:Step] grid, rather than through an
+// OuterRange-bearing [chplan.RangeWindow] the way a bare-selector subquery
+// does (see subquery_inner_histogram_quantile.txtar for the shape). Before
+// RangeBucketFanout.NumAnchors was wired into subqueryAnchorLoad, that grid
+// was invisible to this gate: the scalar sibling
+// TestQuery_SubqueryAnchorBudget422 already rejected the identical
+// [90d:1s] shape, but the histogram-valued analogue sailed straight
+// through to execution with the same 7,776,001-anchor-per-series
+// intermediate. This pins that the two now reject identically.
+func TestQuery_HistogramSubqueryAnchorBudget422(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{} // returns nothing; the gate must reject before reaching it
+	srv := newServerWithAnchorBudget(q, 1_000_000)
+	t.Cleanup(srv.Close)
+
+	q1 := url.QueryEscape("max_over_time(histogram_quantile(0.9, http_requests_bucket)[90d:1s])")
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q1)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	assertBudget422(t, resp)
+
+	if q.lastSQL != "" {
+		t.Fatalf("anchor gate must reject before emitting SQL; querier saw SQL: %q", q.lastSQL)
+	}
+}
+
+// TestQuery_HistogramSubqueryWithinBudget_NotGated — the histogram-inner
+// counterpart of TestQuery_SubqueryWithinBudget_NotGated: a normal
+// histogram_quantile subquery (5m:1m, matching
+// subquery_inner_histogram_quantile.txtar's own shape) must still reach
+// execution rather than being over-rejected by the new RangeBucketFanout
+// charge.
+func TestQuery_HistogramSubqueryWithinBudget_NotGated(t *testing.T) {
+	t.Parallel()
+
+	q := &stubQuerier{samples: []chclient.Sample{
+		{MetricName: "http_requests_bucket", Labels: map[string]string{"job": "api"}, Value: 1},
+	}}
+	srv := newServerWithAnchorBudget(q, 1_000_000)
+	t.Cleanup(srv.Close)
+
+	q1 := url.QueryEscape("max_over_time(histogram_quantile(0.9, http_requests_bucket)[5m:1m])")
+	resp, err := http.Get(srv.URL + "/api/v1/query?query=" + q1)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		t.Fatalf("within-budget histogram subquery wrongly gated (422); the anchor budget over-rejected")
+	}
+	if q.lastSQL == "" {
+		t.Fatal("within-budget histogram subquery never reached execution; the anchor gate over-rejected")
+	}
+}

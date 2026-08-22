@@ -113,24 +113,42 @@ func histogramVectorJoinAlias(side, col string) string {
 }
 
 // histogramVectorJoinSideFrag renders one side of the join as a Frag
-// emitting a parenthesised SELECT subquery. roleMany passes every field
-// of n straight through (no aggregation: a HistogramProjection input is
-// already one row per (series, anchor)). roleOne collapses to one row
-// per Match-reduced key via `any()` per field, with the same
-// `throwIf(uniqExact(...) > 1, ...)` guard plain VectorJoin's roleOne
-// uses.
+// emitting a parenthesised SELECT subquery — a thin wrapper over
+// [emitter.histogramFieldsJoinSideFrag] (shared with
+// [emitter.histogramFloatVectorJoinHistSideFrag], internal/chsql/
+// histogram_float_vector_join.go's own histogram-side arm) binding j's
+// own Match/AttributesColumn/TimestampColumn/StepAligned and field list.
+func (e *emitter) histogramVectorJoinSideFrag(j *chplan.HistogramVectorJoin, n chplan.Node, role sideRole) (Frag, error) {
+	return e.histogramFieldsJoinSideFrag(j.Match, j.AttributesColumn, j.TimestampColumn, j.StepAligned, histogramVectorJoinFieldCols(j), n, role)
+}
+
+// histogramFieldsJoinSideFrag renders one "histogram-valued" side of a
+// join — every field a *chplan.HistogramProjection input publishes
+// (MetricName, Attributes, TimeUnix, the nine fixed Histogram*Column
+// fields) — as a Frag emitting a parenthesised SELECT subquery. roleMany
+// passes every field of n straight through (no aggregation: a
+// HistogramProjection input is already one row per (series, anchor)).
+// roleOne collapses to one row per Match-reduced key via `any()` per
+// field, with the same `throwIf(uniqExact(...) > 1, ...)` guard plain
+// VectorJoin's roleOne uses.
 //
 // Field columns route through the shared `_join_*`-alias-then-outer-
 // rename pattern vectorJoinSideFrag documents (breaks CH's alias-chain
 // trace through the aggregation subquery, avoiding a false
 // ILLEGAL_AGGREGATION) — joinAlias / matchCheckGuardFrag /
 // matchKeyGroupExprFrag are reused verbatim from vector_join.go.
-func (e *emitter) histogramVectorJoinSideFrag(j *chplan.HistogramVectorJoin, n chplan.Node, role sideRole) (Frag, error) {
+//
+// Generalised to plain parameters rather than a *chplan.HistogramVectorJoin
+// so [chplan.HistogramFloatVectorJoin]'s histogram-valued Left arm
+// (histogram_float_vector_join.go, cerberus issue #2342) can reuse the
+// identical collapse-and-guard logic for its own on()/ignoring() and
+// group_left()/group_right() widening, mirroring how [joinSideFrag] was
+// itself generalised from vectorJoinSideFrag for #2339.
+func (e *emitter) histogramFieldsJoinSideFrag(match chplan.VectorMatch, attrsCol, tsCol string, stepAligned bool, cols []string, n chplan.Node, role sideRole) (Frag, error) {
 	sub, err := e.subqueryFrag(n)
 	if err != nil {
 		return nil, err
 	}
-	cols := histogramVectorJoinFieldCols(j)
 	inner := NewQuery().From(sub)
 
 	if role == roleMany {
@@ -140,9 +158,9 @@ func (e *emitter) histogramVectorJoinSideFrag(j *chplan.HistogramVectorJoin, n c
 		}
 		inner.Select(projs...)
 	} else {
-		groupFrags := []Frag{matchKeyGroupExprFrag(j.Match, j.AttributesColumn)}
-		if j.StepAligned {
-			groupFrags = append(groupFrags, Col(j.TimestampColumn))
+		groupFrags := []Frag{matchKeyGroupExprFrag(match, attrsCol)}
+		if stepAligned {
+			groupFrags = append(groupFrags, Col(tsCol))
 		}
 		projs := make([]Frag, 0, len(cols))
 		for _, col := range cols {
@@ -150,7 +168,7 @@ func (e *emitter) histogramVectorJoinSideFrag(j *chplan.HistogramVectorJoin, n c
 		}
 		inner.Select(projs...).
 			GroupBy(groupFrags...).
-			Having(matchCheckGuardFrag(j.AttributesColumn))
+			Having(matchCheckGuardFrag(attrsCol))
 	}
 
 	outerProjs := make([]Frag, 0, len(cols))
