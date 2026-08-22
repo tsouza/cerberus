@@ -453,3 +453,127 @@ func TestRenderDDL_InlineValuesOK(t *testing.T) {
 		t.Errorf("RenderDDL = %q; want toIntervalDay(2)", got)
 	}
 }
+
+// TestCreateTableDatabase pins CreateTableBuilder's Database() qualifier:
+// unset renders the bare table name (the pre-existing optcorpus shape),
+// set renders `<db>.<table>`.
+func TestCreateTableDatabase(t *testing.T) {
+	cols := []ColumnDef{{Name: "a", Type: TypeRaw("String")}}
+	unqualified := CreateTable("t").IfNotExists().Columns(cols...).Engine(EngineMergeTree()).SQL()
+	wantUnqualified := "CREATE TABLE IF NOT EXISTS t (`a` String) ENGINE = MergeTree"
+	if unqualified != wantUnqualified {
+		t.Errorf("unqualified SQL() = %q; want %q", unqualified, wantUnqualified)
+	}
+
+	qualified := CreateTable("t").Database("otel").IfNotExists().Columns(cols...).Engine(EngineMergeTree()).SQL()
+	wantQualified := "CREATE TABLE IF NOT EXISTS otel.t (`a` String) ENGINE = MergeTree"
+	if qualified != wantQualified {
+		t.Errorf("qualified SQL() = %q; want %q", qualified, wantQualified)
+	}
+}
+
+// TestEngineAggregatingMergeTree pins the bare AggregatingMergeTree /
+// ReplicatedAggregatingMergeTree engine clauses — no positional arguments,
+// mirroring EngineMergeTree / EngineReplicatedMergeTree.
+func TestEngineAggregatingMergeTree(t *testing.T) {
+	if got := renderFrag(EngineAggregatingMergeTree()); got != "AggregatingMergeTree" {
+		t.Errorf("EngineAggregatingMergeTree = %q; want AggregatingMergeTree", got)
+	}
+	if got := renderFrag(EngineReplicatedAggregatingMergeTree()); got != "ReplicatedAggregatingMergeTree" {
+		t.Errorf("EngineReplicatedAggregatingMergeTree = %q; want ReplicatedAggregatingMergeTree", got)
+	}
+}
+
+// deltaPrefixMVBody builds a small representative aggregate SELECT — the
+// same shape internal/deltaprefix and internal/schema/ddl compose for the
+// real DELTA-prefix table — reused by TestCreateMaterializedView and
+// TestInsertSelect below.
+func deltaPrefixMVBody() *QueryBuilder {
+	return NewQuery().
+		Select(
+			Col("MetricName"),
+			Col("Attributes"),
+			As(Call("toStartOfDay", Col("TimeUnix")), "BucketStart"),
+			As(Call("sum", Col("Value")), "PartialSum"),
+		).
+		From(Qual("otel", "otel_metrics_sum")).
+		Where(Eq(Col("AggregationTemporality"), InlineLit(int64(1)))).
+		GroupBy(Col("MetricName"), Col("Attributes"), Call("toStartOfDay", Col("TimeUnix")))
+}
+
+// TestCreateMaterializedView pins the CREATE MATERIALIZED VIEW ... TO ...
+// AS ... shape: the optional <db>. qualifier on the view's own name, the
+// idempotent IF NOT EXISTS guard, the optional ON CLUSTER clause, the
+// <db>.<table> TO target, and the bare (unparenthesized) SELECT body. The
+// statement carries no positional args (the body uses only InlineLit), so
+// RenderDDL accepts it.
+func TestCreateMaterializedView(t *testing.T) {
+	wantBody := "SELECT `MetricName`, `Attributes`, toStartOfDay(`TimeUnix`) AS `BucketStart`, " +
+		"sum(`Value`) AS `PartialSum` FROM `otel`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 " +
+		"GROUP BY `MetricName`, `Attributes`, toStartOfDay(`TimeUnix`)"
+
+	got := CreateMaterializedView("otel_metrics_sum_delta_prefix_mv").
+		Database("otel").
+		IfNotExists().
+		To("otel", "otel_metrics_sum_delta_prefix").
+		As(deltaPrefixMVBody()).
+		SQL()
+	want := "CREATE MATERIALIZED VIEW IF NOT EXISTS otel.otel_metrics_sum_delta_prefix_mv " +
+		"TO otel.otel_metrics_sum_delta_prefix AS " + wantBody
+	if got != want {
+		t.Errorf("SQL() = %q; want %q", got, want)
+	}
+
+	gotCluster := CreateMaterializedView("v").
+		IfNotExists().
+		OnCluster("prod").
+		To("", "t").
+		As(NewQuery().Select(Col("a")).From(Col("t"))).
+		SQL()
+	wantCluster := "CREATE MATERIALIZED VIEW IF NOT EXISTS v ON CLUSTER `prod` TO t AS SELECT `a` FROM `t`"
+	if gotCluster != wantCluster {
+		t.Errorf("clustered SQL() = %q; want %q", gotCluster, wantCluster)
+	}
+}
+
+// TestInsertSelect pins the INSERT INTO ... (<cols>) <SELECT ...> shape,
+// including the case that actually motivates the builder: a body carrying a
+// real positional `?` binding (Lit), which Build() must surface in its args
+// return rather than dropping — the DML counterpart of RenderDDL's
+// no-bindings assertion for the CREATE/ALTER builders.
+func TestInsertSelect(t *testing.T) {
+	sql, args := InsertSelect(
+		"otel", "otel_metrics_sum_delta_prefix",
+		[]string{"MetricName", "Attributes", "BucketStart", "PartialSum"},
+		deltaPrefixMVBody(),
+	).Build()
+	want := "INSERT INTO otel.otel_metrics_sum_delta_prefix (`MetricName`, `Attributes`, `BucketStart`, `PartialSum`) " +
+		"SELECT `MetricName`, `Attributes`, toStartOfDay(`TimeUnix`) AS `BucketStart`, sum(`Value`) AS `PartialSum` " +
+		"FROM `otel`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 " +
+		"GROUP BY `MetricName`, `Attributes`, toStartOfDay(`TimeUnix`)"
+	if sql != want {
+		t.Errorf("Build() sql = %q; want %q", sql, want)
+	}
+	if len(args) != 0 {
+		t.Errorf("inline-only body must bind no args, got %v", args)
+	}
+
+	body := NewQuery().
+		Select(Col("MetricName")).
+		From(Qual("otel", "otel_metrics_sum")).
+		Where(Lt(Col("TimeUnix"), Lit(int64(1700000000))))
+	sqlBound, argsBound := InsertSelect("otel", "t", []string{"MetricName"}, body).Build()
+	wantBound := "INSERT INTO otel.t (`MetricName`) SELECT `MetricName` FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ?"
+	if sqlBound != wantBound {
+		t.Errorf("bound Build() sql = %q; want %q", sqlBound, wantBound)
+	}
+	if len(argsBound) != 1 || argsBound[0] != int64(1700000000) {
+		t.Errorf("bound Build() args = %v; want [1700000000]", argsBound)
+	}
+
+	unqualified, _ := InsertSelect("", "t", []string{"a"}, NewQuery().Select(Col("a")).From(Col("t"))).Build()
+	wantUnqualified := "INSERT INTO t (`a`) SELECT `a` FROM `t`"
+	if unqualified != wantUnqualified {
+		t.Errorf("unqualified Build() sql = %q; want %q", unqualified, wantUnqualified)
+	}
+}

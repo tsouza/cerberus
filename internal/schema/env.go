@@ -35,6 +35,18 @@ const (
 	// labels. Empty / unset promotes every resource-attribute key.
 	// Populates Metrics.PromResourceLabels.
 	EnvPromResourceLabels = "CERBERUS_PROM_RESOURCE_LABELS"
+	// EnvMetricsDeltaPrefixEnabled opts into the DELTA-temporality
+	// prefix-reconstruction aggregate table (cerberus issue #2389).
+	// Truthy values populate Metrics.DeltaPrefixTable /
+	// DeltaPrefixBucketColumn / DeltaPrefixSumColumn with their defaults;
+	// unset/empty/falsey leaves all three "" — mirrors EnvTracesTsLookup's
+	// shape. The SAME env var also gates internal/schema/ddl's DDL
+	// provisioning via config.SchemaProvisioning.DeltaPrefixEnabled
+	// (internal/config's own independent read, since internal/config
+	// cannot import internal/schema/env's Getenv-scoped helpers); both
+	// resolve from the identical operator declaration, so they can never
+	// disagree about whether the deployment opted in.
+	EnvMetricsDeltaPrefixEnabled = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
 )
 
 // traceIDTsSuffix is the fixed suffix the OTel-CH exporter's DDL template
@@ -105,6 +117,11 @@ func DefaultOTelMetricsFrom(get Getenv) Metrics {
 	m.ExpHistogramTable, m.TableOverrides.ExpHistogram = envOverride(get, EnvMetricsExpHistogramTable, m.ExpHistogramTable)
 	m.SummaryTable, m.TableOverrides.Summary = envOverride(get, EnvMetricsSummaryTable, m.SummaryTable)
 	m.PromResourceLabels = envCSVList(get, EnvPromResourceLabels)
+	if envBool(get, EnvMetricsDeltaPrefixEnabled) {
+		m.DeltaPrefixTable = defaultDeltaPrefixTable
+		m.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
+		m.DeltaPrefixSumColumn = defaultDeltaPrefixSumColumn
+	}
 	return m
 }
 

@@ -1111,6 +1111,127 @@ maintenance window, not the boot path. Track progress in `system.mutations`
 reads and rewrites the indexed column's marks, not the whole part, so it is
 far cheaper than a `MATERIALIZE PROJECTION` over the same table.
 
+### DELTA-prefix aggregate table + backfill (cerberus issue #2389)
+
+Auto-create can also provision an **opt-in, cerberus-owned** table + materialized
+view backing exact, retention-independent DELTA-temporality prefix
+reconstruction — the mechanism `rate()`/`increase()`'s counter-reset /
+extrapolation-boundary correction needs for a DELTA-temporality OTel Sum
+counter (see `Config.DeltaPrefixLookback`'s doc comment for the mechanism this
+supplements). Unlike the metadata projections and the skip index above, no
+upstream template backs this table — it never appears unless the operator
+opts in, and it is entirely additive: **this PR ships only the table, its MV,
+and the operator tooling below — cerberus's own query answering does not yet
+read from this table.** The read-side emitter change that would consume it
+(the `rate()`/`increase()` fast path) is separate scope, still open under
+issue #2389.
+
+**Provisioning** needs *two* independent flags, both default `false`:
+`CERBERUS_AUTO_CREATE_SCHEMA=true` (as for every other auto-created table) AND
+`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true`. This is new, unproven machinery,
+so a deployment that already has schema auto-create on for the five upstream
+tables does **not** get this table for free — the operator opts in a second
+time, explicitly.
+
+```sql
+CREATE TABLE IF NOT EXISTS <db>.otel_metrics_sum_delta_prefix
+(
+    MetricName          LowCardinality(String),
+    Attributes           Map(LowCardinality(String), String),
+    ResourceAttributes    Map(LowCardinality(String), String),
+    ServiceName          LowCardinality(String),
+    BucketStart          DateTime64(9),
+    PartialSum           SimpleAggregateFunction(sum, Float64)
+)
+ENGINE = AggregatingMergeTree
+ORDER BY (MetricName, BucketStart, Attributes, ResourceAttributes, ServiceName);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS <db>.otel_metrics_sum_delta_prefix_mv
+TO <db>.otel_metrics_sum_delta_prefix AS
+SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
+       toStartOfDay(TimeUnix) AS BucketStart, sum(Value) AS PartialSum
+FROM <db>.otel_metrics_sum
+WHERE AggregationTemporality = 1
+GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketStart;
+```
+
+`BucketStart` sits right after `MetricName` in `ORDER BY` (not last) so a
+date-bounded read prunes on the primary key instead of scanning every bucket
+of every series for a metric. `SimpleAggregateFunction(sum, Float64)` on
+`AggregatingMergeTree` is what makes a plain `sum(PartialSum)` read correct
+regardless of how much background merging has happened — no `FINAL`, no
+staleness window (unlike `ReplacingMergeTree`, which would need one). The
+table's TTL and storage tiering follow the same `CERBERUS_SCHEMA_TTL_METRICS`
+/ `_TIER_AFTER_METRICS` knobs as the five upstream metrics tables, keyed on
+`BucketStart` — kept in lockstep with the base table's own retention on
+purpose: a bucket TTL'd out of the aggregate table is only ever one the base
+table has already dropped too.
+
+#### One-time DELTA-prefix backfill runbook
+
+**A `CREATE MATERIALIZED VIEW` does not retroactively process rows already in
+the base table** — the MV only captures INSERTs from the moment it is created
+onward. So immediately after provisioning, the aggregate table is correct for
+*new* data but **empty for history**, and reading it as-is would silently
+**under-count** every long-lived DELTA series (the exact bug issue #2389
+tracks fixing) — worse than not having the table at all. Two `cerberus
+schema` subcommands cover the one-time catch-up, both opening a real
+ClickHouse connection from the SAME `CERBERUS_*` / `cerberus.yaml`
+configuration the server reads:
+
+```sh
+# 1. Record (or look up) the MV's own creation timestamp, e.g. from
+#    system.tables.metadata_modification_time, or the wall-clock moment the
+#    CREATE MATERIALIZED VIEW statement above ran.
+
+# 2. Backfill everything strictly before that timestamp's calendar day.
+cerberus schema delta-prefix-backfill --before 2026-08-20T00:00:00Z
+
+# 3. Verify per-metric completeness before flipping the read-side flag.
+cerberus schema delta-prefix-verify --before 2026-08-20T00:00:00Z
+```
+
+**The `--before` bound is security-review-grade — getting it wrong corrupts
+data silently.** It MUST be the MV's own creation timestamp. Backfilling past
+it double-counts every row the live MV already captured, inflating
+`PartialSum` for every bucket the two overlap; backfilling with a bound
+*before* the true creation time under-counts the gap between the two. Both
+`delta-prefix-backfill` and `delta-prefix-verify` round the bound down to its
+calendar day internally (`toStartOfDay`), matching the aggregate table's own
+bucket resolution — so the cutover day itself is always left for the live MV
+to capture as ordinary new inserts arrive, and is never double- or
+under-counted by the one-time pass.
+
+`delta-prefix-backfill` runs a single `INSERT INTO ... SELECT` — the same
+`GROUP BY (MetricName, Attributes, ResourceAttributes, ServiceName,
+toStartOfDay(TimeUnix))` shape the MV itself uses — filtered to
+`AggregationTemporality = 1` (DELTA) and `TimeUnix` strictly before the
+cutover's calendar day. `--dry-run` prints the exact statement without
+executing it, for review before a maintenance window. Cost is bounded to the
+DELTA-temporality slice of the base table's history (empirically well under 1%
+of real `otel_metrics_sum` rows — see `Config.DeltaPrefixLookback`'s doc
+comment) plus one aggregate write per distinct `(MetricName, raw attribute
+tuple, day)` — materially cheaper than the projection back-fill above despite
+reading a wider column set.
+
+`delta-prefix-verify` compares the aggregate table's per-metric-name totals
+(`sum(PartialSum)`, grouped by `MetricName` only) against the base table's own
+DELTA-temporality totals (`sum(Value)` under the same `AggregationTemporality
+= 1` + before-day-boundary filter) and reports PASS/FAIL with a
+`--tolerance`-bounded per-metric mismatch table (`--json` for the
+machine-readable form). **Scope note:** this is a per-metric *completeness*
+check — did every DELTA row make it into the aggregate table — not a
+per-series *identity-alignment* check against cerberus's read-time computed
+series key (that validation belongs to the still-open read-side task under
+issue #2389; see `internal/deltaprefix`'s package doc for the full boundary). A
+clean `delta-prefix-verify` pass is the required confirmation before an
+operator sets `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true` and (once shipped)
+whatever flag the read-side change under #2389 introduces. A deployment that
+never backfills is not broken — it simply keeps running today's bounded
+`CERBERUS_DELTA_PREFIX_LOOKBACK` approximation indefinitely, a legitimate
+permanent choice for an operator who doesn't need exact boundary-correction
+precision.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time

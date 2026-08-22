@@ -177,6 +177,44 @@ type Metrics struct {
 	// future rollup-substitution rule would re-consume.
 	MetricsRollups []Rollup
 
+	// DeltaPrefixTable names the AggregatingMergeTree table backing exact,
+	// retention-independent DELTA-temporality prefix-reconstruction
+	// (cerberus issue #2389). Unlike every other table name on this
+	// struct, the upstream OTel Collector-Contrib ClickHouse exporter does
+	// NOT write this table — cerberus owns its DDL and its Materialized
+	// View end to end (see internal/schema/ddl).
+	//
+	// Empty (the default) — NOT a stock name — unless
+	// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in (see
+	// DefaultOTelMetricsFrom in internal/schema/env.go), the same signal
+	// that gates config.SchemaProvisioning.DeltaPrefixEnabled's DDL
+	// provisioning. This is deliberately unlike GaugeTable/SumTable/etc.,
+	// which always name a stock table regardless of whether it happens to
+	// exist: this field means "this deployment's schema declares a
+	// DELTA-prefix table", which is false until the operator says so, not
+	// merely "here is the name it would have". An operator who never sets
+	// the flag never sees this field populated, and the existing bounded
+	// DeltaPrefixLookback scan (internal/config's Config.DeltaPrefixLookback)
+	// remains cerberus's only DELTA-prefix-reconstruction mechanism for
+	// that deployment. Populating it alone changes no runtime query
+	// behavior — the read-side emitter change that would consume it is
+	// tracked separately under #2389.
+	DeltaPrefixTable string
+	// DeltaPrefixBucketColumn names DeltaPrefixTable's daily-bucket-boundary
+	// column (`toStartOfDay(TimeUnix)`, DateTime64(9)) — populated in
+	// lockstep with DeltaPrefixTable, empty under the same conditions.
+	// Unlike the base tables' column names above, this column is
+	// cerberus's own invention (no upstream template backs it), so it
+	// gets its own schema field rather than reusing TimestampColumn.
+	DeltaPrefixBucketColumn string
+	// DeltaPrefixSumColumn names DeltaPrefixTable's
+	// SimpleAggregateFunction(sum, Float64) column accumulating each
+	// bucket's partial sum of DELTA-temporality samples — populated in
+	// lockstep with DeltaPrefixTable, empty under the same conditions.
+	// Cerberus's own invention, like DeltaPrefixBucketColumn — not the
+	// base table's ValueColumn.
+	DeltaPrefixSumColumn string
+
 	// ExpHistogramSuffix is the metric-name suffix used to route a
 	// PromQL `histogram_quantile(phi, metric)` call to the exponential
 	// (native) histogram table instead of the classic-histogram table.
@@ -279,6 +317,21 @@ func (m Metrics) RollupsFor(base string) []Rollup {
 	return out
 }
 
+// defaultDeltaPrefixTable / defaultDeltaPrefixBucketColumn /
+// defaultDeltaPrefixSumColumn are the default names for
+// Metrics.DeltaPrefixTable / DeltaPrefixBucketColumn / DeltaPrefixSumColumn
+// (cerberus issue #2389). Naming the table always — like every other table
+// name on Metrics — even though, unlike the other five, nothing writes it
+// until an operator opts in via CERBERUS_AUTO_CREATE_SCHEMA +
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED: a bare "otel_metrics_sum_delta_prefix"
+// name matches the base table's own naming convention and gives
+// internal/schema/ddl a real default to render DDL against.
+const (
+	defaultDeltaPrefixTable        = "otel_metrics_sum_delta_prefix"
+	defaultDeltaPrefixBucketColumn = "BucketStart"
+	defaultDeltaPrefixSumColumn    = "PartialSum"
+)
+
 // defaultOTelRollups returns the canonical OTel CH exporter rollups.
 // The upstream exporter only writes these tables when the operator
 // explicitly enables the rollup feature, so the default schema
@@ -366,7 +419,11 @@ func DefaultOTelMetrics() Metrics {
 		ValueAtQuantilesColumn:     "ValueAtQuantiles",
 		ExemplarsColumn:            "Exemplars",
 		ExpHistogramSuffix:         "_exp_hist",
-		MetricsRollups:             defaultOTelRollups(),
+		// DeltaPrefixTable / DeltaPrefixBucketColumn / DeltaPrefixSumColumn
+		// are deliberately left "" here — see their doc comments above.
+		// DefaultOTelMetricsFrom (internal/schema/env.go) populates them
+		// only when CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in.
+		MetricsRollups: defaultOTelRollups(),
 	}
 }
 

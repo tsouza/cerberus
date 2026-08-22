@@ -70,6 +70,50 @@ func TestDDLConfig_TableNamesThreaded(t *testing.T) {
 	}
 }
 
+// TestDDLConfig_DeltaPrefixThreaded pins that the DELTA-prefix table name +
+// column names (cerberus issue #2389) thread from cfg.Schema the same way
+// every other table name does, and that the enable bit threads from
+// cfg.SchemaProvisioning.DeltaPrefixEnabled — a second, independent gate on
+// top of AutoCreateSchema, so it is checked here rather than assumed.
+func TestDDLConfig_DeltaPrefixThreaded(t *testing.T) {
+	cfg := config.Config{
+		Schema: schema.Metrics{
+			SumTable:                "m_sum",
+			DeltaPrefixTable:        "m_delta_prefix",
+			DeltaPrefixBucketColumn: "Bucket",
+			DeltaPrefixSumColumn:    "Partial",
+		},
+		SchemaProvisioning: config.SchemaProvisioning{DeltaPrefixEnabled: true},
+	}
+	got, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if !got.DeltaPrefixEnabled {
+		t.Error("DeltaPrefixEnabled not threaded from SchemaProvisioning")
+	}
+	if got.Tables.MetricsDeltaPrefix != "m_delta_prefix" {
+		t.Errorf("Tables.MetricsDeltaPrefix = %q; want m_delta_prefix", got.Tables.MetricsDeltaPrefix)
+	}
+	if got.DeltaPrefixBucketColumn != "Bucket" {
+		t.Errorf("DeltaPrefixBucketColumn = %q; want Bucket", got.DeltaPrefixBucketColumn)
+	}
+	if got.DeltaPrefixSumColumn != "Partial" {
+		t.Errorf("DeltaPrefixSumColumn = %q; want Partial", got.DeltaPrefixSumColumn)
+	}
+
+	// The disabled default must thread through as false, not silently
+	// default-true — this is what keeps an un-opted-in deployment's DDL
+	// byte-identical.
+	off, err := schemaboot.DDLConfig(config.Config{})
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if off.DeltaPrefixEnabled {
+		t.Error("DeltaPrefixEnabled must default false")
+	}
+}
+
 // TestDDLConfig_ReplicatedThreaded pins the Replicated database engine knobs
 // flow through to the ddl Config.
 func TestDDLConfig_ReplicatedThreaded(t *testing.T) {

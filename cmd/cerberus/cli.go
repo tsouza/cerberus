@@ -42,6 +42,7 @@ func newRootCmd(runServer func() error) *cobra.Command {
 	root.AddCommand(newServeCmd(runServer))
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newMigrateCmd())
+	root.AddCommand(newSchemaCmd())
 	root.AddCommand(newConfigDocsCmd())
 	root.AddCommand(newOptDocsCmd())
 	root.AddCommand(newRouteRulesCmd())
@@ -98,6 +99,13 @@ func exitCodeForError(err error) int {
 	var cgate gateFailedError
 	if errors.As(err, &cgate) {
 		return gateExitFail
+	}
+	// delta-prefix-verify reports the same "the gate did its job, not a tool
+	// malfunction" class of failure as `migrate verify`, so it shares that
+	// exit code rather than inventing its own.
+	var dpgate deltaPrefixVerifyFailedError
+	if errors.As(err, &dpgate) {
+		return verifyExitFail
 	}
 	return 1
 }

@@ -1,0 +1,296 @@
+package deltaprefix
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"github.com/tsouza/cerberus/internal/schema"
+)
+
+// testColumns builds a Columns value the way a deployment that has opted
+// into CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED would resolve one — schema.Metrics
+// .DeltaPrefixTable and friends are empty on schema.DefaultOTelMetrics()
+// until that flag is set (see internal/schema/env.go's
+// DefaultOTelMetricsFrom), so this fills them in directly rather than
+// coupling this package's SQL-rendering tests to that env-gating mechanism.
+func testColumns() Columns {
+	m := schema.DefaultOTelMetrics()
+	m.DeltaPrefixTable = "otel_metrics_sum_delta_prefix"
+	m.DeltaPrefixBucketColumn = "BucketStart"
+	m.DeltaPrefixSumColumn = "PartialSum"
+	return FromSchema("otel", m)
+}
+
+var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
+
+// TestBackfillSQL pins the rendered INSERT ... SELECT shape: the target
+// column list, the DELTA-only + before-day-boundary WHERE, and the
+// toStartOfDay bucket GROUP BY matching internal/schema/ddl's MV exactly.
+// The cutoff must be a bound positional arg (Lit), never inlined — it is
+// operator-supplied data, not part of the statement shape.
+func TestBackfillSQL(t *testing.T) {
+	sql, args := BackfillSQL(testColumns(), testBefore)
+	want := "INSERT INTO otel.otel_metrics_sum_delta_prefix " +
+		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketStart`, `PartialSum`) " +
+		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
+		"toStartOfDay(`TimeUnix`) AS `BucketStart`, sum(`Value`) AS `PartialSum` " +
+		"FROM `otel`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 AND `TimeUnix` < toStartOfDay(?) " +
+		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, toStartOfDay(`TimeUnix`)"
+	if sql != want {
+		t.Errorf("BackfillSQL sql =\n%s\nwant\n%s", sql, want)
+	}
+	if len(args) != 1 || args[0] != testBefore {
+		t.Errorf("BackfillSQL args = %v; want [%v]", args, testBefore)
+	}
+}
+
+// TestAggregateAndBaseTotalsSQL pins the two verify reads: both group by
+// MetricName only, both bound to the same before-day-boundary cutoff, and
+// the base read additionally filters to DELTA temporality — exactly the
+// population BackfillSQL writes.
+func TestAggregateAndBaseTotalsSQL(t *testing.T) {
+	c := testColumns()
+
+	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore)
+	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
+		"WHERE `BucketStart` < toStartOfDay(?) GROUP BY `MetricName`"
+	if aggSQL != wantAgg {
+		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
+	}
+	if len(aggArgs) != 1 || aggArgs[0] != testBefore {
+		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, testBefore)
+	}
+
+	baseSQL, baseArgs := baseTotalsSQL(c, testBefore)
+	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < toStartOfDay(?) GROUP BY `MetricName`"
+	if baseSQL != wantBase {
+		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
+	}
+	if len(baseArgs) != 1 || baseArgs[0] != testBefore {
+		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, testBefore)
+	}
+}
+
+// TestDiff pins the comparison logic: an exact match, a mismatch beyond
+// tolerance, a mismatch exactly AT the tolerance boundary (not reported —
+// ">" not ">="), and a metric present on only one side (reads as a full
+// mismatch against an implicit zero on the other side).
+func TestDiff(t *testing.T) {
+	agg := map[string]float64{
+		"exact_match":    100,
+		"over_tolerance": 100,
+		"at_boundary":    100.5,
+		"only_aggregate": 50,
+	}
+	base := map[string]float64{
+		"exact_match":    100,
+		"over_tolerance": 105,
+		"at_boundary":    100,
+		"only_base":      25,
+	}
+	rep := Diff(agg, base, testBefore, 0.5)
+
+	if rep.Pass() {
+		t.Fatal("expected mismatches, got Pass()=true")
+	}
+	if rep.Before != testBefore || rep.Tolerance != 0.5 {
+		t.Errorf("Report metadata not carried through: %+v", rep)
+	}
+
+	byName := map[string]Mismatch{}
+	for _, m := range rep.Mismatches {
+		byName[m.MetricName] = m
+	}
+	if _, ok := byName["exact_match"]; ok {
+		t.Error("exact_match must not be reported as a mismatch")
+	}
+	if _, ok := byName["at_boundary"]; ok {
+		t.Error("a diff exactly AT tolerance (0.5) must not be reported (strictly greater-than only)")
+	}
+	if m, ok := byName["over_tolerance"]; !ok {
+		t.Error("over_tolerance must be reported")
+	} else if m.Diff() != -5 {
+		t.Errorf("over_tolerance Diff() = %v; want -5", m.Diff())
+	}
+	if m, ok := byName["only_aggregate"]; !ok {
+		t.Error("only_aggregate must be reported (base implicitly 0)")
+	} else if m.Base != 0 || m.Aggregate != 50 {
+		t.Errorf("only_aggregate mismatch = %+v; want Aggregate=50 Base=0", m)
+	}
+	if m, ok := byName["only_base"]; !ok {
+		t.Error("only_base must be reported (aggregate implicitly 0)")
+	} else if m.Aggregate != 0 || m.Base != 25 {
+		t.Errorf("only_base mismatch = %+v; want Aggregate=0 Base=25", m)
+	}
+	if len(rep.Mismatches) != 3 {
+		t.Errorf("len(Mismatches) = %d; want 3, got %+v", len(rep.Mismatches), rep.Mismatches)
+	}
+}
+
+// TestDiff_Pass confirms an all-matching pair of maps reports Pass()=true
+// with zero mismatches.
+func TestDiff_Pass(t *testing.T) {
+	agg := map[string]float64{"m": 10}
+	base := map[string]float64{"m": 10}
+	rep := Diff(agg, base, testBefore, 0.001)
+	if !rep.Pass() {
+		t.Errorf("expected Pass()=true, got mismatches: %+v", rep.Mismatches)
+	}
+}
+
+// fakeRows is a canned driver.Rows over fixed (name, total) tuples, mirroring
+// internal/routerrules' source_ch_test.go fakeRows: driver.Rows is embedded
+// so the wide interface's unused methods are satisfied for free, and only
+// the four methods this package's scanTotals calls are overridden.
+type fakeRows struct {
+	driver.Rows
+	data [][2]any
+	pos  int
+}
+
+func (r *fakeRows) Next() bool {
+	if r.pos >= len(r.data) {
+		return false
+	}
+	r.pos++
+	return true
+}
+
+func (r *fakeRows) Scan(dest ...any) error {
+	row := r.data[r.pos-1]
+	if len(dest) != 2 {
+		return fmt.Errorf("fakeRows: scan arity %d != 2", len(dest))
+	}
+	np, ok := dest[0].(*string)
+	if !ok {
+		return fmt.Errorf("fakeRows: dest[0] is %T, want *string", dest[0])
+	}
+	*np = row[0].(string)
+	tp, ok := dest[1].(*float64)
+	if !ok {
+		return fmt.Errorf("fakeRows: dest[1] is %T, want *float64", dest[1])
+	}
+	*tp = row[1].(float64)
+	return nil
+}
+
+func (r *fakeRows) Err() error   { return nil }
+func (r *fakeRows) Close() error { return nil }
+
+// fakeConn is a scripted Conn: Query returns rows keyed by a substring match
+// against the SQL, Exec records every statement + args it received. Mirrors
+// internal/routerrules' recordingConn.
+type fakeConn struct {
+	execSQL  []string
+	execArgs [][]any
+	execErr  error
+
+	queries []string
+	respond map[string][][2]any
+	rowsErr error
+}
+
+func (c *fakeConn) Exec(_ context.Context, query string, args ...any) error {
+	c.execSQL = append(c.execSQL, query)
+	c.execArgs = append(c.execArgs, args)
+	return c.execErr
+}
+
+func (c *fakeConn) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
+	c.queries = append(c.queries, query)
+	if c.rowsErr != nil {
+		return nil, c.rowsErr
+	}
+	for match, rows := range c.respond {
+		if contains(query, match) {
+			return &fakeRows{data: rows}, nil
+		}
+	}
+	return &fakeRows{}, nil
+}
+
+func contains(s, substr string) bool {
+	return len(substr) == 0 || (len(s) >= len(substr) && indexOf(s, substr) >= 0)
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestBackfill_ExecutesRenderedSQL confirms Backfill hands conn EXACTLY the
+// statement + args BackfillSQL renders, and wraps a real Exec failure with
+// enough context to identify which table failed.
+func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
+	c := testColumns()
+	conn := &fakeConn{}
+	if err := Backfill(context.Background(), conn, c, testBefore); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	wantSQL, wantArgs := BackfillSQL(c, testBefore)
+	if len(conn.execSQL) != 1 || conn.execSQL[0] != wantSQL {
+		t.Errorf("Exec sql = %v; want [%q]", conn.execSQL, wantSQL)
+	}
+	if len(conn.execArgs) != 1 || len(conn.execArgs[0]) != len(wantArgs) {
+		t.Errorf("Exec args = %v; want %v", conn.execArgs, wantArgs)
+	}
+
+	failing := &fakeConn{execErr: errors.New("boom")}
+	err := Backfill(context.Background(), failing, c, testBefore)
+	if err == nil {
+		t.Fatal("expected error from a failing Exec")
+	}
+	if got := err.Error(); !contains(got, c.DeltaPrefixTable) {
+		t.Errorf("Backfill error %q does not name the target table %q", got, c.DeltaPrefixTable)
+	}
+}
+
+// TestVerify_ReadsBothTotalsAndDiffs runs Verify end to end against a
+// scripted Conn returning canned per-metric totals for each of the two
+// reads, confirming the resulting Report reflects both.
+func TestVerify_ReadsBothTotalsAndDiffs(t *testing.T) {
+	c := testColumns()
+	// Match keys are backtick-quoted: c.SumTable ("otel_metrics_sum") is a
+	// PREFIX of c.DeltaPrefixTable ("otel_metrics_sum_delta_prefix"), so an
+	// unquoted substring match would ambiguously match both queries — the
+	// closing backtick disambiguates.
+	conn := &fakeConn{
+		respond: map[string][][2]any{
+			"`" + c.DeltaPrefixTable + "`": {{"http_requests_total", 100.0}},
+			"`" + c.SumTable + "`":         {{"http_requests_total", 100.0}, {"missed_metric", 5.0}},
+		},
+	}
+	rep, err := Verify(context.Background(), conn, c, testBefore, 0.01)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(conn.queries) != 2 {
+		t.Fatalf("expected 2 queries (aggregate + base), got %d: %v", len(conn.queries), conn.queries)
+	}
+	if rep.Pass() {
+		t.Fatal("expected a mismatch (missed_metric absent from the aggregate table)")
+	}
+	if len(rep.Mismatches) != 1 || rep.Mismatches[0].MetricName != "missed_metric" {
+		t.Errorf("Mismatches = %+v; want exactly missed_metric", rep.Mismatches)
+	}
+}
+
+// TestVerify_PropagatesQueryError confirms a Query failure on either read
+// surfaces as an error rather than a silently-empty Report.
+func TestVerify_PropagatesQueryError(t *testing.T) {
+	c := testColumns()
+	conn := &fakeConn{rowsErr: errors.New("connection reset")}
+	if _, err := Verify(context.Background(), conn, c, testBefore, 0.01); err == nil {
+		t.Fatal("expected an error from a failing Query")
+	}
+}

@@ -399,6 +399,7 @@ func (c ColumnDef) frag() Frag {
 // optional TTL, and terminate with SQL. Like CreateDatabaseBuilder it binds no
 // positional `?` values, so SQL renders through RenderDDL.
 type CreateTableBuilder struct {
+	database    string // "" => unqualified table reference
 	name        string
 	ifNotExists bool
 	columns     []ColumnDef
@@ -410,6 +411,17 @@ type CreateTableBuilder struct {
 // CreateTable starts a CREATE TABLE builder for the named table.
 func CreateTable(name string) *CreateTableBuilder {
 	return &CreateTableBuilder{name: name}
+}
+
+// Database qualifies the table with a `<database>.` prefix. Unset (the
+// default) renders the bare table name, matching the pre-existing
+// unqualified corpus-table callsite; a cerberus-owned table that lives
+// alongside the OTel-CH schema (e.g. the DELTA-prefix aggregate table)
+// calls this to land in the same configured database as the tables
+// around it.
+func (c *CreateTableBuilder) Database(name string) *CreateTableBuilder {
+	c.database = name
+	return c
 }
 
 // IfNotExists adds the IF NOT EXISTS guard so re-create is idempotent.
@@ -446,12 +458,35 @@ func (c *CreateTableBuilder) TTL(t Frag) *CreateTableBuilder {
 // the single-node corpus table engine.
 func EngineMergeTree() Frag { return BareIdent("MergeTree") }
 
+// EngineAggregatingMergeTree renders the bare `AggregatingMergeTree` table
+// engine (no arguments) — required for a table carrying a
+// SimpleAggregateFunction / AggregateFunction column, whose read-time
+// `sum()`/… re-aggregation is correct regardless of how much background
+// merging has happened (unlike ReplacingMergeTree, which needs FINAL or a
+// dedup step). See EngineReplicatedAggregatingMergeTree for the Replicated-
+// database form.
+func EngineAggregatingMergeTree() Frag { return BareIdent("AggregatingMergeTree") }
+
+// EngineReplicatedAggregatingMergeTree renders the bare
+// `ReplicatedAggregatingMergeTree` table engine — the AggregatingMergeTree
+// analogue of EngineReplicatedMergeTree. Like that constructor, no
+// positional arguments: inside a Replicated database the Keeper path and
+// replica name come from the database's own Replicated(...) coordinates,
+// and explicit arguments are rejected (code 36).
+func EngineReplicatedAggregatingMergeTree() Frag {
+	return BareIdent("ReplicatedAggregatingMergeTree")
+}
+
 // frag assembles the whole CREATE TABLE statement from typed pieces.
 func (c *CreateTableBuilder) frag() Frag {
 	return func(b *Builder) {
 		ddlToken("CREATE TABLE ")(b)
 		if c.ifNotExists {
 			ddlToken("IF NOT EXISTS ")(b)
+		}
+		if c.database != "" {
+			BareIdent(c.database)(b)
+			ddlToken(".")(b)
 		}
 		BareIdent(c.name)(b)
 		ddlToken(" (")(b)
@@ -772,4 +807,174 @@ func (a *AddIndexBuilder) frag() Frag {
 // RenderDDL (which asserts the no-positional-bindings DDL invariant).
 func (a *AddIndexBuilder) SQL() string {
 	return RenderDDL(a.frag())
+}
+
+// --- CREATE MATERIALIZED VIEW surface (cerberus-owned aggregate tables) ---
+//
+// CreateMaterializedViewBuilder renders the `CREATE MATERIALIZED VIEW ...
+// TO <target> AS <SELECT>` form — the ONE cerberus uses. A materialized
+// view whose target is a first-class table this package ALSO creates (as
+// opposed to a bare `CREATE MATERIALIZED VIEW ... AS SELECT ...`, which
+// implicitly owns an internal, unnamed target table). The explicit `TO`
+// form is what lets the target survive a `DROP TABLE <mv>` — dropping the
+// view alone never drops the accumulated aggregate data — and lets an
+// operator (or a read-side emitter) query the target table directly by
+// name, same as any other table.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// CreateMaterializedViewBuilder builds a CREATE MATERIALIZED VIEW ... TO
+// ... AS ... statement.
+type CreateMaterializedViewBuilder struct {
+	database    string // "" => unqualified view reference
+	name        string
+	ifNotExists bool
+	cluster     string // "" => no ON CLUSTER clause
+	toDatabase  string // "" => unqualified target reference
+	toTable     string
+	body        *QueryBuilder
+}
+
+// CreateMaterializedView starts a builder for the named materialized view.
+func CreateMaterializedView(name string) *CreateMaterializedViewBuilder {
+	return &CreateMaterializedViewBuilder{name: name}
+}
+
+// Database qualifies the view's own name with a `<database>.` prefix.
+func (c *CreateMaterializedViewBuilder) Database(name string) *CreateMaterializedViewBuilder {
+	c.database = name
+	return c
+}
+
+// IfNotExists adds the IF NOT EXISTS guard so re-create is idempotent.
+func (c *CreateMaterializedViewBuilder) IfNotExists() *CreateMaterializedViewBuilder {
+	c.ifNotExists = true
+	return c
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the CREATE replicates the
+// same way the other DDL builders' statements do under a classic ON
+// CLUSTER deployment. A Replicated database replicates the DDL itself and
+// needs no clause.
+func (c *CreateMaterializedViewBuilder) OnCluster(name string) *CreateMaterializedViewBuilder {
+	c.cluster = name
+	return c
+}
+
+// To sets the `<database>.<table>` target table the view writes into —
+// already created by the caller earlier in the same statement sequence
+// (the MV references it, so it must exist first).
+func (c *CreateMaterializedViewBuilder) To(database, table string) *CreateMaterializedViewBuilder {
+	c.toDatabase = database
+	c.toTable = table
+	return c
+}
+
+// As sets the SELECT body. body must bind no positional args (the DDL
+// invariant) — every value in a materialized-view definition is part of
+// the statement shape, never a `?` binding (use InlineLit, never Lit,
+// inside body).
+func (c *CreateMaterializedViewBuilder) As(body *QueryBuilder) *CreateMaterializedViewBuilder {
+	c.body = body
+	return c
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/view/target identifiers via BareIdent, the
+// optional ON CLUSTER clause via the typed constructor, and the SELECT body
+// via QueryBuilder's own unexported writeInto (the bare `SELECT ...` text,
+// NOT wrapped in the parens QueryBuilder.Frag() would add — a materialized
+// view's AS clause takes the bare SELECT, unlike a nested subquery) — no
+// raw token is written here.
+func (c *CreateMaterializedViewBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("CREATE MATERIALIZED VIEW ")(b)
+		if c.ifNotExists {
+			ddlToken("IF NOT EXISTS ")(b)
+		}
+		if c.database != "" {
+			BareIdent(c.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(c.name)(b)
+		if c.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(c.cluster)(b)
+		}
+		ddlToken(" TO ")(b)
+		if c.toDatabase != "" {
+			BareIdent(c.toDatabase)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(c.toTable)(b)
+		ddlToken(" AS ")(b)
+		c.body.writeInto(b)
+	}
+}
+
+// SQL renders the CREATE MATERIALIZED VIEW statement to ClickHouse text via
+// RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (c *CreateMaterializedViewBuilder) SQL() string {
+	return RenderDDL(c.frag())
+}
+
+// --- INSERT INTO ... SELECT surface (cerberus-owned backfill statements) ---
+//
+// InsertSelectBuilder renders `INSERT INTO <database>.<table> (<cols...>)
+// <SELECT ...>` — the shape a one-time historical backfill uses to populate
+// a cerberus-owned aggregate table (e.g. `cerberus schema
+// delta-prefix-backfill`, internal/deltaprefix). Unlike the CREATE/ALTER
+// builders above this is a genuine DML statement that DOES carry
+// positional `?` bindings (a backfill cutoff timestamp is real data, bound
+// via Lit inside body's WHERE — never baked into the statement shape via
+// InlineLit), so it renders through Render's plain (sql, args) contract,
+// never RenderDDL.
+
+// InsertSelectBuilder builds an INSERT INTO ... SELECT statement.
+type InsertSelectBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	columns  []string
+	body     *QueryBuilder
+}
+
+// InsertSelect starts a builder inserting into `<database>.<table>`
+// (<database> may be "" for an unqualified reference), naming the target
+// column list explicitly (so the SELECT's column order is pinned rather
+// than left to table-definition order) with body as the SELECT source.
+func InsertSelect(database, table string, columns []string, body *QueryBuilder) *InsertSelectBuilder {
+	return &InsertSelectBuilder{database: database, table: table, columns: columns, body: body}
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table identifiers via BareIdent, backtick-quoted
+// column identifiers via Col, and the SELECT body via QueryBuilder's own
+// unexported writeInto (the bare `SELECT ...` text, matching the INSERT ...
+// SELECT grammar) — no raw token is written here.
+func (i *InsertSelectBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("INSERT INTO ")(b)
+		if i.database != "" {
+			BareIdent(i.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(i.table)(b)
+		ddlToken(" (")(b)
+		for idx, col := range i.columns {
+			if idx > 0 {
+				ddlToken(", ")(b)
+			}
+			Col(col)(b)
+		}
+		ddlToken(") ")(b)
+		i.body.writeInto(b)
+	}
+}
+
+// Build renders the statement to (sql, args) — unlike the CREATE/ALTER
+// builders' SQL() method, args is non-empty whenever body binds real values
+// via Lit (the intended shape for a backfill cutoff bound).
+func (i *InsertSelectBuilder) Build() (string, []any) {
+	return Render(i.frag())
 }

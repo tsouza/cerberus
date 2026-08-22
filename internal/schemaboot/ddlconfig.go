@@ -81,8 +81,18 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			MetricsHistogram:    cfg.Schema.HistogramTable,
 			MetricsExpHistogram: cfg.Schema.ExpHistogramTable,
 			MetricsSummary:      cfg.Schema.SummaryTable,
+			MetricsDeltaPrefix:  cfg.Schema.DeltaPrefixTable,
 		},
 		Settings: settings,
+		// DeltaPrefixEnabled (cerberus issue #2389) is a second, independent
+		// gate on top of AutoCreateSchema — see SchemaProvisioning's doc
+		// comment. The table + column names come from cfg.Schema (the SAME
+		// resolved schema struct every other table name above is threaded
+		// from), the enable bit from SchemaProvisioning (the SAME struct
+		// every other DDL-shaping knob on this Config comes from).
+		DeltaPrefixEnabled:      p.DeltaPrefixEnabled,
+		DeltaPrefixBucketColumn: cfg.Schema.DeltaPrefixBucketColumn,
+		DeltaPrefixSumColumn:    cfg.Schema.DeltaPrefixSumColumn,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert
