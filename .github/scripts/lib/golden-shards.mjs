@@ -215,7 +215,15 @@ export const SHARDS = {
   migration: {
     stage: STAGE_PRE,
     recipe: 'migration-golden',
-    goldens: ['test/e2e/migration/archetypes/*/expected'],
+    // migration-golden's MIGRATION_UPDATE_GOLDENS=1 run rewrites BOTH the
+    // per-archetype corpus goldens AND the MIG-10 rendered-schema goldens
+    // (test/e2e/migration/expected/schema/*.sql, one per schemaCases entry
+    // in test/e2e/migration/steps/schema.go) — a DDL-shape change (a new
+    // ADD PROJECTION / ADD INDEX ALTER, a retention/engine default change)
+    // moves the latter without touching a single archetype fixture, so both
+    // paths must be declared or the schema half fails ownership here even
+    // though the SAME recipe regenerated it.
+    goldens: ['test/e2e/migration/archetypes/*/expected', 'test/e2e/migration/expected/schema'],
     corpus: ['test/e2e/migration/archetypes'],
     // The Tier-0 harness does not emit the explain reports in-process: it
     // spawns the built `cerberus migrate explain` and captures its output
