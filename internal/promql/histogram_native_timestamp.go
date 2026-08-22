@@ -17,8 +17,8 @@ import (
 // shape (`sum(m_exp_hist)`, `rate(m_exp_hist[5m])`, …) the recursive
 // `lower()` call bypasses [lowerRoot]'s histogram-aware dispatch entirely
 // (that dispatch only runs at the ROOT of the whole expression tree), so
-// even a shape `sum(m_exp_hist)` alone lowers successfully hits the exact
-// same rejection once wrapped in `timestamp(...)`.
+// even a shape like `sum(m_exp_hist)` — which lowers successfully on its
+// own — hits the exact same rejection once wrapped in `timestamp(...)`.
 //
 // Reference semantics (tsouza/prometheus@cerberus-parser promql/engine.go,
 // funcTimestamp / rangeEvalTimestampFunctionOverVectorSelector — see
