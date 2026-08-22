@@ -82,27 +82,60 @@ func TestLower_ExpHistogram_MixedSetOpOr(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSideRejects pins the
-// deliberate scope line lowerMixedExpHistogramSetOp draws: a float side
-// that is itself a windowed / derived shape (here, a range-vector
-// `rate()` over a float metric) is not yet reconciled against the
-// histogram side's row shape, so the query is rejected with a clear
-// error rather than silently mis-projected. This is not a regression —
-// the histogram side of this exact query was ALREADY rejected before
-// this file existed (expHistogramSelectorRouting's catch-all).
-func TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSideRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSide pins cerberus
+// issue #2333: a float side that is itself a windowed / derived shape
+// (here, a range-vector `rate()` over a float metric) now lowers
+// successfully in both source orders and both instant and range-query
+// (step > 0) mode, because mixedVectorSetOpArmFrag canonicalises it
+// through the same matrix/derived-shape resolution the plain
+// (non-Mixed) VectorSetOp path already had. Before this fix, every one
+// of these cases was rejected by lowerMixedExpHistogramSetOp's explicit
+// "plain (non-windowed) float side" guard.
+func TestLower_ExpHistogram_MixedSetOpOr_WindowedFloatSide(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	const rangeStep = time.Minute
 
-	query := `rate(up[5m]) or latency_exp_hist`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
+	cases := []struct {
+		name          string
+		query         string
+		histogramLeft bool
+		step          time.Duration
+	}{
+		{name: "float left, instant", query: `rate(up[5m]) or latency_exp_hist`, histogramLeft: false, step: 0},
+		{name: "histogram left, instant", query: `latency_exp_hist or rate(up[5m])`, histogramLeft: true, step: 0},
+		{name: "float left, range", query: `rate(up[5m]) or latency_exp_hist`, histogramLeft: false, step: rangeStep},
+		{name: "histogram left, range", query: `latency_exp_hist or rate(up[5m])`, histogramLeft: true, step: rangeStep},
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, tc.step)
+			if err != nil {
+				t.Fatalf("LowerAtRange(%q, step=%s): unexpected error: %v", tc.query, tc.step, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.MixedRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s", tc.query, shape, chplan.MixedRowShape)
+			}
+			setOp, ok := plan.(*chplan.VectorSetOp)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.VectorSetOp", tc.query, plan)
+			}
+			if !setOp.Mixed {
+				t.Fatalf("lower(%q): VectorSetOp.Mixed = false, want true", tc.query)
+			}
+			if setOp.MixedHistogramOnLeft != tc.histogramLeft {
+				t.Fatalf("lower(%q): MixedHistogramOnLeft = %v, want %v", tc.query, setOp.MixedHistogramOnLeft, tc.histogramLeft)
+			}
+		})
 	}
 }

@@ -95,13 +95,24 @@ func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*
 // sum/avg on that side composes identically); the float-valued side
 // defers to the ordinary [lower]. Both are then widened to the shared
 // fourteen-column Mixed contract by the chsql emitter — this function
-// only builds the [chplan.VectorSetOp] naming which side is which.
+// only builds the [chplan.VectorSetOp] naming which side is which. The
+// float side may be any of the three row shapes
+// internal/chsql's vectorSetOpCanonicalArmFrag doc comment names —
+// canonical-shape, matrix RangeWindow, or instant derived-shape
+// (cerberus issue #2333) — because that package's
+// mixedVectorSetOpArmFrag canonicalises the float arm through the exact
+// same vectorSetOpCanonicalQuartetFrags helper the plain-VectorSetOp
+// path uses; see this function's shape guard below.
 func lowerMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if b.ReturnBool {
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
+	// The root-only leaf recognizer allows a windowed/derived float side
+	// (cerberus issue #2333) — see lowerMixedExpHistogramOperands's own
+	// doc comment for why this is NOT the same acceptance the sum/avg
+	// wrapper (histogram_native_mixed_or_aggregate.go, issue #2346) gets.
+	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx, true)
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +145,26 @@ func lowerMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx low
 // [lowerMixedExpHistogramSetOp] so histogram_native_mixed_or_aggregate.go's
 // `sum`/`avg`-wrapped recognizer (cerberus issue #2346) can build the
 // SAME two operand plans without duplicating the histogram-valued /
-// float-valued dispatch or the float-side shape restriction below.
-func lowerMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (histNode, floatNode chplan.Node, histOnLeft bool, err error) {
+// float-valued dispatch.
+//
+// allowWindowedFloatSide is per-caller, not a shared constant, because the
+// two callers' float-side acceptance genuinely differs:
+//   - The root-only leaf recognizer ([lowerMixedExpHistogramSetOp], issue
+//     #2333) passes true: internal/chsql's mixedVectorSetOpArmFrag
+//     canonicalises a matrix RangeWindow or a reduced instant shape
+//     through the exact same vectorSetOpCanonicalQuartetFrags helper the
+//     plain (non-Mixed) VectorSetOp path already uses, so a windowed/
+//     derived float side is safe there.
+//   - The sum/avg-wrapped recognizer
+//     ([lowerSumOrAvgOverMixedExpHistogramSetOp], issue #2346) passes
+//     false: it feeds floatNode into its OWN aggregation reduction
+//     ([lowerPlainAggOverMixedFloatArm]), which has not been taught that
+//     canonicalisation, so a windowed float side there is a separate,
+//     unimplemented axis — pinned by
+//     TestLower_ExpHistogram_MixedSetOpOr_SumWrapped_WindowedFloatSideRejects.
+func lowerMixedExpHistogramOperands(
+	b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx, allowWindowedFloatSide bool,
+) (histNode, floatNode chplan.Node, histOnLeft bool, err error) {
 	histOnLeft = isExpHistogramValuedShape(b.LHS, s, ctx)
 	histExpr, floatExpr := b.LHS, b.RHS
 	if !histOnLeft {
@@ -150,18 +179,18 @@ func lowerMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metrics, ctx 
 	if err != nil {
 		return nil, nil, false, err
 	}
-	// The float side must publish the plain canonical quartet: a
-	// windowed / already-derived float shape (a matrix rate(), a
-	// reduced instant aggregation) needs its OWN reconciliation against
-	// the histogram side's row shape that this file does not attempt —
-	// scoped out deliberately rather than silently mis-projected. Every
-	// shape this rejects today was ALREADY rejected before this file
-	// existed (the histogram side hit expHistogramSelectorRouting), so
-	// this is not a regression, only a narrower acceptance than the
-	// eventual general case. The restriction applies identically whether
-	// the mixed `or` is the whole query or wrapped in `sum`/`avg`
-	// (cerberus issue #2346), so both callers share this one check.
-	if shape := chplan.RowShapeOf(floatNode); shape != chplan.SampleRowShape {
+	shape := chplan.RowShapeOf(floatNode)
+	accepted := shape == chplan.SampleRowShape ||
+		(allowWindowedFloatSide && (shape == chplan.GridWindowRowShape || shape == chplan.ReducedWindowRowShape))
+	if !accepted {
+		if allowWindowedFloatSide {
+			return nil, nil, false, fmt.Errorf(
+				"promql: 'or' between a float-valued and a histogram-valued operand does not "+
+					"support a %s-shaped float operand, which cerberus issue #2333 does not "+
+					"cover",
+				shape,
+			)
+		}
 		return nil, nil, false, fmt.Errorf(
 			"promql: 'or' between a float-valued and a histogram-valued operand only "+
 				"supports a plain (non-windowed) float side today; got a %s-shaped float "+

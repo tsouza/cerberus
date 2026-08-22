@@ -101,7 +101,11 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
 	}
 
-	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
+	// false: the sum/avg-wrapped path does not yet accept a windowed float
+	// side — see lowerMixedExpHistogramOperands's own doc comment for why
+	// this is NOT the same acceptance the root-only leaf recognizer
+	// (issue #2333) gets.
+	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx, false)
 	if err != nil {
 		return nil, err
 	}
