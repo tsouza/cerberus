@@ -2330,6 +2330,31 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	return nil, fmt.Errorf("promql: function %s is not a recognized lowering target", c.Func.Name)
 }
 
+// matrixSelectorArg validates that c carries exactly one range-vector
+// argument and unwraps it to the (MatrixSelector, its inner VectorSelector)
+// pair lowerRangeVectorCall's generic path operates on. Split out of
+// lowerRangeVectorCall itself so that function's own maintainability index
+// stays clear of golangci-lint's `maintidx` floor (.golangci.yml) — this
+// block is a self-contained validate-and-unwrap step with no dependency on
+// anything lowerRangeVectorCall does afterward.
+func matrixSelectorArg(c *parser.Call) (*parser.MatrixSelector, *parser.VectorSelector, error) {
+	if len(c.Args) != 1 {
+		return nil, nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
+	}
+	arg := peelWrappers(c.Args[0])
+	ms, ok := arg.(*parser.MatrixSelector)
+	if !ok {
+		return nil, nil, fmt.Errorf("promql: %s argument must be a range-vector selector, got %T",
+			c.Func.Name, arg)
+	}
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T",
+			ms.VectorSelector)
+	}
+	return ms, vs, nil
+}
+
 // lowerRangeVectorCall handles range-vector functions: rate, increase,
 // delta, and the `*_over_time` family. The single argument is a
 // MatrixSelector wrapping a VectorSelector; we lower the VectorSelector
@@ -2362,19 +2387,9 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// prometheus/promql/functions.go::funcFirstOverTime. Like
 	// last_over_time it preserves `__name__` via the
 	// wrapRangeWindowPreserveName special-case below.
-	if len(c.Args) != 1 {
-		return nil, fmt.Errorf("promql: %s expects exactly 1 argument, got %d", c.Func.Name, len(c.Args))
-	}
-	arg := peelWrappers(c.Args[0])
-	ms, ok := arg.(*parser.MatrixSelector)
-	if !ok {
-		return nil, fmt.Errorf("promql: %s argument must be a range-vector selector, got %T",
-			c.Func.Name, arg)
-	}
-	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
-	if !ok {
-		return nil, fmt.Errorf("promql: matrix selector's inner must be a VectorSelector, got %T",
-			ms.VectorSelector)
+	ms, vs, err := matrixSelectorArg(c)
+	if err != nil {
+		return nil, err
 	}
 	// deriv / mad_over_time / stddev_over_time / stdvar_over_time read
 	// only the window's float samples in reference Prometheus and answer
