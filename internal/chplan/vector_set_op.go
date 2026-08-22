@@ -68,9 +68,14 @@ type VectorSetOp struct {
 
 	// Mixed marks a VectorSetOr whose Left and Right disagree on value
 	// type -- exactly one is a [HistogramProjection] (or a nested
-	// histogram-shaped VectorSetOp) and the other is a plain
-	// [SampleRowShape] float vector (cerberus issue #2330, the
-	// mixed-type sibling of the Histogram flag above). Reference
+	// histogram-shaped VectorSetOp) and the other is a float vector
+	// (cerberus issue #2330, the mixed-type sibling of the Histogram
+	// flag above), published as any of [SampleRowShape],
+	// [GridWindowRowShape] (a matrix range function), or
+	// [ReducedWindowRowShape] (an instant derived shape) -- see
+	// internal/promql's lowerMixedExpHistogramSetOp (cerberus issue
+	// #2333) for the shape guard and internal/chsql's
+	// mixedVectorSetOpArmFrag for the canonicalisation. Reference
 	// Prometheus's `or` never inspects value type, only labels, so a
 	// `Vector` it returns can freely hold both float and native-histogram
 	// `Sample`s at once -- cerberus answers that by widening BOTH arms to
