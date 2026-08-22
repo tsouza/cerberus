@@ -429,6 +429,7 @@ pinned_name_selector_no_histogram_fanout.txtar
 pow_arithmetic.txtar
 power_op_basic.txtar
 power_op_vv.txtar
+predict_linear_exp_histogram_drops.txtar
 predict_linear_scalar_horizon.txtar
 predict_linear_simple.txtar
 predict_linear_subscrape_drops.txtar
