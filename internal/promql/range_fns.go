@@ -491,11 +491,15 @@ func matrixAndSelector(c *parser.Call, arg parser.Expr) (*parser.MatrixSelector,
 // funcStddevOverTime / funcStdvarOverTime) both early-return `enh.Out, nil`
 // on `len(samples.Floats) == 0`. mad_over_time's funcMadOverTime does the
 // identical `len(samples.Floats) == 0` early return. compareOverTime
-// (min_over_time / max_over_time) does too — verified directly against
-// tsouza/prometheus's promql/functions.go (cerberus issue #2480): `if
-// len(samples.Floats) == 0 { return enh.Out, nil }` runs before it ever
-// looks at samples.Histograms, so an all-histogram window answers empty
-// exactly like the other five here.
+// (min_over_time / max_over_time, and — cerberus issue #2482 — their
+// timestamp-reporting siblings ts_of_max_over_time / ts_of_min_over_time,
+// which route through the SAME compareOverTime with returnTimestamp=true)
+// does too — verified directly against tsouza/prometheus's
+// promql/functions.go (cerberus issues #2480 and #2482): `if
+// len(samples.Floats) == 0 { return enh.Out, nil }` runs before
+// compareOverTime ever looks at samples.Histograms, so an all-histogram
+// window answers empty exactly like the other five here, regardless of
+// whether the caller wants the extreme VALUE or its TIMESTAMP.
 //
 // last_over_time / first_over_time are deliberately EXCLUDED: reference
 // Prometheus (funcLastOverTime / funcFirstOverTime) reads the window's
@@ -515,12 +519,14 @@ func matrixAndSelector(c *parser.Call, arg parser.Expr) (*parser.MatrixSelector,
 // would be wrong for them, so they get their own windowed-count lowering
 // in histogram_native_count_present_over_time.go (cerberus issue #2480).
 var rangeVectorFloatOnlyDropFuncs = map[string]bool{
-	"deriv":            true,
-	"mad_over_time":    true,
-	"stddev_over_time": true,
-	"stdvar_over_time": true,
-	"min_over_time":    true,
-	"max_over_time":    true,
+	"deriv":               true,
+	"mad_over_time":       true,
+	"stddev_over_time":    true,
+	"stdvar_over_time":    true,
+	"min_over_time":       true,
+	"max_over_time":       true,
+	"ts_of_max_over_time": true,
+	"ts_of_min_over_time": true,
 }
 
 // dropExpHistogramSamplesForRangeVector recognises a range-vector

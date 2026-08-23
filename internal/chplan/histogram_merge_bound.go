@@ -1,10 +1,14 @@
 package chplan
 
 // HistogramMergeBudgetMessage is the `throwIf` message the native-histogram
-// across-series merge guard raises when either of its two fan-out factors —
-// series contributing to one (anchor, group) cell, or the merged bucket
-// ladder's width after downscaling — crosses its resource bound. It lives in
-// chplan (not chsql) for the same reason [InfoConflictingLabelMessage] and
+// across-series merge guard raises when the merge's resource bound is
+// crossed: primarily the joint `rows x (merged bucket-range width)^3` cost
+// the real cost driver measured (internal/promql/histogram_merge_bound.go's
+// header doc has the calibration), plus a series-per-group ceiling that
+// exists purely to keep that cost multiply from overflowing Int64 rather
+// than as an independently-tuned business threshold (see that package's
+// maxHistogramMergeRowCountOverflowGuard). It lives in chplan (not chsql)
+// for the same reason [InfoConflictingLabelMessage] and
 // [DuplicateLabelsetMessage] do: the lowering that builds the guard
 // (internal/promql) may not import the SQL-emission layer (see
 // .go-arch-lint.yml — promql may depend on chplan only), and the classifier
