@@ -333,6 +333,37 @@ Notes:
   right-closed membership window, upstream PR #86588). The presence aggregate
   is a `ts_grid_resets` sibling from PR #86010, released in the same 25.9, so
   the floor is unchanged either way.
+- **Window-slide anchor injection** is a second ClickHouse-native lowering of
+  the per-series window stage under
+  `histogram_quantile(phi, <agg> by(le) (sum_over_time(<bucket>[range])))` in
+  range mode, alongside `ts_grid_histogram`'s `rate` ladder. It is **not** a
+  `chopt` registry entry and carries no row in the generated table above:
+  unlike the rest of this family it needs no version-gated ClickHouse
+  function, only plain window functions with a numeric `RANGE` frame that
+  every floor cerberus targets already has, so it is
+  `chopt.AlwaysAvailable` and wired unconditionally rather than resolved
+  against the server version. The mechanism injects one sentinel row per grid
+  anchor via `UNION ALL` and folds each series' contributing rows across it
+  with `sumForEach(BucketCounts) OVER (RANGE BETWEEN <lookback> PRECEDING AND
+  CURRENT ROW)`, so a single windowed aggregate produces the whole grid's
+  ladder without materialising a per-anchor row replica the way the
+  fan-out's array expression does.
+  This path is **not** a blanket replacement for the fan-out: it is eligible
+  only for the SUM-fold `sum_over_time` (`rate` keeps its own `rate()`
+  extrapolation and reset-repair semantics on `ts_grid_histogram` instead),
+  and only once the window's Lookback/Step ratio clears a threshold of 10 —
+  below that, the extra `UNION ALL` and window-frame machinery are not worth
+  their own correctness surface over the existing fan-out. The measured
+  speedup **tracks that ratio directly and is not a flat multiplier**:
+  a 5-minute window at a 1-minute step (ratio 5, the modal Grafana panel
+  shape) measured only 1.12x — explicitly below the eligibility threshold, so
+  that shape stays on the fan-out — while a 5-minute window at a 30-second
+  step (ratio 10, the threshold) measured 1.70x, a 5-minute window at a
+  15-second step (ratio 20) measured 2.65x, and a 30-minute window at a
+  15-second step (ratio 120) measured 10-14x. A query whose window shape sits
+  below the ratio-10 threshold, or whose fold is anything other than
+  `sum_over_time` (`increase`, `delta`, `irate`, `idelta`), continues to lower
+  through the existing array-expression fan-out unchanged.
 
 ## Runtime version probe
 
