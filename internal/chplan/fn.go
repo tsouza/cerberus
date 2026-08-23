@@ -444,6 +444,13 @@ const (
 	// toMonth(d) — d's calendar month (1-12).
 	FnToMonth Fn = "toMonth"
 
+	// toUnixTimestamp64Milli(dt) — dt (DateTime64) as an Int64 count of
+	// milliseconds since the Unix epoch, TRUNCATING any sub-millisecond
+	// tail. Used wherever a DateTime64(9) column must be compared against
+	// Prometheus's own millisecond-resolution Point.T rather than leaking
+	// nanosecond precision Prom never has.
+	FnToUnixMillis Fn = "toUnixTimestamp64Milli"
+
 	// toUnixTimestamp64Nano(dt) — dt (DateTime64) as an Int64 count of nanoseconds
 	// since the Unix epoch.
 	FnToUnixNanos Fn = "toUnixTimestamp64Nano"
