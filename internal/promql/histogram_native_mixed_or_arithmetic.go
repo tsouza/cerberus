@@ -47,13 +47,12 @@ import (
 // composition rather than "the same shape, one more op" — its own sibling
 // recognizer now, histogram_native_mixed_or_comparison.go (cerberus issue
 // #2449's fifth wrapper family), the same way this issue's own math-fn PR
-// (#2479) left round()'s 2-arg to_nearest form unattempted. MUL and histogram-left
-// DIV are likewise out of scope: they need the histogram side actually
-// SCALED (all nine Histogram*Column outputs, à la
-// [scaleHistogramProjection]) rather than dropped, a materially
-// different lowering. Both stay tracked by
-// test/rejection-parity/catalogue's rotated trigger query under this
-// issue.
+// (#2479) left round()'s 2-arg to_nearest form unattempted. MUL and
+// histogram-left DIV are likewise out of THIS recognizer's scope: they
+// need the histogram side actually SCALED (all nine Histogram*Column
+// outputs), a materially different lowering — its own sibling recognizer
+// now, histogram_native_mixed_or_scale.go (cerberus issue #2449's sixth
+// wrapper family).
 func arithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (setOp *parser.BinaryExpr, op chplan.BinaryOp, scalar float64, scalarOnLeft, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || b.Op.IsSetOperator() || b.Op.IsComparisonOperator() {
