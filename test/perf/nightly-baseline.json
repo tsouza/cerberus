@@ -3,26 +3,32 @@
     {
       "name": "classic_histogram_quantile_by_route",
       "expected_status": 200,
-      "max_of_n_bytes": 463466575,
-      "ceiling_bytes": 695199862
+      "max_of_n_bytes": 467301444,
+      "ceiling_bytes": 700952166
     },
     {
       "name": "request_rate_by_method",
       "expected_status": 422,
-      "max_of_n_bytes": 252364637,
-      "ceiling_bytes": 378546955
+      "max_of_n_bytes": 243162243,
+      "ceiling_bytes": 364743364
     },
     {
       "name": "pod_status_reason_gauge",
       "expected_status": 200,
-      "max_of_n_bytes": 823750613,
+      "max_of_n_bytes": 750219684,
       "ceiling_bytes": 912680550
     },
     {
       "name": "error_ratio_by_namespace",
       "expected_status": 422,
-      "max_of_n_bytes": 340975066,
-      "ceiling_bytes": 511462599
+      "max_of_n_bytes": 270230013,
+      "ceiling_bytes": 405345019
+    },
+    {
+      "name": "classic_native_histogram_derived",
+      "expected_status": 200,
+      "max_of_n_bytes": 502923638,
+      "ceiling_bytes": 754385457
     }
   ]
 }

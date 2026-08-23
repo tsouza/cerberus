@@ -193,4 +193,71 @@ var Sentinels = []Sentinel{
 			}
 		},
 	},
+	{
+		// nativeHistogramMetric (loader.go) is DERIVED, not captured: the
+		// real production sample this whole package's data was scrubbed
+		// from only ever emits classic-bucket histograms (see loader.go's
+		// loadNativeHistogramFromClassicSample doc comment), so there is no
+		// real exponential-histogram sample to load. This sentinel carries
+		// the same real 3,741-series cardinality and real per-series sample
+		// cadence as classic_histogram_quantile_by_route, just re-bucketed
+		// into an OTel exponential layout — the point is exercising
+		// internal/chsql/histogram_quantile_native.go's merge/cumsum
+		// machinery at real production scale, which no other lane (smoke's
+		// own native-histogram sentinel is CI-fixture scale, see
+		// test/perf/smoke/seed.go) reaches today.
+		//
+		// Params deliberately does NOT wrap nativeHistogramMetric in a
+		// `sum by(...)(...)` aggregation the way the other by-route/by-method
+		// sentinels do. Measured directly against this exact derived data: a
+		// plain `sum by (http_route) (nativeHistogramMetric)` — even with NO
+		// rate()/window wrapper at all, at a SINGLE query anchor — genuinely
+		// exceeds the 1 GiB ClickHouse memory cap
+		// (MEMORY_LIMIT_EXCEEDED, not a clean chsql-level rejection): the
+		// native-histogram merge path has no resource-bound guard of its own
+		// yet (unlike RangeBucketFanout's #2429 fix), tracked as issue #2490.
+		// The bare per-series shape here — one `histogram_quantile` per
+		// original series, no cross-series merge — is a real,
+		// currently-lowerable PromQL construct (see
+		// test/spec/promql/histogram_quantile_native_range.txtar) that still
+		// exercises the SAME native quantile machinery (cum/revcum bucket
+		// walk over each series' own, now-fixed-layout — see loader.go —
+		// PositiveBucketCounts) at real per-series scale, without tripping
+		// the separately-tracked aggregation gap.
+		//
+		// WindowStart/WindowEnd/Step mirror
+		// classic_histogram_quantile_by_route's own narrowed window rather
+		// than the other three sentinels' shared ~4h20m/1m production
+		// window, calibrated the same way — a real sweep against this exact
+		// derived data at increasing anchor counts (max-of-5 measurements,
+		// same nightlySentinelRepeats this harness always uses):
+		// 5 anchors -> 23.8% of cap, 10 -> 45.9%, 15 -> 75.4% — steeply
+		// non-linear, the same shape classic_histogram_quantile_by_route's
+		// own sweep found. 15 anchors already breaches safe headroom margin
+		// (75.4% * nightlyBaselineHeadroom's 1.5x = 113%, over the cap
+		// outright — PRONG (b) would have to clamp to the absolute ceiling
+		// and so never actually gate, the same failure mode
+		// pod_status_reason_gauge's own comment in
+		// realch_perfnightly_integration_test.go warns against). 10 anchors
+		// is the sweep's safest pick that still meaningfully stresses
+		// ClickHouse: real margin (45.9% * 1.5 = 68.85%, ~16 points under
+		// nightlyMemoryCapFraction) while processing double
+		// classic_histogram_quantile_by_route's own 5-anchor window. The
+		// committed ceiling in nightly-baseline.json comes from its own
+		// separate calibration capture (~46-47% of cap) — normal max-of-5
+		// run-to-run variance from this sweep's own 45.9%, not a different
+		// window or query shape.
+		Name:           "classic_native_histogram_derived",
+		Family:         "histogram_quantile over a DERIVED exponential histogram — same real cardinality/cadence as the classic sentinel above, re-bucketed (see loader.go)",
+		Path:           "/api/v1/query_range",
+		ExpectedStatus: http.StatusOK,
+		WindowStart:    time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
+		WindowEnd:      time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
+		Step:           time.Minute,
+		Params: func(start, end time.Time) url.Values {
+			return url.Values{
+				"query": {`histogram_quantile(0.95, ` + nativeHistogramMetric + `)`},
+			}
+		},
+	},
 }

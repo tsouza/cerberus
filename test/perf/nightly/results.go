@@ -2,7 +2,7 @@
 // perf-nightly-step-summary.mjs can render an unambiguous table in the
 // workflow's $GITHUB_STEP_SUMMARY.
 //
-// Why this exists: 2 of the 4 sentinels in sentinels.go are CALIBRATED to
+// Why this exists: 2 of the 5 sentinels in sentinels.go are CALIBRATED to
 // be rejected with HTTP 422 (issue #2429) — that rejection is the correct,
 // expected outcome, not a failure, and cerberus's own engine.go logs a
 // WARN-level "cerberus query failed" line for every non-2xx query outcome
