@@ -10,7 +10,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 4
+	const wantCount = 5
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
