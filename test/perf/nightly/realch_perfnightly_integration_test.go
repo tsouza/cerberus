@@ -44,7 +44,7 @@
 //     baseline-less sentinel.
 //   - PRONG (b): a committed per-sentinel ceiling in nightly-baseline.json,
 //     the calibration-time max-of-N measurement times a headroom multiplier
-//     (nightlyBaselineHeadroom) — tighter than PRONG (a), so it is what
+//     (Sentinel.BaselineHeadroom, per-sentinel) — tighter than PRONG (a), so it is what
 //     actually catches a real regression long before the absolute ceiling
 //     would.
 //
@@ -133,10 +133,14 @@ const perfNightlyMemoryCapBytes int64 = 1 << 30 // 1 GiB
 // staying meaningfully below ClickHouse's own 1.0 OOM boundary.
 const nightlyMemoryCapFraction = 0.85
 
-// nightlyBaselineHeadroom mirrors test/perf/smoke's sentinelBaselineHeadroom
-// (1.5x) — see its own comment for why a memory metric wants a tighter
-// multiplier than scale_wall_pin_chdb_test.go's noisier wall-clock prong.
-const nightlyBaselineHeadroom = 1.5
+// Per-sentinel committed-ceiling headroom multipliers used to be one
+// package-wide nightlyBaselineHeadroom constant (1.5x, mirroring
+// test/perf/smoke's sentinelBaselineHeadroom). A real noise investigation
+// found the four sentinels' run-to-run peak-memory variance differs by
+// nearly an order of magnitude, so a single multiplier was either too loose
+// for the quiet sentinels or flake-risked the noisy ones — see each
+// sentinel's own BaselineHeadroom field and sentinels.go's *BaselineHeadroom
+// constants for the real measurements backing each value.
 
 // nightlySentinelRepeats (N) mirrors test/perf/smoke's sentinelRepeats — a
 // ceiling gate wants the worst observed case, so max-of-N, never
@@ -306,7 +310,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				// permanently unable to fire — a looser "tighter" check is a
 				// gate that silently never gates. PRONG (b) must never be
 				// looser than PRONG (a).
-				ceiling := min(uint64(float64(maxBytes)*nightlyBaselineHeadroom), capCeiling)
+				ceiling := min(uint64(float64(maxBytes)*sentinel.BaselineHeadroom), capCeiling)
 				updated[sentinel.Name] = nightlyBound{
 					Name: sentinel.Name, ExpectedStatus: sentinel.ExpectedStatus,
 					MaxOfNBytes: maxBytes, CeilingBytes: ceiling,
@@ -338,7 +342,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 				t.Errorf("%s: peak memory %d bytes exceeds the committed ceiling %d bytes (measured max-of-N was "+
 					"%d at calibration time, %.2fx headroom) — %s may have regressed; only run "+
 					"`just update-nightly-perf-baseline` if the increase is genuinely intended",
-					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, nightlyBaselineHeadroom, sentinel.Family)
+					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, sentinel.BaselineHeadroom, sentinel.Family)
 			}
 
 			// Every check above passed — this is the ONLY place Pass is set
