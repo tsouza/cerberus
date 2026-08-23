@@ -912,6 +912,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnToLastDayOfMonth:                "FnToLastDayOfMonth",
 	chplan.FnToMinute:                        "FnToMinute",
 	chplan.FnToMonth:                         "FnToMonth",
+	chplan.FnToUnixMillis:                    "FnToUnixMillis",
 	chplan.FnToUnixNanos:                     "FnToUnixNanos",
 	chplan.FnToYear:                          "FnToYear",
 	chplan.FnAbs:                             "FnAbs",

@@ -341,6 +341,15 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
 		return lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
 	}
+	// ts_of_first_over_time() / ts_of_last_over_time() (cerberus issue
+	// #2482): the timestamp-reporting siblings of last_over_time /
+	// first_over_time just above — see
+	// histogram_native_ts_of_first_last_over_time.go's own doc for why
+	// they need their own lowering (the output is a float TIMESTAMP
+	// value with `__name__` DROPPED, not a preserved histogram sample).
+	if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok {
+		return lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
+	}
 	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramCount(agg, vs, s, ctx)
 	}
