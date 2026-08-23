@@ -401,6 +401,8 @@
         "chclient-integration",
         "histogram-realexporter-integration",
         "metadata-endpoints-integration",
+        "native-lowerers-prom-integration",
+        "native-lowerers-smoke-integration",
         "perf-smoke-integration",
         "route-b-differential-integration",
         "router-corpus-integration",
