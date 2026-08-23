@@ -2193,6 +2193,37 @@ func RowsUnboundedPrecedingToCurrentRow() Frag {
 	}
 }
 
+// RangeBetweenPrecedingAndCurrentRow returns a Frag rendering the window
+// frame clause "RANGE BETWEEN <n> PRECEDING AND CURRENT ROW" — a numeric
+// RANGE frame keyed off the single ORDER BY column's own value, unlike
+// [RowsUnboundedPrecedingToCurrentRow]'s physical-row ROWS frame. Pass to
+// [WindowFrame] together with exactly one numeric OrderKey.
+//
+// n must render a constant expression of numeric type. ClickHouse rejects
+// two shapes outright, both confirmed against real ClickHouse by issue
+// #2408's boundary spike:
+//
+//   - an INTERVAL-typed offset ("Window frame begin OFFSET expression must
+//     be constant with numeric type") — so n is a plain integer/float Frag
+//     (e.g. InlineLit(int64(...))), never toIntervalX(...);
+//   - the literal 2147483647 itself, even cast — the largest offset
+//     ClickHouse accepts is 2147483646. A caller deriving n from a
+//     millisecond lookback must stay at or under that bound.
+//
+// [RangeBucketWindowSlide]'s anchor-injection frame is the only current
+// caller: it passes lookbackMs-1 over a millisecond-encoded ORDER BY column
+// so the frame covers exactly the samples in `(anchor - lookbackMs, anchor]`
+// once anchors are injected as sentinel rows at their own encoded position
+// — see internal/chsql/range_bucket_window_slide.go's doc comment for the
+// full mechanism and why an ASOF JOIN was tried and proven wrong instead.
+func RangeBetweenPrecedingAndCurrentRow(n Frag) Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("RANGE BETWEEN ")
+		n(b)
+		b.sb.WriteString(" PRECEDING AND CURRENT ROW")
+	}
+}
+
 // Star returns a Frag rendering "*" — the unqualified wildcard for
 // SELECT *. Use QualStar for the qualified "<table>.*" form.
 func Star() Frag {
