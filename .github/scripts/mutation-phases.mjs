@@ -74,11 +74,16 @@ export const PHASES = [
     workers: DEFAULT_WORKERS,
     // metrics_compare + prewhere + exemplars + structural_join + late_mat +
     // range_window_grid_native + range_bucket_fanout + range_bucket_grid_native +
-    // emit + vector_set_op + set_op. range_bucket_grid_native.go belongs here
-    // with its two declared siblings: it is range_bucket_fanout.go's native
-    // counterpart (same per-(series, anchor) histogram-ladder contract) built
-    // out of the same timeSeries*ToGrid family range_window_grid_native.go
-    // emits, and both siblings are only ever claimed by this leg.
+    // range_bucket_window_slide + emit + vector_set_op + set_op.
+    // range_bucket_grid_native.go and range_bucket_window_slide.go both
+    // belong here with range_bucket_fanout.go: window-slide is the
+    // anchor-injection sibling of the native ladder — same per-(series,
+    // anchor) histogram-ladder contract as range_bucket_fanout.go, built
+    // out of the same UNION ALL anchor-injection shape range_bucket_fanout.go
+    // and range_bucket_grid_native.go's family emit — and all three
+    // siblings are only ever claimed by this leg. range_bucket_window_slide
+    // _bound.go (its resource-bound guard) does NOT follow it here — see
+    // lwr_fanout_bound.go's own reasoning just below, which it shares:
     // aggregate_range_lwr_fusion.go (cerberus issue #2442) falls to the
     // phase2-other catch-all: it is a standalone RangeLWR/Aggregate
     // fusion fast path with no declared sibling in either leg above —
@@ -87,8 +92,12 @@ export const PHASES = [
     // (cerberus issue #2447) falls there too, for the identical reason: a
     // standalone RangeBucketFanout/RangeLWR sample-count guard, excluded
     // from both legs above rather than enumerated in either.
+    // range_bucket_window_slide_bound.go (issue #2408's follow-up) falls
+    // there for the same reason: a standalone RangeBucketWindowSlide
+    // sample-count guard, excluded from both legs above rather than
+    // enumerated in either.
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_bucket_window_slide_bound|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -106,9 +115,14 @@ export const PHASES = [
     // vector_join.go is itself only ever claimed by this leg.
     // aggregate_range_lwr_fusion.go also falls to phase2-other's
     // catch-all — see that leg's own exclude list. lwr_fanout_bound.go
-    // falls there too, for the same reason.
+    // falls there too, for the same reason. range_bucket_window_slide.go
+    // belongs with range_bucket_fanout.go and range_bucket_grid_native.go
+    // on the phase2-compare leg instead (see that leg's own comment), so
+    // it — and its resource-bound guard range_bucket_window_slide_bound.go,
+    // which falls to phase2-other's catch-all the same way
+    // lwr_fanout_bound.go does — are excluded here too.
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_bucket_window_slide|range_bucket_window_slide_bound|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -131,9 +145,13 @@ export const PHASES = [
     // histogram_float_vector_join.go are vector_join.go's declared siblings
     // (same broadcast + Include-overlay join shape) — all three siblings are
     // themselves only ever claimed by phase2-builder.
-    // range_bucket_grid_native.go is enumerated for the same reason on the
-    // phase2-compare side: it belongs with range_bucket_fanout.go and
-    // range_window_grid_native.go, both claimed only by that leg.
+    // range_bucket_grid_native.go and range_bucket_window_slide.go are
+    // enumerated for the same reason on the phase2-compare side: they
+    // belong with range_bucket_fanout.go and range_window_grid_native.go,
+    // all claimed only by that leg. range_bucket_window_slide_bound.go
+    // (window-slide's own resource-bound guard, issue #2408's follow-up)
+    // is deliberately NOT enumerated here — it falls to THIS catch-all,
+    // the same way lwr_fanout_bound.go does just below.
     // rate_window_fanout_bound.go (cerberus issue #2429) falls to this
     // catch-all the same way scan_resource_bound.go does: it is a
     // standalone resource-bound guard with no declared sibling in either
@@ -145,7 +163,7 @@ export const PHASES = [
     // reason: a standalone RangeBucketFanout/RangeLWR sample-count guard,
     // excluded from both legs above rather than enumerated in either.
     exclude_files:
-      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_window_slide|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',
