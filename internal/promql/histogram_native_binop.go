@@ -336,23 +336,25 @@ func histogramBinopMergeHavingGuard() chplan.Expr {
 
 // histogramBinopBucketWidthBudgetGuardExpr renders the `throwIf(...) = 0`
 // predicate bounding [histogramBinopMergedBucketsExpr]'s merged bucket
-// ladder width — the same cap
-// (histogram_merge_bound.go's maxHistogramMergeBucketWidth) and the same
-// bound-once-per-site helper (mergedLengthExpr) the cross-series merge's
-// own budget guard (histogramMergeBudgetGuardExpr) uses, reused verbatim
-// here rather than duplicated.
+// ladder cost — the same cost model
+// (histogram_merge_bound.go's [histogramMergeCostOverBudgetExpr]) the
+// cross-series merge's own budget guard (histogramMergeBudgetGuardExpr)
+// uses, reused verbatim here rather than duplicated, with the row count
+// fixed at the literal 2 a two-operand binop always has.
 //
 // histogramBinopMergedBucketsExpr renders the identical unbounded
 // `arrayMap(t -> ..., range(mergedLength))` shape
-// [expHistogramMergeBucketsExpr] renders for the cross-series merge, so
-// two histograms whose Scale/Offset diverge enough still produce an
-// unbounded merged ladder here too, with nothing capping it before
-// #2428's fix. Unlike the cross-series merge, the series-per-group axis
-// needs no analogous check: [histogramBinopBothSidesMatchedGuard]'s own
-// `count() = 2` conjunct already caps it at exactly 2 by construction —
-// see this file's header doc ("Why this is narrower than #2385") — so
-// only the bucket-width axis (mergedLengthExpr, for BOTH the positive
-// and the negative ladder) is open here.
+// [expHistogramMergeBucketsExpr] renders for the cross-series merge —
+// see that shared cost model's doc comment for why the real cost is
+// `rowCount x width^3`, not `width` alone — so two histograms whose
+// Scale/Offset diverge enough still produce an unbounded, expensive merged
+// ladder here too, with nothing capping it before #2428's fix. The
+// series-per-group axis needs no analogous check: rowCount is fixed at 2
+// by construction here ([histogramBinopBothSidesMatchedGuard]'s own
+// `count() = 2` conjunct — see this file's header doc, "Why this is
+// narrower than #2385"), so only the width axis (for BOTH the positive
+// and the negative ladder, folded into the shared cost expression) is
+// open here.
 //
 // This reads the SAME groupArray aliases [histogramBinopMergeAggs]
 // collects via [expHistogramMergeAggs] (hqAggScalesArrayAlias plus the
@@ -366,30 +368,24 @@ func histogramBinopMergeHavingGuard() chplan.Expr {
 // risk of the empty-GroupBy/Having conflict [chplan.Aggregate.Having]'s
 // doc warns about.
 func histogramBinopBucketWidthBudgetGuardExpr() chplan.Expr {
-	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
-	mergedScale := &chplan.ColumnRef{Name: hqAggMergedScaleAlias}
-	posOff := &chplan.ColumnRef{Name: hqAggPosOffsetsArrayAlias}
-	posBuc := &chplan.ColumnRef{Name: hqAggPosBucketsArrayAlias}
-	negOff := &chplan.ColumnRef{Name: hqAggNegOffsetsArrayAlias}
-	negBuc := &chplan.ColumnRef{Name: hqAggNegBucketsArrayAlias}
-
-	overBudget := orExpr(
-		gtLit(mergedLengthExpr(scalesArr, posOff, posBuc, mergedScale), maxHistogramMergeBucketWidth),
-		gtLit(mergedLengthExpr(scalesArr, negOff, negBuc, mergedScale), maxHistogramMergeBucketWidth),
-	)
-
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
-				overBudget,
+				histogramMergeCostOverBudgetExpr(&chplan.LitInt{V: histogramBinopOperandCount}),
 				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
 			},
 		},
 		Right: &chplan.LitInt{V: 0},
 	}
 }
+
+// histogramBinopOperandCount is the fixed row count
+// [histogramMergeCostOverBudgetExpr] uses for the two-operand binop merge —
+// see [histogramBinopBothSidesMatchedGuard]'s `count() = 2` conjunct, which
+// fixes it by construction.
+const histogramBinopOperandCount = 2
 
 // histogramBinopMergeAggs collects the group's Count / Sum arrays plus
 // the same Scale (min) / ZeroCount / ZeroThreshold (max) / signed-bucket

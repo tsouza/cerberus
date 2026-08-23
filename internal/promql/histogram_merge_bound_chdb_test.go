@@ -63,9 +63,23 @@ const histogramMergeBoundInsertColumns = "(MetricName, Attributes, TimeUnix, Cou
 // histogramMergeBoundInsertColumns: a single-bucket positive-only
 // distribution at the given series label and PositiveOffset (Scale 0).
 func histogramMergeBoundRow(series string, offset int) string {
+	return histogramMergeBoundRowWide(series, offset, 1)
+}
+
+// histogramMergeBoundRowWide is [histogramMergeBoundRow] with a
+// caller-chosen PositiveBucketCounts width instead of a fixed single
+// bucket, so a test can isolate the rows axis of the
+// `rows x width^3` cost model (histogram_merge_bound.go) by fixing width
+// and scaling rows, rather than needing an impractically large row count
+// at width 1.
+func histogramMergeBoundRowWide(series string, offset, width int) string {
+	buckets := make([]string, width)
+	for i := range buckets {
+		buckets[i] = "1"
+	}
 	return fmt.Sprintf(
-		"('%s', map('series', '%s'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, %d, [1], 0, [])",
-		histogramMergeBoundMetric, series, offset,
+		"('%s', map('series', '%s'), toDateTime64('2026-01-01 00:00:00', 9), 1, 1.0, 0, 0, %d, [%s], 0, [])",
+		histogramMergeBoundMetric, series, offset, strings.Join(buckets, ","),
 	)
 }
 
@@ -127,22 +141,25 @@ func runHistogramMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 }
 
 // TestHistogramMergeBudget_ChDB_BucketWidthExceeded seeds two series whose
-// PositiveOffset diverges enough (0 vs 20000, both Scale 0, one bucket each)
-// that the merged bucket ladder spans 20001 buckets — past
-// maxHistogramMergeBucketWidth (16384) — and asserts the query aborts with
-// the budget guard's own throwIf, not a ClickHouse crash and not a silent
-// wrong answer.
+// PositiveOffset diverges enough (0 vs 500, both Scale 0, one bucket each)
+// that the merged bucket ladder spans 501 buckets — past the point where
+// `rows(2) x width(501)^3` crosses maxHistogramMergeCostUnits
+// (70,000,000; 2 x 501^3 = ~251M) — and asserts the query aborts with the
+// budget guard's own throwIf, not a ClickHouse crash and not a silent
+// wrong answer. This isolates the WIDTH factor of the cost model: 2 rows
+// alone (histogramBinopOperandCount's own fixed row count) never trips it
+// on its own.
 func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
-	b.WriteString("    " + histogramMergeBoundRow("far", 20000) + ";\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", 500) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	err := runHistogramMergeBoundQuery(t, fixture)
 	if err == nil {
-		t.Fatal("expected the merge budget guard to abort the query (merged width 20001 > 16384), got no error")
+		t.Fatal("expected the merge budget guard to abort the query (2 rows x width 501^3 exceeds the cost budget), got no error")
 	}
 	// This test drives chdb-go's raw driver handle directly (see
 	// runHistogramMergeBoundQuery), never through chclient — the typed
@@ -157,27 +174,74 @@ func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	}
 }
 
-// TestHistogramMergeBudget_ChDB_SeriesCountExceeded seeds one more series
-// than maxHistogramMergeSeriesPerGroup (4096), each a trivial single-bucket
-// distribution at PositiveOffset 0 so the WIDTH axis alone would never fire
-// — isolating the SERIES-per-group axis. Every series shares no `by()`
-// label, so all 4097 land in the query's one output group.
-func TestHistogramMergeBudget_ChDB_SeriesCountExceeded(t *testing.T) {
-	const seriesOverCap = 4097 // maxHistogramMergeSeriesPerGroup (4096) + 1
+// TestHistogramMergeBudget_ChDB_RowCountExceeded seeds 100 series sharing
+// an IDENTICAL 100-bucket layout (same PositiveOffset, same width, so the
+// merged width stays 100 regardless of row count — isolating the ROWS
+// factor of the cost model exactly the way issue #2490's own real-CH repro
+// did) — `rows(100) x width(100)^3` = 100,000,000, past
+// maxHistogramMergeCostUnits (70,000,000). Every series shares no `by()`
+// label, so all 100 land in the query's one output group. This is the
+// shape #2385's original independent series-count axis (capped at 4096)
+// would have let straight through: 100 rows sits nowhere near that old
+// cap, which is exactly why issue #2490 found real ClickHouse OOMs the old
+// guard never caught.
+func TestHistogramMergeBudget_ChDB_RowCountExceeded(t *testing.T) {
+	const (
+		rowsOverBudget = 100
+		perRowWidth    = 100
+		sharedOffset   = 0 // identical layout across every row
+	)
 
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
-	rows := make([]string, seriesOverCap)
+	rows := make([]string, rowsOverBudget)
 	for i := range rows {
-		rows[i] = histogramMergeBoundRow("s"+strconv.Itoa(i), 0)
+		rows[i] = histogramMergeBoundRowWide("s"+strconv.Itoa(i), sharedOffset, perRowWidth)
 	}
 	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	err := runHistogramMergeBoundQuery(t, fixture)
 	if err == nil {
-		t.Fatal("expected the merge budget guard to abort the query (4097 series > 4096 cap), got no error")
+		t.Fatal("expected the merge budget guard to abort the query (100 rows x width 100^3 exceeds the cost budget), got no error")
+	}
+	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
+		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
+	}
+}
+
+// TestHistogramMergeBudget_ChDB_RowCountOverflowGuard seeds 4,097 series —
+// one past histogram_merge_bound.go's unexported
+// maxHistogramMergeRowCountOverflowGuard (4096) — sharing an IDENTICAL
+// single-bucket layout, so the merged width stays 1 and the real cost
+// (`rows x width^3` = 4,097 x 1 = 4,097) sits nowhere near
+// maxHistogramMergeCostUnits (70,000,000): the cost-formula disjunct alone
+// would NOT reject this query. This isolates the OVERFLOW-SAFETY disjunct
+// histogramMergeCostOverBudgetExpr ORs in ahead of the cost multiply —
+// proving it independently forces rejection past the row count where the
+// multiply risks wrapping Int64, rather than only ever mattering when the
+// (impractical-to-seed-in-a-test) width axis is also near its clamp.
+func TestHistogramMergeBudget_ChDB_RowCountOverflowGuard(t *testing.T) {
+	const (
+		rowsPastOverflowGuard = 4097
+		perRowWidth           = 1
+		sharedOffset          = 0 // identical layout across every row
+	)
+
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	rows := make([]string, rowsPastOverflowGuard)
+	for i := range rows {
+		rows[i] = histogramMergeBoundRowWide("s"+strconv.Itoa(i), sharedOffset, perRowWidth)
+	}
+	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	err := runHistogramMergeBoundQuery(t, fixture)
+	if err == nil {
+		t.Fatal("expected the merge budget guard to abort the query (4,097 rows exceeds the overflow-safety row cap, even though width 1 keeps the cost formula itself trivially under budget), got no error")
 	}
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
@@ -185,8 +249,8 @@ func TestHistogramMergeBudget_ChDB_SeriesCountExceeded(t *testing.T) {
 }
 
 // TestHistogramMergeBudget_ChDB_WithinBudget seeds a small, legitimate merge
-// (two series, adjacent offsets, well inside both axes) and asserts the
-// query succeeds — the guard must not fire on ordinary data.
+// (two series, adjacent offsets, well inside the cost budget) and asserts
+// the query succeeds — the guard must not fire on ordinary data.
 func TestHistogramMergeBudget_ChDB_WithinBudget(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(histogramMergeBoundSeedDDL)
