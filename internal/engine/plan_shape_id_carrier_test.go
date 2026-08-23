@@ -110,6 +110,20 @@ func carrierTokenCases() []carrierTokenCase {
 			},
 		},
 		{
+			kind:  "RangeBucketWindowSlide",
+			token: "rbw",
+			node: func(in chplan.Node) chplan.Node {
+				return &chplan.RangeBucketWindowSlide{
+					Input: in, Start: shapeGridStart, End: shapeGridEnd, Step: shapeGridStep,
+					Range:             shapeCarrierWindow,
+					AnchorAlias:       "anchor_ts",
+					TimestampCol:      "TimeUnix",
+					BucketCountsCol:   "BucketCounts",
+					ExplicitBoundsCol: "ExplicitBounds",
+				}
+			},
+		},
+		{
 			kind:  "AbsentOverTime",
 			token: "aot",
 			node: func(in chplan.Node) chplan.Node {

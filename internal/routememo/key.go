@@ -201,6 +201,9 @@ func (w *keyWalker) walk(n chplan.Node) {
 		case *chplan.RangeBucketGridNative:
 			w.rangeFuncs = append(w.rangeFuncs, "bucketnative@"+strconv.Itoa(bucketLg(int64(v.Range))))
 			w.hasNative = true
+		case *chplan.RangeBucketWindowSlide:
+			w.rangeFuncs = append(w.rangeFuncs, "bucketwindowslide@"+strconv.Itoa(bucketLg(int64(v.Range))))
+			w.hasNative = true
 		case *chplan.RangeWindowGridNative:
 			w.rangeFuncs = append(w.rangeFuncs, "native@"+strconv.Itoa(bucketLg(int64(v.Range))))
 			w.hasNative = true

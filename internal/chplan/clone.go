@@ -150,6 +150,12 @@ func cloneRangeNode(n Node) Node {
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.GroupByAliases = cloneStrings(v.GroupByAliases)
 		return &c
+	case *RangeBucketWindowSlide:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		c.GroupByAliases = cloneStrings(v.GroupByAliases)
+		return &c
 	case *StepGrid:
 		c := *v
 		return &c

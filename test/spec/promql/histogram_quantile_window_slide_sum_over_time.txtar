@@ -1,0 +1,249 @@
+# The anchor-injection window-slide lowering (#2408 follow-up) for
+# `histogram_quantile(phi, sum by(le)(sum_over_time(<bucket>[range])))` in
+# range mode, at a Lookback/Step ratio (5m/30s = 10) that clears
+# windowSlideMinLookbackStepRatio.
+#
+# Unlike every other native strategy in this table, ClassicHistogram's row
+# does not gate window-slide behind a marker section at all: it is
+# chopt.AlwaysAvailable (issue #2408's Task-1 spike found no ClickHouse
+# version floor for it), so cmd/cerberus wires
+# WindowSlideClassicHistogramWindowLowerer unconditionally, and
+# wireNativeStrategies (internal/promql/native_strategy_coverage_test.go)
+# seeds every fixture with the same chain regardless of marker sections —
+# this fixture carries no `experimental_*` section at all, and still lowers
+# through chplan.RangeBucketWindowSlide.
+#
+# The seed and grid are IDENTICAL to
+# histogram_quantile_native_ladder_range_step.txtar's, with `rate` swapped
+# for `sum_over_time`: a single series, stable bucket layout, growing
+# counter, sampled twice inside the range.
+
+-- query.promql --
+histogram_quantile(0.5, sum by(le)(sum_over_time(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", "NaN"],
+  ["", {}, "2026-01-01T00:00:30Z", 0.5],
+  ["", {}, "2026-01-01T00:01:00Z", 0.5],
+  ["", {}, "2026-01-01T00:01:30Z", 0.5],
+  ["", {}, "2026-01-01T00:02:00Z", 0.5],
+  ["", {}, "2026-01-01T00:02:30Z", 0.5],
+  ["", {}, "2026-01-01T00:03:00Z", 0.5],
+  ["", {}, "2026-01-01T00:03:30Z", 0.5],
+  ["", {}, "2026-01-01T00:04:00Z", 0.5],
+  ["", {}, "2026-01-01T00:04:30Z", 0.5],
+  ["", {}, "2026-01-01T00:05:00Z", 0.5]
+]
+-- args --
+[0] string = ""
+[1] int64 = 1
+[2] string = "Map(String,String)"
+[3] float64 = 0
+[4] int64 = 1
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = "service.name"
+[9] string = "service_name"
+[10] string = ""
+[11] string = "service_name"
+[12] string = "http_server_request_duration"
+[13] string = "http.server.request.duration"
+[14] string = "http.server.request/duration"
+[15] string = "http.server.request_duration"
+[16] string = "http.server/request/duration"
+[17] string = "http.server/request_duration"
+[18] string = "http.server_request.duration"
+[19] string = "http.server_request_duration"
+[20] string = "http/server/request/duration"
+[21] string = "http/server/request_duration"
+[22] string = "http/server_request_duration"
+[23] string = "http_server.request.duration"
+[24] string = "http_server.request_duration"
+[25] string = "http_server_request.duration"
+[26] int64 = 1
+[27] string = "service_name"
+[28] string = "service.name"
+[29] string = "service_name"
+[30] string = "service.name"
+[31] string = "service_name"
+[32] string = ""
+[33] string = "service_name"
+[34] string = "http_server_request_duration"
+[35] string = "http.server.request.duration"
+[36] string = "http.server.request/duration"
+[37] string = "http.server.request_duration"
+[38] string = "http.server/request/duration"
+[39] string = "http.server/request_duration"
+[40] string = "http.server_request.duration"
+[41] string = "http.server_request_duration"
+[42] string = "http/server/request/duration"
+[43] string = "http/server/request_duration"
+[44] string = "http/server_request_duration"
+[45] string = "http_server.request.duration"
+[46] string = "http_server.request_duration"
+[47] string = "http_server_request.duration"
+[48] int64 = 1
+[49] string = "service_name"
+[50] string = "service.name"
+[51] string = "service_name"
+[52] string = "service.name"
+[53] string = "service_name"
+[54] string = ""
+[55] string = "service_name"
+[56] string = "http_server_request_duration"
+[57] string = "http.server.request.duration"
+[58] string = "http.server.request/duration"
+[59] string = "http.server.request_duration"
+[60] string = "http.server/request/duration"
+[61] string = "http.server/request_duration"
+[62] string = "http.server_request.duration"
+[63] string = "http.server_request_duration"
+[64] string = "http/server/request/duration"
+[65] string = "http/server/request_duration"
+[66] string = "http/server_request_duration"
+[67] string = "http_server.request.duration"
+[68] string = "http_server.request_duration"
+[69] string = "http_server_request.duration"
+[70] int64 = 1
+[71] string = "service_name"
+[72] string = "service.name"
+[73] string = "service_name"
+[74] string = "service.name"
+[75] string = "service_name"
+[76] string = ""
+[77] string = "service_name"
+[78] string = "http_server_request_duration"
+[79] string = "http.server.request.duration"
+[80] string = "http.server.request/duration"
+[81] string = "http.server.request_duration"
+[82] string = "http.server/request/duration"
+[83] string = "http.server/request_duration"
+[84] string = "http.server_request.duration"
+[85] string = "http.server_request_duration"
+[86] string = "http/server/request/duration"
+[87] string = "http/server/request_duration"
+[88] string = "http/server_request_duration"
+[89] string = "http_server.request.duration"
+[90] string = "http_server.request_duration"
+[91] string = "http_server_request.duration"
+[92] int64 = 1
+[93] string = "service_name"
+[94] string = "service.name"
+[95] string = "service_name"
+[96] string = "service.name"
+[97] string = "service_name"
+[98] string = ""
+[99] string = "service_name"
+[100] string = "http_server_request_duration"
+[101] string = "http.server.request.duration"
+[102] string = "http.server.request/duration"
+[103] string = "http.server.request_duration"
+[104] string = "http.server/request/duration"
+[105] string = "http.server/request_duration"
+[106] string = "http.server_request.duration"
+[107] string = "http.server_request_duration"
+[108] string = "http/server/request/duration"
+[109] string = "http/server/request_duration"
+[110] string = "http/server_request_duration"
+[111] string = "http_server.request.duration"
+[112] string = "http_server.request_duration"
+[113] string = "http_server_request.duration"
+[114] int64 = 1
+[115] string = "service_name"
+[116] string = "service.name"
+[117] string = "service_name"
+[118] string = "service.name"
+[119] string = "service_name"
+[120] string = ""
+[121] string = "service_name"
+[122] string = "http_server_request_duration"
+[123] string = "http.server.request.duration"
+[124] string = "http.server.request/duration"
+[125] string = "http.server.request_duration"
+[126] string = "http.server/request/duration"
+[127] string = "http.server/request_duration"
+[128] string = "http.server_request.duration"
+[129] string = "http.server_request_duration"
+[130] string = "http/server/request/duration"
+[131] string = "http/server/request_duration"
+[132] string = "http/server_request_duration"
+[133] string = "http_server.request.duration"
+[134] string = "http_server.request_duration"
+[135] string = "http_server_request.duration"
+[136] int64 = 1
+[137] int64 = 1
+[138] int64 = 1
+[139] float64 = 0
+[140] int64 = 1
+[141] string = "service_name"
+[142] string = "service.name"
+[143] string = "service_name"
+[144] string = "service.name"
+[145] string = "service_name"
+[146] string = ""
+[147] string = "service_name"
+[148] string = "http_server_request_duration"
+[149] string = "http.server.request.duration"
+[150] string = "http.server.request/duration"
+[151] string = "http.server.request_duration"
+[152] string = "http.server/request/duration"
+[153] string = "http.server/request_duration"
+[154] string = "http.server_request.duration"
+[155] string = "http.server_request_duration"
+[156] string = "http/server/request/duration"
+[157] string = "http/server/request_duration"
+[158] string = "http/server_request_duration"
+[159] string = "http_server.request.duration"
+[160] string = "http_server.request_duration"
+[161] string = "http_server_request.duration"
+[162] int64 = 1
+[163] string = "http_server_request_duration"
+[164] string = "http.server.request.duration"
+[165] string = "http.server.request/duration"
+[166] string = "http.server.request_duration"
+[167] string = "http.server/request/duration"
+[168] string = "http.server/request_duration"
+[169] string = "http.server_request.duration"
+[170] string = "http.server_request_duration"
+[171] string = "http/server/request/duration"
+[172] string = "http/server/request_duration"
+[173] string = "http/server_request_duration"
+[174] string = "http_server.request.duration"
+[175] string = "http_server.request_duration"
+[176] string = "http_server_request.duration"
+[177] int64 = 1
+-- chplan --
+Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS TimeUnix, Value AS Value]
+  HistogramQuantile phi=0.5 cumulative groupBy=[anchor_ts AS anchor_ts, Attributes AS Attributes]
+    Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayMap(i -> FnArrayMax(FnArraySlice(_hq_ladder, 1, i)), FnArrayEnumerate(_hq_ladder)) AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+      Project [anchor_ts AS anchor_ts, FnCast(FnMap(), "Map(String,String)") AS Attributes, FnArrayConcat(FnArrayMap(u -> FnArraySum(FnArrayFilter((v, pbs) -> FnArrayHas(pbs, u), FnArrayMap((bs, cs) -> FnArraySum(FnArrayMap((b, c) -> FnIf((b <= u), FnToFloat64(c), 0), bs, FnArraySlice(cs, 1, FnLength(bs)))), _hq_bounds_list, _hq_counts_list), _hq_bounds_list)), FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list)))), FnArray(FnArraySum(FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list)))) AS _hq_ladder, FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list))) AS ExplicitBounds]
+        Aggregate groupBy=[anchor_ts AS anchor_ts] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list]
+          UnionAll arms=2
+            RangeBucketWindowSlide step=30s range=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] buckets=BucketCounts bounds=ExplicitBounds start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+              Filter predicate=((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (AggregationTemporality != 1))
+                Scan(otel_metrics_histogram)
+            Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayMap(j -> FnIf((j = 1), _hq_window_ladder[j], (_hq_window_ladder[j] - _hq_window_ladder[(j - 1)])), FnArrayEnumerate(_hq_window_ladder)) AS BucketCounts, ExplicitBounds AS ExplicitBounds]
+              Project [anchor_ts AS anchor_ts, Attributes AS Attributes, FnArrayConcat(FnArrayMap(u -> FnArraySum(FnArrayFilter((v, pbs) -> FnArrayHas(pbs, u), FnArrayMap((bs, cs) -> FnArraySum(FnArrayMap((b, c) -> FnIf((b <= u), FnToFloat64(c), 0), bs, FnArraySlice(cs, 1, FnLength(bs)))), _hq_bounds_list, _hq_counts_list), _hq_bounds_list)), FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list)))), FnArray(FnArraySum(FnArrayMap(cs -> FnToFloat64(FnArraySum(cs)), _hq_counts_list)))) AS _hq_window_ladder, FnArraySort(FnArrayDistinct(FnArrayFlatten(_hq_bounds_list))) AS ExplicitBounds]
+                RangeBucketFanout step=30s lookback=5m0s groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnGroupArray(ExplicitBounds) AS _hq_bounds_list, FnGroupArray(BucketCounts) AS _hq_counts_list, FnGroupArray(TimeUnix) AS _hq_ts_list] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+                  Filter predicate=((MetricName IN ("http_server_request_duration", "http.server.request.duration", "http.server.request/duration", "http.server.request_duration", "http.server/request/duration", "http.server/request_duration", "http.server_request.duration", "http.server_request_duration", "http/server/request/duration", "http/server/request_duration", "http/server_request_duration", "http_server.request.duration", "http_server.request_duration", "http_server_request.duration")) AND (AggregationTemporality = 1))
+                    Scan(otel_metrics_histogram)
+-- sql --
+SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, if(length(`BucketCounts`) = 0, nan, if(`_cerb_hqc_observations` = 0, nan, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`_cerb_hqc_idx` = length(`_cerb_hqc_cum`) AND length(`_cerb_hqc_buckets`) != length(`ExplicitBounds`), `_cerb_hqc_bounds`[length(`_cerb_hqc_bounds`)], if(`_cerb_hqc_idx` = 1 AND `_cerb_hqc_bounds`[1] <= 0, `_cerb_hqc_bounds`[1], (if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1]) + (`_cerb_hqc_bounds`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_bounds`[`_cerb_hqc_idx` - 1])) * (((0.5 * `_cerb_hqc_observations`) - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])) / (`_cerb_hqc_cum`[`_cerb_hqc_idx`] - if(`_cerb_hqc_idx` = 1, 0.0, `_cerb_hqc_cum`[`_cerb_hqc_idx` - 1])))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c >= (0.5 * `_cerb_hqc_observations`), `_cerb_hqc_cum`) AS `_cerb_hqc_idx` FROM (SELECT *, `_cerb_hqc_cum`[length(`_cerb_hqc_cum`)] AS `_cerb_hqc_observations` FROM (SELECT *, arrayMap(i -> `ExplicitBounds`[i], `_cerb_hqc_kept_idx`) AS `_cerb_hqc_bounds`, arrayMap(i -> `_cerb_hqc_buckets`[i], arrayConcat(`_cerb_hqc_kept_idx`, range(length(`ExplicitBounds`) + 1, length(`_cerb_hqc_buckets`) + 1))) AS `_cerb_hqc_cum` FROM (SELECT *, arrayFilter(i -> i = 1 OR `ExplicitBounds`[i] != `ExplicitBounds`[i - 1], range(1, length(`ExplicitBounds`) + 1)) AS `_cerb_hqc_kept_idx`, arrayMap(x -> toFloat64(x), `BucketCounts`) AS `_cerb_hqc_buckets` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayMap(i -> arrayMax(arraySlice(`_hq_ladder`, ?, i)), arrayEnumerate(`_hq_ladder`)) AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, CAST(map(), ?) AS `Attributes`, arrayConcat(arrayMap(u -> arraySum(arrayFilter((v, pbs) -> has(pbs, u), arrayMap((bs, cs) -> arraySum(arrayMap((b, c) -> if((b <= u), toFloat64(c), toFloat64(?)), bs, arraySlice(cs, ?, length(bs)))), `_hq_bounds_list`, `_hq_counts_list`), `_hq_bounds_list`)), arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`)))), array(arraySum(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`)))) AS `_hq_ladder`, arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`))) AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list` FROM ((SELECT `anchor_ts`, `Attributes`, arrayMap(rj -> if(rj = 1, `_rws_filtered_cum`[rj], `_rws_filtered_cum`[rj] - `_rws_filtered_cum`[rj - 1]), arrayEnumerate(`_rws_filtered_cum`)) AS `BucketCounts`, arrayFilter(rb -> isFinite(rb), `_rws_filtered_bounds`) AS `ExplicitBounds` FROM (SELECT fromUnixTimestamp64Nano(`_rws_anchor_ns`) AS `anchor_ts`, `Attributes`, `_rws_is_anchor`, arrayFilter((rf, rp) -> rp >= 1, arraySlice(`_rws_windowed_ext`, 1, length(`_rws_canon_bounds`)), arraySlice(`_rws_windowed_ext`, length(`_rws_canon_bounds`) + 1, length(`_rws_canon_bounds`))) AS `_rws_filtered_cum`, arrayFilter((rf, rp) -> rp >= 1, `_rws_canon_bounds`, arraySlice(`_rws_windowed_ext`, length(`_rws_canon_bounds`) + 1, length(`_rws_canon_bounds`))) AS `_rws_filtered_bounds`, `_rws_windowed_ext`[2 * length(`_rws_canon_bounds`) + 1] AS `_rws_real_count` FROM (SELECT `Attributes`, `_rws_is_anchor`, `_rws_anchor_ns`, `_rws_canon_bounds`, sumForEach(`_rws_extended`) OVER (PARTITION BY `Attributes` ORDER BY `_rws_raw_ns` RANGE BETWEEN 299999 PRECEDING AND CURRENT ROW) AS `_rws_windowed_ext` FROM (SELECT `Attributes`, `_rws_raw_ns`, `_rws_is_anchor`, `_rws_anchor_ns`, `_rws_canon_bounds`, arrayConcat(arrayConcat(arrayMap(rk -> if(has(`_rws_bounds_f`, rk), arraySum(arrayMap((rob, roc) -> if(rob <= rk, roc, 0), `_rws_bounds_f`, arraySlice(`_rws_counts_f`, 1, length(`_rws_bounds_f`)))), 0), arraySlice(`_rws_canon_bounds`, 1, length(`_rws_canon_bounds`) - 1)), array(arraySum(`_rws_counts_f`))), arrayConcat(arrayMap(rk -> if(has(`_rws_bounds_f`, rk), 1, 0), arraySlice(`_rws_canon_bounds`, 1, length(`_rws_canon_bounds`) - 1)), array(1)), array(toFloat64(1 - `_rws_is_anchor`))) AS `_rws_extended` FROM (SELECT * FROM (SELECT * FROM ((SELECT `u`.`Attributes` AS `Attributes`, `u`.`_rws_raw_ns` AS `_rws_raw_ns`, `u`.`_rws_counts_f` AS `_rws_counts_f`, `u`.`_rws_bounds_f` AS `_rws_bounds_f`, `u`.`_rws_is_anchor` AS `_rws_is_anchor`, `u`.`_rws_anchor_ns` AS `_rws_anchor_ns`, `c`.`_rws_canon_bounds` AS `_rws_canon_bounds` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, toInt64(intDiv(toUnixTimestamp64Nano(`TimeUnix`) - 1767225300000000000 + 999999, 1000000)) AS `_rws_raw_ns`, arrayMap(rc -> toFloat64(rc), `BucketCounts`) AS `_rws_counts_f`, arrayMap(rb -> toFloat64(rb), `ExplicitBounds`) AS `_rws_bounds_f`, 0 AS `_rws_is_anchor`, toInt64(0) AS `_rws_anchor_ns` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) AS u INNER JOIN (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `_rws_canon_key_0`, arraySort(arrayDistinct(arrayFlatten(groupArray(arrayPushBack(arrayMap(rb -> toFloat64(rb), `ExplicitBounds`), inf))))) AS `_rws_canon_bounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `_rws_canon_key_0`) AS c ON `u`.`Attributes` = `c`.`_rws_canon_key_0`) UNION ALL (SELECT `Attributes`, `_rws_raw_ns`, array(toFloat64(0)) AS `_rws_counts_f`, emptyArrayFloat64() AS `_rws_bounds_f`, 1 AS `_rws_is_anchor`, `_rws_anchor_ns`, `_rws_canon_bounds` FROM (SELECT `_rws_canon_key_0` AS `Attributes`, `_rws_canon_bounds`, arrayMap(m -> toInt64(intDiv(m - 1767225300000000000 + 999999, 1000000)), arrayMap(i -> toInt64(1767225600000000000 + i * 30000000000), range(0, 11))) AS `_rws_anchor_ns_arr`, arrayMap(i -> toInt64(1767225600000000000 + i * 30000000000), range(0, 11)) AS `_rws_anchor_ns_arr2` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `_rws_canon_key_0`, arraySort(arrayDistinct(arrayFlatten(groupArray(arrayPushBack(arrayMap(rb -> toFloat64(rb), `ExplicitBounds`), inf))))) AS `_rws_canon_bounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `_rws_canon_key_0`)) ARRAY JOIN `_rws_anchor_ns_arr` AS `_rws_raw_ns`, `_rws_anchor_ns_arr2` AS `_rws_anchor_ns`)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `_rws_raw_ns` FROM ((SELECT `u`.`Attributes` AS `Attributes`, `u`.`_rws_raw_ns` AS `_rws_raw_ns`, `u`.`_rws_counts_f` AS `_rws_counts_f`, `u`.`_rws_bounds_f` AS `_rws_bounds_f`, `u`.`_rws_is_anchor` AS `_rws_is_anchor`, `u`.`_rws_anchor_ns` AS `_rws_anchor_ns`, `c`.`_rws_canon_bounds` AS `_rws_canon_bounds` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, toInt64(intDiv(toUnixTimestamp64Nano(`TimeUnix`) - 1767225300000000000 + 999999, 1000000)) AS `_rws_raw_ns`, arrayMap(rc -> toFloat64(rc), `BucketCounts`) AS `_rws_counts_f`, arrayMap(rb -> toFloat64(rb), `ExplicitBounds`) AS `_rws_bounds_f`, 0 AS `_rws_is_anchor`, toInt64(0) AS `_rws_anchor_ns` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) AS u INNER JOIN (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `_rws_canon_key_0`, arraySort(arrayDistinct(arrayFlatten(groupArray(arrayPushBack(arrayMap(rb -> toFloat64(rb), `ExplicitBounds`), inf))))) AS `_rws_canon_bounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `_rws_canon_key_0`) AS c ON `u`.`Attributes` = `c`.`_rws_canon_key_0`) UNION ALL (SELECT `Attributes`, `_rws_raw_ns`, array(toFloat64(0)) AS `_rws_counts_f`, emptyArrayFloat64() AS `_rws_bounds_f`, 1 AS `_rws_is_anchor`, `_rws_anchor_ns`, `_rws_canon_bounds` FROM (SELECT `_rws_canon_key_0` AS `Attributes`, `_rws_canon_bounds`, arrayMap(m -> toInt64(intDiv(m - 1767225300000000000 + 999999, 1000000)), arrayMap(i -> toInt64(1767225600000000000 + i * 30000000000), range(0, 11))) AS `_rws_anchor_ns_arr`, arrayMap(i -> toInt64(1767225600000000000 + i * 30000000000), range(0, 11)) AS `_rws_anchor_ns_arr2` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `_rws_canon_key_0`, arraySort(arrayDistinct(arrayFlatten(groupArray(arrayPushBack(arrayMap(rb -> toFloat64(rb), `ExplicitBounds`), inf))))) AS `_rws_canon_bounds` FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `_rws_canon_key_0`)) ARRAY JOIN `_rws_anchor_ns_arr` AS `_rws_raw_ns`, `_rws_anchor_ns_arr2` AS `_rws_anchor_ns`)) LIMIT 4000001)) > 4000000, 'classic-histogram window-slide anchor injection exceeds the series-times-anchors resource bound') = 0)))) WHERE `_rws_is_anchor` = 1 AND `_rws_real_count` >= 1) UNION ALL (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayMap(j -> if((j = ?), `_hq_window_ladder`[j], (`_hq_window_ladder`[j] - `_hq_window_ladder`[(j - ?)])), arrayEnumerate(`_hq_window_ladder`)) AS `BucketCounts`, `ExplicitBounds` AS `ExplicitBounds` FROM (SELECT `anchor_ts` AS `anchor_ts`, `Attributes` AS `Attributes`, arrayConcat(arrayMap(u -> arraySum(arrayFilter((v, pbs) -> has(pbs, u), arrayMap((bs, cs) -> arraySum(arrayMap((b, c) -> if((b <= u), toFloat64(c), toFloat64(?)), bs, arraySlice(cs, ?, length(bs)))), `_hq_bounds_list`, `_hq_counts_list`), `_hq_bounds_list`)), arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`)))), array(arraySum(arrayMap(cs -> toFloat64(arraySum(cs)), `_hq_counts_list`)))) AS `_hq_window_ladder`, arraySort(arrayDistinct(arrayFlatten(`_hq_bounds_list`))) AS `ExplicitBounds` FROM (SELECT anchor_ts AS `anchor_ts`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, groupArray(`ExplicitBounds`) AS `_hq_bounds_list`, groupArray(`BucketCounts`) AS `_hq_counts_list`, groupArray(`TimeUnix`) AS `_hq_ts_list` FROM (SELECT * FROM (SELECT * FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT *, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT * FROM `otel_metrics_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?)) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 4000001)) > 4000000, 'histogram/LWR sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY anchor_ts, `Attributes`)))) GROUP BY `anchor_ts`))))))))

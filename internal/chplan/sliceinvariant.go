@@ -113,8 +113,8 @@ func IsSliceInvariant(n Node) bool {
 //
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
 // VectorSetOp, HistogramQuantileNative, HistogramProjection, AbsentOverTime,
-// RangeWindowStaleResample, the metrics_* TraceQL family, nested spines under
-// the lcm clamp) are DELIBERATELY ABSENT:
+// RangeWindowStaleResample, RangeBucketWindowSlide, the metrics_* TraceQL
+// family, nested spines under the lcm clamp) are DELIBERATELY ABSENT:
 // each enters this registry only with its own slice-invariance proof + the
 // reset-at-seam fixture family, one node family per PR. To register a kind,
 // argue its per-(series, anchor) output is scan-lower-bound-independent, add

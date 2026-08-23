@@ -786,7 +786,10 @@ func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.M
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
-//	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
+//	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: windowSlide} : windowSlide
+//	  where windowSlide = WindowSlideClassicHistogramWindowLowerer{Fallback: Fanout…{}} — ALWAYS
+//	  wired (chopt.AlwaysAvailable, no feature gate; see windowSlideEligible's own doc), so a
+//	  shape the rate-only native ladder can't handle still reaches window-slide before Fanout.
 //
 // The fan-out impl is the concrete DEFAULT (never nil), and the native impl
 // embeds it as the fallback for shapes it cannot handle. The features are
@@ -839,12 +842,24 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
+	// The anchor-injection window-slide mechanism (#2408 follow-up) needs no
+	// chopt feature gate — chopt.AlwaysAvailable, per its own Task-1 spike —
+	// so it is wired UNCONDITIONALLY as the link between the rate-only
+	// native ladder and the fan-out fallback, following the SAME
+	// one-field-per-family formula every other member of this table uses:
+	// the feature-gated native impl embeds the next link as its own
+	// Fallback, never the bare fan-out impl directly, so a shape the native
+	// rate ladder cannot handle (windowFn != rate) still reaches window-slide
+	// before falling all the way to the fan-out.
+	windowSlideOrFanout := promql.ClassicHistogramWindowLowerer(promql.WindowSlideClassicHistogramWindowLowerer{
+		Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+	})
 	if optSet.Has(chopt.FeatureTSGridHistogram) {
 		l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
-			Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			Fallback: windowSlideOrFanout,
 		}
 	} else {
-		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
+		l.ClassicHistogram = windowSlideOrFanout
 	}
 	return l
 }

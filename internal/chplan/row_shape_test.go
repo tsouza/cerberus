@@ -54,6 +54,7 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"Project":                  chplan.SampleRowShape,
 	"RangeBucketFanout":        chplan.SampleRowShape,
 	"RangeBucketGridNative":    chplan.SampleRowShape,
+	"RangeBucketWindowSlide":   chplan.SampleRowShape,
 	"RangeLWR":                 chplan.SampleRowShape,
 	"RangeWindowStaleResample": chplan.SampleRowShape,
 	"Scan":                     chplan.SampleRowShape,

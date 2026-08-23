@@ -1,5 +1,5 @@
 {
-  "query": "histogram_quantile_over_sum_over_time_bucket/native",
+  "query": "histogram_quantile_window_slide_sum_over_time/native",
   "lowering": "native",
   "routed": false,
   "k": 0,

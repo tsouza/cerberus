@@ -459,12 +459,21 @@ func nightlyClassicHistogramLowerer(ctx context.Context, t *testing.T, client *c
 	t.Logf("probed clickhouse %s, ts_grid capability %s, ts_grid_histogram enabled=%v",
 		version.String(), capability.String(), enabled)
 
+	// Window-slide has no chopt entry of its own (chopt.AlwaysAvailable —
+	// issue #2408's Task-1 spike found no version floor for it), so it is
+	// wired unconditionally in BOTH branches, matching cmd/cerberus's own
+	// nativeRangeLowerers exactly (Native{Fallback: WindowSlide{Fallback:
+	// Fanout{}}} when the feature-gated native rate ladder is enabled;
+	// WindowSlide{Fallback: Fanout{}} alone otherwise).
+	windowSlideOrFanout := promql.ClassicHistogramWindowLowerer(promql.WindowSlideClassicHistogramWindowLowerer{
+		Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+	})
 	if enabled {
 		return promql.NativeClassicHistogramWindowLowerer{
-			Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			Fallback: windowSlideOrFanout,
 		}
 	}
-	return promql.FanoutClassicHistogramWindowLowerer{}
+	return windowSlideOrFanout
 }
 
 func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickHouseContainer, *chclient.Client) {
