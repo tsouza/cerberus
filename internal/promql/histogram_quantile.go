@@ -1315,7 +1315,37 @@ const (
 	// the interpolation rank `phi * (n - 1)` over it.
 	paramSortedRungs  = "qs"
 	paramQuantileRank = "qr"
+	// paramFiniteBound is the single-bound-value parameter of the
+	// isFinite filter lambda #2495's fix threads through
+	// classicBucketUnionBoundsExpr and classicBucketRowCumulativeExpr.
+	// Kept distinct from paramBucketBound (the (bound, count) pairing
+	// lambda's own bound param) so the two scopes never share a name,
+	// even though CH lambdas scope correctly either way.
+	paramFiniteBound = "fb"
 )
+
+// classicBucketFiniteExpr reports whether v is neither NaN nor +/-Inf.
+//
+// Real OTLP data can carry a literal non-finite value inside
+// ExplicitBounds (unvalidated input, not a cerberus invariant); folding
+// it into the layout union unfiltered leaks it into the node's own
+// output ExplicitBounds, where emitHistogramQuantile's overflow-bucket
+// clamp (internal/chsql/histogram_quantile.go's highestBound) can return
+// it directly as the answered quantile (#2495). This mirrors the
+// window-slide path's arrayFilter(isFinite, ...) fix
+// (internal/chsql/range_bucket_window_slide.go's
+// windowSlideCanonBySeriesFrag) at the chplan level, where the sealed Fn
+// vocabulary exposes isNaN / isInfinite as separate symbols rather than
+// a combined isFinite one.
+func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{
+		&chplan.Binary{
+			Op:    chplan.OpOr,
+			Left:  &chplan.FuncCall{Fn: chplan.FnIsNaN, Args: []chplan.Expr{v}},
+			Right: &chplan.FuncCall{Fn: chplan.FnIsInfinite, Args: []chplan.Expr{v}},
+		},
+	}}
+}
 
 // classicBucketShaping bundles a classic-histogram group's bucket
 // aggregates with the reshape they owe the HistogramQuantile node.
@@ -1409,11 +1439,28 @@ func (sh classicBucketShaping) reshape(
 // it. Keying the group on the layout instead (one output row per layout)
 // answers a question nobody asked: the caller asked for one series per
 // group, not one per boundary set.
+//
+// Each row's own ExplicitBounds is narrowed to arrayFilter(isFinite, ...)
+// BEFORE the flatten: a literal +Inf or NaN entry in a row's raw bounds
+// (real OTLP data can produce either) would otherwise survive into this
+// union verbatim and become the node's own output ExplicitBounds, letting
+// emitHistogramQuantile's overflow-bucket clamp answer it directly as the
+// quantile instead of the highest genuine finite bound (#2495).
 func classicBucketUnionBoundsExpr() chplan.Expr {
+	finiteRowBounds := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramFiniteBound},
+			Body:   classicBucketFiniteExpr(&chplan.BareIdent{Name: paramFiniteBound}),
+		},
+		&chplan.BareIdent{Name: paramRowBounds},
+	}}
 	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.FuncCall{Fn: chplan.FnArrayDistinct, Args: []chplan.Expr{
 			&chplan.FuncCall{Fn: chplan.FnArrayFlatten, Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: hqAggBoundsListAlias},
+				&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+					&chplan.Lambda{Params: []string{paramRowBounds}, Body: finiteRowBounds},
+					&chplan.ColumnRef{Name: hqAggBoundsListAlias},
+				}},
 			}},
 		}},
 	}}
@@ -1459,6 +1506,17 @@ func classicBucketUnionBoundsExpr() chplan.Expr {
 // across-series aggregation read a row's cumulative count identically,
 // and the two would silently disagree about the +Inf slice if each kept
 // its own copy.
+//
+// The pairing predicate below guards on isFinite(b) as well as b <= u:
+// b is one bucket's OWN raw upper bound, unfiltered (filtering it here
+// would desynchronise it from its paired count at the same index, unlike
+// classicBucketUnionBoundsExpr's union where filtering is safe because
+// the union has already been deduplicated). A literal +Inf or NaN bound
+// is harmless against b <= u for a finite u (both comparisons are false
+// under IEEE 754), but a literal -Inf bound is NOT: -Inf <= u holds for
+// every finite u, so without the guard a malformed row's -Inf-bound
+// bucket would fold its count into every rung of the merged ladder
+// (#2495).
 func classicBucketRowCumulativeExpr() chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{
 		&chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
@@ -1466,9 +1524,13 @@ func classicBucketRowCumulativeExpr() chplan.Expr {
 				Params: []string{paramBucketBound, paramBucketCount},
 				Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 					&chplan.Binary{
-						Op:    chplan.OpLe,
-						Left:  &chplan.BareIdent{Name: paramBucketBound},
-						Right: &chplan.BareIdent{Name: paramUnionBound},
+						Op:   chplan.OpAnd,
+						Left: classicBucketFiniteExpr(&chplan.BareIdent{Name: paramBucketBound}),
+						Right: &chplan.Binary{
+							Op:    chplan.OpLe,
+							Left:  &chplan.BareIdent{Name: paramBucketBound},
+							Right: &chplan.BareIdent{Name: paramUnionBound},
+						},
 					},
 					// The ladder is a FLOAT domain throughout. Stored
 					// counts are unsigned, and the per-series stage
