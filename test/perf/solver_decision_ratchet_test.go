@@ -217,8 +217,21 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 		case chopt.FeatureTSGridPredictLinear:
 			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 		case chopt.FeatureTSGridHistogram:
+			// Matches cmd/cerberus/main.go's nativeRangeLowerers exactly:
+			// window-slide has no chopt entry of its own (chopt.AlwaysAvailable
+			// — issue #2408's Task-1 spike found no version floor for it), so
+			// it is NOT reached by this loop's chopt.Registry() iteration at
+			// all. Composing it here, inside the ONE case that DOES fire for
+			// the classic-histogram family, is what keeps this helper from
+			// silently classifying every window-slide-eligible corpus query
+			// under the fan-out's own decision — the exact blind spot this
+			// function's own doc warns the default case exists to catch,
+			// except AlwaysAvailable features have no registry entry for that
+			// default to catch them by.
 			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
-				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+				Fallback: promql.WindowSlideClassicHistogramWindowLowerer{
+					Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+				},
 			}
 		case chopt.FeatureTSGridRecollapse:
 			recollapse = true

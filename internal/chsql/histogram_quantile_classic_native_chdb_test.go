@@ -305,8 +305,16 @@ func runHQEmit(t *testing.T, db *sql.DB, query string, native bool) map[hqCell]f
 	}
 	var lowerers promql.RangeLowerers
 	if native {
+		// Window-slide has no chopt entry of its own (chopt.AlwaysAvailable),
+		// so it is composed into the chain unconditionally, matching
+		// cmd/cerberus's own nativeRangeLowerers — a no-op for every query
+		// this suite runs (all `rate(...)`, never sum_over_time, so
+		// windowSlideEligible always declines here), kept for consistency
+		// rather than because this suite exercises it.
 		lowerers.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
-			Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			Fallback: promql.WindowSlideClassicHistogramWindowLowerer{
+				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
+			},
 		}
 	}
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),

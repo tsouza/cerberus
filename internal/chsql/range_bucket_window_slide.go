@@ -105,6 +105,8 @@ const (
 	rwsLadderParam        = "rj"
 	rwsFilterValueParam   = "rf"
 	rwsFilterPresenceParm = "rp"
+	rwsOwnBoundParam      = "rob"
+	rwsOwnCountParam      = "roc"
 )
 
 // windowSlideMsScale is nanoseconds per millisecond — the resolution issue
@@ -250,24 +252,41 @@ const windowSlideMinSamples = 1
 //     interpolation's bounds and change the answered quantile.
 //   - Contribution rule. A row contributes to canonical bound rk's
 //     cumulative sum ONLY when its OWN ExplicitBounds contains rk
-//     EXACTLY (indexOf-based has-gating) — never via a monotone-envelope
-//     "nearest own bound >= rk" reprojection. Reference PromQL models
-//     each `le` value as its OWN scalar time series
-//     (`<name>_bucket{le="X"}`); a row whose layout never reported X
-//     contributes no sample to that series at all, so summing in the
-//     cumulative domain with an exact-membership gate — THEN differencing
-//     the SUMMED (not the per-row) ladder — is what reference's
-//     `sum_over_time` actually computes. Differencing before summing (an
-//     earlier version of this file did that) is only equivalent when
-//     every row contributes at every position, which exact-membership
-//     gating deliberately breaks.
-//   - The +Inf rung is exempt from the has-gate by construction, not by a
-//     special case: every row (real or sentinel) has `inf` appended to
-//     its own bounds list before the indexOf lookup, so
-//     `indexOf(ownBoundsInf, inf)` always resolves (to the row's own
-//     total via arraySum for a real row, to index 1 of `[inf]` giving 0
-//     for a sentinel) — matching reference's own "the +Inf rung folds
-//     unconditionally over the whole window" rule.
+//     EXACTLY (has()-gated) — never via a monotone-envelope "nearest own
+//     bound >= rk" reprojection, and the VALUE it contributes is a
+//     filter-sum over every one of the row's own (bound, count) pairs
+//     with bound <= rk — never a positional arrayCumSum indexed by a
+//     single match. Reference PromQL models each `le` value as its OWN
+//     scalar time series (`<name>_bucket{le="X"}`); a row whose layout
+//     never reported X contributes no sample to that series at all
+//     (the has() gate), and a row whose layout reports X more than once
+//     (real OTLP data can carry duplicate ExplicitBounds) contributes the
+//     SUM of every position at X, matching how the two `le="X"` series an
+//     OTLP-to-Prometheus conversion emits for such a row are the same
+//     label set that `sum by(le)` adds together (see
+//     hasGatedExtendedArrayFrag's own doc — this is EXACTLY
+//     internal/promql's classicBucketRowCumulativeExpr, not merely
+//     analogous to it). Summing in the cumulative domain with this gate
+//     — THEN differencing the SUMMED (not the per-row) ladder — is what
+//     reference's `sum_over_time` actually computes. Differencing before
+//     summing (an earlier version of this file did that, with a
+//     positional-cumsum contribution rule to match) is only equivalent
+//     when every row contributes at every position through the SAME
+//     ordering assumption, which both exact-membership gating and
+//     out-of-order/duplicate real-world ExplicitBounds deliberately
+//     break.
+//   - The +Inf rung is folded SEPARATELY from the finite union bounds and
+//     UNCONDITIONALLY (no has()-gate at all — every row, real or
+//     sentinel, contributes its own `arraySum(_rws_counts_f)` regardless
+//     of what its own layout reports), mirroring how
+//     classicBucketMergedLadderExpr keeps its own +Inf fold
+//     (classicBucketRowTotalExpr) outside the contributing()-gated finite
+//     union loop entirely — matching reference's own "the +Inf rung folds
+//     unconditionally over the whole window" rule. See
+//     hasGatedExtendedArrayFrag's own doc for why this split is also what
+//     keeps the finite-bound filter-sum's own array lengths from
+//     mismatching (BucketCounts is not always exactly
+//     length(ExplicitBounds)+1).
 //   - Level 5 uses exactly ONE window function, not two or three. A
 //     second `sum(...) OVER (<identical PARTITION BY/ORDER BY/RANGE>)`
 //     was the first shape tried for the MinSamples count, and it
@@ -450,7 +469,17 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		sentinel.Select(Col(a))
 	}
 	sentinel.Select(Col(rwsRawNsAlias))
-	sentinel.SelectAs(Call("emptyArrayFloat64"), rwsCountsFAlias)
+	// _rws_counts_f is ONE zero-valued element, not empty: the classic-
+	// histogram row contract is BucketCounts one longer than
+	// ExplicitBounds (the implicit +Inf overflow rung), so a sentinel's
+	// zero finite bounds pairs with exactly one (the +Inf) count. Getting
+	// this wrong breaks hasGatedExtendedArrayFrag's arrayMap((rob, roc) ->
+	// ..., ownBoundsInf, _rws_counts_f) outright — ClickHouse's arrayMap
+	// requires equal-length arguments (confirmed against real chDB: "Arrays
+	// passed to arrayMap must have equal size" when this was
+	// emptyArrayFloat64() paired against ownBoundsInf's own arrayPushBack(...,
+	// inf), which is never shorter than length 1).
+	sentinel.SelectAs(Call("array", Call("toFloat64", InlineLit(int64(0)))), rwsCountsFAlias)
 	sentinel.SelectAs(Call("emptyArrayFloat64"), rwsBoundsFAlias)
 	sentinel.SelectAs(InlineLit(int64(1)), rwsIsAnchorAlias)
 	sentinel.Select(Col(rwsAnchorNsAlias))
@@ -615,54 +644,132 @@ func msEncodeArrayFrag(baseNS int64, arr Frag) Frag {
 }
 
 // hasGatedExtendedArrayFrag renders one row's own contribution to every
-// canonical bound — EXACT membership only, never a monotone-envelope
-// "nearest own bound" reprojection (see the emit function doc's
-// "Contribution rule" note) — concatenated with the same row's presence
-// indicator and its windowSlideMinSamples marker:
+// canonical bound — gated on EXACT membership (never a monotone-envelope
+// "nearest own bound" reprojection — see the emit function doc's
+// "Contribution rule" note) and valued by the SAME filter-sum
+// internal/promql's classicBucketRowCumulativeExpr uses for the fan-out's
+// own per-row cumulative reading — concatenated with the same row's
+// presence indicator and its windowSlideMinSamples marker. The finite
+// union bounds and the +Inf rung are folded SEPARATELY and then
+// concatenated, exactly mirroring classicBucketMergedLadderExpr's own
+// `arrayConcat(<finite fold>, array(<+Inf fold>))` split — see that
+// split's own doc for why: BucketCounts is EITHER
+// length(ExplicitBounds) OR length(ExplicitBounds)+1 (the classic-
+// histogram row shape allowance bucketGridRungsFrag's own doc documents),
+// so a row's own bounds array and its own counts array are not
+// necessarily the same length, and folding them as one combined
+// (bounds+inf, counts) pair — an earlier version of this function did —
+// crashes with a ClickHouse arrayMap length mismatch the moment a seeded
+// row's BucketCounts/ExplicitBounds happen to be equal length (confirmed
+// against real chDB: "Arrays passed to arrayMap must have equal size").
 //
-//	ownBoundsInf = arrayPushBack(_rws_bounds_f, inf)
-//	ownCum       = arrayPushBack(arrayCumSum(arraySlice(_rws_counts_f, 1, length(_rws_bounds_f))),
-//	                             arraySum(_rws_counts_f))
-//	idx(rk)      = indexOf(ownBoundsInf, rk)
-//	cumArr       = arrayMap(rk -> if(idx(rk) > 0, ownCum[idx(rk)], 0.0), _rws_canon_bounds)
-//	presenceArr  = arrayMap(rk -> if(idx(rk) > 0, 1.0, 0.0), _rws_canon_bounds)
+//	finiteCounts   = arraySlice(_rws_counts_f, 1, length(_rws_bounds_f))
+//	presence(rk)   = has(_rws_bounds_f, rk)
+//	cumAtRk(rk)    = arraySum(arrayMap((b, c) -> if(b <= rk, c, 0), _rws_bounds_f, finiteCounts))
+//	finiteCanon    = arraySlice(_rws_canon_bounds, 1, length(_rws_canon_bounds) - 1)  -- drop the trailing +Inf
+//	finiteCumArr   = arrayMap(rk -> if(presence(rk), cumAtRk(rk), 0.0), finiteCanon)
+//	finitePresArr  = arrayMap(rk -> if(presence(rk), 1.0, 0.0), finiteCanon)
+//	cumArr         = arrayConcat(finiteCumArr, [arraySum(_rws_counts_f)])
+//	presenceArr    = arrayConcat(finitePresArr, [1.0])
 //	arrayConcat(cumArr, presenceArr, [toFloat64(1 - _rws_is_anchor)])
 //
-// ownCum is the row's own CUMULATIVE-at-bound reading (the same
-// monotone-envelope construction range_bucket_grid_native.go's
-// bucketGridRungsFrag uses for the identical reason: OTLP's ExplicitBounds
-// contract makes a prefix sum over the row's own counts exactly its
-// cumulative reading at each of ITS OWN bounds). indexOf resolves to 0
-// (no match) for any canonical bound rk this row's own layout never
-// reported exactly — cumArr/presenceArr both read 0 there, so that row
-// contributes NOTHING to rk's window sum, matching reference PromQL's
-// per-`le` scalar-series model (a row whose layout omits `le=rk` has no
-// SAMPLE for the `<name>_bucket{le=rk}` series at all).
+// cumAtRk is deliberately a FILTER-SUM over every one of the row's own
+// (bound, count) pairs, never a positional arrayCumSum: a review of the
+// first version of this file (which used arrayCumSum + indexOf, mirroring
+// range_bucket_grid_native.go's bucketGridRungsFrag) found it silently
+// answered a DIFFERENT number than the fan-out whenever a row's own
+// ExplicitBounds carried a duplicate or an out-of-order bound — both of
+// which real OTLP data can produce. A positional cumulative sum assumes
+// strictly ascending, distinct bounds; classicBucketRowCumulativeExpr
+// makes no such assumption; a filter-sum matches it exactly regardless of
+// the row's own bound ordering or duplication, at the same O(row bounds)
+// cost per canonical position.
 //
-// ownBoundsInf's trailing +Inf guarantees indexOf always finds a match on
-// the +Inf position (every row, real or sentinel, has `inf` appended), so
-// the +Inf rung folds unconditionally over every row exactly as reference
-// requires — see the emit doc's own +Inf note.
+// has() resolves false for any canonical bound rk this row's own layout
+// never reported at all — finiteCumArr/finitePresArr both read 0 there,
+// so that row contributes NOTHING to rk's window sum, matching reference
+// PromQL's per-`le` scalar-series model (a row whose layout omits `le=rk`
+// has no SAMPLE for the `<name>_bucket{le=rk}` series at all). A
+// duplicate bound (e.g. ExplicitBounds carrying `1` twice) still passes
+// `has` once and folds the SUM of every position at that bound via
+// cumAtRk's own filter — matching how the two `le="1"` series an
+// OTLP-to-Prometheus conversion would emit for such a row are the same
+// label set, and `sum by(le)` adds same-label-set series together.
 //
-// A sentinel row's own _rws_counts_f/_rws_bounds_f are both empty:
-// ownBoundsInf degenerates to `[inf]`, ownCum to `[arraySum([])] = [0.0]`;
-// indexOf matches ONLY the +Inf position (contributing 0), never any
-// finite canonical bound — so a sentinel contributes nothing anywhere but
-// its own trailing marker slot (0, since is_anchor=1).
+// The +Inf rung is exempt from the has()/finiteCanon gate by construction:
+// the overflow bucket exists in every layout, so `{le="+Inf"}` folds
+// unconditionally over every row (real or sentinel) — arraySum(_rws_counts_f)
+// is the row's own total regardless of which BucketCounts-length
+// convention it uses, exactly matching classicBucketRowTotalExpr.
+//
+// A sentinel row's own _rws_bounds_f is empty and _rws_counts_f is the
+// single-element `[0.0]` (matching the classic-histogram row contract's
+// own length allowance for zero finite bounds — see the sentinel arm's
+// own construction, and its doc for why an empty _rws_counts_f there is a
+// length-mismatch crash, not just a semantic nit): finiteCounts degenerates
+// to `[]`, has() is false for every finite rk, and the +Inf total is
+// arraySum([0.0]) = 0 — a sentinel contributes nothing anywhere but its
+// own trailing marker slot (0, since is_anchor=1).
 func hasGatedExtendedArrayFrag() Frag {
 	countsF := Col(rwsCountsFAlias)
 	boundsF := Col(rwsBoundsFAlias)
-	ownBoundsInf := Call("arrayPushBack", boundsF, BareIdent("inf"))
-	ownCum := Call("arrayPushBack",
-		Call("arrayCumSum", Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", boundsF))),
-		Call("arraySum", countsF))
-	idx := func() Frag { return Call("indexOf", ownBoundsInf, BareIdent(rwsCanonParam)) }
-	cumArr := Call("arrayMap",
-		Lambda1(rwsCanonParam, If(Gt(idx(), InlineLit(int64(0))), Subscript(ownCum, idx()), InlineLit(0.0))),
-		Col(rwsCanonBoundsAlias))
-	presenceArr := Call("arrayMap",
-		Lambda1(rwsCanonParam, If(Gt(idx(), InlineLit(int64(0))), InlineLit(1.0), InlineLit(0.0))),
-		Col(rwsCanonBoundsAlias))
+
+	// The classic-histogram row contract allows BucketCounts to be EITHER
+	// length(ExplicitBounds) (no separately stored +Inf overflow entry —
+	// see range_bucket_grid_native.go's bucketGridRungsFrag doc for the
+	// same row-shape allowance) OR length(ExplicitBounds)+1 (an explicit
+	// overflow entry). finiteCounts is _rws_counts_f narrowed to exactly
+	// the finite-bound-aligned prefix either shape actually has, mirroring
+	// internal/promql's classicBucketRowCumulativeExpr's own
+	// `arraySlice(paramRowCounts, 1, length(paramRowBounds))` — pairing
+	// the WHOLE _rws_counts_f array against a canonical-bound-set that has
+	// one MORE entry (the appended +Inf) than _rws_bounds_f would silently
+	// misalign whenever a row omits the overflow entry (confirmed against
+	// real chDB as a hard length-mismatch crash, not merely a wrong
+	// answer, the moment a seeded row's own BucketCounts/ExplicitBounds
+	// are the SAME length).
+	finiteCounts := Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", boundsF))
+	presence := func() Frag { return Call("has", boundsF, BareIdent(rwsCanonParam)) }
+	// cumAtRk mirrors internal/promql's classicBucketRowCumulativeExpr
+	// EXACTLY: arraySum(arrayMap((b, c) -> if(b <= rk, c, 0), boundsF,
+	// finiteCounts)) — a filter-sum over EVERY one of the row's own
+	// (bound, count) pairs, never a positional arrayCumSum. This is what
+	// makes it correct for duplicate or unsorted ExplicitBounds — real
+	// OTLP data can produce either — where a positional cumulative sum
+	// silently answers the wrong number (arrayCumSum assumes strictly
+	// ascending, distinct bounds; a filter-sum assumes nothing about
+	// ordering and naturally folds every duplicate bound's own count in).
+	cumAtRk := func() Frag {
+		return Call("arraySum", Call("arrayMap",
+			Lambda2(rwsOwnBoundParam, rwsOwnCountParam, If(
+				Lte(BareIdent(rwsOwnBoundParam), BareIdent(rwsCanonParam)),
+				BareIdent(rwsOwnCountParam),
+				InlineLit(0.0),
+			)),
+			boundsF, finiteCounts))
+	}
+	// _rws_canon_bounds's own trailing entry is always +Inf (canonBySeries
+	// unconditionally appends it before the union/sort — see that level's
+	// own construction), so the finite union bounds this row's own
+	// has()/cumAtRk apply to are exactly its own prefix, one shorter.
+	canonLen := Call("length", Col(rwsCanonBoundsAlias))
+	finiteCanon := Call("arraySlice", Col(rwsCanonBoundsAlias), InlineLit(int64(1)), Sub(canonLen, InlineLit(int64(1))))
+	finiteCumArr := Call("arrayMap",
+		Lambda1(rwsCanonParam, If(presence(), cumAtRk(), InlineLit(0.0))),
+		finiteCanon)
+	finitePresenceArr := Call("arrayMap",
+		Lambda1(rwsCanonParam, If(presence(), InlineLit(1.0), InlineLit(0.0))),
+		finiteCanon)
+	// The +Inf rung is handled separately and unconditionally — the
+	// overflow bucket exists in every layout by definition, so it folds
+	// over EVERY row (real or sentinel) regardless of has(), mirroring
+	// classicBucketRowTotalExpr's own `arraySum(paramRowCounts)` — the
+	// row's WHOLE counts array, any length convention, is its own +Inf
+	// reading.
+	infCum := Call("array", Call("arraySum", countsF))
+	infPresence := Call("array", InlineLit(1.0))
+	cumArr := Call("arrayConcat", finiteCumArr, infCum)
+	presenceArr := Call("arrayConcat", finitePresenceArr, infPresence)
 	marker := Call("array", Call("toFloat64", Sub(InlineLit(int64(1)), Col(rwsIsAnchorAlias))))
 	return Call("arrayConcat", cumArr, presenceArr, marker)
 }
