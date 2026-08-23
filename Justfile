@@ -362,6 +362,20 @@ perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
+# Run the ts_grid_* native range-window lowerer activation lane (#2487): wires
+# a *prom.Handler the way cmd/cerberus's own boot path does (via
+# internal/chopttest, extracted from main.go's nativeRangeLowerers) against a
+# REAL ClickHouse, then proves each of the six native families — rate,
+# staleness (resample), changes, resets, deriv, predict_linear — actually
+# fires by reading the emitted SQL back out of system.query_log, not just
+# that the request returns HTTP 200. Requires Docker; gated behind the
+# `integration` build tag. See
+# test/perf/smoke/realch_native_lowerers_integration_test.go and
+# strict-scan.yml.
+native-lowerers-smoke-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestNativeRangeLowerers_RealCH_Integration ./test/perf/smoke/...
+
 # Run the #2370 nightly measurement + regression gate: loads the real,
 # trimmed production sample (test/perf/nightly/testdata/samples/*.parquet,
 # LFS — needs `git lfs pull` first if not already fetched) into a real
@@ -472,6 +486,20 @@ metadata-endpoints-integration:
 histogram-realexporter-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestHistogram_RealExporterSchema_Integration ./internal/api/prom/...
+
+# Run the ts_grid_* native range-window lowerer activation lane (#2487) for
+# internal/api/prom's own real-CH integration coverage — the package-local
+# sibling of native-lowerers-smoke-integration, exercising the identical six
+# families (rate, staleness/resample, changes, resets, deriv,
+# predict_linear) through this package's OWN *prom.Handler and real exporter
+# schema, so a package-local emit-type or wiring bug can't hide behind
+# test/perf/smoke's coverage alone. Requires Docker; gated behind the
+# `integration` build tag. See
+# internal/api/prom/handler_native_lowerers_integration_test.go and
+# strict-scan.yml.
+native-lowerers-prom-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestNativeRangeLowerers_RealCH_Integration ./internal/api/prom/...
 
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
