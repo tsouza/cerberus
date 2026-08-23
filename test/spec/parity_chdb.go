@@ -838,6 +838,24 @@ func compareAgainstReference(
 		t.Fatalf("fixture %s: %v", c.Name, err)
 	}
 
+	// got arrives sorted by the reference oracle's OWN canonicalisation
+	// (Prometheus's `labels.Labels.String()`, e.g. Evaluate's sortResults),
+	// not cerberus's labelKey. The two disagree on where an EMPTY label set
+	// sorts relative to a non-empty one: Prometheus's bracketed form "{}"
+	// sorts after "{job=...}" (`}` > `j`), while labelKey's plain "" sorts
+	// before "job=...". referenceShapeOfExpectedRows above sorts want with
+	// labelKey, so re-sorting got the same way here is what keeps the
+	// position-wise comparison below meaningful whenever one side of a
+	// query (e.g. an `or` between a `sum by(...)` branch and a
+	// no-group-by branch) mixes an empty and a non-empty label set in one
+	// answer — the case that first exposed the mismatch.
+	sort.SliceStable(got, func(i, j int) bool {
+		if ki, kj := labelKey(got[i].Labels), labelKey(got[j].Labels); ki != kj {
+			return ki < kj
+		}
+		return got[i].TMillis < got[j].TMillis
+	})
+
 	if len(got) != len(want) {
 		t.Fatalf(
 			"fixture %s: reference engine returned %d sample(s), cerberus %d.\n"+
