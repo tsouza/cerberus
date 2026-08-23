@@ -32,6 +32,11 @@ func TestSentinels_Roster(t *testing.T) {
 		if s.Params == nil {
 			t.Fatalf("sentinel %s has nil Params", s.Name)
 		}
+		if s.BaselineHeadroom <= 1.0 {
+			t.Fatalf("sentinel %s has BaselineHeadroom %v, want > 1.0 — a zero/blank value would silently "+
+				"compute a committed ceiling at or below the calibration measurement itself, permanently failing PRONG (b)",
+				s.Name, s.BaselineHeadroom)
+		}
 		params := s.Params(sampleWindowStart, sampleWindowEnd)
 		if params.Get("query") == "" {
 			t.Fatalf("sentinel %s produced an empty query", s.Name)

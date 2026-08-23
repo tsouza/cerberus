@@ -34,6 +34,67 @@ var (
 
 const sentinelStep = time.Minute
 
+// Per-sentinel committed-ceiling headroom multipliers, replacing a single
+// package-wide constant (formerly nightlyBaselineHeadroom, 1.5x for every
+// sentinel). A real noise investigation (issue #2370's headroom-tightening
+// follow-up) measured each sentinel's run-to-run peak-memory variance across
+// repeated, INDEPENDENT `go test -tags=integration -run TestPerfNightlyRealCH`
+// invocations (not just the in-test max-of-N sampling in
+// realch_perfnightly_integration_test.go, which only captures intra-process
+// variance) at the unmodified calibration point, and found the four
+// sentinels' noise floors differ by nearly an order of magnitude — far too
+// much for one multiplier to serve every sentinel honestly: tight enough to
+// catch a real ~25% regression on the quiet sentinels would flake constantly
+// on the noisy ones, and loose enough to never flake the noisy ones leaves
+// the quiet ones no tighter than before.
+//
+//   - histogramBaselineHeadroom (classic_histogram_quantile_by_route, n=5
+//     independent runs): 456.3M-471.0M bytes, max/min = 1.032x (CV 1.26%) —
+//     by far the quietest of the four. This is also the exact sentinel
+//     issue #2408's own investigation regression-tested (a real +24.6%
+//     window-widening regression that a 1.5x headroom passed cleanly), so
+//     it gets the tightest headroom: 1.20x leaves ~16% cushion over the
+//     observed swing while a worst-case calibration/regression draw still
+//     trips at ~+24% — squarely the target range.
+//   - gaugeBaselineHeadroom (pod_status_reason_gauge, n=5): 725.5M-817.7M
+//     bytes, max/min = 1.127x (CV 4.48%). Real memory usage here already
+//     sits at 78-88% of the 1 GiB cap — nightlyMemoryCapFraction (0.85, see
+//     its own comment in realch_perfnightly_integration_test.go) caps the
+//     committed ceiling at 912,680,550 bytes regardless of this multiplier
+//     for ANY headroom above ~1.12x, which the observed noise itself
+//     (1.127x) does not leave enough cushion below to use safely. This
+//     sentinel's real regression protection is PRONG (a)'s absolute cap,
+//     not this constant, so it is left unchanged at 1.5x rather than
+//     pretend a tightened value here buys any real sensitivity — see
+//     issue #2435 for the cap-fraction margin itself.
+//   - requestRateBaselineHeadroom (request_rate_by_method, n=8): 235.1M-
+//     313.4M bytes, max/min = 1.333x (CV 10.45%) — an ExpectedStatus=422
+//     sentinel: "peak memory" is memory used BEFORE the rate-window fanout
+//     bound rejects the query, not a completed query's memory, and that
+//     early-abort point is inherently noisier (scan-ordering/scheduling
+//     dependent) than the two 200-status sentinels above. Left unchanged at
+//     1.5x: the observed worst-case swing alone consumes most of that
+//     headroom (1.5x / 1.333x = 1.125x real cushion), and tightening
+//     further risks flaking on exactly the noise this measurement found.
+//   - errorRatioBaselineHeadroom (error_ratio_by_namespace, n=8): 269.9M-
+//     340.5M bytes, max/min = 1.262x (CV 8.93%) — same rejection-noise
+//     character as request_rate_by_method, modestly less noisy. Tightened
+//     to 1.45x, keeping ~15% real cushion over the observed swing
+//     (1.45x / 1.262x = 1.149x).
+const (
+	histogramBaselineHeadroom   = 1.20
+	gaugeBaselineHeadroom       = 1.50
+	requestRateBaselineHeadroom = 1.50
+	errorRatioBaselineHeadroom  = 1.45
+	// nativeHistogramBaselineHeadroom has no per-sentinel noise measurement
+	// yet (classic_native_histogram_derived was added after the other four
+	// sentinels' independent-process noise sweep) — the unmeasured default
+	// mirrors gaugeBaselineHeadroom/requestRateBaselineHeadroom's own
+	// conservative choice: keep the pre-tightening 1.5x until a real
+	// multi-run sweep for this specific sentinel justifies going tighter.
+	nativeHistogramBaselineHeadroom = 1.50
+)
+
 // Sentinel describes one real-data query the nightly harness issues and the
 // construct family it exercises. Unlike test/perf/smoke's fixed 3-sentinel
 // set (each calibrated to trip one specific memory-bounding mechanism on
@@ -74,6 +135,12 @@ type Sentinel struct {
 	WindowStart time.Time
 	WindowEnd   time.Time
 	Step        time.Duration
+	// BaselineHeadroom is this sentinel's own committed-ceiling multiplier
+	// against the max-of-N calibration measurement — see the
+	// *BaselineHeadroom constants above for the real, independent-process
+	// noise data each value is calibrated against, and why a single
+	// package-wide multiplier does not fit all four sentinels.
+	BaselineHeadroom float64
 }
 
 // Sentinels is PR A's "prove the mechanism, print the numbers" corpus — no
@@ -121,13 +188,14 @@ var Sentinels = []Sentinel{
 		// the cap. 5 anchors leaves ~20 points of margin under
 		// nightlyMemoryCapFraction even after the committed baseline's own
 		// 1.5x headroom, which the 10- and 20-anchor points do not.
-		Name:           "classic_histogram_quantile_by_route",
-		Family:         "histogram_quantile over a classic (bucket/bounds) histogram — issue #2408's arrayJoin bucket-rate fan-out",
-		Path:           "/api/v1/query_range",
-		ExpectedStatus: http.StatusOK,
-		WindowStart:    time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
-		WindowEnd:      time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
-		Step:           time.Minute,
+		Name:             "classic_histogram_quantile_by_route",
+		Family:           "histogram_quantile over a classic (bucket/bounds) histogram — issue #2408's arrayJoin bucket-rate fan-out",
+		Path:             "/api/v1/query_range",
+		ExpectedStatus:   http.StatusOK,
+		WindowStart:      time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
+		WindowEnd:        time.Date(2026, 8, 18, 9, 10, 0, 0, time.UTC),
+		Step:             time.Minute,
+		BaselineHeadroom: histogramBaselineHeadroom,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`histogram_quantile(0.95, sum by (http_route, le) (rate(` + histogramMetric + `_bucket[5m])))`},
@@ -152,6 +220,7 @@ var Sentinels = []Sentinel{
 		Path:                   "/api/v1/query_range",
 		ExpectedStatus:         http.StatusUnprocessableEntity,
 		ExpectedErrorSubstring: chsql.RateWindowFanoutBudgetMessage,
+		BaselineHeadroom:       requestRateBaselineHeadroom,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (method) (rate(` + sumMetric + `[5m]))`},
@@ -159,10 +228,11 @@ var Sentinels = []Sentinel{
 		},
 	},
 	{
-		Name:           "pod_status_reason_gauge",
-		Family:         "Gauge aggregation — signal type the smoke tier has zero coverage of",
-		Path:           "/api/v1/query_range",
-		ExpectedStatus: http.StatusOK,
+		Name:             "pod_status_reason_gauge",
+		Family:           "Gauge aggregation — signal type the smoke tier has zero coverage of",
+		Path:             "/api/v1/query_range",
+		ExpectedStatus:   http.StatusOK,
+		BaselineHeadroom: gaugeBaselineHeadroom,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`sum by (reason) (` + gaugeMetric + `)`},
@@ -184,6 +254,7 @@ var Sentinels = []Sentinel{
 		Path:                   "/api/v1/query_range",
 		ExpectedStatus:         http.StatusUnprocessableEntity,
 		ExpectedErrorSubstring: chsql.RateWindowFanoutBudgetMessage,
+		BaselineHeadroom:       errorRatioBaselineHeadroom,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {
@@ -247,13 +318,14 @@ var Sentinels = []Sentinel{
 		// separate calibration capture (~46-47% of cap) — normal max-of-5
 		// run-to-run variance from this sweep's own 45.9%, not a different
 		// window or query shape.
-		Name:           "classic_native_histogram_derived",
-		Family:         "histogram_quantile over a DERIVED exponential histogram — same real cardinality/cadence as the classic sentinel above, re-bucketed (see loader.go)",
-		Path:           "/api/v1/query_range",
-		ExpectedStatus: http.StatusOK,
-		WindowStart:    time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
-		WindowEnd:      time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
-		Step:           time.Minute,
+		Name:             "classic_native_histogram_derived",
+		Family:           "histogram_quantile over a DERIVED exponential histogram — same real cardinality/cadence as the classic sentinel above, re-bucketed (see loader.go)",
+		Path:             "/api/v1/query_range",
+		ExpectedStatus:   http.StatusOK,
+		BaselineHeadroom: nativeHistogramBaselineHeadroom,
+		WindowStart:      time.Date(2026, 8, 18, 9, 5, 0, 0, time.UTC),
+		WindowEnd:        time.Date(2026, 8, 18, 9, 14, 0, 0, time.UTC),
+		Step:             time.Minute,
 		Params: func(start, end time.Time) url.Values {
 			return url.Values{
 				"query": {`histogram_quantile(0.95, ` + nativeHistogramMetric + `)`},
