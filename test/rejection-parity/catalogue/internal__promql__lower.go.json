@@ -94,8 +94,8 @@
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59",
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "ts_of_first_over_time(demo_latency_exp_hist[5m])",
-      "tracking_issue": 2482,
+      "trigger_query": "year(demo_latency_exp_hist)",
+      "tracking_issue": 2498,
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
@@ -105,7 +105,7 @@
           "resolveSelectorRouting"
         ]
       },
-      "since": "2026-08-22"
+      "since": "2026-08-23"
     },
     {
       "head": "promql",
@@ -272,7 +272,7 @@
       "site": "internal/promql/lower.go:lowerRoot#53e0f9b3",
       "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count_values's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim. sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346), checked immediately after it, only recognises an AggregateExpr whose Op expHistogramAggOpIsMergeable confirms is SUM or AVG — count_values's Op is COUNT_VALUES — so it cannot intercept this shape either. labelCallOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, only recognises a *parser.Call named label_replace/label_join — count_values's AggregateExpr is neither — so it cannot intercept this shape either. mathFnOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts peelWrappers(expr) as a *parser.Call before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers (ParenExpr/StepInvariantExpr only) never turns into a Call — so it cannot intercept this shape either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts unwrapBinaryExpr(expr) as a *parser.BinaryExpr before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which unwrapBinaryExpr (ParenExpr/StepInvariantExpr only) never turns into a BinaryExpr — so it cannot intercept this shape either. countPresentOverExpHistogram and lastFirstOverExpHistogram (cerberus issue #2480), checked immediately after that, each type-assert peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time or last_over_time/first_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so neither can intercept this shape either.",
+      "rationale": "countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count_values's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim. sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346), checked immediately after it, only recognises an AggregateExpr whose Op expHistogramAggOpIsMergeable confirms is SUM or AVG — count_values's Op is COUNT_VALUES — so it cannot intercept this shape either. labelCallOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, only recognises a *parser.Call named label_replace/label_join — count_values's AggregateExpr is neither — so it cannot intercept this shape either. mathFnOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts peelWrappers(expr) as a *parser.Call before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers (ParenExpr/StepInvariantExpr only) never turns into a Call — so it cannot intercept this shape either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts unwrapBinaryExpr(expr) as a *parser.BinaryExpr before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which unwrapBinaryExpr (ParenExpr/StepInvariantExpr only) never turns into a BinaryExpr — so it cannot intercept this shape either. countPresentOverExpHistogram and lastFirstOverExpHistogram (cerberus issue #2480), checked immediately after that, each type-assert peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time or last_over_time/first_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so neither can intercept this shape either. tsOfFirstLastOverExpHistogram (cerberus issue #2482), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named ts_of_first_over_time/ts_of_last_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either.",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
@@ -286,6 +286,7 @@
           "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok",
+          "past returning if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok",
           "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
           "past returning if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok",
           "if agg, ok := countValuesOverExpHistogramValue(expr, s, ctx); ok",
@@ -310,6 +311,7 @@
           "mixedExpHistogramSetOp",
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
+          "tsOfFirstLastOverExpHistogram",
           "unwrapBinaryExpr"
         ]
       }
@@ -319,7 +321,7 @@
       "site": "internal/promql/lower.go:lowerRoot#c7dbd629",
       "message": "promql: internal invariant violated: count/group input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "countOrGroupOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count/group's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim. sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346), checked immediately after it, only recognises an AggregateExpr whose Op expHistogramAggOpIsMergeable confirms is SUM or AVG — count/group's Op is COUNT or GROUP — so it cannot intercept this shape either. labelCallOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, only recognises a *parser.Call named label_replace/label_join — count/group's AggregateExpr is neither — so it cannot intercept this shape either. mathFnOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts peelWrappers(expr) as a *parser.Call before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which peelWrappers (ParenExpr/StepInvariantExpr only) never turns into a Call — so it cannot intercept this shape either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts unwrapBinaryExpr(expr) as a *parser.BinaryExpr before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which unwrapBinaryExpr (ParenExpr/StepInvariantExpr only) never turns into a BinaryExpr — so it cannot intercept this shape either. countPresentOverExpHistogram and lastFirstOverExpHistogram (cerberus issue #2480), checked immediately after that, each type-assert peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time or last_over_time/first_over_time before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so neither can intercept this shape either.",
+      "rationale": "countOrGroupOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. The mixedExpHistogramSetOp guard checked earlier in lowerRoot's chain (cerberus issue #2330) only recognises a VectorSetOp BinaryExpr with exactly one histogram-valued operand — a shape count/group's AggregateExpr is not — so it cannot intercept a query before it reaches this branch, and does not affect this claim. sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346), checked immediately after it, only recognises an AggregateExpr whose Op expHistogramAggOpIsMergeable confirms is SUM or AVG — count/group's Op is COUNT or GROUP — so it cannot intercept this shape either. labelCallOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, only recognises a *parser.Call named label_replace/label_join — count/group's AggregateExpr is neither — so it cannot intercept this shape either. mathFnOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts peelWrappers(expr) as a *parser.Call before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which peelWrappers (ParenExpr/StepInvariantExpr only) never turns into a Call — so it cannot intercept this shape either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449), checked immediately after that, type-asserts unwrapBinaryExpr(expr) as a *parser.BinaryExpr before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which unwrapBinaryExpr (ParenExpr/StepInvariantExpr only) never turns into a BinaryExpr — so it cannot intercept this shape either. countPresentOverExpHistogram and lastFirstOverExpHistogram (cerberus issue #2480), checked immediately after that, each type-assert peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time or last_over_time/first_over_time before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so neither can intercept this shape either. tsOfFirstLastOverExpHistogram (cerberus issue #2482), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named ts_of_first_over_time/ts_of_last_over_time before doing anything else — count/group's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either.",
       "evidence": {
         "guard": [
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
@@ -333,6 +335,7 @@
           "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok",
+          "past returning if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok",
           "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
           "if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok",
           "past returning if err != nil",
@@ -356,6 +359,7 @@
           "mixedExpHistogramSetOp",
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
+          "tsOfFirstLastOverExpHistogram",
           "unwrapBinaryExpr"
         ]
       }
