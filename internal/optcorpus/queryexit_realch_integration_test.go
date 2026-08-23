@@ -39,7 +39,7 @@ import (
 
 // queryExitCHImage pins the ClickHouse server image, matching every other
 // real-CH lane so all of them exercise the same server version.
-const queryExitCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const queryExitCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // queryExitCHStartTimeout bounds container pull + start + the seed/read cycle.
 const queryExitCHStartTimeout = 5 * time.Minute

@@ -51,7 +51,7 @@ import (
 
 // scanWinCHImage pins the same ClickHouse server image the other real-CH lanes
 // use.
-const scanWinCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const scanWinCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 const scanWinDB = "default"
 

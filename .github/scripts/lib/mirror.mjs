@@ -72,7 +72,7 @@ export const mirroredImages = [
   // k3d stack, the startup bench, and the `-tags=integration` testcontainers
   // lanes (24.8 is the older server the replicated-DDL pins are proved on).
   'clickhouse/clickhouse-server:24.8-alpine',
-  'clickhouse/clickhouse-server:25.8-alpine',
+  'clickhouse/clickhouse-server:25.9-alpine',
   'clickhouse/clickhouse-server:26.3',
   'clickhouse/clickhouse-server:26.5',
   'clickhouse/clickhouse-server:26.5-alpine',

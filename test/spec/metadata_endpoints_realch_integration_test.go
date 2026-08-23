@@ -77,7 +77,7 @@ import (
 // metadataEndpointsCHImage matches the other real-CH integration lanes
 // (strict-scan, router-rules, solver-memory-apportion, route-B, chclient)
 // so every real-CH lane exercises the same server version.
-const metadataEndpointsCHImage = "clickhouse/clickhouse-server:25.8-alpine"
+const metadataEndpointsCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 // metadataEndpointsAnchor is the past-anchored base timestamp every seeded
 // row and every request window derives from. It is computed relative to

@@ -42,7 +42,7 @@ func TestProbeVersion_DatabaseAbsent(t *testing.T) {
 	// cold-cluster bootstrap path a fresh k8s/compose deployment hits.
 	container, err := tcclickhouse.Run(
 		ctx,
-		"clickhouse/clickhouse-server:25.8-alpine",
+		"clickhouse/clickhouse-server:25.9-alpine",
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 	)
@@ -111,13 +111,13 @@ func TestProbeVersion_DatabaseAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProbeVersion over default-bound connection (otel absent): %v", err)
 		}
-		// The testcontainers image is the 25.8 line; the probe must resolve a
+		// The testcontainers image is the 25.9 line; the probe must resolve a
 		// real, non-zero version rather than fall through to the 24.8 floor.
 		if v.Major == 0 {
 			t.Fatalf("probe resolved a zero version: %+v", v)
 		}
-		if v.Major != 25 || v.Minor != 8 {
-			t.Errorf("probe version mismatch: got %s, want 25.8 (server image line)", v.String())
+		if v.Major != 25 || v.Minor != 9 {
+			t.Errorf("probe version mismatch: got %s, want 25.9 (server image line)", v.String())
 		}
 	})
 }
