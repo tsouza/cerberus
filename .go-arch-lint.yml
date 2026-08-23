@@ -160,6 +160,13 @@ components:
   chclienttest:   { in: chclienttest }
   chdbsession:    { in: chdbsession }
   chsqltest:      { in: chsqltest }
+  # Real-CH integration-test helper: resolves a live client's chopt.EnabledSet
+  # and builds the same promql.RangeLowerers native dispatch table
+  # cmd/cerberus/main.go's own nativeRangeLowerers builds (unexported,
+  # package main, so it cannot be imported), plus a system.query_log
+  # activation-proof assertion. Consumed by test/perf/smoke and
+  # internal/api/prom's real-CH integration lanes (issue #2487).
+  chopttest:      { in: chopttest }
   sealedscan:     { in: sealedscan }
   dispatchscan:   { in: dispatchscan }
   testsql:        { in: testsql }
@@ -487,6 +494,15 @@ deps:
     mayDependOn:
       - chclient
       - testsql
+  # chopttest resolves the boot-time chopt.EnabledSet against a live client
+  # (chclient) and builds the full promql.RangeLowerers dispatch table from
+  # it (promql), so real-CH integration tests across packages can wire a
+  # handler the way a real deployment does instead of prom.New's
+  # permanently fan-out-only zero value.
+  chopttest:
+    mayDependOn:
+      - chclient
+      - promql
   # api-reqctx resolves the per-request query budget and threads it onto
   # the context, so it needs chclient for the WithQueryTimeout carrier
   # (the `?timeout=` parse itself comes from the api-format

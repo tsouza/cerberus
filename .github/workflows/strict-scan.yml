@@ -235,6 +235,23 @@ jobs:
       - name: Run histogram real-exporter-schema differential (real ClickHouse)
         run: just histogram-realexporter-integration
 
+      # Every real-CH integration test that built a *prom.Handler in this
+      # package (the two steps above) left .Lowerers at prom.New's zero
+      # value, which promql.RangeLowerers.withDefaults normalizes to
+      # fan-out-only regardless of the connected server's version — so
+      # NativeRateLowerer, NativeStalenessLowerer, NativeChangesLowerer,
+      # NativeResetsLowerer, NativeDerivLowerer, and NativePredictLinearLowerer
+      # were never exercised by any real-CH test in this package (#2487).
+      # This step wires a handler the way cmd/cerberus's own boot path does
+      # (internal/chopttest, extracted from main.go's nativeRangeLowerers)
+      # and proves each of the six native families fires by reading the
+      # emitted SQL back out of system.query_log — an HTTP 200 alone cannot
+      # distinguish a genuine native activation from a silent fan-out
+      # fall-back. See
+      # internal/api/prom/handler_native_lowerers_integration_test.go.
+      - name: Run native range-window lowerer activation, prom package (real ClickHouse)
+        run: just native-lowerers-prom-integration
+
       # Whether a pooled ClickHouse connection SURVIVES a cursor teardown is
       # observable only against a real driver + server: clickhouse-go releases a
       # connection when a query ends on a live context and destroys the socket
@@ -268,3 +285,14 @@ jobs:
       # test/perf/smoke/realch_perfsmoke_integration_test.go.
       - name: Run perf-smoke sentinel differential (real ClickHouse)
         run: just perf-smoke-integration
+
+      # test/perf/smoke's own TestPerfSmokeRealCH (the step above) also
+      # leaves .Lowerers at prom.New's zero value, so it never exercised any
+      # native ts_grid_* family either (#2487) — the package-local sibling of
+      # the prom-package step above, wiring internal/chopttest against this
+      # package's own testcontainers ClickHouse and asserting all six native
+      # families' function names land in system.query_log for their
+      # respective query_range request. See
+      # test/perf/smoke/realch_native_lowerers_integration_test.go.
+      - name: Run native range-window lowerer activation, smoke package (real ClickHouse)
+        run: just native-lowerers-smoke-integration
