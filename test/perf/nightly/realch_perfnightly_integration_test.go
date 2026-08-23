@@ -18,7 +18,13 @@
 // a CLASSIC (bucket/bounds) histogram_quantile (the real sample is
 // classic-shaped, not exponential — issue #2408's arrayJoin bucket-rate
 // fan-out), a Gauge aggregation (zero smoke-tier coverage of this signal
-// type), a plain counter rate, and a cross-series ratio shape.
+// type), a plain counter rate, a cross-series ratio shape, and a DERIVED
+// native (exponential) histogram_quantile — the real production sample has
+// no captured exponential-histogram data at all, so loader.go re-buckets
+// the real classic sample into an OTel exponential layout at the same real
+// cardinality/cadence (see loader.go's loadNativeHistogramFromClassicSample
+// doc comment) rather than reusing smoke's own CI-fixture-scale synthetic
+// one.
 //
 // PR A shipped no baseline or gate — its test plan was "run it, print the
 // numbers." Two of those numbers (request_rate_by_method,
@@ -49,7 +55,7 @@
 //     would.
 //
 // A THIRD check this lane adds beyond test/perf/smoke's shape, because two
-// of its four sentinels are EXPECTED to be rejected rather than to
+// of its five sentinels are EXPECTED to be rejected rather than to
 // complete: every repeat's HTTP status must match sentinel.ExpectedStatus
 // exactly, and when that status isn't 200 the response body must carry
 // sentinel.ExpectedErrorSubstring. A status-class change either
@@ -71,7 +77,7 @@
 // and the single overall Pass) is also captured into a results.go
 // SentinelResult and written, at the end of a non-calibration run, to
 // PERF_NIGHTLY_RESULTS_JSON — see results.go's own doc comment for why:
-// two of the four sentinels above are SUPPOSED to be rejected, and
+// two of the five sentinels above are SUPPOSED to be rejected, and
 // cerberus's own engine.go correctly logs a WARN line for every rejected
 // query unconditionally, so the raw `go test -v` log alone cannot tell a
 // human apart "expected rejection" from "real regression" without manually
@@ -176,11 +182,22 @@ func TestPerfNightlyRealCH(t *testing.T) {
 	}
 	t.Logf("loaded gauge sample: %d rows", gaugeRows)
 
+	// Derives the native-histogram sentinel's data from the classic sample
+	// loadHistogramSample just loaded — see loader.go's
+	// loadNativeHistogramFromClassicSample doc comment for why this is a
+	// DERIVATION rather than a fifth parquet load: the real production
+	// sample has no captured exponential-histogram data at all.
+	nativeHistRows, err := loadNativeHistogramFromClassicSample(ctx, client)
+	if err != nil {
+		t.Fatalf("derive native histogram from classic sample: %v", err)
+	}
+	t.Logf("derived native histogram sample: %d rows", nativeHistRows)
+
 	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
 	// noise so a sentinel's memory reading reflects the query itself, not an
 	// in-flight merge competing for the same cap (same rationale as
 	// test/perf/smoke's optimizeTableFinal).
-	for _, table := range []string{"otel_metrics_histogram", "otel_metrics_sum", "otel_metrics_gauge"} {
+	for _, table := range []string{"otel_metrics_histogram", "otel_metrics_sum", "otel_metrics_gauge", "otel_metrics_exponential_histogram"} {
 		if err := conn.Exec(ctx, "OPTIMIZE TABLE "+table+" FINAL"); err != nil {
 			t.Fatalf("optimize table %s: %v", table, err)
 		}
