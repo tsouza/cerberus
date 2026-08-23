@@ -2,7 +2,6 @@ package promql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -129,15 +128,21 @@ func TestLower_ExpHistogram_Timestamp_AtPin(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_Timestamp_OtherDateFnsStillRejectHistograms
-// guards the fix's scope: `timestamp()` is the ONLY date-component
-// function whose value is independent of the sample's payload (reference
-// reads only Point.T). Every sibling (year/month/day_of_month/…) computes
-// its value FROM the sample's Value column via [valueAsDateTime], which a
-// native histogram sample never populates meaningfully — those must keep
-// hitting expHistogramSelectorRouting's rejection over a bare exp-histogram
-// selector, exactly as before this fix.
-func TestLower_ExpHistogram_Timestamp_OtherDateFnsStillRejectHistograms(t *testing.T) {
+// TestLower_ExpHistogram_Timestamp_OtherDateFnsDropInsteadOfReject guards
+// the boundary between `timestamp()` and its seven date-component
+// siblings: `timestamp()` is the ONLY one whose value is independent of
+// the sample's payload (reference reads only Point.T), so it ANSWERS over
+// a histogram-valued argument rather than dropping to empty. Every sibling
+// (year/month/day_of_month/…) computes its value FROM the sample's Value
+// column via [valueAsDateTime], which a native histogram sample never
+// populates meaningfully — reference Prometheus's shared dateWrapper
+// helper drops those samples instead of erroring (issue #2498), and those
+// siblings must keep doing the same rather than regressing to
+// `timestamp`'s answer-it posture. See
+// TestLower_ExpHistogram_DateComponentFunctionsDropSamples
+// (histogram_native_date_fns_test.go) for the drop-semantics coverage
+// itself.
+func TestLower_ExpHistogram_Timestamp_OtherDateFnsDropInsteadOfReject(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -158,13 +163,11 @@ func TestLower_ExpHistogram_Timestamp_OtherDateFnsStillRejectHistograms(t *testi
 			if err != nil {
 				t.Fatalf("ParseExpr(%q): %v", query, err)
 			}
-			_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-			if err == nil {
-				t.Fatalf("LowerAt(%q): expected the exponential-histogram routing rejection, got nil error", query)
-			}
-			if !strings.Contains(err.Error(), "is an exponential histogram metric") {
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
 				t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
 			}
+			assertEmptyFloatProjection(t, plan)
 		})
 	}
 }
