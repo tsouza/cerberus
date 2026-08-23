@@ -98,6 +98,93 @@ func TestKeyForGridGeometryBucketsDiffer(t *testing.T) {
 	}
 }
 
+// TestKeyForWalksEveryRangeAndCombinatorNodeKind exercises every chplan.Node
+// kind keyWalker.walk switches on beyond the RangeWindow-based fixtures
+// above — one per range-window sibling (RangeBucketFanout,
+// RangeBucketGridNative, RangeBucketWindowSlide, RangeLWR,
+// RangeWindowGridNative, RangeWindowStaleResample) and one per combinator
+// (VectorJoin, UnionAll, SetOperation, NaryVectorSetOp, Limit) — so a new
+// case arm added to walk (the RangeBucketWindowSlide arm's own origin) is
+// never silently unexercised again.
+func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
+	const (
+		nAnchors = 241
+		fanout   = int64(20)
+		step     = 15 * time.Second
+	)
+	scan := scanFixture()
+
+	t.Run("RangeBucketFanout sets AggFuncs and buckets Lookback", func(t *testing.T) {
+		fanoutNode := func(lookback time.Duration) *chplan.RangeBucketFanout {
+			return &chplan.RangeBucketFanout{
+				Input:    scan,
+				Lookback: lookback,
+				AggFuncs: []chplan.AggFunc{{Fn: chplan.FnSum}},
+			}
+		}
+		k := KeyFor(fanoutNode(5*time.Minute), nAnchors, fanout, step)
+		if k.AggFuncs == "" {
+			t.Fatalf("expected AggFuncs to be populated from RangeBucketFanout.AggFuncs, got %+v", k)
+		}
+		kOther := KeyFor(fanoutNode(30*time.Minute), nAnchors, fanout, step)
+		if k.RangeFuncs == kOther.RangeFuncs {
+			t.Fatalf("a wildly different Lookback must land in a different bucket: both %q", k.RangeFuncs)
+		}
+	})
+
+	t.Run("RangeBucketGridNative and RangeBucketWindowSlide both set HasNative", func(t *testing.T) {
+		kGridNative := KeyFor(&chplan.RangeBucketGridNative{Input: scan, Range: 5 * time.Minute}, nAnchors, fanout, step)
+		if !kGridNative.HasNative {
+			t.Fatalf("RangeBucketGridNative must set HasNative")
+		}
+		kWindowSlide := KeyFor(&chplan.RangeBucketWindowSlide{Input: scan, Range: 5 * time.Minute}, nAnchors, fanout, step)
+		if !kWindowSlide.HasNative {
+			t.Fatalf("RangeBucketWindowSlide must set HasNative")
+		}
+		if kGridNative.RangeFuncs == kWindowSlide.RangeFuncs {
+			t.Fatalf("RangeBucketGridNative and RangeBucketWindowSlide must not collide: both %q", kGridNative.RangeFuncs)
+		}
+	})
+
+	t.Run("RangeLWR, RangeWindowGridNative and RangeWindowStaleResample", func(t *testing.T) {
+		kLWR := KeyFor(&chplan.RangeLWR{Input: scan, Lookback: 5 * time.Minute}, nAnchors, fanout, step)
+		if kLWR.RangeFuncs == "" {
+			t.Fatalf("RangeLWR must contribute to RangeFuncs, got %+v", kLWR)
+		}
+		kWindowGridNative := KeyFor(&chplan.RangeWindowGridNative{Input: scan, Func: "rate", Range: 5 * time.Minute}, nAnchors, fanout, step)
+		if !kWindowGridNative.HasNative {
+			t.Fatalf("RangeWindowGridNative must set HasNative")
+		}
+		kStaleResample := KeyFor(&chplan.RangeWindowStaleResample{Input: scan}, nAnchors, fanout, step)
+		if !kStaleResample.HasResample {
+			t.Fatalf("RangeWindowStaleResample must set HasResample")
+		}
+	})
+
+	t.Run("combinator node kinds set their own presence bit", func(t *testing.T) {
+		kJoin := KeyFor(&chplan.VectorJoin{Left: scan, Right: scan, Op: chplan.OpAdd}, nAnchors, fanout, step)
+		if !kJoin.HasJoin {
+			t.Fatalf("VectorJoin must set HasJoin")
+		}
+		kUnion := KeyFor(&chplan.UnionAll{Inputs: []chplan.Node{scan, scan}}, nAnchors, fanout, step)
+		if !kUnion.HasUnion {
+			t.Fatalf("UnionAll must set HasUnion")
+		}
+		kSetOp := KeyFor(&chplan.SetOperation{Left: scan, Right: scan, Op: chplan.SetUnion}, nAnchors, fanout, step)
+		if !kSetOp.HasUnion {
+			t.Fatalf("SetOperation must set HasUnion")
+		}
+		kNary := KeyFor(&chplan.NaryVectorSetOp{Arms: []chplan.Node{scan, scan, scan}, Op: chplan.VectorSetOr}, nAnchors, fanout, step)
+		if !kNary.HasUnion {
+			t.Fatalf("NaryVectorSetOp must set HasUnion")
+		}
+		kLimit := KeyFor(&chplan.Limit{Input: scan, Count: 10}, nAnchors, fanout, step)
+		if !kLimit.HasLimit {
+			t.Fatalf("Limit must set HasLimit")
+		}
+	})
+}
+
 func TestKeyForMatcherOperatorMaskIsClosedVocabulary(t *testing.T) {
 	k := KeyFor(filterFixture(scanFixture(), 2, 1), 10, 2, time.Second)
 	if k.MatcherOpMask&matcherOpEq == 0 {

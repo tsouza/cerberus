@@ -158,6 +158,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnToLastDayOfMonth: {Name: "toLastDayOfMonth"},
 	chplan.FnToMinute:         {Name: "toMinute"},
 	chplan.FnToMonth:          {Name: "toMonth"},
+	chplan.FnToUnixMillis:     {Name: "toUnixTimestamp64Milli"},
 	chplan.FnToUnixNanos:      {Name: "toUnixTimestamp64Nano"},
 	chplan.FnToYear:           {Name: "toYear"},
 
