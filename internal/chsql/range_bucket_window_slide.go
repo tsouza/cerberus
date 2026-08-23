@@ -298,6 +298,39 @@ const windowSlideMinSamples = 1
 //     array too) onto the SAME array sumForEach already sums needs only
 //     the one window function and sidesteps the bug entirely.
 func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) error {
+	if err := validateRangeBucketWindowSlide(r); err != nil {
+		return err
+	}
+
+	geom, err := windowSlideGeometryOf(r)
+	if err != nil {
+		return err
+	}
+
+	inner, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+
+	canonKeyAliases := make([]string, len(r.GroupByAliases))
+	for i := range r.GroupByAliases {
+		canonKeyAliases[i] = fmt.Sprintf("%s%d", rwsCanonKeyAliasPrefix, i)
+	}
+
+	canonBySeries := windowSlideCanonBySeriesFrag(r, inner, canonKeyAliases, geom)
+	unionSrc := windowSlideUnionSourceFrag(r, inner, canonBySeries, canonKeyAliases, geom)
+	windowed := windowSlideWindowedFrag(r, unionSrc, geom)
+	final := windowSlideFinalLadderFrag(r, windowed)
+
+	return e.emitSelect(final)
+}
+
+// validateRangeBucketWindowSlide checks the node's own construction
+// invariants that emitRangeBucketWindowSlide's downstream Frag builders all
+// assume hold — every returned error is ErrUnsupported, the same contract
+// every other emitter in this package uses to signal "this shape cannot be
+// lowered to SQL" rather than an internal bug.
+func validateRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) error {
 	if r.Input == nil {
 		return fmt.Errorf("%w: RangeBucketWindowSlide.Input is nil", ErrUnsupported)
 	}
@@ -329,25 +362,20 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 				"union references its keys by name", ErrUnsupported, i)
 		}
 	}
+	return nil
+}
 
-	offsetNS := r.Offset.Nanoseconds()
-	rangeNS := r.Range.Nanoseconds()
-	stepNS := r.Step.Nanoseconds()
-	startNS := r.Start.UnixNano()
-	numAnchors := r.NumAnchors()
+// windowSlideGeom is the ms-encoding geometry emitRangeBucketWindowSlide's
+// Frag builders share, derived once from the node's own fields.
+type windowSlideGeom struct {
+	offsetNS, rangeNS, stepNS, startNS, numAnchors int64
 
-	if rangeNS%windowSlideMsScale != 0 {
-		return fmt.Errorf("%w: RangeBucketWindowSlide requires a whole-millisecond Range (got %s)",
-			ErrUnsupported, r.Range)
-	}
-	lookbackMs := rangeNS / windowSlideMsScale
-	if lookbackMs < 1 || lookbackMs-1 > windowSlideMaxFrameOffset {
-		return fmt.Errorf("%w: RangeBucketWindowSlide Range %s encodes to %dms, outside ClickHouse's "+
-			"numeric RANGE frame offset headroom (1..%dms)",
-			ErrUnsupported, r.Range, lookbackMs, windowSlideMaxFrameOffset+1)
-	}
+	// lookbackMs is rangeNS re-expressed in whole milliseconds — the
+	// window frame's own numeric RANGE offset.
+	lookbackMs int64
+
 	// baseNS keeps every ms-encoded value non-negative — Task 1's proven
-	// formula. Non-negativity is a CORRECTNESS precondition here, not mere
+	// formula. Non-negativity is a CORRECTNESS precondition, not mere
 	// convenience: windowSlideMsEncodeFrag's ceil-to-ms trick is
 	// `intDiv(x - baseNS + bias, scale)`, and ClickHouse's intDiv truncates
 	// TOWARD ZERO — that equals floor (and, with the bias, ceil) only when
@@ -355,41 +383,62 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 	// truncation rounds the WRONG direction. baseNS = Start-Offset-Range is
 	// the first anchor's own lower edge, so BOTH inputs windowSlideMsEncodeFrag
 	// ever sees satisfy x > baseNS by construction: real rows, because
-	// maybePushRangeScanTimeBound (applied below) filters to exactly
-	// `TimeUnix > Start-Offset-Range`; sentinel rows, because their
-	// smallest possible encoded position is `Start-Offset` (Range's own
-	// `r.Range > 0` validation above makes that strictly greater than
-	// `Start-Offset-Range`). Neither holds by luck; both are consequences
-	// of code already in this function, restated here so this expression's
-	// own precondition is not a bare assertion.
-	// the precondition holds for every real invocation, not by luck.
-	baseNS := startNS - offsetNS - rangeNS
+	// maybePushRangeScanTimeBound (applied in windowSlideCanonBySeriesFrag /
+	// windowSlideUnionSourceFrag) filters to exactly `TimeUnix >
+	// Start-Offset-Range`; sentinel rows, because their smallest possible
+	// encoded position is `Start-Offset` (Range's own `r.Range > 0`
+	// validation makes that strictly greater than `Start-Offset-Range`).
+	// Neither holds by luck; both are consequences of code already run by
+	// the time this value is used, restated here so this expression's own
+	// precondition is not a bare assertion.
+	baseNS int64
+}
 
-	inner, err := e.subqueryFrag(r.Input)
-	if err != nil {
-		return err
+// windowSlideGeometryOf derives geom from r's already-validated fields,
+// rejecting the two shapes ms-encoding cannot represent: a non-whole-
+// millisecond Range, and a Range whose millisecond count exceeds
+// ClickHouse's numeric RANGE frame offset headroom.
+func windowSlideGeometryOf(r *chplan.RangeBucketWindowSlide) (windowSlideGeom, error) {
+	g := windowSlideGeom{
+		offsetNS:   r.Offset.Nanoseconds(),
+		rangeNS:    r.Range.Nanoseconds(),
+		stepNS:     r.Step.Nanoseconds(),
+		startNS:    r.Start.UnixNano(),
+		numAnchors: r.NumAnchors(),
 	}
-	// groupKeyFrag returns a FRESH Frag on every call — see the emit doc's
-	// "GROUP-BY / JOIN key rendering" note for why a single shared Frag
-	// (chsql's usual collectGroupByFrags) is unsafe for this node's shape.
-	groupKeyFrag := func(expr chplan.Expr) Frag {
-		return func(b *Builder) { _ = b.Expr(expr) }
+	if g.rangeNS%windowSlideMsScale != 0 {
+		return windowSlideGeom{}, fmt.Errorf("%w: RangeBucketWindowSlide requires a whole-millisecond Range (got %s)",
+			ErrUnsupported, r.Range)
 	}
+	g.lookbackMs = g.rangeNS / windowSlideMsScale
+	if g.lookbackMs < 1 || g.lookbackMs-1 > windowSlideMaxFrameOffset {
+		return windowSlideGeom{}, fmt.Errorf("%w: RangeBucketWindowSlide Range %s encodes to %dms, outside "+
+			"ClickHouse's numeric RANGE frame offset headroom (1..%dms)",
+			ErrUnsupported, r.Range, g.lookbackMs, windowSlideMaxFrameOffset+1)
+	}
+	g.baseNS = g.startNS - g.offsetNS - g.rangeNS
+	return g, nil
+}
 
-	canonKeyAliases := make([]string, len(r.GroupByAliases))
-	for i := range r.GroupByAliases {
-		canonKeyAliases[i] = fmt.Sprintf("%s%d", rwsCanonKeyAliasPrefix, i)
-	}
+// windowSlideGroupKeyFrag returns a FRESH Frag on every call — see the emit
+// doc's "GROUP-BY / JOIN key rendering" note for why a single shared Frag
+// (chsql's usual collectGroupByFrags) is unsafe for this node's shape.
+func windowSlideGroupKeyFrag(expr chplan.Expr) Frag {
+	return func(b *Builder) { _ = b.Expr(expr) }
+}
 
-	// Level 2 — per-series canonical bound set: an ORDINARY (non-windowed)
-	// GROUP BY, one row per series, linear in the bounded scan's row
-	// count. Doubles as this node's discovery arm (one row per series
-	// that has >= 1 row in the bounded scan) — the sentinel arm below
-	// reads its keys directly from here instead of a separate `SELECT
-	// DISTINCT` pass.
+// windowSlideCanonBySeriesFrag builds Level 2 — the per-series canonical
+// bound set: an ORDINARY (non-windowed) GROUP BY, one row per series, linear
+// in the bounded scan's row count. Doubles as this node's discovery arm (one
+// row per series that has >= 1 row in the bounded scan) — the sentinel arm
+// built inside windowSlideUnionSourceFrag reads its keys directly from here
+// instead of a separate `SELECT DISTINCT` pass.
+func windowSlideCanonBySeriesFrag(
+	r *chplan.RangeBucketWindowSlide, inner Frag, canonKeyAliases []string, geom windowSlideGeom,
+) *QueryBuilder {
 	canonBySeries := NewQuery().From(inner)
 	for i := range r.GroupBy {
-		canonBySeries.SelectAs(groupKeyFrag(r.GroupBy[i]), canonKeyAliases[i])
+		canonBySeries.SelectAs(windowSlideGroupKeyFrag(r.GroupBy[i]), canonKeyAliases[i])
 	}
 	canonBySeries.SelectAs(
 		Call("arraySort", Call("arrayDistinct", Call("arrayFlatten",
@@ -401,16 +450,26 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		canonGroupBy[i] = Col(a)
 	}
 	canonBySeries.GroupBy(canonGroupBy...)
-	maybePushRangeScanTimeBound(canonBySeries, r.TimestampCol, r.Start, r.End, offsetNS, rangeNS)
+	maybePushRangeScanTimeBound(canonBySeries, r.TimestampCol, r.Start, r.End, geom.offsetNS, geom.rangeNS)
+	return canonBySeries
+}
 
-	// Level 1 — real sample rows, ts unshifted (see the Offset note
-	// above). BucketCounts/ExplicitBounds are cast to Array(Float64) here
-	// so both UNION ALL arms carry identical column types.
+// windowSlideRealArmFrag builds Level 1 + 1b — the real sample rows (ts
+// unshifted, see the Offset note in windowSlideGeom.baseNS's doc),
+// BucketCounts/ExplicitBounds cast to Array(Float64) so both UNION ALL arms
+// carry identical column types, then JOINed onto each row's series' canon-
+// by-series row to attach rwsCanonBoundsAlias. Both sides read the SAME
+// bounded scan (rawReal's own WHERE, and canonBySeries's own
+// maybePushRangeScanTimeBound), so every series rawReal carries has a
+// matching row here — INNER JOIN is lossless.
+func windowSlideRealArmFrag(
+	r *chplan.RangeBucketWindowSlide, inner Frag, canonBySeries *QueryBuilder, canonKeyAliases []string, geom windowSlideGeom,
+) *QueryBuilder {
 	rawReal := NewQuery().From(inner)
 	for i := range r.GroupBy {
-		rawReal.SelectAs(groupKeyFrag(r.GroupBy[i]), r.GroupByAliases[i])
+		rawReal.SelectAs(windowSlideGroupKeyFrag(r.GroupBy[i]), r.GroupByAliases[i])
 	}
-	rawReal.SelectAs(windowSlideMsEncodeFrag(baseNS, Call("toUnixTimestamp64Nano", Col(r.TimestampCol))), rwsRawNsAlias)
+	rawReal.SelectAs(windowSlideMsEncodeFrag(geom.baseNS, Call("toUnixTimestamp64Nano", Col(r.TimestampCol))), rwsRawNsAlias)
 	rawReal.SelectAs(toFloat64ArrFrag(rwsCountParam, Col(r.BucketCountsCol)), rwsCountsFAlias)
 	rawReal.SelectAs(toFloat64ArrFrag(rwsBoundParam, Col(r.ExplicitBoundsCol)), rwsBoundsFAlias)
 	rawReal.SelectAs(InlineLit(int64(0)), rwsIsAnchorAlias)
@@ -420,13 +479,8 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 	// the UNION ALL — see anchorNsArrayFrag's doc for why that is fatal
 	// (fromUnixTimestamp64Nano needs a concrete Int64, not a Variant).
 	rawReal.SelectAs(Call("toInt64", InlineLit(int64(0))), rwsAnchorNsAlias)
-	maybePushRangeScanTimeBound(rawReal, r.TimestampCol, r.Start, r.End, offsetNS, rangeNS)
+	maybePushRangeScanTimeBound(rawReal, r.TimestampCol, r.Start, r.End, geom.offsetNS, geom.rangeNS)
 
-	// Level 1b — JOIN each real row onto its series' canon-by-series row
-	// to attach rwsCanonBoundsAlias. Both sides read the SAME bounded scan
-	// (rawReal's own WHERE, and canonBySeries's own maybePushRangeScanTimeBound
-	// above), so every series rawReal carries has a matching row here —
-	// INNER JOIN is lossless.
 	real := NewQuery().From(aliasedFrag(rawReal.Frag(), "u"))
 	for _, a := range r.GroupByAliases {
 		real.Select(As(Qual("u", a), a))
@@ -442,28 +496,32 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		realOn[i] = Eq(Qual("u", a), Qual("c", canonKeyAliases[i]))
 	}
 	real.Join(InnerJoin, aliasedFrag(canonBySeries.Frag(), "c"), And(realOn...))
+	return real
+}
 
-	// Level 3a — the two parallel per-anchor axes: the ENCODED position
-	// (anchor - Offset, the side that absorbs the membership shift) and
-	// the REPORTED position (anchor, unshifted). Reads keys AND
-	// rwsCanonBoundsAlias straight from canonBySeries — no join needed on
-	// the sentinel side.
+// windowSlideSentinelArmFrag builds Level 3a + 3b — the two parallel per-
+// anchor axes (the ENCODED position, anchor - Offset, the side that absorbs
+// the membership shift; and the REPORTED position, anchor, unshifted), read
+// straight off canonBySeries (no join needed on this arm), then explodes
+// them in lockstep (ArrayJoin zips same-length arrays positionally, exactly
+// as emitRangeBucketGridNative's own explode.ArrayJoin does) and pads the
+// real arm's columns with each sentinel's empty/marker values. Column order
+// MUST match windowSlideRealArmFrag's real SELECT list (positional UNION
+// ALL).
+func windowSlideSentinelArmFrag(
+	r *chplan.RangeBucketWindowSlide, canonBySeries *QueryBuilder, canonKeyAliases []string, geom windowSlideGeom,
+) *QueryBuilder {
 	sentinelArrays := NewQuery().From(canonBySeries.Frag())
 	for i, a := range r.GroupByAliases {
 		sentinelArrays.Select(As(Col(canonKeyAliases[i]), a))
 	}
 	sentinelArrays.Select(Col(rwsCanonBoundsAlias))
 	sentinelArrays.SelectAs(
-		msEncodeArrayFrag(baseNS, anchorNsArrayFrag(startNS-offsetNS, stepNS, numAnchors)),
+		msEncodeArrayFrag(geom.baseNS, anchorNsArrayFrag(geom.startNS-geom.offsetNS, geom.stepNS, geom.numAnchors)),
 		rwsAnchorNsArrAlias,
 	)
-	sentinelArrays.SelectAs(anchorNsArrayFrag(startNS, stepNS, numAnchors), rwsAnchorNsArr2Alias)
+	sentinelArrays.SelectAs(anchorNsArrayFrag(geom.startNS, geom.stepNS, geom.numAnchors), rwsAnchorNsArr2Alias)
 
-	// Level 3b — explode the two axes in lockstep (ArrayJoin zips
-	// same-length arrays positionally, exactly as
-	// emitRangeBucketGridNative's own explode.ArrayJoin does) and pad the
-	// real arm's columns with each sentinel's empty/marker values. Column
-	// order MUST match real's SELECT list above (positional UNION ALL).
 	sentinel := NewQuery().From(sentinelArrays.Frag())
 	for _, a := range r.GroupByAliases {
 		sentinel.Select(Col(a))
@@ -488,24 +546,35 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		As(Col(rwsAnchorNsArrAlias), rwsRawNsAlias),
 		As(Col(rwsAnchorNsArr2Alias), rwsAnchorNsAlias),
 	)
+	return sentinel
+}
 
-	// Level 3 — UNION ALL, bounded on its own cost axis
-	// (scanned_rows + series x anchors) — reuses lwrFanoutBoundedSourceFrag
-	// (internal/chsql/lwr_fanout_bound.go) directly rather than a
-	// second copy of its two-independent-reads LIMIT+throwIf shape; see
-	// maxRangeBucketWindowSlideRows's own doc for the calibration note and
-	// range_bucket_window_slide_bound.go for why this bound source is NOT
-	// short-circuiting the way the pure-arrayJoin fan-out's is (a real,
-	// documented trade-off, not an oversight).
-	unionSrc := lwrFanoutBoundedSourceFrag(
+// windowSlideUnionSourceFrag builds the real and sentinel arms and unions
+// them (Level 1/1b/3a/3b/3), bounded on the series x anchors cost axis —
+// reuses lwrFanoutBoundedSourceFrag (internal/chsql/lwr_fanout_bound.go)
+// directly rather than a second copy of its two-independent-reads
+// LIMIT+throwIf shape; see maxRangeBucketWindowSlideRows's own doc for the
+// calibration note and range_bucket_window_slide_bound.go for why this
+// bound source is NOT short-circuiting the way the pure-arrayJoin fan-out's
+// is (a real, documented trade-off, not an oversight).
+func windowSlideUnionSourceFrag(
+	r *chplan.RangeBucketWindowSlide, inner Frag, canonBySeries *QueryBuilder, canonKeyAliases []string, geom windowSlideGeom,
+) Frag {
+	real := windowSlideRealArmFrag(r, inner, canonBySeries, canonKeyAliases, geom)
+	sentinel := windowSlideSentinelArmFrag(r, canonBySeries, canonKeyAliases, geom)
+	return lwrFanoutBoundedSourceFrag(
 		Paren(UnionAll(real.Frag(), sentinel.Frag())), rwsRawNsAlias,
 		maxRangeBucketWindowSlideRows, RangeBucketWindowSlideBudgetMessage,
 	)
+}
 
-	// Level 4 — per-row has-gated cumulative reading + presence indicator
-	// + MinSamples marker, concatenated into one array. See the emit doc's
-	// "Contribution rule" note for why has-gating (exact bound membership)
-	// replaces the monotone-envelope reprojection an earlier version used.
+// windowSlideWindowedFrag builds Level 4 + 5 — per-row has-gated cumulative
+// reading + presence indicator + MinSamples marker concatenated into one
+// array (see the emit doc's "Contribution rule" note for why has-gating,
+// exact bound membership, replaces the monotone-envelope reprojection an
+// earlier version used), then folds it through the ONE sliding window
+// aggregate.
+func windowSlideWindowedFrag(r *chplan.RangeBucketWindowSlide, unionSrc Frag, geom windowSlideGeom) *QueryBuilder {
 	reproj := NewQuery().From(unionSrc)
 	for _, a := range r.GroupByAliases {
 		reproj.Select(Col(a))
@@ -516,9 +585,8 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 	reproj.Select(Col(rwsCanonBoundsAlias))
 	reproj.SelectAs(hasGatedExtendedArrayFrag(), rwsExtendedAlias)
 
-	// Level 5 — the ONE sliding window aggregate.
 	orderBy := []OrderKey{{Expr: Col(rwsRawNsAlias)}}
-	frame := RangeBetweenPrecedingAndCurrentRow(InlineLit(lookbackMs - 1))
+	frame := RangeBetweenPrecedingAndCurrentRow(InlineLit(geom.lookbackMs - 1))
 	windowed := NewQuery().From(reproj.Frag())
 	for _, a := range r.GroupByAliases {
 		windowed.Select(Col(a))
@@ -530,11 +598,17 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		WindowFrame(Call("sumForEach", Col(rwsExtendedAlias)), partitionByFrags(r.GroupByAliases), orderBy, frame),
 		rwsWindowedExtAlias,
 	)
+	return windowed
+}
 
-	// Level 6 — split rwsWindowedExtAlias into its three signals and
-	// narrow the per-series canonical bound set down to what THIS
-	// anchor's own window actually reported (sum-presence >= 1) — see the
-	// emit doc's B2 note.
+// windowSlideFinalLadderFrag builds Level 6 + 7: splits rwsWindowedExtAlias
+// into its three signals and narrows the per-series canonical bound set
+// down to what THIS anchor's own window actually reported (sum-presence >=
+// 1 — see the emit doc's B2 note), then differences the narrowed, windowed
+// cumulative ladder back into per-bucket counts, strips +Inf back out of the
+// reported ExplicitBounds, and keeps only the anchor rows whose window
+// covers at least windowSlideMinSamples real samples.
+func windowSlideFinalLadderFrag(r *chplan.RangeBucketWindowSlide, windowed *QueryBuilder) *QueryBuilder {
 	canonLen := Call("length", Col(rwsCanonBoundsAlias))
 	sumCum := Call("arraySlice", Col(rwsWindowedExtAlias), InlineLit(int64(1)), canonLen)
 	sumPresence := Call("arraySlice", Col(rwsWindowedExtAlias), Add(canonLen, InlineLit(int64(1))), canonLen)
@@ -558,10 +632,6 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 	)
 	split.SelectAs(markerExpr, rwsRealCountAlias)
 
-	// Level 7 — difference the narrowed, windowed cumulative ladder back
-	// into per-bucket counts, strip +Inf back out of the reported
-	// ExplicitBounds, and keep only the anchor rows whose window covers
-	// at least windowSlideMinSamples real samples.
 	final := NewQuery().From(split.Frag())
 	final.Select(Col(r.AnchorAlias))
 	for _, a := range r.GroupByAliases {
@@ -575,8 +645,7 @@ func (e *emitter) emitRangeBucketWindowSlide(r *chplan.RangeBucketWindowSlide) e
 		Eq(Col(rwsIsAnchorAlias), InlineLit(int64(1))),
 		Gte(Col(rwsRealCountAlias), InlineLit(float64(windowSlideMinSamples))),
 	))
-
-	return e.emitSelect(final)
+	return final
 }
 
 // partitionByFrags renders each of aliases as a bare Col Frag — the

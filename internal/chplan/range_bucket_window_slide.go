@@ -1,6 +1,10 @@
-package chplan
+package chplan //nolint:dupl // shared method bodies already factored into bucket_grid_carrier_fields.go; the residual is the two distinct chplan.Node struct declarations
 
 import "time"
+
+// This file's struct declaration + NumAnchors/Equal dupl-match
+// range_bucket_grid_native.go for the same reason that file's own header
+// comment explains — see it and bucket_grid_carrier_fields.go for why.
 
 // RangeBucketWindowSlide is the anchor-injection sibling of
 // [RangeBucketFanout] (and the second ClickHouse-native sibling alongside
@@ -106,10 +110,7 @@ func (r *RangeBucketWindowSlide) Children() []Node { return []Node{r.Input} }
 // for why a caller should never have to also know this node's own
 // construction invariants hold.
 func (r *RangeBucketWindowSlide) NumAnchors() int64 {
-	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
-		return 0
-	}
-	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
+	return bucketGridCarrierNumAnchors(r.Start, r.End, r.Step)
 }
 
 func (r *RangeBucketWindowSlide) Equal(other Node) bool {
@@ -117,33 +118,13 @@ func (r *RangeBucketWindowSlide) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
-		return false
-	}
-	if r.Step != o.Step || r.Range != o.Range || r.Offset != o.Offset {
-		return false
-	}
-	if r.AnchorAlias != o.AnchorAlias || r.TimestampCol != o.TimestampCol {
-		return false
-	}
-	if r.BucketCountsCol != o.BucketCountsCol || r.ExplicitBoundsCol != o.ExplicitBoundsCol {
-		return false
-	}
-	if len(r.GroupBy) != len(o.GroupBy) || len(r.GroupByAliases) != len(o.GroupByAliases) {
-		return false
-	}
-	for i := range r.GroupByAliases {
-		if r.GroupByAliases[i] != o.GroupByAliases[i] {
-			return false
-		}
-	}
-	for i := range r.GroupBy {
-		if !r.GroupBy[i].Equal(o.GroupBy[i]) {
-			return false
-		}
-	}
-	if r.Input == nil || o.Input == nil {
-		return r.Input == nil && o.Input == nil
-	}
-	return r.Input.Equal(o.Input)
+	return bucketGridCarrierFields{
+		input: r.Input, start: r.Start, end: r.End, step: r.Step, rng: r.Range, offset: r.Offset,
+		groupBy: r.GroupBy, groupByAliases: r.GroupByAliases, anchorAlias: r.AnchorAlias,
+		timestampCol: r.TimestampCol, bucketCountsCol: r.BucketCountsCol, explicitBoundsCol: r.ExplicitBoundsCol,
+	}.equal(bucketGridCarrierFields{
+		input: o.Input, start: o.Start, end: o.End, step: o.Step, rng: o.Range, offset: o.Offset,
+		groupBy: o.GroupBy, groupByAliases: o.GroupByAliases, anchorAlias: o.AnchorAlias,
+		timestampCol: o.TimestampCol, bucketCountsCol: o.BucketCountsCol, explicitBoundsCol: o.ExplicitBoundsCol,
+	})
 }
