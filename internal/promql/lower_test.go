@@ -151,8 +151,15 @@ func TestLower(t *testing.T) {
 				// Each row of [nativeStrategies] binds one RangeLowerers
 				// field to the marker section that opts a fixture into
 				// that field's ClickHouse-native strategy; carrying no
-				// marker section leaves the all-fan-out default, so every
-				// fixture without one stays byte-identical.
+				// marker section leaves the all-fan-out default for every
+				// OTHER field, so a fixture without any marker stays
+				// byte-identical for those. ClassicHistogram is the one
+				// exception: wireNativeStrategies seeds it with
+				// window-slide-or-fanout unconditionally (chopt.AlwaysAvailable
+				// — cmd/cerberus wires it the same way regardless of feature
+				// state), so a fixture whose query happens to be window-slide
+				// eligible (SUM-fold sum_over_time at a qualifying Lookback/Step
+				// ratio) takes that path even with no marker section at all.
 				lowerers := wireNativeStrategies(func(name string) bool {
 					return hasSection(c, name)
 				})

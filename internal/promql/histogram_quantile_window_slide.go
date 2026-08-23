@@ -88,6 +88,21 @@ func (w WindowSlideClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in
 // any window at or above a 10:1 Lookback/Step ratio (a 5-minute window at
 // 30-second step or coarser-relative-to-step) is eligible; anything finer
 // stays on the fan-out, where its own cost is already acceptable.
+//
+// Caveat, added by a code review after the initial implementation: the
+// curve above was measured against the Task-1 spike's own SQL shape, which
+// predates two correctness/perf fixes review found in the shipped emitter —
+// a wrong per-anchor bound set (now has-gated, exact-membership contribution
+// — see chsql's emitRangeBucketWindowSlide doc) and an O(rows^2)-per-series
+// canonical-bound computation (now a linear per-series GROUP BY joined back
+// in). Both fixes change the emitter's absolute cost by a constant-ish
+// factor (one extra JOIN + one extra linear aggregate pass) that does NOT
+// scale with the Lookback/Step ratio itself, so the RATIO-DEPENDENT shape of
+// the curve — the reason higher ratios pay off more — should still hold
+// directionally; the ABSOLUTE speedup at each point on it has not been
+// re-measured against the current, fixed emitter. Recalibrate this constant
+// against a fresh benchmark of the shipped shape before leaning on the exact
+// numbers above.
 const windowSlideMinLookbackStepRatio = 10
 
 // windowSlideMaxLookbackMs is the largest Range issue #2408's Task-1 spike
@@ -112,9 +127,11 @@ const windowSlideMaxLookbackMs = 2147483647
 //     — and is NOT what `rate` / `increase` / `delta` / `irate` / `idelta`
 //     mean: those need the reset-aware `counterIncreaseFold` this
 //     mechanism does not implement. `rate` already has its own native
-//     ladder ([NativeClassicHistogramWindowLowerer]); extending window-slide
-//     to the other functions is future work, not silently approximated
-//     here.
+//     ladder ([NativeClassicHistogramWindowLowerer]); every OTHER windowFn
+//     (increase, delta, irate, idelta) has no native ladder of any kind and
+//     stays on the array-expression fan-out, exactly as it did before this
+//     node existed — this scope boundary is deliberate, not an
+//     approximation of those semantics.
 //   - the grid must be MATERIALISED (Step > 0 with both bounds pinned),
 //     identically to nativeClassicHistogramEligible: the sentinel side's
 //     anchor grid is built from constant (Start, End, Step) parameters at
@@ -136,6 +153,17 @@ const windowSlideMaxLookbackMs = 2147483647
 //     is picked from.
 func windowSlideEligible(in classicHistogramWindowInput) bool {
 	if in.shape.windowFn != sumOverTimeWindowFn {
+		return false
+	}
+	// chsql's emitter hard-codes windowSlideMinSamples = 1 (chsql cannot
+	// import this package to read histogramWindowMinSamples directly — see
+	// that const's own doc). This defends the cross-package assumption: if
+	// histogramWindowMinSamples(sumOverTimeWindowFn) ever stopped returning
+	// stalenessMinSamples, this node's real-row-count gate would silently
+	// answer the wrong MinSamples floor rather than failing loudly, so this
+	// case falls back to the fan-out (which reads shape.minSamples() fresh
+	// on every query) instead.
+	if in.shape.minSamples() != stalenessMinSamples {
 		return false
 	}
 	if in.ctx.step <= 0 || in.ctx.start.IsZero() || in.ctx.end.IsZero() {

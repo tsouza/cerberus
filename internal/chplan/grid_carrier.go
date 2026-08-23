@@ -196,9 +196,10 @@ func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
 // sliceInvariantKinds (no slice-invariance proof has been argued for it)
 // and carries no ReanchorRange arm (internal/chplan/reanchor.go), so
 // internal/solver's carrierGeometryOf reports it non-re-anchorable. Both
-// refusals should be pinned by a test mirroring
+// refusals are structural (a registry omission and a missing ReanchorRange
+// arm, not a runtime check), the same shape
 // TestRangeBucketGridNative_SlicingRefusedAtBothGates /
-// _NeverRoutesUnderAuto before this node reaches production traffic.
+// _NeverRoutesUnderAuto pin for this node's rate-window sibling.
 func (r *RangeBucketWindowSlide) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.

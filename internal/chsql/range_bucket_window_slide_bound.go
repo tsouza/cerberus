@@ -26,9 +26,12 @@ package chsql
 // count against MaxQuerySamples before the query is even planned; this one
 // bounds the TOTAL unioned row count the window sort actually receives).
 //
-// The two-independent-reads LIMIT+throwIf shape (bounded copy + a second,
-// independently LIMIT-bounded scalar count() probe) is copied verbatim from
-// lwrFanoutBoundedSourceFrag/lwrFanoutGuardFrag rather than re-derived: see
+// This bound wraps the emitter's own UNION ALL source via the EXISTING
+// lwrFanoutBoundedSourceFrag / lwrFanoutGuardFrag helpers
+// (internal/chsql/lwr_fanout_bound.go) directly — they already take the
+// threshold and message as parameters, so this file supplies only its own
+// constants below rather than a second copy of the two-independent-reads
+// LIMIT+throwIf shape (a code review caught the earlier duplicate). See
 // that file's doc comment for the fuller design history (four designs
 // tried, why a LIMIT alone doesn't suffice — a window function needs its
 // whole PARTITION materialised before it emits even one row, so a LIMIT
@@ -36,6 +39,23 @@ package chsql
 // truncation probe must be an INDEPENDENT unwindowed count() on a second
 // read rather than a window function annotating the bounded result
 // directly).
+//
+// NOT short-circuiting, unlike the pure-arrayJoin fan-out this shape is
+// modelled on. lwrFanoutBoundedSourceFrag's own rationale rests on "no
+// blocking operator sits between this LIMIT and the underlying
+// scan/arrayJoin, so ClickHouse stops pulling upstream data once
+// maxRows+1 rows are produced" — that holds for RangeBucketFanout's
+// arrayJoin source, but NOT here: this bound wraps a UNION ALL whose real
+// arm is itself an INNER JOIN against a per-series GROUP BY aggregate
+// (emitRangeBucketWindowSlide's canonBySeries), and whose sentinel arm is
+// generated FROM that same GROUP BY. Both are blocking operators the
+// LIMIT sits downstream of, so an oversized query still pays for the full
+// canon-by-series aggregate (and its own input scan) before the guard has
+// a chance to fire. The guard still correctly REJECTS an oversized query
+// before the window sort runs — it just does not shrink the work upstream
+// of itself the way the arrayJoin case does. Recovering that property is a
+// different bound entirely (on the scan feeding canonBySeries, not this
+// LIMIT), not a variant of the shape here.
 //
 // Calibration. maxRangeBucketWindowSlideRows is a REASONED, not yet
 // chDB/testcontainers-measured, starting bound: this node's blocking
@@ -46,60 +66,23 @@ package chsql
 // GROUP cardinality, so it is calibrated against the SAME order of
 // magnitude as maxRangeBucketFanoutRows rather than
 // maxRangeLWRFanoutRows's much larger fixed-accumulator bound, pending a
-// real measurement. Recalibrate by binary search against a real
-// ClickHouse the same way lwr_fanout_bound.go's own constants were
-// calibrated (unique query_id per run — see that file's harness-pitfall
-// note) once this path carries real traffic.
+// real measurement. This axis is now the actual dominant cost driver for
+// the sort: an earlier version of the canon-by-series computation used a
+// per-row whole-partition window aggregate (O(rows^2) per series — a real
+// quadratic blow-up a code review caught before this shipped), which this
+// row-count bound could not have caught at any realistic per-series row
+// count; canonBySeries is now an ordinary (linear) GROUP BY, so the total
+// union row count is the right axis again. Recalibrate by binary search
+// against a real ClickHouse the same way lwr_fanout_bound.go's own
+// constants were calibrated (unique query_id per run — see that file's
+// harness-pitfall note) once this path carries real traffic.
 const maxRangeBucketWindowSlideRows = 4_000_000
 
 // RangeBucketWindowSlideBudgetMessage is the throwIf message
-// windowSlideFanoutGuardFrag raises. Distinct text from
-// RangeBucketFanoutBudgetMessage / RangeLWRFanoutBudgetMessage so a
-// rejection's error message alone says which bound fired — see those
+// lwrFanoutGuardFrag raises when this node's own bound fires. Distinct
+// text from RangeBucketFanoutBudgetMessage / RangeLWRFanoutBudgetMessage so
+// a rejection's error message alone says which bound fired — see those
 // constants' own doc for why that matters for classifyThrowIfGuardError
 // and for a human reading a query_log entry.
 const RangeBucketWindowSlideBudgetMessage = "classic-histogram window-slide anchor injection exceeds the " +
 	"series-times-anchors resource bound"
-
-// windowSlideBoundedSourceFrag wraps unionSrc — the UNION ALL of real
-// sample rows and per-anchor sentinel rows RangeBucketWindowSlide's emit
-// builds (rwsRawNsAlias / rwsCountsFAlias / rwsBoundsFAlias / rwsIsAnchorAlias
-// / rwsAnchorNsAlias) — with a hard LIMIT plus a truncation-detecting guard,
-// mirroring lwrFanoutBoundedSourceFrag's exact two-independent-reads shape.
-//
-// probeColumn names a column unionSrc is guaranteed to carry unchanged
-// (rwsRawNsAlias, present and Int64-typed on both UNION ALL arms) — used
-// only for the truncation probe's reduced-width second read.
-func windowSlideBoundedSourceFrag(unionSrc Frag, probeColumn string) Frag {
-	bounded := NewQuery().From(unionSrc)
-	bounded.Select(Star())
-	bounded.Limit(maxRangeBucketWindowSlideRows + 1)
-
-	probe := NewQuery().From(unionSrc)
-	probe.Select(Col(probeColumn))
-	probe.Limit(maxRangeBucketWindowSlideRows + 1)
-	probeCount := NewQuery().From(probe.Frag())
-	probeCount.Select(As(Call("count"), "n"))
-
-	guarded := NewQuery().From(bounded.Frag())
-	guarded.Select(Star())
-	guarded.Where(windowSlideFanoutGuardFrag(probeCount))
-	return guarded.Frag()
-}
-
-// windowSlideFanoutGuardFrag renders the WHERE predicate that aborts the
-// query when probeCount — a scalar subquery counting an independent
-// LIMIT-bounded copy of the same UNION ALL source — shows the LIMIT
-// truncated the input, mirroring lwrFanoutGuardFrag exactly:
-//
-//	throwIf((<probeCount>) > maxRangeBucketWindowSlideRows, RangeBucketWindowSlideBudgetMessage) = 0
-func windowSlideFanoutGuardFrag(probeCount *QueryBuilder) Frag {
-	return Eq(
-		Call(
-			"throwIf",
-			Gt(Subquery(probeCount), InlineLit(int64(maxRangeBucketWindowSlideRows))),
-			InlineLit(RangeBucketWindowSlideBudgetMessage),
-		),
-		InlineLit(int64(0)),
-	)
-}
