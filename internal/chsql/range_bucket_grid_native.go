@@ -55,6 +55,16 @@ const (
 	bucketGridPairParam   = "hp"
 	bucketGridBoundParam  = "hb"
 	bucketGridLadderParam = "hj"
+	// bucketGridUnionBoundParam / bucketGridOwnBoundParam /
+	// bucketGridOwnCountParam are bucketGridRungsFrag's own has-gated
+	// filter-sum params — see that function's doc for why the cumulative
+	// reading at each of a row's own bounds is computed this way rather
+	// than via a positional arrayCumSum. Named distinctly from the
+	// window-slide sibling's rws* params (they never appear in the same
+	// expression tree) but mirror that file's rob/roc/rk naming.
+	bucketGridUnionBoundParam = "hub"
+	bucketGridOwnBoundParam   = "hob"
+	bucketGridOwnCountParam   = "hoc"
 )
 
 // bucketGridRateFn is the native per-grid-point rate aggregate — the same
@@ -108,7 +118,13 @@ const bucketGridSeenFn = "timeSeriesResetsToGrid"
 //	             ifNull(_hqn_rate, 0) AS _hqn_v,
 //	             (isNull(_hqn_rate) AND NOT isFinite(_hqn_le)) AS _hqn_short
 //	      FROM (
-//	        -- 1. one native rate grid per (series, `le` rung)
+//	        -- 1. one native rate grid per (series, `le` rung) — the (series,
+//	        --    rung) group's OWN row count is bounded first (source bounded
+//	        --    by bucketGridGroupCountBoundedSourceFrag — see
+//	        --    range_bucket_grid_native_bound.go — a CHEAP probe that never
+//	        --    invokes the native aggregate below, so the guard fires
+//	        --    BEFORE this level's own expensive per-group array state is
+//	        --    ever materialised)
 //	        SELECT <gk>, _hqn_le,
 //	               timeSeriesRateToGrid(<start>, <end>, <step_s>, <window_s>)(<ts>, _hqn_cum) AS _hqn_grid,
 //	               timeSeriesResetsToGrid(<start>, <end>, <step_s>, <window_s>)(<ts>, _hqn_cum) AS _hqn_seen,
@@ -209,14 +225,6 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 		}
 	}
 
-	// Rendered before the input subquery because collectGroupByFrags binds any
-	// captured args at CALL time and the group keys are the first args-bearing
-	// text the emitted SQL writes (the innermost SELECT list, ahead of its own
-	// FROM). See collectGroupByFrags.
-	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
-	if err != nil {
-		return err
-	}
 	inner, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -246,9 +254,19 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	}
 
 	// Level 0 — unnest one stored histogram row into one row per `le` rung.
+	// The group keys render via bucketGridGroupKeyFrag (a FRESH closure per
+	// call, re-deriving its own args at each render) rather than
+	// collectGroupByFrags: Level 1's own bucketGridGroupCountBoundedSourceFrag
+	// wrap below renders the WHOLE rungs subquery chain — Level 0 included —
+	// TWICE (its own group-count probe plus the guarded pass-through), and
+	// collectGroupByFrags's Frags bind their args ONCE, at Go call time, on
+	// the promise the returned text is spliced EXACTLY once — see
+	// range_bucket_window_slide.go's identical "GROUP-BY / JOIN key
+	// rendering" note (the review fix that same file's own doc comment
+	// documents) for the fuller rationale.
 	unnest := NewQuery().From(inner)
-	for i, g := range groupFrags {
-		unnest.Select(As(g, r.GroupByAliases[i]))
+	for i, g := range r.GroupBy {
+		unnest.Select(As(bucketGridGroupKeyFrag(g), r.GroupByAliases[i]))
 	}
 	unnest.Select(Col(r.TimestampCol))
 	unnest.Select(As(Call("arrayJoin", bucketGridRungsFrag(r)), bucketGridRungAlias))
@@ -265,7 +283,14 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	rungs.Select(As(TupleIndex(Col(bucketGridRungAlias), 2), bucketGridCumAlias))
 
 	// Level 1 — one native rate grid (and one presence grid) per (series, rung).
-	grids := NewQuery().From(rungs.Frag())
+	// rungs' own output is bounded first — see
+	// bucketGridGroupCountBoundedSourceFrag's own doc (range_bucket_grid_native_bound.go)
+	// for why the guard sits HERE, upstream of the expensive native
+	// aggregate, rather than downstream of it the way lwrFanoutBoundedSourceFrag's
+	// usual placement would put it.
+	grids := NewQuery().From(bucketGridGroupCountBoundedSourceFrag(
+		rungs.Frag(), keyCols, r.NumAnchors(), maxRangeBucketGridNativeRows, RangeBucketGridNativeBudgetMessage,
+	))
 	grids.Select(keyCols...)
 	grids.Select(Col(bucketGridLeAlias))
 	grids.Select(As(Parametric(bucketGridRateFn, gridParams,
@@ -335,23 +360,56 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	return e.emitSelect(counts)
 }
 
+// bucketGridGroupKeyFrag returns a FRESH Frag on every call — see
+// emitRangeBucketGridNative's own "Level 0" comment for why a single shared
+// Frag (chsql's usual collectGroupByFrags) is unsafe once this node's own
+// resource bound renders Level 0 more than once. Mirrors
+// range_bucket_window_slide.go's identical windowSlideGroupKeyFrag.
+func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
+	return func(b *Builder) { _ = b.Expr(expr) }
+}
+
 // bucketGridRungsFrag renders one stored histogram row's `(le, cumulative
 // count)` rungs as an Array(Tuple(Float64, Float64)), ready for arrayJoin:
 //
 //	arrayZip(arrayPushBack(<bounds>, inf),
-//	         arrayPushBack(arrayCumSum(arraySlice(<counts_f>, 1, length(<bounds>))),
+//	         arrayPushBack(arrayMap(hub -> arraySum(arrayMap((hob, hoc) ->
+//	                          if(hob <= hub, hoc, 0.0), <bounds>, <finite_counts>)), <bounds>),
 //	                       arraySum(<counts_f>)))
 //
-// with `<counts_f> = arrayMap(hc -> toFloat64(hc), <BucketCounts>)`.
+// with `<counts_f> = arrayMap(hc -> toFloat64(hc), <BucketCounts>)` and
+// `<finite_counts> = arraySlice(<counts_f>, 1, length(<bounds>))`.
 //
-// `arrayCumSum` is the cumulative count at each bound BECAUSE OTLP requires
-// ExplicitBounds to be strictly ascending: under that contract the prefix sum
-// at position i and the fan-out fold's own `arraySum(if(b <= u, c, 0))` over the
-// row are the same number for every bound. The contract is what makes the
-// cheap form exact, so it is stated rather than assumed — a row storing a
-// REPEATED bound would give the two forms different answers at the repeat, and
-// nothing between the OTel writer and here can synthesise one (the `le` matcher
-// restriction filters rungs, it never duplicates them).
+// Each finite rung's cumulative reading is a FILTER-SUM over every one of
+// THIS ROW's own (bound, count) pairs whose bound is <= the rung being
+// evaluated — internal/promql's classicBucketRowCumulativeExpr applied to
+// the row's own bounds as their own union set — never a positional
+// `arrayCumSum`. This is issue #2492's fix, mirroring the identical fix
+// already applied to the sibling anchor-injection shape's
+// hasGatedExtendedArrayFrag (range_bucket_window_slide.go): a positional
+// cumulative sum assumes ExplicitBounds is strictly ascending, and while
+// OTLP's wire format expects that, it does not enforce it — real,
+// unvalidated OTLP data can and does produce an out-of-order or duplicate
+// bound. `arrayCumSum` over such a row silently answers a DIFFERENT
+// cumulative reading than the filter-sum at every position past the first
+// inversion (confirmed: unsorted bounds `[5.0, 1.0]` diverges from the
+// fan-out's reference-correct answer). The filter-sum makes no ordering
+// assumption at all, and a duplicate bound naturally folds in the SUM of
+// every position at that bound — matching how two `le="X"` series an
+// OTLP-to-Prometheus conversion would emit for such a row are the same
+// label set that `sum by(le)` adds together.
+//
+// No has()-gate is needed here the way the window-slide sibling's
+// per-SERIES canonical bound set needs one: this function evaluates
+// entirely over ONE row's own bounds against themselves (the outer map's
+// `hub` ranges over the same `<bounds>` the inner filter-sum reads), so
+// every union-bound position this row contributes to is trivially one it
+// "has" — Level 0's unnest (the emit function's own doc) only ever emits a
+// rung for a bound the row's OWN layout actually reported, never one merged
+// in from a UNION across rows or across time (that merge happens later, via
+// Level 1's GROUP BY (series, le) accumulating each rung's own per-row value
+// into one time series per le — the same rung ACROSS rows is summed by the
+// native aggregate over time, not by this per-row expression).
 //
 // Both arms are exactly `length(<bounds>) + 1` long — arrayZip rejects a
 // mismatch outright — which is what makes the row shape allowance explicit:
@@ -363,14 +421,26 @@ func bucketGridRungsFrag(r *chplan.RangeBucketGridNative) Frag {
 		Lambda1(bucketGridCountParam, Call("toFloat64", BareIdent(bucketGridCountParam))),
 		Col(r.BucketCountsCol))
 	bounds := Col(r.ExplicitBoundsCol)
+	finiteCounts := Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", bounds))
+	// cumAtBound mirrors internal/promql's classicBucketRowCumulativeExpr
+	// exactly (see this function's own doc): a filter-sum over every one of
+	// the row's own (bound, count) pairs, evaluated once per bound in the
+	// row's own layout.
+	cumAtBound := Call("arrayMap",
+		Lambda1(bucketGridUnionBoundParam, Call("arraySum", Call("arrayMap",
+			Lambda2(bucketGridOwnBoundParam, bucketGridOwnCountParam, If(
+				Lte(BareIdent(bucketGridOwnBoundParam), BareIdent(bucketGridUnionBoundParam)),
+				BareIdent(bucketGridOwnCountParam),
+				InlineLit(0.0),
+			)),
+			bounds, finiteCounts))),
+		bounds)
 	return Call(
 		"arrayZip",
 		// `inf` is ClickHouse's Float64 infinity constant, the bound of the
 		// overflow rung PromQL spells `le="+Inf"`.
 		Call("arrayPushBack", bounds, BareIdent("inf")),
-		Call("arrayPushBack",
-			Call("arrayCumSum", Call("arraySlice", countsF, InlineLit(int64(1)), Call("length", bounds))),
-			Call("arraySum", countsF)),
+		Call("arrayPushBack", cumAtBound, Call("arraySum", countsF)),
 	)
 }
 
