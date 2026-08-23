@@ -784,6 +784,26 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 			reanchorable: false,
 		}, true
 
+	case *chplan.RangeBucketWindowSlide:
+		// The anchor-injection window-slide aggregate: one UNION ALL source
+		// (real rows + series x anchors sentinels) feeding a single sliding
+		// window function, rather than a per-(series, anchor) fan-out, so
+		// singlePass is set for the same reason RangeBucketGridNative's is.
+		// NOT re-anchorable: chplan.ReanchorRange has no arm that re-grids
+		// it, so a routed shard would evaluate the FULL grid rather than its
+		// own slice — the SECOND of the two refusals holding this kind on
+		// route A (the first is its absence from chplan.IsSliceInvariant's
+		// registry), mirroring RangeBucketGridNative's own reasoning exactly
+		// (see that case's comment and this node's own AnchorGridDivides
+		// doc). A slice-invariance proof + a ReanchorRange arm are both
+		// prerequisites before this kind could ever route B.
+		return carrierGeometry{
+			outerRange:   v.End.Sub(v.Start),
+			lookback:     v.Range,
+			singlePass:   true,
+			reanchorable: false,
+		}, true
+
 	case *chplan.RangeWindowGridNative:
 		// timeSeries<fn>ToGrid: the whole rate(m[Range]) collapses into one
 		// ClickHouse aggregate, so this node ALONE carries the grid of a

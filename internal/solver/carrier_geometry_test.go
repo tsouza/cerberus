@@ -207,6 +207,34 @@ func carrierCases() []carrierCase {
 			reanchorable: false,
 		},
 		{
+			// RangeBucketWindowSlide is the anchor-injection sibling: one
+			// UNION ALL source feeding a single sliding window function, so
+			// the fan-out feature is the single-pass constant, mirroring
+			// RangeBucketGridNative's own reasoning exactly. Not
+			// re-anchorable for the same reason — absent from
+			// chplan.IsSliceInvariant's registry, so a plan carrying it
+			// stays on route A.
+			kind: "RangeBucketWindowSlide",
+			plan: func() chplan.Node {
+				return &chplan.RangeBucketWindowSlide{
+					Input:             leafScan(),
+					Start:             gridStart,
+					End:               gridEnd,
+					Step:              gridStep,
+					Range:             geomFanoutLookback,
+					GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+					GroupByAliases:    []string{"Attributes"},
+					AnchorAlias:       "anchor_ts",
+					TimestampCol:      "TimeUnix",
+					BucketCountsCol:   "BucketCounts",
+					ExplicitBoundsCol: "ExplicitBounds",
+				}
+			},
+			wantD:        geomFanoutLookback,
+			wantFanout:   singlePassFanout,
+			reanchorable: false,
+		},
+		{
 			kind: "AbsentOverTime",
 			plan: func() chplan.Node {
 				return &chplan.AbsentOverTime{
