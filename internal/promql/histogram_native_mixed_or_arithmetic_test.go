@@ -143,13 +143,14 @@ func TestLower_ExpHistogram_MixedSetOpOr_HistogramLeftDivStillRejects(t *testing
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_ComparisonStillRejects pins that
+// TestLower_ExpHistogram_MixedSetOpOr_ComparisonNowComposes pins that
 // comparison ops — which [expHistogramScalarOpDropsSample] classifies as
-// "drop" too, but which internal/promql/binary.go's [lowerVectorScalar]
+// "drop" too, and which internal/promql/binary.go's [lowerVectorScalar]
 // answers through a structurally different Filter / bool-Project shape,
-// not the single arithmetic Project this recognizer builds — are a
-// separate, unattempted wrapper family. See this file's header.
-func TestLower_ExpHistogram_MixedSetOpOr_ComparisonStillRejects(t *testing.T) {
+// not the single arithmetic Project this recognizer builds — now compose
+// via their own sibling recognizer, histogram_native_mixed_or_comparison.go
+// (cerberus issue #2449's fifth wrapper family). See that file's header.
+func TestLower_ExpHistogram_MixedSetOpOr_ComparisonNowComposes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -161,8 +162,12 @@ func TestLower_ExpHistogram_MixedSetOpOr_ComparisonStillRejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+	}
+	if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
+		t.Fatalf("lower(%q): plan root publishes %s, want %s", query, shape, chplan.SampleRowShape)
 	}
 }
 

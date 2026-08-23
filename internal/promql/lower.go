@@ -318,6 +318,20 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
 	}
+	// A scalar comparison binop (`==`, `!=`, `<`, `<=`, `>`, `>=`, with or
+	// without `bool`) wrapping that same mixed shape (cerberus issue
+	// #2449 — the fifth wrapper family, and the shape the arithmetic
+	// composition just above deliberately left unattempted because a
+	// comparison lowers through a structurally different Filter /
+	// bool-Project shape). Checked here for the identical reason: a mixed
+	// `or` argument never resolves as purely histogram-valued, so nothing
+	// above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_comparison.go has the composition's own
+	// doc comment for why every comparison op drops the histogram side
+	// unconditionally, regardless of `bool`.
+	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}

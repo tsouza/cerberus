@@ -43,10 +43,11 @@ import (
 // answers a comparison through a structurally different shape (a bare
 // Filter without the `bool` modifier, a toFloat64-wrapped Project with
 // it) than the single Project every arithmetic op shares here, so
-// widening this recognizer to comparisons is a second, separately-scoped
-// composition rather than "the same shape, one more op" — left for a
-// follow-on pass, same as this issue's own math-fn PR (#2479) left
-// round()'s 2-arg to_nearest form unattempted. MUL and histogram-left
+// widening this recognizer to comparisons was a second, separately-scoped
+// composition rather than "the same shape, one more op" — its own sibling
+// recognizer now, histogram_native_mixed_or_comparison.go (cerberus issue
+// #2449's fifth wrapper family), the same way this issue's own math-fn PR
+// (#2479) left round()'s 2-arg to_nearest form unattempted. MUL and histogram-left
 // DIV are likewise out of scope: they need the histogram side actually
 // SCALED (all nine Histogram*Column outputs, à la
 // [scaleHistogramProjection]) rather than dropped, a materially
