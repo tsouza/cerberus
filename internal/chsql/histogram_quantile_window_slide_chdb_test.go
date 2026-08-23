@@ -58,6 +58,21 @@
 //     narrows a query down to its own scan range would mask a
 //     frame-boundary bug entirely rather than surface it as a
 //     cross-anchor divergence.
+//
+// A literal non-finite (+Inf / NaN) value inside a row's own ExplicitBounds
+// is NOT covered here, even though it is a real shape adversarial review of
+// this suite found window-slide mishandling (a row-shape contract
+// violation, fixed in windowSlideCanonBySeriesFrag). Tracing that seed
+// through the fan-out's own shared merge path
+// (internal/promql/histogram_quantile.go's classicBucketUnionBoundsExpr)
+// found it has the identical class of bug — a SEPARATE, pre-existing issue
+// independent of window-slide — so a dual-emit VALUE comparison over that
+// shape would assert window-slide against an equally-broken reference for
+// every anchor whose window reaches the malformed row. The regression proof
+// for window-slide's own fix lives in
+// range_bucket_window_slide_row_shape_chdb_test.go instead, which asserts
+// the row-shape contract directly against chplan.RangeBucketWindowSlide's
+// raw output rather than through histogram_quantile's shared machinery.
 package chsql_test
 
 import (

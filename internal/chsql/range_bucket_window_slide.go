@@ -107,6 +107,7 @@ const (
 	rwsFilterPresenceParm = "rp"
 	rwsOwnBoundParam      = "rob"
 	rwsOwnCountParam      = "roc"
+	rwsFiniteBoundParam   = "rfb"
 )
 
 // windowSlideMsScale is nanoseconds per millisecond — the resolution issue
@@ -194,7 +195,7 @@ const windowSlideMinSamples = 1
 //	--   --    review: a windowed groupArray here would materialise
 //	--   --    O(rows^2) per series)
 //	--   SELECT <ck>, arraySort(arrayDistinct(arrayFlatten(
-//	--     groupArray(arrayPushBack(_rws_bounds_f, inf))
+//	--     groupArray(arrayPushBack(arrayFilter(isFinite, _rws_bounds_f), inf))
 //	--   ))) AS _rws_canon_bounds
 //	--   FROM (-- 1. real sample rows --) GROUP BY <ck>
 //
@@ -433,6 +434,16 @@ func windowSlideGroupKeyFrag(expr chplan.Expr) Frag {
 // row per series that has >= 1 row in the bounded scan) — the sentinel arm
 // built inside windowSlideUnionSourceFrag reads its keys directly from here
 // instead of a separate `SELECT DISTINCT` pass.
+//
+// Each row's own bounds are narrowed to arrayFilter(isFinite, ...) BEFORE
+// the arrayPushBack of the sentinel +Inf: real OTLP data can carry a
+// literal `+Inf` or `NaN` inside ExplicitBounds (unvalidated input, not a
+// cerberus invariant), and ClickHouse's arraySort places NaN AFTER +Inf
+// (confirmed against real chDB: arraySort([1,2,inf,nan]) = [1,2,inf,nan]).
+// Left unfiltered, a NaN anywhere in the series' bounded scan would push
+// the true +Inf sentinel off the tail of the sorted, deduped union, which
+// hasGatedExtendedArrayFrag's finiteCanon relies on being the LAST element
+// — see that function's own invariant comment.
 func windowSlideCanonBySeriesFrag(
 	r *chplan.RangeBucketWindowSlide, inner Frag, canonKeyAliases []string, geom windowSlideGeom,
 ) *QueryBuilder {
@@ -442,7 +453,11 @@ func windowSlideCanonBySeriesFrag(
 	}
 	canonBySeries.SelectAs(
 		Call("arraySort", Call("arrayDistinct", Call("arrayFlatten",
-			Call("groupArray", Call("arrayPushBack", toFloat64ArrFrag(rwsBoundParam, Col(r.ExplicitBoundsCol)), BareIdent("inf")))))),
+			Call("groupArray", Call("arrayPushBack",
+				Call("arrayFilter",
+					Lambda1(rwsFiniteBoundParam, Call("isFinite", BareIdent(rwsFiniteBoundParam))),
+					toFloat64ArrFrag(rwsBoundParam, Col(r.ExplicitBoundsCol))),
+				BareIdent("inf")))))),
 		rwsCanonBoundsAlias,
 	)
 	canonGroupBy := make([]Frag, len(canonKeyAliases))
