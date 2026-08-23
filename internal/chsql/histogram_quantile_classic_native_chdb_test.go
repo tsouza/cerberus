@@ -199,6 +199,29 @@ func hqNativeCases() []hqNativeCase {
     ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:03:00', 9), [11, 13, 15], [0.1, 0.5, 1.0])`,
 		},
 		{
+			// Issue #2492's own repro: a row whose ExplicitBounds is NOT
+			// strictly ascending (real, unvalidated OTLP data can produce
+			// this — the wire format never enforces ordering).
+			// bucketGridRungsFrag used to compute each rung's cumulative
+			// count via a POSITIONAL arrayCumSum, which silently answers a
+			// DIFFERENT number than the fan-out's reference-correct
+			// filter-sum (classicBucketRowCumulativeExpr) the moment a
+			// row's own bounds are out of order — confirmed in the issue:
+			// unsorted bounds [5.0, 1.0] gave native=0.857 vs
+			// fan-out=3.667 for this exact query shape. Every row here
+			// carries ExplicitBounds = [5.0, 1.0] (descending, not
+			// ascending), so the dual-emit comparison below fails outright
+			// pre-fix and passes post-fix.
+			name:  "unsorted_bounds_within_row",
+			query: q("sum"),
+			rows: `
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [5.0, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:01:00', 9), [1, 2, 5], [5.0, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:02:00', 9), [2, 5, 11], [5.0, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:03:00', 9), [4, 9, 18], [5.0, 1.0]),
+    ('http_server_request_duration', map('service', 'api'), toDateTime64('2026-01-01 00:04:00', 9), [6, 13, 27], [5.0, 1.0])`,
+		},
+		{
 			// `count by(le)` is the scale-INVARIANT fold: its ladder counts
 			// contributing series, so a rung fabricated at any anchor changes
 			// the answer outright rather than by a float ulp.

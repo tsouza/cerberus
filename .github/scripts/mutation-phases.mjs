@@ -95,9 +95,12 @@ export const PHASES = [
     // range_bucket_window_slide_bound.go (issue #2408's follow-up) falls
     // there for the same reason: a standalone RangeBucketWindowSlide
     // sample-count guard, excluded from both legs above rather than
-    // enumerated in either.
+    // enumerated in either. range_bucket_grid_native_bound.go (issues
+    // #2486/#2492) falls there too, for the identical reason: a standalone
+    // RangeBucketGridNative sample-count guard, excluded from both legs
+    // above rather than enumerated in either.
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_bucket_window_slide_bound|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|nary_vector_set_op|nested_set_annotate|query_exemplars|range_bucket_grid_native_bound|range_bucket_window_slide_bound|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -121,8 +124,11 @@ export const PHASES = [
     // it — and its resource-bound guard range_bucket_window_slide_bound.go,
     // which falls to phase2-other's catch-all the same way
     // lwr_fanout_bound.go does — are excluded here too.
+    // range_bucket_grid_native_bound.go (issues #2486/#2492) is excluded
+    // here for the same reason as range_bucket_window_slide_bound.go: it
+    // falls to phase2-other's catch-all.
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_bucket_window_slide|range_bucket_window_slide_bound|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_bucket_window_slide|range_bucket_window_slide_bound|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
@@ -152,6 +158,10 @@ export const PHASES = [
     // (window-slide's own resource-bound guard, issue #2408's follow-up)
     // is deliberately NOT enumerated here — it falls to THIS catch-all,
     // the same way lwr_fanout_bound.go does just below.
+    // range_bucket_grid_native_bound.go (RangeBucketGridNative's own
+    // resource-bound guard, issues #2486/#2492) is deliberately NOT
+    // enumerated here either, for the identical reason: it falls to THIS
+    // catch-all.
     // rate_window_fanout_bound.go (cerberus issue #2429) falls to this
     // catch-all the same way scan_resource_bound.go does: it is a
     // standalone resource-bound guard with no declared sibling in either
