@@ -121,6 +121,14 @@ const (
 	// Histogram*Column aliases regardless. [RowShapeOf] reports the
 	// SHAPE a node's own SELECT publishes, not which Go type built it, so
 	// this is still the correct answer here.
+	//
+	// [InfoJoin] answers it too when its own Histogram field is set —
+	// internal/promql's lowerInfo builds one when `info(v[, …])`'s base
+	// vector v is histogram-valued (cerberus issue #2509): reference
+	// Prometheus's info() preserves a histogram sample in the base vector
+	// rather than dropping it, so the join's own SELECT widens to carry
+	// Input's nine Histogram*Column outputs through alongside the
+	// canonical quartet. See [InfoJoin]'s own doc comment.
 	HistogramRowShape
 
 	// MixedRowShape is [VectorSetOp]'s answer when its Mixed field is
@@ -218,6 +226,10 @@ func RowShapeOf(n Node) RowShape {
 			return MixedRowShape
 		}
 	case *NaryVectorSetOp:
+		if v.Histogram {
+			return HistogramRowShape
+		}
+	case *InfoJoin:
 		if v.Histogram {
 			return HistogramRowShape
 		}

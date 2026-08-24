@@ -64,6 +64,12 @@ const (
 // a base series carrying only `job` joins an info series carrying only
 // `job` (both sides see `”` for the absent `instance`), and a base
 // carrying `instance` does NOT match an info series lacking it.
+//
+// When InfoJoin.Histogram is set, L is histogram-shaped (see InfoJoin's
+// own doc comment): the SELECT list above widens with L's nine
+// chplan.Histogram*Column outputs under their plain names, and — when
+// MergeInfoMetrics also applies — those nine columns join the GROUP BY
+// key too (see infoJoinHistogramCols).
 func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 	if err := e.validateInfoJoinCols(j); err != nil {
 		return err
@@ -86,13 +92,20 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 		kind = InnerJoin
 	}
 
+	selects := []Frag{
+		As(qualColFrag("L", j.MetricNameColumn), j.MetricNameColumn),
+		As(infoOutputAttributesFrag(j), j.AttributesColumn),
+		As(qualColFrag("L", j.TimestampColumn), j.TimestampColumn),
+		As(qualColFrag("L", j.ValueColumn), j.ValueColumn),
+	}
+	if j.Histogram {
+		for _, col := range infoJoinHistogramCols() {
+			selects = append(selects, As(qualColFrag("L", col), col))
+		}
+	}
+
 	sb := NewQuery().
-		Select(
-			As(qualColFrag("L", j.MetricNameColumn), j.MetricNameColumn),
-			As(infoOutputAttributesFrag(j), j.AttributesColumn),
-			As(qualColFrag("L", j.TimestampColumn), j.TimestampColumn),
-			As(qualColFrag("L", j.ValueColumn), j.ValueColumn),
-		).
+		Select(selects...).
 		From(aliasedFrag(leftFrag, "L")).
 		Join(
 			kind,
@@ -100,10 +113,47 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 			infoJoinPredicateFrag(j),
 		)
 	if j.MergeInfoMetrics {
-		sb.GroupBy(infoBaseSampleKeyFrags(j)...)
+		groupBy := infoBaseSampleKeyFrags(j)
+		if j.Histogram {
+			for _, col := range infoJoinHistogramCols() {
+				groupBy = append(groupBy, qualColFrag("L", col))
+			}
+		}
+		sb.GroupBy(groupBy...)
 		sb.Having(infoConflictGuardFrag(j))
 	}
 	return e.emitSelect(sb)
+}
+
+// infoJoinHistogramCols lists the nine fixed chplan.Histogram*Column
+// names an [chplan.InfoJoin] with Histogram set forwards from its Input
+// (L) side alongside the canonical quartet — byte-identical to the field
+// list [histogramFloatVectorJoinHistCols] reads off its own histogram
+// Left arm, since both nodes join a histogram-shaped side against a
+// plain float-shaped one and forward the nine columns under their PLAIN
+// canonical names rather than a `_hq_*`-prefixed pair. Info (R) never
+// carries these — an info metric like `target_info` is conventionally a
+// plain Gauge — so only L needs qualifying.
+//
+// When [chplan.InfoJoin.MergeInfoMetrics] also folds several
+// per-info-metric join rows back into one, these columns join the GROUP
+// BY key alongside [infoBaseSampleKeyFrags] rather than riding through an
+// `any()` aggregate: they are drawn from the SAME physical L row that
+// key already pins to one row per group, so they are already constant
+// within the group and a second reference to them is exactly as valid a
+// grouping key as the four columns naming that row.
+func infoJoinHistogramCols() []string {
+	return []string{
+		chplan.HistogramCountColumn,
+		chplan.HistogramSumColumn,
+		chplan.HistogramScaleColumn,
+		chplan.HistogramZeroThresholdColumn,
+		chplan.HistogramZeroCountColumn,
+		chplan.HistogramPositiveOffsetColumn,
+		chplan.HistogramPositiveBucketCountsColumn,
+		chplan.HistogramNegativeOffsetColumn,
+		chplan.HistogramNegativeBucketCountsColumn,
+	}
 }
 
 // infoConflictGuardFrag renders the HAVING term that fails the query when

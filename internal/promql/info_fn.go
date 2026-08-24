@@ -45,11 +45,22 @@ var infoIdentityLabels = []string{"instance", "job"}
 // Lowering:
 //
 //   - arg[0] (`v`) lowers normally to the canonical per-series-latest
-//     Sample shape.
+//     Sample shape — UNLESS it is histogram-valued (a bare exponential-
+//     histogram selector, sum()/avg() over one, or any other shape
+//     lowerExpHistogramValuedShape recognises), in which case it lowers
+//     through that path instead. Reference Prometheus never drops a
+//     histogram sample in the base vector (evalInfo's addToSeries copies
+//     both `sample.F` and `sample.H` unchanged — the float-only check
+//     applies only to the info metric's OWN samples), so cerberus mirrors
+//     that here rather than falling through to expHistogramSelectorRouting's
+//     rejection (cerberus issue #2509). See chplan.InfoJoin.Histogram's
+//     doc comment for how the join carries the histogram columns through.
 //   - The info metric (default `target_info`, or the name a second-arg
 //     `__name__` matcher selects) lowers through the same VectorSelector
 //     path so the info side is also per-series-latest — each base series
-//     matches at most one info series per identity key.
+//     matches at most one info series per identity key. The info side is
+//     never itself histogram-valued: an info metric like `target_info` is
+//     conventionally a plain Gauge carrying only data labels.
 //   - The two sides wrap in a chplan.InfoJoin keyed on `{instance, job}`.
 //
 // The optional second argument is a label-selector: its `__name__`
@@ -73,7 +84,32 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return nil, fmt.Errorf("promql: info expects 1 or 2 arguments, got %d", len(c.Args))
 	}
 
-	base, err := lower(c.Args[0], s, ctx)
+	// A histogram-valued base (a bare exponential-histogram selector,
+	// sum()/avg() over one, or any other shape lowerExpHistogramValuedShape
+	// recognises) needs the histogram-aware lowering path rather than the
+	// generic one: reference Prometheus's info() copies a histogram sample
+	// in the base vector through unchanged (evalInfo's addToSeries — see
+	// chplan.InfoJoin's own doc comment) instead of dropping it, and the
+	// generic lower() has no shape for that (cerberus issue #2509). This
+	// mirrors label_replace/label_join's own dispatch
+	// (histogram_native_label_replace.go): recognise via the cheap
+	// isExpHistogramValuedShape probe, then lower through the same
+	// recogniser that decides "ok" so the two never disagree.
+	histogramBase := isExpHistogramValuedShape(c.Args[0], s, ctx)
+
+	var (
+		base chplan.Node
+		err  error
+	)
+	if histogramBase {
+		var matched bool
+		base, matched, err = lowerExpHistogramValuedShape(c.Args[0], s, ctx)
+		if err == nil && !matched {
+			err = fmt.Errorf("promql: internal invariant violated: info() base is not a known histogram-valued shape: %v", c.Args[0])
+		}
+	} else {
+		base, err = lower(c.Args[0], s, ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -98,18 +134,41 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	// is decidable here and the split collapses to one of its two arms —
 	// keeping the common `info(up)` shape a plain join over an unfiltered
 	// base, and making `info(target_info)` the pass-through it is upstream.
+	// A histogram-valued base can reach this branch too — a bare
+	// exp-histogram selector is a literal VectorSelector with a pinned
+	// Name, exactly like a float selector — so the ignore-set semantics
+	// apply identically to both shapes.
 	if name, ok := staticBaseMetricName(c.Args[0]); ok {
 		if matchesEveryNameMatcher(nameMatchers, name) {
 			return base, nil
 		}
-		return lowerInfoJoin(base, nameMatchers, dataMatchers, s, ctx)
+		return lowerInfoJoin(base, histogramBase, nameMatchers, dataMatchers, s, ctx)
+	}
+
+	if histogramBase {
+		// Every OTHER histogram-valued shape lowerExpHistogramValuedShape
+		// recognises (sum()/avg(), rate()/increase(), …) reaches here
+		// through an AggregateExpr/Call/BinaryExpr wrapper, never a literal
+		// VectorSelector — staticBaseMetricName above already took the one
+		// leaf case that is one. Every such wrapper DROPS __name__ on its
+		// result, mirroring reference Prometheus (e.g. extrapolatedRate's
+		// Sample carries no name) — so the ignore-set test
+		// (matchesEveryNameMatcher) could only succeed against an EMPTY
+		// name, a shape neither the default `target_info` equality matcher
+		// nor the `.+_info` regex fallback ever matches. There is no
+		// query-time ignore/enrich split to build for this shape (unlike
+		// the float case just below, whose Project caps the result to the
+		// canonical quartet and would silently drop the nine histogram
+		// columns): every histogram-valued base of this kind always
+		// enriches.
+		return lowerInfoJoin(base, histogramBase, nameMatchers, dataMatchers, s, ctx)
 	}
 
 	// Undecidable statically (the base selects several metric names, or is
 	// an expression rather than a selector) — split at query time.
 	join, err := lowerInfoJoin(
 		&chplan.Filter{Input: base, Predicate: infoEnrichablePredicate(nameMatchers, s)},
-		nameMatchers, dataMatchers, s, ctx,
+		false, nameMatchers, dataMatchers, s, ctx,
 	)
 	if err != nil {
 		return nil, err
@@ -141,8 +200,10 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 
 // lowerInfoJoin builds the enrichment join over an already-lowered base
 // arm. Split out of lowerInfo so the ignore-set carve-out can feed it
-// either the whole base vector or just its enrichable arm.
-func lowerInfoJoin(input chplan.Node, nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+// either the whole base vector or just its enrichable arm. histogramBase
+// marks input as histogram-valued (chplan.RowShapeOf(input) ==
+// chplan.HistogramRowShape) — see chplan.InfoJoin.Histogram's doc comment.
+func lowerInfoJoin(input chplan.Node, histogramBase bool, nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	infoNode, err := lowerInfoMetric(nameMatchers, dataMatchers, s, ctx)
 	if err != nil {
 		return nil, err
@@ -154,6 +215,7 @@ func lowerInfoJoin(input chplan.Node, nameMatchers, dataMatchers []*labels.Match
 		DataLabels:       infoDataLabelNames(dataMatchers),
 		DropUnmatched:    infoDropsUnmatched(dataMatchers),
 		MergeInfoMetrics: !pinsSingleInfoMetric(nameMatchers),
+		Histogram:        histogramBase,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
