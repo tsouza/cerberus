@@ -109,21 +109,87 @@ package chsql
 // code-241 MEMORY_LIMIT_EXCEEDED abort at 99.9% of cap — the guard-selection
 // evidence for switching designs, not this guard's own behaviour.)
 //
-// 4,000,000 sits comfortably above the last measured-safe point
-// (2,693,520 rows / 53.6% of cap at 60 anchors, ~2x real margin) while
-// every point past it — including the full production window — now gets a
-// clean, cheap rejection in under 1.5s at 8-25% of cap, independent of how
-// far over budget the query is (the probe's own cost is O(raw scanned
-// rows), not O(NumAnchors), so a 20,201,400-groups-x-anchors query at 450
-// anchors rejects just as fast and just as cheaply as one barely over
-// budget at 90). Recalibrate by binary search against a real testcontainers
-// ClickHouse if this drifts — see lwr_fanout_bound.go's own
-// harness-pitfall note (unique query_id per run) and design rationale to
-// preserve when doing so. The calibration test itself
-// (TestCalibrateRangeBucketGridNativeBound) was deleted before this fix
-// merged, per lwr_fanout_bound.go's own established precedent — this doc
+// Issue #2522 recalibration (real ClickHouse 25.9-alpine via `docker run`,
+// same 1 GiB cap): the nightly e2e dashboard's OWN self-monitoring panel —
+// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(
+// cerberus_queries_duration_seconds_bucket[5m])))` at a 24h/15s window
+// (5,760 anchors) — started hitting this exact throwIf in run 32688649627,
+// even though `cerberus_queries_duration_seconds` is a LOW-cardinality
+// self-telemetry histogram (one series per distinct (cerberus.ql,
+// http.Pattern route, ok/error result) combo — internal/telemetry/
+// metrics.go's QueryTimer.Done — a few dozen to a couple hundred series
+// even across all three heads, nowhere near the 3,741-series production
+// sample above) with a WIDE anchor grid the original calibration table
+// never exercised (it only varied anchors from 5 to 450 at a FIXED HIGH
+// groups count of 44,892; #2522's own shape is the opposite corner: LOW
+// groups, HIGH anchors).
+//
+// Direct real-ClickHouse measurement of that unexercised corner (16 rungs —
+// QueryDurationBoundaries' 15 finite bounds + Inf — 5,760 anchors, a
+// realistic ~120 rows/series density matching the e2e stack's 10s OTLP
+// PeriodicReader default over the run's own ~20-minute cluster uptime):
+//
+//	series   groups x anchors   peak memory (realistic density)
+//	   44          4,055,040      9.6% of cap   — REJECTED by the old 4,000,000 bound
+//	  100          9,216,000      8.1% of cap   — REJECTED by the old bound; this is #2522's real shape
+//	  200         18,432,000     14.5% of cap   — comfortably safe
+//	  500         46,080,000     21.9% of cap   — comfortably safe
+//	1,000         92,160,000     42.7% of cap   — comfortably safe
+//
+// So the old 4,000,000 threshold was a genuine false positive for this
+// shape: #2522's real query used well under 10% of the memory cap yet was
+// rejected. A floor-density (2 rows/series — the adversarial case for
+// THIS axis; floor density measured HIGHER percent-of-cap than realistic
+// density at the same groups x anchors, 37.6% vs 8.1% at 9,216,000) sweep
+// at the same 16-rung/5,760-anchor shape found the real safe/unsafe
+// boundary for the groups x anchors axis alone:
+//
+//	series   groups x anchors   peak memory (floor density)
+//	  163         15,022,080     37.6% of cap  — safe
+//	  217         19,998,720     75.1% of cap  — safe
+//	  271         24,975,360     75.1% of cap  — safe (plateau, not rising)
+//	  326         30,044,160     75.1% of cap  — safe (still the same plateau)
+//	  651         59,996,160     REJECTED: real ClickHouse code-241
+//	                             MEMORY_LIMIT_EXCEEDED (57.1% reported before
+//	                             the abort)
+//
+// 20,000,000 sits below the floor-density-confirmed-safe plateau (safe
+// through at least 30,044,160, with the real OOM cliff only starting
+// somewhere before 59,996,160 — a >2x margin below the nearest confirmed
+// failure) AND comfortably passes every realistic-density point measured
+// up to 4.6x this value (92,160,000 at 42.7% of cap) — while giving
+// #2522's own real query (~9-20M formula units, depending on the actual
+// route/ql/result cardinality live on a given nightly run) several-fold
+// headroom rather than sitting right at its own edge.
+//
+// A genuinely separate finding surfaced by this same investigation, NOT
+// fixed here: `groups x anchors` alone is not a complete cost model — a
+// HIGH-density, comparatively LOW-groups-x-anchors query can independently
+// OOM. Reproduced directly: 3,741 series x 12 rungs x 60 anchors
+// (2,693,520 groups x anchors — under BOTH the old 4,000,000 and this
+// file's new 20,000,000 threshold) genuinely hit a real ClickHouse
+// code-241 MEMORY_LIMIT_EXCEEDED at ~350 samples/series density (matching
+// the ORIGINAL #2486 production sample's own row/series ratio), while the
+// identical shape at floor density (2 rows/series) used only ~11% of cap.
+// That means today's single-axis (groups x anchors) guard — both before
+// and after this recalibration — does not actually protect the real
+// #2486 production incident's own density profile at realistic scale; it
+// only ever exercised the axis this file bounds, never the density axis.
+// Tracked separately (see the issue this recalibration's own PR files)
+// rather than folded into this fix, because closing it properly needs a
+// density-aware (or raw-row-volume-aware) second guard with its own
+// dedicated real-ClickHouse calibration sweep, not a threshold number on
+// this same single axis.
+//
+// Recalibrate by binary search against a real ClickHouse if this drifts —
+// see lwr_fanout_bound.go's own harness-pitfall note (unique query_id per
+// run) and design rationale to preserve when doing so. The calibration
+// test itself (a throwaway `docker run clickhouse/clickhouse-server`
+// harness, not TestCalibrateRangeBucketGridNativeBound — that one was
+// already deleted before #2504 merged) was deleted before this fix merged
+// too, per lwr_fanout_bound.go's own established precedent — this doc
 // comment is the retained record.
-const maxRangeBucketGridNativeRows = 4_000_000
+const maxRangeBucketGridNativeRows = 20_000_000
 
 // RangeBucketGridNativeBudgetMessage is the throwIf message
 // bucketGridGroupCountGuardFrag raises when this node's own bound fires.

@@ -1243,6 +1243,22 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chplan.ClassicBucketMergeBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// Same family again: RangeBucketGridNative's own per-(series, `le` rung)
+	// native rate-ladder bound (#2486/#2504) planted its own throwIf, but
+	// was never wired into this switch — found investigating #2522, where
+	// that gap meant every real firing of this guard fell through to the
+	// generic 502 errorType=internal branch below instead of the intended
+	// 422, the wire-shape half of #2522's own root cause (the OTHER half
+	// was the threshold itself being miscalibrated for a low-cardinality,
+	// wide-anchor query shape — see range_bucket_grid_native_bound.go's own
+	// recalibration). Same 422 errorType=execution "resource exhausted"
+	// shape as every other guard in this switch.
+	case throwIfMessageMatches(err, chsql.RangeBucketGridNativeBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.RangeBucketGridNativeBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }

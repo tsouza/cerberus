@@ -106,12 +106,15 @@ func seedGridNativeSeries(t *testing.T, exec func(string) error, seriesCount int
 // has never actually been triggered is exactly as untested as no bound at
 // all).
 //
-// 60 series x 51 rungs/series x 1,400 anchors = 4,284,000 groups x anchors,
-// comfortably past maxRangeBucketGridNativeRows (4,000,000). Only 120 real
-// rows need seeding (two per series — see seedGridNativeSeries) — the
-// anchor grid width is free (an emitter-generated timeSeriesRange, not
-// seeded data), and (per gridNativeBoundBoundsCount's own doc) the guard's
-// cheap probe needs no presence coverage across it either.
+// 60 series x 51 rungs/series x 6,600 anchors = 20,196,000 groups x
+// anchors, comfortably past maxRangeBucketGridNativeRows (20,000,000 —
+// recalibrated by issue #2522, see range_bucket_grid_native_bound.go's own
+// doc for the real-ClickHouse measurement this threshold is grounded in).
+// Only 120 real rows need seeding (two per series — see
+// seedGridNativeSeries) — the anchor grid width is free (an
+// emitter-generated timeSeriesRange, not seeded data), and (per
+// gridNativeBoundBoundsCount's own doc) the guard's cheap probe needs no
+// presence coverage across it either.
 func TestRangeBucketGridNativeBound_ThrowsWhenOversized(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
@@ -122,7 +125,7 @@ func TestRangeBucketGridNativeBound_ThrowsWhenOversized(t *testing.T) {
 	}
 
 	const seriesCount = 60
-	const numAnchors = 1_400 // 60 * 51 * 1,400 = 4,284,000 > maxRangeBucketGridNativeRows (4,000,000)
+	const numAnchors = 6_600 // 60 * 51 * 6,600 = 20,196,000 > maxRangeBucketGridNativeRows (20,000,000)
 	seedGridNativeSeries(t, func(s string) error { _, err := db.Exec(s); return err }, seriesCount)
 
 	sqlStr, args := buildGridNativePlan(t, numAnchors)
@@ -170,5 +173,50 @@ func TestRangeBucketGridNativeBound_PassesWhenUnderBudget(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("expected at least one row from the under-budget query")
+	}
+}
+
+// TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape is
+// issue #2522's own regression pin: a LOW-series-cardinality, WIDE-anchor
+// query — the shape a self-monitoring dashboard panel like
+// `histogram_quantile(0.95, sum by (le, cerberus_ql) (rate(
+// cerberus_queries_duration_seconds_bucket[5m])))` at a 24h/15s window
+// (5,760 anchors) produces — must NOT trip the guard, even though
+// `groups x anchors` here (60 series x 51 rungs x 5,760 anchors =
+// 17,625,600) comfortably exceeds the OLD maxRangeBucketGridNativeRows
+// (4,000,000) that wrongly rejected run 32688649627's real nightly
+// dashboard query. See range_bucket_grid_native_bound.go's own doc for the
+// real-ClickHouse measurement (8-42% of the 1 GiB cap across this exact
+// shape family) grounding the new 20,000,000 threshold. Before that
+// recalibration, this exact test would have failed with the old bound's
+// throwIf firing.
+func TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 60
+	const numAnchors = 5_760 // 24h/15s, run 32688649627's own failing grid width
+	seedGridNativeSeries(t, func(s string) error { _, err := db.Exec(s); return err }, seriesCount)
+
+	sqlStr, args := buildGridNativePlan(t, numAnchors)
+	rows, err := db.Query(sqlStr, args...)
+	if err != nil {
+		t.Fatalf("low-cardinality/wide-anchor query unexpectedly failed (issue #2522 regression): %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected at least one row from the low-cardinality/wide-anchor query")
 	}
 }
