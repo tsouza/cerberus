@@ -371,9 +371,11 @@ label_replace_truncated_shared_capture_name.txtar
 last_over_time_exp_histogram_preserves.txtar
 last_over_time_regex_name.txtar
 limit_ratio_complement.txtar
+limit_ratio_exp_histogram_bare.txtar
 limit_ratio_half.txtar
 limitk_below_one_empty.txtar
 limitk_by_job_all_survive.txtar
+limitk_exp_histogram_bare.txtar
 limitk_without_instance.txtar
 ln_metric.txtar
 log10_metric.txtar
