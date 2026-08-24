@@ -42,9 +42,13 @@ import (
 // sample" argMax / derived-shape / step-aligned logic emitVectorJoin's
 // own Right arm already exercises — so this file adds no new per-side
 // join mechanics of its own, only the histogram Left arm's field list,
-// the output-Attributes fold (CardOneToOne Keep/Del, sided by HistIsLHS,
-// or CardManyToOne/CardOneToMany Include overlay — [histogramFloat
-// VectorJoinOutputAttributesFrag]), and the outer SELECT/JOIN shape.
+// the output-Attributes fold (CardOneToOne Keep/Del, always reduced off
+// Left regardless of which side PromQL's on()/ignoring() named — sound
+// because the join's own ON-clause equality already forces both sides'
+// reduced Attributes to be byte-identical for any row that joins at all,
+// see [chplan.HistogramFloatVectorJoin]'s own doc — or CardManyToOne/
+// CardOneToMany Include overlay — [histogramFloatVectorJoinOutput
+// AttributesFrag]), and the outer SELECT/JOIN shape.
 func (e *emitter) emitHistogramFloatVectorJoin(j *chplan.HistogramFloatVectorJoin) error {
 	if err := e.validateHistogramFloatVectorJoinCols(j); err != nil {
 		return err

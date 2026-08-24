@@ -165,6 +165,114 @@ func TestFloatVectorScalingBinop_HistOnRHS_ChDB(t *testing.T) {
 	}
 }
 
+// swapIgnoringHistMetric/swapIgnoringFloatMetric back the CardOneToOne/
+// ignoring()/histogram-on-RHS scenario — the mirror image of
+// TestFloatVectorScalingBinop_HistOnRHS_ChDB's on() case, proving the
+// Del-reduction rule (drop the ignored label, keep everything else) is
+// correct when the histogram plays Left via the same unconditional-
+// reduce-Left emitter path, not just the Keep rule the on() test covers.
+// Both rows carry a "region" label with DIFFERENT values so a reduction
+// bug that leaked either side's value into the output (instead of
+// dropping the label entirely) is visible rather than accidentally
+// passing.
+const (
+	swapIgnoringHistMetric  = "swap_ignoring_hist_side_exp_hist"
+	swapIgnoringFloatMetric = "swap_ignoring_float_side_gauge"
+)
+
+var swapIgnoringSeed = "" +
+	"CREATE OR REPLACE TABLE otel_metrics_exponential_histogram (" +
+	"`MetricName` String, `Attributes` Map(String, String), " +
+	"`ResourceAttributes` Map(String, String) DEFAULT map(), `ServiceName` LowCardinality(String) DEFAULT '', " +
+	"`TimeUnix` DateTime64(9), " +
+	"`Count` UInt64, `Sum` Float64, `Scale` Int32, `ZeroCount` UInt64, " +
+	"`PositiveOffset` Int32, `PositiveBucketCounts` Array(UInt64), " +
+	"`NegativeOffset` Int32, `NegativeBucketCounts` Array(UInt64)" +
+	") ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n" +
+	"INSERT INTO otel_metrics_exponential_histogram " +
+	"(MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n" +
+	"    ('" + swapIgnoringHistMetric + "', map('job', 'api', 'region', 'hist-side'), toDateTime64('2026-01-01 00:00:00', 9), 3, 6.0, 0, 0, 0, [9], 0, []);\n" +
+	swapGaugeSeedDDL +
+	"INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES\n" +
+	"    ('" + swapIgnoringFloatMetric + "', map('job', 'api', 'region', 'float-side'), toDateTime64('2026-01-01 00:00:00', 9), 2.0);\n"
+
+// TestFloatVectorScalingBinop_HistOnRHS_IgnoringChDB proves
+// `float * ignoring(region) hist` — hist on the syntactic RHS,
+// CardOneToOne, ignoring() key — scales the histogram correctly and
+// drops the ignored "region" label from the output regardless of which
+// side's value it came from.
+func TestFloatVectorScalingBinop_HistOnRHS_IgnoringChDB(t *testing.T) {
+	fixture := newChDBFixture(t, swapIgnoringSeed)
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+
+	// Hist on the syntactic RHS, float on the LHS — same operand order
+	// TestFloatVectorScalingBinop_HistOnRHS_ChDB exercises for on(), here
+	// with ignoring(region) instead.
+	query := swapIgnoringFloatMetric + " * ignoring(region) " + swapIgnoringHistMetric
+
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	plan, err := promql.LowerAt(context.Background(), expr, s, swapEvalTS, swapEvalTS)
+	if err != nil {
+		t.Fatalf("LowerAt(%q): %v", query, err)
+	}
+	join := findHistogramFloatVectorJoin(plan)
+	if join == nil {
+		t.Fatalf("LowerAt(%q): plan does not root in a *chplan.HistogramFloatVectorJoin", query)
+	}
+	if join.Card != chplan.CardOneToOne {
+		t.Fatalf("LowerAt(%q): join.Card = %v, want CardOneToOne", query, join.Card)
+	}
+	sqlStr, args, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit(%q): %v", query, err)
+	}
+
+	projection := "`Attributes`['job'] AS job, `Attributes`['region'] AS region, " +
+		"`HistogramCount` AS cnt, `HistogramSum` AS sum, `HistogramPositiveBucketCounts`[1] AS bucket1"
+	rows := fixture.queryOverEmitted(t, projection, sqlStr, args)
+	defer func() { _ = rows.Close() }()
+
+	n := 0
+	for rows.Next() {
+		n++
+		var job, region string
+		var cnt, sum, bucket1 float64
+		if err := rows.Scan(&job, &region, &cnt, &sum, &bucket1); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if job != "api" {
+			t.Errorf("job = %q, want %q", job, "api")
+		}
+		// ignoring(region) must DROP region from the output entirely,
+		// regardless of which side's value ("hist-side" or "float-side")
+		// the reduction actually ran over.
+		if region != "" {
+			t.Errorf("region = %q, want empty (ignoring(region) must drop it)", region)
+		}
+		const wantCount, wantSum, wantBucket1 = 6, 12.0, 18 // hist(Count=3,Sum=6,bucket=[9]) * float(Value=2)
+		if cnt != wantCount {
+			t.Errorf("HistogramCount = %v, want %v", cnt, wantCount)
+		}
+		if sum != wantSum {
+			t.Errorf("HistogramSum = %v, want %v", sum, wantSum)
+		}
+		if bucket1 != wantBucket1 {
+			t.Errorf("HistogramPositiveBucketCounts[1] = %v, want %v", bucket1, wantBucket1)
+		}
+	}
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("got %d rows, want exactly 1", n)
+	}
+}
+
 // swapBroadcastHistMetric/swapBroadcastFloatMetric back the
 // group_right()/histogram-as-"one" broadcast scenario, kept distinct
 // from swapHistMetric/swapFloatMetric above so the two scenarios' seeds
