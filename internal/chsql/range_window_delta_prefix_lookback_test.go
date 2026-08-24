@@ -37,6 +37,54 @@ func deltaCapableMatrixWindow() *chplan.RangeWindow {
 	return r
 }
 
+// deltaPrefixAggregateCapableWindow is deltaCapableInstantWindow with
+// DeltaPrefixAggregateInput populated — the shape deltaPrefixAggregateSource
+// governs (only reachable when both DeltaPrefixAggregateInput != nil AND
+// WithDeltaPrefixReadEnabled(ctx, true) — see that function's doc).
+func deltaPrefixAggregateCapableWindow() *chplan.RangeWindow {
+	r := deltaCapableInstantWindow()
+	r.DeltaPrefixAggregateInput = &chplan.Scan{Table: "otel_metrics_sum_delta_prefix"}
+	return r
+}
+
+// TestDeltaPrefixAggregateSource_PresenceGuardWiredIntoBothTerms pins that
+// deltaPrefixAggregateSource applies the SAME CUMULATIVE-only presence guard
+// (deltaPresenceGuardFrag) instantDeltaPrefixSource's own prefix scan already
+// carries, to BOTH of its two summed terms — the aggregate-table scan and the
+// raw-remainder scan — not just one. An adversarial review of PR #2514 found
+// this guard silently absent from the new mechanism entirely, reintroducing
+// the exact unguarded-scan cost (measured at 181x on deltaPresenceGuardFrag's
+// own doc) for the ~99.99% of production traffic that is CUMULATIVE-only.
+// It also pins that the summed join carries the ifNull guard the same review
+// found missing — see TestDeltaPrefixAggregateSource_JoinUseNulls1DoesNotPropagateNull
+// (chdb) for the behavioural proof.
+func TestDeltaPrefixAggregateSource_PresenceGuardWiredIntoBothTerms(t *testing.T) {
+	t.Parallel()
+
+	r := deltaPrefixAggregateCapableWindow()
+	ctx := WithDeltaPrefixReadEnabled(context.Background(), true)
+	sqlText, _, err := Emit(ctx, r)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// AggregationTemporality = 1 is schema.AggregationTemporalityDelta.
+	const guard = "(SELECT max(`AggregationTemporality` = 1)"
+	if got := strings.Count(sqlText, guard); got != 2 {
+		t.Errorf("expected the presence guard exactly twice (aggregate term + raw-remainder term), found %d\nSQL: %s", got, sqlText)
+	}
+
+	// Both LEFT JOIN reads feeding the summed delta_prefix_before_window must
+	// be ifNull-guarded: a join_use_nulls=1 deployment (a legitimate
+	// ClickHouse setting cerberus does not itself pin) returns NULL, not the
+	// numeric-type default, on a LEFT JOIN miss, and NULL + x is NULL in
+	// ClickHouse.
+	const summed = "ifNull(`a`.`delta_prefix_aggregate_before_window`, 0) + ifNull(`p`.`delta_prefix_raw_remainder`, 0)"
+	if !strings.Contains(sqlText, summed) {
+		t.Errorf("expected the summed join to ifNull-guard both terms\nwant substring: %s\nSQL: %s", summed, sqlText)
+	}
+}
+
 func TestDeltaPrefixLookback_InstantScan_AddsLowerBound(t *testing.T) {
 	t.Parallel()
 

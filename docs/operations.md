@@ -1261,6 +1261,16 @@ read, replacing `CERBERUS_DELTA_PREFIX_LOOKBACK`'s bounded scalar scan:
    start>), <window start>]` — the current, still-open bucket's own
    contribution, at most one bucket width.
 
+Both terms carry the same CUMULATIVE-only presence guard the
+`CERBERUS_DELTA_PREFIX_LOOKBACK` scalar scan already carries: an
+uncorrelated scalar subquery testing whether any row in the eval window is
+genuinely DELTA-temporality. ClickHouse evaluates it once and, for the
+overwhelmingly common case of a CUMULATIVE-only series, folds the whole
+predicate to a constant `false` and skips both table reads entirely —
+`rate()`/`increase()` over a CUMULATIVE counter never pays the cost below.
+The cost this section measures applies only to a query the guard actually
+lets through: a genuinely DELTA-temporality series in the eval window.
+
 Both terms resolve to the same series through cerberus's ordinary
 column-name GroupBy resolution — see `chplan.RangeWindow.DeltaPrefixAggregateInput`'s
 doc — not a new join-key derivation.

@@ -3524,12 +3524,31 @@ func (e *emitter) deltaPrefixAggregateSource(
 	window *QueryBuilder,
 	groupFrags []Frag,
 	rangeStart Frag,
+	end Frag,
+	rangeNS int64,
 ) (Frag, error) {
 	groupColumns, err := plainGroupColumnNames(r.GroupBy)
 	if err != nil {
 		return nil, err
 	}
 	bucketStart := deltaPrefixBucketStartFrag(rangeStart)
+
+	// Prune both terms on a CUMULATIVE-only metric — see
+	// deltaPresenceGuardFrag. Without this, the aggregate term in
+	// particular is pure waste on the overwhelming majority of
+	// production traffic (no per-series row is ever eligible to consume
+	// it — deltaFirstValFrag only substitutes the reconstructed level for
+	// a genuinely DELTA series) while ALSO being the one term
+	// instantDeltaPrefixSource's own doc calls out as having no
+	// PK-level pruning below MetricName (Cost 2 above), i.e. exactly the
+	// unguarded shape the 181x measurement on deltaPresenceGuardFrag's
+	// doc was taken against. The guard is EXACT (see that doc), so
+	// applying it here changes no query's result, only what is read.
+	windowLo, windowHi := instantWindowScanBoundsFrags(r.TimestampColumn, end, rangeNS)
+	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
+	if err != nil {
+		return nil, err
+	}
 
 	aggInput, err := e.subqueryFrag(r.DeltaPrefixAggregateInput)
 	if err != nil {
@@ -3543,6 +3562,9 @@ func (e *emitter) deltaPrefixAggregateSource(
 	}
 	agg.Select(As(Call("sum", Col(deltaPrefixAggregateSumColumn)), deltaPrefixAggregateBeforeWindowAlias))
 	agg.Where(Lt(Col(deltaPrefixAggregateBucketColumn), bucketStart))
+	if guard != nil {
+		agg.Where(guard)
+	}
 	agg.GroupBy(groupFrags...)
 
 	rawInput, err := e.subqueryFrag(r.Input)
@@ -3558,6 +3580,9 @@ func (e *emitter) deltaPrefixAggregateSource(
 	raw.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixRawRemainderAlias))
 	raw.Where(Gte(Col(r.TimestampColumn), bucketStart))
 	raw.Where(Lte(Col(r.TimestampColumn), rangeStart))
+	if guard != nil {
+		raw.Where(guard)
+	}
 	raw.GroupBy(groupFrags...)
 
 	joined := NewQuery().From(aliasedFrag(window.Frag(), "w"))
@@ -3566,8 +3591,23 @@ func (e *emitter) deltaPrefixAggregateSource(
 	}
 	joined.Select(As(Qual("w", "series_array"), "series_array"))
 	joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
+	// ifNull guards a LEFT JOIN miss on either side (a never-backfilled /
+	// CUMULATIVE-guarded-away aggregate term, or — TestDeltaPrefixAggregateSource_GapBeforeRawRemainder's
+	// own scenario — a raw remainder with zero in-bucket samples) the same
+	// way internal/chsql/nested_set_annotate.go's LEFT JOIN read already
+	// does. Without it, a deployment running ClickHouse with
+	// join_use_nulls=1 (cerberus does not itself pin this setting) sees a
+	// NULL, not the intended numeric-type default 0, on the missing side;
+	// NULL + x is NULL, so ordinary ClickHouse addition would silently
+	// propagate that NULL through the whole reconstructed value instead of
+	// degrading to "the other term alone", the documented behaviour both
+	// TestDeltaPrefixAggregateSource_GapBeforeRawRemainder and
+	// TestDeltaPrefixAggregateSource_NeverBackfilledSeries pin.
 	joined.Select(As(
-		Add(Qual("a", deltaPrefixAggregateBeforeWindowAlias), Qual("p", deltaPrefixRawRemainderAlias)),
+		Add(
+			Call("ifNull", Qual("a", deltaPrefixAggregateBeforeWindowAlias), InlineLit(0)),
+			Call("ifNull", Qual("p", deltaPrefixRawRemainderAlias), InlineLit(0)),
+		),
 		deltaPrefixBeforeWindowAlias,
 	))
 	if len(groupColumns) == 0 {
@@ -3688,7 +3728,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		// instantDeltaPrefixSource UNCHANGED — the default for every
 		// deployment that hasn't opted in, byte-identical to pre-#2389 SQL.
 		if r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled {
-			windowSource, err = e.deltaPrefixAggregateSource(r, innermost, groupFrags, rangeStart)
+			windowSource, err = e.deltaPrefixAggregateSource(r, innermost, groupFrags, rangeStart, end, rangeNS)
 		} else {
 			windowSource, err = e.instantDeltaPrefixSource(r, innermost, groupFrags, rangeStart, end, rangeNS)
 		}

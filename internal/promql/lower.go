@@ -1339,6 +1339,38 @@ func deltaPrefixAggregateMetricNameMatchers(ms []*labels.Matcher) []*labels.Matc
 	return out
 }
 
+// attachDeltaPrefixAggregateArm side-feeds the exact, retention-independent
+// DELTA-prefix aggregate mechanism (cerberus issue #2389) onto rw whenever
+// funcName is eligible for it: rate()/increase()
+// (deltaPrefixAggregateEligibleFunc) over an unambiguous Sum/Histogram-table
+// scan (temporalityCol != "" — the SAME eligibility
+// rangeVectorCounterTemporalityColumn already resolved before this call, so
+// this never fires for the bucket-fanout / companion-union / catalog shapes
+// that pre-merge Attributes) on a deployment whose schema names a
+// DELTA-prefix table (s.DeltaPrefixTable != "" — see that field's doc:
+// populated only when CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in). This
+// populates the FIELD unconditionally under those conditions; whether chsql
+// actually CONSUMES it is a separate, emit-time gate
+// (config.Config.DeltaPrefixReadEnabled) so populating it here changes no
+// emitted SQL by itself. rangeCtx is passed UNCHANGED — the same ctx value
+// lowerVectorSelector received as attrCtx for this eligible path
+// (attributesPreMerged never applies to it; see
+// rangeVectorCounterTemporalityColumn's doc) — so
+// selectorAttributesExpr(rangeCtx, s) here produces a structurally Equal
+// Expr to rw.Input's own Attributes projection.
+func attachDeltaPrefixAggregateArm(
+	rw *chplan.RangeWindow,
+	funcName string,
+	vs *parser.VectorSelector,
+	s schema.Metrics,
+	temporalityCol string,
+	rangeCtx lowerCtx,
+) {
+	if s.DeltaPrefixTable != "" && temporalityCol != "" && deltaPrefixAggregateEligibleFunc(funcName) {
+		rw.DeltaPrefixAggregateInput = buildDeltaPrefixAggregateArm(vs.LabelMatchers, s, rangeCtx)
+	}
+}
+
 // buildDeltaPrefixAggregateArm builds chplan.RangeWindow.DeltaPrefixAggregateInput
 // (cerberus issue #2389): a Scan of s.DeltaPrefixTable, filtered to the same
 // MetricName matcher(s) the primary selector arm uses, wrapped by
@@ -2597,28 +2629,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		TemporalityColumn: temporalityCol,
 	}
-	// Side-feed the exact, retention-independent DELTA-prefix aggregate
-	// mechanism (cerberus issue #2389) whenever this call is eligible for
-	// it: rate()/increase() (deltaPrefixAggregateEligibleFunc) over an
-	// unambiguous Sum/Histogram-table scan (temporalityCol != "" — the
-	// SAME eligibility rangeVectorCounterTemporalityColumn already
-	// resolved above, so this never fires for the bucket-fanout /
-	// companion-union / catalog shapes that pre-merge Attributes) on a
-	// deployment whose schema names a DELTA-prefix table
-	// (s.DeltaPrefixTable != "" — see that field's doc: populated only
-	// when CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in). This populates
-	// the FIELD unconditionally under those conditions; whether chsql
-	// actually CONSUMES it is a separate, emit-time gate
-	// (config.Config.DeltaPrefixReadEnabled) so populating it here changes
-	// no emitted SQL by itself. rangeCtx is passed UNCHANGED — the same
-	// ctx value lowerVectorSelector above received as attrCtx for this
-	// eligible path (attributesPreMerged never applies to it; see
-	// rangeVectorCounterTemporalityColumn's doc) — so
-	// selectorAttributesExpr(rangeCtx, s) here produces a structurally
-	// Equal Expr to rw.Input's own Attributes projection.
-	if s.DeltaPrefixTable != "" && temporalityCol != "" && deltaPrefixAggregateEligibleFunc(c.Func.Name) {
-		rw.DeltaPrefixAggregateInput = buildDeltaPrefixAggregateArm(vs.LabelMatchers, s, rangeCtx)
-	}
+	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
 	// name land on one label set — the case reference Prometheus refuses

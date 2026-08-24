@@ -5,6 +5,7 @@ package chsql
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -114,8 +115,13 @@ func deltaPrefixAggregateSeedDDL(t *testing.T, db *sql.DB) {
 
 // runDeltaPrefixQuery emits r under the given lookback / read-enable
 // context values, wraps it to expose the `job` label as a plain string
-// column, and returns job -> rate() value for every row.
-func runDeltaPrefixQuery(t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool) map[string]float64 {
+// column, and returns job -> rate() value for every row. settings, when
+// non-empty, appends a query-scoped `SETTINGS <settings>` clause — used by
+// TestDeltaPrefixAggregateSource_JoinUseNulls1DoesNotPropagateNull to
+// exercise join_use_nulls=1 without mutating the shared chDB session's
+// default (which would leak into every later test in this process — chDB's
+// session is process-global, see chsqltest.OpenIsolatedChDB's doc).
+func runDeltaPrefixQuery(t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookback time.Duration, readEnabled bool, settings ...string) map[string]float64 {
 	t.Helper()
 	ctx := WithDeltaPrefixLookback(context.Background(), lookback)
 	ctx = WithDeltaPrefixReadEnabled(ctx, readEnabled)
@@ -125,6 +131,9 @@ func runDeltaPrefixQuery(t *testing.T, db *sql.DB, r *chplan.RangeWindow, lookba
 	}
 	inner := strings.TrimSuffix(strings.TrimSpace(sqlText), ";")
 	wrapped := "SELECT Attributes['job'] AS job, Value FROM (" + inner + ")"
+	if len(settings) > 0 {
+		wrapped += " SETTINGS " + strings.Join(settings, ", ")
+	}
 	rows, err := db.Query(wrapped, args...)
 	if err != nil {
 		t.Fatalf("query(lookback=%s, readEnabled=%v): %v\n%s", lookback, readEnabled, err, sqlText)
@@ -351,6 +360,223 @@ func TestDeltaPrefixAggregateSource_NeverBackfilledSeries(t *testing.T) {
 			"this test's own fixture is supposed to reproduce the documented under-count hazard "+
 			"(999 units of real history missing from the aggregate term); if this now passes because "+
 			"the mechanism changed, update the assertion deliberately, don't just widen the tolerance", gotVal, oracleVal)
+	}
+}
+
+// TestDeltaPrefixAggregateSource_JoinUseNulls1DoesNotPropagateNull re-runs
+// the NeverBackfilledSeries (aggregate-term LEFT JOIN miss) and
+// GapBeforeRawRemainder (raw-remainder-term LEFT JOIN miss) scenarios above
+// under `SETTINGS join_use_nulls = 1` — a legitimate ClickHouse deployment
+// setting cerberus does not itself pin. Under that setting a LEFT JOIN miss
+// returns NULL, not the query's Float64 default; NULL + x is NULL in
+// ClickHouse, so without the ifNull guard on both summed terms (see
+// deltaPrefixAggregateSource's doc) the row's Value comes back NULL — which
+// this test's plain float64 Scan turns into a hard error rather than a
+// silently wrong number, making a regression here fail loud. Cross-checked
+// against the default-settings (join_use_nulls=0) run to confirm the
+// deployment setting changes nothing about the answer, only how a miss is
+// represented before the ifNull guard resolves it.
+func TestDeltaPrefixAggregateSource_JoinUseNulls1DoesNotPropagateNull(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	deltaPrefixAggregateSeedDDL(t, db)
+
+	// Aggregate-term miss: real base history, but otel_metrics_sum_delta_prefix
+	// stays empty for this job (same fixture as NeverBackfilledSeries).
+	insertDeltaPrefixWindowSamples(t, db, `map('job', 'nulljoin_agg_miss')`, "nulljoin_agg_miss")
+	if _, err := db.Exec(`INSERT INTO otel_metrics_sum VALUES
+		(1, map('job', 'nulljoin_agg_miss'), toDateTime64('2026-01-10 00:00:00', 9), 999)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw-remainder-term miss: correctly-backfilled aggregate history, but
+	// nothing in otel_metrics_sum between toStartOfDay(rangeStart) and the
+	// window itself (same fixture as GapBeforeRawRemainder).
+	insertDeltaPrefixWindowSamples(t, db, `map('job', 'nulljoin_raw_miss')`, "nulljoin_raw_miss")
+	if _, err := db.Exec(`INSERT INTO otel_metrics_sum VALUES
+		(1, map('job', 'nulljoin_raw_miss'), toDateTime64('2026-01-05 00:00:00', 9), 42)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO otel_metrics_sum_delta_prefix VALUES
+		(map('job', 'nulljoin_raw_miss'), toDateTime64('2026-01-05 00:00:00', 9), 42)`); err != nil {
+		t.Fatal(err)
+	}
+
+	window := deltaPrefixCanonicalizedWindow(deltaPrefixTestStart, deltaPrefixTestRange, "otel_metrics_sum_delta_prefix")
+	underJoinUseNulls := runDeltaPrefixQuery(t, db, window, 0, true, "join_use_nulls = 1")
+	defaultSettings := runDeltaPrefixQuery(t, db, window, 0, true)
+
+	for _, job := range []string{"nulljoin_agg_miss", "nulljoin_raw_miss"} {
+		got, ok := underJoinUseNulls[job]
+		if !ok {
+			t.Fatalf("%s: missing under join_use_nulls=1 — NULL likely propagated through the summed join and dropped the row", job)
+		}
+		if math.IsNaN(got) || math.IsInf(got, 0) {
+			t.Fatalf("%s: non-finite value under join_use_nulls=1: %v", job, got)
+		}
+		want, ok := defaultSettings[job]
+		if !ok {
+			t.Fatalf("%s: missing under the default (join_use_nulls=0) settings — fixture bug", job)
+		}
+		if math.Abs(want-got) > 1e-9 {
+			t.Errorf("%s: join_use_nulls=1 changed the answer: got %v, join_use_nulls=0 got %v — the ifNull guard must make both deployments answer identically", job, got, want)
+		}
+	}
+}
+
+// deltaPrefixCumulativeOnlyAggregateRows is the row count seeded into
+// otel_metrics_sum_delta_prefix by
+// TestDeltaPrefixAggregateSource_PresenceGuardPrunesCumulativeOnlyScan —
+// large enough that a full (unguarded) scan and a guard-pruned scan report
+// visibly different EXPLAIN ESTIMATE read_rows.
+const deltaPrefixCumulativeOnlyAggregateRows = 20_000
+
+// deltaPrefixCumulativeOnlyAggregateSeriesCount is the distinct-series
+// fan-out for that same seed, keeping seriesRows^-1 * total rows per bucket
+// realistic rather than one enormous single-series history.
+const deltaPrefixCumulativeOnlyAggregateSeriesCount = 500
+
+// explainEstimateRowsForTable returns the read_rows EXPLAIN ESTIMATE reports
+// for table specifically (EXPLAIN ESTIMATE emits one row per (database,
+// table) the plan touches), or -1 if table never appears — distinguishing
+// "genuinely pruned to zero" (present, 0) from "not in the plan at all"
+// would need a third state this test doesn't need: both mean "not read".
+func explainEstimateRowsForTable(t *testing.T, db *sql.DB, query, table string) int64 {
+	t.Helper()
+	rows, err := db.Query("EXPLAIN ESTIMATE " + query)
+	if err != nil {
+		t.Fatalf("EXPLAIN ESTIMATE: %v\nquery: %s", err, query)
+	}
+	defer func() { _ = rows.Close() }()
+	var total int64
+	found := false
+	for rows.Next() {
+		var database, tbl string
+		var parts, r, marks int64
+		if err := rows.Scan(&database, &tbl, &parts, &r, &marks); err != nil {
+			t.Fatalf("scan estimate: %v", err)
+		}
+		if tbl == table {
+			total += r
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if !found {
+		return -1
+	}
+	return total
+}
+
+// stripPresenceGuard removes every ` AND (SELECT max(...)...)` presence-guard
+// clause deltaPresenceGuardFrag renders from sqlText via balanced-paren
+// scanning, reconstructing the exact SQL shape the pre-fix
+// deltaPrefixAggregateSource emitted (the guard entirely absent) from the
+// REAL, current emitter's own output — a precise, code-derived "before"
+// baseline rather than a hand-written approximation of it.
+func stripPresenceGuard(t *testing.T, sqlText string) string {
+	t.Helper()
+	const marker = " AND (SELECT max("
+	for {
+		idx := strings.Index(sqlText, marker)
+		if idx == -1 {
+			return sqlText
+		}
+		openIdx := idx + len(" AND ")
+		depth := 0
+		end := -1
+		for i := openIdx; i < len(sqlText); i++ {
+			switch sqlText[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end != -1 {
+				break
+			}
+		}
+		if end == -1 {
+			t.Fatalf("stripPresenceGuard: unbalanced parens in:\n%s", sqlText)
+		}
+		sqlText = sqlText[:idx] + sqlText[end+1:]
+	}
+}
+
+// TestDeltaPrefixAggregateSource_PresenceGuardPrunesCumulativeOnlyScan is the
+// empirical (EXPLAIN ESTIMATE) counterpart to
+// TestDeltaPrefixAggregateSource_PresenceGuardWiredIntoBothTerms's structural
+// check: for a CUMULATIVE-only series — the ~99.99% common case
+// deltaPresenceGuardFrag's own doc measures — the aggregate-table term's
+// read_rows with the guard present must be near zero (ClickHouse constant-
+// folds the guard's scalar subquery to `false` and prunes the whole table
+// read), while the SAME emitted query with ONLY the guard clause removed
+// (stripPresenceGuard, reconstructing the pre-fix shape) reads the full
+// seeded corpus. This is the exact class of evidence (EXPLAIN ESTIMATE
+// against a real chDB session) an adversarial review of PR #2514 used to
+// find the guard missing from deltaPrefixAggregateSource in the first place.
+func TestDeltaPrefixAggregateSource_PresenceGuardPrunesCumulativeOnlyScan(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	deltaPrefixAggregateSeedDDL(t, db)
+
+	// The in-window samples are CUMULATIVE (AggregationTemporality=2), not
+	// DELTA — the guard's own scalar subquery reads exactly these two rows
+	// and must fold to `false`.
+	if _, err := db.Exec(`INSERT INTO otel_metrics_sum VALUES
+		(2, map('job', 'cumonly'), toDateTime64('2026-01-15 11:59:30', 9), 1),
+		(2, map('job', 'cumonly'), toDateTime64('2026-01-15 12:00:00', 9), 2)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A realistically large aggregate-table corpus, entirely BEFORE the
+	// query window's own day (BucketStart < toStartOfDay(rangeStart) is
+	// deltaPrefixAggregateSource's own aggregate-term bound), fanned across
+	// many distinct series so this isn't one series' single-partition
+	// history.
+	seedSQL := fmt.Sprintf(`INSERT INTO otel_metrics_sum_delta_prefix
+SELECT
+    map('job', concat('s', toString(number %% %d))) AS Attributes,
+    toDateTime64('2026-01-15 00:00:00', 9) - toIntervalDay(number %% 30 + 1) AS BucketStart,
+    toFloat64(number) AS PartialSum
+FROM numbers(%d)`, deltaPrefixCumulativeOnlyAggregateSeriesCount, deltaPrefixCumulativeOnlyAggregateRows)
+	if _, err := db.Exec(seedSQL); err != nil {
+		t.Fatalf("seed aggregate corpus: %v", err)
+	}
+
+	r := deltaPrefixCanonicalizedWindow(deltaPrefixTestStart, deltaPrefixTestRange, "otel_metrics_sum_delta_prefix")
+	ctx := WithDeltaPrefixReadEnabled(context.Background(), true)
+	guardedSQL, _, err := Emit(ctx, r)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	guardedSQL = strings.TrimSuffix(strings.TrimSpace(guardedSQL), ";")
+	unguardedSQL := stripPresenceGuard(t, guardedSQL)
+	if unguardedSQL == guardedSQL {
+		t.Fatal("stripPresenceGuard left the SQL unchanged — the guard clause was not found; fixture/marker drifted from the real emit shape")
+	}
+
+	guardedRows := explainEstimateRowsForTable(t, db, guardedSQL, "otel_metrics_sum_delta_prefix")
+	unguardedRows := explainEstimateRowsForTable(t, db, unguardedSQL, "otel_metrics_sum_delta_prefix")
+	t.Logf("otel_metrics_sum_delta_prefix read_rows: guarded=%d unguarded=%d (seeded %d)",
+		guardedRows, unguardedRows, deltaPrefixCumulativeOnlyAggregateRows)
+
+	if unguardedRows < deltaPrefixCumulativeOnlyAggregateRows {
+		t.Fatalf("unguarded (pre-fix shape) read_rows=%d, want >= the seeded %d rows — corpus/EXPLAIN setup did not reproduce a full scan to compare against",
+			unguardedRows, deltaPrefixCumulativeOnlyAggregateRows)
+	}
+	// A guarded read of exactly 0 is the ideal (ClickHouse's constant-false
+	// short-circuit skips the table read outright); this asserts the
+	// weaker, robust property — pruned to a small fraction of the
+	// unguarded scan — so the test isn't coupled to that specific
+	// optimizer behaviour.
+	const maxGuardedFraction = 10 // guarded must read < 1/10th of unguarded
+	if guardedRows*maxGuardedFraction >= unguardedRows {
+		t.Errorf("guarded read_rows=%d not far below unguarded read_rows=%d (want guarded*%d < unguarded) — the presence guard is not pruning the CUMULATIVE-only scan",
+			guardedRows, unguardedRows, maxGuardedFraction)
 	}
 }
 

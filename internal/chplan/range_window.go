@@ -457,11 +457,20 @@ func (r *RangeWindow) Equal(other Node) bool {
 			return false
 		}
 	}
-	if (r.DeltaPrefixAggregateInput == nil) != (o.DeltaPrefixAggregateInput == nil) {
-		return false
-	}
-	if r.DeltaPrefixAggregateInput != nil && !r.DeltaPrefixAggregateInput.Equal(o.DeltaPrefixAggregateInput) {
+	if !optionalNodeEqual(r.DeltaPrefixAggregateInput, o.DeltaPrefixAggregateInput) {
 		return false
 	}
 	return r.Input.Equal(o.Input)
+}
+
+// optionalNodeEqual compares two possibly-nil optional child nodes (the
+// MetricsCompare RootLookup / RangeWindow DeltaPrefixAggregateInput shape):
+// equal when both are nil, or both non-nil and structurally Equal. Shared so
+// each optional-child Equal method stays a single branch rather than the
+// nil-mismatch-check-plus-Equal-call pair inline.
+func optionalNodeEqual(a, b Node) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	return a == nil || a.Equal(b)
 }
