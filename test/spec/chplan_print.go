@@ -336,26 +336,6 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
-	case *chplan.RangeBucketWindowSlide:
-		gbw := make([]string, len(v.GroupBy))
-		for i, e := range v.GroupBy {
-			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
-				gbw[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
-			} else {
-				gbw[i] = printExpr(e)
-			}
-		}
-		fmt.Fprintf(b, "%sRangeBucketWindowSlide step=%s range=%s", indent, v.Step, v.Range)
-		if v.Offset != 0 {
-			fmt.Fprintf(b, " offset=%s", v.Offset)
-		}
-		fmt.Fprintf(b, " groupBy=[%s] buckets=%s bounds=%s",
-			strings.Join(gbw, ", "), v.BucketCountsCol, v.ExplicitBoundsCol)
-		if !v.Start.IsZero() || !v.End.IsZero() {
-			fmt.Fprintf(b, " start=%s end=%s", v.Start.UTC().Format("2006-01-02T15:04:05Z"), v.End.UTC().Format("2006-01-02T15:04:05Z"))
-		}
-		b.WriteString("\n")
-		printNode(b, v.Input, depth+1)
 	case *chplan.VectorJoin:
 		fmt.Fprintf(b, "%sVectorJoin op=%s match=%s card=%s",
 			indent, v.Op, printVectorMatch(v.Match), printVectorCard(v.Card))

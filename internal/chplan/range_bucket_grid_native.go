@@ -1,15 +1,6 @@
-package chplan //nolint:dupl // shared method bodies already factored into bucket_grid_carrier_fields.go; the residual is the two distinct chplan.Node struct declarations
+package chplan
 
 import "time"
-
-// This file's struct declaration + NumAnchors/Equal still dupl-match
-// range_bucket_window_slide.go even after bucket_grid_carrier_fields.go
-// extracted their shared method BODIES: the two node types' FIELD LIST is
-// still identical, and it must stay that way as two separate chplan.Node
-// kinds — see bucket_grid_carrier_fields.go's own doc for why embedding a
-// shared struct (which would resolve this at the type level too) is not
-// worth breaking every existing keyed struct literal across the tree that
-// constructs one of these nodes directly.
 
 // RangeBucketGridNative is the ClickHouse-native sibling of
 // [RangeBucketFanout] for the ONE range-mode shape whose fan-out cost is
@@ -101,7 +92,10 @@ func (r *RangeBucketGridNative) Children() []Node { return []Node{r.Input} }
 // Same rationale as [RangeBucketFanout.NumAnchors] for why this axis needs
 // its own charge in [requireSubquerySampleBudget].
 func (r *RangeBucketGridNative) NumAnchors() int64 {
-	return bucketGridCarrierNumAnchors(r.Start, r.End, r.Step)
+	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
+		return 0
+	}
+	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
 }
 
 func (r *RangeBucketGridNative) Equal(other Node) bool {
@@ -109,13 +103,33 @@ func (r *RangeBucketGridNative) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	return bucketGridCarrierFields{
-		input: r.Input, start: r.Start, end: r.End, step: r.Step, rng: r.Range, offset: r.Offset,
-		groupBy: r.GroupBy, groupByAliases: r.GroupByAliases, anchorAlias: r.AnchorAlias,
-		timestampCol: r.TimestampCol, bucketCountsCol: r.BucketCountsCol, explicitBoundsCol: r.ExplicitBoundsCol,
-	}.equal(bucketGridCarrierFields{
-		input: o.Input, start: o.Start, end: o.End, step: o.Step, rng: o.Range, offset: o.Offset,
-		groupBy: o.GroupBy, groupByAliases: o.GroupByAliases, anchorAlias: o.AnchorAlias,
-		timestampCol: o.TimestampCol, bucketCountsCol: o.BucketCountsCol, explicitBoundsCol: o.ExplicitBoundsCol,
-	})
+	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
+		return false
+	}
+	if r.Step != o.Step || r.Range != o.Range || r.Offset != o.Offset {
+		return false
+	}
+	if r.AnchorAlias != o.AnchorAlias || r.TimestampCol != o.TimestampCol {
+		return false
+	}
+	if r.BucketCountsCol != o.BucketCountsCol || r.ExplicitBoundsCol != o.ExplicitBoundsCol {
+		return false
+	}
+	if len(r.GroupBy) != len(o.GroupBy) || len(r.GroupByAliases) != len(o.GroupByAliases) {
+		return false
+	}
+	for i := range r.GroupByAliases {
+		if r.GroupByAliases[i] != o.GroupByAliases[i] {
+			return false
+		}
+	}
+	for i := range r.GroupBy {
+		if !r.GroupBy[i].Equal(o.GroupBy[i]) {
+			return false
+		}
+	}
+	if r.Input == nil || o.Input == nil {
+		return r.Input == nil && o.Input == nil
+	}
+	return r.Input.Equal(o.Input)
 }

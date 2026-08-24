@@ -2,9 +2,9 @@
 
 // chDB-backed regression test for #2495: the classic-histogram
 // histogram_quantile ORDINARY FAN-OUT merge path (chplan.RangeBucketFanout
-// via promql.FanoutClassicHistogramWindowLowerer — NOT window-slide, NOT
-// chplan.RangeBucketGridNative, both fixed separately for their own,
-// unrelated non-finite-bound bugs) must never leak a literal +Inf or NaN
+// via promql.FanoutClassicHistogramWindowLowerer — NOT
+// chplan.RangeBucketGridNative, fixed separately for its own,
+// unrelated non-finite-bound bug) must never leak a literal +Inf or NaN
 // value from a row's own ExplicitBounds into the answered quantile.
 //
 // This is the issue's own repro, reproduced verbatim: one series carries
@@ -38,8 +38,7 @@ import (
 // hqFanoutNonFiniteQuery is the issue's own PromQL repro: a classic-bucket
 // selector, summed by(le) over a sum_over_time window — the shape that
 // lowers through lowerHistogramQuantileAgg's classicBucketMergeShaping
-// merge fold (histogram_quantile.go:1412 / :1462), not the native or
-// window-slide paths.
+// merge fold (histogram_quantile.go:1412 / :1462), not the native path.
 const hqFanoutNonFiniteQuery = `histogram_quantile(0.5, sum by(le) (sum_over_time(http_server_request_duration_bucket[5m])))`
 
 // hqFanoutNonFiniteRows is the issue's own repro data: row 2's
@@ -75,8 +74,8 @@ func TestHistogramQuantileFanout_ChDB_NonFiniteBoundExcluded(t *testing.T) {
 	}
 	// Zero-value LowerOpts.Lowerers.ClassicHistogram resolves to
 	// promql.FanoutClassicHistogramWindowLowerer{} (lower_strategy.go) —
-	// the ordinary fan-out this issue is about, never window-slide or the
-	// ClickHouse-native ladder.
+	// the ordinary fan-out this issue is about, never the ClickHouse-native
+	// ladder.
 	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, schema.DefaultOTelMetrics(),
 		gridStart, gridEnd, gridStep, promql.LowerOpts{})
 	if err != nil {

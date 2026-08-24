@@ -89,7 +89,6 @@ var _ = []GridCarrier{
 	(*RangeLWR)(nil),
 	(*RangeBucketFanout)(nil),
 	(*RangeBucketGridNative)(nil),
-	(*RangeBucketWindowSlide)(nil),
 	(*AbsentOverTime)(nil),
 }
 
@@ -120,13 +119,6 @@ func (r *RangeBucketFanout) EvalGrid() (time.Time, time.Time, time.Duration) {
 // EvalGrid: the native bucket-ladder aggregate is handed the same
 // (Start, End, Step) grid its fan-out sibling walks.
 func (r *RangeBucketGridNative) EvalGrid() (time.Time, time.Time, time.Duration) {
-	return r.Start, r.End, r.Step
-}
-
-// EvalGrid: the anchor-injection window-slide aggregate is handed the same
-// (Start, End, Step) grid its RangeBucketFanout / RangeBucketGridNative
-// siblings walk — one sentinel row is materialised per anchor across it.
-func (r *RangeBucketWindowSlide) EvalGrid() (time.Time, time.Time, time.Duration) {
 	return r.Start, r.End, r.Step
 }
 
@@ -183,24 +175,6 @@ func (r *RangeBucketFanout) AnchorGridDivides() bool { return !r.PeakIndependent
 // this kind as slice-invariant therefore fails loudly rather than silently
 // handing the solver a licence nobody re-derived.
 func (r *RangeBucketGridNative) AnchorGridDivides() bool { return true }
-
-// AnchorGridDivides: the anchor-injection window aggregate materialises one
-// sentinel row per (series, anchor) — linear in the grid width N — and each
-// series' PARTITION BY sort for the sliding window only needs the real rows
-// inside that shard's own (possibly Lookback-widened) scan window, which
-// shrinks the same way [RangeBucketGridNative]'s per-series intermediate
-// does. Reported honestly, TRUE, for the identical reason
-// RangeBucketGridNative's own doc gives: this is the solver's LICENCE TO
-// SHARD, and what keeps the honest answer safe is that slicing never
-// actually reaches this node — it is deliberately absent from
-// sliceInvariantKinds (no slice-invariance proof has been argued for it)
-// and carries no ReanchorRange arm (internal/chplan/reanchor.go), so
-// internal/solver's carrierGeometryOf reports it non-re-anchorable. Both
-// refusals are structural (a registry omission and a missing ReanchorRange
-// arm, not a runtime check), the same shape
-// TestRangeBucketGridNative_SlicingRefusedAtBothGates /
-// _NeverRoutesUnderAuto pin for this node's rate-window sibling.
-func (r *RangeBucketWindowSlide) AnchorGridDivides() bool { return true }
 
 // AnchorGridDivides: absent_over_time emits one row per anchor.
 func (a *AbsentOverTime) AnchorGridDivides() bool { return true }

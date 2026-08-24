@@ -101,10 +101,9 @@ func TestKeyForGridGeometryBucketsDiffer(t *testing.T) {
 // TestKeyForWalksEveryRangeAndCombinatorNodeKind exercises every chplan.Node
 // kind keyWalker.walk switches on beyond the RangeWindow-based fixtures
 // above — one per range-window sibling (RangeBucketFanout,
-// RangeBucketGridNative, RangeBucketWindowSlide, RangeLWR,
-// RangeWindowGridNative, RangeWindowStaleResample) and one per combinator
-// (VectorJoin, UnionAll, SetOperation, NaryVectorSetOp, Limit) — so a new
-// case arm added to walk (the RangeBucketWindowSlide arm's own origin) is
+// RangeBucketGridNative, RangeLWR, RangeWindowGridNative,
+// RangeWindowStaleResample) and one per combinator (VectorJoin, UnionAll,
+// SetOperation, NaryVectorSetOp, Limit) — so a new case arm added to walk is
 // never silently unexercised again.
 func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 	const (
@@ -132,17 +131,10 @@ func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 		}
 	})
 
-	t.Run("RangeBucketGridNative and RangeBucketWindowSlide both set HasNative", func(t *testing.T) {
+	t.Run("RangeBucketGridNative sets HasNative", func(t *testing.T) {
 		kGridNative := KeyFor(&chplan.RangeBucketGridNative{Input: scan, Range: 5 * time.Minute}, nAnchors, fanout, step)
 		if !kGridNative.HasNative {
 			t.Fatalf("RangeBucketGridNative must set HasNative")
-		}
-		kWindowSlide := KeyFor(&chplan.RangeBucketWindowSlide{Input: scan, Range: 5 * time.Minute}, nAnchors, fanout, step)
-		if !kWindowSlide.HasNative {
-			t.Fatalf("RangeBucketWindowSlide must set HasNative")
-		}
-		if kGridNative.RangeFuncs == kWindowSlide.RangeFuncs {
-			t.Fatalf("RangeBucketGridNative and RangeBucketWindowSlide must not collide: both %q", kGridNative.RangeFuncs)
 		}
 	})
 

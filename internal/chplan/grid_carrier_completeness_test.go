@@ -29,7 +29,6 @@ var gridCarrierRegistry = []GridCarrier{
 	&RangeLWR{},
 	&RangeBucketFanout{},
 	&RangeBucketGridNative{},
-	&RangeBucketWindowSlide{},
 	&AbsentOverTime{},
 }
 
@@ -71,10 +70,6 @@ func (n *RangeBucketGridNative) setEvalGrid(start, end time.Time, step time.Dura
 	n.Start, n.End, n.Step = start, end, step
 }
 
-func (n *RangeBucketWindowSlide) setEvalGrid(start, end time.Time, step time.Duration) {
-	n.Start, n.End, n.Step = start, end, step
-}
-
 func (n *AbsentOverTime) setEvalGrid(start, end time.Time, step time.Duration) {
 	n.Start, n.End, n.Step = start, end, step
 }
@@ -93,7 +88,6 @@ var gridCarrierSetterFactories = []func() gridCarrierSetter{
 	func() gridCarrierSetter { return &RangeLWR{} },
 	func() gridCarrierSetter { return &RangeBucketFanout{} },
 	func() gridCarrierSetter { return &RangeBucketGridNative{} },
-	func() gridCarrierSetter { return &RangeBucketWindowSlide{} },
 	func() gridCarrierSetter { return &AbsentOverTime{} },
 }
 

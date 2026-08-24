@@ -31,11 +31,11 @@ import "time"
 // Why the guard sits BEFORE Level 1, not after it (the mistake an earlier
 // version of this file made). The obvious reuse of lwrFanoutBoundedSourceFrag
 // / lwrFanoutGuardFrag (internal/chsql/lwr_fanout_bound.go) —
-// wrapping Level 2's ArrayJoin explode output the way
-// range_bucket_window_slide_bound.go wraps its own UNION ALL source — LOOKS
-// right (Level 2's own ArrayJoin is not itself blocking), but real
-// testcontainers calibration caught why it is wrong FOR THIS NODE: unlike
-// window-slide's UNION ALL arms, Level 1's GROUP BY sits strictly upstream
+// wrapping Level 2's ArrayJoin explode output the same way that shared
+// pattern wraps a plain UNION ALL / arrayJoin source elsewhere in this
+// package — LOOKS right (Level 2's own ArrayJoin is not itself blocking),
+// but real testcontainers calibration caught why it is wrong FOR THIS NODE:
+// unlike a plain fan-out source, Level 1's GROUP BY sits strictly upstream
 // of the ArrayJoin, and lwrFanoutBoundedSourceFrag's own two-independent-reads
 // shape means an oversized query pays for that GROUP BY's own anchor-wide
 // per-group array state TWICE (once building the LIMIT-bounded read, once
@@ -64,12 +64,9 @@ import "time"
 // plan time from Start/End/Step alone). `groups x NumAnchors > maxRows`
 // throwIf-rejects BEFORE Level 1's GROUP BY consumes the anchor-wide array
 // state the real risk lives in — true short-circuiting, unlike the
-// Level-2-wrap mistake above and unlike range_bucket_window_slide_bound.go's
-// own accepted (and documented) "does not shrink the work upstream of
-// itself" trade-off: there is no comparably cheap upstream probe available
-// for window-slide's shape (its own blocking operator IS the sort whose
-// input the UNION ALL arms already fully are), but this node's own
-// arithmetic — GROUP CARDINALITY times a plan-time CONSTANT — has one.
+// Level-2-wrap mistake above: this node's own arithmetic — GROUP
+// CARDINALITY times a plan-time CONSTANT — gives it a comparably cheap
+// upstream probe that not every blocking-operator shape in this package has.
 //
 // Calibration (real testcontainers ClickHouse 25.9-alpine, 1 GiB cap — the
 // CERBERUS_CH_QUERY_MAX_MEMORY default — a synthetic classic-histogram
@@ -192,10 +189,9 @@ const maxRangeBucketGridNativeRows = 20_000_000
 // RangeBucketGridNativeBudgetMessage is the throwIf message
 // bucketGridGroupCountGuardFrag raises when this node's own bound fires.
 // Distinct text from RangeBucketFanoutBudgetMessage / RangeLWRFanoutBudgetMessage
-// / RangeBucketWindowSlideBudgetMessage so a rejection's error message alone
-// says which bound fired — see those constants' own doc for why that
-// matters for classifyThrowIfGuardError and for a human reading a
-// query_log entry.
+// so a rejection's error message alone says which bound fired — see those
+// constants' own doc for why that matters for classifyThrowIfGuardError and
+// for a human reading a query_log entry.
 const RangeBucketGridNativeBudgetMessage = "classic-histogram native rate grid exceeds the " +
 	"series-times-rungs-times-anchors resource bound"
 
