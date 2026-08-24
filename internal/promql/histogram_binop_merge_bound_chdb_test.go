@@ -105,7 +105,7 @@ func runHistogramBinopMergeBoundQuery(t *testing.T, fixture *chdbFixture) error 
 // on each of the two operand metrics, sharing the `series` label so default
 // one-to-one matching pairs them, whose PositiveOffset diverges enough (0
 // vs 20000, both Scale 0, one bucket each) that the merged bucket ladder
-// spans 20001 buckets — so `rows(2, fixed by construction) x width(20001)^3`
+// spans 20001 buckets — so `rows(2, fixed by construction) x width(20001)^2`
 // crosses maxHistogramMergeCostUnits (histogram_merge_bound.go) by many
 // orders of magnitude — and asserts the query aborts with the budget
 // guard's own throwIf rather than letting ClickHouse allocate an unbounded

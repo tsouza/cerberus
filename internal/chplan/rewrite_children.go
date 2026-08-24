@@ -23,6 +23,24 @@ func rewriteSingleInput(
 	return clone(newInput), true
 }
 
+// rewriteOptionalPair is the shared clone-on-change shape for nodes with one
+// always-present child (primary) and one optional child (optional, nilable):
+// TopK's Input/KExpr, RangeWindow's Input/DeltaPrefixAggregateInput, and
+// MetricsCompare's Inner/RootLookup all share this exact shape. fn is
+// applied to primary unconditionally and to optional only when non-nil, so
+// a nil optional stays nil in the result (newOptional's zero value) rather
+// than being handed to fn. changed reports whether either child came back
+// different, matching rewriteSingleInput / rewriteLeftRight's own
+// changed-flag convention.
+func rewriteOptionalPair(fn func(Node) (Node, bool), primary, optional Node) (newPrimary, newOptional Node, changed bool) {
+	newPrimary, primaryCh := fn(primary)
+	optCh := false
+	if optional != nil {
+		newOptional, optCh = fn(optional)
+	}
+	return newPrimary, newOptional, primaryCh || optCh
+}
+
 // rewriteLeftRight is the shared clone-on-change shape for binary nodes
 // with exactly two children (Left / Right): apply fn to each; when
 // neither changed, hand back the original node, otherwise clone via
@@ -121,12 +139,6 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			return &cp
 		})
 	case *Aggregate:
-		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
-			cp := *v
-			cp.Input = in
-			return &cp
-		})
-	case *RangeWindow:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v
 			cp.Input = in
@@ -297,26 +309,32 @@ func rewriteBinaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, h
 
 // rewriteIrregularNode handles the nodes whose child shape doesn't fit the
 // unary / binary helpers: TopK (Input + optional KExpr), UnionAll
-// (N inputs), and MetricsCompare (Inner + optional RootLookup).
+// (N inputs), RangeWindow (Input + optional DeltaPrefixAggregateInput), and
+// MetricsCompare (Inner + optional RootLookup).
 func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, handled bool) {
 	switch v := n.(type) {
 	case *TopK:
-		newInput, ch := fn(v.Input)
-		var newKExpr Node
-		kCh := false
-		if v.KExpr != nil {
-			newKExpr, kCh = fn(v.KExpr)
-		}
-		if !ch && !kCh {
+		newInput, newKExpr, ch := rewriteOptionalPair(fn, v.Input, v.KExpr)
+		if !ch {
 			return v, false, true
 		}
 		cp := *v
-		if ch {
-			cp.Input = newInput
+		cp.Input = newInput
+		cp.KExpr = newKExpr
+		return &cp, true, true
+	case *RangeWindow:
+		// Input is the always-present windowed relation;
+		// DeltaPrefixAggregateInput is the optional DELTA-prefix aggregate
+		// side-scan (cerberus issue #2389) — same shape as MetricsCompare's
+		// Inner/optional-RootLookup pair below, so recurse into both when
+		// present rather than treating the side-scan as an opaque leaf.
+		newInput, newDeltaPrefixInput, ch := rewriteOptionalPair(fn, v.Input, v.DeltaPrefixAggregateInput)
+		if !ch {
+			return v, false, true
 		}
-		if kCh {
-			cp.KExpr = newKExpr
-		}
+		cp := *v
+		cp.Input = newInput
+		cp.DeltaPrefixAggregateInput = newDeltaPrefixInput
 		return &cp, true, true
 	case *UnionAll:
 		// Recurse into each arm so existing optimizer rules
@@ -380,22 +398,13 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 		// Inner is the always-present child; RootLookup is an optional
 		// second child (the service-graph root-name join side). Recurse
 		// into both, rebuilding only when one changed.
-		newInner, innerCh := fn(v.Inner)
-		var newRootLookup Node
-		rootCh := false
-		if v.RootLookup != nil {
-			newRootLookup, rootCh = fn(v.RootLookup)
-		}
-		if !innerCh && !rootCh {
+		newInner, newRootLookup, ch := rewriteOptionalPair(fn, v.Inner, v.RootLookup)
+		if !ch {
 			return v, false, true
 		}
 		cp := *v
-		if innerCh {
-			cp.Inner = newInner
-		}
-		if rootCh {
-			cp.RootLookup = newRootLookup
-		}
+		cp.Inner = newInner
+		cp.RootLookup = newRootLookup
 		return &cp, true, true
 	}
 	return n, false, false

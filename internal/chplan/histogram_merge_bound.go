@@ -2,7 +2,7 @@ package chplan
 
 // HistogramMergeBudgetMessage is the `throwIf` message the native-histogram
 // across-series merge guard raises when the merge's resource bound is
-// crossed: primarily the joint `rows x (merged bucket-range width)^3` cost
+// crossed: primarily the joint `rows x (merged bucket-range width)^2` cost
 // the real cost driver measured (internal/promql/histogram_merge_bound.go's
 // header doc has the calibration), plus a series-per-group ceiling that
 // exists purely to keep that cost multiply from overflowing Int64 rather

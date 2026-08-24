@@ -147,11 +147,12 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
 	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
 	e := &emitter{
-		spansTable:            spansTable,
-		ctxSpansTable:         spansTable,
-		ctxLateMatTable:       ctxLMTable,
-		ctxLateMatShape:       ctxLMShape,
-		deltaPrefixLookbackNS: deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
+		spansTable:             spansTable,
+		ctxSpansTable:          spansTable,
+		ctxLateMatTable:        ctxLMTable,
+		ctxLateMatShape:        ctxLMShape,
+		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
+		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -286,6 +287,17 @@ type emitter struct {
 	// never threading WithDeltaPrefixLookback resolves to
 	// defaultDeltaPrefixLookback via deltaPrefixLookbackFromCtx, not to 0).
 	deltaPrefixLookbackNS int64
+
+	// deltaPrefixReadEnabled is the resolved query-path consumption gate
+	// for the exact DELTA-prefix aggregate mechanism (cerberus issue
+	// #2389; see WithDeltaPrefixReadEnabled / deltaPrefixReadEnabledFromCtx
+	// in range_window.go). false — its zero value AND the default when
+	// nothing threads WithDeltaPrefixReadEnabled at all — keeps
+	// emitWindowedArrayExtrapolated on today's instantDeltaPrefixSource
+	// path unconditionally, so a deployment that hasn't opted in (or
+	// hasn't threaded the new config through internal/engine at all) sees
+	// byte-identical SQL to before this field existed.
+	deltaPrefixReadEnabled bool
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the

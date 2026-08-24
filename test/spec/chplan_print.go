@@ -956,6 +956,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnToUnixNanos:                     "FnToUnixNanos",
 	chplan.FnToYear:                          "FnToYear",
 	chplan.FnAbs:                             "FnAbs",
+	chplan.FnBitShiftLeft:                    "FnBitShiftLeft",
 	chplan.FnBitShiftRight:                   "FnBitShiftRight",
 	chplan.FnCeil:                            "FnCeil",
 	chplan.FnExp:                             "FnExp",
