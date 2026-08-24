@@ -139,10 +139,7 @@ func (m *MetricsCompare) Equal(other Node) bool {
 	if m.Pairs != nil && !m.Pairs.Equal(o.Pairs) {
 		return false
 	}
-	if (m.RootLookup == nil) != (o.RootLookup == nil) {
-		return false
-	}
-	if m.RootLookup != nil && !m.RootLookup.Equal(o.RootLookup) {
+	if !optionalNodeEqual(m.RootLookup, o.RootLookup) {
 		return false
 	}
 	if (m.Inner == nil) != (o.Inner == nil) {

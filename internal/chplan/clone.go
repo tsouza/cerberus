@@ -114,6 +114,11 @@ func cloneRangeNode(n Node) Node {
 	case *RangeWindow:
 		c := *v
 		c.Input = CloneNode(v.Input)
+		// DeltaPrefixAggregateInput is nil (the common case) for any
+		// RangeWindow the DELTA-prefix mechanism hasn't populated; CloneNode
+		// returns nil for a nil Node so this stays a no-op then, same as
+		// Input would if it were ever nil.
+		c.DeltaPrefixAggregateInput = CloneNode(v.DeltaPrefixAggregateInput)
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.Scalars = cloneFloats(v.Scalars)
 		c.ScalarExprs = cloneExprs(v.ScalarExprs)

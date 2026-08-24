@@ -98,10 +98,7 @@ type Config struct {
 	// fleet-wide semantic approximation, not a free bug fix: an operator who
 	// needs exact boundary correction for long-lived DELTA counters should
 	// raise it (or disable it with `0`, restoring the pre-fix unbounded
-	// scan) rather than assume the default is always precise. The fully
-	// precise fix — a materialized / incrementally maintained running total,
-	// so no query pays an O(retention) scan for this — is tracked separately
-	// (see cerberus issue #2389) and is out of scope here.
+	// scan) rather than assume the default is always precise.
 	//
 	// `0` (an explicit setting, not the resolved default) disables the bound
 	// entirely, restoring the exact pre-fix unbounded scan. Unset resolves
@@ -109,7 +106,56 @@ type Config struct {
 	// sums typically reset on restart/redeploy, so a day's lookback captures
 	// the overwhelming majority of genuine resets while keeping the scan
 	// retention-independent.
+	//
+	// ROLE AS OF #2389's read-path: this value bounds the FALLBACK
+	// mechanism only. A deployment that has provisioned the DELTA-prefix
+	// aggregate table (CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED), completed and
+	// verified its one-time backfill, and set DeltaPrefixReadEnabled=true
+	// gets the fully precise, retention-independent reconstruction instead
+	// (internal/chsql's deltaPrefixAggregateSource) — this knob is not
+	// consulted at all for such a deployment. Every OTHER deployment
+	// (read-enable off, the default) keeps exactly this
+	// lookback-approximation, unchanged, as its only mechanism — this field
+	// is never a dead knob, only a superseded PRIMARY one where the operator
+	// has explicitly opted into the exact alternative.
 	DeltaPrefixLookback time.Duration
+
+	// DeltaPrefixReadEnabled (CERBERUS_DELTA_PREFIX_READ_ENABLED) is the
+	// query-path consumption gate for the exact, retention-independent
+	// DELTA-temporality prefix-reconstruction mechanism (cerberus issue
+	// #2389): when true, a rate()/increase() query against a genuinely
+	// DELTA-temporality Sum/Histogram counter reconstructs its pre-window
+	// cumulative level by reading the operator-provisioned DELTA-prefix
+	// aggregate table (schema.Metrics.DeltaPrefixTable) instead of the
+	// DeltaPrefixLookback-bounded approximation above.
+	//
+	// Deliberately a SEPARATE knob from
+	// SchemaProvisioning.DeltaPrefixEnabled / CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED
+	// rather than a reuse of it, and deliberately top-level like
+	// DeltaPrefixLookback rather than nested under SchemaProvisioning (it
+	// governs QUERY behaviour, not DDL). The schema-provisioning flag only
+	// says "the table + materialized view exist" — it says nothing about
+	// whether their one-time historical backfill (the
+	// `cerberus schema delta-prefix-backfill` CLI, see docs/operations.md)
+	// has run and been verified. A deployment can turn the provisioning
+	// flag on, let CERBERUS_AUTO_CREATE_SCHEMA create the table, and start
+	// backfilling — all while this flag stays false and every query keeps
+	// using the safe DeltaPrefixLookback approximation. Reusing one flag
+	// for both would make the read path go live the INSTANT the table
+	// exists, mid-backfill, silently UNDER-counting every long-lived DELTA
+	// counter's boundary correction relative to even the old approximation
+	// — precisely the bug class this mechanism exists to fix, reintroduced
+	// by the fix itself.
+	//
+	// Default false: a deployment that upgrades cerberus without touching
+	// either DELTA-prefix flag emits byte-identical SQL to before this
+	// field existed. Only set this to true after completing AND verifying
+	// the backfill (docs/operations.md's DELTA-prefix runbook, including
+	// its verification query) — this is an operator-declared fact about
+	// deployment state, never inferred by probing ClickHouse, matching this
+	// codebase's established convention (see e.g. PromMetadataLookback's
+	// doc for the same reasoning).
+	DeltaPrefixReadEnabled bool
 
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
@@ -487,9 +533,12 @@ type SchemaProvisioning struct {
 	// half the story — its materialized view captures new rows from its
 	// creation moment onward, so pre-existing history still needs the
 	// one-time `cerberus schema delta-prefix-backfill` pass (see
-	// docs/operations.md), and cerberus's own query answering does not yet
-	// consume the table regardless of this flag (the read-side emitter
-	// change is tracked separately under #2389).
+	// docs/operations.md). This flag ONLY provisions the table + MV — it
+	// does not, by itself, change query answering: that is the separate,
+	// LATER Config.DeltaPrefixReadEnabled (CERBERUS_DELTA_PREFIX_READ_ENABLED)
+	// opt-in, which an operator sets only after completing and verifying
+	// the backfill. See DeltaPrefixReadEnabled's doc for why the two are
+	// deliberately independent knobs rather than one.
 	DeltaPrefixEnabled bool
 }
 
@@ -685,6 +734,7 @@ const (
 	envLokiTailWriteTO          = "CERBERUS_LOKI_TAIL_WRITE_TIMEOUT"
 	envPromMetadataLookback     = "CERBERUS_PROM_METADATA_LOOKBACK"
 	envDeltaPrefixLookback      = "CERBERUS_DELTA_PREFIX_LOOKBACK"
+	envDeltaPrefixReadEnabled   = "CERBERUS_DELTA_PREFIX_READ_ENABLED"
 	envDebugPProf               = "CERBERUS_DEBUG_PPROF"
 	envTempoStructuralTwoPhase  = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
 	envAutoCreateSchema         = "CERBERUS_AUTO_CREATE_SCHEMA"
@@ -929,6 +979,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	deltaPrefixReadEnabled, err := getBool(v, envDeltaPrefixReadEnabled)
+	if err != nil {
+		return Config{}, err
+	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -1000,12 +1054,13 @@ func FromEnv() (Config, error) {
 		extra:           surface.ch,
 	})
 	return Config{
-		HTTPAddr:             getString(v, envHTTPAddr),
-		HTTPServer:           surface.httpServer,
-		LokiTailWriteTimeout: surface.lokiTailWriteTimeout,
-		PromMetadataLookback: surface.promMetadataLookback,
-		DeltaPrefixLookback:  deltaPrefixLookback,
-		ClickHouse:           chCfg,
+		HTTPAddr:               getString(v, envHTTPAddr),
+		HTTPServer:             surface.httpServer,
+		LokiTailWriteTimeout:   surface.lokiTailWriteTimeout,
+		PromMetadataLookback:   surface.promMetadataLookback,
+		DeltaPrefixLookback:    deltaPrefixLookback,
+		DeltaPrefixReadEnabled: deltaPrefixReadEnabled,
+		ClickHouse:             chCfg,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
 		// the surface does — internal/schema owns these defaults, so they never
@@ -1083,6 +1138,7 @@ var allEnvKeys = []string{
 	envLokiTailWriteTO,
 	envPromMetadataLookback,
 	envDeltaPrefixLookback,
+	envDeltaPrefixReadEnabled,
 	envDebugPProf,
 	envTempoStructuralTwoPhase,
 	envAutoCreateSchema,
@@ -1244,6 +1300,10 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
 	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
+	// The query-path DELTA-prefix aggregate mechanism is OFF by default —
+	// see Config.DeltaPrefixReadEnabled's doc for why this must stay a
+	// separate, later, operator-verified opt-in from schema provisioning.
+	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
@@ -1324,9 +1384,13 @@ const (
 	defaultSchemaTTL                = "0s"
 	defaultSchemaTierAfter          = "0s"
 	defaultSchemaDeltaPrefixEnabled = false
-	defaultRequirementsCheck        = true
-	defaultExperimentalTSGrid       = false
-	defaultLogCommentShape          = false
+	// defaultDeltaPrefixReadEnabled keeps the exact DELTA-prefix aggregate
+	// query path OFF until an operator explicitly declares backfill
+	// complete AND verified — see Config.DeltaPrefixReadEnabled's doc.
+	defaultDeltaPrefixReadEnabled = false
+	defaultRequirementsCheck      = true
+	defaultExperimentalTSGrid     = false
+	defaultLogCommentShape        = false
 	// defaultCHOptimizations is "auto": enable every auto-eligible feature the
 	// connected server supports. Auto-eligibility (Feature.AutoSelect) is a
 	// separate axis from maturity (Feature.Stability) — `auto` turns on the

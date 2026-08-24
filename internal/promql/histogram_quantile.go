@@ -1032,6 +1032,14 @@ func mulExpr(l, r chplan.Expr) chplan.Expr {
 	return &chplan.Binary{Op: chplan.OpMul, Left: l, Right: r}
 }
 
+func leastExpr(l, r chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnLeast, Args: []chplan.Expr{l, r}}
+}
+
+func greatestExpr(l, r chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnGreatest, Args: []chplan.Expr{l, r}}
+}
+
 func toFloat64Expr(e chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{e}}
 }
@@ -1858,8 +1866,7 @@ const (
 )
 
 // Lambda parameter names for the exp-histogram bucket expressions. One
-// (scale, offset, buckets) triple is ONE stored row's distribution;
-// paramExpBucketPos indexes 1-based into that row's bucket array.
+// (scale, offset, buckets) triple is ONE stored row's distribution.
 //
 // Shared by the across-series merge and the across-time window
 // reduction: both bind the same triple over the same groupArray lists,
@@ -1869,7 +1876,6 @@ const (
 	paramExpRowScale   = "s"
 	paramExpRowOffset  = "off"
 	paramExpRowBuckets = "arr"
-	paramExpBucketPos  = "j"
 )
 
 // lowerHistogramQuantileNativeAgg builds the chplan tree for
@@ -2494,67 +2500,106 @@ func expHistogramBucketRowContribExpr(mergedScale, mergedStart chplan.Expr, para
 // picker shared by [expHistogramBucketRowContribExpr] (the cross-series
 // Kahan-compensated merge) and [histogramBinopBucketRowContribExpr] (the
 // two-operand plain-arithmetic binop, internal/promql/histogram_native_binop.go)
-// — for one (s, off, arr) tuple and target absolute index T:
+// — for one (s, off, arr) tuple and target absolute index T
+// (mergedStart + t), the SLICE of arr whose elements downscale onto T:
 //
-//	arrayMap(j -> if(bitShiftRight(off + j - 1, s - merged_scale) = T, arr[j], 0), arrayEnumerate(arr))
+//	arraySlice(arr, sliceStart, sliceLen)
 //
-// The two callers differ ONLY in which fold reduces this array afterward
-// (Kahan-compensated vs plain), matching reference Prometheus's own split
-// between FloatHistogram.KahanAdd's compensated `kahanReduceResolution` and
-// Add/Sub's plain `reduceResolution` — see histogram_native_binop.go's
-// header doc. The picker itself has no fold-order sensitivity of its own
-// (each element is independent), so sharing it cannot let the two callers'
-// bucket-index math drift apart.
+// where [sliceStart, sliceStart+sliceLen) is computed DIRECTLY from
+// (s, off, length(arr), mergedScale, T) via arithmetic, never by rescanning
+// arr's own arrayEnumerate and comparing every position's downscaled index
+// against T (cerberus issue #2500 — see below).
+//
+// # Why a slice suffices
+//
+// mergedScale is always min(scalesArr) (hqAggMergedScaleAlias), so
+// downscaling only ever COARSENS: ratio = 2^(s-mergedScale) is a per-row
+// CONSTANT >= 1 (independent of j), and j -> bitShiftRight(off+j-1, s-
+// mergedScale) is therefore a REGULAR, monotonic step function of j. Every
+// target this row touches corresponds to exactly one CONTIGUOUS run of
+// j's — off's own alignment against ratio can only shorten the FIRST and
+// LAST such run (a partial chunk), never split one apart in the middle.
+// The run for T is thus the intersection of T's own absolute bucket range
+// [T*ratio, (T+1)*ratio) with the row's own populated absolute range
+// [off, off+length(arr)-1], translated back into a 1-based position in
+// arr: chunkStartAbs/chunkEndAbs below compute that intersection, clamped
+// (via the outer least/greatest around sliceStart, and greatest(0, ...)
+// around sliceLen) so a row that does not touch T at all yields sliceLen
+// = 0 — an empty slice, never an out-of-range one (arraySlice tolerates an
+// offset past either end of arr as long as the length is 0).
+//
+// # cerberus issue #2500 — why this used to be O(row-width) per TARGET
+//
+// This function used to return arr's OWN length, zero everywhere except
+// the (0 or few) positions landing on T — an
+// `arrayMap(j -> if(...), arrayEnumerate(arr))` picker. Called once per
+// target bucket (up to mergedLength of them, per
+// [expHistogramMergeBucketsExpr]'s outer arrayMap), that rescanned this
+// row's ENTIRE array every time: real ClickHouse 25.9-alpine measurements
+// (histogram_merge_bound.go's header doc) showed the resulting cost
+// tracking rows x (merged bucket-range width)^3, not the `rows x width`
+// #2385 assumed — the per-target-bucket O(row-width) rescan turned what
+// looks like a width x series pass into one that is CUBIC in width alone
+// whenever a row's own bucket count tracks the merged width (the common
+// case).
+//
+// [promHistogramKahanSum] (the caller Kahan-folding this function's
+// result) and [plainArraySum] (the binop caller) are algebraically
+// UNCHANGED by dropping the interstitial zeros this slice no longer
+// carries: IEEE754 addition of an exact 0 is a no-op for a plain sum, and
+// for the Neumaier-compensated recurrence promHistogramKahanSum
+// implements, `value = 0` forces `boundTotal = accSum` exactly and
+// `correction = 0` exactly (see that function's own `correction` /
+// `nextCompensation` branches) — so the folded RESULT is bit-identical to
+// folding the old zero-padded array, regardless of how many interstitial
+// zeros this slice's absence removes. Only the amount of WORK changes:
+// this slice has length <= ratio per target (or exactly 1 when
+// s == mergedScale, the common no-collapse case), not the row's full
+// width, so summing over mergedLength targets costs this row O(row's own
+// width) total — once, not once per target.
 func expHistogramBucketPositionPickerExpr(mergedScale, mergedStart chplan.Expr, paramT string) chplan.Expr {
+	rowScale := &chplan.BareIdent{Name: paramExpRowScale}
+	rowOffset := &chplan.BareIdent{Name: paramExpRowOffset}
+	rowBuckets := &chplan.BareIdent{Name: paramExpRowBuckets}
+	rowLength := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{rowBuckets}}
+
+	// ratio = 2^(s - mergedScale): every ratio consecutive absolute
+	// buckets at row scale fold onto one merged-scale bucket.
+	ratio := &chplan.FuncCall{
+		Fn:   chplan.FnBitShiftLeft,
+		Args: []chplan.Expr{&chplan.LitInt{V: 1}, subExpr(rowScale, mergedScale)},
+	}
+	// target absolute index = mergedStart + t (t is 0-based).
+	targetAbs := addExpr(mergedStart, &chplan.BareIdent{Name: paramT})
+	// row's own last populated absolute index (off + length(arr) - 1;
+	// off - 1 for an empty row, matching
+	// expHistogramMergeBucketsBoundsExpr's own empty-row convention).
+	rowLastAbs := subExpr(addExpr(rowOffset, rowLength), &chplan.LitInt{V: 1})
+
+	// [chunkStartAbs, chunkEndAbs] = T's own absolute range
+	// [T*ratio, (T+1)*ratio - 1] intersected with the row's own populated
+	// range [off, rowLastAbs]. An empty intersection (chunkEndAbs <
+	// chunkStartAbs) is resolved by sliceLen's own greatest(0, ...) below,
+	// not here.
+	chunkStartAbs := greatestExpr(rowOffset, mulExpr(targetAbs, ratio))
+	chunkEndAbs := leastExpr(
+		rowLastAbs,
+		subExpr(mulExpr(addExpr(targetAbs, &chplan.LitInt{V: 1}), ratio), &chplan.LitInt{V: 1}),
+	)
+
+	// 1-based position of chunkStartAbs within arr, clamped to
+	// [1, length(arr)+1] so an empty intersection still yields a
+	// syntactically valid (offset, 0) slice rather than an out-of-range
+	// offset arraySlice might reject.
+	sliceStart := leastExpr(
+		greatestExpr(addExpr(subExpr(chunkStartAbs, rowOffset), &chplan.LitInt{V: 1}), &chplan.LitInt{V: 1}),
+		addExpr(rowLength, &chplan.LitInt{V: 1}),
+	)
+	sliceLen := greatestExpr(&chplan.LitInt{V: 0}, addExpr(subExpr(chunkEndAbs, chunkStartAbs), &chplan.LitInt{V: 1}))
+
 	return &chplan.FuncCall{
-		Fn: chplan.FnArrayMap,
-		Args: []chplan.Expr{
-			&chplan.Lambda{
-				Params: []string{paramExpBucketPos},
-				Body: &chplan.FuncCall{
-					Fn: chplan.FnIf,
-					Args: []chplan.Expr{
-						&chplan.Binary{
-							Op: chplan.OpEq,
-							Left: &chplan.FuncCall{
-								Fn: chplan.FnBitShiftRight,
-								Args: []chplan.Expr{
-									&chplan.Binary{
-										Op:   chplan.OpAdd,
-										Left: &chplan.BareIdent{Name: paramExpRowOffset},
-										Right: &chplan.Binary{
-											Op:    chplan.OpSub,
-											Left:  &chplan.BareIdent{Name: paramExpBucketPos},
-											Right: &chplan.LitInt{V: 1},
-										},
-									},
-									&chplan.Binary{
-										Op:    chplan.OpSub,
-										Left:  &chplan.BareIdent{Name: paramExpRowScale},
-										Right: mergedScale,
-									},
-								},
-							},
-							// target absolute index = mergedStart + t (t is 0-based).
-							Right: &chplan.Binary{
-								Op:    chplan.OpAdd,
-								Left:  mergedStart,
-								Right: &chplan.BareIdent{Name: paramT},
-							},
-						},
-						&chplan.Subscript{
-							Container: &chplan.BareIdent{Name: paramExpRowBuckets},
-							Key:       &chplan.BareIdent{Name: paramExpBucketPos},
-						},
-						&chplan.LitInt{V: 0},
-					},
-				},
-			},
-			&chplan.FuncCall{
-				Fn:   chplan.FnArrayEnumerate,
-				Args: []chplan.Expr{&chplan.BareIdent{Name: paramExpRowBuckets}},
-			},
-		},
+		Fn:   chplan.FnArraySlice,
+		Args: []chplan.Expr{rowBuckets, sliceStart, sliceLen},
 	}
 }
 

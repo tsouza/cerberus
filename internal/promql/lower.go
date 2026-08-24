@@ -1293,6 +1293,127 @@ func augmentSelectorAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics
 	}
 }
 
+// augmentDeltaPrefixAggregateAttributes is augmentSelectorAttributes' small
+// variant for the DELTA-prefix aggregate table (cerberus issue #2389,
+// design comment "§4.2 revision"). It calls the EXACT SAME, UNCHANGED
+// selectorAttributesExpr(ctx, s) augmentSelectorAttributes calls for the
+// primary selector arm's Attributes projection — see
+// TestDeltaPrefixAggregateArm_AttributesExprMatchesInput in lower_test.go
+// for the structural-equality guard this identity is load-bearing for — but
+// projects the DELTA-prefix aggregate table's own row shape
+// (MetricNameColumn, shaped Attributes, the bucket-boundary column, the
+// partial-sum column) instead of the canonical Sample quadruple
+// (MetricName, Attributes, TimeUnix, Value[, AggregationTemporality]).
+//
+// The bucket/sum columns are projected under their OWN raw names
+// ("BucketStart" / "PartialSum" — see chsql's
+// deltaPrefixAggregateBucketColumn / deltaPrefixAggregateSumColumn, which
+// read them back by those same literal names) rather than being renamed
+// onto s.TimestampColumn / s.ValueColumn: they are cerberus's own invented
+// columns on a table cerberus alone provisions (schema.Metrics.
+// DeltaPrefixTable's doc), not a reuse of the base Sum table's timestamp /
+// value columns, so borrowing those names here would suggest an identity
+// that doesn't hold.
+//
+// Unlike augmentSelectorAttributes, this NEVER skips the Project — even
+// when selectorAttributesExpr resolves to a bare Attributes passthrough
+// (isBareAttributesRef, which lets augmentSelectorAttributes return `input`
+// unchanged): the aggregate table's own column names never match a raw
+// Scan's columns regardless of whether the Attributes rebind itself
+// happens to be a no-op, so the rename is load-bearing every time.
+func augmentDeltaPrefixAggregateAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: selectorAttributesExpr(ctx, s), Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.DeltaPrefixBucketColumn}, Alias: s.DeltaPrefixBucketColumn},
+			{Expr: &chplan.ColumnRef{Name: s.DeltaPrefixSumColumn}, Alias: s.DeltaPrefixSumColumn},
+		},
+	}
+}
+
+// deltaPrefixAggregateMetricNameMatchers returns the subset of ms matching
+// the `__name__` label, in original order — used to filter
+// buildDeltaPrefixAggregateArm's scan to the SAME metric-name predicate the
+// primary selector arm resolves (see rangeVectorCounterTemporalityColumn /
+// resolveSelectorRouting), without pulling in the query's other label
+// matchers. The DELTA-prefix aggregate table has no per-sample columns to
+// filter non-name matchers against beyond what its own raw
+// Attributes/ResourceAttributes/dedicated columns already carry, and any
+// further narrowing happens at the GROUP BY join emitted by chsql's
+// deltaPrefixAggregateSource, exactly as it already does for the primary
+// arm's TimeUnix/Value pair.
+func deltaPrefixAggregateMetricNameMatchers(ms []*labels.Matcher) []*labels.Matcher {
+	var out []*labels.Matcher
+	for _, m := range ms {
+		if m.Name == model.MetricNameLabel {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// attachDeltaPrefixAggregateArm side-feeds the exact, retention-independent
+// DELTA-prefix aggregate mechanism (cerberus issue #2389) onto rw whenever
+// funcName is eligible for it: rate()/increase()
+// (deltaPrefixAggregateEligibleFunc) over an unambiguous Sum/Histogram-table
+// scan (temporalityCol != "" — the SAME eligibility
+// rangeVectorCounterTemporalityColumn already resolved before this call, so
+// this never fires for the bucket-fanout / companion-union / catalog shapes
+// that pre-merge Attributes) on a deployment whose schema names a
+// DELTA-prefix table (s.DeltaPrefixTable != "" — see that field's doc:
+// populated only when CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in). This
+// populates the FIELD unconditionally under those conditions; whether chsql
+// actually CONSUMES it is a separate, emit-time gate
+// (config.Config.DeltaPrefixReadEnabled) so populating it here changes no
+// emitted SQL by itself. rangeCtx is passed UNCHANGED — the same ctx value
+// lowerVectorSelector received as attrCtx for this eligible path
+// (attributesPreMerged never applies to it; see
+// rangeVectorCounterTemporalityColumn's doc) — so
+// selectorAttributesExpr(rangeCtx, s) here produces a structurally Equal
+// Expr to rw.Input's own Attributes projection.
+func attachDeltaPrefixAggregateArm(
+	rw *chplan.RangeWindow,
+	funcName string,
+	vs *parser.VectorSelector,
+	s schema.Metrics,
+	temporalityCol string,
+	rangeCtx lowerCtx,
+) {
+	if s.DeltaPrefixTable != "" && temporalityCol != "" && deltaPrefixAggregateEligibleFunc(funcName) {
+		rw.DeltaPrefixAggregateInput = buildDeltaPrefixAggregateArm(vs.LabelMatchers, s, rangeCtx)
+	}
+}
+
+// buildDeltaPrefixAggregateArm builds chplan.RangeWindow.DeltaPrefixAggregateInput
+// (cerberus issue #2389): a Scan of s.DeltaPrefixTable, filtered to the same
+// MetricName matcher(s) the primary selector arm uses, wrapped by
+// augmentDeltaPrefixAggregateAttributes so its Attributes projection is
+// built by the identical selectorAttributesExpr(ctx, s) call the primary
+// arm's own augmentSelectorAttributes uses.
+func buildDeltaPrefixAggregateArm(matchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	scan := &chplan.Scan{Table: s.DeltaPrefixTable}
+	var input chplan.Node = scan
+	if pred := buildPredicate(deltaPrefixAggregateMetricNameMatchers(matchers), s); pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	return augmentDeltaPrefixAggregateAttributes(input, ctx, s)
+}
+
+// deltaPrefixAggregateEligibleFunc reports whether c.Func.Name is one of the
+// two range functions the exact DELTA-prefix aggregate mechanism applies
+// to. This is a NARROWER set than counterTemporalityRangeFn's ("rate",
+// "increase", "irate"): the reconstructed prefix value only ever feeds
+// deltaFirstValFrag's boundary correction for extrapolationKind.isCounter()
+// (chsql's rate/increase extrapolation), which irate's last-two-samples
+// shape never routes through. Building chplan.RangeWindow.DeltaPrefixAggregateInput
+// for an irate() call would be inert (chsql's irate emitter never reads the
+// field) but wasteful — so lowering skips it.
+func deltaPrefixAggregateEligibleFunc(funcName string) bool {
+	return funcName == "rate" || funcName == "increase"
+}
+
 // selectorAttributesExpr returns the rebound Attributes expression for the
 // selector Project: the base resource-merge
 // (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) with the
@@ -2523,6 +2644,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		TemporalityColumn: temporalityCol,
 	}
+	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
 	// name land on one label set — the case reference Prometheus refuses
