@@ -81,18 +81,31 @@ import (
 // outright, `bool` or not, because reference's `err` check runs before
 // the `bool`-modifier override).
 //
-// group_left()/group_right() (any Card other than CardOneToOne) is
-// likewise out of scope: broadcasting the "many" side while ALSO
-// discriminating each row's own payload compounds the four-combination
-// fold with the Include-label broadcast [chplan.MixedVectorJoin]'s own
-// doc names as the reason it carries no Card field at all.
-// [vectorVectorArithmeticOverMixedExpHistogramSetOp] rejects that shape
-// outright (falls through to the pre-existing rejection) rather than
-// mis-widening it.
-func vectorVectorArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, ok bool) {
+// group_left()/group_right() (Card other than CardOneToOne) IS supported:
+// see this file's [mixedVVManySide] / [mixedVVOneSide] and
+// [mixedVVOutputAttributesExpr] — cerberus issue #2449's ninth wrapper
+// family. Broadcasting the "many" side while ALSO discriminating each
+// row's own payload does NOT compound with the four-combination fold the
+// way an earlier pass on this issue assumed: [chplan.MixedVectorJoin]'s
+// JOIN still hands every output row its own independent L/R discriminator
+// pair regardless of cardinality (a "many"-side row broadcast against the
+// SAME collapsed "one"-side row still produces one genuine L/R pair per
+// output row), so the per-row Value/Histogram*/discriminator projections
+// below are UNCHANGED by Card — only the output Attributes (manySide's
+// own full Attributes, optionally overlaid with the "one" side's Include
+// labels) and the representative Timestamp (the "many" side's own row,
+// mirroring plain [chplan.VectorJoin]'s `outerSide` pick in
+// internal/chsql/vector_join.go's emitVectorJoin) need to learn which
+// side is which. [vectorVectorArithmeticOverMixedExpHistogramSetOp]
+// accepts CardManyToOne/CardOneToMany and threads Card + Include through
+// to [chplan.MixedVectorJoin]; the chsql emitter's [mixedVectorJoinRoles]
+// (internal/chsql/mixed_vector_join.go) resolves the per-side roleMany/
+// roleOne split the identical way plain VectorJoin's own vectorJoinRoles
+// does.
+func vectorVectorArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || b.Op.IsSetOperator() || b.Op.IsComparisonOperator() {
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	switch b.Op {
 	case parser.ADD, parser.SUB, parser.MUL, parser.DIV:
@@ -102,37 +115,52 @@ func vectorVectorArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema
 		// still computes normally — left unattempted here (falls through
 		// to the pre-existing rejection even for the float,float case),
 		// tracked as remaining scope under #2449 alongside comparisons.
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	chOp, err := promBinaryOp(b.Op)
 	if err != nil {
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 
 	if _, isScalar := tryScalarLiteral(b.LHS); isScalar {
 		// Exactly one side scalar is arithmeticOverMixedExpHistogramSetOp's
 		// / mulOrDivScaleOverMixedExpHistogramSetOp's shape, not this one.
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	if _, isScalar := tryScalarLiteral(b.RHS); isScalar {
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 
-	if b.VectorMatching != nil && b.VectorMatching.Card != parser.CardOneToOne {
-		// group_left()/group_right() — deliberately out of scope, see
-		// this file's header.
-		return nil, nil, "", chplan.VectorMatch{}, false
+	card = chplan.CardOneToOne
+	if b.VectorMatching != nil {
+		switch b.VectorMatching.Card {
+		case parser.CardOneToOne:
+		case parser.CardManyToOne:
+			card = chplan.CardManyToOne
+		case parser.CardOneToMany:
+			card = chplan.CardOneToMany
+		default:
+			// CardManyToMany: the parser only ever sets this for the
+			// `and`/`or`/`unless` set operators, already excluded above
+			// via b.Op.IsSetOperator() — unreachable here in practice,
+			// rejected defensively rather than silently treated as
+			// one-to-one.
+			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
+		}
+		if len(b.VectorMatching.Include) > 0 {
+			include = append([]string(nil), b.VectorMatching.Include...)
+		}
 	}
 
 	lhsSetOp, lhsOk := mixedExpHistogramSetOp(b.LHS, s, ctx)
 	if !lhsOk {
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	rhsSetOp, rhsOk := mixedExpHistogramSetOp(b.RHS, s, ctx)
 	if !rhsOk {
-		return nil, nil, "", chplan.VectorMatch{}, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
-	return lhsSetOp, rhsSetOp, chOp, mixedExpHistogramMatch(b), true
+	return lhsSetOp, rhsSetOp, chOp, mixedExpHistogramMatch(b), card, include, true
 }
 
 // mixedVVJoinSideL / mixedVVJoinSideR name the two sides of a
@@ -169,15 +197,75 @@ func mixedVVDiscEq(side string, want int64) chplan.Expr {
 	}
 }
 
-// mixedVVOutputAttributesExpr renders the CardOneToOne output Attributes
-// expression: the join's LHS-side Attributes, reduced to the matching
-// label set per Prometheus's `resultMetric` Keep/Del rule — the
-// chplan.Expr-level mirror of chsql's outputMatchSetFrag
-// (internal/chsql/vector_join.go), needed here because
+// mixedVVManySide and mixedVVOneSide report which of "L"/"R" (the join's
+// Left/Right — the operator's syntactic LHS/RHS operand) plays the
+// "many"/"one" role for card: CardManyToOne (`group_left`) keeps Left's
+// own per-series granularity; CardOneToMany (`group_right`) keeps
+// Right's. CardOneToOne has no "many"/"one" distinction (both sides are
+// already collapsed to the same matching key by construction), so
+// mixedVVManySide defaults to L — the side [mixedVVOutputAttributesExpr]'s
+// own CardOneToOne branch already read unconditionally before this pair
+// existed. Mirrors internal/promql/histogram_native_binop_card.go's
+// histogramCardManySide / histogramCardOneSide for
+// [chplan.HistogramVectorJoin]'s identical shape.
+func mixedVVManySide(card chplan.VectorCard) string {
+	if card == chplan.CardOneToMany {
+		return mixedVVJoinSideR
+	}
+	return mixedVVJoinSideL
+}
+
+func mixedVVOneSide(card chplan.VectorCard) string {
+	if card == chplan.CardOneToMany {
+		return mixedVVJoinSideL
+	}
+	return mixedVVJoinSideR
+}
+
+// mixedVVOutputAttributesExpr renders the join's output Attributes
+// expression — the chplan.Expr-level mirror of chsql's
+// outputAttributesFrag (internal/chsql/vector_join.go) /
+// internal/promql's own histogramCardOutputAttributesExpr
+// (histogram_native_binop_card.go), needed here because
 // [chplan.MixedVectorJoin] is deliberately "dumb" about output shaping
 // (see its own doc) and internal/promql cannot reach chsql's private
 // helper.
-func mixedVVOutputAttributesExpr(m chplan.VectorMatch, attrs chplan.Expr) chplan.Expr {
+//
+// CardOneToOne: the join's LHS-side Attributes, reduced to the matching
+// label set per Prometheus's `resultMetric` Keep/Del rule.
+//
+// CardManyToOne/CardOneToMany (group_left()/group_right()): the "many"
+// side's own full Attributes, optionally overlaid with the "one" side's
+// Include labels via `mapConcat` (CH's later-argument-wins map merge).
+// The CardOneToOne Keep/Del reduction does NOT apply here — Prometheus
+// skips it for a non-one-to-one cardinality, keeping the many side's full
+// labels (then overlaying Include). Bare group_left/right (no Include
+// labels) leaves the "many" side's Attributes unchanged.
+func mixedVVOutputAttributesExpr(m chplan.VectorMatch, card chplan.VectorCard, include []string, attrsCol string) chplan.Expr {
+	if card != chplan.CardOneToOne {
+		many := mixedJoinFieldRef(mixedVVManySide(card), attrsCol)
+		if len(include) == 0 {
+			return many
+		}
+		one := mixedJoinFieldRef(mixedVVOneSide(card), attrsCol)
+		list := make([]chplan.Expr, len(include))
+		for i, lbl := range include {
+			list[i] = &chplan.LitString{V: lbl}
+		}
+		overlay := &chplan.FuncCall{
+			Fn: chplan.FnMapFilter,
+			Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{"k", "v"},
+					Body:   &chplan.InList{Left: &chplan.BareIdent{Name: "k"}, List: list},
+				},
+				one,
+			},
+		}
+		return &chplan.FuncCall{Fn: chplan.FnMapMerge, Args: []chplan.Expr{many, overlay}}
+	}
+
+	attrs := mixedJoinFieldRef(mixedVVJoinSideL, attrsCol)
 	if len(m.Labels) == 0 {
 		if m.On {
 			// on() with no labels: Keep() with nothing yields an empty
@@ -220,7 +308,7 @@ func mixedVVOutputAttributesExpr(m chplan.VectorMatch, attrs chplan.Expr) chplan
 // (`+`/`-`, [lowerMixedVVFloatOnlyArithmetic]) or the scaled fold
 // (`*`/`/`, [lowerMixedVVScaledArithmetic]) — see this file's header for
 // the four-combination semantics each answers.
-func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	leftNode, err := lowerMixedExpHistogramSetOp(lhsSetOp, s, ctx)
 	if err != nil {
 		return nil, err
@@ -234,6 +322,8 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 		Left:             leftNode,
 		Right:            rightNode,
 		Match:            match,
+		Card:             card,
+		Include:          include,
 		StepAligned:      ctx.step > 0,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
@@ -269,10 +359,10 @@ func lowerMixedVVFloatOnlyArithmetic(join *chplan.MixedVectorJoin, op chplan.Bin
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{
-				Expr:  mixedVVOutputAttributesExpr(join.Match, mixedJoinFieldRef(mixedVVJoinSideL, s.AttributesColumn)),
+				Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
 				Alias: s.AttributesColumn,
 			},
-			{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.TimestampColumn), Alias: s.TimestampColumn},
+			{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.TimestampColumn), Alias: s.TimestampColumn},
 			{Expr: &chplan.Binary{Op: op, Left: lValue, Right: rValue}, Alias: s.ValueColumn},
 		},
 	}
@@ -344,10 +434,10 @@ func lowerMixedVVScaledArithmetic(join *chplan.MixedVectorJoin, op chplan.Binary
 	projs := []chplan.Projection{
 		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 		{
-			Expr:  mixedVVOutputAttributesExpr(join.Match, mixedJoinFieldRef(mixedVVJoinSideL, s.AttributesColumn)),
+			Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
 			Alias: s.AttributesColumn,
 		},
-		{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.TimestampColumn), Alias: s.TimestampColumn},
+		{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.TimestampColumn), Alias: s.TimestampColumn},
 		{Expr: &chplan.Binary{Op: op, Left: lValue, Right: rValue}, Alias: s.ValueColumn},
 	}
 

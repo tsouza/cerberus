@@ -105,48 +105,74 @@ import (
 //
 // # What this file does NOT attempt
 //
-// group_left()/group_right() (any Card other than CardOneToOne) is out
-// of scope for the identical reason
-// [vectorVectorArithmeticOverMixedExpHistogramSetOp] gives:
-// [chplan.MixedVectorJoin] carries no Card field at all. A mixed-`or`
-// operand paired with a plain (non-mixed) vector remains its own
-// separately-tracked gap (the rejection-parity catalogue's existing
-// `binary.go` divergence entry), untouched by this file.
-func comparisonVectorVectorOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, returnBool, ok bool) {
+// group_left()/group_right() (Card other than CardOneToOne) IS supported,
+// for the identical reason
+// [vectorVectorArithmeticOverMixedExpHistogramSetOp]'s own header gives:
+// [chplan.MixedVectorJoin]'s JOIN hands every output row its own
+// independent L/R discriminator pair regardless of cardinality, so the
+// keep/drop decision and payload fold below are UNCHANGED by Card — only
+// the output Attributes (via [mixedVVOutputAttributesExpr]) need to learn
+// the manySide+Include overlay; the Timestamp similarly picks the "many"
+// side (mirroring plain [chplan.VectorJoin]'s `outerSide`). MetricName/
+// Value/the nine Histogram*Column fields for the non-`bool` filter stay
+// sourced from L (the operator's syntactic LHS) UNCONDITIONALLY, exactly
+// as they already were — reference always preserves vector1's (LHS's) own
+// sample for a bare V-V comparison regardless of which side plays "many"/
+// "one" (see [lowerMixedVVCompareFilter]'s own doc), so no Card-dependent
+// choice is needed there. A mixed-`or` operand paired with a plain
+// (non-mixed) vector remains its own separately-tracked gap (the
+// rejection-parity catalogue's existing `binary.go` divergence entry),
+// untouched by this file.
+func comparisonVectorVectorOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool, ok bool) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || !b.Op.IsComparisonOperator() {
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 	chOp, err := promBinaryOp(b.Op)
 	if err != nil {
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 
 	if _, isScalar := tryScalarLiteral(b.LHS); isScalar {
 		// Exactly one side scalar is comparisonOverMixedExpHistogramSetOp's
 		// own shape (histogram_native_mixed_or_comparison.go), not this
 		// one.
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 	if _, isScalar := tryScalarLiteral(b.RHS); isScalar {
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 
-	if b.VectorMatching != nil && b.VectorMatching.Card != parser.CardOneToOne {
-		// group_left()/group_right() — deliberately out of scope, see this
-		// file's header.
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+	card = chplan.CardOneToOne
+	if b.VectorMatching != nil {
+		switch b.VectorMatching.Card {
+		case parser.CardOneToOne:
+		case parser.CardManyToOne:
+			card = chplan.CardManyToOne
+		case parser.CardOneToMany:
+			card = chplan.CardOneToMany
+		default:
+			// CardManyToMany: the parser only ever sets this for the
+			// `and`/`or`/`unless` set operators, already excluded above
+			// via !b.Op.IsComparisonOperator() — unreachable here in
+			// practice, rejected defensively rather than silently
+			// treated as one-to-one.
+			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
+		}
+		if len(b.VectorMatching.Include) > 0 {
+			include = append([]string(nil), b.VectorMatching.Include...)
+		}
 	}
 
 	lhsSetOp, lhsOk := mixedExpHistogramSetOp(b.LHS, s, ctx)
 	if !lhsOk {
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
 	rhsSetOp, rhsOk := mixedExpHistogramSetOp(b.RHS, s, ctx)
 	if !rhsOk {
-		return nil, nil, "", chplan.VectorMatch{}, false, false
+		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
 	}
-	return lhsSetOp, rhsSetOp, chOp, mixedExpHistogramMatch(b), b.ReturnBool, true
+	return lhsSetOp, rhsSetOp, chOp, mixedExpHistogramMatch(b), card, include, b.ReturnBool, true
 }
 
 // lowerComparisonVectorVectorOverMixedExpHistogramSetOp lowers the shape
@@ -156,7 +182,7 @@ func comparisonVectorVectorOverMixedExpHistogramSetOp(expr parser.Expr, s schema
 // [lowerMixedVVCompareFilter]) or the always-float `bool` fold
 // ([lowerMixedVVCompareBool]) — see this file's header for the
 // four-combination semantics each answers.
-func lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *parser.BinaryExpr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	leftNode, err := lowerMixedExpHistogramSetOp(lhsSetOp, s, ctx)
 	if err != nil {
 		return nil, err
@@ -170,6 +196,8 @@ func lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 		Left:             leftNode,
 		Right:            rightNode,
 		Match:            match,
+		Card:             card,
+		Include:          include,
 		StepAligned:      ctx.step > 0,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
@@ -243,7 +271,15 @@ func mixedVVHistogramFieldsExpr(ne bool) chplan.Expr {
 // for `==`/`!=` only, histogram,histogram satisfying the structural
 // field-equality/inequality — forwarding L's own canonical quartet
 // (MetricName UNCHANGED — comparisons never changesMetricSchema),
-// Histogram*Column fields, and discriminator. See this file's header for
+// Histogram*Column fields, and discriminator, ALL UNCONDITIONALLY from L
+// regardless of Card: reference always preserves vector1's (the
+// operator's syntactic LHS's) own sample for a bare V-V comparison, and
+// that choice is independent of which side group_left()/group_right()
+// names as "many". Only the output Attributes and Timestamp are
+// Card-aware (via [mixedVVOutputAttributesExpr] / [mixedVVManySide]),
+// mirroring plain [chplan.VectorJoin]'s own split between its
+// hardcoded-LHS bare-comparison Value and its `outerSide`-picked
+// Timestamp (internal/chsql/vector_join.go). See this file's header for
 // why an ordering op (`<`/`<=`/`>`/`>=`) never admits a histogram,
 // histogram pair.
 func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
@@ -273,10 +309,10 @@ func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp,
 	projs := []chplan.Projection{
 		{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.MetricNameColumn), Alias: s.MetricNameColumn},
 		{
-			Expr:  mixedVVOutputAttributesExpr(join.Match, mixedJoinFieldRef(mixedVVJoinSideL, s.AttributesColumn)),
+			Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
 			Alias: s.AttributesColumn,
 		},
-		{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.TimestampColumn), Alias: s.TimestampColumn},
+		{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.TimestampColumn), Alias: s.TimestampColumn},
 		{Expr: lValue, Alias: s.ValueColumn},
 	}
 	for _, col := range mixedVVHistogramFieldColumns() {
@@ -336,10 +372,10 @@ func lowerMixedVVCompareBool(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{
-				Expr:  mixedVVOutputAttributesExpr(join.Match, mixedJoinFieldRef(mixedVVJoinSideL, s.AttributesColumn)),
+				Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
 				Alias: s.AttributesColumn,
 			},
-			{Expr: mixedJoinFieldRef(mixedVVJoinSideL, s.TimestampColumn), Alias: s.TimestampColumn},
+			{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.TimestampColumn), Alias: s.TimestampColumn},
 			{Expr: valueExpr, Alias: s.ValueColumn},
 		},
 	}

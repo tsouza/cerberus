@@ -2,6 +2,7 @@ package promql_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -152,25 +153,77 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowStillRejects(t *testing.
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorGroupLeftStillRejects
-// pins that group_left()/group_right() between two mixed `or` operands
-// remains unimplemented — [chplan.MixedVectorJoin]'s own doc names why
-// broadcasting the "many" side while ALSO discriminating each row's own
-// payload is a separately-scoped extension.
-func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorGroupLeftStillRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorGroupLeftRight pins
+// cerberus issue #2449's ninth wrapper family: group_left()/group_right()
+// between two mixed `or` operands now lowers to a [chplan.MixedVectorJoin]
+// carrying the matching Card/Include (rather than falling through to the
+// pre-existing rejection), for both the bare modifier and the
+// Include-labels form — see [chplan.MixedVectorJoin]'s own doc for why
+// broadcasting the "many" side does not compound with the per-row
+// float/histogram discrimination this node stays blind to.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorGroupLeftRight(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	query := mixedOrExpr + ` * on(job) group_left() ` + mixedOrExpr
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
+	cases := []struct {
+		name        string
+		query       string
+		wantCard    chplan.VectorCard
+		wantInclude []string
+	}{
+		{
+			name:     "group_left, no Include",
+			query:    mixedOrExpr + ` * on(job) group_left() ` + mixedOrExpr,
+			wantCard: chplan.CardManyToOne,
+		},
+		{
+			name:        "group_left, with Include",
+			query:       mixedOrExpr + ` * on(job) group_left(instance) ` + mixedOrExpr,
+			wantCard:    chplan.CardManyToOne,
+			wantInclude: []string{"instance"},
+		},
+		{
+			name:        "group_right, with Include",
+			query:       mixedOrExpr + ` * on(job) group_right(instance) ` + mixedOrExpr,
+			wantCard:    chplan.CardOneToMany,
+			wantInclude: []string{"instance"},
+		},
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", tc.query, err)
+			}
+			proj, ok := plan.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", tc.query, plan)
+			}
+			filter, ok := proj.Input.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter", tc.query, proj.Input)
+			}
+			join, ok := filter.Input.(*chplan.MixedVectorJoin)
+			if !ok {
+				t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.MixedVectorJoin", tc.query, filter.Input)
+			}
+			if join.Card != tc.wantCard {
+				t.Errorf("lower(%q): Card = %v, want %v", tc.query, join.Card, tc.wantCard)
+			}
+			if !slices.Equal(join.Include, tc.wantInclude) {
+				t.Errorf("lower(%q): Include = %v, want %v", tc.query, join.Include, tc.wantInclude)
+			}
+		})
 	}
 }
 

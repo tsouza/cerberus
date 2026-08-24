@@ -9,32 +9,38 @@ import (
 // emitMixedVectorJoin renders a vector-vector PromQL binary expression
 // whose BOTH operands are themselves a mixed float/histogram `or`
 // (internal/promql's histogram_native_mixed_or.go, cerberus issue #2330)
-// as a real INNER JOIN of two per-side "one row per matching key"
-// aggregations — [chplan.MixedVectorJoin]'s own doc has the design.
+// as a real INNER JOIN of two per-side aggregations — [chplan.MixedVectorJoin]'s
+// own doc has the design.
 //
 // Mirrors [emitHistogramVectorJoin]'s shape almost exactly, generalised
 // from the nine histogram-only fields to all fourteen Mixed columns via
 // the SAME generic per-side aggregation helper
 // ([emitter.histogramFieldsJoinSideFrag]) — this node just supplies a
-// different field list and, unlike HistogramVectorJoin (group_left/right
-// ONLY), resolves its OWN roleMany/roleOne split the way plain
-// [emitVectorJoin]'s CardOneToOne branch does: a full-Attributes match
-// keeps both sides at per-series granularity (roleMany — the per-series
-// uniqueness is already guaranteed by construction, since each side is
-// itself an already-reduced Mixed VectorSetOp); an on()/ignoring() subset
-// match collapses both sides to one row per matching key with the runtime
+// different field list and resolves its OWN roleMany/roleOne split the
+// way plain [emitVectorJoin]'s does ([mixedVectorJoinRoles]): CardManyToOne
+// (`group_left`) keeps Left at per-series granularity (roleMany) and
+// collapses Right to one row per matching key (roleOne); CardOneToMany
+// (`group_right`) mirrors with sides swapped; CardOneToOne with a
+// full-Attributes match keeps both sides at per-series granularity
+// (roleMany — the per-series uniqueness is already guaranteed by
+// construction, since each side is itself an already-reduced Mixed
+// VectorSetOp); CardOneToOne with an on()/ignoring() subset match
+// collapses both sides to one row per matching key with the runtime
 // `throwIf(uniqExact(...) > 1, ...)` ambiguity guard (roleOne).
 //
 // Deliberately "dumb" about the per-combination fold: every field of both
 // sides is exposed under `_mvj_L_<field>` / `_mvj_R_<field>` aliases, and
 // the caller (internal/promql's
-// histogram_native_mixed_or_vector_arithmetic.go) builds the Value /
-// Histogram* / discriminator projections on top.
+// histogram_native_mixed_or_vector_arithmetic.go /
+// histogram_native_mixed_or_vector_comparison.go) builds the Value /
+// Histogram* / discriminator / output-Attributes projections on top —
+// including the Card-aware manySide+Include output-Attributes overlay,
+// this node has no notion of.
 func (e *emitter) emitMixedVectorJoin(j *chplan.MixedVectorJoin) error {
 	if err := e.validateMixedVectorJoinCols(j); err != nil {
 		return err
 	}
-	leftRole, rightRole := mixedVectorJoinRoles(j.Match)
+	leftRole, rightRole := mixedVectorJoinRoles(j)
 	cols := mixedVectorJoinFieldCols(j)
 
 	leftFrag, err := e.histogramFieldsJoinSideFrag(j.Match, j.AttributesColumn, j.TimestampColumn, j.StepAligned, cols, j.Left, leftRole)
@@ -77,16 +83,24 @@ func (e *emitter) validateMixedVectorJoinCols(j *chplan.MixedVectorJoin) error {
 }
 
 // mixedVectorJoinRoles resolves the per-side aggregation roles for a
-// MixedVectorJoin — always CardOneToOne (see that type's own doc for why
-// group_left()/group_right() is out of scope): a full-Attributes match
-// (default, no on()/ignoring()) keeps both sides at per-series
-// granularity (roleMany), since each side is already an at-most-one-row-
-// per-series Mixed VectorSetOp; an on()/ignoring() subset match collapses
-// both sides to one row per matching key (roleOne), guarded by the
-// runtime uniqueness check. Mirrors [vectorJoinRoles]'s CardOneToOne
-// branch exactly.
-func mixedVectorJoinRoles(m chplan.VectorMatch) (sideRole, sideRole) {
-	if len(m.Labels) == 0 && !m.On {
+// MixedVectorJoin, mirroring [vectorJoinRoles] exactly:
+//
+//   - CardManyToOne (`group_left`)   → Left is many, Right is one.
+//   - CardOneToMany (`group_right`)  → Right is many, Left is one.
+//   - CardOneToOne with subset match → both sides are "one" (uniqueness
+//     enforced at runtime).
+//   - CardOneToOne with full-Attributes match → both sides are "many";
+//     the per-series aggregation already guarantees one row per matching
+//     key, since each side is already an at-most-one-row-per-series
+//     Mixed VectorSetOp.
+func mixedVectorJoinRoles(j *chplan.MixedVectorJoin) (sideRole, sideRole) {
+	switch j.Card {
+	case chplan.CardManyToOne:
+		return roleMany, roleOne
+	case chplan.CardOneToMany:
+		return roleOne, roleMany
+	}
+	if len(j.Match.Labels) == 0 && !j.Match.On {
 		return roleMany, roleMany
 	}
 	return roleOne, roleOne
