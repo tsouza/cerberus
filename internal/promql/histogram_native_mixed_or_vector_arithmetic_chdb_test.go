@@ -176,10 +176,30 @@ func TestVectorVectorArithmeticOverMixedSetOpOr_ChDB(t *testing.T) {
 		if got, want := rows["ff"].val, q+q; math.Abs(got-want) > 1e-9 {
 			t.Errorf("ff: Value = %v, want %v", got, want)
 		}
-		for _, series := range []string{"fh", "hf", "hh"} {
+		for _, series := range []string{"fh", "hf"} {
 			if _, ok := rows[series]; ok {
-				t.Errorf("%s: got a row, want none (+ drops every combination but float,float, including the histogram,histogram merge this PR does not implement)", series)
+				t.Errorf("%s: got a row, want none (+ drops a mismatched float/histogram pair)", series)
 			}
+		}
+		// "hh": both sides histogram (Count=2/Sum=4.0/bucket1=6 and
+		// Count=5/Sum=10.0/bucket1=15, same trivial same-offset layout) —
+		// the genuinely-different-layout merge is pinned separately by
+		// TestVectorVectorAdditiveArithmeticHistHistDifferentLayout_ChDB.
+		hh, ok := rows["hh"]
+		if !ok {
+			t.Fatalf("hh: no row, want one (histogram,histogram now merges for +)")
+		}
+		if hh.disc != 1 {
+			t.Errorf("hh: disc = %d, want 1", hh.disc)
+		}
+		if got, want := hh.cnt, 2.0+5.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramCount = %v, want %v", got, want)
+		}
+		if got, want := hh.sum, 4.0+10.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramSum = %v, want %v", got, want)
+		}
+		if got, want := hh.bucket1, 6.0+15.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramPositiveBucketCounts[1] = %v, want %v", got, want)
 		}
 	})
 
@@ -188,10 +208,23 @@ func TestVectorVectorArithmeticOverMixedSetOpOr_ChDB(t *testing.T) {
 		if got, want := rows["ff"].val, q-q; math.Abs(got-want) > 1e-9 {
 			t.Errorf("ff: Value = %v, want %v", got, want)
 		}
-		for _, series := range []string{"fh", "hf", "hh"} {
+		for _, series := range []string{"fh", "hf"} {
 			if _, ok := rows[series]; ok {
 				t.Errorf("%s: got a row, want none", series)
 			}
+		}
+		hh, ok := rows["hh"]
+		if !ok {
+			t.Fatalf("hh: no row, want one (histogram,histogram now merges for -)")
+		}
+		if got, want := hh.cnt, 2.0-5.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramCount = %v, want %v", got, want)
+		}
+		if got, want := hh.sum, 4.0-10.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramSum = %v, want %v", got, want)
+		}
+		if got, want := hh.bucket1, 6.0-15.0; math.Abs(got-want) > 1e-9 {
+			t.Errorf("hh: HistogramPositiveBucketCounts[1] = %v, want %v", got, want)
 		}
 	})
 
