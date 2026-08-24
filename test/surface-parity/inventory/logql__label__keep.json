@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "label:keep",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | logfmt | keep level",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

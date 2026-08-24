@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "op:\u003e=",
+      "kind": "binary-op",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m]) \u003e= count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

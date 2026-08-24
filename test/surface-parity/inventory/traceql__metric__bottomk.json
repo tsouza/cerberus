@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "metric:bottomk",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | rate() by (name) | bottomk(3)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

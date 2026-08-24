@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "linefilter:neq",
+      "kind": "line-filter",
+      "probe": "{service_name=\"gateway\"} != \"error\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

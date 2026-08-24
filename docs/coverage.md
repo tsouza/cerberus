@@ -50,7 +50,7 @@ each citing an open issue and held to a count ceiling plus an age cap — see
 ## Coverage at a glance
 
 The numbers below are derived directly from
-[`test/surface-parity/inventory.json`](../test/surface-parity/inventory.json),
+[`test/surface-parity/inventory/`](../test/surface-parity/inventory),
 the pinned ledger of every grammar symbol the three upstream parsers expose.
 The table is rendered from it by `scripts/gen-coverage.py`, and every cell is
 re-derived from the ledger on each pull request by the `doc-counts` gate

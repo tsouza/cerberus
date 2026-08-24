@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "label:line_format",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | line_format \"{{.status}}\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "range:stddev_over_time",
+      "kind": "range-agg",
+      "probe": "stddev_over_time({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

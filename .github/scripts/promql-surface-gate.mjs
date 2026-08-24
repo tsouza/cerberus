@@ -70,14 +70,20 @@
 // Env contract:
 //   PROM_IMAGE     reference image (default prom/prometheus:v3.11.3)
 //   REF_PORT       host port for the flag-enabled reference (default 39090)
-//   INVENTORY      path to inventory.json
-//                  (default test/surface-parity/inventory.json)
-//   ARTIFACT       path to promql-reference-verdicts.json
+//   INVENTORY      path to the inventory shard directory
+//                  (default test/surface-parity/inventory — one shard file
+//                  per (head, symbol) pair, see
+//                  test/surface-parity/inventory_shard.go)
+//   ARTIFACT       path to the promql-reference-verdicts manifest, carrying
+//                  only the reference/oracle/generated_by metadata
 //                  (default test/surface-parity/promql-reference-verdicts.json)
+//   ARTIFACT_DIR   path to the verdict shard directory, one shard file per
+//                  symbol (default test/surface-parity/promql-reference-verdicts)
 //   SHOWCASE       path to showcase-promql.json
 //                  (default test/e2e/grafana/compose/dashboards/showcase-promql.json)
-//   REGENERATE     when "1", rewrite ARTIFACT from the live reference and
-//                  exit 0 (artifact-regeneration mode); otherwise verify.
+//   REGENERATE     when "1", rewrite ARTIFACT + ARTIFACT_DIR from the live
+//                  reference and exit 0 (artifact-regeneration mode);
+//                  otherwise verify.
 //   KEEP_REF       when "1", leave the reference container running on exit
 //                  (local debugging).
 //
@@ -91,16 +97,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { error, notice, log, capture } from './lib/gh.mjs';
+import { loadShardedEntries, loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 import { pullImageWithRetry } from './lib/registry.mjs';
 
 const PROM_IMAGE = process.env.PROM_IMAGE || 'prom/prometheus:v3.11.3';
 const REF_PORT = process.env.REF_PORT || '39090';
-const INVENTORY = process.env.INVENTORY || 'test/surface-parity/inventory.json';
+const INVENTORY = process.env.INVENTORY || 'test/surface-parity/inventory';
 const ARTIFACT = process.env.ARTIFACT || 'test/surface-parity/promql-reference-verdicts.json';
+const ARTIFACT_DIR = process.env.ARTIFACT_DIR || 'test/surface-parity/promql-reference-verdicts';
 const SHOWCASE =
   process.env.SHOWCASE || 'test/e2e/grafana/compose/dashboards/showcase-promql.json';
 const REGENERATE = process.env.REGENERATE === '1';
 const KEEP_REF = process.env.KEEP_REF === '1';
+
+// symbolKeySegments splits a surface-parity symbol key ("fn:abs",
+// "intrinsic:span:duration") into shard-key segments on ":" — mirroring the
+// (head, symbol) split test/surface-parity/inventory_shard.go's
+// inventoryShardName uses for the sibling inventory ledger.
+function symbolKeySegments(symbol) {
+  return symbol.split(':');
+}
 
 const REF_CONTAINER = 'cerberus-promql-surface-ref';
 let refCfgDir = null;
@@ -285,7 +301,12 @@ function showcaseRejectionExprs(dash) {
 }
 
 async function main() {
-  const inv = loadJSON(INVENTORY);
+  let inv;
+  try {
+    inv = { entries: loadShardedEntries(INVENTORY) };
+  } catch (e) {
+    die(`cannot read/parse shards under ${INVENTORY}: ${e.message}`);
+  }
   const symbols = promSymbols(inv);
   if (symbols.length === 0) {
     die(`${INVENTORY} carries no promql fn/aggregator entries`);
@@ -306,16 +327,16 @@ async function main() {
   if (REGENERATE) {
     const verdicts = {};
     for (const sym of [...live.keys()].sort()) verdicts[sym] = live.get(sym);
-    const out = {
+    writeShardedMap(ARTIFACT_DIR, verdicts, symbolKeySegments);
+    const manifest = {
       reference: `${PROM_IMAGE} --enable-feature=promql-experimental-functions`,
       oracle:
         'HTTP GET /api/v1/query verdict (2xx=accept, 4xx=reject); data-independent parse+type validation, no seeding required',
       generated_by:
         '.github/scripts/promql-surface-gate.mjs (regenerate mode), pinned + verified by test/surface-parity',
-      verdicts,
     };
-    writeFileSync(ARTIFACT, `${JSON.stringify(out, null, 2)}\n`);
-    notice(`regenerated ${ARTIFACT} (${Object.keys(verdicts).length} symbols)`);
+    writeFileSync(ARTIFACT, `${JSON.stringify(manifest, null, 2)}\n`);
+    notice(`regenerated ${ARTIFACT_DIR} (${Object.keys(verdicts).length} symbols) + ${ARTIFACT} manifest`);
     teardown();
     process.exit(0);
   }
@@ -323,8 +344,12 @@ async function main() {
   let failed = false;
 
   // ---- 1. ARTIFACT PARITY ----
-  const artifact = loadJSON(ARTIFACT);
-  const pinned = artifact.verdicts || {};
+  let pinned;
+  try {
+    pinned = loadShardedMap(ARTIFACT_DIR);
+  } catch (e) {
+    die(`cannot read/parse shards under ${ARTIFACT_DIR}: ${e.message}`);
+  }
   const artifactDrift = [];
   const uncovered = [];
   for (const e of symbols) {
@@ -338,14 +363,14 @@ async function main() {
   }
   if (uncovered.length > 0) {
     error(
-      `${ARTIFACT} is missing ${uncovered.length} parser symbol(s) present in the inventory ` +
+      `${ARTIFACT_DIR} is missing ${uncovered.length} parser symbol(s) present in the inventory ` +
         `(the pinned surface grew — regenerate with REGENERATE=1): ${uncovered.join(', ')}`,
     );
     failed = true;
   }
   if (artifactDrift.length > 0) {
     error(
-      `${ARTIFACT} drifted from the live flag-enabled reference (regenerate with REGENERATE=1):\n  ` +
+      `${ARTIFACT_DIR} drifted from the live flag-enabled reference (regenerate with REGENERATE=1):\n  ` +
         artifactDrift.join('\n  '),
     );
     failed = true;

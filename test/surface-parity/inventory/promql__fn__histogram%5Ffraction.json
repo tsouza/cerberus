@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_fraction",
+      "kind": "function",
+      "probe": "histogram_fraction(0, 1, showcase_latency_exp_hist)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

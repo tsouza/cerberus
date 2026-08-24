@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:sort_by_label_desc",
+      "kind": "function",
+      "probe": "sort_by_label_desc(up, \"s\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

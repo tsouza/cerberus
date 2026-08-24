@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "label:decolorize",
+      "kind": "label-fn",
+      "probe": "{service_name=\"painter\"} | decolorize",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

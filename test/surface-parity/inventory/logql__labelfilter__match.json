@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "labelfilter:match",
+      "kind": "label-filter",
+      "probe": "{service_name=\"gateway\"} | logfmt | level = \"error\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

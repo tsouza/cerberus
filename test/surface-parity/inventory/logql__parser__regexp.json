@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "parser:regexp",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"gateway\"} | regexp \"(?P\u003clvl\u003e\\\\w+)\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

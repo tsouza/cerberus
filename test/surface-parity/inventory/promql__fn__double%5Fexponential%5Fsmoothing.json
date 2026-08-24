@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:double_exponential_smoothing",
+      "kind": "function",
+      "probe": "double_exponential_smoothing(http_server_request_duration_count[5m], 0.5, 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

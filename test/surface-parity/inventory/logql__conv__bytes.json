@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "conv:bytes",
+      "kind": "conv-fn",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap bytes(size) [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

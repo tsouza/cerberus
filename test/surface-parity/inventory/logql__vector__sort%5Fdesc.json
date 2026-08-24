@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "vector:sort_desc",
+      "kind": "vector-agg",
+      "probe": "sort_desc(count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 // The full coverage profile needs chDB and is intentionally kept on the
 // push/nightly/release paths. That used to make an ordinary PR's required
 // `coverage` check a green no-op: a PR could add a statement-carrying package
-// without enrolling it in test/coverage-floor.json, merge, and leave the first
+// without enrolling it in test/coverage-floor/, merge, and leave the first
 // real coverage run red on main.
 //
 // This is the cheap structural half of that gate. `go list` supplies the files
@@ -17,8 +17,8 @@
 //   node .github/scripts/coverage-package-floor.mjs
 //
 // Env contract:
-//   COVERAGE_FLOORS           floor ledger to compare against
-//                             (default: test/coverage-floor.json).
+//   COVERAGE_FLOORS           floor ledger DIRECTORY to compare against, one
+//                             shard file per package (default: test/coverage-floor).
 //   COVERAGE_PACKAGE_PATTERN  go-list pattern (default: ./...). Intended for
 //                             the hermetic unit fixture; CI leaves it unset.
 //
@@ -27,13 +27,13 @@
 //      every floor still names a statement-carrying package.
 //   1  go-list/cover failed, the ledger is invalid, or enrollment is missing.
 
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { capture, error, log, notice } from './lib/gh.mjs';
+import { loadShardedMap } from './lib/sharded-json.mjs';
 
-const DEFAULT_FLOORS = 'test/coverage-floor.json';
+const DEFAULT_FLOORS = 'test/coverage-floor';
 const DEFAULT_PATTERN = './...';
 const FILE_SEPARATOR = '\u001f';
 const FULL_TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
@@ -103,17 +103,12 @@ export function compareEnrollment(statementPackages, floors) {
   return { missing: missing.sort(), nonPositive: nonPositive.sort(), stale: stale.sort() };
 }
 
-function readFloors(file) {
-  let floors;
+function readFloors(dir) {
   try {
-    floors = JSON.parse(readFileSync(file, 'utf8'));
+    return loadShardedMap(dir);
   } catch (e) {
-    failure(`could not read ${file}: ${e.message}`);
+    return failure(`could not read ${dir}: ${e.message}`);
   }
-  if (floors === null || typeof floors !== 'object' || Array.isArray(floors)) {
-    failure(`${file} must be a JSON object mapping package path to floor percentage`);
-  }
-  return floors;
 }
 
 function listPackages(pattern, tags = '') {
@@ -179,9 +174,9 @@ function statementPackages(packages) {
 }
 
 function main() {
-  const floorFile = process.env.COVERAGE_FLOORS || DEFAULT_FLOORS;
+  const floorDir = process.env.COVERAGE_FLOORS || DEFAULT_FLOORS;
   const pattern = process.env.COVERAGE_PACKAGE_PATTERN || DEFAULT_PATTERN;
-  const floors = readFloors(floorFile);
+  const floors = readFloors(floorDir);
   const merged = mergePackageLanes([listPackages(pattern), listPackages(pattern, FULL_TAGS)]);
   if (merged.err) failure(merged.err);
   const carrying = statementPackages(merged.packages);

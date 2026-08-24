@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "label:drop",
+      "kind": "label-fn",
+      "probe": "{service_name=\"gateway\"} | logfmt | drop level",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

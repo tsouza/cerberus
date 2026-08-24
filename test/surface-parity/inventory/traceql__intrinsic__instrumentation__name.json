@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:instrumentation:name",
+      "kind": "intrinsic",
+      "probe": "{ instrumentation:name = \"showcase-instrumentation\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

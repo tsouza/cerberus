@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "range:count_over_time",
+      "kind": "range-agg",
+      "probe": "count_over_time({service_name=\"gateway\"}[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

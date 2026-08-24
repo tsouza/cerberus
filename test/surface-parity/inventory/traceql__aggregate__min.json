@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "aggregate:min",
+      "kind": "aggregate",
+      "probe": "{ resource.service.name = \"gateway\" } | min(duration) \u003e 1ms",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

@@ -6,11 +6,12 @@
 // could rot one package at a time with every run still green.
 //
 // This replaces the awk with the same table plus a floor comparison. Every
-// package carrying statements has a committed floor in test/coverage-floor.json;
-// a package below its floor, a package with no floor, a floor of ZERO, and a
-// floor with no package are all failures. The two-directional check is
-// deliberate — a one-directional one degrades to an allow-list the moment a
-// package stops being measured.
+// package carrying statements has a committed floor in test/coverage-floor/
+// (one shard file per package — see lib/sharded-json.mjs); a package below
+// its floor, a package with no floor, a floor of ZERO, and a floor with no
+// package are all failures. The two-directional check is deliberate — a
+// one-directional one degrades to an allow-list the moment a package stops
+// being measured.
 //
 // A floor of zero is rejected in both directions — the gate refuses to pass one
 // and the updater refuses to write one — because it is a floor nothing can fall
@@ -34,8 +35,8 @@
 //
 // Env contract:
 //   COVERAGE_PROFILE        Go cover profile to read (default: cover-merged.out).
-//   COVERAGE_FLOORS         floor ledger to compare against
-//                           (default: test/coverage-floor.json).
+//   COVERAGE_FLOORS         floor ledger DIRECTORY to compare against, one
+//                           shard file per package (default: test/coverage-floor).
 //   COVERAGE_LANES          which test lanes produced the profile, as the
 //                           Justfile recipe observed them: `default+chdb` or
 //                           `default`. Floors are measured with both lanes, so
@@ -52,13 +53,14 @@
 //   0  every package clears its floor (or the ledger was rewritten).
 //   1  unreadable input, a lane mismatch, or a floor violation.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
+import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
 const DEFAULT_PROFILE = 'cover-merged.out';
-const DEFAULT_FLOORS = 'test/coverage-floor.json';
+const DEFAULT_FLOORS = 'test/coverage-floor';
 
 // The lane set the floors are measured with. A chdb-tagged run reaches code the
 // default-tag run cannot compile, so the two profiles are not comparable.
@@ -242,22 +244,28 @@ export function nextFloors(packages, floors) {
   };
 }
 
-function readFloors(path) {
-  let doc;
-  try {
-    doc = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    if (e.code === 'ENOENT') return {};
-    fail(`could not read ${path}: ${e.message}`);
+// packageKeySegments splits a package path into shard-key segments on "/",
+// refusing an empty component the way test/rejection-parity/catalogue.go's
+// shardName refuses one — an empty segment could only come from a leading,
+// trailing or doubled "/", none of which is a real Go import path.
+export function packageKeySegments(pkg) {
+  const segs = pkg.split('/');
+  if (segs.some((s) => s === '')) {
+    throw new Error(`package path ${JSON.stringify(pkg)} has an empty "/"-separated component`);
   }
-  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
-    fail(`${path} must be a JSON object mapping package path to floor percentage`);
-  }
-  return doc;
+  return segs;
 }
 
-function writeFloors(path, floors) {
-  writeFileSync(path, `${JSON.stringify(floors, null, 2)}\n`);
+function readFloors(dir) {
+  try {
+    return loadShardedMap(dir);
+  } catch (e) {
+    return fail(`could not read ${dir}: ${e.message}`);
+  }
+}
+
+function writeFloors(dir, floors) {
+  writeShardedMap(dir, floors, packageKeySegments);
 }
 
 function writeSummary(packages) {
@@ -309,7 +317,7 @@ export function resolveLanes(lanes, required) {
 
 function main() {
   const profilePath = process.env.COVERAGE_PROFILE || DEFAULT_PROFILE;
-  const floorsPath = process.env.COVERAGE_FLOORS || DEFAULT_FLOORS;
+  const floorsDir = process.env.COVERAGE_FLOORS || DEFAULT_FLOORS;
 
   let text;
   try {
@@ -322,7 +330,7 @@ function main() {
 
   writeSummary(packages);
 
-  const floors = readFloors(floorsPath);
+  const floors = readFloors(floorsDir);
 
   if (process.env.COVERAGE_UPDATE_FLOORS === '1') {
     const { next, regressions, unfloorable } = nextFloors(packages, floors);
@@ -345,8 +353,8 @@ function main() {
           unfloorable.map((r) => `  - ${r.pkg}: ${r.value.toFixed(2)}% of ${r.total} statements`).join('\n'),
       );
     }
-    writeFloors(floorsPath, next);
-    log(`coverage-summary: ${floorsPath} <- ${Object.keys(next).length} package floor(s)`);
+    writeFloors(floorsDir, next);
+    log(`coverage-summary: ${floorsDir} <- ${Object.keys(next).length} package floor(s)`);
     return;
   }
 
@@ -354,7 +362,7 @@ function main() {
   if (lanes.err) fail(lanes.err);
   if (!lanes.enforce) {
     notice(
-      `profile was produced without the chdb lane, so the floors in ${floorsPath} do not apply ` +
+      `profile was produced without the chdb lane, so the floors in ${floorsDir} do not apply ` +
         `to it and were not compared. Install libchdb.so (\`just chdb-install\`) to run the gate.`,
       { title: 'coverage floor' },
     );

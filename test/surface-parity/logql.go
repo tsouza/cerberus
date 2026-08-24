@@ -148,7 +148,7 @@ func setOp(op string) string {
 // TestInventoryIsRegenerable and `just update-parity-ledgers`, both part
 // of the default `check` gate — imported an AGPL package with no build
 // tag. It now reads the frozen verdict the same live call produced,
-// exactly mirroring how promql.go reads promql-reference-verdicts.json
+// exactly mirroring how promql.go reads promql-reference-verdicts/
 // instead of hitting a live reference Prometheus. See
 // logql_reference.go + logql_reference_agpl_test.go (the agpl_oracle
 // -tagged regeneration/drift-check counterpart) and #1520.

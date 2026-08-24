@@ -729,7 +729,7 @@ jobs:
     # The reference verdict is parse + type validation — data-independent,
     # so no ClickHouse / seeding / cerberus container is needed. Cerberus's
     # runtime verdict comes from the in-process pipeline recorded in
-    # test/surface-parity/inventory.json (the same parse->lower->optimize->
+    # test/surface-parity/inventory/ (the same parse->lower->optimize->
     # emit path the HTTP handler runs), so the gate is deterministic +
     # dependency-light: a Docker daemon (already on the runner) + node
     # (already on ubuntu-latest). All logic lives in

@@ -148,7 +148,8 @@ func promQLAggregatorProbe(op string) string {
 // promAggregators is the aggregation-op set probed for parity. The
 // reference verdict is NO LONGER modelled from a hand-set experimental
 // flag — it is read from the flag-enabled-reference verdict artifact
-// (promql-reference-verdicts.json) keyed by "agg:<op>", so limitk /
+// (promql-reference-verdicts/, one shard file per symbol) keyed by
+// "agg:<op>", so limitk /
 // limit_ratio inherit the SAME real reference posture every other symbol
 // does. See referenceVerdictPromQL + the artifact doc-comment.
 var promAggregators = []string{
@@ -220,7 +221,7 @@ var promModifiers = []struct {
 // cerberus rejected could masquerade as a "parity rejection" while a fn
 // cerberus accepted looked like a "wrong-accept". referenceVerdictPromQL
 // replaces the stand-in with the REAL flag-enabled HTTP verdict captured
-// in promql-reference-verdicts.json — see the oracle's doc-comment.
+// in promql-reference-verdicts/ — see the oracle's doc-comment.
 func probePromQL() ([]Entry, error) {
 	ref, err := loadReferenceVerdicts()
 	if err != nil {

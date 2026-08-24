@@ -141,11 +141,15 @@ test/perf/metadata-query-size-baseline.json  -merge
 # Regenerate: `just update-coverage-floor`
 #   (COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs, reading
 #    the cover-merged.out `just coverage` leaves behind — needs libchdb.so so the
-#    chdb lane is in the profile). One `"<package>": <percent>` line per package:
-#    a blend pairs no key with the wrong value, but it can silently carry a
-#    LOWERED floor across from a branch that had regenerated after a drop, and a
-#    floor that quietly fell is exactly the regression the gate exists to catch.
-test/coverage-floor.json                     -merge
+#    chdb lane is in the profile). One shard file per package
+#    (.github/scripts/lib/sharded-json.mjs owns the name mapping), each holding
+#    a single `"<package>": <percent>` entry: two branches touching different
+#    packages' floors never write the same shard, but a blend of the SAME
+#    shard could still pair no key with the wrong value, or silently carry a
+#    LOWERED floor across from a branch that had regenerated after a drop — a
+#    floor that quietly fell is exactly the regression the gate exists to
+#    catch, so every shard stays `-merge` gated too.
+test/coverage-floor/*.json                   -merge
 
 # --- Compatibility ----------------------------------------------------------
 # CANNOT be regenerated locally. `.github/scripts/compat-baseline-sync.mjs`
@@ -209,11 +213,19 @@ test/rejection-parity/catalogue/*.json       -merge
 # changes the first time a second key lands.
 test/rejection-parity/divergence-ceiling.json  -merge
 # CERBERUS_UPDATE_INVENTORY=1 go test ./test/surface-parity/
-test/surface-parity/inventory.json           -merge
+# One shard per (head, symbol) pair (test/surface-parity/inventory_shard.go
+# owns the mapping) — two PRs closing coverage gaps for two different
+# functions write different shards and never blend.
+test/surface-parity/inventory/*.json         -merge
 # Regenerate: REGENERATE=1 node .github/scripts/promql-surface-gate.mjs
 #   (starts a local reference Prometheus in Docker; normally produced by the
 #    compatibility/promql-surface job)
+# The manifest carries only reference/oracle/generated_by metadata, which
+# moves in lock-step with a PROM_IMAGE version bump rather than per-symbol.
 test/surface-parity/promql-reference-verdicts.json  -merge
+# The verdicts themselves: one shard per symbol
+# (.github/scripts/lib/sharded-json.mjs owns the mapping).
+test/surface-parity/promql-reference-verdicts/*.json  -merge
 # Regenerate: CERBERUS_UPDATE_LOGQL_REFERENCE_VERDICTS=1 go test -tags agpl_oracle
 #   -run TestLogQLReferenceVerdictsAreCurrent ./test/surface-parity/
 #   One `"<symbol>": "<verdict>"` entry per probed surface symbol, re-probed

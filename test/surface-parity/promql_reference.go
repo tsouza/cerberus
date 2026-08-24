@@ -4,11 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
-// referenceVerdictsPath is the checked-in artifact recording the
-// flag-enabled reference Prometheus verdict per PromQL parser symbol.
-const referenceVerdictsPath = "promql-reference-verdicts.json"
+// referenceVerdictsDir is the checked-in shard directory recording the
+// flag-enabled reference Prometheus verdict per PromQL parser symbol — one
+// shard file per symbol, each holding a single {"<symbol>": "<verdict>"}
+// entry (#2565, mirroring test/rejection-parity/catalogue.go's shard design
+// from #2564: two PRs adding coverage for two different symbols must never
+// write the same file). A small companion manifest,
+// promql-reference-verdicts.json, sits alongside it carrying only the
+// reference/oracle/generated_by metadata (which moves in lock-step with a
+// PROM_IMAGE version bump rather than per-symbol, so it stays a single
+// file) — this package never reads it, only
+// .github/scripts/promql-surface-gate.mjs does.
+const referenceVerdictsDir = "promql-reference-verdicts"
 
 // referenceVerdicts is the parsed flag-enabled-reference verdict ledger.
 //
@@ -38,20 +49,40 @@ type referenceVerdicts struct {
 	Verdicts map[string]string `json:"verdicts"`
 }
 
-// loadReferenceVerdicts reads + parses the pinned artifact.
+// loadReferenceVerdicts reads every shard in referenceVerdictsDir and merges
+// them into one ledger — byte-for-byte the same in-memory value the
+// single-file artifact used to parse to, so nothing downstream of this
+// function knows the artifact is sharded.
 func loadReferenceVerdicts() (*referenceVerdicts, error) {
-	raw, err := os.ReadFile(referenceVerdictsPath) //nolint:gosec // repo-relative artifact path
+	des, err := os.ReadDir(referenceVerdictsDir)
 	if err != nil {
-		return nil, fmt.Errorf("read %s (regenerate via .github/scripts/promql-surface-gate.mjs): %w", referenceVerdictsPath, err)
+		return nil, fmt.Errorf("read %s (regenerate via .github/scripts/promql-surface-gate.mjs): %w", referenceVerdictsDir, err)
 	}
-	var rv referenceVerdicts
-	if err := json.Unmarshal(raw, &rv); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", referenceVerdictsPath, err)
+	verdicts := map[string]string{}
+	for _, de := range des {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(referenceVerdictsDir, de.Name())
+		raw, err := os.ReadFile(path) //nolint:gosec // repo-relative artifact path
+		if err != nil {
+			return nil, err
+		}
+		var shard map[string]string
+		if err := json.Unmarshal(raw, &shard); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		for symbol, v := range shard {
+			if _, dup := verdicts[symbol]; dup {
+				return nil, fmt.Errorf("symbol %q present in more than one shard under %s", symbol, referenceVerdictsDir)
+			}
+			verdicts[symbol] = v
+		}
 	}
-	if len(rv.Verdicts) == 0 {
-		return nil, fmt.Errorf("%s has no verdicts", referenceVerdictsPath)
+	if len(verdicts) == 0 {
+		return nil, fmt.Errorf("%s has no verdicts", referenceVerdictsDir)
 	}
-	return &rv, nil
+	return &referenceVerdicts{Verdicts: verdicts}, nil
 }
 
 // verdict returns the flag-enabled reference verdict for a symbol key
@@ -67,7 +98,7 @@ func (rv *referenceVerdicts) verdict(symbol string) (Verdict, error) {
 	if !ok {
 		return "", fmt.Errorf("%s: no reference verdict for %q — the pinned parser surface grew a symbol the "+
 			"flag-enabled-reference artifact doesn't cover; regenerate via .github/scripts/promql-surface-gate.mjs",
-			referenceVerdictsPath, symbol)
+			referenceVerdictsDir, symbol)
 	}
 	switch Verdict(v) {
 	case VerdictAccept:
@@ -75,6 +106,6 @@ func (rv *referenceVerdicts) verdict(symbol string) (Verdict, error) {
 	case VerdictReject:
 		return VerdictReject, nil
 	default:
-		return "", fmt.Errorf("%s: symbol %q has invalid verdict %q (want accept/reject)", referenceVerdictsPath, symbol, v)
+		return "", fmt.Errorf("%s: symbol %q has invalid verdict %q (want accept/reject)", referenceVerdictsDir, symbol, v)
 	}
 }

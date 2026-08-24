@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "label:label_replace",
+      "kind": "label-fn",
+      "probe": "label_replace(count_over_time({service_name=\"gateway\"}[5m]), \"dst\", \"$1\", \"service_name\", \"(.*)\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}
