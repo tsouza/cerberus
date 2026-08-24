@@ -129,12 +129,17 @@ func TestLower_ExpHistogram_MixedSetOpOr_ComparisonNowComposes(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorArithmeticStillRejects
-// pins that a vector-vector arithmetic binop over a mixed `or`
-// (`(a or b) + other_metric`, neither side a scalar literal) is a
-// further unattempted shape — this recognizer only matches a scalar on
-// exactly one side.
-func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorArithmeticStillRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorArithmeticNowComposes
+// pins that a vector-vector arithmetic binop over a mixed `or` where the
+// OTHER operand is a plain, non-mixed vector (`(a or b) + other_metric`,
+// neither side a scalar literal) — this recognizer only matches a scalar
+// on exactly one side, so it has nothing to add here — now composes via
+// cerberus issue #2449's tenth and final wrapper family,
+// histogram_native_mixed_or_vector_plain_arithmetic.go. See that file's
+// own test coverage (histogram_native_mixed_or_vector_plain_arithmetic_test.go)
+// for the full shape pinning; this test only confirms the trigger query
+// this recognizer's own doc used to cite as still-rejected now lowers.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorArithmeticNowComposes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -146,7 +151,7 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorArithmeticStillRejects(t *t
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err != nil {
+		t.Fatalf("lower(%q): unexpected error: %v", query, err)
 	}
 }

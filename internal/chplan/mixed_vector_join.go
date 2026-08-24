@@ -49,8 +49,26 @@ import "slices"
 // internal/promql/histogram_native_binop_card.go's
 // histogramCardOutputAttributesExpr for [HistogramVectorJoin]'s identical
 // shape). Default CardOneToOne.
+//
+// One side may also be a WIDENED plain (non-mixed) vector rather than a
+// genuine Mixed [VectorSetOp] — cerberus issue #2449's tenth and final
+// wrapper family, `(a or b) <op> plain_vector`
+// (internal/promql/histogram_native_mixed_or_vector_plain_arithmetic.go /
+// _plain_comparison.go). internal/promql's widenPlainVectorToMixedShape
+// wraps the plain operand's own lowered Node in a Project publishing the
+// identical fourteen-column contract — the real canonical quartet plus
+// nine typed-zero/empty-array Histogram*Column placeholders and a
+// discriminator that is always 0 — so this node cannot tell the
+// difference from either side, and every existing per-op fold reads it
+// correctly with no change: a statically-0 discriminator is simply the
+// degenerate case of a per-row one that always happens to read 0. See
+// that file's own header for the full argument.
 type MixedVectorJoin struct {
-	Left, Right Node // each an already-lowered Mixed VectorSetOp.
+	// Left, Right are each an already-lowered Mixed VectorSetOp, OR a
+	// plain vector Node widened to the same fourteen-column contract via
+	// internal/promql's widenPlainVectorToMixedShape (see this type's own
+	// doc comment above).
+	Left, Right Node
 
 	Match VectorMatch
 

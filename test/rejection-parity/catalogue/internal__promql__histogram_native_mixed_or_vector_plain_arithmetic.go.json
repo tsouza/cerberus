@@ -1,0 +1,32 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_vector_plain_arithmetic.go:lowerPlainOperandForMixedJoin#005d1321",
+      "message": "promql: a mixed float/histogram 'or' operand paired with a %s-shaped operand is not supported",
+      "class": "internal",
+      "rationale": "both callers (vectorPlainArithmeticOverMixedExpHistogramSetOp's own recognizer, via lowerVectorPlainArithmeticOverMixedExpHistogramSetOp, and comparisonVectorPlainOverMixedExpHistogramSetOp's, via lowerComparisonVectorPlainOverMixedExpHistogramSetOp) reach this default switch arm only when RowShapeOf(plainNode) is neither SampleRowShape, GridWindowRowShape, nor ReducedWindowRowShape, i.e. HistogramRowShape or MixedRowShape — believed unreachable through any parseable query today, the same way lowerMixedExpHistogramOperands's own identical fallback (histogram_native_mixed_or.go) already is: both recognizers exclude the plain operand via isExpHistogramValuedShape (rejecting a genuinely histogram-valued plain side, out of this piece's scope) and via mixedExpHistogramSetOp (rejecting a plain side that is itself another mixed `or`, vectorVectorArithmeticOverMixedExpHistogramSetOp's own shape) BEFORE ever calling lower() on it here, so no shape lower() could resolve to Histogram/MixedRowShape survives to reach this switch. A defensive guard against a future histogram-aware lowering silently mis-projecting through this path, not a live divergence.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "default of switch shape over [case chplan.SampleRowShape, chplan.GridWindowRowShape, chplan.ReducedWindowRowShape; default]"
+        ],
+        "callers": [
+          "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
+          "lowerVectorPlainArithmeticOverMixedExpHistogramSetOp"
+        ],
+        "cited": [
+          "comparisonVectorPlainOverMixedExpHistogramSetOp",
+          "isExpHistogramValuedShape",
+          "lower",
+          "lowerComparisonVectorPlainOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramOperands",
+          "lowerVectorPlainArithmeticOverMixedExpHistogramSetOp",
+          "mixedExpHistogramSetOp",
+          "vectorPlainArithmeticOverMixedExpHistogramSetOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

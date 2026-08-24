@@ -113,20 +113,22 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScalarLeftDivStillDropFamily(t *testing
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorStillRejects pins
+// TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorNowComposes pins
 // that `(a or b) * demo_num_cpus` — a mixed `or` arithmetic-multiplied by
-// a PLAIN (non-mixed) vector operand — is still a further, unattempted
-// shape. It is NOT [mulOrDivScaleOverMixedExpHistogramSetOp]'s shape
-// (that recognizer only matches a scalar LITERAL on exactly one side,
-// not a vector), and it is NOT
-// histogram_native_mixed_or_vector_arithmetic.go's vector-vector shape
-// either — that recognizer requires BOTH operands to themselves be a
-// mixed `or` (cerberus issue #2449's own scope statement: "neither is a
-// scalar literal" means neither collapses to a scalar, not that either
-// side may be an arbitrary plain vector); `demo_num_cpus` is a plain
-// selector, not an `or`. A mixed-or-times-plain-vector operand pairing
-// remains unimplemented and out of THIS issue's stated scope.
-func TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorStillRejects(t *testing.T) {
+// a PLAIN (non-mixed) vector operand, the exact trigger query the
+// rejection-parity catalogue's `lowerVectorSetOp#4924e0ba` entry cited —
+// is NOT [mulOrDivScaleOverMixedExpHistogramSetOp]'s shape (that
+// recognizer only matches a scalar LITERAL on exactly one side, not a
+// vector), and is NOT histogram_native_mixed_or_vector_arithmetic.go's
+// vector-vector shape either (that recognizer requires BOTH operands to
+// themselves be a mixed `or`; `demo_num_cpus` is a plain selector, not an
+// `or`) — it now composes via cerberus issue #2449's tenth and final
+// wrapper family, histogram_native_mixed_or_vector_plain_arithmetic.go.
+// See that file's own test coverage
+// (histogram_native_mixed_or_vector_plain_arithmetic_test.go) for the
+// full shape pinning; this test only confirms the ISSUE'S OWN trigger
+// query now lowers.
+func TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorNowComposes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -138,7 +140,7 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorStillRejects(t *testin
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err != nil {
+		t.Fatalf("lower(%q): unexpected error: %v", query, err)
 	}
 }
