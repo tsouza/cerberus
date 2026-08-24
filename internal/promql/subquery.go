@@ -791,16 +791,38 @@ func lowerOuterRangeFnOverSubquery(
 	}
 	// A subquery whose OWN inner expression resolved histogram-native
 	// (cerberus issue #2543, [lowerHistogramNativeSubqueryInner]) is a
-	// deliberately unsupported composition here: this reducer's
-	// RangeWindow below folds over TimestampColumn "anchor_ts" /
-	// ValueColumn s.ValueColumn, and a histogram-shaped row publishes
-	// neither meaningfully — Value is only the placeholder
-	// [chplan.HistogramProjection] always carries alongside its real
-	// nine Histogram*Column fields (see that type's own doc comment).
-	// Rejecting explicitly here, rather than letting the RangeWindow
-	// below reference a column the histogram-shaped relation never
-	// publishes, turns what would otherwise be a ClickHouse "Unknown
+	// deliberately unsupported composition for the functions that reach
+	// this point: this reducer's RangeWindow below folds over
+	// TimestampColumn "anchor_ts" / ValueColumn s.ValueColumn, and a
+	// histogram-shaped row publishes neither meaningfully — Value is only
+	// the placeholder [chplan.HistogramProjection] always carries
+	// alongside its real nine Histogram*Column fields (see that type's own
+	// doc comment). Rejecting explicitly here, rather than letting the
+	// RangeWindow below reference a column the histogram-shaped relation
+	// never publishes, turns what would otherwise be a ClickHouse "Unknown
 	// identifier" 502 into a clear promql-level error.
+	//
+	// This is reachable ONLY for the functions reference Prometheus itself
+	// defines no real histogram semantics for — max_over_time,
+	// min_over_time, stddev_over_time, stdvar_over_time,
+	// quantile_over_time, mad_over_time, deriv, predict_linear,
+	// double_exponential_smoothing (holt_winters), ts_of_max_over_time,
+	// ts_of_min_over_time — each of which reads only
+	// `matrixVal[0].Floats` in reference (tsouza/prometheus's
+	// promql/functions.go), so an all-histogram window has nothing for
+	// them to answer. Cerberus issue #2545 gave the REMAINING functions
+	// that do have real histogram semantics — count_over_time,
+	// present_over_time, last_over_time, first_over_time, resets, changes,
+	// ts_of_first_over_time, ts_of_last_over_time — their own dedicated
+	// lowering ([selectFnOverExpHistogramSubquery] /
+	// [lowerSelectFnOverExpHistogramSubquery],
+	// histogram_native_subquery_select.go), dispatched from
+	// [lowerHistogramNativeRoot] ahead of the generic `lower()` path that
+	// reaches this function, so none of those eight names can reach this
+	// guard any more. rate/increase/delta/irate/idelta/sum_over_time/
+	// avg_over_time are intercepted the same way, one level earlier
+	// still, by [rangeFnOverExpHistogramSubquery] /
+	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
 	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
 		return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
 	}

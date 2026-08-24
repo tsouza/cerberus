@@ -193,16 +193,7 @@ func tsOfSampleTimestampSelected(fn string, ms *parser.MatrixSelector, vs *parse
 // timestamp, converted to ms-precision epoch seconds via
 // [tsOfEpochSecondsExpr].
 func tsOfInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
-	ts := &chplan.ColumnRef{Name: tsOfSampleTimestampAlias}
-	return &chplan.Project{
-		Input: inner,
-		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
-			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: chplan.NowNano(), Alias: s.TimestampColumn},
-			{Expr: tsOfEpochSecondsExpr(ts), Alias: s.ValueColumn},
-		},
-	}
+	return tsOfSelectProjection(inner, chplan.NowNano(), s)
 }
 
 // tsOfRangeProjection projects a RANGE-mode plan — either
@@ -213,14 +204,24 @@ func tsOfInstantProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
 // exp-histogram consumer); the Value stays the picked sample's own
 // timestamp via [tsOfSampleTimestampAlias].
 func tsOfRangeProjection(inner chplan.Node, s schema.Metrics) chplan.Node {
-	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
+	return tsOfSelectProjection(inner, &chplan.ColumnRef{Name: stepGridAnchorColumn}, s)
+}
+
+// tsOfSelectProjection is the shared cap [tsOfInstantProjection] /
+// [tsOfRangeProjection] apply, factored out so
+// histogram_native_subquery_select.go's subquery sibling
+// ([capSelectFnOverSubquery]) can reuse the identical float-quartet shape
+// with its own tsExpr (the subquery-anchor-conditional expression
+// [lowerSelectFnOverExpHistogramSubquery] derives) instead of either of
+// this pair's two hardcoded choices.
+func tsOfSelectProjection(inner chplan.Node, tsExpr chplan.Expr, s schema.Metrics) chplan.Node {
 	rawTs := &chplan.ColumnRef{Name: tsOfSampleTimestampAlias}
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
-			{Expr: anchor, Alias: s.TimestampColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: tsOfEpochSecondsExpr(rawTs), Alias: s.ValueColumn},
 		},
 	}

@@ -368,6 +368,19 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		plan, err := lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
 		return plan, true, err
 	}
+	// The SUBQUERY sibling of the five bare recognizers just above
+	// (cerberus issue #2545): count_over_time / present_over_time /
+	// last_over_time / first_over_time / resets / changes /
+	// ts_of_first_over_time / ts_of_last_over_time wrapping a subquery
+	// whose own inner already resolved histogram-native. Checked here,
+	// ahead of the generic `lower()` dispatch that would otherwise reach
+	// [lowerOuterRangeFnOverSubquery]'s explicit rejection for these eight
+	// names too — see histogram_native_subquery_select.go's own doc for
+	// the full function-by-function reference citation.
+	if shape, ok := selectFnOverExpHistogramSubquery(expr, s, ctx); ok {
+		plan, err := lowerSelectFnOverExpHistogramSubquery(shape, s, ctx)
+		return plan, true, err
+	}
 	// count()/group() over a bare selector or any already histogram-valued
 	// expression — see [lowerExpHistogramCountFamily]'s own doc; factored
 	// out (cerberus issue #2549) so [lowerAggregate]'s generic fallback can
