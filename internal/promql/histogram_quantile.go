@@ -286,6 +286,19 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 	}
 
 	if !isBare {
+		// The argument may still be a native-histogram MERGE shape that
+		// matchHistogramAggIdiom's walker does not recognise —
+		// `hist_a + hist_b`, `2 * hist`, an on()/ignoring() sum, … . Those
+		// answer histogram-valued under reference Prometheus (the binop /
+		// scalar-scaling machinery composes with sum()/avg() exactly the
+		// way [isExpHistogramValuedShape]'s own doc describes), so they
+		// carry a real merged distribution for histogram_quantile to walk
+		// — not the "provably no bucket data" float pipeline the
+		// fallback below assumes (cerberus issue #2554).
+		if node, matched, err := lowerHistogramQuantileHistogramValuedArg(c.Args[1], phi, s, ctx); matched {
+			return node, err
+		}
+
 		// Unrecognised inner shape — `histogram_quantile(0.9, sum(up))`,
 		// `histogram_quantile(0.9, vector(1))`, … . Reference Prometheus
 		// accepts any instant-vector second argument: classic-histogram
@@ -1838,6 +1851,102 @@ func lowerHistogramQuantileNative(vs *parser.VectorSelector, phi phiArg, s schem
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}, nil
+}
+
+// lowerHistogramQuantileHistogramValuedArg is lowerHistogramQuantile's own
+// "try the HISTOGRAM-VALUED retry" opt-in for its non-bare, non-agg-idiom
+// argument, factored out to keep that branch a single flat check —
+// mirroring the `if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(...);
+// ok { … }` shape every float-only wrapper in this package already uses at
+// its own callsite — rather than nesting the match/error/shape checks
+// inline, which golangci-lint's nestif gate flags past a threshold.
+// matched=false leaves the caller's own "unrecognised inner shape" empty
+// fallback untouched.
+func lowerHistogramQuantileHistogramValuedArg(
+	arg parser.Expr,
+	phi phiArg,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (node chplan.Node, matched bool, err error) {
+	hist, matched, err := lowerExpHistogramValuedShape(arg, s, ctx)
+	if !matched {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	// RowShapeOf, not a *chplan.HistogramProjection type assertion: a
+	// set-op operand (histogram_native_set_op.go) answers histogram-valued
+	// as a *chplan.VectorSetOp with Histogram=true, publishing the
+	// identical nine-column contract under a different node type.
+	// RowShapeOf is this package's own shared test for "is this the
+	// thirteen-column histogram row shape" across every such producer.
+	if chplan.RowShapeOf(hist) != chplan.HistogramRowShape {
+		return nil, true, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T", hist)
+	}
+	return lowerHistogramQuantileNativeOverProjection(hist, phi, s), true, nil
+}
+
+// lowerHistogramQuantileNativeOverProjection is the nested-argument
+// counterpart to lowerHistogramQuantileNative / …NativeAgg: hp is an
+// ALREADY-lowered histogram-valued plan (sum()/avg()/rate()/a
+// histogram-histogram binop/a set-op/…) whose own lowering already resolved
+// instant-vs-range mode, the newest-sample collapse, and (for a merging
+// shape) the cross-series distribution add. HistogramQuantileNative's
+// Input contract is purely per-row (see its chplan doc: "Input produces
+// rows surfacing the exp-histogram columns … Typically Scan or Filter"),
+// so hp — already one row per (series[, anchor]) — composes directly
+// without re-deriving the merge lowerHistogramQuantileNativeAgg's own
+// Aggregate + Project stages build for the `sum by(le) (rate(...))`
+// idiom. Both Attributes and Timestamp are threaded through GroupBy so a
+// range-mode hp's own per-anchor timestamp survives into the wrapping
+// Sample projection instead of being overwritten by a hardcoded
+// now64(9), unlike the instant-only …NativeAgg scaffold above (cerberus
+// issue #2554).
+//
+// hp's nine structural columns are read under [histogramProjectionSchema],
+// not s directly: every [chplan.HistogramRowShape] producer (a
+// HistogramProjection, a Histogram-flagged VectorSetOp, …) publishes
+// them under the FIXED chplan.Histogram*Column aliases rather than the
+// schema's own raw names (see chsql's emitHistogramProjection /
+// emitVectorSetOp) — s's own names would resolve to columns hp never
+// publishes. Attributes/Timestamp stay under s's own names: those come
+// from hp's GroupByAliases, which every histogram-valued lowering
+// threads from the ORIGINAL schema unchanged (nativeHistogramProjection).
+func lowerHistogramQuantileNativeOverProjection(hp chplan.Node, phi phiArg, s schema.Metrics) chplan.Node {
+	histSchema := histogramProjectionSchema(s)
+	hq := &chplan.HistogramQuantileNative{
+		Input:                      hp,
+		Phi:                        phi.lit,
+		PhiExpr:                    phi.expr,
+		ScaleColumn:                histSchema.ScaleColumn,
+		ZeroCountColumn:            histSchema.ZeroCountColumn,
+		ZeroThresholdColumn:        histSchema.ZeroThresholdColumn,
+		PositiveOffsetColumn:       histSchema.PositiveOffsetColumn,
+		PositiveBucketCountsColumn: histSchema.PositiveBucketCountsColumn,
+		NegativeOffsetColumn:       histSchema.NegativeOffsetColumn,
+		NegativeBucketCountsColumn: histSchema.NegativeBucketCountsColumn,
+		CountColumn:                histSchema.CountColumn,
+		SumColumn:                  histSchema.SumColumn,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: s.AttributesColumn},
+			&chplan.ColumnRef{Name: s.TimestampColumn},
+		},
+		GroupByAliases:   []string{s.AttributesColumn, s.TimestampColumn},
+		MetricNameColumn: s.MetricNameColumn,
+		AttributesColumn: s.AttributesColumn,
+		TimestampColumn:  s.TimestampColumn,
+	}
+
+	return &chplan.Project{
+		Input: hq,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		},
+	}
 }
 
 // Aliases used by lowerHistogramQuantileNativeAgg to thread per-row
