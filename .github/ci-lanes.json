@@ -1674,7 +1674,7 @@
       "recipes": [],
       "command": "node .github/scripts/coverage-package-floor.mjs",
       "build_tags": [],
-      "package_globs": ["cmd/**", "internal/**", "test/coverage-floor.json"],
+      "package_globs": ["cmd/**", "internal/**", "test/coverage-floor/**"],
       "substrate": "runner",
       "risk_domains": ["coverage", "package-enrollment"],
       "merge_posture": "always",
