@@ -54,7 +54,7 @@
       "rationale": "labelCallOverExpHistogram admits only label_replace and label_join before calling lowerLabelCallOverExpHistogram",
       "evidence": {
         "guard": [
-          "default of switch call.Func.Name over [case \"label_replace\"; case \"label_join\"; default]"
+          "default of switch call.Func.Name over [case fnLabelReplace; case fnLabelJoin; default]"
         ],
         "callers": [
           "lowerExpHistogramValuedShape",

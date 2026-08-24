@@ -229,7 +229,7 @@ func CompareMetrics(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions
 	if len(a.Series) != len(b.Series) {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "cardinality",
+			Kind:   reasonKindCardinality,
 			Detail: fmt.Sprintf("%s=%d series, %s=%d series", aLabel, len(a.Series), bLabel, len(b.Series)),
 		})
 	}
@@ -253,14 +253,14 @@ func CompareMetrics(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions
 	for _, k := range missingInA {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_a",
+			Kind:   reasonKindMissingInA,
 			Detail: fmt.Sprintf("series key %s present in %s but missing in %s (%s)", k, bLabel, aLabel, formatLabels(bByKey[k].Labels)),
 		})
 	}
 	for _, k := range missingInB {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_b",
+			Kind:   reasonKindMissingInB,
 			Detail: fmt.Sprintf("series key %s present in %s but missing in %s (%s)", k, aLabel, bLabel, formatLabels(aByKey[k].Labels)),
 		})
 	}
@@ -324,25 +324,25 @@ func compareMetricsSeries(key string, a, b MetricsSeriesEntry, aLabel, bLabel st
 	case a.Value != nil && b.Value != nil:
 		if !valuesClose(*a.Value, *b.Value, opts) {
 			reasons = append(reasons, DiffReason{
-				Kind:   "field_mismatch",
+				Kind:   reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: instant value %s=%g vs %s=%g", key, aLabel, *a.Value, bLabel, *b.Value),
 			})
 		}
 	case a.Value != nil && b.Value == nil:
 		reasons = append(reasons, DiffReason{
-			Kind:   "field_mismatch",
+			Kind:   reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: %s returned instant value but %s did not", key, aLabel, bLabel),
 		})
 	case a.Value == nil && b.Value != nil:
 		reasons = append(reasons, DiffReason{
-			Kind:   "field_mismatch",
+			Kind:   reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: %s returned instant value but %s did not", key, bLabel, aLabel),
 		})
 	}
 
 	if len(a.Samples) != len(b.Samples) {
 		reasons = append(reasons, DiffReason{
-			Kind:   "field_mismatch",
+			Kind:   reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: samples count %s=%d vs %s=%d", key, aLabel, len(a.Samples), bLabel, len(b.Samples)),
 		})
 		// Fall through to a per-position best-effort diff anyway; both
@@ -361,14 +361,14 @@ func compareMetricsSeries(key string, a, b MetricsSeriesEntry, aLabel, bLabel st
 	for i := 0; i < n; i++ {
 		if aSamples[i].TimestampMs != bSamples[i].TimestampMs {
 			reasons = append(reasons, DiffReason{
-				Kind:   "field_mismatch",
+				Kind:   reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: sample[%d] ts %s=%d vs %s=%d", key, i, aLabel, aSamples[i].TimestampMs, bLabel, bSamples[i].TimestampMs),
 			})
 			continue
 		}
 		if !valuesClose(aSamples[i].Value, bSamples[i].Value, opts) {
 			reasons = append(reasons, DiffReason{
-				Kind:   "field_mismatch",
+				Kind:   reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: sample[%d]@%d value %s=%g vs %s=%g", key, i, aSamples[i].TimestampMs, aLabel, aSamples[i].Value, bLabel, bSamples[i].Value),
 			})
 		}
@@ -398,13 +398,13 @@ func AssertMetricsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffR
 	}
 	if tc.ExpectedMinSeries > 0 && len(m.Series) < tc.ExpectedMinSeries {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d series, want >= %d", backendLabel, len(m.Series), tc.ExpectedMinSeries),
 		})
 	}
 	if tc.ExpectedMaxSeries > 0 && len(m.Series) > tc.ExpectedMaxSeries {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d series, want <= %d", backendLabel, len(m.Series), tc.ExpectedMaxSeries),
 		})
 	}
@@ -412,7 +412,7 @@ func AssertMetricsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffR
 		for _, s := range m.Series {
 			if len(s.Samples) < tc.ExpectedSamplesPerSeries {
 				reasons = append(reasons, DiffReason{
-					Kind:   "assertion",
+					Kind:   reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: series %s has %d samples, want >= %d", backendLabel, formatLabels(s.Labels), len(s.Samples), tc.ExpectedSamplesPerSeries),
 				})
 				break
@@ -496,7 +496,7 @@ func RunSemanticChecks(tc CorpusCase, body []byte, backendLabel string) ([]DiffR
 		fn, ok := SemanticChecks[name]
 		if !ok {
 			reasons = append(reasons, DiffReason{
-				Kind:   "assertion",
+				Kind:   reasonKindAssertion,
 				Detail: fmt.Sprintf("%s: unknown semantic check %q (registered: %s)", backendLabel, name, registeredSemanticCheckNames()),
 			})
 			continue

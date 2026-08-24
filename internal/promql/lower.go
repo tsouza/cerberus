@@ -2577,6 +2577,16 @@ func matchOp(t labels.MatchType) chplan.BinaryOp {
 	panic(fmt.Sprintf("promql: unexpected match type %v", t))
 }
 
+// PromQL label-manipulation function names, shared by lowerCall's own
+// dispatch below and the histogram_native_* lowering paths that special-case
+// these two functions (they rewrite the __name__/le labels a native
+// histogram carrier tracks, so need to recognise them ahead of the generic
+// dispatch).
+const (
+	fnLabelReplace = "label_replace"
+	fnLabelJoin    = "label_join"
+)
+
 // lowerCall dispatches PromQL function calls. The arg shape decides the
 // path: a MatrixSelector means a range-vector function (rate, increase,
 // *_over_time); the clamp family takes a vector + scalar bounds; everything
@@ -2625,9 +2635,9 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 	case "histogram_count", "histogram_sum", "histogram_avg",
 		"histogram_stddev", "histogram_stdvar", "histogram_fraction":
 		return lowerHistogramValueFn(c, s, ctx)
-	case "label_replace":
+	case fnLabelReplace:
 		return lowerLabelReplace(c, s, ctx)
-	case "label_join":
+	case fnLabelJoin:
 		return lowerLabelJoin(c, s, ctx)
 	case "info":
 		return lowerInfo(c, s, ctx)

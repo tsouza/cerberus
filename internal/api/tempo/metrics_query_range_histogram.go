@@ -80,9 +80,9 @@ func wrapHistogramForSample(rw *chplan.RangeWindow, m *chplan.MetricsHistogramOv
 	return &chplan.Project{
 		Input: rw,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: &chplan.FuncCall{Fn: chplan.FnMap, Args: args}, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "TimeUnix"},
+			{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+			{Expr: &chplan.FuncCall{Fn: chplan.FnMap, Args: args}, Alias: sampleAttributesCol},
+			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: sampleTimeUnixCol},
 			{Expr: &chplan.ColumnRef{Name: m.ValueAlias}, Alias: "Value"},
 		},
 	}

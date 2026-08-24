@@ -53,11 +53,11 @@ func labelCallOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx
 		return nil, nil, false
 	}
 	switch call.Func.Name {
-	case "label_replace":
+	case fnLabelReplace:
 		if len(call.Args) != 5 {
 			return nil, nil, false
 		}
-	case "label_join":
+	case fnLabelJoin:
 		if len(call.Args) < 3 {
 			return nil, nil, false
 		}
@@ -87,9 +87,9 @@ func lowerLabelCallOverMixedExpHistogramSetOp(call *parser.Call, b *parser.Binar
 		err   error
 	)
 	switch call.Func.Name {
-	case "label_replace":
+	case fnLabelReplace:
 		attrs, err = labelReplaceAttributes(call, s)
-	case "label_join":
+	case fnLabelJoin:
 		attrs, err = labelJoinAttributes(call, s)
 	default:
 		return nil, fmt.Errorf("promql: internal invariant violated: %s is not a label-only mixed set-op consumer", call.Func.Name)

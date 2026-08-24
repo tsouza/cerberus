@@ -28,8 +28,18 @@
 # - nestif (max nested-if depth). Currently max 5; threshold 6 leaves a
 #   one-step buffer.
 #
-# - dupl (token-stream duplication). Threshold 220 tokens; no production
-#   clone currently reaches it.
+# - dupl (token-stream duplication). Threshold 190 tokens; no production
+#   clone currently reaches it. Tightened from 220 after the
+#   internal/optimizer/constant_fold.go foldIntInt/foldFloatFloat clone
+#   (the only one that fired between 190 and 220) was collapsed into a
+#   shared foldNumeric generic helper.
+#
+# - goconst (repeated string literal). `min-len: 8, min-occurrences: 8,
+#   ignore-tests: true` — the defaults (no min-len, 3 occurrences) fire
+#   thousands of times on test-table string literals; this threshold keeps
+#   the signal to genuine cross-file/cross-function duplication a shared
+#   constant would actually guard. No production literal currently reaches
+#   it.
 #
 # - maintidx (composite Maintainability Index). Halstead-based score;
 #   warns when a fn's MI < 20. Production minimum currently 47 (no fires).
@@ -130,6 +140,7 @@ linters:
     - funlen
     - nestif
     - dupl
+    - goconst
     - maintidx
     - lll
   settings:
@@ -166,7 +177,11 @@ linters:
     nestif:
       min-complexity: 6
     dupl:
-      threshold: 220
+      threshold: 190
+    goconst:
+      min-len: 8
+      min-occurrences: 8
+      ignore-tests: true
     maintidx:
       under: 20
     lll:

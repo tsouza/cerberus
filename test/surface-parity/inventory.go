@@ -85,6 +85,21 @@ type Entry struct {
 	Note string `json:"note,omitempty"`
 }
 
+// The five most-repeated Entry.Kind categories (dozens of probe-table
+// rows apiece across logql.go/promql.go/traceql.go), named so a typo in
+// one row fails to compile instead of silently minting a new,
+// unintended category. The rest of the Kind vocabulary the Entry.Kind
+// doc comment lists ("function", "aggregator", "modifier", ...) stays
+// literal — each used only a handful of times, where a shared constant
+// buys little.
+const (
+	kindRangeAgg  = "range-agg"
+	kindVectorAgg = "vector-agg"
+	kindBinaryOp  = "binary-op"
+	kindIntrinsic = "intrinsic"
+	kindMetricsOp = "metrics-op"
+)
+
 // Inventory is the merged, in-memory view of the checked-in artifact — the
 // shard directory test/surface-parity/inventory/ (see inventory_shard.go),
 // one shard file per (Head, Symbol) pair. Consumers see this one flat value

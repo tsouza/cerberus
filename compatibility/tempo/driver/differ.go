@@ -149,9 +149,20 @@ func DefaultDiffOptions() DiffOptions {
 // a struct (not a free-form string) so the markdown report can
 // group / filter by Kind without parsing strings.
 type DiffReason struct {
-	Kind   string // "cardinality" | "missing_in_a" | "missing_in_b" | "field_mismatch"
+	Kind   string // reasonKind* below
 	Detail string // human-readable; safe to embed in the markdown body
 }
+
+// reasonKind* are DiffReason.Kind's full vocabulary, named once so every
+// producer (differ.go, differ_metrics.go, proto_fetch.go) and consumer
+// agree on the exact tag.
+const (
+	reasonKindCardinality   = "cardinality"
+	reasonKindMissingInA    = "missing_in_a"
+	reasonKindMissingInB    = "missing_in_b"
+	reasonKindFieldMismatch = "field_mismatch"
+	reasonKindAssertion     = "assertion"
+)
 
 // Diff is the structured outcome of comparing two parsed
 // SearchResponse bodies.
@@ -192,7 +203,7 @@ func Compare(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions) (Diff
 	if len(a.Traces) != len(b.Traces) {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "cardinality",
+			Kind:   reasonKindCardinality,
 			Detail: fmt.Sprintf("%s=%d traces, %s=%d traces", aLabel, len(a.Traces), bLabel, len(b.Traces)),
 		})
 	}
@@ -216,14 +227,14 @@ func Compare(aBody, bBody []byte, aLabel, bLabel string, opts DiffOptions) (Diff
 	for _, key := range missingInA {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_a",
+			Kind:   reasonKindMissingInA,
 			Detail: fmt.Sprintf("key %s present in %s but missing in %s (rootServiceName=%q rootTraceName=%q)", key, bLabel, aLabel, bByKey[key].RootServiceName, bByKey[key].RootTraceName),
 		})
 	}
 	for _, key := range missingInB {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_b",
+			Kind:   reasonKindMissingInB,
 			Detail: fmt.Sprintf("key %s present in %s but missing in %s (rootServiceName=%q rootTraceName=%q)", key, aLabel, bLabel, aByKey[key].RootServiceName, aByKey[key].RootTraceName),
 		})
 	}
@@ -288,13 +299,13 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 		// Same TraceID, different rootServiceName — a real backend
 		// regression in how span -> trace rollup picks the root.
 		reasons = append(reasons, DiffReason{
-			Kind:   "field_mismatch",
+			Kind:   reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: rootServiceName %s=%q vs %s=%q", key, aLabel, a.RootServiceName, bLabel, b.RootServiceName),
 		})
 	}
 	if a.RootTraceName != b.RootTraceName {
 		reasons = append(reasons, DiffReason{
-			Kind:   "field_mismatch",
+			Kind:   reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: rootTraceName %s=%q vs %s=%q", key, aLabel, a.RootTraceName, bLabel, b.RootTraceName),
 		})
 	}
@@ -307,7 +318,7 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 	if a.DurationMs != 0 || b.DurationMs != 0 {
 		if !valuesClose(float64(a.DurationMs), float64(b.DurationMs), opts) {
 			reasons = append(reasons, DiffReason{
-				Kind:   "field_mismatch",
+				Kind:   reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: durationMs %s=%d vs %s=%d", key, aLabel, a.DurationMs, bLabel, b.DurationMs),
 			})
 		}
@@ -323,7 +334,7 @@ func compareSummary(key string, a, b TraceSummary, aLabel, bLabel string, opts D
 		bn, errB := strconv.ParseFloat(b.StartTimeUnixNano, 64)
 		if errA != nil || errB != nil || !valuesClose(an, bn, opts) {
 			reasons = append(reasons, DiffReason{
-				Kind:   "field_mismatch",
+				Kind:   reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: startTimeUnixNano %s=%q vs %s=%q", key, aLabel, a.StartTimeUnixNano, bLabel, b.StartTimeUnixNano),
 			})
 		}
@@ -395,7 +406,7 @@ func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []Dif
 
 	if (len(aSpans) == 0) != (len(bSpans) == 0) {
 		return append(reasons, DiffReason{
-			Kind: "field_mismatch",
+			Kind: reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: spanSets %s=%d spans vs %s=%d spans (asymmetric presence)",
 				key, aLabel, len(aSpans), bLabel, len(bSpans)),
 		})
@@ -406,14 +417,14 @@ func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []Dif
 
 	if aMatched != bMatched {
 		reasons = append(reasons, DiffReason{
-			Kind: "field_mismatch",
+			Kind: reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: spanSets matched %s=%d vs %s=%d",
 				key, aLabel, aMatched, bLabel, bMatched),
 		})
 	}
 	if len(aSpans) != len(bSpans) {
 		reasons = append(reasons, DiffReason{
-			Kind: "field_mismatch",
+			Kind: reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: spanSets span count %s=%d vs %s=%d",
 				key, aLabel, len(aSpans), bLabel, len(bSpans)),
 		})
@@ -442,7 +453,7 @@ func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []Dif
 		bs, ok := bByID[id]
 		if !ok {
 			reasons = append(reasons, DiffReason{
-				Kind: "field_mismatch",
+				Kind: reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s: span %s present in %s but missing in %s",
 					key, id, aLabel, bLabel),
 			})
@@ -450,21 +461,21 @@ func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []Dif
 		}
 		if as.Name != bs.Name {
 			reasons = append(reasons, DiffReason{
-				Kind: "field_mismatch",
+				Kind: reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s span %s: name %s=%q vs %s=%q",
 					key, id, aLabel, as.Name, bLabel, bs.Name),
 			})
 		}
 		if !uintStringsEqual(as.StartTimeUnixNano, bs.StartTimeUnixNano) {
 			reasons = append(reasons, DiffReason{
-				Kind: "field_mismatch",
+				Kind: reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s span %s: startTimeUnixNano %s=%q vs %s=%q",
 					key, id, aLabel, as.StartTimeUnixNano, bLabel, bs.StartTimeUnixNano),
 			})
 		}
 		if !uintStringsEqual(as.DurationNanos, bs.DurationNanos) {
 			reasons = append(reasons, DiffReason{
-				Kind: "field_mismatch",
+				Kind: reasonKindFieldMismatch,
 				Detail: fmt.Sprintf("key %s span %s: durationNanos %s=%q vs %s=%q",
 					key, id, aLabel, as.DurationNanos, bLabel, bs.DurationNanos),
 			})
@@ -479,7 +490,7 @@ func compareSpanSets(key string, a, b TraceSummary, aLabel, bLabel string) []Dif
 	sort.Strings(extra)
 	for _, id := range extra {
 		reasons = append(reasons, DiffReason{
-			Kind: "field_mismatch",
+			Kind: reasonKindFieldMismatch,
 			Detail: fmt.Sprintf("key %s: span %s present in %s but missing in %s",
 				key, id, bLabel, aLabel),
 		})
@@ -555,13 +566,13 @@ func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]D
 	}
 	if tc.ExpectedMinTraces > 0 && len(a.Traces) < tc.ExpectedMinTraces {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d traces, want >= %d", backendLabel, len(a.Traces), tc.ExpectedMinTraces),
 		})
 	}
 	if tc.ExpectedMaxTraces > 0 && len(a.Traces) > tc.ExpectedMaxTraces {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d traces, want <= %d", backendLabel, len(a.Traces), tc.ExpectedMaxTraces),
 		})
 	}
@@ -573,7 +584,7 @@ func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]D
 		for _, svc := range tc.ExpectedServices {
 			if !seen[svc] {
 				reasons = append(reasons, DiffReason{
-					Kind:   "assertion",
+					Kind:   reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: expected rootServiceName=%q to appear in results", backendLabel, svc),
 				})
 			}
@@ -583,7 +594,7 @@ func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]D
 		for _, t := range a.Traces {
 			if !tc.ExpectedRootNameRE.MatchString(t.RootTraceName) {
 				reasons = append(reasons, DiffReason{
-					Kind:   "assertion",
+					Kind:   reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: rootTraceName %q does not match /%s/", backendLabel, t.RootTraceName, tc.ExpectedRootNameRE.String()),
 				})
 				break // one report is enough; the report should highlight failures, not enumerate every span
@@ -607,13 +618,13 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 	var reasons []DiffReason
 	if tc.ExpectedMinValues > 0 && len(tagNames) < tc.ExpectedMinValues {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d tag names, want >= %d", backendLabel, len(tagNames), tc.ExpectedMinValues),
 		})
 	}
 	if tc.ExpectedMaxValues > 0 && len(tagNames) > tc.ExpectedMaxValues {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d tag names, want <= %d", backendLabel, len(tagNames), tc.ExpectedMaxValues),
 		})
 	}
@@ -622,7 +633,7 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 		for _, want := range tc.ExpectedValues {
 			if !seen[want] {
 				reasons = append(reasons, DiffReason{
-					Kind:   "assertion",
+					Kind:   reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: expected tag name %q in response", backendLabel, want),
 				})
 			}
@@ -633,7 +644,7 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 		for _, unwanted := range tc.ExpectedAbsentValues {
 			if seen[unwanted] {
 				reasons = append(reasons, DiffReason{
-					Kind: "assertion",
+					Kind: reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: tag name %q must be absent from the response (q=%q)",
 						backendLabel, unwanted, tc.Query),
 				})
@@ -643,7 +654,7 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 	if len(tc.ExpectedScopes) > 0 {
 		if !v2 {
 			reasons = append(reasons, DiffReason{
-				Kind:   "assertion",
+				Kind:   reasonKindAssertion,
 				Detail: fmt.Sprintf("%s: expected_scopes only meaningful for tags_v2", backendLabel),
 			})
 		} else {
@@ -651,7 +662,7 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 			for _, want := range tc.ExpectedScopes {
 				if !seen[want] {
 					reasons = append(reasons, DiffReason{
-						Kind:   "assertion",
+						Kind:   reasonKindAssertion,
 						Detail: fmt.Sprintf("%s: expected scope %q in response (got %v)", backendLabel, want, scopeNames),
 					})
 				}
@@ -675,13 +686,13 @@ func assertTagValuesCase(tc CorpusCase, body []byte, backendLabel string) ([]Dif
 	var reasons []DiffReason
 	if tc.ExpectedMinValues > 0 && len(values) < tc.ExpectedMinValues {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d tag values, want >= %d", backendLabel, len(values), tc.ExpectedMinValues),
 		})
 	}
 	if tc.ExpectedMaxValues > 0 && len(values) > tc.ExpectedMaxValues {
 		reasons = append(reasons, DiffReason{
-			Kind:   "assertion",
+			Kind:   reasonKindAssertion,
 			Detail: fmt.Sprintf("%s: got %d tag values, want <= %d", backendLabel, len(values), tc.ExpectedMaxValues),
 		})
 	}
@@ -690,7 +701,7 @@ func assertTagValuesCase(tc CorpusCase, body []byte, backendLabel string) ([]Dif
 		for _, want := range tc.ExpectedValues {
 			if !seen[want] {
 				reasons = append(reasons, DiffReason{
-					Kind:   "assertion",
+					Kind:   reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: expected tag value %q in response (tag_name=%q)", backendLabel, want, tc.TagName),
 				})
 			}
@@ -701,7 +712,7 @@ func assertTagValuesCase(tc CorpusCase, body []byte, backendLabel string) ([]Dif
 		for _, unwanted := range tc.ExpectedAbsentValues {
 			if seen[unwanted] {
 				reasons = append(reasons, DiffReason{
-					Kind: "assertion",
+					Kind: reasonKindAssertion,
 					Detail: fmt.Sprintf("%s: tag value %q must be absent from the response (tag_name=%q, q=%q)",
 						backendLabel, unwanted, tc.TagName, tc.Query),
 				})
@@ -840,7 +851,7 @@ func CompareTagNames(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff,
 	if len(aNames) != len(bNames) {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "cardinality",
+			Kind:   reasonKindCardinality,
 			Detail: fmt.Sprintf("%s=%d tag names, %s=%d tag names", aLabel, len(aNames), bLabel, len(bNames)),
 		})
 	}
@@ -878,7 +889,7 @@ func CompareTagValues(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff
 	if len(aValues) != len(bValues) {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "cardinality",
+			Kind:   reasonKindCardinality,
 			Detail: fmt.Sprintf("%s=%d tag values, %s=%d tag values", aLabel, len(aValues), bLabel, len(bValues)),
 		})
 	}
@@ -898,7 +909,7 @@ func CompareTagValues(aBody, bBody []byte, aLabel, bLabel string, v2 bool) (Diff
 			if at != "" && bt != "" && at != bt {
 				out.Equal = false
 				out.Reasons = append(out.Reasons, DiffReason{
-					Kind:   "field_mismatch",
+					Kind:   reasonKindFieldMismatch,
 					Detail: fmt.Sprintf("value %q: type %s=%q vs %s=%q", v, aLabel, at, bLabel, bt),
 				})
 			}
@@ -930,14 +941,14 @@ func addSetDiff(out *Diff, a, b []string, aLabel, bLabel string) {
 	for _, s := range missingInA {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_a",
+			Kind:   reasonKindMissingInA,
 			Detail: fmt.Sprintf("%q present in %s but missing in %s", s, bLabel, aLabel),
 		})
 	}
 	for _, s := range missingInB {
 		out.Equal = false
 		out.Reasons = append(out.Reasons, DiffReason{
-			Kind:   "missing_in_b",
+			Kind:   reasonKindMissingInB,
 			Detail: fmt.Sprintf("%q present in %s but missing in %s", s, aLabel, bLabel),
 		})
 	}

@@ -537,6 +537,20 @@ const (
 	maxSearchRecentLimit     = 200
 )
 
+// Canonical Sample-contract column aliases: every tempo lowering path that
+// reshapes a plan into the (MetricName, Attributes, TimeUnix, Value) Sample
+// contract projects under these exact names. Named once here — mirroring
+// internal/logql's own sampleMetricNameCol/sampleAttributesCol/
+// sampleTimeUnixCol — so every projection site references the same
+// constant instead of re-typing the literal. A separate set from logql's:
+// Go doesn't let one package reuse another's unexported constants, and the
+// two packages' Sample-contract shapes are otherwise unrelated.
+const (
+	sampleMetricNameCol = "MetricName"
+	sampleAttributesCol = "Attributes"
+	sampleTimeUnixCol   = "TimeUnix"
+)
+
 // tsScanBound renders `<tsCol> <op> fromUnixTimestamp64Nano(<t.UnixNano()>)` —
 // a nanosecond Timestamp predicate that sits directly on the spans Scan so
 // ClickHouse partition-prunes toDate(Timestamp). Mirrors traceql.tsBound; kept
@@ -1131,9 +1145,9 @@ func wrapWithSampleProjection(plan chplan.Node, s schema.Traces, meta engine.Met
 		// lands on /api/search; the empty-MetricName synthesis keeps
 		// the response shape sane.
 		return &chplan.Project{Input: plan, Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: emptyAttrsMap(), Alias: "Attributes"},
-			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
+			{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+			{Expr: emptyAttrsMap(), Alias: sampleAttributesCol},
+			{Expr: chplan.NowNano(), Alias: sampleTimeUnixCol},
 			{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 		}}
 	case isProjectShape(plan):
@@ -1206,9 +1220,9 @@ func sampleProjectionsWithSelected(s schema.Traces, selectedKVs []chplan.Expr) [
 		reservedMap,
 	}}
 	return []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: mergedAttrs, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: sampleMetricNameCol},
+		{Expr: mergedAttrs, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: sampleTimeUnixCol},
 		// Duration is Int64 (nanoseconds) in OTel-CH; chclient.Sample.Value
 		// is float64 and clickhouse-go's Scan refuses Int64→float64 without
 		// a cast. toFloat64 keeps the wire shape lossless within the
@@ -1313,9 +1327,9 @@ func rQualifiedSampleProjections(s schema.Traces) []chplan.Projection {
 		reservedMap,
 	}}
 	return []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: mergedAttrs, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: sampleMetricNameCol},
+		{Expr: mergedAttrs, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: sampleTimeUnixCol},
 		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
@@ -1377,9 +1391,9 @@ func traceByIDProjections(s schema.Traces) []chplan.Projection {
 	}}
 
 	return []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: "MetricName"},
-		{Expr: mergedAttrs, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: s.SpanNameColumn}, Alias: sampleMetricNameCol},
+		{Expr: mergedAttrs, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: sampleTimeUnixCol},
 		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.DurationColumn}}}, Alias: "Value"},
 	}
 }
@@ -1536,9 +1550,9 @@ func isSpansetAggregateShape(plan chplan.Node) bool {
 // projection stays decoupled from the lowering layer.
 func aggregateCarriesSpansetEnvelope(a *chplan.Aggregate) bool {
 	wanted := map[string]bool{
-		"MetricName":    false,
-		"ResourceAttrs": false,
-		"TimeUnix":      false,
+		sampleMetricNameCol: false,
+		"ResourceAttrs":     false,
+		sampleTimeUnixCol:   false,
 		// boundNewestTraces sorts the result by TraceStartNs; require it here
 		// too so the shape-matcher and the ORDER BY key stay in lockstep — a
 		// future envelope without TraceStartNs must not match (the ORDER BY
@@ -1625,9 +1639,9 @@ func spansetAggregateSampleProjections() []chplan.Projection {
 		traceIDMap,
 	}}
 	return []chplan.Projection{
-		{Expr: &chplan.ColumnRef{Name: "MetricName"}, Alias: "MetricName"},
-		{Expr: mergedAttrs, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: "TimeUnix"}, Alias: "TimeUnix"},
+		{Expr: &chplan.ColumnRef{Name: sampleMetricNameCol}, Alias: sampleMetricNameCol},
+		{Expr: mergedAttrs, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: sampleTimeUnixCol}, Alias: sampleTimeUnixCol},
 		{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Value"}}}, Alias: "Value"},
 	}
 }

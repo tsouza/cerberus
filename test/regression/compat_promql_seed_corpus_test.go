@@ -433,19 +433,74 @@ func findSliceLiteral(t *testing.T, path, name string) *ast.CompositeLit {
 }
 
 // basicLitValue unquotes a string literal expression, handling both the
-// interpreted and raw-string forms the seeder mixes.
+// interpreted and raw-string forms the seeder mixes. A bare identifier
+// (a goconst-extracted package-level string constant, e.g.
+// `otelMetricsGaugeTable`) resolves through packageStringConst instead of
+// failing outright — the fixture lists this test walks are exactly the
+// kind of repeated-literal table goconst flags, so the source is expected
+// to name its own constants rather than repeat the raw string forever.
 func basicLitValue(t *testing.T, path string, expr ast.Expr) string {
 	t.Helper()
 
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			t.Fatalf("%s: expected a string literal, got a non-string literal", path)
+		}
+		v, err := strconv.Unquote(e.Value)
+		if err != nil {
+			t.Fatalf("%s: unquote %.40s...: %v", path, e.Value, err)
+		}
+		return v
+	case *ast.Ident:
+		v, ok := packageStringConst(t, path, e.Name)
+		if !ok {
+			t.Fatalf("%s: identifier %q does not resolve to a package-level string constant", path, e.Name)
+		}
+		return v
+	default:
 		t.Fatalf("%s: expected a string literal, got %T", path, expr)
+		return ""
 	}
-	v, err := strconv.Unquote(lit.Value)
+}
+
+// packageStringConst looks up `const <name> = "<value>"` at package level
+// in the given file (a single ValueSpec, not an iota-typed block — the
+// only shape goconst-driven extraction produces).
+func packageStringConst(t *testing.T, path, name string) (string, bool) {
+	t.Helper()
+
+	file, err := goparser.ParseFile(token.NewFileSet(), path, nil, goparser.SkipObjectResolution)
 	if err != nil {
-		t.Fatalf("%s: unquote %.40s...: %v", path, lit.Value, err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
-	return v
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, ident := range vs.Names {
+				if ident.Name != name || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				v, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("%s: unquote const %s: %v", path, name, err)
+				}
+				return v, true
+			}
+		}
+	}
+	return "", false
 }
 
 // parseCorpusMetricNames returns every metric name the corpus selects, plus

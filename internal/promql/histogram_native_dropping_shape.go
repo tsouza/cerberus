@@ -209,11 +209,11 @@ func labelCallOverExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, 
 		return nil, false
 	}
 	switch call.Func.Name {
-	case "label_replace":
+	case fnLabelReplace:
 		if len(call.Args) != 5 {
 			return nil, false
 		}
-	case "label_join":
+	case fnLabelJoin:
 		if len(call.Args) < 3 {
 			return nil, false
 		}
@@ -235,9 +235,9 @@ func labelCallOverExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, 
 func lowerLabelCallOverExpHistogramDroppingShape(call *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	var err error
 	switch call.Func.Name {
-	case "label_replace":
+	case fnLabelReplace:
 		_, err = labelReplaceAttributes(call, s)
-	case "label_join":
+	case fnLabelJoin:
 		_, err = labelJoinAttributes(call, s)
 	}
 	if err != nil {

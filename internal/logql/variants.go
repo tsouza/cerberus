@@ -530,9 +530,9 @@ func variantSampleArm(inner chplan.Node, s schema.Logs, lc lowerCtx, index int) 
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: cols.metricName, Alias: "MetricName"},
-			{Expr: attrs, Alias: "Attributes"},
-			{Expr: tsExpr, Alias: "TimeUnix"},
+			{Expr: cols.metricName, Alias: sampleMetricNameCol},
+			{Expr: attrs, Alias: sampleAttributesCol},
+			{Expr: tsExpr, Alias: sampleTimeUnixCol},
 			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
 	}
@@ -563,9 +563,9 @@ func variantFusedSampleShape(top chplan.Node, s schema.Logs, lc lowerCtx) chplan
 	return &chplan.Project{
 		Input: top,
 		Projections: []chplan.Projection{
-			{Expr: cols.metricName, Alias: "MetricName"},
-			{Expr: attrs, Alias: "Attributes"},
-			{Expr: tsExpr, Alias: "TimeUnix"},
+			{Expr: cols.metricName, Alias: sampleMetricNameCol},
+			{Expr: attrs, Alias: sampleAttributesCol},
+			{Expr: tsExpr, Alias: sampleTimeUnixCol},
 			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
 	}

@@ -540,9 +540,9 @@ func wrapMetricsForSample(inner chplan.Node, m *chplan.MetricsAggregate) chplan.
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-			{Expr: attrs, Alias: "Attributes"},
-			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: "TimeUnix"},
+			{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+			{Expr: attrs, Alias: sampleAttributesCol},
+			{Expr: &chplan.ColumnRef{Name: "anchor_ts"}, Alias: sampleTimeUnixCol},
 			{Expr: &chplan.ColumnRef{Name: m.ValueAlias}, Alias: "Value"},
 		},
 	}
