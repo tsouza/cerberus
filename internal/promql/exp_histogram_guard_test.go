@@ -47,6 +47,25 @@ import (
 // HistogramIgnoredInAggregation annotation, because counting a sample
 // never has to look at it. That is why it is answered
 // (histogram_native_count.go) while its five neighbours are not.
+//
+// `resets()` / `changes()` / `count()` / `group()` wrapped by a further
+// scalar op, aggregation or instant math function used to stay rejected
+// too — cerberus issue #2549 — even though their own answer is an
+// ordinary float sample nothing about the wrapper would object to; what
+// tripped the rejection was the ARGUMENT, which reached
+// [lowerVectorSelector] through the ordinary descent with no
+// histogram-aware retry. [lowerRangeVectorCall] (resets/changes) and
+// [lowerAggregate] (count/group) now retry those two recognisers at
+// every level of nesting the same way a query's own root always could,
+// so every case that moved out of this file's own rejection list lives
+// in TestLower_ExpHistogram_ResetsChangesCountAreFloatValued instead —
+// see that test's own "wrapped" cases.
+//
+// The subquery form (`resets(<selector>[range:step])`) is a genuinely
+// DIFFERENT shape from a wrapper — the selector's own outer range-vector
+// function IS resets()/changes() itself, routed through
+// lowerOuterRangeFnOverSubquery rather than lowerRangeVectorCall — and
+// stays rejected here: #2549's fix never touches that path.
 func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 	t.Parallel()
 
@@ -62,23 +81,8 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		// TestLower_ExpHistogram_BareMatrixSelectorIsHistogramValued — so
 		// it is deliberately no longer a case here.
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
-
-		// `resets()` / `changes()` / `count()` over a bare selector ARE
-		// answered (see TestLower_ExpHistogram_ResetsChangesCountAreFloatValued).
-		// Their answer is an ordinary float sample, so unlike the
-		// histogram-valued shapes above nothing about the RESULT stops a
-		// consumer from reading it. What keeps these rejected is the
-		// ARGUMENT: the selector nested under them still reaches
-		// lowerVectorSelector through the ordinary descent, where it is
-		// still an exp-histogram selector with no Value column.
-		{name: "resets under arithmetic", query: `resets(latency_exp_hist[5m]) * 2`},
-		{name: "resets under sum", query: `sum(resets(latency_exp_hist[5m]))`},
-		{name: "changes under arithmetic", query: `changes(latency_exp_hist[5m]) + 1`},
-		{name: "changes under abs", query: `abs(changes(latency_exp_hist[5m]))`},
 		{name: "resets over subquery", query: `resets(latency_exp_hist[5m:1m])`},
 		{name: "changes over subquery", query: `changes(latency_exp_hist[5m:1m])`},
-		{name: "count under arithmetic", query: `count(latency_exp_hist) + 1`},
-		{name: "count of count", query: `count(count(latency_exp_hist))`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
