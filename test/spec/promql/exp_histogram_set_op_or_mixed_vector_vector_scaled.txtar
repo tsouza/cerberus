@@ -1,0 +1,37 @@
+-- query.promql --
+(histogram_quantile(0.5, mvv_mul_a_base_exp_hist) or mvv_mul_a_hist_exp_hist) * (histogram_quantile(0.5, mvv_mul_b_base_exp_hist) or mvv_mul_b_hist_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `(<A quantile> or <A hist>) * (<B quantile> or <B hist>)` — cerberus
+-- issue #2449's seventh wrapper family, vector-vector arithmetic over TWO
+-- independently mixed float/histogram `or` operands. Reference
+-- Prometheus's vectorElemBinop keeps THREE of the four combinations for
+-- `*` (histogram_native_mixed_or_vector_arithmetic.go's own header has
+-- the full accounting):
+--   - series "api": LHS resolves float (the A quantile arm), RHS
+--     resolves histogram (mvv_mul_b_hist) -> kept, RHS's histogram
+--     SCALED by LHS's float value (hrhs.Copy().Mul(lhs)).
+--   - series "web": LHS resolves histogram (mvv_mul_a_hist), RHS
+--     resolves float (the B quantile arm) -> kept, LHS's histogram
+--     SCALED by RHS's float value (hlhs.Copy().Mul(rhs)).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('mvv_mul_a_base_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvv_mul_b_hist_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 5, 10.0, 0, 0, 0, [15],          0, []),
+    ('mvv_mul_a_hist_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0,  0, 0, 0, [6],           0, []),
+    ('mvv_mul_b_base_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []);

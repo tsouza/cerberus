@@ -114,9 +114,18 @@ func TestLower_ExpHistogram_MixedSetOpOr_ScalarLeftDivStillDropFamily(t *testing
 }
 
 // TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorStillRejects pins
-// that a vector-vector `*`/`/` over a mixed `or` (neither side a scalar
-// literal) is a further, unattempted shape — this recognizer only
-// matches a scalar literal on exactly one side.
+// that `(a or b) * demo_num_cpus` — a mixed `or` arithmetic-multiplied by
+// a PLAIN (non-mixed) vector operand — is still a further, unattempted
+// shape. It is NOT [mulOrDivScaleOverMixedExpHistogramSetOp]'s shape
+// (that recognizer only matches a scalar LITERAL on exactly one side,
+// not a vector), and it is NOT
+// histogram_native_mixed_or_vector_arithmetic.go's vector-vector shape
+// either — that recognizer requires BOTH operands to themselves be a
+// mixed `or` (cerberus issue #2449's own scope statement: "neither is a
+// scalar literal" means neither collapses to a scalar, not that either
+// side may be an arbitrary plain vector); `demo_num_cpus` is a plain
+// selector, not an `or`. A mixed-or-times-plain-vector operand pairing
+// remains unimplemented and out of THIS issue's stated scope.
 func TestLower_ExpHistogram_MixedSetOpOr_ScaleVectorVectorStillRejects(t *testing.T) {
 	t.Parallel()
 

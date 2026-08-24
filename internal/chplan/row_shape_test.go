@@ -47,6 +47,7 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"MetricsCompare":           chplan.SampleRowShape,
 	"MetricsHistogramOverTime": chplan.SampleRowShape,
 	"MetricsSecondStage":       chplan.SampleRowShape,
+	"MixedVectorJoin":          chplan.SampleRowShape,
 	"NaryVectorSetOp":          chplan.SampleRowShape,
 	"NestedSetAnnotate":        chplan.SampleRowShape,
 	"OneRow":                   chplan.SampleRowShape,

@@ -59,14 +59,20 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 		*Aggregate,
 		*MetricsAggregate,
 		*MetricsHistogramOverTime,
-		*HistogramVectorJoin:
+		*HistogramVectorJoin,
+		*MixedVectorJoin:
 		// HistogramVectorJoin's own SELECT exposes `_hq_L_*`/`_hq_R_*`
 		// aliases — no bare `MetricName` column exists in its scope, so
 		// derived (true) is the honest answer, matching the reducing
 		// nodes' own reasoning. Never actually consulted for it: every
 		// caller wraps it in an explicit-column Project before any
 		// canonical-shape consumer sees it (internal/promql's
-		// histogram_native_binop_card.go).
+		// histogram_native_binop_card.go). MixedVectorJoin's own SELECT
+		// exposes the analogous `_mvj_L_*`/`_mvj_R_*` aliases (internal/
+		// chsql/mixed_vector_join.go) for the identical reason — its
+		// caller (internal/promql/histogram_native_mixed_or_vector_
+		// arithmetic.go) likewise always wraps it in an explicit-column
+		// Project before any canonical-shape consumer sees it.
 		return true
 	case *Filter:
 		return IsDerivedShape(v.Input, cols)

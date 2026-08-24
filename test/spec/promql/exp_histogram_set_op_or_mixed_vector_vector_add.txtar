@@ -1,0 +1,41 @@
+-- query.promql --
+(histogram_quantile(0.5, mvv_add_a_base_exp_hist) or mvv_add_a_hist_exp_hist) + (histogram_quantile(0.5, mvv_add_b_base_exp_hist) or mvv_add_b_hist_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `(<A quantile> or <A hist>) + (<B quantile> or <B hist>)` — cerberus
+-- issue #2449's seventh wrapper family, vector-vector arithmetic over TWO
+-- independently mixed float/histogram `or` operands (neither side a
+-- scalar literal), after `sum`/`avg` (#2346), `label_replace`/
+-- `label_join`, single-arg instant math functions, drop-family scalar
+-- arithmetic, scalar comparisons, and MUL/histogram-left-DIV scalar
+-- scaling (#2449's first through sixth passes). Reference Prometheus's
+-- vectorElemBinop keeps ONLY the float,float combination for `+`/`-`
+-- (histogram_native_mixed_or_vector_arithmetic.go's own header has the
+-- full four-combination accounting):
+--   - series "api": BOTH operands resolve float (the A/B quantile arms)
+--     -> kept, summed.
+--   - series "web": the LHS operand resolves histogram (mvv_add_a_hist),
+--     the RHS resolves float (the B quantile arm) -> DROPPED, not
+--     emitted (this PR's histogram,float `+` gap matches reference
+--     exactly: reference also drops this combination for `+`/`-`).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('mvv_add_a_base_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvv_add_b_base_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvv_add_a_hist_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0,  0, 0, 0, [6],           0, []),
+    ('mvv_add_b_base_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []);

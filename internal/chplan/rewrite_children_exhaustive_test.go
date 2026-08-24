@@ -128,6 +128,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"VectorJoin", &VectorJoin{Left: sentinelChild(), Right: sentinelChild()}, false},
 		{"HistogramVectorJoin", &HistogramVectorJoin{Left: sentinelChild(), Right: sentinelChild()}, false},
 		{"HistogramFloatVectorJoin", &HistogramFloatVectorJoin{Left: sentinelChild(), Right: sentinelChild()}, false},
+		{"MixedVectorJoin", &MixedVectorJoin{Left: sentinelChild(), Right: sentinelChild()}, false},
 		{"VectorSetOp", &VectorSetOp{Left: sentinelChild(), Right: sentinelChild()}, false},
 		{"SetOperation", &SetOperation{Left: sentinelChild(), Right: sentinelChild()}, false},
 	}
