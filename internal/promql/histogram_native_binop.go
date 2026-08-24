@@ -346,7 +346,7 @@ func histogramBinopMergeHavingGuard() chplan.Expr {
 // `arrayMap(t -> ..., range(mergedLength))` shape
 // [expHistogramMergeBucketsExpr] renders for the cross-series merge —
 // see that shared cost model's doc comment for why the real cost is
-// `rowCount x width^3`, not `width` alone — so two histograms whose
+// `rowCount x width^2`, not `width` alone — so two histograms whose
 // Scale/Offset diverge enough still produce an unbounded, expensive merged
 // ladder here too, with nothing capping it before #2428's fix. The
 // series-per-group axis needs no analogous check: rowCount is fixed at 2
