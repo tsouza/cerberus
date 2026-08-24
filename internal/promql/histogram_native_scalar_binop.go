@@ -227,7 +227,30 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 // shipped lowering — unmodified, so a query without the scalar wrapper
 // still lowers byte-for-byte the same way. drop selects reference's
 // keep=false incompatible-types result; otherwise the capping
-// HistogramProjection is rewritten to scale it.
+// histogram-shaped node is rewritten to scale it.
+//
+// The histogram side is asserted by ROW SHAPE
+// ([chplan.RowShapeOf] == [chplan.HistogramRowShape]), not by literal Go
+// type: [isExpHistogramValuedShape] — the very predicate
+// [expHistogramScalarBinop] / [expHistogramDroppingScalarBinop] gate on to
+// decide the histogram side is even eligible — reports true for a
+// `and`/`or`/`unless` set-op result too (cerberus issue #2324), which
+// [lowerExpHistogramValuedShape] lowers to a *chplan.VectorSetOp, not a
+// *chplan.HistogramProjection. A strict `node.(*chplan.HistogramProjection)`
+// type assertion here rejected that shape with an "internal invariant
+// violated" error despite the recognizer having just accepted it as
+// histogram-valued (cerberus issue #2557) — the recognizer and this
+// lowering disagreeing about which shapes are admissible is exactly what
+// this package's doc comment on [lowerExpHistogramValuedShape] says
+// pairing them is supposed to prevent. [scaleHistogramProjection] below
+// already reads its input by column NAME through a Project (see that
+// function's own doc for why it is typed `chplan.Node`, not
+// `*chplan.HistogramProjection`), and a histogram-shaped *chplan.VectorSetOp
+// publishes those same fixed Histogram*Column aliases
+// ([chplan.RowShapeOf]'s VectorSetOp doc), so accepting any
+// histogram-shaped node here — mirroring
+// [lowerExpHistogramSetOpOperand]'s identical widening in
+// histogram_native_set_op.go — is correct, not merely permissive.
 func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, s schema.Metrics, ctx lowerCtx, drop bool) (chplan.Node, error) {
 	node, matched, err := lowerExpHistogramValuedShape(histSide, s, ctx)
 	if !matched {
@@ -236,17 +259,19 @@ func lowerExpHistogramScalarBinop(histSide parser.Expr, op chplan.BinaryOp, scal
 	if err != nil {
 		return nil, err
 	}
-	hp, ok := node.(*chplan.HistogramProjection)
-	if !ok {
-		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T", node)
+	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf(
+			"promql: internal invariant violated: exp-histogram scalar-binop operand lowering published %s row shape (%T), want %s",
+			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+		)
 	}
 	if drop {
 		// Reference returns keep=false plus an incompatible-types info
 		// annotation. Cerberus has no info-annotation wire channel, but
 		// matches the accepted empty result.
-		return &chplan.Filter{Input: hp, Predicate: &chplan.LitBool{V: false}}, nil
+		return &chplan.Filter{Input: node, Predicate: &chplan.LitBool{V: false}}, nil
 	}
-	return scaleHistogramProjection(hp, op, scale, s), nil
+	return scaleHistogramProjection(node, op, scale, s), nil
 }
 
 // scaleHistogramProjection wraps hp in a Project that scales it by
