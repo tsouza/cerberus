@@ -1253,12 +1253,17 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 		AggFuncs:           shaping.aggs,
 		DropEmptyOnNoGroup: true,
 	}
+	// Bound the cross-series merge before the union/ladder Projects below
+	// ever read it — issue #2408's own audited "Proposed next step": this
+	// stage is the shared, previously-unguarded dominant cost regardless of
+	// which per-series mechanism fed perSeries. See classic_bucket_merge_bound.go.
+	guardedAgg := wrapClassicBucketMergeBudgetGuard(agg)
 
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
 	// column (rebuilt from the gkey aliases) plus the merged
 	// BucketCounts + ExplicitBounds pair.
-	rebuilt, cumulative := shaping.reshape(agg, []chplan.Projection{
+	rebuilt, cumulative := shaping.reshape(guardedAgg, []chplan.Projection{
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
 

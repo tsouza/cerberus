@@ -1230,6 +1230,19 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RangeLWRFanoutBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// Same family again: the classic-histogram cross-series bucket merge
+	// (#2408) planted its own throwIf — the shared classicBucketMergeShaping
+	// stage every per-series lowering mechanism (fan-out, native rate
+	// ladder, window-slide) feeds, found by a real audited benchmark to be
+	// the dominant unguarded cost at realistic query width. Same 422
+	// errorType=execution "resource exhausted" shape as the histogram
+	// merge guard above.
+	case throwIfMessageMatches(err, chplan.ClassicBucketMergeBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chplan.ClassicBucketMergeBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }
