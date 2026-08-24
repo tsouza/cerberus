@@ -1,0 +1,44 @@
+-- query.promql --
+info(latency_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2509: info(v) hard-rejected any histogram-valued base
+-- vector via expHistogramSelectorRouting's catch-all — lowerInfo lowered
+-- arg[0] through the generic lower() dispatch with no
+-- lowerExpHistogramValuedShape check. Reference Prometheus's info()
+-- (promql/info.go::evalInfo/addToSeries) copies a histogram sample in
+-- the base vector through unchanged rather than dropping it, so the
+-- expected output here is the SAME histogram rows a bare
+-- `latency_exp_hist` selector produces, each enriched with the matching
+-- target_info series' data labels (job/instance identify the join; a
+-- base-carried label like job is never overwritten by the info side).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('latency_exp_hist', map('job', 'api', 'instance', 'i1'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []),
+    ('latency_exp_hist', map('job', 'db',  'instance', 'i2'), toDateTime64('2026-01-01 00:00:00', 9), 4, 10.0, 0, 0, 0, [7],        0, []);
+INSERT INTO otel_metrics_gauge VALUES
+    ('target_info', map('job', 'api', 'instance', 'i1', 'version', '1.2.3'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('target_info', map('job', 'db',  'instance', 'i2', 'version', '4.5.6'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
+-- expected_rows --
+[]
