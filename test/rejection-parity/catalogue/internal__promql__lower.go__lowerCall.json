@@ -9,7 +9,7 @@
       "evidence": {
         "guard": [
           "past returning if c.Func.Name == \"quantile_over_time\"",
-          "past exhaustive switch c.Func.Name over [case \"absent\"; case \"clamp\", \"clamp_min\", \"clamp_max\"; case \"histogram_quantile\"; case \"histogram_quantiles\"; case \"histogram_count\", \"histogram_sum\", \"histogram_avg\", \"histogram_stddev\", \"histogram_stdvar\", \"histogram_fraction\"; case \"label_replace\"; case \"label_join\"; case \"info\"; case \"time\"; case \"vector\"; case \"year\", \"month\", \"day_of_month\", \"day_of_week\", \"day_of_year\", \"days_in_month\", \"hour\", \"minute\", \"timestamp\"; case \"sort\", \"sort_desc\"; case \"sort_by_label\", \"sort_by_label_desc\"; case \"scalar\"; case \"range\", \"step\"; case \"start\", \"end\"; case \"pi\"]",
+          "past exhaustive switch c.Func.Name over [case \"absent\"; case \"clamp\", \"clamp_min\", \"clamp_max\"; case \"histogram_quantile\"; case \"histogram_quantiles\"; case \"histogram_count\", \"histogram_sum\", \"histogram_avg\", \"histogram_stddev\", \"histogram_stdvar\", \"histogram_fraction\"; case fnLabelReplace; case fnLabelJoin; case \"info\"; case \"time\"; case \"vector\"; case \"year\", \"month\", \"day_of_month\", \"day_of_week\", \"day_of_year\", \"days_in_month\", \"hour\", \"minute\", \"timestamp\"; case \"sort\", \"sort_desc\"; case \"sort_by_label\", \"sort_by_label_desc\"; case \"scalar\"; case \"range\", \"step\"; case \"start\", \"end\"; case \"pi\"]",
           "past returning if chFn, ok := instantFnCH[c.Func.Name]; ok"
         ],
         "callers": [
