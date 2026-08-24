@@ -389,6 +389,21 @@ type wsCell struct {
 	anchor string
 }
 
+// NOTE (issue #2511): promql.WindowSlideClassicHistogramWindowLowerer's
+// LowerClassicHistogramWindow calls windowSlideEligible, which is currently
+// gated off unconditionally by windowSlideDisabledPending2511 (internal/
+// promql/histogram_quantile_window_slide.go) — a real chDB/testcontainers
+// benchmark found the mechanism OOMs at every tested Lookback/Step ratio in
+// production. While that gate is active, runWSEmit's windowSlide=true arm
+// ALSO falls through to FanoutClassicHistogramWindowLowerer (the same
+// lowerer the windowSlide=false arm resolves to), so this test currently
+// compares the fan-out against itself and cannot discriminate a real
+// window-slide arithmetic bug. It is left running rather than deleted or
+// skipped: it still runs real chDB queries, it will start discriminating
+// again immediately once windowSlideDisabledPending2511 flips back to
+// false, and the mechanism's own row-shape regression test
+// (range_bucket_window_slide_row_shape_chdb_test.go) exercises
+// chplan.RangeBucketWindowSlide directly and is unaffected by this gate.
 func TestWindowSlideClassicHistogramLadder_DualEmitParity(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 
