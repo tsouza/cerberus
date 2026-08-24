@@ -32,6 +32,22 @@
           "lowerCall"
         ]
       }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/info_fn.go:lowerInfo#c844565d",
+      "message": "promql: internal invariant violated: info() base is not a known histogram-valued shape: %v",
+      "class": "",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) \u003c 1 || len(c.Args) \u003e 2",
+          "if histogramBase",
+          "if err == nil \u0026\u0026 !matched"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
     }
   ]
 }
