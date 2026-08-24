@@ -43,6 +43,10 @@ var derivedShapeVerdicts = map[string]bool{
 	// below (which still names a real MetricName output, placeholder
 	// value or not).
 	"HistogramVectorJoin": true,
+	// MixedVectorJoin's own SELECT exposes the analogous
+	// `_mvj_L_*`/`_mvj_R_*`-prefixed aliases (internal/chsql/
+	// mixed_vector_join.go) — no bare MetricName column either.
+	"MixedVectorJoin": true,
 
 	// Everything else keeps the canonical columns in scope (or is
 	// re-canonicalised by its own emit, as a nested VectorSetOp is).

@@ -82,6 +82,7 @@ var resourceBoundClassification = map[string]struct {
 	"VectorJoin":               {boundRuntimeNet, "axis 4: on()/ignoring() match join over two bounded vectors; max_memory_usage"},
 	"HistogramVectorJoin":      {boundRuntimeNet, "axis 4: group_left()/group_right() match join between two bounded histogram-valued operand vectors (VectorJoin's many-to-one counterpart for native histograms); max_memory_usage"},
 	"HistogramFloatVectorJoin": {boundRuntimeNet, "axis 4: MUL/DIV histogram-scaling match join between a bounded histogram-valued operand and a bounded float-valued operand vector (VectorJoin's per-row-scale-factor counterpart for native histograms); max_memory_usage"},
+	"MixedVectorJoin":          {boundRuntimeNet, "axis 4: vector-vector arithmetic/comparison match join between two bounded mixed float/histogram operand vectors (VectorJoin's fourteen-column counterpart for a mixed `or` on both sides, issue #2449); max_memory_usage"},
 	"VectorSetOp":              {boundStructural, "and/or/unless — ≤ the union of the two bounded operand vectors"},
 	"UnionAll":                 {boundStructural, "≤ the sum of its bounded inputs"},
 }
