@@ -314,3 +314,52 @@ func TestVectorVectorArithmeticOverMixedSetOpOr_ChDB(t *testing.T) {
 		}
 	})
 }
+
+// TestVectorVectorPowModAtan2OverMixedSetOpOr_ChDB proves the `^`/`%`/
+// `atan2` piece of cerberus issue #2449 against a real chDB execution:
+// reference Prometheus's own vectorElemBinop drops EVERY
+// histogram-involving combination for these three ops (verified against
+// the vendored tsouza/prometheus:cerberus-parser fork — see
+// histogram_native_mixed_or_vector_arithmetic.go's header), so only "ff"
+// (float,float) should survive with the correct computed value; "fh",
+// "hf" and "hh" must all drop.
+func TestVectorVectorPowModAtan2OverMixedSetOpOr_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, mvvSeed)
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	q := mvvQuantileBaseline
+
+	assertOnlyFloatFloatSurvives := func(t *testing.T, rows map[string]mvvRow, want float64) {
+		t.Helper()
+		ff, ok := rows["ff"]
+		if !ok {
+			t.Fatalf("ff: no row, want one (float,float survives)")
+		}
+		if ff.disc != 0 {
+			t.Errorf("ff: disc = %d, want 0", ff.disc)
+		}
+		if math.Abs(ff.val-want) > 1e-9 {
+			t.Errorf("ff: Value = %v, want %v", ff.val, want)
+		}
+		for _, series := range []string{"fh", "hf", "hh"} {
+			if _, ok := rows[series]; ok {
+				t.Errorf("%s: got a row, want none (a histogram-involving pair always drops for this op)", series)
+			}
+		}
+	}
+
+	t.Run("^", func(t *testing.T) {
+		rows := mvvRunQuery(t, fixture, s, p, mvvLHSExpr()+" ^ "+mvvRHSExpr())
+		assertOnlyFloatFloatSurvives(t, rows, math.Pow(q, q))
+	})
+
+	t.Run("%", func(t *testing.T) {
+		rows := mvvRunQuery(t, fixture, s, p, mvvLHSExpr()+" % "+mvvRHSExpr())
+		assertOnlyFloatFloatSurvives(t, rows, math.Mod(q, q))
+	})
+
+	t.Run("atan2", func(t *testing.T) {
+		rows := mvvRunQuery(t, fixture, s, p, mvvLHSExpr()+" atan2 "+mvvRHSExpr())
+		assertOnlyFloatFloatSurvives(t, rows, math.Atan2(q, q))
+	})
+}

@@ -136,31 +136,64 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorScaledArithmetic(t *testing
 // Vector-vector COMPARISONS over two mixed `or` operands are implemented
 // by histogram_native_mixed_or_vector_comparison.go, whose own test file
 // (histogram_native_mixed_or_vector_comparison_test.go) pins the
-// four-combination plan shape. `^`/`%`/`atan2` over two mixed `or`
-// operands, and a mixed `or` operand paired with a plain (non-mixed)
-// vector, remain cerberus issue #2449's open scope (see this package's
-// histogram_native_mixed_or_vector_arithmetic.go header for the full
-// accounting).
+// four-combination plan shape. A mixed `or` operand paired with a plain
+// (non-mixed) vector remains cerberus issue #2449's open scope (see this
+// package's histogram_native_mixed_or_vector_arithmetic.go header for
+// the full accounting).
 
-// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowStillRejects pins
-// that `^`/`%`/`atan2` over two mixed `or` operands remain unimplemented
-// even for the float,float combination — this recognizer only matches
-// `+`, `-`, `*`, `/` (see histogram_native_mixed_or_vector_arithmetic.go's
-// header for why).
-func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowStillRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowModAtan2 pins
+// cerberus issue #2449's `^`/`%`/`atan2` wrapper family: reference
+// Prometheus drops EVERY histogram-involving combination for these three
+// ops (see histogram_native_mixed_or_vector_arithmetic.go's header,
+// verified against vectorElemBinop), so the lowered plan keeps the full
+// fourteen-column Mixed shape's structure but its keep predicate is
+// `L.disc = 0 AND R.disc = 0` rather than the additive fold's "same
+// type" test.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowModAtan2(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	query := mixedOrExpr + " ^ " + mixedOrExpr
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+	for _, op := range []string{"^", "%", "atan2"} {
+		op := op
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			query := mixedOrExpr + " " + op + " " + mixedOrExpr
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.MixedRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s", query, shape, chplan.MixedRowShape)
+			}
+			proj, ok := plan.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", query, plan)
+			}
+			if len(proj.Projections) != 14 {
+				t.Fatalf("lower(%q): plan root projects %d columns, want 14 (the fourteen-column Mixed shape)", query, len(proj.Projections))
+			}
+			if proj.Projections[0].Alias != s.MetricNameColumn {
+				t.Fatalf("lower(%q): first projection alias = %q, want %q", query, proj.Projections[0].Alias, s.MetricNameColumn)
+			}
+			last := proj.Projections[len(proj.Projections)-1]
+			if last.Alias != chplan.MixedDiscriminatorColumn {
+				t.Fatalf("lower(%q): last projection alias = %q, want %q", query, last.Alias, chplan.MixedDiscriminatorColumn)
+			}
+			filter, ok := proj.Input.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter (the float,float-only keep predicate)", query, proj.Input)
+			}
+			if _, ok := filter.Input.(*chplan.MixedVectorJoin); !ok {
+				t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.MixedVectorJoin", query, filter.Input)
+			}
+		})
 	}
 }
 
