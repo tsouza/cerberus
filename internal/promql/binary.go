@@ -141,11 +141,11 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		// emitter's "many" aggregation handles by construction).
 	}
 
-	left, err := lower(b.LHS, s, ctx)
+	left, err := lowerVectorVectorOperand(b.LHS, s, ctx)
 	if err != nil {
 		return nil, err
 	}
-	right, err := lower(b.RHS, s, ctx)
+	right, err := lowerVectorVectorOperand(b.RHS, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -651,6 +651,82 @@ func tryScalarLiteral(e parser.Expr) (float64, bool) {
 	return TryFoldScalar(e)
 }
 
+// lowerScalarBinopOperand lowers [lowerVectorScalar]'s vec argument,
+// trying the exp-histogram "preserve"/"drop" family opt-in first — exactly
+// as every wrapper callsite in this package already does (a Call's single
+// vector argument, an AggregateExpr's Expr — cerberus issues
+// #2221/#2345/#2456/#2498/#2528) — before falling back to the plain
+// [lower] dispatcher.
+//
+// This closes a structurally different gap from those wrapper callsites
+// (cerberus issue #2534): [lowerVectorScalar] is reached from lowerRoot's
+// own final `lower(expr, s, ctx)` fallback only after every dedicated
+// histogram/scalar recogniser — lowerRoot's own dispatch chain, and
+// [lowerExpHistogramValuedShape]'s own [expHistogramScalarBinop] entry —
+// has already failed to match the WHOLE outer expression. Both that
+// recogniser and its drop-family sibling [expHistogramDroppingScalarBinop]
+// match unconditionally whenever vec is directly histogram-valued (there
+// is no vector-matching mode for a scalar operand to gate on), so by
+// construction vec can never be DIRECTLY one of those shapes here — an
+// outer recogniser would already have claimed the whole expression first.
+// What escapes undetected is a NESTED composition vec happens to be — a
+// drop-family (or preserve-family) binop as ANOTHER binop's own operand,
+// e.g. `(demo_latency_exp_hist + 0) * 2` — which none of the outer
+// recognisers look inside far enough to see, because they only ever
+// inspect the binop's own immediate LHS/RHS, not a further nested
+// sub-expression's OWN operand structure.
+// [lowerExpHistogramArgAsCanonicalFloat] already tries both families and
+// reprojects either to the canonical (MetricName, Attributes, TimeUnix,
+// Value) quartet [lowerVectorScalar]'s own arithmetic already expects from
+// a plain [lower] result, so no further plumbing is needed once matched.
+//
+// Deliberately NOT reused for [lowerVectorVector]'s two operands — see
+// [lowerVectorVectorOperand]'s own doc for why the vector-vector case
+// needs a narrower opt-in.
+func lowerScalarBinopOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(expr, s, ctx); ok {
+		return node, err
+	}
+	return lower(expr, s, ctx)
+}
+
+// lowerVectorVectorOperand lowers one operand of [lowerVectorVector]
+// (LHS or RHS), trying ONLY the exp-histogram "drop" family's nested-
+// composition opt-in before falling back to the generic [lower]
+// dispatcher — unlike [lowerScalarBinopOperand] (the scalar-operand
+// sibling this mirrors for cerberus issue #2534), it deliberately does
+// NOT also try the "preserve" family.
+//
+// A drop-family match answers reference's genuinely, unconditionally
+// EMPTY result: composing an already-empty vector under ANY further
+// vector-vector op or matching mode is still empty, regardless of whether
+// cerberus's join machinery happens to support that op/matching-mode
+// combination for a NON-empty histogram operand — so resolving it eagerly
+// here can never disagree with a matching-mode-aware outer recogniser.
+//
+// The "preserve" family cannot take the same shortcut: a histogram-valued
+// operand is a real, non-empty value that must still flow through the
+// correct vector-vector JOIN — and matching-mode-sensitive recognisers
+// like [expHistogramFloatVectorScalingBinop]
+// (histogram_native_float_vector_scaling_binop.go) deliberately decline
+// some on()/group_left()/group_right() combinations that shape does not
+// yet support, in which case the query must keep hard-rejecting rather
+// than silently discarding the join and answering an empty result.
+// Because a DIRECTLY-valued V-V operand is otherwise always claimed by
+// one of lowerRoot's own exhaustive, matching-mode-aware dispatches
+// before [lowerVectorVector]'s generic fallback is ever reached, trying
+// the "preserve" family here would only ever fire on exactly those
+// deliberately-unsupported combinations — silently downgrading a correct
+// rejection into a wrong empty answer. See
+// TestLower_ExpHistogram_FloatVectorScalingBinopStillRejected for the
+// regression this scoping avoids.
+func lowerVectorVectorOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
+		return dropped, err
+	}
+	return lower(expr, s, ctx)
+}
+
 // lowerVectorScalar lowers a binary expression mixing a vector and a
 // scalar. Arithmetic ops are mapped through a Project that replaces
 // `Value` with `(scalar OP Value)` or `(Value OP scalar)`. Comparison ops
@@ -661,7 +737,7 @@ func tryScalarLiteral(e parser.Expr) (float64, bool) {
 // scalarOnLeft flips the operand order — important for non-commutative
 // ops like SUB and DIV and for comparisons (`5 > up` vs `up > 5`).
 func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, scalar float64, scalarOnLeft, returnBool bool, ctx lowerCtx) (chplan.Node, error) {
-	inner, err := lower(vec, s, ctx)
+	inner, err := lowerScalarBinopOperand(vec, s, ctx)
 	if err != nil {
 		return nil, err
 	}

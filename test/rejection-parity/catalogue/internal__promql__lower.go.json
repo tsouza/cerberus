@@ -94,8 +94,8 @@
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59",
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "(demo_latency_exp_hist + 0) * 2",
-      "tracking_issue": 2534,
+      "trigger_query": "histogram_quantile(0.5, demo_latency_exp_hist) * on(service) demo_latency_exp_hist",
+      "tracking_issue": 2537,
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
@@ -129,7 +129,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) and lowerMixedExpHistogramOperands (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering — cerberus issue #2346 — can share the same operand lowering) re-enter lower() for one BinaryExpr operand of an already-parsed vector-vector query apiece, likewise typechecker-constrained to a vector, so neither widens the set either; the #2346 split adds lowerSumOrAvgOverMixedExpHistogramSetOp as a second CALLER of lowerMixedExpHistogramOperands, but not a new re-entry into lower() itself — the operand it forwards is unchanged. lowerVectorSetOpOperand (cerberus issue #2325) replaces binary.go's lowerVectorSetOp as the direct caller: lowerVectorSetOp no longer calls lower() itself, routing both its and/or/unless operands through this helper instead, which forwards to lower() only the operand it has itself confirmed is NOT exp-histogram-valued — the same already-parsed, typechecker-constrained-to-vector expr lowerVectorSetOp used to pass straight through — so it narrows rather than widens too. lowerExpHistogramFloatVectorScalingBinop (cerberus issue #2339) re-enters lower() only for the float-valued operand of an already-parsed MUL/DIV BinaryExpr, likewise typechecker-constrained to a vector, so it doesn't widen the set either. lowerScalarVectorArg (cerberus issue #2515) replaces lowerScalarArg's own direct lower() call for scalar()'s vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and answers via dropExpHistogramSamples, forwarding to lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector scalar() argument lowerScalarArg used to pass straight through — so it narrows rather than widens too. lowerLimitKInput (cerberus issue #2518) replaces lowerLimitK's and lowerLimitRatio's own direct lower() calls for their vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and forwards the input unchanged, calling lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector aggregate argument lowerLimitK/lowerLimitRatio used to pass straight through — so it narrows rather than widens too. lowerTopKComputed's own direct lower() call is unchanged for topk/bottomk (a purely histogram-valued input is intercepted upstream by droppingAggregationOverExpHistogram before ever reaching it); for limitk it now routes through lowerLimitKInput exactly as the literal-K path does.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) and lowerMixedExpHistogramOperands (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering — cerberus issue #2346 — can share the same operand lowering) re-enter lower() for one BinaryExpr operand of an already-parsed vector-vector query apiece, likewise typechecker-constrained to a vector, so neither widens the set either; the #2346 split adds lowerSumOrAvgOverMixedExpHistogramSetOp as a second CALLER of lowerMixedExpHistogramOperands, but not a new re-entry into lower() itself — the operand it forwards is unchanged. lowerVectorSetOpOperand (cerberus issue #2325) replaces binary.go's lowerVectorSetOp as the direct caller: lowerVectorSetOp no longer calls lower() itself, routing both its and/or/unless operands through this helper instead, which forwards to lower() only the operand it has itself confirmed is NOT exp-histogram-valued — the same already-parsed, typechecker-constrained-to-vector expr lowerVectorSetOp used to pass straight through — so it narrows rather than widens too. lowerExpHistogramFloatVectorScalingBinop (cerberus issue #2339) re-enters lower() only for the float-valued operand of an already-parsed MUL/DIV BinaryExpr, likewise typechecker-constrained to a vector, so it doesn't widen the set either. lowerScalarVectorArg (cerberus issue #2515) replaces lowerScalarArg's own direct lower() call for scalar()'s vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and answers via dropExpHistogramSamples, forwarding to lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector scalar() argument lowerScalarArg used to pass straight through — so it narrows rather than widens too. lowerLimitKInput (cerberus issue #2518) replaces lowerLimitK's and lowerLimitRatio's own direct lower() calls for their vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and forwards the input unchanged, calling lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector aggregate argument lowerLimitK/lowerLimitRatio used to pass straight through — so it narrows rather than widens too. lowerTopKComputed's own direct lower() call is unchanged for topk/bottomk (a purely histogram-valued input is intercepted upstream by droppingAggregationOverExpHistogram before ever reaching it); for limitk it now routes through lowerLimitKInput exactly as the literal-K path does. lowerScalarBinopOperand and lowerVectorVectorOperand (cerberus issue #2534, binary.go) replace lowerVectorScalar's and lowerVectorVector's own direct lower() calls for their vector operand(s): lowerScalarBinopOperand recognises an exp-histogram preserve- or drop-family argument via lowerExpHistogramArgAsCanonicalFloat first, forwarding to lower() only when that check comes back unmatched, and lowerVectorVectorOperand recognises a drop-family argument via lowerExpHistogramDroppingShape first — deliberately not the preserve family, since a directly-valued vector-vector operand is always already claimed by one of lowerRoot's own matching-mode-aware dispatches before lowerVectorVector's generic fallback runs, see lowerVectorVectorOperand's own doc comment — forwarding to lower() only when that check comes back unmatched too. In both cases the argument lower() ultimately receives is the identical already-parsed, typechecker-constrained-to-vector operand lowerVectorScalar/lowerVectorVector used to pass straight through before this issue's fix, so neither widens the set either.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -156,20 +156,22 @@
           "lowerMixedExpHistogramOperands",
           "lowerRoot",
           "lowerRoundToNearest",
+          "lowerScalarBinopOperand",
           "lowerScalarVectorArg",
           "lowerSort",
           "lowerSortByLabel",
           "lowerTopK",
           "lowerTopKComputed",
           "lowerUnary",
-          "lowerVectorScalar",
           "lowerVectorSetOpOperand",
-          "lowerVectorVector"
+          "lowerVectorVectorOperand"
         ],
         "cited": [
           "dropExpHistogramSamples",
           "droppingAggregationOverExpHistogram",
           "lower",
+          "lowerExpHistogramArgAsCanonicalFloat",
+          "lowerExpHistogramDroppingShape",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramValuedShape",
@@ -181,11 +183,15 @@
           "lowerMixedExpHistogramSetOp",
           "lowerRoot",
           "lowerScalarArg",
+          "lowerScalarBinopOperand",
           "lowerScalarVectorArg",
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
           "lowerTopKComputed",
+          "lowerVectorScalar",
           "lowerVectorSetOp",
-          "lowerVectorSetOpOperand"
+          "lowerVectorSetOpOperand",
+          "lowerVectorVector",
+          "lowerVectorVectorOperand"
         ]
       }
     },
