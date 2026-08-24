@@ -59,19 +59,11 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 	switch c.Func.Name {
 	case "round":
 		if len(c.Args) == 2 {
-			if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
-				if err != nil {
-					return nil, err
-				}
-				return dropExpHistogramSamples(hist, s), nil
-			}
-			// Nested drop-family argument (cerberus issue #2528) — see
-			// the unary-function branch below for the full rationale.
-			if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
-				if err != nil {
-					return nil, err
-				}
-				return dropped, nil
+			// Nested drop-family argument recognised too (cerberus issue
+			// #2528) — see the unary-function branch below for the full
+			// rationale.
+			if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(c.Args[0], s, ctx); ok {
+				return node, err
 			}
 			return lowerRoundToNearest(c, s, ctx)
 		}
@@ -81,24 +73,14 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 		return nil, fmt.Errorf("promql: %s with %d arguments is unsupported (instant math fns are unary)",
 			c.Func.Name, len(c.Args))
 	}
-	if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
-		if err != nil {
-			return nil, err
-		}
-		return dropExpHistogramSamples(hist, s), nil
-	}
-	// A nested drop-family argument (cerberus issue #2528) — e.g.
-	// `abs(demo_latency_exp_hist + 0)`. Reference's simpleFloatFunc skips
-	// every H-set sample regardless of how the argument's own value was
-	// derived, so an already-empty argument stays empty; the canonical
-	// empty shape [lowerExpHistogramDroppingShape] already built is the
-	// answer as-is, with no chFn(Value) rewrite to apply since no row
-	// survives to read it.
-	if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
-		if err != nil {
-			return nil, err
-		}
-		return dropped, nil
+	// A histogram-VALUED argument reprojects to the canonical empty float
+	// quartet (Prom's simpleFloatFunc skips every H-set sample). A nested
+	// drop-family argument (cerberus issue #2528) — e.g.
+	// `abs(demo_latency_exp_hist + 0)` — is already that same empty shape,
+	// so no chFn(Value) rewrite is needed either: no row survives to read
+	// it.
+	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(c.Args[0], s, ctx); ok {
+		return node, err
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
@@ -205,23 +187,12 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 // exactly as dropExpHistogramSamples does for the unary math functions.
 func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) >= 1 {
-		if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
-			if err != nil {
-				return nil, err
-			}
-			return dropExpHistogramSamples(hist, s), nil
-		}
-		// A nested drop-family argument (cerberus issue #2528) — e.g.
-		// `clamp_min(demo_latency_exp_hist + 0, 1)`. See lowerInstantFn's
-		// own comment for the shared rationale: an already-empty argument
-		// composes for free, so the canonical empty shape
-		// [lowerExpHistogramDroppingShape] already built is the answer
-		// as-is.
-		if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
-			if err != nil {
-				return nil, err
-			}
-			return dropped, nil
+		// See lowerInstantFn's own comment for the shared rationale
+		// (histogram-valued and drop-family arguments alike, cerberus
+		// issues #2345 and #2528): an already-empty argument composes for
+		// free.
+		if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(c.Args[0], s, ctx); ok {
+			return node, err
 		}
 	}
 	switch c.Func.Name {

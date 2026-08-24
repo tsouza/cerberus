@@ -88,24 +88,13 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		// through to the generic lower() dispatch below and hit
 		// expHistogramSelectorRouting's catch-all rejection instead of
 		// Prom's drop-and-answer-empty semantics (cerberus issue #2498).
-		if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
-			if err != nil {
-				return nil, err
-			}
-			return dropExpHistogramSamples(hist, s), nil
-		}
-		// A nested drop-family argument (cerberus issue #2528) — e.g.
-		// `day_of_month(demo_latency_exp_hist + 0)`. That argument
-		// already evaluates to an empty vector under reference
-		// Prometheus, so this eight-function family's own "process only
-		// float samples" drop is a no-op on top of it; the canonical
-		// empty shape [lowerExpHistogramDroppingShape] already built is
-		// the answer as-is.
-		if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
-			if err != nil {
-				return nil, err
-			}
-			return dropped, nil
+		// lowerExpHistogramArgAsCanonicalFloat also recognises a NESTED
+		// drop-family argument (cerberus issue #2528) — e.g.
+		// `day_of_month(demo_latency_exp_hist + 0)` — which already
+		// evaluates to empty, so this family's own float-only drop is a
+		// no-op on top of it.
+		if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(c.Args[0], s, ctx); ok {
+			return node, err
 		}
 	}
 

@@ -97,3 +97,27 @@ func floatShapedExpHistogramDrop(alreadyEmpty chplan.Node, s schema.Metrics) chp
 		},
 	}
 }
+
+// lowerExpHistogramArgAsCanonicalFloat is the shared "argument opt-in" every
+// float-only wrapper in this package threads before falling back to the
+// generic [lower] dispatcher (cerberus issues #2221/#2345/#2456/#2498, and
+// — for the drop-family half — #2528): arg may be histogram-VALUED (the
+// "preserve" family, reprojected to the canonical empty float quartet via
+// [dropExpHistogramSamples], since these wrappers read only Value) or
+// itself one of the "drop" family's shapes (already reprojected the
+// identical way by [lowerExpHistogramDroppingShape]). Folding both checks
+// into one function — rather than two sequential `if …, ok := …; ok { … }`
+// blocks at every callsite — keeps each callsite a single flat branch
+// instead of tripping golangci-lint's nestif complexity gate.
+func lowerExpHistogramArgAsCanonicalFloat(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
+		if err != nil {
+			return nil, true, err
+		}
+		return dropExpHistogramSamples(hist, s), true, nil
+	}
+	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
+		return dropped, true, err
+	}
+	return nil, false, nil
+}
