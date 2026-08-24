@@ -5,21 +5,22 @@
       "site": "internal/promql/binary.go:lowerVectorSetOp#4924e0ba",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them",
       "class": "divergence",
-      "trigger_query": "(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) or demo_num_cpus",
-      "tracking_issue": 2555,
+      "trigger_query": "(sum(demo_latency_exp_hist) and demo_num_cpus) or demo_http_requests_total",
+      "tracking_issue": 2571,
       "evidence": {
         "guard": [
           "past returning if err != nil",
           "past returning if b.ReturnBool",
           "past returning if err != nil",
           "past returning if err != nil",
-          "if kind == chplan.VectorSetOr \u0026\u0026 leftHistogram != rightHistogram"
+          "if kind == chplan.VectorSetOr",
+          "case leftHistogram != rightHistogram of switch"
         ],
         "callers": [
           "lowerBinary"
         ]
       },
-      "since": "2026-08-17"
+      "since": "2026-08-24"
     },
     {
       "head": "promql",

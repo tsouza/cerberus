@@ -42,17 +42,17 @@ import (
 // shape and internal/chclient/cursor.go's shapeSampleMixed is the decode
 // side that reads the discriminator per row.
 //
-// Deliberately root-only. [mixedExpHistogramSetOp] is registered in
+// Deliberately root-only as a RECOGNIZER — but not, since cerberus
+// issue #2555, as a NODE. [mixedExpHistogramSetOp] is registered in
 // [lowerRoot] directly — NOT inside [lowerExpHistogramValuedShape]'s
-// recursive dispatch table the way [expHistogramSetOp] is — so THIS
-// recognizer's own Mixed node is only ever the WHOLE query's plan; it
-// never composes under a further wrapper simply by NESTING (the way a
-// histogram-valued shape composes through [lowerExpHistogramValuedShape]'s
-// recursion). Any wrapper that DOES compose over a mixed `or` (the two
-// exceptions immediately below) needs its OWN sibling root-only
-// recognizer, registered in [lowerRoot] next to this one, rather than
-// falling out of this recognizer's registration for free. That is a
-// deliberate scope line, not an oversight: every generic forwarder
+// recursive dispatch table the way [expHistogramSetOp] is — so it never
+// fires merely because SOME expression nested arbitrarily deep happens
+// to look like `(a or b)`; every wrapper that composes over its Mixed
+// result (the three exceptions below, the last one added by #2555) has
+// its own explicit, deliberate recognition of that composition rather
+// than inheriting it implicitly the way a histogram-valued shape
+// composes through [lowerExpHistogramValuedShape]'s recursion. That is
+// a deliberate scope line, not an oversight: every generic forwarder
 // (projectValueOverInner, projectAttributesOverInner) that reads `Value`
 // unconditionally would silently drop the histogram on a Mixed result's
 // histogram-shaped rows, where Value is only ever the placeholder — see
@@ -86,6 +86,30 @@ import (
 // has grown a MixedRowShape branch, because a label rewrite touches only
 // Attributes and needs no per-payload conditional the way a value
 // transform would.
+//
+// A further vector set operator (`and`/`or`/`unless`) wrapping a mixed
+// `or` ALSO composes, since cerberus issue #2555 — but through a THIRD
+// mechanism, distinct from both cases above: neither a sibling root-only
+// recognizer (the `sum`/`avg` and `label_replace`/`label_join` pattern)
+// nor a recursive dispatch-table entry (the way a histogram-valued shape
+// composes through [lowerExpHistogramValuedShape]). Instead,
+// histogram_native_set_op.go's [lowerVectorSetOpOperand] — the helper
+// binary.go's [lowerVectorSetOp] already uses to lower EACH operand of
+// an outer `and`/`or`/`unless` — checks [mixedExpHistogramSetOp] on that
+// OPERAND expression directly and routes a match through THIS function.
+// That is necessary rather than merely sufficient: [lowerVectorSetOp]
+// is reachable for an `and`/`or`/`unless` node that is NOT the query
+// root (any nesting the generic `lower()` BinaryExpr dispatch reaches),
+// so a sibling root-only recognizer registered next to this one in
+// [lowerRoot] would never fire for it — the outer set op's own AST node
+// is not, itself, `(a or b)` shaped. `and`/`unless` forward the Mixed
+// operand's own fourteen columns unchanged (see
+// internal/chsql/vector_set_op.go's vectorSetOpCanonicalArmFrag /
+// vectorSetOpOutputCols); `or` composes a Mixed operand with a
+// Histogram-shaped, Sample-shaped, or another Mixed-shaped other arm
+// (mixedVectorSetOpArmFrag) the same way it already composes the
+// two-pure-shapes case this function itself builds. See
+// [chplan.VectorSetOp.Mixed]'s doc comment for the full picture.
 func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, false

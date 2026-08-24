@@ -190,6 +190,23 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 // Sample row shape a plain float operand would; no set-op-specific
 // wrapping is needed.
 //
+// A MIXED `or` operand — `(demo_latency_exp_hist or
+// histogram_quantile(0.5, demo_latency_exp_hist)) and ...` (cerberus issue
+// #2555) — routes through [mixedExpHistogramSetOp] /
+// [lowerMixedExpHistogramSetOp] (histogram_native_mixed_or.go) instead of
+// falling through to the generic [lower] below. Without this check, such
+// an operand would descend into [lower]'s own `*parser.BinaryExpr`
+// dispatch, which calls [lowerVectorSetOp] directly for a set-operator
+// node — reaching a NON-root call of that function, which never gets a
+// chance to resolve the inner `(a or b)` as Mixed (that recognition only
+// runs from [lowerRoot] and, since this check, from here) and instead
+// rejects at [lowerVectorSetOp]'s own `leftHistogram != rightHistogram`
+// guard. Checked after the both-histogram case just above (which the
+// mixed shape can never match — [mixedExpHistogramSetOp] requires
+// exactly one side histogram-valued) and before the drop-family case
+// below (a mixed `or`'s own arms are never a drop-family binop), so the
+// ordering cannot shadow either sibling.
+//
 // Every other operand — including a FLOAT-valued function that merely
 // reads a histogram selector as its own argument, like
 // histogram_quantile(), or an operand with no histogram involvement at
@@ -199,6 +216,9 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if isExpHistogramValuedShape(expr, s, ctx) {
 		return lowerExpHistogramSetOpOperand(expr, s, ctx)
+	}
+	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerMixedExpHistogramSetOp(b, s, ctx)
 	}
 	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
 		return dropped, err
