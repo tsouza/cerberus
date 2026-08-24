@@ -37,7 +37,8 @@
       "head": "promql",
       "site": "internal/promql/info_fn.go:lowerInfo#c844565d",
       "message": "promql: internal invariant violated: info() base is not a known histogram-valued shape: %v",
-      "class": "",
+      "class": "internal",
+      "rationale": "isExpHistogramValuedShape already proves c.Args[0] histogram-valued; lowerInfo reuses lowerExpHistogramValuedShape for that same expression, mirroring lowerExpHistogramDroppingAggregation's identical guard",
       "evidence": {
         "guard": [
           "past returning if len(c.Args) \u003c 1 || len(c.Args) \u003e 2",
@@ -46,6 +47,12 @@
         ],
         "callers": [
           "lowerCall"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramDroppingAggregation",
+          "lowerExpHistogramValuedShape",
+          "lowerInfo"
         ]
       }
     }
