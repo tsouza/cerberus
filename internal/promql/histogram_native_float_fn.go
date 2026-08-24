@@ -46,6 +46,20 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
 		return plan, true, err
 	}
+	// The vector-scaling sibling of the literal-scalar case just above
+	// (cerberus issue #2540, widening #2339/#2342/#2537's own recognizer
+	// into this shared dispatch table): threading it in here is what lets
+	// [mergeableExpHistogramAggregate]'s recursion just above resolve
+	// `sum(hist * on(x) group_left() float)`'s inner MUL as
+	// histogram-valued, and lets every OTHER consumer of this function
+	// (count()/group(), count_values(), the drop-family aggregations, a
+	// histogram-histogram binop operand, a set-op operand) lower it the
+	// same way [isExpHistogramValuedShape]'s own sibling widening lets
+	// them recognise it.
+	if histSide, floatSide, op, match, card, include, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, match, card, include, s, ctx)
+		return plan, true, err
+	}
 	if lhs, rhs, sub, vm, ok := expHistogramHistogramBinop(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramHistogramBinop(lhs, rhs, sub, vm, s, ctx)
 		return plan, true, err
