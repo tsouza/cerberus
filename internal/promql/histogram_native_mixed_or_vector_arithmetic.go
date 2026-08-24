@@ -88,6 +88,25 @@ import (
 // outright, `bool` or not, because reference's `err` check runs before
 // the `bool`-modifier override).
 //
+// POW/MOD/ATAN2 (`^`, `%`, `atan2`) are a separate case from the four
+// arithmetic ops above, verified against the SAME vendored
+// `tsouza/prometheus:cerberus-parser` fork's `vectorElemBinop`: reference
+// drops EVERY histogram-involving combination for these three ops —
+// float,histogram; histogram,float; AND histogram,histogram all hit
+// `NewIncompatibleTypesInBinOpInfo` — unlike MUL/DIV, which keep three of
+// the four combinations, POW/MOD/ATAN2 keep ONLY float,float. That float,
+// float result is computed exactly as the plain (non-mixed) float path
+// already does, via [chplan.OpPow]/[chplan.OpMod]/[chplan.OpAtan2]
+// (internal/chsql/builder.go's exprBinary renders `pow(l, r)`/Go-modulo/
+// `atan2(l, r)`). [lowerMixedVVFloatOnlyArithmetic] answers this: a
+// single keep predicate (both discriminators = 0) ahead of an
+// unconditional Value fold and an unconditional forward of L's own
+// (guaranteed-placeholder, post-filter) Histogram*Column fields — no
+// per-combination branching needed, since only one combination ever
+// survives. This is cerberus issue #2449's mixed-or vector-vector
+// POW/MOD/ATAN2 piece; a mixed `or` operand paired with a plain
+// (non-mixed) vector remains open under the same issue.
+//
 // group_left()/group_right() (Card other than CardOneToOne) IS supported:
 // see this file's [mixedVVManySide] / [mixedVVOneSide] and
 // [mixedVVOutputAttributesExpr] — cerberus issue #2449's ninth wrapper
@@ -115,13 +134,8 @@ func vectorVectorArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	switch b.Op {
-	case parser.ADD, parser.SUB, parser.MUL, parser.DIV:
+	case parser.ADD, parser.SUB, parser.MUL, parser.DIV, parser.POW, parser.MOD, parser.ATAN2:
 	default:
-		// POW, MOD, ATAN2: reference drops every histogram-involving
-		// combination for these ops too, but a bare float,float pair
-		// still computes normally — left unattempted here (falls through
-		// to the pre-existing rejection even for the float,float case),
-		// tracked as remaining scope under #2449 alongside comparisons.
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 	chOp, err := promBinaryOp(b.Op)
@@ -338,10 +352,16 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 		ValueColumn:      s.ValueColumn,
 	}
 
-	if op == chplan.OpAdd || op == chplan.OpSub {
+	switch op {
+	case chplan.OpAdd, chplan.OpSub:
 		return lowerMixedVVAdditiveArithmetic(join, op, s), nil
+	case chplan.OpMul, chplan.OpDiv:
+		return lowerMixedVVScaledArithmetic(join, op, s), nil
+	default:
+		// POW, MOD, ATAN2: see this file's header — only float,float
+		// survives.
+		return lowerMixedVVFloatOnlyArithmetic(join, op, s), nil
 	}
-	return lowerMixedVVScaledArithmetic(join, op, s), nil
 }
 
 // lowerMixedVVAdditiveArithmetic answers `+`/`-`: reference keeps the
@@ -695,4 +715,66 @@ func mixedVVFlipSource(op chplan.BinaryOp, rIsHist, whenR, whenL chplan.Expr) ch
 		return whenL
 	}
 	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{rIsHist, whenR, whenL}}
+}
+
+// mixedVVFloatOnlyHistogramColumns lists the nine Histogram*Column
+// fields [lowerMixedVVFloatOnlyArithmetic] forwards unconditionally from
+// L. Order does not matter (each is a distinct Projection alias); listed
+// in the same scalar/scale/offset/bucket-ladder grouping this file's
+// other two folds use.
+func mixedVVFloatOnlyHistogramColumns() []string {
+	return []string{
+		chplan.HistogramCountColumn, chplan.HistogramSumColumn, chplan.HistogramZeroCountColumn,
+		chplan.HistogramScaleColumn, chplan.HistogramZeroThresholdColumn,
+		chplan.HistogramPositiveOffsetColumn, chplan.HistogramPositiveBucketCountsColumn,
+		chplan.HistogramNegativeOffsetColumn, chplan.HistogramNegativeBucketCountsColumn,
+	}
+}
+
+// lowerMixedVVFloatOnlyArithmetic answers `^`/`%`/`atan2` (POW/MOD/
+// ATAN2): unlike [lowerMixedVVAdditiveArithmetic] and
+// [lowerMixedVVScaledArithmetic], reference keeps ONLY the float,float
+// combination for these three ops (see this file's header) — every
+// histogram-involving pair drops. The keep predicate is therefore
+// `L.disc = 0 AND R.disc = 0` rather than the additive fold's "same
+// type" test, and no per-combination source pick is needed for the nine
+// Histogram*Column fields: a surviving row is always float,float, so L's
+// own Histogram*Column fields are already the mixed `or` set-op's
+// all-zero, empty-bucket placeholder (the same placeholder
+// [lowerMixedVVAdditiveArithmetic]'s own header argues is harmless to
+// republish on a float,float row), and forwarding them unconditionally
+// is exactly as safe as reading L's Value unconditionally below — decode
+// never reads either on a discriminator-0 row.
+//
+// Shape:
+//
+//	Project [canonical quartet + nine Histogram*Column fields (forwarded
+//	         from L) + discriminator (forwarded from L, always 0 here)]
+//	  Filter keep=(L.disc = 0 AND R.disc = 0)
+//	    MixedVectorJoin
+func lowerMixedVVFloatOnlyArithmetic(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
+	keep := andExpr(mixedVVDiscEq(mixedVVJoinSideL, 0), mixedVVDiscEq(mixedVVJoinSideR, 0))
+	filtered := &chplan.Filter{Input: join, Predicate: keep}
+
+	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)
+	rValue := mixedJoinFieldRef(mixedVVJoinSideR, s.ValueColumn)
+
+	projs := []chplan.Projection{
+		{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+		{
+			Expr:  mixedVVOutputAttributesExpr(join.Match, join.Card, join.Include, s.AttributesColumn),
+			Alias: s.AttributesColumn,
+		},
+		{Expr: mixedJoinFieldRef(mixedVVManySide(join.Card), s.TimestampColumn), Alias: s.TimestampColumn},
+		{Expr: &chplan.Binary{Op: op, Left: lValue, Right: rValue}, Alias: s.ValueColumn},
+	}
+	for _, col := range mixedVVFloatOnlyHistogramColumns() {
+		projs = append(projs, chplan.Projection{Expr: mixedJoinFieldRef(mixedVVJoinSideL, col), Alias: col})
+	}
+	projs = append(projs, chplan.Projection{
+		Expr:  mixedJoinFieldRef(mixedVVJoinSideL, mixedDiscriminatorColumn),
+		Alias: mixedDiscriminatorColumn,
+	})
+
+	return &chplan.Project{Input: filtered, Projections: projs}
 }
