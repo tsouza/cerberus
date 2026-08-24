@@ -35,7 +35,10 @@ import (
 // float that pass the comparison, exactly matching reference (a histogram
 // sample compared against an ordinary float sample is always
 // `NewIncompatibleTypesInBinOpInfo`, dropped regardless of `bool`).
-func comparisonVectorPlainOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool, ok bool) {
+func comparisonVectorPlainOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
+	mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp,
+	match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool, ok bool,
+) {
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || !b.Op.IsComparisonOperator() {
 		return nil, nil, false, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false, false
@@ -104,7 +107,11 @@ func comparisonVectorPlainOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 // operator's syntactic LHS regardless of which side is mixed), and
 // dispatch to the SAME two fold functions
 // [lowerComparisonVectorVectorOverMixedExpHistogramSetOp] already uses.
-func lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerComparisonVectorPlainOverMixedExpHistogramSetOp(
+	mixedSetOp *parser.BinaryExpr, plainExpr parser.Expr, mixedOnLeft bool, op chplan.BinaryOp,
+	match chplan.VectorMatch, card chplan.VectorCard, include []string, returnBool bool,
+	s schema.Metrics, ctx lowerCtx,
+) (chplan.Node, error) {
 	mixedNode, err := lowerMixedExpHistogramSetOp(mixedSetOp, s, ctx)
 	if err != nil {
 		return nil, err
