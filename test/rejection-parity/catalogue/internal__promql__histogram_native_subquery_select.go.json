@@ -1,0 +1,67 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the PromQL parser rejects negative subquery steps; zero is the valid default handled before this guard",
+      "evidence": {
+        "guard": [
+          "if step \u003c 0"
+        ],
+        "callers": [
+          "lowerHistogramNativeRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#ca3ce26e",
+      "message": "promql: internal invariant violated: histogram subquery input is %T with %s row shape",
+      "class": "internal",
+      "rationale": "selectFnOverExpHistogramSubquery requires a histogram-valued inner (via isExpHistogramValuedShape) and lowerExpHistogramValuedShape must return HistogramRowShape for that same inner",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "past returning if !ok",
+          "past returning if err != nil",
+          "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedShape",
+          "selectFnOverExpHistogramSubquery"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery#d4ecb9e5",
+      "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and selectFnOverExpHistogramSubquery's own subqueryHasEvalAnchor check already declines to match in that case, so this branch is unreachable even from that entry point",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "selectFnOverExpHistogramSubquery",
+          "subqueryHasEvalAnchor"
+        ]
+      }
+    }
+  ]
+}

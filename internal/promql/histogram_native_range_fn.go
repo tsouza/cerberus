@@ -191,9 +191,21 @@ type histogramSubqueryRangeShape struct {
 }
 
 // rangeFnOverExpHistogramSubquery recognizes rate/increase/delta/irate/
-// idelta over a subquery whose inner expression is already histogram-valued.
-// It deliberately asks the same recursive recognizer the lowering uses, so a
-// newly composable histogram producer cannot be admitted on one side only.
+// idelta/sum_over_time/avg_over_time over a subquery whose inner expression
+// is already histogram-valued. It deliberately asks the same recursive
+// recognizer the lowering uses, so a newly composable histogram producer
+// cannot be admitted on one side only.
+//
+// sum_over_time/avg_over_time joined this switch as part of cerberus issue
+// #2545: [expHistogramValuedWindowFold] already special-cased both names
+// (the "sum whatever is there" fold [expHistogramValuedOverTimeFold]
+// applies, as opposed to rate's boundary-extrapolated counter fold) for
+// their BARE-selector sibling [overTimeOverExpHistogram] — this switch
+// simply hadn't been widened to let a subquery argument reach that same
+// fold, so `sum_over_time((m_exp_hist)[5m:1m])` fell through to
+// [lowerOuterRangeFnOverSubquery]'s histogram-shape rejection despite
+// [lowerExpHistogramRangeFnOverSubquery] below already being able to answer
+// it correctly once matched.
 func rangeFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubqueryRangeShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return histogramSubqueryRangeShape{}, false
@@ -203,15 +215,44 @@ func rangeFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx low
 		return histogramSubqueryRangeShape{}, false
 	}
 	switch call.Func.Name {
-	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn:
+	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:
 	default:
 		return histogramSubqueryRangeShape{}, false
 	}
 	sub, ok := peelWrappers(call.Args[0]).(*parser.SubqueryExpr)
-	if !ok || sub.Range <= 0 || !isExpHistogramValuedShape(sub.Expr, s, ctx) {
+	if !ok || sub.Range <= 0 || !isExpHistogramValuedShape(sub.Expr, s, ctx) || !subqueryHasEvalAnchor(sub, ctx) {
 		return histogramSubqueryRangeShape{}, false
 	}
 	return histogramSubqueryRangeShape{sub: sub, windowFn: call.Func.Name}, true
+}
+
+// subqueryHasEvalAnchor reports whether ctx carries enough query eval-time
+// context for [subqueryGridCtx] to resolve sub's own anchor grid — i.e.
+// whether the caller reached lowering through [LowerAt] / [LowerAtRange]
+// rather than a bare [Lower] with no query time threaded through at all.
+//
+// Both histogram-native subquery-outer-reducer recognizers
+// ([rangeFnOverExpHistogramSubquery] and, for cerberus issue #2545,
+// [selectFnOverExpHistogramSubquery]) gate on this so that a bare [Lower]
+// call — which cannot resolve ANY subquery's anchor grid, histogram or
+// not — falls through to the SAME non-histogram-aware rejection every
+// other subquery shape gets under that entry point, rather than a
+// confusing "matched but errored" answer from this file's own lowering.
+// This mirrors [lowerHistogramNativeSubqueryInner]'s own identical
+// convention (see that function's doc): "not matched" when no eval anchor
+// is available, not "matched, then hard error".
+func subqueryHasEvalAnchor(sub *parser.SubqueryExpr, ctx lowerCtx) bool {
+	step := sub.Step
+	if step == 0 {
+		step = defaultSubqueryStep
+	}
+	if step < 0 {
+		// Let the lowering surface its own "subquery step must be
+		// positive" error rather than silently falling through here.
+		return true
+	}
+	_, ok, err := subqueryGridCtx(sub, step, ctx)
+	return err == nil && ok
 }
 
 // lowerExpHistogramRangeFnOverSubquery keeps the subquery matrix on the
