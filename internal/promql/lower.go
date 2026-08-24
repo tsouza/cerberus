@@ -265,107 +265,14 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		return plan, err
 	}
 	// `or` between a float-valued operand and a histogram-valued operand
-	// (cerberus issue #2330) — the exactly-one-side sibling of
-	// [expHistogramSetOp]'s both-sides-histogram case just above.
-	// Deliberately checked only here at the root; see
-	// [mixedExpHistogramSetOp]'s doc comment for why it must never be
-	// registered inside [lowerExpHistogramValuedShape]'s recursive
-	// dispatch table.
-	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerMixedExpHistogramSetOp(b, s, ctx)
-	}
-	// `sum`/`avg` [by/without] wrapping that same mixed shape (cerberus
-	// issue #2346 — the WHERE-recognized follow-on this file's own
-	// [mixedExpHistogramSetOp] doc comment named as deliberately
-	// unattempted). Checked right after the leaf case for the same
-	// reason: [lowerExpHistogramValuedShape] above already tried and
-	// failed to resolve a mixed `or` aggregand as purely histogram-
-	// valued, so nothing above this line can have consumed the shape yet.
-	if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
-	}
-	// `label_replace`/`label_join` wrapping that same mixed shape (cerberus
-	// issue #2449 — the generic-forwarder follow-on to #2346's sum/avg
-	// composition just above). Checked here for the identical reason: a
-	// mixed `or` argument never resolves as purely histogram-valued, so
-	// nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_label.go has the composition's own doc
-	// comment for why it needs no bespoke reduction the way sum/avg did.
-	if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
-	}
-	// A single-arg instant math function (abs(), ceil(), sqrt(), ...)
-	// wrapping that same mixed shape (cerberus issue #2449 — the third
-	// wrapper family, and the first to genuinely read the payload rather
-	// than just forward it). Checked here for the identical reason: a
-	// mixed `or` argument never resolves as purely histogram-valued, so
-	// nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_math_fn.go has the composition's own doc
-	// comment for why reference's drop semantics (not a per-payload
-	// chplan.Case) is the correct answer here.
-	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
-	}
-	// Scalar `*` / histogram-left `/` wrapping that same mixed shape
-	// (cerberus issue #2449 — the sixth wrapper family, and the piece
-	// histogram_native_mixed_or_arithmetic.go's own header explicitly
-	// named as out of ITS scope because these two ops SCALE the
-	// histogram-shaped rows rather than dropping them). Checked ahead of
-	// the drop-family recognizer just below, mirroring
-	// [expHistogramScalarBinop]'s own precedence over
-	// [expHistogramDroppingScalarBinop] for the bare-histogram case: a
-	// scalable shape keeps its value rather than falling into the
-	// broader drop recognizer. histogram_native_mixed_or_scale.go has the
-	// composition's own doc comment for why no discriminator-keyed
-	// chplan.Case is needed to scale both arms safely.
-	if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
-	}
-	// A scalar arithmetic binop (`+`, `-`, `*`, `/`, `%`, `^`, `atan2`)
-	// wrapping that same mixed shape (cerberus issue #2449 — the fourth
-	// wrapper family, and the issue's own originally-named example,
-	// `(a or b) + 1`). Checked here for the identical reason: a mixed
-	// `or` argument never resolves as purely histogram-valued, so
-	// nothing above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_arithmetic.go has the composition's own
-	// doc comment for why only the DROP-family ops (not MUL / histogram-
-	// left DIV, and not comparisons) are recognised here.
-	if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
-	}
-	// A scalar comparison binop (`==`, `!=`, `<`, `<=`, `>`, `>=`, with or
-	// without `bool`) wrapping that same mixed shape (cerberus issue
-	// #2449 — the fifth wrapper family, and the shape the arithmetic
-	// composition just above deliberately left unattempted because a
-	// comparison lowers through a structurally different Filter /
-	// bool-Project shape). Checked here for the identical reason: a mixed
-	// `or` argument never resolves as purely histogram-valued, so nothing
-	// above this line can have consumed the shape yet.
-	// histogram_native_mixed_or_comparison.go has the composition's own
-	// doc comment for why every comparison op drops the histogram side
-	// unconditionally, regardless of `bool`.
-	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
-	}
-	// Vector-vector `+`/`-`/`*`/`/` where BOTH operands are themselves a
-	// mixed `or` — neither side a scalar literal (cerberus issue #2449,
-	// the seventh wrapper family and the piece every prior pass on this
-	// issue named as its own remaining scope: the discriminator-keyed
-	// `chplan.Case`/CH `if()` mechanism the issue itself asked for).
-	// Checked here for the identical reason every sibling recognizer
-	// above is: a mixed `or` operand never resolves as purely
-	// histogram-valued, so nothing above this line can have consumed the
-	// shape yet, and this recognizer's own scalar-literal exclusion keeps
-	// it disjoint from [arithmeticOverMixedExpHistogramSetOp] /
-	// [mulOrDivScaleOverMixedExpHistogramSetOp] just above (each requires
-	// exactly one side to fold to a scalar; this one requires neither
-	// side to). histogram_native_mixed_or_vector_arithmetic.go has the
-	// composition's own doc comment for the four-combination semantics
-	// decision and what remains out of scope (comparisons,
-	// group_left()/group_right(), and the histogram-histogram ADD/SUB
-	// merge).
-	if lhs, rhs, op, match, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, s, ctx)
+	// (cerberus issue #2330), and every wrapper composition around that
+	// same mixed shape (cerberus issues #2346/#2449) — split out into
+	// [lowerMixedExpHistogramFamily] purely to keep this function's own
+	// golangci-lint maintainability-index score over the repo's floor; the
+	// dispatch order and semantics are unchanged, see that function's own
+	// doc for the per-recognizer rationale each check used to carry here.
+	if plan, ok, err := lowerMixedExpHistogramFamily(expr, s, ctx); ok {
+		return plan, err
 	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
@@ -455,6 +362,127 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		return plan, err
 	}
 	return lower(expr, s, ctx)
+}
+
+// lowerMixedExpHistogramFamily dispatches `or` between a float-valued
+// operand and a histogram-valued operand (cerberus issue #2330 — the
+// exactly-one-side sibling of [expHistogramSetOp]'s both-sides-histogram
+// case [lowerExpHistogramValuedShape] handles) and every wrapper
+// composition [lowerRoot] tries around that same mixed shape. Deliberately
+// checked only from [lowerRoot], never from inside
+// [lowerExpHistogramValuedShape]'s own recursive dispatch table; see
+// [mixedExpHistogramSetOp]'s doc comment for why. Split out of lowerRoot's
+// own body (this function used to be eight sequential `if` blocks inline
+// there) purely to keep that function's golangci-lint maintainability-index
+// score over the repo's floor — the dispatch order and every recognizer's
+// own rationale are unchanged from when they lived there.
+func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if b, ok := mixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerMixedExpHistogramSetOp(b, s, ctx)
+		return plan, true, err
+	}
+	// `sum`/`avg` [by/without] wrapping that same mixed shape (cerberus
+	// issue #2346 — the WHERE-recognized follow-on this file's own
+	// [mixedExpHistogramSetOp] doc comment named as deliberately
+	// unattempted). Checked right after the leaf case for the same
+	// reason: [lowerExpHistogramValuedShape] (called before this
+	// function, from lowerRoot) already tried and failed to resolve a
+	// mixed `or` aggregand as purely histogram-valued, so nothing before
+	// this function can have consumed the shape yet.
+	if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
+		return plan, true, err
+	}
+	// `label_replace`/`label_join` wrapping that same mixed shape (cerberus
+	// issue #2449 — the generic-forwarder follow-on to #2346's sum/avg
+	// composition just above). Checked here for the identical reason: a
+	// mixed `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_label.go has the composition's own doc
+	// comment for why it needs no bespoke reduction the way sum/avg did.
+	if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerLabelCallOverMixedExpHistogramSetOp(call, b, s, ctx)
+		return plan, true, err
+	}
+	// A single-arg instant math function (abs(), ceil(), sqrt(), ...)
+	// wrapping that same mixed shape (cerberus issue #2449 — the third
+	// wrapper family, and the first to genuinely read the payload rather
+	// than just forward it). Checked here for the identical reason: a
+	// mixed `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_math_fn.go has the composition's own doc
+	// comment for why reference's drop semantics (not a per-payload
+	// chplan.Case) is the correct answer here.
+	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
+		return plan, true, err
+	}
+	// Scalar `*` / histogram-left `/` wrapping that same mixed shape
+	// (cerberus issue #2449 — the sixth wrapper family, and the piece
+	// histogram_native_mixed_or_arithmetic.go's own header explicitly
+	// named as out of ITS scope because these two ops SCALE the
+	// histogram-shaped rows rather than dropping them). Checked ahead of
+	// the drop-family recognizer lowerRoot tries just below this
+	// function, mirroring [expHistogramScalarBinop]'s own precedence over
+	// [expHistogramDroppingScalarBinop] for the bare-histogram case: a
+	// scalable shape keeps its value rather than falling into the
+	// broader drop recognizer. histogram_native_mixed_or_scale.go has the
+	// composition's own doc comment for why no discriminator-keyed
+	// chplan.Case is needed to scale both arms safely.
+	if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
+		return plan, true, err
+	}
+	// A scalar arithmetic binop (`+`, `-`, `*`, `/`, `%`, `^`, `atan2`)
+	// wrapping that same mixed shape (cerberus issue #2449 — the fourth
+	// wrapper family, and the issue's own originally-named example,
+	// `(a or b) + 1`). Checked here for the identical reason: a mixed
+	// `or` argument never resolves as purely histogram-valued, so
+	// nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_arithmetic.go has the composition's own
+	// doc comment for why only the DROP-family ops (not MUL / histogram-
+	// left DIV, and not comparisons) are recognised here.
+	if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerArithmeticOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
+		return plan, true, err
+	}
+	// A scalar comparison binop (`==`, `!=`, `<`, `<=`, `>`, `>=`, with or
+	// without `bool`) wrapping that same mixed shape (cerberus issue
+	// #2449 — the fifth wrapper family, and the shape the arithmetic
+	// composition just above deliberately left unattempted because a
+	// comparison lowers through a structurally different Filter /
+	// bool-Project shape). Checked here for the identical reason: a mixed
+	// `or` argument never resolves as purely histogram-valued, so nothing
+	// above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_comparison.go has the composition's own
+	// doc comment for why every comparison op drops the histogram side
+	// unconditionally, regardless of `bool`.
+	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
+		return plan, true, err
+	}
+	// Vector-vector `+`/`-`/`*`/`/` where BOTH operands are themselves a
+	// mixed `or` — neither side a scalar literal (cerberus issue #2449,
+	// the seventh wrapper family and the piece every prior pass on this
+	// issue named as its own remaining scope: the discriminator-keyed
+	// `chplan.Case`/CH `if()` mechanism the issue itself asked for).
+	// Checked here for the identical reason every sibling recognizer
+	// above is: a mixed `or` operand never resolves as purely
+	// histogram-valued, so nothing above this line can have consumed the
+	// shape yet, and this recognizer's own scalar-literal exclusion keeps
+	// it disjoint from [arithmeticOverMixedExpHistogramSetOp] /
+	// [mulOrDivScaleOverMixedExpHistogramSetOp] just above (each requires
+	// exactly one side to fold to a scalar; this one requires neither
+	// side to). histogram_native_mixed_or_vector_arithmetic.go has the
+	// composition's own doc comment for the four-combination semantics
+	// decision and what remains out of scope (comparisons,
+	// group_left()/group_right(), and the histogram-histogram ADD/SUB
+	// merge).
+	if lhs, rhs, op, match, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, s, ctx)
+		return plan, true, err
+	}
+	return nil, false, nil
 }
 
 func lower(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
