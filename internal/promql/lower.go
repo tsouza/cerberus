@@ -348,19 +348,12 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		plan, err := lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
 		return plan, true, err
 	}
-	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
-		plan, err := lowerExpHistogramCount(agg, vs, s, ctx)
-		return plan, true, err
-	}
-	if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok {
-		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
-		if err != nil {
-			return nil, true, err
-		}
-		if !matched {
-			return nil, true, fmt.Errorf("promql: internal invariant violated: count/group input is not histogram-valued: %v", agg.Expr)
-		}
-		plan, err := lowerExpHistogramCountOrGroupOverPlan(agg, input, s)
+	// count()/group() over a bare selector or any already histogram-valued
+	// expression — see [lowerExpHistogramCountFamily]'s own doc; factored
+	// out (cerberus issue #2549) so [lowerAggregate]'s generic fallback can
+	// retry the identical shape when it is NESTED under a further wrapper,
+	// rather than restating the two recognisers there.
+	if plan, ok, err := lowerExpHistogramCountFamily(expr, s, ctx); ok {
 		return plan, true, err
 	}
 	if agg, ok := countValuesOverExpHistogramValue(expr, s, ctx); ok {
@@ -2522,6 +2515,25 @@ func matrixSelectorArg(c *parser.Call) (*parser.MatrixSelector, *parser.VectorSe
 // and wrap the result in a RangeWindow capturing the function name +
 // range duration.
 func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// resets()/changes() over a NESTED exp-histogram selector (cerberus
+	// issue #2549): [lowerHistogramNativeRoot] only tries
+	// [resetsOrChangesOverExpHistogram] when the call IS the query's own
+	// root. The moment it is wrapped by anything else — scalar
+	// arithmetic (`resets(m[5m]) * 2`), an aggregation
+	// (`sum(resets(m[5m]))`), an instant math function
+	// (`abs(changes(m[5m]))`) — every such wrapper's own operand lowering
+	// falls back to the generic [lower] dispatcher, which reaches THIS
+	// function (every resets()/changes() call carries a MatrixSelector
+	// argument) before the switch below ever sees it. Both functions
+	// already answer a plain FLOAT sample once resolved
+	// (histogram_native_resets.go's own doc explains why nothing about
+	// them needs the histogram-VALUED family's
+	// [lowerExpHistogramArgAsCanonicalFloat] "preserve"/"drop" opt-in) —
+	// they just need the same chance to retry as histogram-native that a
+	// query's root always had.
+	if shape, ok := resetsOrChangesOverExpHistogram(c, s, ctx); ok {
+		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
+	}
 	switch c.Func.Name {
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
@@ -3567,6 +3579,21 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	}
 	if a.Op == parser.LIMIT_RATIO {
 		return lowerLimitRatio(a, s, ctx)
+	}
+	// count()/group() over an exp-histogram shape, NESTED under a further
+	// wrapper (cerberus issue #2549) — `count(m_exp_hist) * 2`,
+	// `sum(count(m_exp_hist))`, `abs(group(m_exp_hist))`,
+	// `count(rate(m_exp_hist[5m])) * 2`. [lowerHistogramNativeRoot] only
+	// tries [lowerExpHistogramCountFamily] when this aggregation IS the
+	// query's own root; every wrapper reaches its operand through this
+	// function's own generic `lower(a.Expr, ...)` fallback below, which
+	// would otherwise hit [lowerVectorSelector]'s ordinary path and
+	// [expHistogramSelectorRouting]'s hard rejection. See that function's
+	// own doc for why count()/group() need this rather than the
+	// histogram-VALUED family's [lowerExpHistogramArgAsCanonicalFloat]
+	// opt-in: their own OUTPUT is float-valued, not histogram-valued.
+	if plan, ok, err := lowerExpHistogramCountFamily(a, s, ctx); ok {
+		return plan, err
 	}
 
 	input, err := lower(a.Expr, s, ctx)

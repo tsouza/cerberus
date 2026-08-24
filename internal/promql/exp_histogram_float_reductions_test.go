@@ -35,6 +35,21 @@ import (
 // function result and every aggregation result alike, so the quartet's
 // first slot must be an EMPTY literal rather than the MetricName column
 // the bare selector carries up.
+//
+// The "wrapped" queries below pin cerberus issue #2549: resets() /
+// changes() / count() / group() over a bare exp-histogram selector used
+// to reject the instant the call was itself wrapped by a further scalar
+// op, aggregation or instant math function — the wrapper's own operand
+// lowering fell back to the generic descent, which hit
+// [lowerVectorSelector]'s ordinary rejection on the histogram selector
+// underneath, never reaching the recognisers pinned by the bare cases
+// above. See [lowerRangeVectorCall] and [lowerExpHistogramCountFamily]'s
+// own doc for the fix. The shape assertions below are identical to the
+// bare cases' — the wrapper composes with an already float-valued
+// result, so nothing about the row shape or the dropped `__name__`
+// changes; TestLower_ExpHistogram_ResetsChangesCountNested_ChDB (chdb
+// build tag) is what pins the actual numeric answer through the
+// wrapper's own arithmetic.
 func TestLower_ExpHistogram_ResetsChangesCountAreFloatValued(t *testing.T) {
 	t.Parallel()
 
@@ -54,6 +69,19 @@ func TestLower_ExpHistogram_ResetsChangesCountAreFloatValued(t *testing.T) {
 		`count by (service) (latency_exp_hist)`,
 		`count without (pod) (latency_exp_hist{service="api"})`,
 		`(count(latency_exp_hist))`,
+
+		// Wrapped shapes (cerberus issue #2549) — this issue's own four
+		// trigger queries, plus the count()/group() family the issue's
+		// architectural note names alongside them.
+		`resets(latency_exp_hist[5m]) * 2`,
+		`sum(resets(latency_exp_hist[5m]))`,
+		`changes(latency_exp_hist[5m]) + 1`,
+		`abs(changes(latency_exp_hist[5m]))`,
+		`count(latency_exp_hist) + 1`,
+		`count(count(latency_exp_hist))`,
+		`group(latency_exp_hist) * 2`,
+		`abs(group(latency_exp_hist))`,
+		`sum(resets(latency_exp_hist[5m]) * 2)`,
 	}
 	modes := []struct {
 		name  string
@@ -96,7 +124,7 @@ func TestLower_ExpHistogram_ResetsChangesCountAreFloatValued(t *testing.T) {
 						q, len(proj.Projections), len(wantAliases))
 				}
 				for i, want := range wantAliases {
-					if got := proj.Projections[i].Alias; got != want {
+					if got := projectionColumnName(proj.Projections[i]); got != want {
 						t.Fatalf("lower(%q): output column %d is %q, want %q", q, i, got, want)
 					}
 				}
@@ -112,6 +140,27 @@ func TestLower_ExpHistogram_ResetsChangesCountAreFloatValued(t *testing.T) {
 			})
 		}
 	}
+}
+
+// projectionColumnName reports the SQL-visible name of a projection: its
+// own Alias when the lowering set one explicitly, or the underlying
+// ColumnRef's Name when it did not. A pass-through projection built by
+// [guardedValueProjection] (the scalar-binop / instant-fn wrapper path a
+// [chplan.Project] taking this shortcut) leaves Alias empty for a column
+// it forwards unchanged — the emitter's own SQL still names the output
+// column after the ref, so an empty Alias is not a missing column, only
+// an unaliased one. The dedicated exp-histogram Projects this test also
+// covers (expHistogramPairCountProjection, lowerExpHistogramCount's own
+// projection) always set Alias explicitly, so this fallback never masks
+// a genuinely wrong column there.
+func projectionColumnName(p chplan.Projection) string {
+	if p.Alias != "" {
+		return p.Alias
+	}
+	if ref, ok := p.Expr.(*chplan.ColumnRef); ok {
+		return ref.Name
+	}
+	return ""
 }
 
 // TestLower_ExpHistogram_ResetsAndChangesUseDifferentKernels pins the one
