@@ -1,0 +1,49 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSimpleScalarFilter#37e7c55d",
+      "message": "traceql: scalar-filter RHS must be a literal, got %T",
+      "class": "internal",
+      "rationale": "internal invariant: lowerScalarFilter only dispatches here when isBareStatic(sf.RHS) holds, so lowerScalarExpr(sf.RHS) always resolves via the Static case to a chplan.Expr; the type-assert failure is unreachable at this call site.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerScalarFilter"
+        ],
+        "cited": [
+          "isBareStatic",
+          "lowerScalarExpr",
+          "lowerScalarFilter"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSimpleScalarFilter#ead2eeaf",
+      "message": "traceql: scalar-filter LHS must aggregate to a series (count() / sum(...) / avg(...) / min(...) / max(...)), got %T",
+      "class": "internal",
+      "rationale": "internal invariant: lowerScalarFilter only dispatches here when isBareAggregate(sf.LHS) holds, so lowerScalarExpr(sf.LHS) always resolves via the Aggregate case to a chplan.Node; the type-assert failure is unreachable at this call site.",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerScalarFilter"
+        ],
+        "cited": [
+          "isBareAggregate",
+          "lowerScalarExpr",
+          "lowerScalarFilter"
+        ]
+      }
+    }
+  ]
+}

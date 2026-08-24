@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerUnaryOperation#5f9f3466",
+      "message": "traceql: unary operator %s is unsupported",
+      "class": "internal",
+      "rationale": "Defensive: TraceQL admits only OpExists / OpNotExists / OpNot unary operators, all handled above, so the unsupported-operator branch is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch u.Op over [case traceql.OpExists, traceql.OpNotExists; case traceql.OpNot; case traceql.OpSub]"
+        ],
+        "callers": [
+          "lowerFieldExpr"
+        ]
+      }
+    }
+  ]
+}

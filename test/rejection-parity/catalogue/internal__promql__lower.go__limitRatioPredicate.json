@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:limitRatioPredicate#afc83b92",
+      "message": "promql: limit_ratio ratio: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the wrapped scalar-lowering rejection is catalogued at its origin",
+      "evidence": {
+        "guard": [
+          "past returning if err := registerScalarGuard(ctx, \"limit_ratio ratio\", param, s, func(values []float64) error { _, err := limitRatioParamDomain(values) return err }); err != nil",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerLimitRatio",
+          "lowerSubqueryOverLimitRatio"
+        ]
+      }
+    }
+  ]
+}

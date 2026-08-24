@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExtractStringExpr#427e92de",
+      "message": "logql: unsupported JSON path segment type %T in %q",
+      "class": "internal",
+      "rationale": "the upstream jsonpath parser produces only string and array-index segments, both handled",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "default of switch v := seg.(type) over [case string; case int; default]"
+        ],
+        "callers": [
+          "jsonExpressionMergeLabels"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExtractStringExpr#e6040681",
+      "message": "logql: invalid `| json` path %q: %w",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} | json foo=\"bar[\"",
+      "evidence": {
+        "guard": [
+          "if err != nil"
+        ],
+        "callers": [
+          "jsonExpressionMergeLabels"
+        ]
+      }
+    }
+  ]
+}

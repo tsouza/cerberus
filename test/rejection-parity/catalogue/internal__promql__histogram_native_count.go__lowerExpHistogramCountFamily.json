@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_count.go:lowerExpHistogramCountFamily#c7dbd629",
+      "message": "promql: internal invariant violated: count/group input is not histogram-valued: %v",
+      "class": "internal",
+      "rationale": "countOrGroupOverExpHistogramValue's own return value IS isExpHistogramValuedShape(agg.Expr, s, ctx), so a true ok already proves the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. lowerExpHistogramCountFamily (cerberus issue #2549) is factored out of lowerHistogramNativeRoot's own body so lowerAggregate's generic fallback can retry the identical recogniser pair when a count()/group() over an exp-histogram shape is NESTED under a further wrapper rather than sitting at the query's own root; it gained a second caller by that factoring, but the invariant argument depends only on the SHAPE of whatever expr reaches this guard, not on which of the two callers supplied it, so the new caller does not affect it.",
+      "evidence": {
+        "guard": [
+          "past returning if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok",
+          "if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerAggregate",
+          "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "countOrGroupOverExpHistogramValue",
+          "isExpHistogramValuedShape",
+          "lowerAggregate",
+          "lowerExpHistogramCountFamily",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot"
+        ]
+      }
+    }
+  ]
+}

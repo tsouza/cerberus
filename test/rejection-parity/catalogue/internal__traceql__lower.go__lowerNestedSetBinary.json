@@ -1,0 +1,39 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#6b70ed94",
+      "message": "traceql: cannot negate a %s literal",
+      "class": "internal",
+      "rationale": "Defensive: a nested-set intrinsic is always numeric (TypeInt), so a comparison pairing a negated nested-set operand with a non-numeric literal (string/boolean) fails the AST-level operand-type-match rule at parse time (\"binary operations must operate on the same type\") before this lowering code ever runs — no parseable query reaches it.",
+      "evidence": {
+        "guard": [
+          "if negated",
+          "if lit, ok := fieldExprStatic(other); ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerBinaryOperation"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNestedSetBinary#dc45d078",
+      "message": "traceql: intrinsic %s is not a nested-set position",
+      "class": "internal",
+      "rationale": "Defensive: reached only via a nested-set intrinsic attribute, for which nestedSetColumn always resolves, so the not-a-position branch is unreachable.",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerBinaryOperation"
+        ],
+        "cited": [
+          "nestedSetColumn"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsAggregate#c5a17af0",
+      "message": "traceql: quantile_over_time requires at least one quantile",
+      "class": "internal",
+      "rationale": "the grammar requires at least one quantile argument on quantile_over_time",
+      "evidence": {
+        "guard": [
+          "past returning if op == traceql.MetricsAggregateHistogramOverTime",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if op == traceql.MetricsAggregateQuantileOverTime",
+          "if len(qs) == 0"
+        ],
+        "callers": [
+          "lowerMetricsPipeline"
+        ]
+      }
+    }
+  ]
+}

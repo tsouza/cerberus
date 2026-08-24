@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsGroupBy#26b9b81a",
+      "message": "traceql: empty by(...) group key",
+      "class": "internal",
+      "rationale": "the grammar rejects an empty by() group key as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if len(attrs) == 0",
+          "if a == (traceql.Attribute{})"
+        ],
+        "callers": [
+          "lowerAverageOverTime",
+          "lowerMetricsAggregate",
+          "lowerMetricsHistogramOverTime"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#27f7a326",
+      "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side; use group_left/group_right when projecting include labels",
+      "class": "internal",
+      "rationale": "include labels require group_left/group_right in the grammar, which set many-to-one / one-to-many cardinality; include with one-to-one is not parser-producible",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
+          "if b.VectorMatching != nil",
+          "if len(b.VectorMatching.Include) \u003e 0",
+          "if card == chplan.CardOneToOne"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\")",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool \u0026\u0026 !isComparison(op)"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#81f45a15",
+      "message": "promql: many-to-many matching not allowed: matching labels must be unique on one side",
+      "class": "internal",
+      "rationale": "CardManyToMany arises only from set operators, which route to lowerVectorSetOp before this check",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
+          "if b.VectorMatching != nil",
+          "case parser.CardManyToMany of switch b.VectorMatching.Card"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerVectorSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerVectorVector#bfcc1402",
+      "message": "promql: unsupported vector-matching cardinality %d",
+      "class": "internal",
+      "rationale": "the parser's VectorMatchCardinality enum values are all handled; no parser-producible value reaches the default arm",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool \u0026\u0026 !isComparison(op)",
+          "past returning if lhs, rhs, ne, vm, ok := expHistogramHistogramCompareBoolBinop(b, s, ctx); ok",
+          "if b.VectorMatching != nil",
+          "default of switch b.VectorMatching.Card over [case parser.CardOneToOne; case parser.CardManyToOne; case parser.CardOneToMany; case parser.CardManyToMany; default]"
+        ],
+        "callers": [
+          "lowerBinary"
+        ]
+      }
+    }
+  ]
+}

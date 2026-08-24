@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:buildSubqueryAggFunc#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "internal",
+      "rationale": "the caller (lowerSubqueryOverAggregate) pre-filters to the supported aggregation op set before consulting this builder",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch a.Op over [case parser.SUM; case parser.COUNT; case parser.AVG; case parser.MIN; case parser.MAX; case parser.STDDEV; case parser.STDVAR; case parser.GROUP; case parser.QUANTILE]"
+        ],
+        "callers": [
+          "lowerSubqueryOverAggregate"
+        ],
+        "cited": [
+          "lowerSubqueryOverAggregate"
+        ]
+      }
+    }
+  ]
+}

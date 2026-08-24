@@ -1,0 +1,36 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left == nil",
+          "past exhaustive switch e.Operation over [case syntax.OpTypeTopK, syntax.OpTypeBottomK, syntax.OpTypeApproxTopK; case syntax.OpTypeSort, syntax.OpTypeSortDesc]",
+          "if !ok"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:lowerVectorAggregation#9210acc4",
+      "message": "logql: vector-aggregation has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a vector aggregation with a nil inner",
+      "evidence": {
+        "guard": [
+          "if e.Left == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:ipLabelFilterExpr#dd5ced4f",
+      "message": "logql: ip: invalid operation for label filter (only = and != support ip())",
+      "class": "internal",
+      "rationale": "unreachable: the LogQL grammar only builds IPLabelFilter for = and != (syntax.y: IDENTIFIER EQ/NEQ IP OPEN_PARENTHESIS ...)",
+      "evidence": {
+        "guard": [
+          "default of switch f.Ty over [case syntax.LabelFilterEqual, syntax.LabelFilterNotEqual; default]"
+        ],
+        "callers": [
+          "labelFiltererLower"
+        ]
+      }
+    }
+  ]
+}

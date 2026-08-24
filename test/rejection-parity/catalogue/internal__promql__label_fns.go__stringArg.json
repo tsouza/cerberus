@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:stringArg#4c3f7595",
+      "message": "promql: %s(%s) requires a string literal, got %T",
+      "class": "internal",
+      "rationale": "the parser typechecker admits only string literals in string-typed argument slots; PromQL has no other string-producing expression",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "labelJoinAttributes",
+          "labelReplaceAttributes",
+          "lowerHistogramQuantiles",
+          "lowerSortByLabel"
+        ]
+      }
+    }
+  ]
+}

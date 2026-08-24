@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerQuantileOverTime#682124f4",
+      "message": "promql: quantile_over_time expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

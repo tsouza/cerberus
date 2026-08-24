@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerVector#7cb6213b",
+      "message": "promql: vector() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: vector() is pinned at one argument",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

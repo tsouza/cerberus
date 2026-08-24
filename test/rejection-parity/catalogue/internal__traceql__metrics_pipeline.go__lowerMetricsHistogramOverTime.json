@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsHistogramOverTime#3fe5309b",
+      "message": "traceql: histogram_over_time requires an attribute operand",
+      "class": "internal",
+      "rationale": "the grammar admits only attribute operands inside histogram_over_time(...)",
+      "evidence": {
+        "guard": [
+          "if attr == (traceql.Attribute{})"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ]
+      }
+    }
+  ]
+}

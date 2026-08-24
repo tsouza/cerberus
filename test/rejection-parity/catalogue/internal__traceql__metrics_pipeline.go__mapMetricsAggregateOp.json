@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#a456c01c",
+      "message": "traceql: histogram_over_time must lower via lowerMetricsHistogramOverTime",
+      "class": "internal",
+      "rationale": "internal routing invariant: histogram_over_time is dispatched to lowerMetricsHistogramOverTime before this mapper",
+      "evidence": {
+        "guard": [
+          "case traceql.MetricsAggregateHistogramOverTime of switch op"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ],
+        "cited": [
+          "lowerMetricsHistogramOverTime"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:mapMetricsAggregateOp#e363ec48",
+      "message": "traceql: metrics aggregate op %s is unsupported",
+      "class": "internal",
+      "rationale": "every metrics aggregate op the pinned grammar produces is mapped",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.MetricsAggregateRate; case traceql.MetricsAggregateCountOverTime; case traceql.MetricsAggregateSumOverTime; case traceql.MetricsAggregateAvgOverTime; case traceql.MetricsAggregateMinOverTime; case traceql.MetricsAggregateMaxOverTime; case traceql.MetricsAggregateQuantileOverTime; case traceql.MetricsAggregateHistogramOverTime]"
+        ],
+        "callers": [
+          "lowerMetricsAggregate"
+        ]
+      }
+    }
+  ]
+}

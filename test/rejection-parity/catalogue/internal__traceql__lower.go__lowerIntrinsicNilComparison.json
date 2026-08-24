@@ -1,0 +1,69 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#07654c50",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no events column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures an events column; reachable only under a schema override that drops it",
+      "evidence": {
+        "guard": [
+          "past returning if op == traceql.OpNotExists",
+          "case traceql.IntrinsicEventName, traceql.IntrinsicEventTimeSinceStart of switch attr.Intrinsic",
+          "if s.EventsColumn == \"\""
+        ],
+        "callers": [
+          "lowerNilComparison"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#284df75f",
+      "message": "traceql: intrinsic %s requires per-span child counts the OTel ClickHouse schema does not materialise",
+      "class": "internal",
+      "rationale": "the pinned tempo parser rejects the childCount spelling (\"unexpected childCount\"), so the arm is unreachable from a parseable query",
+      "evidence": {
+        "guard": [
+          "past returning if op == traceql.OpNotExists",
+          "case traceql.IntrinsicChildCount of switch attr.Intrinsic"
+        ],
+        "callers": [
+          "lowerNilComparison"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#5c445f2a",
+      "message": "traceql: %s = nil is not valid because intrinsics cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ kind = nil }",
+      "evidence": {
+        "guard": [
+          "if op == traceql.OpNotExists"
+        ],
+        "callers": [
+          "lowerNilComparison"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerIntrinsicNilComparison#e2d1d3a8",
+      "message": "traceql: nil comparison on intrinsic %s is unsupported — the configured schema has no links column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures a links column; reachable only under a schema override that drops it",
+      "evidence": {
+        "guard": [
+          "past returning if op == traceql.OpNotExists",
+          "case traceql.IntrinsicLinkTraceID, traceql.IntrinsicLinkSpanID of switch attr.Intrinsic",
+          "if s.LinksColumn == \"\""
+        ],
+        "callers": [
+          "lowerNilComparison"
+        ]
+      }
+    }
+  ]
+}

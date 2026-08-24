@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerPredictLinear#2b0de462",
+      "message": "promql: predict_linear expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFnNoArg#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: lowerCall routes only the known date-function names here",
+      "evidence": {
+        "guard": [
+          "if expr == nil"
+        ],
+        "callers": [
+          "lowerDateFn"
+        ],
+        "cited": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

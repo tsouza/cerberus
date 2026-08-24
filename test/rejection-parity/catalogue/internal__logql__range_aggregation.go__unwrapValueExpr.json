@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapValueExpr#ad5af60c",
+      "message": "logql: `| unwrap` has empty identifier",
+      "class": "internal",
+      "rationale": "the grammar requires a non-empty unwrap identifier; an empty one is a parse error",
+      "evidence": {
+        "guard": [
+          "if u.Identifier == \"\""
+        ],
+        "callers": [
+          "rangeValueExpr",
+          "rangeValueExprFromMerged"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:unwrapValueExpr#bbe4735f",
+      "message": "logql: unsupported unwrap conversion %q",
+      "class": "internal",
+      "rationale": "every conversion the grammar accepts (bytes / duration / duration_seconds) is handled",
+      "evidence": {
+        "guard": [
+          "past returning if u.Identifier == \"\"",
+          "past exhaustive switch u.Operation over [case \"\"; case syntax.OpConvDuration, syntax.OpConvDurationSeconds; case syntax.OpConvBytes]"
+        ],
+        "callers": [
+          "rangeValueExpr",
+          "rangeValueExprFromMerged"
+        ]
+      }
+    }
+  ]
+}

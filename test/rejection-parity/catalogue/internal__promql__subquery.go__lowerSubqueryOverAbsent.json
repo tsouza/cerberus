@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAbsent#c311e6be",
+      "message": "promql: subquery over absent() requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "The HTTP handlers always thread eval times via LowerAt / LowerAtRange; only the raw Lower() entrypoint (tests / tooling) can present a zero eval anchor to this guard.",
+      "evidence": {
+        "guard": [
+          "if ctx.end.IsZero()"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/scalar_domain.go:limitRatioParamDomain#4b08e802",
+      "message": "Ratio value is NaN",
+      "class": "rejection",
+      "trigger_query": "limit_ratio(NaN, up)",
+      "evidence": {
+        "guard": [
+          "case hasAnyNaN(values) of switch"
+        ],
+        "callers": [
+          "limitRatioPredicate"
+        ]
+      }
+    }
+  ]
+}

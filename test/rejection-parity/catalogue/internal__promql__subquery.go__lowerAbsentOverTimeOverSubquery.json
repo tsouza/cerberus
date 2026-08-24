@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerAbsentOverTimeOverSubquery#e8585e71",
+      "message": "promql: absent_over_time() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: absent_over_time() is pinned to one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(outer.Args) != 1"
+        ],
+        "callers": [
+          "lowerOuterRangeFnOverSubquery"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#064574ba",
+      "message": "promql: %s expects exactly 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the range-vector functions are pinned at one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#5fccc59e",
+      "message": "promql: matrix selector's inner must be a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only builds MatrixSelector around a VectorSelector",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:matrixSelectorArg#ccda8b22",
+      "message": "promql: %s argument must be a range-vector selector, got %T",
+      "class": "internal",
+      "rationale": "subquery arguments are intercepted by lowerOuterRangeFnOverSubquery; the parser's typechecker admits only matrix-typed arguments otherwise",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 1",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ],
+        "cited": [
+          "lowerOuterRangeFnOverSubquery"
+        ]
+      }
+    }
+  ]
+}

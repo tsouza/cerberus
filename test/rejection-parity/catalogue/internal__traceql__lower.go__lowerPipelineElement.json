@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipelineElement#3ea8ac7a",
+      "message": "traceql: pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline element type the pinned grammar produces is handled",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := elem.(type) over [case *traceql.SpansetFilter; case traceql.SpansetOperation; case *traceql.SpansetOperation]"
+        ],
+        "callers": [
+          "lowerPipeline"
+        ]
+      }
+    }
+  ]
+}

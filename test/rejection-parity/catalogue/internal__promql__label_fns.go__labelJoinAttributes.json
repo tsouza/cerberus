@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/label_fns.go:labelJoinAttributes#c71ab88a",
+      "message": "promql: label_join expects at least 3 arguments (v, dst, separator[, src…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: label_join requires at least the vector, destination label, and separator arguments. Since cerberus issue #2449, lowerLabelCallOverMixedExpHistogramSetOp joins lowerLabelCallOverExpHistogram and lowerLabelJoin as a third caller, but its own labelCallOverMixedExpHistogramSetOp recognizer re-runs the identical `len(call.Args) \u003c 3` check on the same parser Call before ever calling this function, so the claim is unaffected by the new caller. Since cerberus issue #2528, lowerLabelCallOverExpHistogramDroppingShape joins as a fourth caller, and likewise only reaches this function after its own labelCallOverExpHistogramDroppingShape recognizer has re-run the identical arity check, so the claim is unaffected by it either.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c 3"
+        ],
+        "callers": [
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverExpHistogramDroppingShape",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin"
+        ],
+        "cited": [
+          "labelCallOverExpHistogramDroppingShape",
+          "labelCallOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverExpHistogram",
+          "lowerLabelCallOverExpHistogramDroppingShape",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerLabelJoin"
+        ]
+      }
+    }
+  ]
+}

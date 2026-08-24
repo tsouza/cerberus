@@ -1,0 +1,54 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#23b3f454",
+      "message": "logql: %s does not accept `| unwrap`",
+      "class": "internal",
+      "rationale": "the parser rejects bytes_rate / bytes_over_time with `| unwrap` (\"invalid aggregation ... with unwrap\"); guard kept against a future parser loosening",
+      "evidence": {
+        "guard": [
+          "if e.Left.Unwrap != nil",
+          "case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes of switch op"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#34122fa8",
+      "message": "logql: %s requires an `| unwrap` clause",
+      "class": "internal",
+      "rationale": "the parser rejects sum_over_time-family operations without `| unwrap` (\"invalid aggregation ... without unwrap\")",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left.Unwrap != nil",
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes]",
+          "case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast, syntax.OpRangeTypeRateCounter of switch op"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeValueExpr#b1ec3bca",
+      "message": "logql: range op %s is not yet supported",
+      "class": "internal",
+      "rationale": "unreachable: without unwrap the parser only admits rate/count_over_time/bytes_rate/bytes_over_time/absent_over_time (all handled or routed earlier); every other lexable op requires unwrap and takes the unwrap branch",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left.Unwrap != nil",
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytesRate, syntax.OpRangeTypeBytes]",
+          "past exhaustive switch op over [case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast, syntax.OpRangeTypeRateCounter]"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ]
+      }
+    }
+  ]
+}

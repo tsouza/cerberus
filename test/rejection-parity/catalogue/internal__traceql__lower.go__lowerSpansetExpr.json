@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerSpansetExpr#e8ccb6b4",
+      "message": "traceql: spanset expression %T is unsupported",
+      "class": "internal",
+      "rationale": "Defensive: every SpansetExpression the parser can place as a set-operation operand (SpansetFilter, SpansetOperation, Pipeline) is handled above, so the default branch is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := e.(type) over [case *traceql.SpansetFilter; case *traceql.SpansetOperation; case traceql.SpansetOperation; case *traceql.Pipeline; case traceql.Pipeline]"
+        ],
+        "callers": [
+          "lowerSpansetOperation"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
+      "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
+      "class": "divergence",
+      "trigger_query": "max_over_time((demo_latency_exp_hist)[5m:1m])",
+      "tracking_issue": 2563,
+      "evidence": {
+        "guard": [
+          "past returning if outer.Func.Name == \"absent_over_time\"",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))",
+          "past returning if err != nil",
+          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      },
+      "since": "2026-08-24"
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "internal",
+      "rationale": "unreachable: a PromQL function that takes a range-vector argument is either a member of the shared range-window vocabulary (chplan.IsPromQLRangeWindowFunc, consulted through canonicalRangeWindowFunc so the double_exponential_smoothing source spelling resolves to its IR name) or absent_over_time, and the arm directly above this guard routes absent_over_time to lowerAbsentOverTimeOverSubquery, so no parseable query reaches it",
+      "evidence": {
+        "guard": [
+          "past returning if outer.Func.Name == \"absent_over_time\"",
+          "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "cited": [
+          "canonicalRangeWindowFunc",
+          "lowerAbsentOverTimeOverSubquery"
+        ]
+      }
+    }
+  ]
+}

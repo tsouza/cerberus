@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerPipeline#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "Defensive: lowerRoot rejects an empty top-level pipeline before this helper runs, and a parsed sub-pipeline operand always carries at least one element, so the empty-pipeline branch is unreachable.",
+      "evidence": {
+        "guard": [
+          "if len(p.Elements) == 0"
+        ],
+        "callers": [
+          "lowerRoot",
+          "lowerSpansetOperand"
+        ],
+        "cited": [
+          "lowerRoot"
+        ]
+      }
+    }
+  ]
+}

@@ -188,8 +188,8 @@ type Catalogue struct {
 }
 
 // catalogueShard is the on-disk shape of one shard file: the entries
-// whose site keys name a single source file, sorted by site key. There
-// is deliberately no other field — anything a shard could carry about
+// whose site keys name a single (source file, function) pair, sorted by
+// site key. There is deliberately no other field — anything a shard could carry about
 // the catalogue as a whole would be duplicated 30 times and would
 // itself become a merge conflict.
 type catalogueShard struct {
@@ -198,17 +198,35 @@ type catalogueShard struct {
 
 // Shard-file naming.
 //
-// The catalogue is stored as one shard per SOURCE FILE, so two PRs
-// fixing guards in different lowering files never write the same file.
-// A shard's name is its source path with every "/" replaced by
-// shardPathSeparator, plus a ".json" suffix:
+// The catalogue is stored as one shard per (SOURCE FILE, FUNCTION) pair,
+// so two PRs fixing guards in different lowering files — or in different
+// functions of the SAME file — never write the same shard. Sharding by
+// file alone was the original design, but every fix in a single busy
+// dispatch file (internal/promql/lower.go's lowerHistogramNativeRoot in
+// particular) kept landing in the same file, so unrelated entries in
+// that file collided anyway: an entry two functions away could get
+// silently demoted by a conflict-resolution choice that had nothing to
+// do with it. A shard's name is its site's "<file>/<func>" key — the
+// site's source path plus its function name, joined with "/" — with
+// every "/" replaced by shardPathSeparator, plus a ".json" suffix:
 //
-//	internal/promql/subquery.go  ->  internal__promql__subquery.go.json
+//	internal/promql/lower.go:lowerHistogramNativeRoot#53e0f9b3
+//	  ->  internal__promql__lower.go__lowerHistogramNativeRoot.json
+//
+// Two entries for the SAME function still share a shard and can still
+// conflict if two PRs edit that function's own guard chain concurrently
+// — that is a real, unavoidable serialization on one piece of logic, not
+// something sharding can parallelize away. What this granularity buys is
+// narrower blast radius: a PR touching lowerCall no longer shares a file
+// with one touching lowerHistogramNativeRoot, even though both live in
+// lower.go.
 //
 // The mapping is injective and reversible — split the name's stem on
-// shardPathSeparator to recover the source path — as long as no path
-// component itself contains the separator. shardName rejects such a
-// path rather than silently aliasing two source files onto one shard.
+// shardPathSeparator and rejoin all but the last component with "/" to
+// recover the source path, with the last component the function name —
+// as long as no path component or function name itself contains the
+// separator. shardName rejects such a key rather than silently aliasing
+// two sites onto one shard.
 const (
 	shardPathSeparator = "__"
 	shardExt           = ".json"
@@ -224,6 +242,11 @@ const (
 // siteSourceSeparator splits a site key into its source-file half and
 // the "<func>#<hash>" half. Source paths never contain it.
 const siteSourceSeparator = ":"
+
+// siteHashSeparator splits a site key's "<func>#<hash>" half into the
+// function name and its disambiguating hash. Function names never
+// contain it.
+const siteHashSeparator = "#"
 
 // Endpoint identifiers consumed by compatibility/cmd/rejection-parity.
 const (
@@ -595,16 +618,24 @@ func reclassifyOnEvidenceDrift(e *Entry, prevEvidence *Evidence) {
 	e.Rationale = ""
 }
 
-// siteSourceFile returns the source-file half of a site key —
-// "internal/promql/subquery.go:lowerSubquery#0a1b2c3d" yields
-// "internal/promql/subquery.go". It is the shard key.
-func siteSourceFile(site string) (string, error) {
-	src, _, ok := strings.Cut(site, siteSourceSeparator)
+// siteShardKey returns the shard key for a site — its source file and
+// function name, joined with "/" so shardName's existing path-splitting
+// logic partitions them into separate components:
+// "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59" yields
+// "internal/promql/lower.go/expHistogramSelectorRouting". See the
+// shardPathSeparator doc comment for why this is the shard granularity.
+func siteShardKey(site string) (string, error) {
+	src, rest, ok := strings.Cut(site, siteSourceSeparator)
 	if !ok || src == "" {
 		return "", fmt.Errorf("site key %q carries no %q-terminated source path — every key is "+
 			"\"<file>.go:<func>#<hash8>\"", site, siteSourceSeparator)
 	}
-	return src, nil
+	fn, _, ok := strings.Cut(rest, siteHashSeparator)
+	if !ok || fn == "" {
+		return "", fmt.Errorf("site key %q carries no %q-separated function name — every key is "+
+			"\"<file>.go:<func>#<hash8>\"", site, siteHashSeparator)
+	}
+	return src + "/" + fn, nil
 }
 
 // shardName maps a source path to the shard file that owns its
@@ -621,8 +652,10 @@ func shardName(srcPath string) (string, error) {
 	return strings.Join(parts, shardPathSeparator) + shardExt, nil
 }
 
-// shardSourcePath reverses shardName.
-func shardSourcePath(name string) (string, error) {
+// shardSourceKey reverses shardName, recovering the "<file>/<func>"
+// shard key shardName encoded (not a real filesystem path — the
+// trailing component is a function name, not a path segment).
+func shardSourceKey(name string) (string, error) {
 	stem, ok := strings.CutSuffix(name, shardExt)
 	if !ok || stem == "" {
 		return "", fmt.Errorf("shard file %q is not a %q-suffixed shard name", name, shardExt)
@@ -682,15 +715,15 @@ func sortEntries(entries []Entry) {
 }
 
 // ShardCatalogue renders the canonical on-disk form: shard file name ->
-// file bytes (2-space indent + trailing newline), entries partitioned
-// by source file and sorted by site key inside each shard. A catalogue
-// with no entries for a source file yields no shard for it, which is
-// what makes pruning in WriteCatalogue a total operation rather than a
-// guess.
+// file bytes (2-space indent + trailing newline), entries partitioned by
+// (source file, function) and sorted by site key inside each shard. A
+// catalogue with no entries for a shard key yields no shard for it,
+// which is what makes pruning in WriteCatalogue a total operation rather
+// than a guess.
 func ShardCatalogue(cat *Catalogue) (map[string][]byte, error) {
 	byShard := map[string][]Entry{}
 	for _, e := range cat.Entries {
-		src, err := siteSourceFile(e.Site.Site)
+		src, err := siteShardKey(e.Site.Site)
 		if err != nil {
 			return nil, err
 		}
@@ -714,8 +747,8 @@ func ShardCatalogue(cat *Catalogue) (map[string][]byte, error) {
 
 // WriteCatalogue writes the sharded form into dir and REMOVES shards
 // that carry no entries any more. Pruning is not housekeeping: a shard
-// left behind after the last guard in its source file was deleted
-// keeps feeding stale entries into LoadCatalogue, so the catalogue
+// left behind after the last guard in its (file, function) pair was
+// deleted keeps feeding stale entries into LoadCatalogue, so the catalogue
 // would go on asserting rejections that no longer exist while the
 // regenerate-and-diff test — which only ever compared the files it
 // wrote — reported green.

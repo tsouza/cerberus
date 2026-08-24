@@ -1,0 +1,73 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#9b8454a6",
+      "message": "promql: subquery inner %s expects exactly %d argument(s), got %d",
+      "class": "internal",
+      "rationale": "the range-window vocabulary gate above (chplan.IsPromQLRangeWindowFunc) routes a non-reducer call to lowerSubqueryOverInstantCall, so only vocabulary members reach this check, and subqueryInnerRangeFnShape reports each member's true PromQL arity; none of them is variadic, so the upstream parser has already rejected any call whose argument count differs before lowering begins",
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
+          "if len(call.Args) != arity"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "cited": [
+          "lowerSubqueryOverInstantCall",
+          "subqueryInnerRangeFnShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#a2b5a42c",
+      "message": "promql: subquery inner %s must wrap a MatrixSelector, got %T",
+      "class": "internal",
+      "rationale": "matrixArgExpr is peelWrappers(call.Args[matrixArg]) (#1896); the parser only ever gives this argument position a Matrix-typed expression (a MatrixSelector or a SubqueryExpr, optionally wrapped in ParenExpr/StepInvariantExpr), and peeling strips every such wrapper, so after peeling matrixArgExpr can only be a MatrixSelector or a SubqueryExpr -- this assertion cannot fail on any parseable query",
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
+          "past returning if len(call.Args) != arity",
+          "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "cited": [
+          "peelWrappers"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCall#df8fa0f7",
+      "message": "promql: subquery inner matrix selector must wrap a VectorSelector, got %T",
+      "class": "internal",
+      "rationale": "the parser only ever builds a MatrixSelector around a VectorSelector, so the inner assertion cannot fail on any parseable query",
+      "evidence": {
+        "guard": [
+          "past returning if isInstantTransformCall(call) \u0026\u0026 subqueryInstantSafe(call)",
+          "past returning if call.Func.Name == \"absent\"",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
+          "past returning if len(call.Args) != arity",
+          "past returning if innerSub, ok := matrixArgExpr.(*parser.SubqueryExpr); ok",
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ]
+      }
+    }
+  ]
+}

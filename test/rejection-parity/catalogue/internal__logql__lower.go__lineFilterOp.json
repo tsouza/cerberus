@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lineFilterOp#e051286a",
+      "message": "logql: unknown line-filter match type %s",
+      "class": "internal",
+      "rationale": "unreachable: all six parser-producible LineMatchTypes are handled (the four substring/regex arms here; pattern and ip route out of lineFilterPart earlier)",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch t over [case syntax.LineMatchEqual; case syntax.LineMatchNotEqual; case syntax.LineMatchRegexp; case syntax.LineMatchNotRegexp]"
+        ],
+        "callers": [
+          "lineFilterPart"
+        ],
+        "cited": [
+          "lineFilterPart"
+        ]
+      }
+    }
+  ]
+}

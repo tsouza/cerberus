@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#3bb91b26",
+      "message": "traceql: empty pipeline",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns an empty pipeline without an error",
+      "evidence": {
+        "guard": [
+          "past returning if expr == nil",
+          "if len(expr.Pipeline.Elements) == 0"
+        ],
+        "callers": [
+          "Lower"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerRoot#e52d8be5",
+      "message": "traceql: nil RootExpr",
+      "class": "internal",
+      "rationale": "internal invariant: tempo's Parse never returns a nil RootExpr without an error",
+      "evidence": {
+        "guard": [
+          "if expr == nil"
+        ],
+        "callers": [
+          "Lower"
+        ]
+      }
+    }
+  ]
+}

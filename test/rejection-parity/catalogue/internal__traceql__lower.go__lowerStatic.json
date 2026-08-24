@@ -1,0 +1,54 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#218e2332",
+      "message": "traceql: static status literal has no Status() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeStatus static always carries a Status value",
+      "evidence": {
+        "guard": [
+          "case traceql.TypeStatus of switch st.Type",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerFieldExpr",
+          "lowerScalarExpr"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#25110d71",
+      "message": "traceql: static literal type %s is unsupported",
+      "class": "internal",
+      "rationale": "every static type the pinned grammar produces in lowerable positions (int / float / string / bool / duration / status / kind) is handled; array statics do not parse",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch st.Type over [case traceql.TypeString; case traceql.TypeInt; case traceql.TypeFloat; case traceql.TypeBoolean; case traceql.TypeDuration; case traceql.TypeStatus; case traceql.TypeKind]"
+        ],
+        "callers": [
+          "lowerFieldExpr",
+          "lowerScalarExpr"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStatic#567e5794",
+      "message": "traceql: static kind literal has no Kind() value",
+      "class": "internal",
+      "rationale": "internal invariant: a TypeKind static always carries a Kind value",
+      "evidence": {
+        "guard": [
+          "case traceql.TypeKind of switch st.Type",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerFieldExpr",
+          "lowerScalarExpr"
+        ]
+      }
+    }
+  ]
+}

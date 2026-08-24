@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:rangeFuncName#b1ec3bca",
+      "message": "logql: range op %s is not yet supported",
+      "class": "internal",
+      "rationale": "unreachable: every lexer-producible range op is mapped (rate/bytes_rate/rate_counter/count/bytes plus the *_over_time family incl. first/last; absent_over_time routes to lowerAbsentOverTime first); the dunder sharding ops (__quantile_sketch_over_time__, __first/last_over_time_ts__) have no lexer tokens",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpRangeTypeRate, syntax.OpRangeTypeBytesRate; case syntax.OpRangeTypeRateCounter; case syntax.OpRangeTypeCount; case syntax.OpRangeTypeBytes; case syntax.OpRangeTypeSum, syntax.OpRangeTypeAvg, syntax.OpRangeTypeMin, syntax.OpRangeTypeMax, syntax.OpRangeTypeStddev, syntax.OpRangeTypeStdvar, syntax.OpRangeTypeQuantile, syntax.OpRangeTypeFirst, syntax.OpRangeTypeLast]"
+        ],
+        "callers": [
+          "lowerRangeAggregation"
+        ],
+        "cited": [
+          "lowerAbsentOverTime"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#88443708",
+      "message": "traceql: scalar filter rhs of type (%T) is not supported: the right-hand side of a scalar filter must be a literal",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name =~ \".+\" } | max(duration) \u003e avg(duration)",
+      "evidence": {
+        "guard": [
+          "past returning if !isBareAggregate(sf.LHS)",
+          "if !isBareStatic(sf.RHS)"
+        ],
+        "callers": [
+          "lowerFollowingElement"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerScalarFilter#e4a47953",
+      "message": "traceql: scalar filter lhs of type (%T) is not supported: the left-hand side of a scalar filter must be a single aggregate (count() / sum(...) / avg(...) / min(...) / max(...))",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name =~ \".+\" } | max(duration) - min(duration) \u003e= 0",
+      "evidence": {
+        "guard": [
+          "if !isBareAggregate(sf.LHS)"
+        ],
+        "callers": [
+          "lowerFollowingElement"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#b76969a7",
+      "message": "traceql: IN comparison RHS must be a literal array, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only folds `attr = a || attr = b` into an OpIn/OpNotIn BinaryOperation whose RHS is an array Static, so a non-literal RHS is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerBinaryOperation"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerInOperation#e5851186",
+      "message": "traceql: IN comparison LHS must be an attribute reference, got %T",
+      "class": "internal",
+      "rationale": "Defensive: the Tempo parser only emits an OpIn/OpNotIn BinaryOperation with an attribute LHS, so a non-attribute LHS is unreachable from a parseable query.",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerBinaryOperation"
+        ]
+      }
+    }
+  ]
+}

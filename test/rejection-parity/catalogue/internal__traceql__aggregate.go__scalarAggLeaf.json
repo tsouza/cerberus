@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/aggregate.go:scalarAggLeaf#813b68dc",
+      "message": "traceql: aggregate `%s` has nil inner expression",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields an aggregate with a nil inner expression",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if agg.Op() == traceql.AggregateCount",
+          "if inner == nil"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
+    }
+  ]
+}

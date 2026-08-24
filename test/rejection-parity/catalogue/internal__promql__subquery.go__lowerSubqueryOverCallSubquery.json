@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
+      "message": "promql: %s does not accept a subquery argument",
+      "class": "internal",
+      "rationale": "lowerSubqueryOverCall is the only caller and dispatches here only after its own range-window vocabulary gate has admitted the call, so chplan.IsPromQLRangeWindowFunc has already answered true for the same canonicalised name by the time this check runs",
+      "evidence": {
+        "guard": [
+          "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ],
+        "cited": [
+          "lowerSubqueryOverCall"
+        ]
+      }
+    }
+  ]
+}

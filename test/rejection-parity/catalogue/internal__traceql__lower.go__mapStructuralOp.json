@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapStructuralOp#753a4362",
+      "message": "traceql: spanset op %s is not a structural relation",
+      "class": "internal",
+      "rationale": "callers pre-filter to the structural operator set before consulting this mapper",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.OpSpansetChild; case traceql.OpSpansetParent; case traceql.OpSpansetDescendant; case traceql.OpSpansetAncestor; case traceql.OpSpansetSibling; case traceql.OpSpansetNotChild; case traceql.OpSpansetNotParent; case traceql.OpSpansetNotDescendant; case traceql.OpSpansetNotAncestor; case traceql.OpSpansetNotSibling; case traceql.OpSpansetUnionChild; case traceql.OpSpansetUnionParent; case traceql.OpSpansetUnionDescendant; case traceql.OpSpansetUnionAncestor; case traceql.OpSpansetUnionSibling]"
+        ],
+        "callers": [
+          "lowerSpansetOperation"
+        ]
+      }
+    }
+  ]
+}

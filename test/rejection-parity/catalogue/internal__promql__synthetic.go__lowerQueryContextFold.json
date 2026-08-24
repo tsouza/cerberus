@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerQueryContextFold#5004da30",
+      "message": "promql: %s() takes no arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: range() / step() take no arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 0"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/synthetic.go:lowerQueryContextFold#93eabf31",
+      "message": "promql: %s is not a query-context function",
+      "class": "internal",
+      "rationale": "unreachable default: the lowering switch routes only range / step into this helper",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 0",
+          "default of switch c.Func.Name over [case \"range\"; case \"step\"; default]"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

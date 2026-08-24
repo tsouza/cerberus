@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapBinaryOp#786cde25",
+      "message": "traceql: operator %s is unsupported",
+      "class": "internal",
+      "rationale": "every operator the pinned grammar yields in binary positions is mapped; unary operators route through lowerUnaryOperation",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.OpEqual; case traceql.OpNotEqual; case traceql.OpLess; case traceql.OpLessEqual; case traceql.OpGreater; case traceql.OpGreaterEqual; case traceql.OpRegex; case traceql.OpNotRegex; case traceql.OpAnd; case traceql.OpOr; case traceql.OpAdd; case traceql.OpSub; case traceql.OpMult; case traceql.OpDiv; case traceql.OpMod; case traceql.OpPower]"
+        ],
+        "callers": [
+          "lowerBinaryOperation",
+          "lowerMetricsFilter",
+          "lowerScalarFilter"
+        ],
+        "cited": [
+          "lowerUnaryOperation"
+        ]
+      }
+    }
+  ]
+}

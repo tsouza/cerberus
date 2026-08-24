@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:plainAggCH#a6e9df79",
+      "message": "promql: aggregation op %s is not yet supported",
+      "class": "internal",
+      "rationale": "the only caller (buildAggFunc) pre-filters to the seven operators this mapper handles",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.SUM; case parser.COUNT; case parser.AVG; case parser.MIN; case parser.MAX; case parser.STDDEV; case parser.STDVAR]"
+        ],
+        "callers": [
+          "buildAggFunc"
+        ],
+        "cited": [
+          "buildAggFunc"
+        ]
+      }
+    }
+  ]
+}
