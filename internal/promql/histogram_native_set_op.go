@@ -182,6 +182,14 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 // [expHistogramSelectorRouting]'s catch-all rejection — the exact bug
 // #2325 reports.
 //
+// A drop-family operand — `(demo_latency_exp_hist + 0) or ...` (cerberus
+// issue #2534, the set-op sibling of the same gap
+// [lowerVectorVectorOperand] (binary.go) closes for arithmetic/comparison
+// V-V binops) — reprojects to the canonical empty float quartet via
+// [lowerExpHistogramDroppingShape], which already produces exactly the
+// Sample row shape a plain float operand would; no set-op-specific
+// wrapping is needed.
+//
 // Every other operand — including a FLOAT-valued function that merely
 // reads a histogram selector as its own argument, like
 // histogram_quantile(), or an operand with no histogram involvement at
@@ -191,6 +199,9 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 func lowerVectorSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if isExpHistogramValuedShape(expr, s, ctx) {
 		return lowerExpHistogramSetOpOperand(expr, s, ctx)
+	}
+	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
+		return dropped, err
 	}
 	return lower(expr, s, ctx)
 }
