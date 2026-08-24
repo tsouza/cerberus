@@ -168,15 +168,46 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 	return plan, nil
 }
 
-// lowerRoot lowers the ROOT of a query expression. It is [lower] plus the
-// dispatches that can only be decided at the root: the shapes over an
-// exponential (native) histogram that return a HISTOGRAM-VALUED sample —
-// a bare selector, `sum`/`avg` `[by/without] (<selector>)`, and
-// histogram-valued range functions over a range-vector selector — plus scalar binary
-// operations that preserve or drop that value and histogram-aware wrappers
-// such as label_replace that preserve the payload. Their answers have a wire
-// representation only when the histogram-valued shape (possibly under such
-// a wrapper) is the whole query.
+// lowerRoot lowers the ROOT of a query expression. It is [lower] plus
+// [lowerHistogramNativeRoot]'s histogram-native dispatch table — see that
+// function's own doc for what it recognises and why the distinction has
+// to happen at a root rather than inside [lowerVectorSelector].
+//
+// Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
+// through here: it enumerates series and labels rather than evaluating an
+// expression, consumes no Value column, and already has its own
+// full-range bare-selector path.
+func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if plan, ok, err := lowerHistogramNativeRoot(expr, s, ctx); ok {
+		return plan, err
+	}
+	return lower(expr, s, ctx)
+}
+
+// lowerHistogramNativeRoot is [lowerRoot]'s histogram-native dispatch
+// table: the shapes over an exponential (native) histogram that return a
+// HISTOGRAM-VALUED sample — a bare selector, `sum`/`avg`
+// `[by/without] (<selector>)`, and histogram-valued range functions over
+// a range-vector selector — plus scalar binary operations that preserve
+// or drop that value and histogram-aware wrappers such as label_replace
+// that preserve the payload. Their answers have a wire representation
+// only when the histogram-valued shape (possibly under such a wrapper) is
+// the whole query — or, since cerberus issue #2543, the whole INNER
+// expression of a bare top-level subquery ([lowerHistogramNativeSubqueryInner],
+// subquery.go): a subquery's inner is re-evaluated at every anchor of its
+// own grid exactly the way a query's root is evaluated once, so the
+// identical recognizer chain applies, just against a different grid.
+//
+// It is factored out of [lowerRoot] itself for exactly that reuse:
+// lowerRoot was the sole caller until #2543, because `lower`'s
+// `*parser.SubqueryExpr` case calls [lowerSubquery] directly and every
+// `lowerSubqueryOver*` helper called its own generic lowering entry point
+// (lowerVectorSelector / lowerBinary / lowerAggregate) unconditionally,
+// never lowerRoot's table — so a subquery's inner never got the same
+// chance a query's root always has. ok is false when expr matched none of
+// the recognizers below; lowerRoot's caller falls through to [lower], and
+// lowerHistogramNativeSubqueryInner's caller falls through to its own
+// per-shape generic lowering, unchanged from before #2543.
 //
 // The distinction cannot be made inside [lowerVectorSelector], because the
 // selector in `sum(m_exp_hist)` and the selector in `m_exp_hist` arrive
@@ -252,17 +283,13 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 // #2449) still falls through to internal/promql/binary.go's
 // lowerVectorSetOp rejection, tracked as an open divergence in
 // test/rejection-parity/catalogue under #2449.
-//
-// Metadata lowering ([LowerMetadataRange]) deliberately does NOT route
-// through here: it enumerates series and labels rather than evaluating an
-// expression, consumes no Value column, and already has its own
-// full-range bare-selector path.
-func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
 	if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok {
-		return lowerLabelReplaceOverExpHistogram(call, s, ctx)
+		plan, err := lowerLabelReplaceOverExpHistogram(call, s, ctx)
+		return plan, true, err
 	}
 	if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
-		return plan, err
+		return plan, true, err
 	}
 	// `or` between a float-valued operand and a histogram-valued operand
 	// (cerberus issue #2330), and every wrapper composition around that
@@ -272,7 +299,7 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// dispatch order and semantics are unchanged, see that function's own
 	// doc for the per-recognizer rationale each check used to carry here.
 	if plan, ok, err := lowerMixedExpHistogramFamily(expr, s, ctx); ok {
-		return plan, err
+		return plan, true, err
 	}
 	// Vector-vector `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`,
 	// where BOTH operands are themselves a mixed `or` — neither side a
@@ -291,13 +318,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// every matched pair regardless of type compatibility, contrary to
 	// what the arithmetic pass's own header had assumed.
 	if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
+		plan, err := lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
+		return plan, true, err
 	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramOverTime(shape, s, ctx)
+		plan, err := lowerExpHistogramOverTime(shape, s, ctx)
+		return plan, true, err
 	}
 	if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
+		plan, err := lowerExpHistogramResetsOrChanges(shape, s, ctx)
+		return plan, true, err
 	}
 	// count_over_time() / present_over_time() (cerberus issue #2480): the
 	// window-counting sibling of sum_over_time / avg_over_time just above
@@ -306,7 +336,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// (rangeVectorFloatOnlyDropFuncs) or the fold treatment
 	// (overTimeOverExpHistogram) applies.
 	if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok {
-		return lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+		plan, err := lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+		return plan, true, err
 	}
 	// last_over_time() / first_over_time() (cerberus issue #2480): the
 	// histogram-PRESERVING sibling of count_over_time / present_over_time
@@ -314,7 +345,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// for why reference selects (rather than drops or counts) the
 	// window's newest/oldest sample.
 	if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
-		return lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
+		plan, err := lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
+		return plan, true, err
 	}
 	// ts_of_first_over_time() / ts_of_last_over_time() (cerberus issue
 	// #2482): the timestamp-reporting siblings of last_over_time /
@@ -323,45 +355,54 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// they need their own lowering (the output is a float TIMESTAMP
 	// value with `__name__` DROPPED, not a preserved histogram sample).
 	if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok {
-		return lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
+		plan, err := lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
+		return plan, true, err
 	}
 	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramCount(agg, vs, s, ctx)
+		plan, err := lowerExpHistogramCount(agg, vs, s, ctx)
+		return plan, true, err
 	}
 	if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok {
 		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if !matched {
-			return nil, fmt.Errorf("promql: internal invariant violated: count/group input is not histogram-valued: %v", agg.Expr)
+			return nil, true, fmt.Errorf("promql: internal invariant violated: count/group input is not histogram-valued: %v", agg.Expr)
 		}
-		return lowerExpHistogramCountOrGroupOverPlan(agg, input, s)
+		plan, err := lowerExpHistogramCountOrGroupOverPlan(agg, input, s)
+		return plan, true, err
 	}
 	if agg, ok := countValuesOverExpHistogramValue(expr, s, ctx); ok {
 		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if !matched {
-			return nil, fmt.Errorf("promql: internal invariant violated: count_values input is not histogram-valued: %v", agg.Expr)
+			return nil, true, fmt.Errorf("promql: internal invariant violated: count_values input is not histogram-valued: %v", agg.Expr)
 		}
-		return lowerExpHistogramCountValuesOverPlan(agg, input, s, ctx)
+		plan, err := lowerExpHistogramCountValuesOverPlan(agg, input, s, ctx)
+		return plan, true, err
 	}
 	if agg, vs, ok := droppingAggregationOverExpHistogram(expr, s, ctx); ok {
-		return lowerExpHistogramDroppingAggregation(agg, vs, s, ctx)
+		plan, err := lowerExpHistogramDroppingAggregation(agg, vs, s, ctx)
+		return plan, true, err
 	}
 	if histSide, ok := expHistogramDroppingScalarBinop(expr, s, ctx); ok {
-		return lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
+		plan, err := lowerExpHistogramScalarBinop(histSide, "", nil, s, ctx, true)
+		return plan, true, err
 	}
 	if lhs, rhs, ok := expHistogramDroppingHistogramBinop(expr, s, ctx); ok {
-		return lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
+		plan, err := lowerExpHistogramDroppingHistogramBinop(lhs, rhs, s, ctx)
+		return plan, true, err
 	}
 	if histSide, floatSide, op, match, card, include, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
-		return lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, match, card, include, s, ctx)
+		plan, err := lowerExpHistogramFloatVectorScalingBinop(histSide, floatSide, op, match, card, include, s, ctx)
+		return plan, true, err
 	}
 	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
-		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
+		plan, err := lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
+		return plan, true, err
 	}
 	// A wrapper around a NESTED drop-family shape (cerberus issue #2528):
 	// an aggregation of ANY operator, or label_replace/label_join, whose
@@ -378,9 +419,9 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// result composes under further wrapping without needing a bespoke
 	// recogniser per wrapper.
 	if plan, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
-		return plan, err
+		return plan, true, err
 	}
-	return lower(expr, s, ctx)
+	return nil, false, nil
 }
 
 // lowerMixedExpHistogramFamily dispatches `or` between a float-valued

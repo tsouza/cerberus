@@ -38,6 +38,18 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		return nil, fmt.Errorf("promql: subquery step must be positive, got %s", e.Step)
 	}
 
+	// A subquery's inner expression is re-evaluated at every one of its own
+	// grid anchors — the identical thing a query's own root is evaluated
+	// once at — so it gets the identical first chance at histogram-native
+	// routing lowerRoot gives a query's root, before any of the
+	// lowerSubqueryOver* helpers below fall back to their own generic
+	// lowering entry point (cerberus issue #2543). See
+	// [lowerHistogramNativeSubqueryInner]'s own doc for the shapes this
+	// covers and why none of them needed a per-helper change.
+	if plan, matched, err := lowerHistogramNativeSubqueryInner(e, step, s, ctx); matched {
+		return plan, err
+	}
+
 	switch inner := e.Expr.(type) {
 	case *parser.VectorSelector:
 		return lowerSubqueryOverVectorSelector(e, inner, step, s, ctx)
@@ -60,6 +72,95 @@ func lowerSubquery(e *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chpl
 		return lowerSubqueryOverSubquery(e, inner, step, s, ctx)
 	}
 	return nil, fmt.Errorf("promql: subquery over %T is unsupported", e.Expr)
+}
+
+// lowerHistogramNativeSubqueryInner tries [lowerHistogramNativeRoot]'s
+// entire histogram-native recognizer chain against sub's OWN inner
+// expression, evaluated at the subquery's own per-anchor grid
+// ([subqueryGridCtx]) rather than the raw sample stream every
+// lowerSubqueryOver* helper otherwise falls back to (cerberus issue
+// #2543).
+//
+// It composes with the SAME machinery a non-subquery histogram-native
+// query already uses in range mode: every histogram-native lowering
+// ([lowerExpHistogramBare] and its siblings) fans its own output across
+// ctx.start/ctx.end/ctx.step whenever they are set ([rangeGridShapeFor]),
+// and [subqueryGridCtx] sets exactly those three fields to the
+// subquery's OWN anchor grid. The histogram-native result therefore
+// already carries one row per (series, subquery anchor) with no further
+// RangeWindow wrap needed — unlike the Sample-shape siblings
+// [wrapSubqueryIdentity] windows, which start from an UNBOUNDED raw
+// selector and need the wrapper to do the per-anchor windowing itself.
+// This mirrors [lowerExpHistogramRangeFnOverSubquery]'s own existing use
+// of the identical subqueryGridCtx + histogram-lowering pattern for
+// `rate(<histogram-valued-subquery>)` — the OUTER-wraps-subquery
+// composition; this function is its BARE (no outer wrapper) sibling.
+//
+// matched is false whenever sub's inner is not one of the recognized
+// shapes (the caller keeps its own per-shape lowering unchanged) or when
+// no eval anchor is available at all ([subqueryGridCtx] returns ok=false
+// — only reachable from a bare [Lower] call with no query time threaded
+// through at all; every real HTTP entry point uses [LowerAt] /
+// [LowerAtRange] and always has one). A [subqueryGridCtx] error is
+// likewise treated as "not matched" rather than surfaced directly: the
+// caller's own per-shape lowering recomputes the identical anchor below
+// and will raise the same error itself, so there is exactly one place
+// that error message is spelled.
+//
+// When matched, plan is returned exactly as the histogram-native
+// recognizer built it EXCEPT for its own row shape:
+//
+//   - [chplan.HistogramRowShape] / [chplan.MixedRowShape] (a
+//     histogram-valued or mixed-`or` result) is returned AS-IS.
+//     Re-projecting it through [subqueryAnchorShape]'s four-column
+//     Sample quartet would silently drop the nine Histogram*Column
+//     outputs (or the mixed shape's discriminator column) — the exact
+//     hazard [chplan.HistogramRowShape]'s own doc comment warns every
+//     generic forwarder about.
+//   - Anything else (the "drop" family's always-empty float quartet, a
+//     [chplan.SampleRowShape] result) gets the SAME [subqueryAnchorShape]
+//     wrap the non-histogram arithmetic siblings already apply, so a
+//     wrapping outer range-vector function can still read the
+//     `anchor_ts` alias.
+//
+// A histogram-native shape reached from an OUTER range-vector function
+// wrapping this subquery (`max_over_time((m_exp_hist)[5m:1m])`) is a
+// separate, deliberately unsupported composition:
+// [lowerOuterRangeFnOverSubquery] rejects a [chplan.HistogramRowShape] /
+// [chplan.MixedRowShape] result from this function explicitly, because
+// its own RangeWindow wrapper reduces over the placeholder `Value`
+// column a histogram-shaped row does not meaningfully carry.
+func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Duration, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	grid, ok, err := subqueryGridCtx(sub, step, ctx)
+	if err != nil || !ok {
+		return nil, false, nil
+	}
+
+	innerExpr := sub.Expr
+	// The subquery's own modifiers shadow a directly-nested selector's —
+	// mirrors lowerSubqueryOverVectorSelector's identical strip, applied
+	// here so a bare histogram selector under a subquery sees the same
+	// anchor its Sample-shape sibling does rather than double-applying
+	// its own `@`/`offset` on top of the grid subqueryGridCtx already
+	// derived from the subquery's modifiers.
+	if vs, ok := unwrapVectorSelector(innerExpr); ok {
+		vsNoModifier, _ := stripSelectorModifierForRangeVector(vs, grid)
+		innerExpr = &vsNoModifier
+	}
+
+	plan, matched, herr := lowerHistogramNativeRoot(innerExpr, s, grid)
+	if !matched {
+		return nil, false, nil
+	}
+	if herr != nil {
+		return nil, true, herr
+	}
+	switch chplan.RowShapeOf(plan) {
+	case chplan.HistogramRowShape, chplan.MixedRowShape:
+		return plan, true, nil
+	default:
+		return subqueryAnchorShape(plan, s), true, nil
+	}
 }
 
 // lowerSubqueryOverUnary — `(-<expr>)[range:step]` / `(+<expr>)[range:step]`.
@@ -687,6 +788,21 @@ func lowerOuterRangeFnOverSubquery(
 	inner, err := lowerSubquery(sub, s, ctx)
 	if err != nil {
 		return nil, err
+	}
+	// A subquery whose OWN inner expression resolved histogram-native
+	// (cerberus issue #2543, [lowerHistogramNativeSubqueryInner]) is a
+	// deliberately unsupported composition here: this reducer's
+	// RangeWindow below folds over TimestampColumn "anchor_ts" /
+	// ValueColumn s.ValueColumn, and a histogram-shaped row publishes
+	// neither meaningfully — Value is only the placeholder
+	// [chplan.HistogramProjection] always carries alongside its real
+	// nine Histogram*Column fields (see that type's own doc comment).
+	// Rejecting explicitly here, rather than letting the RangeWindow
+	// below reference a column the histogram-shaped relation never
+	// publishes, turns what would otherwise be a ClickHouse "Unknown
+	// identifier" 502 into a clear promql-level error.
+	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+		return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
 	}
 
 	anchor, err := subqueryAnchor(sub, ctx)

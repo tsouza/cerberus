@@ -35,6 +35,26 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
+      "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
+      "class": "divergence",
+      "trigger_query": "max_over_time((demo_latency_exp_hist)[5m:1m])",
+      "tracking_issue": 2545,
+      "evidence": {
+        "guard": [
+          "past returning if outer.Func.Name == \"absent_over_time\"",
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))",
+          "past returning if err != nil",
+          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      },
+      "since": "2026-08-24"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "internal",
@@ -99,11 +119,12 @@
       "site": "internal/promql/subquery.go:lowerSubquery#a374d4b2",
       "message": "promql: subquery over %T is unsupported",
       "class": "internal",
-      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors.",
+      "rationale": "SubqueryExpr.Expr must type-check as an instant vector, and every instant-vector AST shape is dispatched (selector, call, paren, aggregate, binary, unary, plus the parser-impossible nested SubqueryExpr handled defensively); scalar- and string-typed inners are parse-time type errors. The lowerHistogramNativeSubqueryInner call added ahead of the switch by cerberus issue #2543 does not narrow that exhaustiveness claim: when it returns matched=false control falls through to the identical switch this rationale already covers, over the identical e.Expr value.",
       "evidence": {
         "guard": [
           "past returning if e.Range \u003c= 0",
           "past returning if step \u003c 0",
+          "past returning if plan, matched, err := lowerHistogramNativeSubqueryInner(e, step, s, ctx); matched",
           "past exhaustive switch inner := e.Expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.ParenExpr; case *parser.AggregateExpr; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.SubqueryExpr]"
         ],
         "callers": [
@@ -113,6 +134,9 @@
           "lowerSubquery",
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery"
+        ],
+        "cited": [
+          "lowerHistogramNativeSubqueryInner"
         ]
       }
     },
