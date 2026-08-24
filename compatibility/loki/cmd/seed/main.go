@@ -75,6 +75,15 @@ const packedFormat = "packed"
 // explicitly) ever queries it.
 const metadataProbeFormat = "metadata-probe"
 
+// The two synthetic cluster partitions the seeded services split across,
+// and the container id each partition's services run under.
+const (
+	clusterZero   = "cluster-0"
+	clusterOne    = "cluster-1"
+	containerZero = "container-0"
+	containerOne  = "container-1"
+)
+
 type serviceConfig struct {
 	Name        string
 	ServiceName string
@@ -86,19 +95,19 @@ type serviceConfig struct {
 }
 
 var serviceConfigs = []serviceConfig{
-	{Name: "web-server", ServiceName: "web-server", Format: "json", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-0", Container: "container-0"},
-	{Name: "database", ServiceName: "database", Format: "json", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-1", Container: "container-0"},
-	{Name: "cache", ServiceName: "cache", Format: "json", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-2", Container: "container-0"},
-	{Name: "auth-service", ServiceName: "auth-service", Format: "json", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-3", Container: "container-0"},
-	{Name: "kafka", ServiceName: "kafka", Format: "json", Cluster: "cluster-1", Namespace: "namespace-2", Pod: "pod-4", Container: "container-1"},
-	{Name: "prometheus", ServiceName: "prometheus", Format: "json", Cluster: "cluster-1", Namespace: "namespace-2", Pod: "pod-5", Container: "container-1"},
-	{Name: "loki", ServiceName: "loki", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-3", Pod: "pod-6", Container: "container-1"},
-	{Name: "mimir", ServiceName: "mimir", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-3", Pod: "pod-7", Container: "container-1"},
-	{Name: "tempo", ServiceName: "tempo", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-8", Container: "container-1"},
-	{Name: "grafana", ServiceName: "grafana", Format: "logfmt", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-9", Container: "container-1"},
-	{Name: "nginx", ServiceName: "nginx", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-0", Pod: "pod-10", Container: "container-0"},
-	{Name: "kubernetes", ServiceName: "kubernetes", Format: "unstructured", Cluster: "cluster-0", Namespace: "namespace-1", Pod: "pod-11", Container: "container-0"},
-	{Name: "syslog", ServiceName: "syslog", Format: "unstructured", Cluster: "cluster-1", Namespace: "namespace-4", Pod: "pod-12", Container: "container-1"},
+	{Name: "web-server", ServiceName: "web-server", Format: "json", Cluster: clusterZero, Namespace: "namespace-0", Pod: "pod-0", Container: containerZero},
+	{Name: "database", ServiceName: "database", Format: "json", Cluster: clusterZero, Namespace: "namespace-0", Pod: "pod-1", Container: containerZero},
+	{Name: "cache", ServiceName: "cache", Format: "json", Cluster: clusterZero, Namespace: "namespace-1", Pod: "pod-2", Container: containerZero},
+	{Name: "auth-service", ServiceName: "auth-service", Format: "json", Cluster: clusterZero, Namespace: "namespace-1", Pod: "pod-3", Container: containerZero},
+	{Name: "kafka", ServiceName: "kafka", Format: "json", Cluster: clusterOne, Namespace: "namespace-2", Pod: "pod-4", Container: containerOne},
+	{Name: "prometheus", ServiceName: "prometheus", Format: "json", Cluster: clusterOne, Namespace: "namespace-2", Pod: "pod-5", Container: containerOne},
+	{Name: "loki", ServiceName: "loki", Format: "logfmt", Cluster: clusterOne, Namespace: "namespace-3", Pod: "pod-6", Container: containerOne},
+	{Name: "mimir", ServiceName: "mimir", Format: "logfmt", Cluster: clusterOne, Namespace: "namespace-3", Pod: "pod-7", Container: containerOne},
+	{Name: "tempo", ServiceName: "tempo", Format: "logfmt", Cluster: clusterOne, Namespace: "namespace-4", Pod: "pod-8", Container: containerOne},
+	{Name: "grafana", ServiceName: "grafana", Format: "logfmt", Cluster: clusterOne, Namespace: "namespace-4", Pod: "pod-9", Container: containerOne},
+	{Name: "nginx", ServiceName: "nginx", Format: "unstructured", Cluster: clusterZero, Namespace: "namespace-0", Pod: "pod-10", Container: containerZero},
+	{Name: "kubernetes", ServiceName: "kubernetes", Format: "unstructured", Cluster: clusterZero, Namespace: "namespace-1", Pod: "pod-11", Container: containerZero},
+	{Name: "syslog", ServiceName: "syslog", Format: "unstructured", Cluster: clusterOne, Namespace: "namespace-4", Pod: "pod-12", Container: containerOne},
 	// packed-source is the ONLY seeded stream carrying Promtail
 	// `pack`-shaped payloads (a JSON object with a top-level string
 	// "_entry" key) — see generatePackedLine. It exists so the LogQL
@@ -106,12 +115,12 @@ var serviceConfigs = []serviceConfig{
 	// has real packed/malformed lines to run differentially against;
 	// every other service's JSON lines are plain structured logs that
 	// `| unpack` would either no-op on or reject, never extract from.
-	{Name: "packed-source", ServiceName: "packed-source", Format: packedFormat, Cluster: "cluster-1", Namespace: "namespace-5", Pod: "pod-13", Container: "container-1"},
+	{Name: "packed-source", ServiceName: "packed-source", Format: packedFormat, Cluster: clusterOne, Namespace: "namespace-5", Pod: "pod-13", Container: containerOne},
 	// metadata-probe is the ONLY seeded stream carrying the generic
 	// `request_id` structured-metadata key — see metadataProbeFormat's
 	// doc comment for why request_id can't safely ride along on any of
 	// the streams above.
-	{Name: "metadata-probe", ServiceName: "metadata-probe", Format: metadataProbeFormat, Cluster: "cluster-1", Namespace: "namespace-6", Pod: "pod-14", Container: "container-1"},
+	{Name: "metadata-probe", ServiceName: "metadata-probe", Format: metadataProbeFormat, Cluster: clusterOne, Namespace: "namespace-6", Pod: "pod-14", Container: containerOne},
 }
 
 var (

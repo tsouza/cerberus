@@ -361,19 +361,22 @@ func identityForBool(op chplan.BinaryOp, lit bool, other chplan.Expr) (chplan.Ex
 	return nil, false
 }
 
-func foldIntInt(op chplan.BinaryOp, l, r int64) (chplan.Expr, bool) {
+// foldNumeric folds a binary op over two same-typed numeric operands,
+// shared by foldIntInt/foldFloatFloat — they differ only in T and the
+// literal wrapper, so the arithmetic/comparison logic lives here once.
+func foldNumeric[T int64 | float64](op chplan.BinaryOp, l, r T, wrap func(T) chplan.Expr) (chplan.Expr, bool) {
 	switch op {
 	case chplan.OpAdd:
-		return &chplan.LitInt{V: l + r}, true
+		return wrap(l + r), true
 	case chplan.OpSub:
-		return &chplan.LitInt{V: l - r}, true
+		return wrap(l - r), true
 	case chplan.OpMul:
-		return &chplan.LitInt{V: l * r}, true
+		return wrap(l * r), true
 	case chplan.OpDiv:
 		if r == 0 {
 			return nil, false
 		}
-		return &chplan.LitInt{V: l / r}, true
+		return wrap(l / r), true
 	case chplan.OpEq:
 		return &chplan.LitBool{V: l == r}, true
 	case chplan.OpNe:
@@ -390,31 +393,10 @@ func foldIntInt(op chplan.BinaryOp, l, r int64) (chplan.Expr, bool) {
 	return nil, false
 }
 
+func foldIntInt(op chplan.BinaryOp, l, r int64) (chplan.Expr, bool) {
+	return foldNumeric(op, l, r, func(v int64) chplan.Expr { return &chplan.LitInt{V: v} })
+}
+
 func foldFloatFloat(op chplan.BinaryOp, l, r float64) (chplan.Expr, bool) {
-	switch op {
-	case chplan.OpAdd:
-		return &chplan.LitFloat{V: l + r}, true
-	case chplan.OpSub:
-		return &chplan.LitFloat{V: l - r}, true
-	case chplan.OpMul:
-		return &chplan.LitFloat{V: l * r}, true
-	case chplan.OpDiv:
-		if r == 0 {
-			return nil, false
-		}
-		return &chplan.LitFloat{V: l / r}, true
-	case chplan.OpEq:
-		return &chplan.LitBool{V: l == r}, true
-	case chplan.OpNe:
-		return &chplan.LitBool{V: l != r}, true
-	case chplan.OpLt:
-		return &chplan.LitBool{V: l < r}, true
-	case chplan.OpLe:
-		return &chplan.LitBool{V: l <= r}, true
-	case chplan.OpGt:
-		return &chplan.LitBool{V: l > r}, true
-	case chplan.OpGe:
-		return &chplan.LitBool{V: l >= r}, true
-	}
-	return nil, false
+	return foldNumeric(op, l, r, func(v float64) chplan.Expr { return &chplan.LitFloat{V: v} })
 }

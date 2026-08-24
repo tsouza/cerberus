@@ -1497,8 +1497,8 @@ var instantTransformFns = map[string]struct{}{
 	"rad":   {},
 
 	// Label rewrites: per-sample Attributes maps, Value untouched.
-	"label_replace": {},
-	"label_join":    {},
+	fnLabelReplace: {},
+	fnLabelJoin:    {},
 	// `info(v[, {matchers}])` joins identity-matched labels off the
 	// info metric onto each of v's samples. It rewrites Attributes and
 	// leaves TimeUnix / Value untouched — the same sample-preserving

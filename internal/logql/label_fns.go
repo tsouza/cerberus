@@ -76,9 +76,9 @@ func lowerLabelReplace(e *syntax.LabelReplaceExpr, s schema.Logs, lc lowerCtx) (
 	return &chplan.Project{
 		Input: inner,
 		Projections: []chplan.Projection{
-			{Expr: cols.metricName, Alias: "MetricName"},
-			{Expr: attrs, Alias: "Attributes"},
-			{Expr: cols.timeExpr, Alias: "TimeUnix"},
+			{Expr: cols.metricName, Alias: sampleMetricNameCol},
+			{Expr: attrs, Alias: sampleAttributesCol},
+			{Expr: cols.timeExpr, Alias: sampleTimeUnixCol},
 			{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: rangeAggSynthValueColumn},
 		},
 	}, nil

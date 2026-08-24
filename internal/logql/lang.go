@@ -134,6 +134,20 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 // the pair.
 const LogLineColumn = "Line"
 
+// Canonical Sample-contract column aliases: every LogQL lowering path
+// that reshapes a plan into the (MetricName, Attributes, TimeUnix,
+// Value) Sample contract projects under these exact names — see
+// ProjectSamples's own doc comment for the contract chclient's cursor
+// scans against. Named once here so every projection site references
+// the same constant instead of re-typing (and risking a typo in) the
+// literal.
+const (
+	sampleMetricNameCol = "MetricName"
+	sampleAttributesCol = "Attributes"
+	sampleTimeUnixCol   = "TimeUnix"
+	sampleValueCol      = "Value"
+)
+
 // ProjectSamples wraps plan with the projection that reshapes the
 // emitted rows into the positional shape the chclient cursor scans.
 // Metric queries synthesise MetricName + a near-now TimeUnix anchor
@@ -183,7 +197,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		// applies in [sampleShapeOverLogInner].
 		attrsCol := s.ResourceAttributesColumn
 		if isVectorAggregateSampleShape(plan) {
-			attrsCol = "Attributes"
+			attrsCol = sampleAttributesCol
 		}
 		// TimeUnix source:
 		//   - Matrix-shape RangeWindow (OuterRange > 0): the inner SELECT
@@ -212,7 +226,7 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		var tsExpr chplan.Expr
 		switch {
 		case isVectorAggregateSampleShape(plan):
-			tsExpr = &chplan.ColumnRef{Name: "TimeUnix"}
+			tsExpr = &chplan.ColumnRef{Name: sampleTimeUnixCol}
 		case bottomsOutAtMatrixRangeWindow(plan):
 			tsExpr = &chplan.ColumnRef{Name: "anchor_ts"}
 		case !l.End.IsZero():
@@ -223,10 +237,10 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 		return &chplan.Project{
 			Input: plan,
 			Projections: []chplan.Projection{
-				{Expr: &chplan.LitString{V: ""}, Alias: "MetricName"},
-				{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: "Attributes"},
-				{Expr: tsExpr, Alias: "TimeUnix"},
-				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: "Value"},
+				{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+				{Expr: &chplan.ColumnRef{Name: attrsCol}, Alias: sampleAttributesCol},
+				{Expr: tsExpr, Alias: sampleTimeUnixCol},
+				{Expr: &chplan.ColumnRef{Name: rangeAggSynthValueColumn}, Alias: sampleValueCol},
 			},
 		}
 	}

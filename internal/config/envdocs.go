@@ -44,13 +44,28 @@ type envDocGroup struct {
 	Intro string
 }
 
+// The most-repeated Group names and Type tags below (each an EnvDoc field
+// value typed dozens of times across the individual key rows further down
+// this file) are named constants so a typo in one row fails to compile
+// instead of silently creating an ungrouped key TestEnvDocsCoverAllKeys
+// would otherwise have to catch at test time rather than build time.
+const (
+	groupHTTPServer         = "HTTP server"
+	groupClickHouseConn     = "ClickHouse connection"
+	groupConnectionPool     = "Connection pool"
+	groupQueryLimitsAndMem  = "Query limits and memory"
+	groupSchemaProvisioning = "Schema provisioning"
+	groupClickHouseOptimize = "ClickHouse optimizations"
+	docTypeDuration         = "duration"
+)
+
 // envDocGroups defines the section order and per-section prose for the
 // generated configuration reference. The Intro text is migrated verbatim from
 // the previously hand-written docs/configuration.md so nothing readable is
 // lost; the per-key tables below it are generated.
 var envDocGroups = []envDocGroup{
 	{
-		Name: "HTTP server",
+		Name: groupHTTPServer,
 		Intro: "A single listener serves all three upstream APIs plus the health probes; there\n" +
 			"is no separate admin port. See [`operations.md`](operations.md#port-binding)\n" +
 			"for the port-binding contract (including h2c + gRPC on the same socket).\n\n" +
@@ -62,7 +77,7 @@ var envDocGroups = []envDocGroup{
 			"attacks; `IdleTimeout` reclaims idle keep-alive connections.",
 	},
 	{
-		Name: "ClickHouse connection",
+		Name: groupClickHouseConn,
 		Intro: "ClickHouse is the only mandatory backing service, reached exclusively through\n" +
 			"these connection inputs. `CERBERUS_CH_ADDR` accepts a comma-separated list of\n" +
 			"hosts for a replicated / sharded cluster; with more than one host the driver\n" +
@@ -89,7 +104,7 @@ var envDocGroups = []envDocGroup{
 			"`native` is **rejected at startup** (they would be silently ignored).",
 	},
 	{
-		Name: "Connection pool",
+		Name: groupConnectionPool,
 		Intro: "The connection-count defaults reproduce clickhouse-go/v2's previously-implicit\n" +
 			"pool sizing verbatim, made explicit so the sharded-pushdown solver can raise the\n" +
 			"ceiling for fan-out rather than inherit a hidden driver default. The\n" +
@@ -108,7 +123,7 @@ var envDocGroups = []envDocGroup{
 			"age-eviction backstop if keepalive is disabled.",
 	},
 	{
-		Name:  "Query limits and memory",
+		Name:  groupQueryLimitsAndMem,
 		Intro: "Per-query wall-clock, memory, and sample budgets. A query crossing any cap gets a breaker-neutral typed rejection rather than holding an admit slot and pooled connection unbounded.",
 	},
 	{
@@ -156,7 +171,7 @@ var envDocGroups = []envDocGroup{
 			"[`observability.md`](observability.md) for the full self-observability contract.",
 	},
 	{
-		Name: "Schema provisioning",
+		Name: groupSchemaProvisioning,
 		Intro: "The auto-create hook (off by default) runs the idempotent OTel-CH exporter DDL\n" +
 			"at startup before HTTP serving begins. Every knob below shapes that DDL and is\n" +
 			"a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA=true`. `CERBERUS_REQUIREMENTS_CHECK`\n" +
@@ -170,7 +185,7 @@ var envDocGroups = []envDocGroup{
 			"[`observability.md`](observability.md#schema-shape-overrides).",
 	},
 	{
-		Name: "ClickHouse optimizations",
+		Name: groupClickHouseOptimize,
 		Intro: "The ClickHouse-optimization suite: an auto-picker that enables the\n" +
 			"server-supported, auto-eligible optimizations for the connected ClickHouse\n" +
 			"version (including the native `timeSeries*ToGrid` aggregates on a capable\n" +
@@ -208,31 +223,31 @@ var envDocGroups = []envDocGroup{
 // default.
 var envDocs = []EnvDoc{
 	// --- HTTP server ---
-	{envHTTPAddr, "string", "HTTP server", "HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes."},
-	{envHTTPReadTimeout, "duration", "HTTP server", "Whole-request read deadline (headers + body). `0` = unlimited (streaming-safe)."},
-	{envHTTPReadHdrTimeout, "duration", "HTTP server", "Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`. `0` falls back to `CERBERUS_HTTP_READ_TIMEOUT`, and is unlimited when that is `0` too."},
-	{envHTTPWriteTimeout, "duration", "HTTP server", "Response write deadline. `0` = unlimited - required so `/tail` + long matrices stream uninterrupted."},
-	{envHTTPIdleTimeout, "duration", "HTTP server", "Idle keep-alive connection lifetime. `0` falls back to `CERBERUS_HTTP_READ_TIMEOUT`, and holds an idle connection open indefinitely when that is `0` too."},
-	{envHTTPMaxHeaderBytes, "size", "HTTP server", "Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default."},
-	{envHTTPMaxBodyBytes, "size", "HTTP server", "Max inbound HTTP request body size, applied via `http.MaxBytesReader` on the Prom / Loki / Tempo HTTP paths (the gRPC path is unaffected). Accepts a raw byte integer **or** a humanized size (`4Mi`, `1M`). Default `4Mi`; `0` disables the cap."},
-	{envDebugPProf, "bool", "HTTP server", "Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production."},
-	{envEnabledHeads, "string", "HTTP server", "Comma-separated subset of query heads this process serves: `prom`, `loki`, `tempo` (case-insensitive). Default (all three) preserves full backward compatibility. A subset skips building **and** mounting the disabled heads' handler/client/limiter (and the Tempo gRPC service) so one head can run isolated in its own process/cgroup; `/healthz` + `/readyz` stay served in every mode. An unknown head or an empty list fails startup."},
+	{envHTTPAddr, "string", groupHTTPServer, "HTTP listen address for the Prom / Loki / Tempo APIs and the `/healthz` / `/readyz` probes."},
+	{envHTTPReadTimeout, docTypeDuration, groupHTTPServer, "Whole-request read deadline (headers + body). `0` = unlimited (streaming-safe)."},
+	{envHTTPReadHdrTimeout, docTypeDuration, groupHTTPServer, "Request-header read deadline. Must be `<=` `CERBERUS_HTTP_READ_TIMEOUT` when that is `> 0`. `0` falls back to `CERBERUS_HTTP_READ_TIMEOUT`, and is unlimited when that is `0` too."},
+	{envHTTPWriteTimeout, docTypeDuration, groupHTTPServer, "Response write deadline. `0` = unlimited - required so `/tail` + long matrices stream uninterrupted."},
+	{envHTTPIdleTimeout, docTypeDuration, groupHTTPServer, "Idle keep-alive connection lifetime. `0` falls back to `CERBERUS_HTTP_READ_TIMEOUT`, and holds an idle connection open indefinitely when that is `0` too."},
+	{envHTTPMaxHeaderBytes, "size", groupHTTPServer, "Max request header size in bytes. Accepts a raw byte integer (e.g. `1048576`) **or** a humanized size (`1Mi`, `512Ki`, `1M`); the raw-integer form is unchanged for backward compatibility. `0` leaves Go's 1 MiB default."},
+	{envHTTPMaxBodyBytes, "size", groupHTTPServer, "Max inbound HTTP request body size, applied via `http.MaxBytesReader` on the Prom / Loki / Tempo HTTP paths (the gRPC path is unaffected). Accepts a raw byte integer **or** a humanized size (`4Mi`, `1M`). Default `4Mi`; `0` disables the cap."},
+	{envDebugPProf, "bool", groupHTTPServer, "Mount the `net/http/pprof` debug endpoints (`/debug/pprof/*`) on the HTTP listener. **Off by default** - opt-in only, so the profiling surface never ships open in production."},
+	{envEnabledHeads, "string", groupHTTPServer, "Comma-separated subset of query heads this process serves: `prom`, `loki`, `tempo` (case-insensitive). Default (all three) preserves full backward compatibility. A subset skips building **and** mounting the disabled heads' handler/client/limiter (and the Tempo gRPC service) so one head can run isolated in its own process/cgroup; `/healthz` + `/readyz` stay served in every mode. An unknown head or an empty list fails startup."},
 
 	// --- ClickHouse connection ---
-	{envCHAddr, "string", "ClickHouse connection", "ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required)."},
-	{envCHDatabase, "string", "ClickHouse connection", "ClickHouse database name. Matches the upstream OTel ClickHouse exporter default; `AUTO_CREATE_SCHEMA` creates it (idempotently) if absent."},
-	{envCHUsername, "string", "ClickHouse connection", "ClickHouse user."},
-	{envCHPassword, "string", "ClickHouse connection", "ClickHouse password. Source from a secret, never commit."},
-	{envCHDialTimeout, "duration", "ClickHouse connection", "ClickHouse dial timeout. `0` leaves the clickhouse-go driver's own 30s default in place."},
-	{envCHProtocol, "enum", "ClickHouse connection", "Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`."},
-	{envCHConnOpenStrategy, "enum", "ClickHouse connection", "Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host."},
-	{envCHReadTimeout, "duration", "ClickHouse connection", "Socket read ceiling. Unset - or `0` - derives it from `CERBERUS_QUERY_TIMEOUT`. When set `> 0` it must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob."},
-	{envCHCompression, "enum", "ClickHouse connection", "Wire compression: `none`, `lz4`, or `zstd`."},
-	{envCHCompressionLevel, "int", "ClickHouse connection", "Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`."},
-	{envCHBlockBufferSize, "int", "ClickHouse connection", "Per-connection block buffer count (`0` -> driver default 2; valid `1..255`)."},
-	{envCHMaxComprBuffer, "size", "ClickHouse connection", "Compression buffer cap in bytes. Accepts a raw byte integer **or** a humanized size (`16Mi`, `10M`); the raw-integer form is unchanged for backward compatibility. `0` -> driver default 10 MiB; otherwise `> 0`."},
-	{envCHFreeBufOnRelease, "bool", "ClickHouse connection", "Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse)."},
-	{envCHDebug, "bool", "ClickHouse connection", "clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only."},
+	{envCHAddr, "string", groupClickHouseConn, "ClickHouse endpoint(s). Comma-separated for multiple hosts (each trimmed; at least one required)."},
+	{envCHDatabase, "string", groupClickHouseConn, "ClickHouse database name. Matches the upstream OTel ClickHouse exporter default; `AUTO_CREATE_SCHEMA` creates it (idempotently) if absent."},
+	{envCHUsername, "string", groupClickHouseConn, "ClickHouse user."},
+	{envCHPassword, "string", groupClickHouseConn, "ClickHouse password. Source from a secret, never commit."},
+	{envCHDialTimeout, docTypeDuration, groupClickHouseConn, "ClickHouse dial timeout. `0` leaves the clickhouse-go driver's own 30s default in place."},
+	{envCHProtocol, "enum", groupClickHouseConn, "Wire protocol: `native` (port 9000) or `http` (port 8123). The HTTP-only knobs below require `http`."},
+	{envCHConnOpenStrategy, "enum", groupClickHouseConn, "Multi-host selection: `in_order` (try hosts in order) or `round_robin` (rotate). Pointless but benign with a single host."},
+	{envCHReadTimeout, docTypeDuration, groupClickHouseConn, "Socket read ceiling. Unset - or `0` - derives it from `CERBERUS_QUERY_TIMEOUT`. When set `> 0` it must be `>=` `CERBERUS_QUERY_TIMEOUT`. clickhouse-go has no write-timeout knob."},
+	{envCHCompression, "enum", groupClickHouseConn, "Wire compression: `none`, `lz4`, or `zstd`."},
+	{envCHCompressionLevel, "int", groupClickHouseConn, "Compression level. `0` = method default. Requires a method. lz4: `0..12`; zstd: `1..22`."},
+	{envCHBlockBufferSize, "int", groupClickHouseConn, "Per-connection block buffer count (`0` -> driver default 2; valid `1..255`)."},
+	{envCHMaxComprBuffer, "size", groupClickHouseConn, "Compression buffer cap in bytes. Accepts a raw byte integer **or** a humanized size (`16Mi`, `10M`); the raw-integer form is unchanged for backward compatibility. `0` -> driver default 10 MiB; otherwise `> 0`."},
+	{envCHFreeBufOnRelease, "bool", groupClickHouseConn, "Drop the preserved memory buffer after each query (lower steady-state memory, less buffer reuse)."},
+	{envCHDebug, "bool", groupClickHouseConn, "clickhouse-go legacy stdout debug logging. Noisy; local diagnosis only."},
 
 	// --- ClickHouse TLS / mTLS ---
 	{envCHTLSEnabled, "bool", "ClickHouse TLS / mTLS", "Dial ClickHouse over TLS. Required for any other TLS sub-knob."},
@@ -249,28 +264,28 @@ var envDocs = []EnvDoc{
 	{envCHHTTPProxyURL, "string", "ClickHouse HTTP-protocol knobs", "HTTP proxy URL (absolute, with scheme + host)."},
 
 	// --- Connection pool ---
-	{envCHMaxOpenConns, "int", "Connection pool", "Total pooled ClickHouse connections (busy + idle). Must be > 0."},
-	{envCHMaxIdleConns, "int", "Connection pool", "Idle ClickHouse connections kept warm for reuse. Must be > 0."},
-	{envCHConnMaxLifetime, "duration", "Connection pool", "Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0."},
-	{envCHKeepAliveEnabled, "bool", "Connection pool", "Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart."},
-	{envCHKeepAliveIdle, "duration", "Connection pool", "Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled."},
-	{envCHKeepAliveInterval, "duration", "Connection pool", "Gap between successive keepalive probes. Must be > 0 when keepalive is enabled."},
-	{envCHKeepAliveCount, "int", "Connection pool", "Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled."},
+	{envCHMaxOpenConns, "int", groupConnectionPool, "Total pooled ClickHouse connections (busy + idle). Must be > 0."},
+	{envCHMaxIdleConns, "int", groupConnectionPool, "Idle ClickHouse connections kept warm for reuse. Must be > 0."},
+	{envCHConnMaxLifetime, docTypeDuration, groupConnectionPool, "Max age of a pooled connection before it is recycled. Age-eviction backstop for a stale conn to a restarted backend (keepalive is the primary mechanism). Must be > 0."},
+	{envCHKeepAliveEnabled, "bool", groupConnectionPool, "Enable TCP keepalive on ClickHouse connection sockets so the kernel detects a dead peer after a restart."},
+	{envCHKeepAliveIdle, docTypeDuration, groupConnectionPool, "Idle time before the first keepalive probe. Must be > 0 when keepalive is enabled."},
+	{envCHKeepAliveInterval, docTypeDuration, groupConnectionPool, "Gap between successive keepalive probes. Must be > 0 when keepalive is enabled."},
+	{envCHKeepAliveCount, "int", groupConnectionPool, "Unanswered keepalive probes before the socket is declared dead. Must be > 0 when keepalive is enabled."},
 
 	// --- Query limits and memory ---
-	{envCHQueryMaxMemory, "size", "Query limits and memory", "Per-query ClickHouse memory cap (`max_memory_usage` on every data-plane query; DDL exempt). Accepts a raw byte integer (e.g. `1073741824`) **or** a humanized size (`2Gi`, `512Mi`, `1G`); the raw-integer form is unchanged for backward compatibility. 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422)."},
-	{envQueryMaxSamples, "int64", "Query limits and memory", "Per-query sample budget, mirroring Prometheus `--query.max-samples`. Enforced three ways: it aborts a result-set drain that crosses the budget; it derives the per-request Go-heap byte ceiling a PromQL sample drain runs under (the row count is a poor proxy for bytes on a native-histogram result, whose every row owns two bucket ladders); **and** it rejects a PromQL subquery whose anchor grid (`OuterRange/Step`) alone would exceed it — before any SQL runs, with the same `too many samples` 422 (the drain sees ~1 row/series for an instant reducer, so it can't catch the subquery-intermediate blowup). It is the only bound on cerberus-process heap (unlike `max_memory_usage`, which ClickHouse enforces server-side), so `0` does **not** disable it — `0` is coerced back to the default and logs a startup warning. Disabling requires an explicit `-1`, which logs a loud startup warning that the process-OOM backstop is off."},
-	{envQueryTimeout, "duration", "Query limits and memory", "Per-query wall-clock cap, stamped as ClickHouse `max_execution_time` (with `timeout_overflow_mode=throw`) on every data-plane query; DDL exempt. Mirrors Prometheus `--query.timeout`. The `?timeout=` query param min's against this per request. Also derives the driver-level socket `ReadTimeout`. `0` disables both."},
-	{envTempoStructuralTwoPhase, "bool", "Query limits and memory", "Split eligible TraceQL structural searches (`A >> B`, `A << B`, `A !>> B`, and a `select(...)` pipe over them) into a narrow top-N search phase then a wide hydrate restricted to those traces, bounding the wide span projection that OOMs on a dense descendant side. **On by default**; `false` falls back to the traditional single wide query."},
-	{envPromMetadataLookback, "duration", "Query limits and memory", "How far back a **windowless** Prom metadata-discovery request (`/api/v1/labels`, `/api/v1/label/<l>/values`, `/api/v1/series` with no `start`/`end` — the Grafana variable-refresh shape) scans. Requests that supply either bound are honored verbatim and ignore this. Write it as your retention: `90d` and `2160h` are the same value. `0` (the default) uses a conservative 14d fallback. This is the ONLY way to tell cerberus your real retention — the schema-provisioning TTL knobs are not evidence of it (they are a no-op unless auto-create is on, and their `CREATE TABLE IF NOT EXISTS` never touches a table your collector already created). Set it to your real retention when that exceeds the fallback, or discovery silently omits metrics quiet for longer than the fallback. The cost runs the other way: raising it never drops results but does widen the scan — the resource-label arm reads the fact table over the whole window."},
-	{envDeltaPrefixLookback, "duration", "Query limits and memory", "How far before a `rate()`/`increase()` window's start cerberus reconstructs a DELTA-temporality OTel Sum counter's pre-window cumulative level, needed only for Prometheus's counter-reset/extrapolation-**boundary** correction — never for the `rate()`/`increase()` value itself, which always comes from in-window samples alone. Unbounded, this scans a metric's ENTIRE retention on every `rate()`/`increase()` query against any Sum-typed counter whose table carries an `AggregationTemporality` column, Cumulative-temporality series included (the reconstructed value is provably unused for them) — this is the incident this default fixes. `24h` default: OTel collectors accumulating DELTA sums typically reset on restart/redeploy, so a day's lookback captures the overwhelming majority of genuine resets while keeping the scan retention-independent. Raising it improves boundary-correction precision for long-lived DELTA counters at the cost of scan size; `0` disables the bound entirely (the pre-fix unbounded scan). Empirically near-irrelevant in deployments where DELTA-temporality Sum data is rare (verified: well under 1% of rows in a real production `otel_metrics_sum` table) but is a real, fleet-wide semantic approximation wherever DELTA temporality genuinely appears. This is the FALLBACK mechanism as of cerberus issue #2389's exact read path (see `CERBERUS_DELTA_PREFIX_READ_ENABLED`): a deployment that has opted into the exact mechanism does not consult this knob at all; every other deployment keeps this approximation as its only mechanism, unchanged."},
-	{envDeltaPrefixReadEnabled, "bool", "Query limits and memory", "Query-path consumption gate for the exact, retention-independent DELTA-temporality prefix-reconstruction mechanism (cerberus issue #2389): `true` reconstructs a DELTA counter's pre-window cumulative level by reading the operator-provisioned DELTA-prefix aggregate table (`schema.Metrics.DeltaPrefixTable`) instead of the `CERBERUS_DELTA_PREFIX_LOOKBACK`-bounded approximation. **Deliberately separate** from `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`: that flag only says the table + materialized view exist, not that their one-time historical backfill (the `cerberus schema delta-prefix-backfill` CLI) has run and been VERIFIED — reusing one flag for both would flip the read path live mid-backfill and silently UNDER-count long-lived DELTA counters, the exact bug class this mechanism exists to fix. `false` (the default): every deployment that hasn't made this explicit, later declaration keeps the lookback approximation, byte-identical to pre-#2389 behaviour. Only set `true` after completing AND verifying the backfill (see docs/operations.md's DELTA-prefix runbook)."},
+	{envCHQueryMaxMemory, "size", groupQueryLimitsAndMem, "Per-query ClickHouse memory cap (`max_memory_usage` on every data-plane query; DDL exempt). Accepts a raw byte integer (e.g. `1073741824`) **or** a humanized size (`2Gi`, `512Mi`, `1G`); the raw-integer form is unchanged for backward compatibility. 1 GiB default. `0` leaves it unset. A query over the cap gets a breaker-neutral resource-exhausted rejection (Prom 422 / Loki 400 / Tempo 422)."},
+	{envQueryMaxSamples, "int64", groupQueryLimitsAndMem, "Per-query sample budget, mirroring Prometheus `--query.max-samples`. Enforced three ways: it aborts a result-set drain that crosses the budget; it derives the per-request Go-heap byte ceiling a PromQL sample drain runs under (the row count is a poor proxy for bytes on a native-histogram result, whose every row owns two bucket ladders); **and** it rejects a PromQL subquery whose anchor grid (`OuterRange/Step`) alone would exceed it — before any SQL runs, with the same `too many samples` 422 (the drain sees ~1 row/series for an instant reducer, so it can't catch the subquery-intermediate blowup). It is the only bound on cerberus-process heap (unlike `max_memory_usage`, which ClickHouse enforces server-side), so `0` does **not** disable it — `0` is coerced back to the default and logs a startup warning. Disabling requires an explicit `-1`, which logs a loud startup warning that the process-OOM backstop is off."},
+	{envQueryTimeout, docTypeDuration, groupQueryLimitsAndMem, "Per-query wall-clock cap, stamped as ClickHouse `max_execution_time` (with `timeout_overflow_mode=throw`) on every data-plane query; DDL exempt. Mirrors Prometheus `--query.timeout`. The `?timeout=` query param min's against this per request. Also derives the driver-level socket `ReadTimeout`. `0` disables both."},
+	{envTempoStructuralTwoPhase, "bool", groupQueryLimitsAndMem, "Split eligible TraceQL structural searches (`A >> B`, `A << B`, `A !>> B`, and a `select(...)` pipe over them) into a narrow top-N search phase then a wide hydrate restricted to those traces, bounding the wide span projection that OOMs on a dense descendant side. **On by default**; `false` falls back to the traditional single wide query."},
+	{envPromMetadataLookback, docTypeDuration, groupQueryLimitsAndMem, "How far back a **windowless** Prom metadata-discovery request (`/api/v1/labels`, `/api/v1/label/<l>/values`, `/api/v1/series` with no `start`/`end` — the Grafana variable-refresh shape) scans. Requests that supply either bound are honored verbatim and ignore this. Write it as your retention: `90d` and `2160h` are the same value. `0` (the default) uses a conservative 14d fallback. This is the ONLY way to tell cerberus your real retention — the schema-provisioning TTL knobs are not evidence of it (they are a no-op unless auto-create is on, and their `CREATE TABLE IF NOT EXISTS` never touches a table your collector already created). Set it to your real retention when that exceeds the fallback, or discovery silently omits metrics quiet for longer than the fallback. The cost runs the other way: raising it never drops results but does widen the scan — the resource-label arm reads the fact table over the whole window."},
+	{envDeltaPrefixLookback, docTypeDuration, groupQueryLimitsAndMem, "How far before a `rate()`/`increase()` window's start cerberus reconstructs a DELTA-temporality OTel Sum counter's pre-window cumulative level, needed only for Prometheus's counter-reset/extrapolation-**boundary** correction — never for the `rate()`/`increase()` value itself, which always comes from in-window samples alone. Unbounded, this scans a metric's ENTIRE retention on every `rate()`/`increase()` query against any Sum-typed counter whose table carries an `AggregationTemporality` column, Cumulative-temporality series included (the reconstructed value is provably unused for them) — this is the incident this default fixes. `24h` default: OTel collectors accumulating DELTA sums typically reset on restart/redeploy, so a day's lookback captures the overwhelming majority of genuine resets while keeping the scan retention-independent. Raising it improves boundary-correction precision for long-lived DELTA counters at the cost of scan size; `0` disables the bound entirely (the pre-fix unbounded scan). Empirically near-irrelevant in deployments where DELTA-temporality Sum data is rare (verified: well under 1% of rows in a real production `otel_metrics_sum` table) but is a real, fleet-wide semantic approximation wherever DELTA temporality genuinely appears. This is the FALLBACK mechanism as of cerberus issue #2389's exact read path (see `CERBERUS_DELTA_PREFIX_READ_ENABLED`): a deployment that has opted into the exact mechanism does not consult this knob at all; every other deployment keeps this approximation as its only mechanism, unchanged."},
+	{envDeltaPrefixReadEnabled, "bool", groupQueryLimitsAndMem, "Query-path consumption gate for the exact, retention-independent DELTA-temporality prefix-reconstruction mechanism (cerberus issue #2389): `true` reconstructs a DELTA counter's pre-window cumulative level by reading the operator-provisioned DELTA-prefix aggregate table (`schema.Metrics.DeltaPrefixTable`) instead of the `CERBERUS_DELTA_PREFIX_LOOKBACK`-bounded approximation. **Deliberately separate** from `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`: that flag only says the table + materialized view exist, not that their one-time historical backfill (the `cerberus schema delta-prefix-backfill` CLI) has run and been VERIFIED — reusing one flag for both would flip the read path live mid-backfill and silently UNDER-count long-lived DELTA counters, the exact bug class this mechanism exists to fix. `false` (the default): every deployment that hasn't made this explicit, later declaration keeps the lookback approximation, byte-identical to pre-#2389 behaviour. Only set `true` after completing AND verifying the backfill (see docs/operations.md's DELTA-prefix runbook)."},
 
 	// --- Circuit breaker ---
 	{envCHBreakerEnabled, "bool", "Circuit breaker", "Master switch. `false` makes the breaker a no-op (always-allow, never trips); a dead CH then surfaces as ordinary errors."},
 	{envCHBreakerThreshold, "int", "Circuit breaker", "Consecutive CH-health failures within the window that trip the breaker CLOSED -> OPEN. Must be >= 1."},
-	{envCHBreakerWindow, "duration", "Circuit breaker", "Rolling window over which the threshold failures must occur. Must be > 0."},
-	{envCHBreakerOpenIntrvl, "duration", "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0."},
+	{envCHBreakerWindow, docTypeDuration, "Circuit breaker", "Rolling window over which the threshold failures must occur. Must be > 0."},
+	{envCHBreakerOpenIntrvl, docTypeDuration, "Circuit breaker", "OPEN-state backoff before the breaker admits a single HALF-OPEN probe, and the `Retry-After` a breaker-open 503 advertises. Must be > 0."},
 
 	// --- Admission control ---
 	{envAdmitDisabled, "bool", "Admission control", "Disable admission control entirely, on every budget at once (handy for local development)."},
@@ -287,47 +302,47 @@ var envDocs = []EnvDoc{
 	{envOTLPEndpoint, "string", "Self-telemetry (OTLP export)", "gRPC OTLP target for self-telemetry (e.g. `otel-collector.observability.svc:4317`). Empty disables the exporters."},
 	{envOTLPInsecure, "bool", "Self-telemetry (OTLP export)", "Dial the OTLP endpoint without TLS (handy for local dev / k3d)."},
 	{envOTLPHeaders, "string", "Self-telemetry (OTLP export)", "Comma-separated `key=value` gRPC metadata sent on every OTLP request (typically auth bearer tokens)."},
-	{envOTLPTimeout, "duration", "Self-telemetry (OTLP export)", "Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters). `0` leaves each exporter's own default in place."},
-	{envOTLPExportInterval, "duration", "Self-telemetry (OTLP export)", "Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. `0` leaves the `PeriodicReader`'s own default in place."},
+	{envOTLPTimeout, docTypeDuration, "Self-telemetry (OTLP export)", "Per-request OTLP roundtrip timeout (applies to both the trace and metric exporters). `0` leaves each exporter's own default in place."},
+	{envOTLPExportInterval, docTypeDuration, "Self-telemetry (OTLP export)", "Metric `PeriodicReader` flush interval. The quickstart default is tuned for time-to-first-panel; deployments at scale should raise it (e.g. `60s`) to cut collector load. `0` leaves the `PeriodicReader`'s own default in place."},
 
 	// --- Schema provisioning ---
-	{envAutoCreateSchema, "bool", "Schema provisioning", "When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`."},
-	{envAutoCreateDatabase, "bool", "Schema provisioning", "Whether the hook also creates the database (`CREATE DATABASE IF NOT EXISTS`) over a bootstrap connection to the always-present `default` db. Defaults to the value of `CERBERUS_AUTO_CREATE_SCHEMA`. Set `false` to create only the tables when the database is provisioned externally."},
-	{envSchemaCluster, "string", "Schema provisioning", "Render an `ON CLUSTER <name>` clause into the auto-create DDL (classic distributed-DDL clusters). Mutually exclusive with `CERBERUS_SCHEMA_DATABASE_REPLICATED`."},
-	{envSchemaTableEngine, "string", "Schema provisioning", "Override the table engine. Empty renders `MergeTree()` - or, when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`, the bare `ReplicatedMergeTree` (no args). Set this only to pin some other non-default engine."},
-	{envSchemaTTL, "duration", "Schema provisioning", "Global default retention for every signal's tables (no TTL clause when `0`). Per-signal overrides below take precedence."},
-	{envSchemaTTLMetrics, "duration", "Schema provisioning", "Retention for the five metrics tables. A non-zero value overrides the global default for metrics; `0` inherits `CERBERUS_SCHEMA_TTL`."},
-	{envSchemaTTLLogs, "duration", "Schema provisioning", "Retention for the logs table; `0` inherits `CERBERUS_SCHEMA_TTL`."},
-	{envSchemaTTLTraces, "duration", "Schema provisioning", "Retention for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TTL`."},
-	{envSchemaDBReplicated, "bool", "Schema provisioning", "Create the database with `ENGINE = Replicated(...)` so DDL auto-replicates across replicas (no `ON CLUSTER` needed). Emits a bare `ReplicatedMergeTree` table engine to replicate the data."},
-	{envSchemaDBReplPath, "string", "Schema provisioning", "ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`."},
-	{envSchemaDBReplShard, "string", "Schema provisioning", "Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro."},
-	{envSchemaDBReplReplica, "string", "Schema provisioning", "Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro."},
-	{envSchemaStoragePolicy, "string", "Schema provisioning", "Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one)."},
-	{envSchemaTierVolume, "string", "Schema provisioning", "Storage-policy VOLUME aged parts move to — emits `TTL <age> TO VOLUME '<name>'` on every auto-created table. A multi-volume (hot/cold) `CERBERUS_SCHEMA_STORAGE_POLICY` does nothing without this: parts stay on the first (hot) volume until retention deletes them. Requires a non-zero `CERBERUS_SCHEMA_TIER_AFTER*`; the volume must belong to the table's storage policy."},
-	{envSchemaTierAfter, "duration", "Schema provisioning", "Global default age at which a part moves to `CERBERUS_SCHEMA_TIER_VOLUME` (no move rule when `0`). Must be shorter than the matching retention TTL. Per-signal overrides below take precedence."},
-	{envSchemaTierAfterMetrics, "duration", "Schema provisioning", "Tiering age for the five metrics tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
-	{envSchemaTierAfterLogs, "duration", "Schema provisioning", "Tiering age for the logs table; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
-	{envSchemaTierAfterTraces, "duration", "Schema provisioning", "Tiering age for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
-	{envSchemaSettings, "string", "Schema provisioning", "Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL)."},
-	{envSchemaDeltaPrefixEnabled, "bool", "Schema provisioning", "Provision the DELTA-temporality prefix-reconstruction aggregate table + materialized view (`schema.Metrics.DeltaPrefixTable`, cerberus issue #2389) — a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is ALSO `true`. New machinery: opting a deployment's five upstream tables into auto-create does not opt this one in for free. The table + MV alone are not the whole story — the MV only captures rows inserted from its own creation moment onward, so pre-existing history needs the one-time `cerberus schema delta-prefix-backfill` pass. This flag ONLY provisions the table; it does NOT change query answering by itself — that is the separate, later `CERBERUS_DELTA_PREFIX_READ_ENABLED` opt-in, deliberately kept apart so the read path never goes live mid-backfill."},
-	{envRequirementsCheck, "bool", "Schema provisioning", "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
+	{envAutoCreateSchema, "bool", groupSchemaProvisioning, "When `true`, run the idempotent OTel-CH exporter DDL at startup before HTTP serving begins. The knobs below shape that DDL - all are no-ops unless this is `true`."},
+	{envAutoCreateDatabase, "bool", groupSchemaProvisioning, "Whether the hook also creates the database (`CREATE DATABASE IF NOT EXISTS`) over a bootstrap connection to the always-present `default` db. Defaults to the value of `CERBERUS_AUTO_CREATE_SCHEMA`. Set `false` to create only the tables when the database is provisioned externally."},
+	{envSchemaCluster, "string", groupSchemaProvisioning, "Render an `ON CLUSTER <name>` clause into the auto-create DDL (classic distributed-DDL clusters). Mutually exclusive with `CERBERUS_SCHEMA_DATABASE_REPLICATED`."},
+	{envSchemaTableEngine, "string", groupSchemaProvisioning, "Override the table engine. Empty renders `MergeTree()` - or, when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`, the bare `ReplicatedMergeTree` (no args). Set this only to pin some other non-default engine."},
+	{envSchemaTTL, docTypeDuration, groupSchemaProvisioning, "Global default retention for every signal's tables (no TTL clause when `0`). Per-signal overrides below take precedence."},
+	{envSchemaTTLMetrics, docTypeDuration, groupSchemaProvisioning, "Retention for the five metrics tables. A non-zero value overrides the global default for metrics; `0` inherits `CERBERUS_SCHEMA_TTL`."},
+	{envSchemaTTLLogs, docTypeDuration, groupSchemaProvisioning, "Retention for the logs table; `0` inherits `CERBERUS_SCHEMA_TTL`."},
+	{envSchemaTTLTraces, docTypeDuration, groupSchemaProvisioning, "Retention for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TTL`."},
+	{envSchemaDBReplicated, "bool", groupSchemaProvisioning, "Create the database with `ENGINE = Replicated(...)` so DDL auto-replicates across replicas (no `ON CLUSTER` needed). Emits a bare `ReplicatedMergeTree` table engine to replicate the data."},
+	{envSchemaDBReplPath, "string", groupSchemaProvisioning, "ZooKeeper/Keeper path the Replicated engine coordinates on (e.g. `/clickhouse/databases/otel`). **Required** when `CERBERUS_SCHEMA_DATABASE_REPLICATED=true`."},
+	{envSchemaDBReplShard, "string", groupSchemaProvisioning, "Shard name for the Replicated engine - defaults to the ClickHouse server `{shard}` macro."},
+	{envSchemaDBReplReplica, "string", groupSchemaProvisioning, "Replica name for the Replicated engine - defaults to the ClickHouse server `{replica}` macro."},
+	{envSchemaStoragePolicy, "string", groupSchemaProvisioning, "Typed shorthand for the MergeTree `storage_policy` setting on every auto-created table (the S3 / tiered-storage knob). Appended FIRST to the SETTINGS tail. Empty appends nothing. Mutually exclusive with a `storage_policy` key in `CERBERUS_SCHEMA_SETTINGS` (set it in exactly one)."},
+	{envSchemaTierVolume, "string", groupSchemaProvisioning, "Storage-policy VOLUME aged parts move to — emits `TTL <age> TO VOLUME '<name>'` on every auto-created table. A multi-volume (hot/cold) `CERBERUS_SCHEMA_STORAGE_POLICY` does nothing without this: parts stay on the first (hot) volume until retention deletes them. Requires a non-zero `CERBERUS_SCHEMA_TIER_AFTER*`; the volume must belong to the table's storage policy."},
+	{envSchemaTierAfter, docTypeDuration, groupSchemaProvisioning, "Global default age at which a part moves to `CERBERUS_SCHEMA_TIER_VOLUME` (no move rule when `0`). Must be shorter than the matching retention TTL. Per-signal overrides below take precedence."},
+	{envSchemaTierAfterMetrics, docTypeDuration, groupSchemaProvisioning, "Tiering age for the five metrics tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
+	{envSchemaTierAfterLogs, docTypeDuration, groupSchemaProvisioning, "Tiering age for the logs table; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
+	{envSchemaTierAfterTraces, docTypeDuration, groupSchemaProvisioning, "Tiering age for the spans + `trace_id_ts` tables; `0` inherits `CERBERUS_SCHEMA_TIER_AFTER`."},
+	{envSchemaSettings, "string", groupSchemaProvisioning, "Generic MergeTree-SETTINGS escape hatch: an ordered `k=v,k2=v2` list appended to every auto-created table's SETTINGS tail (e.g. `min_bytes_for_wide_part=0`). Numeric / boolean values render bare, others single-quoted. Empty appends nothing (byte-identical default DDL)."},
+	{envSchemaDeltaPrefixEnabled, "bool", groupSchemaProvisioning, "Provision the DELTA-temporality prefix-reconstruction aggregate table + materialized view (`schema.Metrics.DeltaPrefixTable`, cerberus issue #2389) — a no-op unless `CERBERUS_AUTO_CREATE_SCHEMA` is ALSO `true`. New machinery: opting a deployment's five upstream tables into auto-create does not opt this one in for free. The table + MV alone are not the whole story — the MV only captures rows inserted from its own creation moment onward, so pre-existing history needs the one-time `cerberus schema delta-prefix-backfill` pass. This flag ONLY provisions the table; it does NOT change query answering by itself — that is the separate, later `CERBERUS_DELTA_PREFIX_READ_ENABLED` opt-in, deliberately kept apart so the read path never goes live mid-backfill."},
+	{envRequirementsCheck, "bool", groupSchemaProvisioning, "Run the boot-time requirements check (version + schema-shape gate) after the schema-create step. Fails startup on a fatal finding; an absent (not-yet-provisioned) schema instead boots NOT READY and re-probes."},
 
 	// --- ClickHouse optimizations ---
-	{envCHOptimizations, "string", "ClickHouse optimizations", "`auto` (enable every **auto-eligible** feature the probed server supports — including the experimental-maturity native `timeSeries*ToGrid` aggregates; `columnar_result_decode` is the lone opt-in-only feature `auto` skips), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add the opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined."},
-	{envCHOptimizationsMode, "string", "ClickHouse optimizations", "`enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`."},
-	{envLogCommentShape, "bool", "ClickHouse optimizations", "Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`."},
-	{envCHOptCorpusEnabled, "bool", "ClickHouse optimizations", "Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none)."},
-	{envCHOptCorpusInterval, "duration", "ClickHouse optimizations", "How often the reconciler joins recently-dispatched query_ids back to `system.query_log`. `0` is rejected when `CERBERUS_CH_OPT_CORPUS_ENABLED` is set (it would leave the reconciler enabled but inert); it is inert either way when the corpus is off."},
-	{envCHOptCorpusSinkPath, "string", "ClickHouse optimizations", "JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink."},
-	{envCHOptCorpusRing, "int", "ClickHouse optimizations", "Ring capacity for tracked queries; a routed query holds one query_id per shard in one slot, so memory + the per-interval `IN(...)` scale with ring x fan-out."},
-	{envCHOptCorpusSinkMode, "string", "ClickHouse optimizations", "Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis)."},
+	{envCHOptimizations, "string", groupClickHouseOptimize, "`auto` (enable every **auto-eligible** feature the probed server supports — including the experimental-maturity native `timeSeries*ToGrid` aggregates; `columnar_result_decode` is the lone opt-in-only feature `auto` skips), `off` (enable nothing), or a comma-separated list of feature ids. `auto` may itself appear in the list to add the opt-in feature on top of the auto-selected set, e.g. `auto,columnar_result_decode`. `off` is absolute and cannot be combined."},
+	{envCHOptimizationsMode, "string", groupClickHouseOptimize, "`enforcing` (an explicitly-requested but unsupported feature is a FATAL startup error) or `permissive` (it is skipped with a `WARN`). Ignored under `auto`/`off`."},
+	{envLogCommentShape, "bool", groupClickHouseOptimize, "Stamp ClickHouse `log_comment` with a compact, literal-free cerberus shape id (`cerb:<root>[;mod...]`) so `system.query_log` rows cluster by `normalized_query_hash`."},
+	{envCHOptCorpusEnabled, "bool", groupClickHouseOptimize, "Enable the async `system.query_log` performance-corpus reconciler (needs `system.query_log` access; production-only - chDB has none)."},
+	{envCHOptCorpusInterval, docTypeDuration, groupClickHouseOptimize, "How often the reconciler joins recently-dispatched query_ids back to `system.query_log`. `0` is rejected when `CERBERUS_CH_OPT_CORPUS_ENABLED` is set (it would leave the reconciler enabled but inert); it is inert either way when the corpus is off."},
+	{envCHOptCorpusSinkPath, "string", groupClickHouseOptimize, "JSONL sink path for the `(shape-id, opts, timings)` corpus. Empty disables the file sink."},
+	{envCHOptCorpusRing, "int", groupClickHouseOptimize, "Ring capacity for tracked queries; a routed query holds one query_id per shard in one slot, so memory + the per-interval `IN(...)` scale with ring x fan-out."},
+	{envCHOptCorpusSinkMode, "string", groupClickHouseOptimize, "Corpus sink: `jsonl` (default, writes the sink-path file) or `chtable` (writes the `cerberus_router_corpus` MergeTree for the route A/B go/no-go analysis)."},
 
 	// --- Experimental flags ---
 	{envExperimentalTSGrid, "bool", "Experimental flags", "Soft-deprecated alias for `CERBERUS_CH_OPTIMIZATIONS=ts_grid_range`. Emit ClickHouse-native `timeSeriesRateToGrid` for eligible `rate(<counter>[range])` query_range instead of the default arrayJoin fan-out. Requires ClickHouse >= 25.9."},
 
 	// --- Loki streaming ---
-	{envLokiTailWriteTO, "duration", "Loki streaming", "Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`."},
+	{envLokiTailWriteTO, docTypeDuration, "Loki streaming", "Bound on a single `/loki/api/v1/tail` WebSocket write before a slow / dead client is torn down. `> 0`."},
 }
 
 // EnvDocs returns the documentation metadata for every CERBERUS_* key the

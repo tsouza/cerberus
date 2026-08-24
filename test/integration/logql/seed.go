@@ -12,6 +12,10 @@ import (
 
 var seedAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 
+// serviceNameLabel is the stream label every RichSeed record carries,
+// named once so a typo can't silently mint an unmatched stream.
+const serviceNameLabel = "service_name"
+
 // RichSeed returns one deterministic OTel logs fixture and its independent
 // in-memory mirror. The rows intentionally overlap on stream labels while
 // varying bodies, structured metadata, severity, and IP tokens so every
@@ -19,27 +23,27 @@ var seedAnchor = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 func RichSeed() (string, *property.LogsModel) {
 	records := []property.LogRecord{
 		logRecord(0, "INFO", "request ok cache hit 10.1.2.3",
-			map[string]string{"job": "api", "service_name": "checkout"},
+			map[string]string{"job": "api", serviceNameLabel: "checkout"},
 			map[string]string{"trace.id": "t-1"}),
 		logRecord(1, "WARN", "request timeout retry 10.200.0.9",
-			map[string]string{"job": "api", "service_name": "checkout"},
+			map[string]string{"job": "api", serviceNameLabel: "checkout"},
 			map[string]string{"level": "ERR", "trace.id": "t-2"}),
 		logRecord(2, "ERROR", "auth error retry 192.168.1.5",
-			map[string]string{"job": "api", "service_name": "auth"},
+			map[string]string{"job": "api", serviceNameLabel: "auth"},
 			map[string]string{"detected_level": "Warn", "tenant": "blue"}),
 		logRecord(3, "DEBUG", "cache miss ok 172.16.0.1",
-			map[string]string{"job": "web", "service_name": "checkout"},
+			map[string]string{"job": "web", serviceNameLabel: "checkout"},
 			map[string]string{"log.level": "debug", "tenant": "green"}),
 		logRecord(4, "", "billing error timeout 8.8.8.8",
-			map[string]string{"job": "batch", "service_name": "billing"},
+			map[string]string{"job": "batch", serviceNameLabel: "billing"},
 			map[string]string{"severity": "critical"}),
 		logRecord(5, "INFO", "request ok cache miss",
-			map[string]string{"job": "web", "service_name": "auth"}, nil),
+			map[string]string{"job": "web", serviceNameLabel: "auth"}, nil),
 		logRecord(6, "ERROR", "auth timeout from 10.1.2.3 retry",
-			map[string]string{"job": "api", "service_name": "auth"},
+			map[string]string{"job": "api", serviceNameLabel: "auth"},
 			map[string]string{"severity_text": "fatal", "tenant": "blue"}),
 		logRecord(7, "", "worker heartbeat ok",
-			map[string]string{"job": "batch", "service_name": "billing"}, nil),
+			map[string]string{"job": "batch", serviceNameLabel: "billing"}, nil),
 	}
 	return renderDDL(records), &property.LogsModel{Records: records}
 }

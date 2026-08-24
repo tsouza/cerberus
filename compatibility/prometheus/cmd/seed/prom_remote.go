@@ -124,6 +124,12 @@ type fixtureSource struct {
 	accumulateToCumulative bool
 }
 
+// The two OTel-CH metric tables the seeded fixtures span.
+const (
+	otelMetricsSumTable   = "otel_metrics_sum"
+	otelMetricsGaugeTable = "otel_metrics_gauge"
+)
+
 // fixtureSources, histogramFixtureSources and expHistogramFixtureSources
 // together mirror fixtureInserts in main.go — keep them in lock-step so every
 // CH-side INSERT has a corresponding Prom remote_write. The lock-step is
@@ -131,17 +137,17 @@ type fixtureSource struct {
 // test/regression/compat_promql_seed_corpus_test.go fails when the lists
 // diverge.
 var fixtureSources = []fixtureSource{
-	{metricName: "demo_cpu_usage_seconds_total", table: "otel_metrics_sum"},
-	{metricName: "demo_memory_usage_bytes", table: "otel_metrics_gauge"},
-	{metricName: "demo_sparse_memory_bytes", table: "otel_metrics_gauge"},
-	{metricName: "demo_http_requests_total", table: "otel_metrics_sum"},
-	{metricName: "demo_disk_usage_bytes", table: "otel_metrics_gauge"},
-	{metricName: "demo_disk_total_bytes", table: "otel_metrics_gauge"},
-	{metricName: "demo_num_cpus", table: "otel_metrics_gauge"},
-	{metricName: "demo_batch_last_success_timestamp_seconds", table: "otel_metrics_gauge"},
-	{metricName: "demo_intermittent_metric", table: "otel_metrics_gauge"},
-	{metricName: "up", table: "otel_metrics_gauge"},
-	{metricName: "demo_gauge_with_nan_run", table: "otel_metrics_gauge"},
+	{metricName: "demo_cpu_usage_seconds_total", table: otelMetricsSumTable},
+	{metricName: "demo_memory_usage_bytes", table: otelMetricsGaugeTable},
+	{metricName: "demo_sparse_memory_bytes", table: otelMetricsGaugeTable},
+	{metricName: "demo_http_requests_total", table: otelMetricsSumTable},
+	{metricName: "demo_disk_usage_bytes", table: otelMetricsGaugeTable},
+	{metricName: "demo_disk_total_bytes", table: otelMetricsGaugeTable},
+	{metricName: "demo_num_cpus", table: otelMetricsGaugeTable},
+	{metricName: "demo_batch_last_success_timestamp_seconds", table: otelMetricsGaugeTable},
+	{metricName: "demo_intermittent_metric", table: otelMetricsGaugeTable},
+	{metricName: "up", table: otelMetricsGaugeTable},
+	{metricName: "demo_gauge_with_nan_run", table: otelMetricsGaugeTable},
 	// demo_delta_requests_total: a DELTA-temporality counter (issue #1628).
 	// The CH fixture stores raw per-step increments with
 	// AggregationTemporality = 1; the reference Prometheus side has no

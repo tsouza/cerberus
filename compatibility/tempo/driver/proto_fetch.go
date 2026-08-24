@@ -391,7 +391,7 @@ func diffTracesEndpoint(ctx context.Context, client *http.Client, tempoURL, cerb
 // place (reasons + MatchedCount).
 func diffCrossBackendShapes(res *CaseResult, tempoShape, cerbShape traceShape) {
 	if tempoShape.SpanCount != cerbShape.SpanCount {
-		appendReason(&res.Diff, "cardinality", fmt.Sprintf("tempo=%d spans, cerberus=%d spans", tempoShape.SpanCount, cerbShape.SpanCount))
+		appendReason(&res.Diff, reasonKindCardinality, fmt.Sprintf("tempo=%d spans, cerberus=%d spans", tempoShape.SpanCount, cerbShape.SpanCount))
 	}
 	tempoSet := stringSet(tempoShape.SpanIDs)
 	cerbSet := stringSet(cerbShape.SpanIDs)
@@ -412,10 +412,10 @@ func diffCrossBackendShapes(res *CaseResult, tempoShape, cerbShape traceShape) {
 	sort.Strings(missingInTempo)
 	sort.Strings(missingInCerb)
 	for _, id := range missingInTempo {
-		appendReason(&res.Diff, "missing_in_a", fmt.Sprintf("span %s present in cerberus but missing in tempo", id))
+		appendReason(&res.Diff, reasonKindMissingInA, fmt.Sprintf("span %s present in cerberus but missing in tempo", id))
 	}
 	for _, id := range missingInCerb {
-		appendReason(&res.Diff, "missing_in_b", fmt.Sprintf("span %s present in tempo but missing in cerberus", id))
+		appendReason(&res.Diff, reasonKindMissingInB, fmt.Sprintf("span %s present in tempo but missing in cerberus", id))
 	}
 	res.Diff.MatchedCount = matched
 }

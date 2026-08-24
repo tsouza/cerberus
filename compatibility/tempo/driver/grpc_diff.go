@@ -90,7 +90,7 @@ const grpcHeadName = "tempo-grpc"
 // has no trace-by-id or search/recent equivalent.
 func grpcSupportsEndpoint(ep string) bool {
 	switch ep {
-	case "search", "tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2", "metrics_range", "metrics_instant":
+	case endpointSearch, endpointTagsV1, endpointTagsV2, endpointTagValuesV1, endpointTagValuesV2, endpointMetricsRange, endpointMetricsInstant:
 		return true
 	default:
 		return false
@@ -304,7 +304,7 @@ func diffCaseGRPC(ctx context.Context, tempoClient, cerbClient tempopb.Streaming
 	res.Assertions = append(res.Assertions, tempoReasons...)
 	res.Assertions = append(res.Assertions, cerbReasons...)
 
-	if len(tc.SemanticChecks) > 0 && (tc.Endpoint == "metrics_range" || tc.Endpoint == "metrics_instant") {
+	if len(tc.SemanticChecks) > 0 && (tc.Endpoint == endpointMetricsRange || tc.Endpoint == endpointMetricsInstant) {
 		tempoSem, err := RunSemanticChecks(tc, tempoBody, "tempo")
 		if err != nil {
 			res.HardError = fmt.Sprintf("semantic tempo: %v", err)
@@ -382,19 +382,19 @@ func diffStatusParityCaseGRPC(tc CorpusCase, terr, cerr error) CaseResult {
 // filters those out before this is ever invoked.
 func fetchGRPCForEndpoint(ctx context.Context, client tempopb.StreamingQuerierClient, tc CorpusCase, opts caseOpts) ([]byte, error) {
 	switch tc.Endpoint {
-	case "search":
+	case endpointSearch:
 		return fetchGRPCSearch(ctx, client, tc, opts)
-	case "tags_v1":
+	case endpointTagsV1:
 		return fetchGRPCTagsV1(ctx, client, tc, opts)
-	case "tags_v2":
+	case endpointTagsV2:
 		return fetchGRPCTagsV2(ctx, client, tc, opts)
-	case "tag_values_v1":
+	case endpointTagValuesV1:
 		return fetchGRPCTagValuesV1(ctx, client, tc, opts)
-	case "tag_values_v2":
+	case endpointTagValuesV2:
 		return fetchGRPCTagValuesV2(ctx, client, tc, opts)
-	case "metrics_range":
+	case endpointMetricsRange:
 		return fetchGRPCMetricsRange(ctx, client, tc, opts)
-	case "metrics_instant":
+	case endpointMetricsInstant:
 		return fetchGRPCMetricsInstant(ctx, client, tc, opts)
 	default:
 		return nil, fmt.Errorf("unsupported grpc endpoint %q (no StreamingQuerier RPC)", tc.Endpoint)

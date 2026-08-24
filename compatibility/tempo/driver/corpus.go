@@ -133,6 +133,23 @@ import (
 	traceql "github.com/tsouza/cerberus/internal/traceql/ast"
 )
 
+// endpointX are CorpusCase.Endpoint's full vocabulary — see the field's own
+// doc comment below for what each one hits. Named once so every producer
+// (corpus.go's own parser/validator) and consumer (differ.go,
+// differ_metrics.go, diff.go, grpc_diff.go) agree on the exact string.
+const (
+	endpointSearch         = "search"
+	endpointSearchRecent   = "search_recent"
+	endpointTraces         = "traces"
+	endpointTracesV2       = "traces_v2"
+	endpointTagsV1         = "tags_v1"
+	endpointTagsV2         = "tags_v2"
+	endpointTagValuesV1    = "tag_values_v1"
+	endpointTagValuesV2    = "tag_values_v2"
+	endpointMetricsRange   = "metrics_range"
+	endpointMetricsInstant = "metrics_instant"
+)
+
 // CorpusCase is one entry parsed out of the TXTAR file.
 //
 // Every field except Name + Query + Endpoint is optional; the differ
@@ -169,7 +186,7 @@ type CorpusCase struct {
 	Endpoint string
 
 	// TraceIDTemplate is only consulted when Endpoint == "traces" or
-	// "traces_v2".
+	// endpointTracesV2.
 	// Format: "<svc>/<idx>" — the differ derives the byte-identical
 	// 16-byte trace ID via the same hash the seeder uses, hex-encodes
 	// it, and substitutes it into the URL. Decoupling the template
@@ -188,7 +205,7 @@ type CorpusCase struct {
 	// every scope).
 	Scope string
 
-	// Step is only consulted when Endpoint == "metrics_range". The string
+	// Step is only consulted when Endpoint == endpointMetricsRange. The string
 	// is sent verbatim as the URL's `step` parameter (Tempo accepts
 	// "60s", "1m", or plain seconds). An empty Step on a metrics_range
 	// case is a validation error.
@@ -535,37 +552,37 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 		return cur, fmt.Errorf("case missing -- name -- (case #%d)", ord)
 	}
 	if cur.Endpoint == "" {
-		cur.Endpoint = "search"
+		cur.Endpoint = endpointSearch
 	}
-	if !isTagEndpoint(cur.Endpoint) && cur.Query == "" && cur.Endpoint != "search_recent" {
+	if !isTagEndpoint(cur.Endpoint) && cur.Query == "" && cur.Endpoint != endpointSearchRecent {
 		return cur, fmt.Errorf("case %q missing -- query -- (search_recent and the four tag endpoints are the only kinds that may omit it)", cur.Name)
 	}
 	switch cur.Endpoint {
-	case "search", "search_recent", "traces", "traces_v2",
-		"tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2",
-		"metrics_range", "metrics_instant":
+	case endpointSearch, endpointSearchRecent, endpointTraces, endpointTracesV2,
+		endpointTagsV1, endpointTagsV2, endpointTagValuesV1, endpointTagValuesV2,
+		endpointMetricsRange, endpointMetricsInstant:
 	default:
 		return cur, fmt.Errorf("case %q: unknown endpoint %q (want search | search_recent | traces | traces_v2 | tags_v1 | tags_v2 | tag_values_v1 | tag_values_v2 | metrics_range | metrics_instant)", cur.Name, cur.Endpoint)
 	}
-	if (cur.Endpoint == "traces" || cur.Endpoint == "traces_v2") && cur.TraceIDTemplate == "" {
+	if (cur.Endpoint == endpointTraces || cur.Endpoint == endpointTracesV2) && cur.TraceIDTemplate == "" {
 		return cur, fmt.Errorf("case %q: endpoint=%s requires -- traceid_template --", cur.Name, cur.Endpoint)
 	}
-	if (cur.Endpoint == "tag_values_v1" || cur.Endpoint == "tag_values_v2") && cur.TagName == "" {
+	if (cur.Endpoint == endpointTagValuesV1 || cur.Endpoint == endpointTagValuesV2) && cur.TagName == "" {
 		return cur, fmt.Errorf("case %q: endpoint=%s requires -- tag_name --", cur.Name, cur.Endpoint)
 	}
-	if cur.Scope != "" && cur.Endpoint != "tags_v2" {
+	if cur.Scope != "" && cur.Endpoint != endpointTagsV2 {
 		return cur, fmt.Errorf("case %q: -- scope -- is only valid for endpoint=tags_v2 (got %s)", cur.Name, cur.Endpoint)
 	}
 	if err := validateTagAssertions(cur); err != nil {
 		return cur, err
 	}
-	if cur.Spss != 0 && cur.Endpoint != "search" {
+	if cur.Spss != 0 && cur.Endpoint != endpointSearch {
 		return cur, fmt.Errorf("case %q: -- spss -- is only valid for endpoint=search (got %s)", cur.Name, cur.Endpoint)
 	}
 	if cur.Spss < 0 {
 		return cur, fmt.Errorf("case %q: -- spss -- must be positive (got %d)", cur.Name, cur.Spss)
 	}
-	if cur.Endpoint == "metrics_range" && cur.Step == "" {
+	if cur.Endpoint == endpointMetricsRange && cur.Step == "" {
 		return cur, fmt.Errorf("case %q: endpoint=metrics_range requires -- step -- (e.g. \"60s\")", cur.Name)
 	}
 	if err := validateExpectedStatus(cur); err != nil {
@@ -584,13 +601,13 @@ func validateCase(cur CorpusCase, ord int) (CorpusCase, error) {
 // the request query, while the V1 ones reach storage with a bare scope
 // (names) or a bare tag name (values) and no slot for a filter.
 func narrowingTagEndpoint(ep string) bool {
-	return ep == "tags_v2" || ep == "tag_values_v2"
+	return ep == endpointTagsV2 || ep == endpointTagValuesV2
 }
 
 // unfilteredTagEndpoint reports whether the endpoint is a tag-discovery
 // route that IGNORES `q` — the two V1 routes.
 func unfilteredTagEndpoint(ep string) bool {
-	return ep == "tags_v1" || ep == "tag_values_v1"
+	return ep == endpointTagsV1 || ep == endpointTagValuesV1
 }
 
 // validateTagAssertions keeps a tag-discovery case honest about what it
@@ -670,7 +687,7 @@ func validateExpectedStatus(cur CorpusCase) error {
 	if cur.ExpectedStatus < 400 || cur.ExpectedStatus > 599 {
 		return fmt.Errorf("case %q: -- expect_status -- must be a 4xx/5xx code (got %d) — this axis exists to express rejection parity, not 2xx parity, which the ordinary body-diff path already covers", cur.Name, cur.ExpectedStatus)
 	}
-	if cur.Endpoint == "traces" || cur.Endpoint == "traces_v2" {
+	if cur.Endpoint == endpointTraces || cur.Endpoint == endpointTracesV2 {
 		return fmt.Errorf("case %q: -- expect_status -- is not supported on endpoint=%s (that endpoint runs through the proto-aware differ, which this axis does not cover)", cur.Name, cur.Endpoint)
 	}
 	if hasBodyShapeAssertion(cur) {
@@ -727,7 +744,7 @@ func hasBodyShapeAssertion(cur CorpusCase) bool {
 // the V2 halves and ignored on the V1 halves.
 func isTagEndpoint(ep string) bool {
 	switch ep {
-	case "tags_v1", "tags_v2", "tag_values_v1", "tag_values_v2":
+	case endpointTagsV1, endpointTagsV2, endpointTagValuesV1, endpointTagValuesV2:
 		return true
 	}
 	return false

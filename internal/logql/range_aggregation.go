@@ -302,7 +302,7 @@ func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lower
 		return nil, err
 	}
 
-	const tsAlias = "TimeUnix"
+	const tsAlias = sampleTimeUnixCol
 	a := &chplan.AbsentOverTime{
 		Input: &chplan.Project{
 			Input: inner,
@@ -315,8 +315,8 @@ func lowerAbsentOverTime(e *syntax.RangeAggregationExpr, s schema.Logs, lc lower
 		Offset:           e.Left.Offset,
 		TimestampColumn:  tsAlias,
 		ValueColumn:      rangeAggSynthValueColumn,
-		MetricNameColumn: "MetricName",
-		AttributesColumn: "Attributes",
+		MetricNameColumn: sampleMetricNameCol,
+		AttributesColumn: sampleAttributesCol,
 	}
 	if lc.rangeMode() {
 		a.Start = lc.Start.UTC()
@@ -605,7 +605,7 @@ func bottomsOutAtMatrixRangeWindow(plan chplan.Node) bool {
 func matrixBucketColumn(plan chplan.Node) string {
 	switch v := plan.(type) {
 	case *chplan.Aggregate:
-		return "TimeUnix"
+		return sampleTimeUnixCol
 	case *chplan.Project:
 		return matrixBucketColumn(v.Input)
 	case *chplan.Filter:

@@ -284,7 +284,7 @@ func probePromQL() ([]Entry, error) {
 		entries = append(entries, Entry{
 			Head:          "promql",
 			Symbol:        "op:" + b.sym,
-			Kind:          "binary-op",
+			Kind:          kindBinaryOp,
 			Probe:         b.probe,
 			Cerberus:      cv,
 			Reference:     ref,

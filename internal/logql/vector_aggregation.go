@@ -313,7 +313,7 @@ func lowerTopK(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chp
 
 	by := topKPartition(e)
 	if lc.rangeMode() {
-		by = append(by, &chplan.ColumnRef{Name: "TimeUnix"})
+		by = append(by, &chplan.ColumnRef{Name: sampleTimeUnixCol})
 	}
 
 	return &chplan.TopK{
@@ -325,7 +325,7 @@ func lowerTopK(e *syntax.VectorAggregationExpr, s schema.Logs, lc lowerCtx) (chp
 		// keeps the smallest. approx_topk is exact-top-k here (see
 		// lowerTopK doc), so it shares topk's descending sort.
 		Desc:    e.Operation == syntax.OpTypeTopK || e.Operation == syntax.OpTypeApproxTopK,
-		Columns: []string{"MetricName", "Attributes", "TimeUnix", rangeAggSynthValueColumn},
+		Columns: []string{sampleMetricNameCol, sampleAttributesCol, sampleTimeUnixCol, rangeAggSynthValueColumn},
 	}, nil
 }
 
@@ -349,7 +349,7 @@ func topKPartition(e *syntax.VectorAggregationExpr) []chplan.Expr {
 	if g == nil || (!g.Without && len(g.Groups) == 0) {
 		return nil
 	}
-	attrs := &chplan.ColumnRef{Name: "Attributes"}
+	attrs := &chplan.ColumnRef{Name: sampleAttributesCol}
 	if g.Without {
 		return []chplan.Expr{&chplan.MapWithoutKeys{
 			Map:  attrs,
@@ -470,16 +470,6 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 		attrs = &chplan.FuncCall{Fn: chplan.FnMap, Args: args}
 	}
 
-	// Use the metrics-schema column names for the Sample contract; the
-	// API layer reads MetricName/Attributes/TimeUnix/Value regardless of
-	// which head produced the row.
-	const (
-		metricNameCol = "MetricName"
-		attrsCol      = "Attributes"
-		tsCol         = "TimeUnix"
-		valueCol      = "Value"
-	)
-
 	tsExpr := chplan.NowNano()
 	if rangeBucketed {
 		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
@@ -488,10 +478,10 @@ func wrapVectorAggregateForSample(agg *chplan.Aggregate, e *syntax.VectorAggrega
 	return &chplan.Project{
 		Input: agg,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.LitString{V: ""}, Alias: metricNameCol},
-			{Expr: attrs, Alias: attrsCol},
-			{Expr: tsExpr, Alias: tsCol},
-			{Expr: &chplan.ColumnRef{Name: valueCol}, Alias: valueCol},
+			{Expr: &chplan.LitString{V: ""}, Alias: sampleMetricNameCol},
+			{Expr: attrs, Alias: sampleAttributesCol},
+			{Expr: tsExpr, Alias: sampleTimeUnixCol},
+			{Expr: &chplan.ColumnRef{Name: sampleValueCol}, Alias: sampleValueCol},
 		},
 	}
 }

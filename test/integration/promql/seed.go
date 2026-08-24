@@ -62,6 +62,10 @@ const stepInterval = 15 * time.Second
 // a fresh sample near the end of the window.
 const seedSteps = 40
 
+// instanceLabel is the label every seeded series carries, named once so a
+// typo can't silently mint an unmatched series.
+const instanceLabel = "instance"
+
 // instances are the three scrape targets. Mirroring the reference fixture's
 // three service.instance.id values gives a real cross-target dimension for
 // on(instance)/group_left() joins.
@@ -102,7 +106,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// mode), distinct slopes so rate()/by() roll-ups differ across series.
 	for i, inst := range instances {
 		for mi, mode := range []string{"user", "system", "idle"} {
-			lbls := map[string]string{"instance": inst, "job": "demo", "mode": mode}
+			lbls := map[string]string{instanceLabel: inst, "job": "demo", "mode": mode}
 			slope := float64(1+mi) + float64(i)*0.5
 			vals := counterValues(slope, false)
 			b.WriteString(sumInsert("demo_cpu_usage_seconds_total", lbls, vals))
@@ -114,7 +118,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// It is kept monotonic so rate() agrees byte-for-byte between cerberus
 	// and the oracle.
 	for i, inst := range instances {
-		lbls := map[string]string{"instance": inst, "job": "demo"}
+		lbls := map[string]string{instanceLabel: inst, "job": "demo"}
 		slope := 5 + float64(i)
 		vals := counterValues(slope, false)
 		b.WriteString(sumInsert("demo_items_shipped_total", lbls, vals))
@@ -129,7 +133,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// be a meaningful assertion rather than a vacuously-zero one; see
 	// cat9OverTime's resets()/changes() cases.
 	for i, inst := range instances {
-		lbls := map[string]string{"instance": inst, "job": "demo"}
+		lbls := map[string]string{instanceLabel: inst, "job": "demo"}
 		slope := 3 + float64(i)
 		vals := counterValues(slope, true)
 		b.WriteString(sumInsert("demo_worker_restarts_total", lbls, vals))
@@ -140,7 +144,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// demo_memory_usage_bytes{instance,type}: the group_left pivot.
 	for i, inst := range instances {
 		for ti, typ := range []string{"used", "cached", "buffers", "free"} {
-			lbls := map[string]string{"instance": inst, "job": "demo", "type": typ}
+			lbls := map[string]string{instanceLabel: inst, "job": "demo", "type": typ}
 			base := 2e9 + float64(i)*1e7 + float64(ti)*1e6
 			vals := gaugeRamp(base, 1024)
 			b.WriteString(gaugeInsert("demo_memory_usage_bytes", lbls, vals))
@@ -150,7 +154,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// demo_disk_usage_bytes / demo_disk_total_bytes{instance,device}.
 	for i, inst := range instances[:2] {
 		for di, dev := range []string{"/dev/sda1", "/dev/sda2"} {
-			lbls := map[string]string{"instance": inst, "job": "demo", "device": dev}
+			lbls := map[string]string{instanceLabel: inst, "job": "demo", "device": dev}
 			usage := gaugeRamp(10e9+float64(i)*4096, float64(di+1)*1024)
 			b.WriteString(gaugeInsert("demo_disk_usage_bytes", lbls, usage))
 			series = append(series, mkSeries("demo_disk_usage_bytes", lbls, usage))
@@ -162,7 +166,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	}
 	// demo_num_cpus{instance}: constant gauge (4 cores).
 	for _, inst := range instances {
-		lbls := map[string]string{"instance": inst, "job": "demo"}
+		lbls := map[string]string{instanceLabel: inst, "job": "demo"}
 		vals := gaugeConst(4)
 		b.WriteString(gaugeInsert("demo_num_cpus", lbls, vals))
 		series = append(series, mkSeries("demo_num_cpus", lbls, vals))
@@ -172,7 +176,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// count_over_time/absent_over_time see fewer samples than a dense
 	// series would.
 	for i, inst := range instances {
-		lbls := map[string]string{"instance": inst, "job": "demo"}
+		lbls := map[string]string{instanceLabel: inst, "job": "demo"}
 		vals := sparseValues(float64(i + 1))
 		b.WriteString(gaugeInsert("demo_intermittent_metric", lbls, vals))
 		series = append(series, mkSeries("demo_intermittent_metric", lbls, vals))
@@ -213,7 +217,7 @@ func RichSeed() (ddl string, model *property.MetricsModel) {
 	// hand-derivation (see histogram_native_test.go's
 	// TestNativeHistogramQuantile_NegativeBuckets doc comment).
 	for i, inst := range instances[:2] {
-		lbls := map[string]string{"instance": inst, "job": "demo"}
+		lbls := map[string]string{instanceLabel: inst, "job": "demo"}
 		var pts []property.Point
 		if i == 0 {
 			pts = expHistogramValues(0, 0, []uint64{1, 2, 3}, 0, nil, 0)

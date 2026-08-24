@@ -286,11 +286,11 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	// v2, the TraceByIDResponse envelope drift that broke Grafana 12's
 	// trace view (cerberus returning the bare v1 trace bytes on the v2
 	// URL). Every other endpoint stays on JSON.
-	if tc.Endpoint == "traces" {
+	if tc.Endpoint == endpointTraces {
 		diffTracesEndpoint(ctx, client, tempoURL, cerbURL, &res)
 		return res
 	}
-	if tc.Endpoint == "traces_v2" {
+	if tc.Endpoint == endpointTracesV2 {
 		diffTracesV2Endpoint(ctx, client, tempoURL, cerbURL, &res)
 		return res
 	}
@@ -352,7 +352,7 @@ func diffCase(ctx context.Context, client *http.Client, tc CorpusCase, opts case
 	// — the structural diff stays Equal because both backends produced
 	// the same wrong shape, but the semantic check fails because the
 	// shape itself violates the invariant.
-	if len(tc.SemanticChecks) > 0 && (tc.Endpoint == "metrics_range" || tc.Endpoint == "metrics_instant") {
+	if len(tc.SemanticChecks) > 0 && (tc.Endpoint == endpointMetricsRange || tc.Endpoint == endpointMetricsInstant) {
 		tempoSem, err := RunSemanticChecks(tc, tempoBody, "tempo")
 		if err != nil {
 			res.HardError = fmt.Sprintf("semantic tempo: %v", err)
@@ -434,7 +434,7 @@ func diffStatusParityCase(tc CorpusCase, tempoStatus, cerbStatus int, terr, cerr
 // Pulled out of diffCase to keep that function under funlen.
 func assertCaseForEndpoint(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
 	switch tc.Endpoint {
-	case "metrics_range", "metrics_instant":
+	case endpointMetricsRange, endpointMetricsInstant:
 		return AssertMetricsCase(tc, body, backendLabel)
 	default:
 		return AssertCase(tc, body, backendLabel)
@@ -451,15 +451,15 @@ func assertCaseForEndpoint(tc CorpusCase, body []byte, backendLabel string) ([]D
 // `Compare`.
 func compareForEndpoint(tc CorpusCase, tempoBody, cerbBody []byte) (Diff, error) {
 	switch tc.Endpoint {
-	case "tags_v1":
+	case endpointTagsV1:
 		return CompareTagNames(tempoBody, cerbBody, "tempo", "cerberus", false)
-	case "tags_v2":
+	case endpointTagsV2:
 		return CompareTagNames(tempoBody, cerbBody, "tempo", "cerberus", true)
-	case "tag_values_v1":
+	case endpointTagValuesV1:
 		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", false)
-	case "tag_values_v2":
+	case endpointTagValuesV2:
 		return CompareTagValues(tempoBody, cerbBody, "tempo", "cerberus", true)
-	case "metrics_range", "metrics_instant":
+	case endpointMetricsRange, endpointMetricsInstant:
 		return CompareMetrics(tempoBody, cerbBody, "tempo", "cerberus", DefaultDiffOptions())
 	default:
 		opts := DefaultDiffOptions()
@@ -507,7 +507,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 	}
 	q := url.Values{}
 	switch tc.Endpoint {
-	case "search":
+	case endpointSearch:
 		u.Path += "/api/search"
 		q.Set("q", tc.Query)
 		q.Set("limit", fmt.Sprintf("%d", searchLimit))
@@ -518,27 +518,27 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 		}
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
-	case "search_recent":
+	case endpointSearchRecent:
 		u.Path += "/api/search/recent"
 		q.Set("limit", fmt.Sprintf("%d", searchLimit))
-	case "traces":
+	case endpointTraces:
 		id, err := deriveTraceIDFromTemplate(tc.TraceIDTemplate)
 		if err != nil {
 			return "", err
 		}
 		u.Path += "/api/traces/" + id
-	case "traces_v2":
+	case endpointTracesV2:
 		id, err := deriveTraceIDFromTemplate(tc.TraceIDTemplate)
 		if err != nil {
 			return "", err
 		}
 		u.Path += "/api/v2/traces/" + id
-	case "tags_v1":
+	case endpointTagsV1:
 		u.Path += "/api/search/tags"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 		setTagQuery(q, tc)
-	case "tags_v2":
+	case endpointTagsV2:
 		u.Path += "/api/v2/search/tags"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
@@ -546,17 +546,17 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 			q.Set("scope", tc.Scope)
 		}
 		setTagQuery(q, tc)
-	case "tag_values_v1":
+	case endpointTagValuesV1:
 		u.Path += "/api/search/tag/" + tc.TagName + "/values"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 		setTagQuery(q, tc)
-	case "tag_values_v2":
+	case endpointTagValuesV2:
 		u.Path += "/api/v2/search/tag/" + tc.TagName + "/values"
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
 		q.Set("end", fmt.Sprintf("%d", endTS.Unix()))
 		setTagQuery(q, tc)
-	case "metrics_range":
+	case endpointMetricsRange:
 		u.Path += "/api/metrics/query_range"
 		q.Set("q", tc.Query)
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))
@@ -565,7 +565,7 @@ func buildURL(base string, tc CorpusCase, backend string, startTS, endTS time.Ti
 			return "", fmt.Errorf("%s: case %q endpoint=metrics_range needs Step", backend, tc.Name)
 		}
 		q.Set("step", tc.Step)
-	case "metrics_instant":
+	case endpointMetricsInstant:
 		u.Path += "/api/metrics/query"
 		q.Set("q", tc.Query)
 		q.Set("start", fmt.Sprintf("%d", startTS.Unix()))

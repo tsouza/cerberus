@@ -272,9 +272,9 @@ func buildRootLookupPlan(s schema.Traces, traceIDs []string) chplan.Node {
 	return &chplan.Project{
 		Input: agg,
 		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: "RootSpanName"}, Alias: "MetricName"},
-			{Expr: attrsMap, Alias: "Attributes"},
-			{Expr: chplan.NowNano(), Alias: "TimeUnix"},
+			{Expr: &chplan.ColumnRef{Name: "RootSpanName"}, Alias: sampleMetricNameCol},
+			{Expr: attrsMap, Alias: sampleAttributesCol},
+			{Expr: chplan.NowNano(), Alias: sampleTimeUnixCol},
 			{Expr: &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: []chplan.Expr{traceDurationNs}}, Alias: "Value"},
 		},
 	}
