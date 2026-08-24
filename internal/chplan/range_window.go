@@ -154,6 +154,43 @@ type RangeWindow struct {
 	// through, and issue #1628.
 	TemporalityColumn string
 
+	// DeltaPrefixAggregateInput is the optional second scan side-feeding
+	// exact, retention-independent DELTA-temporality prefix reconstruction
+	// (cerberus issue #2389). When non-nil it names a Node reading the
+	// operator-provisioned DELTA-prefix aggregate table
+	// (schema.Metrics.DeltaPrefixTable), already shaped by
+	// internal/promql/lower.go's augmentDeltaPrefixAggregateAttributes —
+	// the SAME selectorAttributesExpr(ctx, s) tower Input's own Attributes
+	// projection uses, just re-hosted over the aggregate table's
+	// (MetricName, Attributes, BucketStart, PartialSum) row shape instead
+	// of Input's canonical (MetricName, Attributes, TimeUnix, Value[,
+	// AggregationTemporality]) quadruple. Because both Projects alias
+	// their shaped column to the same name, chsql's existing name-based
+	// GroupBy resolution (plainGroupColumnNames / collectGroupByFrags)
+	// joins the two sides correctly without any new join-key derivation —
+	// see internal/chsql/range_window.go's deltaPrefixAggregateSource.
+	//
+	// nil (the default) — the pre-#2389 bounded-lookback approximation
+	// (CERBERUS_DELTA_PREFIX_LOOKBACK / instantDeltaPrefixSource's single
+	// scalar scan over Input alone) remains cerberus's only
+	// DELTA-prefix-reconstruction mechanism for this RangeWindow. Only a
+	// deployment whose schema names a DeltaPrefixTable gets this field
+	// populated at lowering time; the chsql emitter separately gates
+	// actually CONSUMING it on the query-path enable flag
+	// (config.Config.DeltaPrefixReadEnabled /
+	// CERBERUS_DELTA_PREFIX_READ_ENABLED — deliberately a DIFFERENT knob
+	// from the schema-provisioning CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED,
+	// see that field's doc for why), so populating this field alone changes
+	// no emitted SQL.
+	//
+	// NOTE ON invariant 12 (no result caching): reading this
+	// operator-provisioned AggregatingMergeTree table is NOT query-result
+	// caching — it is a normal table scan against schema cerberus itself
+	// keeps in ClickHouse (mirroring how Input already reads whatever base
+	// table the schema names), re-aggregated fresh on every query. No
+	// per-query answer is stored or reused across requests.
+	DeltaPrefixAggregateInput Node
+
 	// GroupBy lists the expressions that identify a series for grouping
 	// (typically `[ColumnRef("Attributes")]` for OTel-CH, since the map
 	// column carries all the labels). May be nil/empty, in which case
@@ -305,7 +342,18 @@ func FusibleWindowFunc(fn string) bool {
 
 func (*RangeWindow) planNode() {}
 
-func (r *RangeWindow) Children() []Node { return []Node{r.Input} }
+// Children returns Input alone, or [Input, DeltaPrefixAggregateInput] when
+// the DELTA-prefix aggregate side-scan is populated — mirroring
+// MetricsCompare's Inner/optional-RootLookup shape, so every generic tree
+// walk (optimizer rewrites, resource-bound accounting, plan Equal via
+// recursive Children traversal) reaches the side-scan the same way it
+// already reaches Input, rather than silently treating it as an opaque leaf.
+func (r *RangeWindow) Children() []Node {
+	if r.DeltaPrefixAggregateInput == nil {
+		return []Node{r.Input}
+	}
+	return []Node{r.Input, r.DeltaPrefixAggregateInput}
+}
 
 // NumAnchors is the number of subquery anchor points this RangeWindow
 // materialises: one row per Step across (End - OuterRange, End], i.e.
@@ -408,6 +456,12 @@ func (r *RangeWindow) Equal(other Node) bool {
 		if !r.Variants[i].Equal(o.Variants[i]) {
 			return false
 		}
+	}
+	if (r.DeltaPrefixAggregateInput == nil) != (o.DeltaPrefixAggregateInput == nil) {
+		return false
+	}
+	if r.DeltaPrefixAggregateInput != nil && !r.DeltaPrefixAggregateInput.Equal(o.DeltaPrefixAggregateInput) {
+		return false
 	}
 	return r.Input.Equal(o.Input)
 }

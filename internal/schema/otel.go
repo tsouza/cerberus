@@ -197,8 +197,13 @@ type Metrics struct {
 	// DeltaPrefixLookback scan (internal/config's Config.DeltaPrefixLookback)
 	// remains cerberus's only DELTA-prefix-reconstruction mechanism for
 	// that deployment. Populating it alone changes no runtime query
-	// behavior — the read-side emitter change that would consume it is
-	// tracked separately under #2389.
+	// behavior: internal/promql/lower.go builds
+	// chplan.RangeWindow.DeltaPrefixAggregateInput whenever this field is
+	// non-empty, but internal/chsql only CONSUMES that field when the
+	// separate, later config.Config.DeltaPrefixReadEnabled
+	// (CERBERUS_DELTA_PREFIX_READ_ENABLED) opt-in is also true — see that
+	// field's doc for why backfill-completion has to be a distinct,
+	// operator-verified declaration from "the table exists".
 	DeltaPrefixTable string
 	// DeltaPrefixBucketColumn names DeltaPrefixTable's daily-bucket-boundary
 	// column (`toStartOfDay(TimeUnix)`, DateTime64(9)) — populated in

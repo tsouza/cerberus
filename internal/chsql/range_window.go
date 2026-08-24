@@ -198,6 +198,38 @@ const windowTemporalityAlias = "temporality"
 // first counter level never requires a retention-wide groupArray.
 const deltaPrefixBeforeWindowAlias = "delta_prefix_before_window"
 
+// deltaPrefixAggregateBeforeWindowAlias / deltaPrefixRawRemainderAlias are
+// deltaPrefixAggregateSource's OWN inner-subquery aliases for its two
+// disjoint terms (cerberus issue #2389) — the full-days-before-today
+// aggregate-table sum and the still-open-bucket raw-table sum,
+// respectively. Neither escapes deltaPrefixAggregateSource: the function's
+// outer join re-aliases their sum to deltaPrefixBeforeWindowAlias above, the
+// SAME name instantDeltaPrefixSource's single-term join already produces,
+// so every downstream reader (deltaFirstValFrag, emitWindowedArrayExtrapolated)
+// stays oblivious to which of the two mechanisms produced the value.
+const (
+	deltaPrefixAggregateBeforeWindowAlias = "delta_prefix_aggregate_before_window"
+	deltaPrefixRawRemainderAlias          = "delta_prefix_raw_remainder"
+)
+
+// deltaPrefixAggregateBucketColumn / deltaPrefixAggregateSumColumn name
+// DeltaPrefixAggregateInput's own two non-identity columns — schema.Metrics.
+// DeltaPrefixBucketColumn / DeltaPrefixSumColumn's stock values
+// (internal/schema/otel.go's defaultDeltaPrefixBucketColumn /
+// defaultDeltaPrefixSumColumn, both populated only when
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opts in). chsql cannot import
+// internal/schema (.go-arch-lint.yml keeps the plan→SQL emitter from
+// depending back on the schema layer that feeds lowering), so — exactly
+// like defaultDeltaPrefixLookback mirrors config.defaultDeltaPrefixLookback
+// for the identical layering reason — these are chsql's own copy of the
+// same two cerberus-invented column names, not a schema-configurable knob:
+// today's wiring (internal/schema/env.go) never lets an operator rename
+// them independently of the stock defaults.
+const (
+	deltaPrefixAggregateBucketColumn = "BucketStart"
+	deltaPrefixAggregateSumColumn    = "PartialSum"
+)
+
 const (
 	// deltaAnchorLevelsAlias is the ordered running sum of deltaPrefixStepAlias
 	// through the current anchor — the reconstructed DELTA counter level
@@ -3258,6 +3290,38 @@ func deltaPrefixLookbackFromCtx(ctx context.Context) time.Duration {
 	return defaultDeltaPrefixLookback
 }
 
+// deltaPrefixReadEnabledKey is the unexported context key carrying the
+// operator's explicit "the DELTA-prefix aggregate table is provisioned AND
+// its one-time backfill is complete AND verified" declaration (cerberus
+// issue #2389) into the emit chokepoint. See WithDeltaPrefixReadEnabled /
+// deltaPrefixReadEnabledFromCtx and config.Config.DeltaPrefixReadEnabled's
+// doc for why this is a DELIBERATELY SEPARATE knob from
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED (which only says the table + MV
+// exist, not that historical data has been backfilled into them).
+type deltaPrefixReadEnabledKey struct{}
+
+// WithDeltaPrefixReadEnabled returns ctx carrying enabled as the query-path
+// consumption gate for the exact, retention-independent DELTA-prefix
+// aggregate mechanism (deltaPrefixAggregateSource). false (the default when
+// nothing threads this at all — see deltaPrefixReadEnabledFromCtx) keeps
+// every emitted query on today's instantDeltaPrefixSource-only,
+// CERBERUS_DELTA_PREFIX_LOOKBACK-bounded approximation, byte-identical to
+// pre-#2389 behaviour: this is what makes the new mechanism strictly
+// opt-in.
+func WithDeltaPrefixReadEnabled(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, deltaPrefixReadEnabledKey{}, enabled)
+}
+
+// deltaPrefixReadEnabledFromCtx recovers the bound WithDeltaPrefixReadEnabled
+// set, or false when the caller never threaded one — the fail-closed
+// default: a plan built outside internal/engine's wiring (the spec/golden
+// lane, property tests, any other direct chsql.Emit caller) never takes the
+// new aggregate-table path by accident.
+func deltaPrefixReadEnabledFromCtx(ctx context.Context) bool {
+	enabled, _ := ctx.Value(deltaPrefixReadEnabledKey{}).(bool)
+	return enabled
+}
+
 // deltaPrefixLowerBoundFrag returns the `<tsCol> > <rangeStart> -
 // toIntervalNanosecond(<lookbackNS>)` predicate that bounds a DELTA-
 // temporality prefix-reconstruction scan, or nil when lookbackNS == 0 (the
@@ -3384,6 +3448,144 @@ func (e *emitter) instantDeltaPrefixSource(
 	return joined.Frag(), nil
 }
 
+// deltaPrefixBucketStartFrag renders `toStartOfDay(<rangeStart>)` — the
+// bucket boundary DeltaPrefixAggregateInput's rows are keyed by
+// (schema.Metrics.DeltaPrefixBucketColumn / DDL comment: `toStartOfDay
+// (TimeUnix)`) and deltaPrefixAggregateSource's own split point between
+// its two terms.
+func deltaPrefixBucketStartFrag(rangeStart Frag) Frag {
+	return Call("toStartOfDay", rangeStart)
+}
+
+// deltaPrefixAggregateSource is instantDeltaPrefixSource's sibling for the
+// exact, retention-independent DELTA-prefix mechanism (cerberus issue
+// #2389), selected only when e.deltaPrefixReadEnabled AND
+// r.DeltaPrefixAggregateInput != nil (see emitWindowedArrayExtrapolated's
+// call site). instantDeltaPrefixSource itself is UNTOUCHED — every
+// deployment that has not opted into the new mechanism keeps emitting
+// exactly the SQL it emits today, unconditionally.
+//
+// Where instantDeltaPrefixSource joins ONE per-series scalar (a single
+// CERBERUS_DELTA_PREFIX_LOOKBACK-bounded scan of r.Input) onto the
+// windowed-array source, this joins TWO, summed — deliberately DISJOINT by
+// construction, so the sum is exact rather than an overlapping
+// approximation:
+//
+//   - the aggregate term: sum(PartialSum) over r.DeltaPrefixAggregateInput
+//     (the DELTA-prefix AggregatingMergeTree table, already shaped by
+//     internal/promql/lower.go's augmentDeltaPrefixAggregateAttributes),
+//     bounded to `BucketStart < toStartOfDay(rangeStart)` — every FULL day
+//     strictly before the window's own day. Cost scales with day-count ×
+//     per-metric raw-tuple multiplicity (Map key-order / sanitisation /
+//     dedicated-column-overlay variance across collector redeploys — see
+//     the design's Cost 1), never with retained SAMPLE count, which is
+//     what makes this retention-independent in the sense the issue asks
+//     for. No PK-pruning below MetricName exists for this predicate (Cost
+//     2 — the series-identity key is computed at read time, not a table
+//     column, so ClickHouse's sparse index cannot prune on it); see
+//     docs/operations.md's DELTA-prefix runbook for the measured cost.
+//   - the raw-remainder term: sum(Value) over r.Input, bounded to
+//     `TimeUnix >= toStartOfDay(rangeStart) AND TimeUnix <= rangeStart` —
+//     the current, still-open bucket's own contribution. Structurally the
+//     SAME scan shape instantDeltaPrefixSource's own prefix sub-builder
+//     already renders (a per-series sum(Value) scalar joined onto the
+//     windowed-array source), just re-bounded to at most one bucket width
+//     instead of the operator's CERBERUS_DELTA_PREFIX_LOOKBACK knob, which
+//     this path does not consult AT ALL — see
+//     config.Config.DeltaPrefixReadEnabled's doc for why that is a
+//     DIFFERENT knob from the one gating this function's selection.
+//
+// A series with NO row in the aggregate term (never backfilled, or
+// genuinely new — the two are indistinguishable from a single query)
+// contributes 0 there via ClickHouse's ordinary LEFT JOIN default-value
+// semantics (no COALESCE needed, matching instantDeltaPrefixSource's own
+// no-COALESCE convention for the identical reason), so the sum degrades to
+// "raw remainder only": exact for a genuinely new series, an UNDER-count
+// relative to even the OLD lookback-bounded approximation for a long-lived
+// series an operator enabled DeltaPrefixReadEnabled for before finishing
+// (and verifying) backfill. That hazard is an OPERATIONAL precondition —
+// the DELTA-prefix backfill runbook in docs/operations.md — not something
+// a single query can detect on its own.
+//
+// groupFrags resolve against BOTH r.Input and r.DeltaPrefixAggregateInput
+// by NAME, the same way instantDeltaPrefixSource's groupFrags already
+// resolve against r.Input alone: both selector Projects alias their shaped
+// Attributes column to schema.Metrics.AttributesColumn, so no new join-key
+// derivation exists here — see chplan.RangeWindow.DeltaPrefixAggregateInput's
+// doc and internal/promql/lower.go's augmentDeltaPrefixAggregateAttributes.
+//
+// NOTE ON invariant 12 (no result caching): both terms are ordinary
+// ClickHouse table scans, re-aggregated fresh on every query, exactly like
+// r.Input's own scan. Reading the operator-provisioned DELTA-prefix
+// AggregatingMergeTree table is schema, not a cache of a prior query's
+// answer.
+func (e *emitter) deltaPrefixAggregateSource(
+	r *chplan.RangeWindow,
+	window *QueryBuilder,
+	groupFrags []Frag,
+	rangeStart Frag,
+) (Frag, error) {
+	groupColumns, err := plainGroupColumnNames(r.GroupBy)
+	if err != nil {
+		return nil, err
+	}
+	bucketStart := deltaPrefixBucketStartFrag(rangeStart)
+
+	aggInput, err := e.subqueryFrag(r.DeltaPrefixAggregateInput)
+	if err != nil {
+		return nil, err
+	}
+	agg := NewQuery().From(aggInput)
+	aggKeys := make([]string, len(groupFrags))
+	for i, groupFrag := range groupFrags {
+		aggKeys[i] = fmt.Sprintf("delta_prefix_agg_key_%d", i)
+		agg.Select(As(groupFrag, aggKeys[i]))
+	}
+	agg.Select(As(Call("sum", Col(deltaPrefixAggregateSumColumn)), deltaPrefixAggregateBeforeWindowAlias))
+	agg.Where(Lt(Col(deltaPrefixAggregateBucketColumn), bucketStart))
+	agg.GroupBy(groupFrags...)
+
+	rawInput, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return nil, err
+	}
+	raw := NewQuery().From(rawInput)
+	rawKeys := make([]string, len(groupFrags))
+	for i, groupFrag := range groupFrags {
+		rawKeys[i] = fmt.Sprintf("delta_prefix_raw_key_%d", i)
+		raw.Select(As(groupFrag, rawKeys[i]))
+	}
+	raw.Select(As(Call("sum", Col(r.ValueColumn)), deltaPrefixRawRemainderAlias))
+	raw.Where(Gte(Col(r.TimestampColumn), bucketStart))
+	raw.Where(Lte(Col(r.TimestampColumn), rangeStart))
+	raw.GroupBy(groupFrags...)
+
+	joined := NewQuery().From(aliasedFrag(window.Frag(), "w"))
+	for _, groupColumn := range groupColumns {
+		joined.Select(As(Qual("w", groupColumn), groupColumn))
+	}
+	joined.Select(As(Qual("w", "series_array"), "series_array"))
+	joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
+	joined.Select(As(
+		Add(Qual("a", deltaPrefixAggregateBeforeWindowAlias), Qual("p", deltaPrefixRawRemainderAlias)),
+		deltaPrefixBeforeWindowAlias,
+	))
+	if len(groupColumns) == 0 {
+		joined.Join(CrossJoin, aliasedFrag(agg.Frag(), "a"), nil)
+		joined.Join(CrossJoin, aliasedFrag(raw.Frag(), "p"), nil)
+		return joined.Frag(), nil
+	}
+	aggOn := make([]Frag, len(groupColumns))
+	rawOn := make([]Frag, len(groupColumns))
+	for i, groupColumn := range groupColumns {
+		aggOn[i] = Eq(Qual("w", groupColumn), Qual("a", aggKeys[i]))
+		rawOn[i] = Eq(Qual("w", groupColumn), Qual("p", rawKeys[i]))
+	}
+	joined.Join(LeftJoin, aliasedFrag(agg.Frag(), "a"), And(aggOn...))
+	joined.Join(LeftJoin, aliasedFrag(raw.Frag(), "p"), And(rawOn...))
+	return joined.Frag(), nil
+}
+
 // emitWindowedArrayExtrapolated emits SQL for rate / increase / delta
 // with Prom's `extrapolatedRate` boundary correction applied to the
 // per-window value. Compared to emitWindowedArray, this path projects
@@ -3477,7 +3679,19 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	windowSource := innermost.Frag()
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
 	if needsDeltaFirstLevel {
-		windowSource, err = e.instantDeltaPrefixSource(r, innermost, groupFrags, rangeStart, end, rangeNS)
+		// The exact, retention-independent mechanism (cerberus issue #2389)
+		// takes over ONLY when the operator has both populated
+		// r.DeltaPrefixAggregateInput at lowering time (the schema names a
+		// DELTA-prefix table) AND separately declared, via
+		// WithDeltaPrefixReadEnabled, that its backfill is complete and
+		// verified. Either condition absent falls through to
+		// instantDeltaPrefixSource UNCHANGED — the default for every
+		// deployment that hasn't opted in, byte-identical to pre-#2389 SQL.
+		if r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled {
+			windowSource, err = e.deltaPrefixAggregateSource(r, innermost, groupFrags, rangeStart)
+		} else {
+			windowSource, err = e.instantDeltaPrefixSource(r, innermost, groupFrags, rangeStart, end, rangeNS)
+		}
 		if err != nil {
 			return err
 		}
@@ -3634,6 +3848,17 @@ func (e *emitter) applyMatrixFanoutScanBound(
 // extrapolation quantities (first_ts / last_ts / first_val /
 // sampled_interval / duration_to_start / duration_to_end) see exactly
 // the per-anchor sample sets Prom's extrapolatedRate contract pins.
+//
+// DELTA-prefix reconstruction here (needsDeltaFirstLevel below) is STILL
+// the query_range matrix path's own deltaPrefixAnchorArrayFrag /
+// deltaMatrixLevelSource shape, bounded by e.deltaPrefixLookbackNS exactly
+// as before cerberus issue #2389's exact mechanism — it does NOT consult
+// r.DeltaPrefixAggregateInput even when populated and
+// e.deltaPrefixReadEnabled is true. The instant path's
+// deltaPrefixAggregateSource (see emitWindowedArrayExtrapolated) is the
+// only consumer today; extending the exact mechanism to this matrix path
+// is tracked as remaining scope under #2389, not implemented by this
+// function.
 func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()

@@ -41,6 +41,11 @@ func allNodeKinds() []chplan.Node {
 			Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,
 			OuterRange: time.Hour, Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
 			GroupBy: []chplan.Expr{expr}, Scalars: []float64{1}, ScalarExprs: []chplan.Expr{&chplan.LitFloat{V: 2}},
+			// Populated (not left nil) so the clone contract is exercised on
+			// the DELTA-prefix aggregate side-scan too (cerberus issue
+			// #2389) — a nil Node clones correctly by accident, same
+			// reasoning as RangeWindowGridNative.Recollapse above.
+			DeltaPrefixAggregateInput: &chplan.Scan{Table: "otel_metrics_sum_delta_prefix"},
 		},
 		&chplan.RangeWindowGridNative{
 			Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,

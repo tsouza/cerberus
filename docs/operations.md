@@ -1120,11 +1120,21 @@ extrapolation-boundary correction needs for a DELTA-temporality OTel Sum
 counter (see `Config.DeltaPrefixLookback`'s doc comment for the mechanism this
 supplements). Unlike the metadata projections and the skip index above, no
 upstream template backs this table — it never appears unless the operator
-opts in, and it is entirely additive: **this PR ships only the table, its MV,
-and the operator tooling below — cerberus's own query answering does not yet
-read from this table.** The read-side emitter change that would consume it
-(the `rate()`/`increase()` fast path) is separate scope, still open under
-issue #2389.
+opts in, and it is entirely additive.
+
+**Query answering now CAN read from this table**, gated behind a separate,
+later opt-in from provisioning: `Config.DeltaPrefixReadEnabled`
+(`CERBERUS_DELTA_PREFIX_READ_ENABLED`, default `false`). Provisioning the
+table (`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`) only says the table + MV
+exist; it says nothing about whether their one-time backfill (below) has run
+and been verified. Reusing one flag for both would flip the read path live
+mid-backfill and silently under-count every long-lived DELTA counter's
+boundary correction — the exact bug this whole mechanism exists to fix,
+reintroduced by the fix itself — so the two are independent knobs by design.
+Set `CERBERUS_DELTA_PREFIX_READ_ENABLED=true` only after `delta-prefix-verify`
+(below) passes clean. Until then — or for a deployment that never intends to
+backfill — `Config.DeltaPrefixLookback`'s bounded approximation remains
+cerberus's only DELTA-prefix mechanism, unchanged.
 
 **Provisioning** needs *two* independent flags, both default `false`:
 `CERBERUS_AUTO_CREATE_SCHEMA=true` (as for every other auto-created table) AND
@@ -1222,15 +1232,70 @@ DELTA-temporality totals (`sum(Value)` under the same `AggregationTemporality
 machine-readable form). **Scope note:** this is a per-metric *completeness*
 check — did every DELTA row make it into the aggregate table — not a
 per-series *identity-alignment* check against cerberus's read-time computed
-series key (that validation belongs to the still-open read-side task under
-issue #2389; see `internal/deltaprefix`'s package doc for the full boundary). A
-clean `delta-prefix-verify` pass is the required confirmation before an
-operator sets `CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true` and (once shipped)
-whatever flag the read-side change under #2389 introduces. A deployment that
-never backfills is not broken — it simply keeps running today's bounded
+series key; see `internal/deltaprefix`'s package doc for the full boundary
+and where that alignment property is actually proven (a structural
+plan-equality test plus a chDB round-trip probe, both in the read-side
+mechanism itself — see below). A clean `delta-prefix-verify` pass is the
+required confirmation before an operator sets
+`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true` **and**
+`CERBERUS_DELTA_PREFIX_READ_ENABLED=true`. A deployment that never
+backfills is not broken — it simply keeps running today's bounded
 `CERBERUS_DELTA_PREFIX_LOOKBACK` approximation indefinitely, a legitimate
 permanent choice for an operator who doesn't need exact boundary-correction
 precision.
+
+#### Read-side mechanism and its measured PK-pruning cost
+
+Once backfilled and verified, `CERBERUS_DELTA_PREFIX_READ_ENABLED=true`
+switches `rate()`/`increase()`'s DELTA-prefix reconstruction to a two-term
+read, replacing `CERBERUS_DELTA_PREFIX_LOOKBACK`'s bounded scalar scan:
+
+1. `sum(PartialSum)` from the aggregate table, bounded to `BucketStart <
+   toStartOfDay(<window start>)` — every full day strictly before the
+   window's own day. Cost scales with day-count × a per-metric raw-tuple
+   multiplicity (attribute key-sanitisation collisions, `Map`
+   key-insertion-order variance across collector redeploys, dedicated-column
+   overlay — see the series-identity note above), never with retained
+   *sample* count.
+2. `sum(Value)` from the base table, bounded to `[toStartOfDay(<window
+   start>), <window start>]` — the current, still-open bucket's own
+   contribution, at most one bucket width.
+
+Both terms resolve to the same series through cerberus's ordinary
+column-name GroupBy resolution — see `chplan.RangeWindow.DeltaPrefixAggregateInput`'s
+doc — not a new join-key derivation.
+
+**PK-pruning cost, re-measured against real production-shaped data.** An
+earlier estimate (design discussion for this feature, not previously
+committed to this document) against a *synthetic* 200-series/90-day probe
+(18,000 rows) found a `MetricName`-only read scanning 71% of the table,
+dropping to 34% once `BucketStart` moved to position 2 in `ORDER BY` — the
+ordering this table already uses above — and flagged re-measuring against a
+real high-cardinality metric as still open before this document claimed a
+specific number. That re-measurement:
+`test/perf/smoke/testdata/samples/svc_http_requests_total.parquet` — a real,
+scrubbed 14-day Sum-metric capture, 18,591,129 raw samples across 31,073
+distinct series — loaded into a chDB session and aggregated into this
+table's exact shape (`GROUP BY MetricName, Attributes, ResourceAttributes,
+ServiceName, toStartOfDay(TimeUnix)`), yielding 53,252 aggregate rows (most
+series are active on only 1–2 of the 14 days — this sample's two-window daily
+capture pattern, not a data-loading artefact). Against that table, `EXPLAIN
+ESTIMATE` for a single-metric, half-window read (`WHERE MetricName = ... AND
+BucketStart < <day 8 of 14>`) reads **26,624 of the table's 53,252 rows
+(50.0%)** — essentially every series' rows for the included days — to answer
+a query whose TRUE per-series contribution is typically 1–2 rows. This
+confirms the synthetic finding at real production scale and sharpens it: even
+with a real metric's genuine (non-synthetic) cardinality and day-distribution,
+**no PK-level pruning exists below `MetricName`** — the series-identity
+predicate is a `GROUP BY` key computed from the scan output, never a
+`WHERE`-testable column, so cost scales with `date-range × metric-cardinality`
+regardless of dataset size. This is still enormously cheaper than the removed
+unbounded-retention scan (bounded by day-count regardless of series
+cardinality, vs. literally the whole base table's history), but is a real,
+named cost for a single-series `rate()`/`increase()` query against a
+high-cardinality DELTA metric — not `date-range × 1` — and belongs in
+capacity planning for any deployment enabling
+`CERBERUS_DELTA_PREFIX_READ_ENABLED` against such a metric.
 
 ### Startup requirements preflight
 

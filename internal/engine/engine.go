@@ -149,7 +149,10 @@ type rangeSeriesOrderer interface {
 // chplan.RangeWindow with a TemporalityColumn, so chsql's DELTA-temporality
 // prefix-reconstruction emitters this bounds are simply never reached for
 // them.
-func emitForHead(ctx context.Context, lang Lang, plan chplan.Node, deltaPrefixLookback time.Duration) (string, []any, error) {
+func emitForHead(
+	ctx context.Context, lang Lang, plan chplan.Node,
+	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
+) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
 	}
@@ -161,6 +164,12 @@ func emitForHead(ctx context.Context, lang Lang, plan chplan.Node, deltaPrefixLo
 		plan = ro.RangeSeriesOrder(plan)
 	}
 	ctx = chsql.WithDeltaPrefixLookback(ctx, deltaPrefixLookback)
+	// Threaded alongside DeltaPrefixLookback for the identical reason (see
+	// Engine.DeltaPrefixReadEnabled's doc): every caller passes its
+	// Engine's own field directly, so an Engine built without it wired
+	// (e.g. Engine{} in a test) resolves to false — the fail-closed
+	// default that keeps the DeltaPrefixLookback-only path.
+	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
 	return chsql.Emit(ctx, plan)
 }
 
@@ -785,6 +794,38 @@ type Engine struct {
 	// non-zero default when unset.
 	DeltaPrefixLookback time.Duration
 
+	// DeltaPrefixReadEnabled mirrors config.Config.DeltaPrefixReadEnabled
+	// (wired from CERBERUS_DELTA_PREFIX_READ_ENABLED in cmd/cerberus,
+	// PromQL head only, same inertness reasoning as DeltaPrefixLookback
+	// above) — the query-path consumption gate for the exact,
+	// retention-independent DELTA-prefix aggregate mechanism (cerberus
+	// issue #2389). emitForHead / routeBExecCtx thread it onto the emit
+	// context via chsql.WithDeltaPrefixReadEnabled exactly the way they
+	// already thread DeltaPrefixLookback, so both route A and route B see
+	// the same resolved gate.
+	//
+	// Deliberately a SEPARATE field from config.SchemaProvisioning.
+	// DeltaPrefixEnabled / CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED, not a
+	// reuse of it: that flag governs whether cerberus PROVISIONS the
+	// DELTA-prefix table's DDL (and, via internal/schema/env.go, whether
+	// schema.Metrics.DeltaPrefixTable gets populated at all) — a
+	// deployment can flip it on, let CERBERUS_AUTO_CREATE_SCHEMA create the
+	// table, and start running the one-time backfill CLI, ALL before a
+	// single query is ready to read exact results from it. If query
+	// answering consumed the same flag, the read path would go live the
+	// INSTANT the table exists — mid-backfill, with the aggregate table
+	// still missing most of its history — silently UNDER-counting every
+	// long-lived DELTA counter's boundary correction, which is exactly the
+	// bug class this whole mechanism exists to fix. This field is the
+	// operator's own, separate, later declaration: "the backfill has
+	// finished AND I have verified it (docs/operations.md's DELTA-prefix
+	// runbook) — start reading from the table." The zero Go value (false)
+	// keeps every deployment that hasn't made that declaration on today's
+	// DeltaPrefixLookback-bounded approximation, byte-identical to
+	// pre-#2389 SQL — including one that only set the schema-provisioning
+	// flag.
+	DeltaPrefixReadEnabled bool
+
 	// RouteMemo is the OPTIONAL failure-driven route memo (internal/routememo,
 	// docs/solver.md §"Failure-driven route memo"). Nil unless wired from
 	// cmd/cerberus, so the default path is byte-unchanged. When non-nil AND
@@ -1056,7 +1097,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback)
+		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
@@ -1194,7 +1235,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1269,7 +1310,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1384,12 +1425,19 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // silently fall back to chsql's own defaultDeltaPrefixLookback instead of
 // the operator's configured CERBERUS_DELTA_PREFIX_LOOKBACK — still bounded,
 // but not necessarily the SAME bound route A used for the un-sliced plan.
-func routeBExecCtx(ctx context.Context, langName, responseShape string, decision *solver.Decision, deltaPrefixLookback time.Duration) context.Context {
+func routeBExecCtx(
+	ctx context.Context, langName, responseShape string, decision *solver.Decision,
+	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
+) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
 	ctx = chsql.WithDeltaPrefixLookback(ctx, deltaPrefixLookback)
+	// Threaded across to route B for the same byte-identical-to-route-A
+	// reason DeltaPrefixLookback is above — see Engine.DeltaPrefixReadEnabled's
+	// doc and emitForHead's matching call.
+	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
 	return ctx
 }
 
@@ -1429,7 +1477,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -1737,7 +1785,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
@@ -1923,7 +1971,7 @@ func (e *Engine) executeRoutedCursor(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {

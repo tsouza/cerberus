@@ -113,6 +113,20 @@ func TestRangeWindow_Walk_VisitsInput(t *testing.T) {
 	assertSentinels(t, visitScans(root), []string{"rw_input"})
 }
 
+func TestRangeWindow_Walk_VisitsInputAndDeltaPrefixAggregateInput(t *testing.T) {
+	t.Parallel()
+	root := &chplan.RangeWindow{
+		Input:                     &chplan.Scan{Table: "rw_input"},
+		DeltaPrefixAggregateInput: &chplan.Scan{Table: "rw_delta_prefix"},
+		Func:                      "rate",
+		TimestampColumn:           "TimeUnix",
+		ValueColumn:               "Value",
+	}
+	// Pre-order: Input first, DeltaPrefixAggregateInput second — same
+	// left-to-right convention as MetricsCompare's Inner/RootLookup pair.
+	assertSentinels(t, visitScans(root), []string{"rw_input", "rw_delta_prefix"})
+}
+
 func TestLimit_Walk_VisitsInput(t *testing.T) {
 	t.Parallel()
 	root := &chplan.Limit{Input: &chplan.Scan{Table: "limit_input"}, Count: 10}
@@ -391,6 +405,17 @@ func TestChildren_RangeWindowReturnsExactlyInput(t *testing.T) {
 	kids := r.Children()
 	if len(kids) != 1 || kids[0] != input {
 		t.Errorf("RangeWindow.Children() should return [Input], got %v", kids)
+	}
+}
+
+func TestChildren_RangeWindowReturnsBothWhenDeltaPrefixAggregateInputSet(t *testing.T) {
+	t.Parallel()
+	input := &chplan.Scan{Table: "t"}
+	deltaPrefix := &chplan.Scan{Table: "otel_metrics_sum_delta_prefix"}
+	r := &chplan.RangeWindow{Input: input, DeltaPrefixAggregateInput: deltaPrefix, Func: "rate"}
+	kids := r.Children()
+	if len(kids) != 2 || kids[0] != input || kids[1] != deltaPrefix {
+		t.Errorf("RangeWindow.Children() should return [Input, DeltaPrefixAggregateInput], got %v", kids)
 	}
 }
 

@@ -724,6 +724,10 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		// heads and is not wired onto their engines — see
 		// engine.Engine.DeltaPrefixLookback's doc.
 		DeltaPrefixLookback: cfg.DeltaPrefixLookback,
+		// Same PromQL-only inertness reasoning as DeltaPrefixLookback above
+		// — see engine.Engine.DeltaPrefixReadEnabled's doc for why this is
+		// a separate, later opt-in from schema.SchemaProvisioning.DeltaPrefixEnabled.
+		DeltaPrefixReadEnabled: cfg.DeltaPrefixReadEnabled,
 	}
 	h.Limiter = limiter
 	h.Version = Version

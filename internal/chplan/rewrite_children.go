@@ -126,12 +126,6 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
-	case *RangeWindow:
-		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
-			cp := *v
-			cp.Input = in
-			return &cp
-		})
 	case *RangeWindowGridNative:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v
@@ -290,7 +284,8 @@ func rewriteBinaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, h
 
 // rewriteIrregularNode handles the nodes whose child shape doesn't fit the
 // unary / binary helpers: TopK (Input + optional KExpr), UnionAll
-// (N inputs), and MetricsCompare (Inner + optional RootLookup).
+// (N inputs), RangeWindow (Input + optional DeltaPrefixAggregateInput), and
+// MetricsCompare (Inner + optional RootLookup).
 func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, handled bool) {
 	switch v := n.(type) {
 	case *TopK:
@@ -309,6 +304,29 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 		}
 		if kCh {
 			cp.KExpr = newKExpr
+		}
+		return &cp, true, true
+	case *RangeWindow:
+		// Input is the always-present windowed relation;
+		// DeltaPrefixAggregateInput is the optional DELTA-prefix aggregate
+		// side-scan (cerberus issue #2389) — same shape as MetricsCompare's
+		// Inner/optional-RootLookup pair below, so recurse into both when
+		// present rather than treating the side-scan as an opaque leaf.
+		newInput, inCh := fn(v.Input)
+		var newDeltaPrefixInput Node
+		deltaCh := false
+		if v.DeltaPrefixAggregateInput != nil {
+			newDeltaPrefixInput, deltaCh = fn(v.DeltaPrefixAggregateInput)
+		}
+		if !inCh && !deltaCh {
+			return v, false, true
+		}
+		cp := *v
+		if inCh {
+			cp.Input = newInput
+		}
+		if deltaCh {
+			cp.DeltaPrefixAggregateInput = newDeltaPrefixInput
 		}
 		return &cp, true, true
 	case *UnionAll:

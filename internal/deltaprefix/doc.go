@@ -39,9 +39,18 @@
 // history. It does NOT validate that the aggregate table's raw-tuple rows
 // join byte-identically against cerberus's read-time computed series key
 // (the `mapSort(mapConcat(mapUpdate(...)))` shaping tower in
-// internal/promql) — that is the read-side emitter change's own concern
-// (cerberus issue #2389's task 5, tracked separately and NOT implemented by
-// this package), which needs the shaping tower this package deliberately
-// does not import (internal/chsql must not depend on internal/promql; see
-// CLAUDE.md's architecture decision tree).
+// internal/promql) — this package deliberately does not import that tower
+// (internal/chsql must not depend on internal/promql; see CLAUDE.md's
+// architecture decision tree), so it can only ever prove completeness, not
+// identity alignment.
+//
+// The read-side emitter change that DOES consume the alignment property —
+// internal/promql/lower.go's augmentDeltaPrefixAggregateAttributes (which
+// reuses the SAME shaping tower for both the primary selector arm and the
+// aggregate table's arm, rather than re-deriving a second join key) plus
+// internal/chsql's deltaPrefixAggregateSource — has since shipped, gated
+// behind the separate config.Config.DeltaPrefixReadEnabled /
+// CERBERUS_DELTA_PREFIX_READ_ENABLED flag this package's `--before` cutover
+// still has to precede: a clean Verify pass remains the required
+// precondition before an operator sets that flag, exactly as before.
 package deltaprefix
