@@ -215,6 +215,12 @@ func cloneCompositeNode(n Node) Node {
 		c.Match.Labels = cloneStrings(v.Match.Labels)
 		c.Include = cloneStrings(v.Include)
 		return &c
+	case *MixedVectorJoin:
+		c := *v
+		c.Left = CloneNode(v.Left)
+		c.Right = CloneNode(v.Right)
+		c.Match.Labels = cloneStrings(v.Match.Labels)
+		return &c
 	case *VectorSetOp:
 		c := *v
 		c.Left = CloneNode(v.Left)

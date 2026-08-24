@@ -347,6 +347,26 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerComparisonOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, returnBool, s, ctx)
 	}
+	// Vector-vector `+`/`-`/`*`/`/` where BOTH operands are themselves a
+	// mixed `or` — neither side a scalar literal (cerberus issue #2449,
+	// the seventh wrapper family and the piece every prior pass on this
+	// issue named as its own remaining scope: the discriminator-keyed
+	// `chplan.Case`/CH `if()` mechanism the issue itself asked for).
+	// Checked here for the identical reason every sibling recognizer
+	// above is: a mixed `or` operand never resolves as purely
+	// histogram-valued, so nothing above this line can have consumed the
+	// shape yet, and this recognizer's own scalar-literal exclusion keeps
+	// it disjoint from [arithmeticOverMixedExpHistogramSetOp] /
+	// [mulOrDivScaleOverMixedExpHistogramSetOp] just above (each requires
+	// exactly one side to fold to a scalar; this one requires neither
+	// side to). histogram_native_mixed_or_vector_arithmetic.go has the
+	// composition's own doc comment for the four-combination semantics
+	// decision and what remains out of scope (comparisons,
+	// group_left()/group_right(), and the histogram-histogram ADD/SUB
+	// merge).
+	if lhs, rhs, op, match, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}

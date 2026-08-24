@@ -260,6 +260,20 @@ func RowShapeOf(n Node) RowShape {
 		// it in an explicit-column Project first, exactly as
 		// HistogramVectorJoin's callers do.
 		return SampleRowShape
+	case *MixedVectorJoin:
+		// Its own SELECT publishes `_mvj_L_*`/`_mvj_R_*`-prefixed aliases
+		// (internal/chsql/mixed_vector_join.go), not any of the fixed
+		// shapes above — like HistogramVectorJoin/HistogramFloatVectorJoin
+		// above, SampleRowShape here is a documentation default rather
+		// than a claim about live columns: no generic forwarder is ever
+		// placed directly over it. internal/promql's
+		// histogram_native_mixed_or_vector_arithmetic.go always wraps it
+		// in an explicit-column Filter+Project before any consumer sees
+		// it; THAT Project is what RowShapeOf's own *Project case above
+		// classifies as MixedRowShape (MUL/DIV) or leaves as the plain
+		// canonical SampleRowShape (ADD/SUB, whose kept rows are always
+		// float-valued — see that file's header for why).
+		return SampleRowShape
 	case *RangeWindowStaleResample:
 		// Spelled out because it is the third `RangeWindow*` node and the
 		// one most likely to be swept in here by analogy. Its emitter

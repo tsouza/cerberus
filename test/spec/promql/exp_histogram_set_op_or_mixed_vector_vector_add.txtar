@@ -1,0 +1,299 @@
+-- query.promql --
+(histogram_quantile(0.5, mvv_add_a_base_exp_hist) or mvv_add_a_hist_exp_hist) + (histogram_quantile(0.5, mvv_add_b_base_exp_hist) or mvv_add_b_hist_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `(<A quantile> or <A hist>) + (<B quantile> or <B hist>)` — cerberus
+-- issue #2449's seventh wrapper family, vector-vector arithmetic over TWO
+-- independently mixed float/histogram `or` operands (neither side a
+-- scalar literal), after `sum`/`avg` (#2346), `label_replace`/
+-- `label_join`, single-arg instant math functions, drop-family scalar
+-- arithmetic, scalar comparisons, and MUL/histogram-left-DIV scalar
+-- scaling (#2449's first through sixth passes). Reference Prometheus's
+-- vectorElemBinop keeps ONLY the float,float combination for `+`/`-`
+-- (histogram_native_mixed_or_vector_arithmetic.go's own header has the
+-- full four-combination accounting):
+--   - series "api": BOTH operands resolve float (the A/B quantile arms)
+--     -> kept, summed.
+--   - series "web": the LHS operand resolves histogram (mvv_add_a_hist),
+--     the RHS resolves float (the B quantile arm) -> DROPPED, not
+--     emitted (this PR's histogram,float `+` gap matches reference
+--     exactly: reference also drops this combination for `+`/`-`).
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('mvv_add_a_base_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvv_add_b_base_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvv_add_a_hist_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0,  0, 0, 0, [6],           0, []),
+    ('mvv_add_b_base_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []);
+-- expected_rows --
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 12.699208415745595]
+]
+-- args --
+[0] string = ""
+[1] string = ""
+[2] int64 = 9
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "mvv_add_a_base_exp_hist"
+[11] string = "mvv.add.a.base.exp.hist"
+[12] string = "mvv.add.a.base.exp/hist"
+[13] string = "mvv.add.a.base.exp_hist"
+[14] string = "mvv.add.a.base/exp/hist"
+[15] string = "mvv.add.a.base/exp_hist"
+[16] string = "mvv.add.a.base_exp.hist"
+[17] string = "mvv.add.a.base_exp_hist"
+[18] string = "mvv.add.a/base/exp/hist"
+[19] string = "mvv.add.a/base/exp_hist"
+[20] string = "mvv.add.a/base_exp_hist"
+[21] string = "mvv.add.a_base.exp.hist"
+[22] string = "mvv.add.a_base.exp_hist"
+[23] string = "mvv.add.a_base_exp.hist"
+[24] string = "mvv.add.a_base_exp_hist"
+[25] string = "mvv.add/a/base/exp/hist"
+[26] string = "mvv.add/a/base/exp_hist"
+[27] string = "mvv.add/a/base_exp_hist"
+[28] string = "mvv.add/a_base_exp_hist"
+[29] string = "mvv.add_a.base.exp.hist"
+[30] string = "mvv.add_a.base.exp_hist"
+[31] string = "mvv.add_a.base_exp.hist"
+[32] string = "mvv.add_a.base_exp_hist"
+[33] string = "mvv.add_a_base.exp.hist"
+[34] string = "mvv.add_a_base.exp_hist"
+[35] string = "mvv.add_a_base_exp.hist"
+[36] string = "mvv.add_a_base_exp_hist"
+[37] string = "mvv/add/a/base/exp/hist"
+[38] string = "mvv/add/a/base/exp_hist"
+[39] string = "mvv/add/a/base_exp_hist"
+[40] string = "mvv/add/a_base_exp_hist"
+[41] string = "mvv/add_a_base_exp_hist"
+[42] string = "mvv_add.a.base.exp.hist"
+[43] string = "mvv_add.a.base.exp_hist"
+[44] string = "mvv_add.a.base_exp.hist"
+[45] string = "mvv_add.a.base_exp_hist"
+[46] string = "mvv_add.a_base.exp.hist"
+[47] string = "mvv_add.a_base.exp_hist"
+[48] string = "mvv_add.a_base_exp.hist"
+[49] string = "mvv_add.a_base_exp_hist"
+[50] string = "mvv_add_a.base.exp.hist"
+[51] string = "mvv_add_a.base.exp_hist"
+[52] string = "mvv_add_a.base_exp.hist"
+[53] string = "mvv_add_a.base_exp_hist"
+[54] string = "mvv_add_a_base.exp.hist"
+[55] string = "mvv_add_a_base.exp_hist"
+[56] string = "mvv_add_a_base_exp.hist"
+[57] string = "2026-01-01 00:00:01.000000000"
+[58] int64 = 9
+[59] string = "2026-01-01 00:00:01.000000000"
+[60] int64 = 9
+[61] int64 = 300000000000
+[62] int64 = 9
+[63] float64 = 0
+[64] string = "service_name"
+[65] string = "service.name"
+[66] string = "service_name"
+[67] string = "service.name"
+[68] string = "service_name"
+[69] string = ""
+[70] string = "service_name"
+[71] string = "mvv_add_a_hist_exp_hist"
+[72] string = "mvv.add.a.hist.exp.hist"
+[73] string = "mvv.add.a.hist.exp/hist"
+[74] string = "mvv.add.a.hist.exp_hist"
+[75] string = "mvv.add.a.hist/exp/hist"
+[76] string = "mvv.add.a.hist/exp_hist"
+[77] string = "mvv.add.a.hist_exp.hist"
+[78] string = "mvv.add.a.hist_exp_hist"
+[79] string = "mvv.add.a/hist/exp/hist"
+[80] string = "mvv.add.a/hist/exp_hist"
+[81] string = "mvv.add.a/hist_exp_hist"
+[82] string = "mvv.add.a_hist.exp.hist"
+[83] string = "mvv.add.a_hist.exp_hist"
+[84] string = "mvv.add.a_hist_exp.hist"
+[85] string = "mvv.add.a_hist_exp_hist"
+[86] string = "mvv.add/a/hist/exp/hist"
+[87] string = "mvv.add/a/hist/exp_hist"
+[88] string = "mvv.add/a/hist_exp_hist"
+[89] string = "mvv.add/a_hist_exp_hist"
+[90] string = "mvv.add_a.hist.exp.hist"
+[91] string = "mvv.add_a.hist.exp_hist"
+[92] string = "mvv.add_a.hist_exp.hist"
+[93] string = "mvv.add_a.hist_exp_hist"
+[94] string = "mvv.add_a_hist.exp.hist"
+[95] string = "mvv.add_a_hist.exp_hist"
+[96] string = "mvv.add_a_hist_exp.hist"
+[97] string = "mvv.add_a_hist_exp_hist"
+[98] string = "mvv/add/a/hist/exp/hist"
+[99] string = "mvv/add/a/hist/exp_hist"
+[100] string = "mvv/add/a/hist_exp_hist"
+[101] string = "mvv/add/a_hist_exp_hist"
+[102] string = "mvv/add_a_hist_exp_hist"
+[103] string = "mvv_add.a.hist.exp.hist"
+[104] string = "mvv_add.a.hist.exp_hist"
+[105] string = "mvv_add.a.hist_exp.hist"
+[106] string = "mvv_add.a.hist_exp_hist"
+[107] string = "mvv_add.a_hist.exp.hist"
+[108] string = "mvv_add.a_hist.exp_hist"
+[109] string = "mvv_add.a_hist_exp.hist"
+[110] string = "mvv_add.a_hist_exp_hist"
+[111] string = "mvv_add_a.hist.exp.hist"
+[112] string = "mvv_add_a.hist.exp_hist"
+[113] string = "mvv_add_a.hist_exp.hist"
+[114] string = "mvv_add_a.hist_exp_hist"
+[115] string = "mvv_add_a_hist.exp.hist"
+[116] string = "mvv_add_a_hist.exp_hist"
+[117] string = "mvv_add_a_hist_exp.hist"
+[118] string = "2026-01-01 00:00:01.000000000"
+[119] int64 = 9
+[120] string = "2026-01-01 00:00:01.000000000"
+[121] int64 = 9
+[122] int64 = 300000000000
+[123] string = ""
+[124] int64 = 9
+[125] string = "service_name"
+[126] string = "service.name"
+[127] string = "service_name"
+[128] string = "service.name"
+[129] string = "service_name"
+[130] string = ""
+[131] string = "service_name"
+[132] string = "mvv_add_b_base_exp_hist"
+[133] string = "mvv.add.b.base.exp.hist"
+[134] string = "mvv.add.b.base.exp/hist"
+[135] string = "mvv.add.b.base.exp_hist"
+[136] string = "mvv.add.b.base/exp/hist"
+[137] string = "mvv.add.b.base/exp_hist"
+[138] string = "mvv.add.b.base_exp.hist"
+[139] string = "mvv.add.b.base_exp_hist"
+[140] string = "mvv.add.b/base/exp/hist"
+[141] string = "mvv.add.b/base/exp_hist"
+[142] string = "mvv.add.b/base_exp_hist"
+[143] string = "mvv.add.b_base.exp.hist"
+[144] string = "mvv.add.b_base.exp_hist"
+[145] string = "mvv.add.b_base_exp.hist"
+[146] string = "mvv.add.b_base_exp_hist"
+[147] string = "mvv.add/b/base/exp/hist"
+[148] string = "mvv.add/b/base/exp_hist"
+[149] string = "mvv.add/b/base_exp_hist"
+[150] string = "mvv.add/b_base_exp_hist"
+[151] string = "mvv.add_b.base.exp.hist"
+[152] string = "mvv.add_b.base.exp_hist"
+[153] string = "mvv.add_b.base_exp.hist"
+[154] string = "mvv.add_b.base_exp_hist"
+[155] string = "mvv.add_b_base.exp.hist"
+[156] string = "mvv.add_b_base.exp_hist"
+[157] string = "mvv.add_b_base_exp.hist"
+[158] string = "mvv.add_b_base_exp_hist"
+[159] string = "mvv/add/b/base/exp/hist"
+[160] string = "mvv/add/b/base/exp_hist"
+[161] string = "mvv/add/b/base_exp_hist"
+[162] string = "mvv/add/b_base_exp_hist"
+[163] string = "mvv/add_b_base_exp_hist"
+[164] string = "mvv_add.b.base.exp.hist"
+[165] string = "mvv_add.b.base.exp_hist"
+[166] string = "mvv_add.b.base_exp.hist"
+[167] string = "mvv_add.b.base_exp_hist"
+[168] string = "mvv_add.b_base.exp.hist"
+[169] string = "mvv_add.b_base.exp_hist"
+[170] string = "mvv_add.b_base_exp.hist"
+[171] string = "mvv_add.b_base_exp_hist"
+[172] string = "mvv_add_b.base.exp.hist"
+[173] string = "mvv_add_b.base.exp_hist"
+[174] string = "mvv_add_b.base_exp.hist"
+[175] string = "mvv_add_b.base_exp_hist"
+[176] string = "mvv_add_b_base.exp.hist"
+[177] string = "mvv_add_b_base.exp_hist"
+[178] string = "mvv_add_b_base_exp.hist"
+[179] string = "2026-01-01 00:00:01.000000000"
+[180] int64 = 9
+[181] string = "2026-01-01 00:00:01.000000000"
+[182] int64 = 9
+[183] int64 = 300000000000
+[184] int64 = 9
+[185] float64 = 0
+[186] string = "service_name"
+[187] string = "service.name"
+[188] string = "service_name"
+[189] string = "service.name"
+[190] string = "service_name"
+[191] string = ""
+[192] string = "service_name"
+[193] string = "mvv_add_b_hist_exp_hist"
+[194] string = "mvv.add.b.hist.exp.hist"
+[195] string = "mvv.add.b.hist.exp/hist"
+[196] string = "mvv.add.b.hist.exp_hist"
+[197] string = "mvv.add.b.hist/exp/hist"
+[198] string = "mvv.add.b.hist/exp_hist"
+[199] string = "mvv.add.b.hist_exp.hist"
+[200] string = "mvv.add.b.hist_exp_hist"
+[201] string = "mvv.add.b/hist/exp/hist"
+[202] string = "mvv.add.b/hist/exp_hist"
+[203] string = "mvv.add.b/hist_exp_hist"
+[204] string = "mvv.add.b_hist.exp.hist"
+[205] string = "mvv.add.b_hist.exp_hist"
+[206] string = "mvv.add.b_hist_exp.hist"
+[207] string = "mvv.add.b_hist_exp_hist"
+[208] string = "mvv.add/b/hist/exp/hist"
+[209] string = "mvv.add/b/hist/exp_hist"
+[210] string = "mvv.add/b/hist_exp_hist"
+[211] string = "mvv.add/b_hist_exp_hist"
+[212] string = "mvv.add_b.hist.exp.hist"
+[213] string = "mvv.add_b.hist.exp_hist"
+[214] string = "mvv.add_b.hist_exp.hist"
+[215] string = "mvv.add_b.hist_exp_hist"
+[216] string = "mvv.add_b_hist.exp.hist"
+[217] string = "mvv.add_b_hist.exp_hist"
+[218] string = "mvv.add_b_hist_exp.hist"
+[219] string = "mvv.add_b_hist_exp_hist"
+[220] string = "mvv/add/b/hist/exp/hist"
+[221] string = "mvv/add/b/hist/exp_hist"
+[222] string = "mvv/add/b/hist_exp_hist"
+[223] string = "mvv/add/b_hist_exp_hist"
+[224] string = "mvv/add_b_hist_exp_hist"
+[225] string = "mvv_add.b.hist.exp.hist"
+[226] string = "mvv_add.b.hist.exp_hist"
+[227] string = "mvv_add.b.hist_exp.hist"
+[228] string = "mvv_add.b.hist_exp_hist"
+[229] string = "mvv_add.b_hist.exp.hist"
+[230] string = "mvv_add.b_hist.exp_hist"
+[231] string = "mvv_add.b_hist_exp.hist"
+[232] string = "mvv_add.b_hist_exp_hist"
+[233] string = "mvv_add_b.hist.exp.hist"
+[234] string = "mvv_add_b.hist.exp_hist"
+[235] string = "mvv_add_b.hist_exp.hist"
+[236] string = "mvv_add_b.hist_exp_hist"
+[237] string = "mvv_add_b_hist.exp.hist"
+[238] string = "mvv_add_b_hist.exp_hist"
+[239] string = "mvv_add_b_hist_exp.hist"
+[240] string = "2026-01-01 00:00:01.000000000"
+[241] int64 = 9
+[242] string = "2026-01-01 00:00:01.000000000"
+[243] int64 = 9
+[244] int64 = 300000000000
+[245] int64 = 0
+[246] int64 = 0
+-- chplan --
+Project ["" AS MetricName, _mvj_L_Attributes AS Attributes, _mvj_L_TimeUnix AS TimeUnix, (_mvj_L_Value + _mvj_R_Value) AS Value]
+  Filter predicate=((_mvj_L__setop_is_histogram = 0) AND (_mvj_R__setop_is_histogram = 0))
+    <unknown:*chplan.MixedVectorJoin>
+-- sql --
+SELECT ? AS `MetricName`, `_mvj_L_Attributes` AS `Attributes`, `_mvj_L_TimeUnix` AS `TimeUnix`, (`_mvj_L_Value` + `_mvj_R_Value`) AS `Value` FROM (SELECT * FROM (SELECT L.`MetricName` AS `_mvj_L_MetricName`, R.`MetricName` AS `_mvj_R_MetricName`, L.`Attributes` AS `_mvj_L_Attributes`, R.`Attributes` AS `_mvj_R_Attributes`, L.`TimeUnix` AS `_mvj_L_TimeUnix`, R.`TimeUnix` AS `_mvj_R_TimeUnix`, L.`Value` AS `_mvj_L_Value`, R.`Value` AS `_mvj_R_Value`, L.`HistogramCount` AS `_mvj_L_HistogramCount`, R.`HistogramCount` AS `_mvj_R_HistogramCount`, L.`HistogramSum` AS `_mvj_L_HistogramSum`, R.`HistogramSum` AS `_mvj_R_HistogramSum`, L.`HistogramScale` AS `_mvj_L_HistogramScale`, R.`HistogramScale` AS `_mvj_R_HistogramScale`, L.`HistogramZeroThreshold` AS `_mvj_L_HistogramZeroThreshold`, R.`HistogramZeroThreshold` AS `_mvj_R_HistogramZeroThreshold`, L.`HistogramZeroCount` AS `_mvj_L_HistogramZeroCount`, R.`HistogramZeroCount` AS `_mvj_R_HistogramZeroCount`, L.`HistogramPositiveOffset` AS `_mvj_L_HistogramPositiveOffset`, R.`HistogramPositiveOffset` AS `_mvj_R_HistogramPositiveOffset`, L.`HistogramPositiveBucketCounts` AS `_mvj_L_HistogramPositiveBucketCounts`, R.`HistogramPositiveBucketCounts` AS `_mvj_R_HistogramPositiveBucketCounts`, L.`HistogramNegativeOffset` AS `_mvj_L_HistogramNegativeOffset`, R.`HistogramNegativeOffset` AS `_mvj_R_HistogramNegativeOffset`, L.`HistogramNegativeBucketCounts` AS `_mvj_L_HistogramNegativeBucketCounts`, R.`HistogramNegativeBucketCounts` AS `_mvj_R_HistogramNegativeBucketCounts`, L.`_setop_is_histogram` AS `_mvj_L__setop_is_histogram`, R.`_setop_is_histogram` AS `_mvj_R__setop_is_histogram` FROM (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value`, `_join_HistogramCount` AS `HistogramCount`, `_join_HistogramSum` AS `HistogramSum`, `_join_HistogramScale` AS `HistogramScale`, `_join_HistogramZeroThreshold` AS `HistogramZeroThreshold`, `_join_HistogramZeroCount` AS `HistogramZeroCount`, `_join_HistogramPositiveOffset` AS `HistogramPositiveOffset`, `_join_HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `_join_HistogramNegativeOffset` AS `HistogramNegativeOffset`, `_join_HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts`, `_join__setop_is_histogram` AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, `TimeUnix` AS `_join_TimeUnix`, `Value` AS `_join_Value`, `HistogramCount` AS `_join_HistogramCount`, `HistogramSum` AS `_join_HistogramSum`, `HistogramScale` AS `_join_HistogramScale`, `HistogramZeroThreshold` AS `_join_HistogramZeroThreshold`, `HistogramZeroCount` AS `_join_HistogramZeroCount`, `HistogramPositiveOffset` AS `_join_HistogramPositiveOffset`, `HistogramPositiveBucketCounts` AS `_join_HistogramPositiveBucketCounts`, `HistogramNegativeOffset` AS `_join_HistogramNegativeOffset`, `HistogramNegativeBucketCounts` AS `_join_HistogramNegativeBucketCounts`, `_setop_is_histogram` AS `_join__setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`)) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, toFloat64(0) AS `HistogramCount`, toFloat64(0) AS `HistogramSum`, toInt32(0) AS `HistogramScale`, toFloat64(0) AS `HistogramZeroThreshold`, toFloat64(0) AS `HistogramZeroCount`, toInt32(0) AS `HistogramPositiveOffset`, emptyArrayFloat64() AS `HistogramPositiveBucketCounts`, toInt32(0) AS `HistogramNegativeOffset`, emptyArrayFloat64() AS `HistogramNegativeBucketCounts`, 0 AS `_setop_is_histogram` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`Count` = 0, nan, if(0.5 = 0, if(`_cerb_hq_first_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_first_populated`) + 1), if(`_cerb_hq_first_populated` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_first_populated` - length(`NegativeBucketCounts`) - 2)))), if(0.5 = 1, if(`_cerb_hq_last_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_last_populated`)), if(`_cerb_hq_last_populated` = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_last_populated` - length(`NegativeBucketCounts`) - 1)))), if(`_cerb_hq_idx` = 0, if(isNaN(`Sum`), nan, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) = 0 AND `ZeroCount` = 0, 0., if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2))), if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) - length(`NegativeBucketCounts`) - 1)))))), if(`_cerb_hq_value_idx` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_value_idx`) + 1 - (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]), if(`_cerb_hq_value_idx` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.) + (if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.) - if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)) * (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`], pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_value_idx` - length(`NegativeBucketCounts`) - 2) + (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`, arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated` FROM (SELECT *, if(isNaN(`Sum`), if(length(`PositiveBucketCounts`) > 0, length(`NegativeBucketCounts`) + 1 + length(`PositiveBucketCounts`), if(`ZeroCount` > 0, length(`NegativeBucketCounts`) + 1, length(`NegativeBucketCounts`))), `_cerb_hq_idx`) AS `_cerb_hq_value_idx` FROM (SELECT *, toFloat64(least(if(isNaN(`Sum`), `_cerb_hq_cum`[`_cerb_hq_idx`], `_cerb_hq_revcum`[`_cerb_hq_idx`]), `Count`)) AS `_cerb_hq_count` FROM (SELECT *, if(isNaN(`Sum`), arrayFirstIndex(c -> c >= (0.5 * `Count`), `_cerb_hq_cum`), arrayLastIndex(c -> c >= ((1 - 0.5) * `Count`), `_cerb_hq_revcum`)) AS `_cerb_hq_idx` FROM (SELECT *, arrayCumSum(`_cerb_hq_buckets`) AS `_cerb_hq_cum`, arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`))) AS `_cerb_hq_revcum` FROM (SELECT *, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`) AS `_cerb_hq_buckets` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)))))))))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, 1 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0))) AS L INNER JOIN (SELECT `_join_MetricName` AS `MetricName`, `_join_Attributes` AS `Attributes`, `_join_TimeUnix` AS `TimeUnix`, `_join_Value` AS `Value`, `_join_HistogramCount` AS `HistogramCount`, `_join_HistogramSum` AS `HistogramSum`, `_join_HistogramScale` AS `HistogramScale`, `_join_HistogramZeroThreshold` AS `HistogramZeroThreshold`, `_join_HistogramZeroCount` AS `HistogramZeroCount`, `_join_HistogramPositiveOffset` AS `HistogramPositiveOffset`, `_join_HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, `_join_HistogramNegativeOffset` AS `HistogramNegativeOffset`, `_join_HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts`, `_join__setop_is_histogram` AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `_join_MetricName`, `Attributes` AS `_join_Attributes`, `TimeUnix` AS `_join_TimeUnix`, `Value` AS `_join_Value`, `HistogramCount` AS `_join_HistogramCount`, `HistogramSum` AS `_join_HistogramSum`, `HistogramScale` AS `_join_HistogramScale`, `HistogramZeroThreshold` AS `_join_HistogramZeroThreshold`, `HistogramZeroCount` AS `_join_HistogramZeroCount`, `HistogramPositiveOffset` AS `_join_HistogramPositiveOffset`, `HistogramPositiveBucketCounts` AS `_join_HistogramPositiveBucketCounts`, `HistogramNegativeOffset` AS `_join_HistogramNegativeOffset`, `HistogramNegativeBucketCounts` AS `_join_HistogramNegativeBucketCounts`, `_setop_is_histogram` AS `_join__setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`)) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, toFloat64(0) AS `HistogramCount`, toFloat64(0) AS `HistogramSum`, toInt32(0) AS `HistogramScale`, toFloat64(0) AS `HistogramZeroThreshold`, toFloat64(0) AS `HistogramZeroCount`, toInt32(0) AS `HistogramPositiveOffset`, emptyArrayFloat64() AS `HistogramPositiveBucketCounts`, toInt32(0) AS `HistogramNegativeOffset`, emptyArrayFloat64() AS `HistogramNegativeBucketCounts`, 0 AS `_setop_is_histogram` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`Count` = 0, nan, if(0.5 = 0, if(`_cerb_hq_first_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_first_populated`) + 1), if(`_cerb_hq_first_populated` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_first_populated` - length(`NegativeBucketCounts`) - 2)))), if(0.5 = 1, if(`_cerb_hq_last_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_last_populated`)), if(`_cerb_hq_last_populated` = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_last_populated` - length(`NegativeBucketCounts`) - 1)))), if(`_cerb_hq_idx` = 0, if(isNaN(`Sum`), nan, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) = 0 AND `ZeroCount` = 0, 0., if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2))), if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) - length(`NegativeBucketCounts`) - 1)))))), if(`_cerb_hq_value_idx` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_value_idx`) + 1 - (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]), if(`_cerb_hq_value_idx` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.) + (if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.) - if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)) * (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`], pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_value_idx` - length(`NegativeBucketCounts`) - 2) + (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`, arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated` FROM (SELECT *, if(isNaN(`Sum`), if(length(`PositiveBucketCounts`) > 0, length(`NegativeBucketCounts`) + 1 + length(`PositiveBucketCounts`), if(`ZeroCount` > 0, length(`NegativeBucketCounts`) + 1, length(`NegativeBucketCounts`))), `_cerb_hq_idx`) AS `_cerb_hq_value_idx` FROM (SELECT *, toFloat64(least(if(isNaN(`Sum`), `_cerb_hq_cum`[`_cerb_hq_idx`], `_cerb_hq_revcum`[`_cerb_hq_idx`]), `Count`)) AS `_cerb_hq_count` FROM (SELECT *, if(isNaN(`Sum`), arrayFirstIndex(c -> c >= (0.5 * `Count`), `_cerb_hq_cum`), arrayLastIndex(c -> c >= ((1 - 0.5) * `Count`), `_cerb_hq_revcum`)) AS `_cerb_hq_idx` FROM (SELECT *, arrayCumSum(`_cerb_hq_buckets`) AS `_cerb_hq_cum`, arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`))) AS `_cerb_hq_revcum` FROM (SELECT *, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`) AS `_cerb_hq_buckets` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)))))))))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, 1 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0))) AS R ON mapSort(L.`Attributes`) = mapSort(R.`Attributes`)) WHERE ((`_mvj_L__setop_is_histogram` = ?) AND (`_mvj_R__setop_is_histogram` = ?)))
