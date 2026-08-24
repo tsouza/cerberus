@@ -1,0 +1,33 @@
+# limitk() over a bare exp-histogram selector (cerberus issue #2518).
+# Reference Prometheus's LIMITK arm of aggregationK (promql/engine.go)
+# builds every Sample — float or histogram — from ev.nextValues and
+# pushes it onto the group heap unconditionally; unlike TOPK/BOTTOMK it
+# never branches on the sample's H field, so a histogram sample survives
+# limitk unchanged, same as any float sample would. Before this fix
+# cerberus hard-rejected this shape at expHistogramSelectorRouting
+# instead of lowering it at all.
+
+-- query.promql --
+limitk(3, demo_latency_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]

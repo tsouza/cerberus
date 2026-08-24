@@ -1,0 +1,34 @@
+# limit_ratio() over a bare exp-histogram selector (cerberus issue
+# #2518). Reference Prometheus's LIMIT_RATIO arm of aggregationK
+# (promql/engine.go) builds every Sample — float or histogram — from
+# ev.nextValues and hands it to the hash-based ratio sampler
+# unconditionally; the sampler's keep/drop decision is a per-series label
+# hash, never a check on the sample's H field, so a histogram sample the
+# sampler keeps survives limit_ratio unchanged, same as any float sample
+# would. Before this fix cerberus hard-rejected this shape at
+# expHistogramSelectorRouting instead of lowering it at all.
+
+-- query.promql --
+limit_ratio(0.5, demo_latency_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]
