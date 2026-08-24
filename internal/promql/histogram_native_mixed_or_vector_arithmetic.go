@@ -69,14 +69,17 @@ import (
 // `*`/`/` dropping histogram,histogram matches reference exactly — no gap
 // there.
 //
-// Comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`, with/without `bool`) are
-// ALSO out of this file's scope, for the same reason
+// Comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`, with/without `bool`) were
+// ALSO out of this file's scope, for the reason
 // histogram_native_mixed_or_arithmetic.go's header gives for the scalar
-// case: reference's `bool`-modifier semantics for a vector-vector
-// comparison keep EVERY matched pair (emitting 1.0/0.0) regardless of
-// type compatibility — a structurally different shape from this file's
-// "drop the incompatible pair outright" fold, and its own separately-
-// scoped follow-on, tracked under #2449.
+// case: a comparison lowers through a structurally different Filter /
+// bool-Project shape than this file's single arithmetic Project. They are
+// now answered by histogram_native_mixed_or_vector_comparison.go — whose
+// own header corrects an assumption this paragraph used to make (that
+// reference's `bool` modifier keeps every matched pair regardless of type
+// compatibility; it does not — an incompatible-type pair is dropped
+// outright, `bool` or not, because reference's `err` check runs before
+// the `bool`-modifier override).
 //
 // group_left()/group_right() (any Card other than CardOneToOne) is
 // likewise out of scope: broadcasting the "many" side while ALSO
