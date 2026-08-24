@@ -84,6 +84,23 @@ const InfoConflictingLabelMessage = "conflicting label"
 // The output Attributes is `mapConcat(infoExtras, base.Attributes)` so the
 // base side wins on any conflicting key — matching the reference rule that
 // skips info labels already present on the base series.
+//
+// Histogram marks Input as histogram-VALUED — a base vector that is a bare
+// exponential-histogram selector, `sum()`/`avg()` over one, or any other
+// shape [RowShapeOf] reports [HistogramRowShape] for (cerberus issue
+// #2509). Reference Prometheus's `info()` never drops a histogram sample:
+// evalInfo's addToSeries step copies both `sample.F` and `sample.H`
+// unchanged, and the float-only check applies only to the INFO metric's
+// own samples, never to the base vector being annotated (promql/info.go).
+// Mirrors [VectorSetOp.Histogram] / [NaryVectorSetOp.Histogram]: the join
+// still reads only [ValueColumn] off Input for its own SELECT (a
+// placeholder — see [HistogramProjection]'s doc comment — never the real
+// answer), but the emitter additionally forwards Input's nine
+// Histogram*Column outputs alongside the canonical quartet, so a
+// histogram-valued base joins its info labels without losing its bucket
+// structure. Info itself is never histogram-shaped — an info metric like
+// `target_info` is conventionally a plain Gauge carrying only data
+// labels — so only Input's side needs the widened column set.
 type InfoJoin struct {
 	Input Node
 	Info  Node
@@ -100,6 +117,8 @@ type InfoJoin struct {
 	// sample back into a single output row with the union of their data
 	// labels.
 	MergeInfoMetrics bool
+	// Histogram marks Input as histogram-valued — see the type doc above.
+	Histogram bool
 
 	MetricNameColumn string
 	AttributesColumn string
@@ -121,6 +140,9 @@ func (j *InfoJoin) Equal(other Node) bool {
 		return false
 	}
 	if j.DropUnmatched != o.DropUnmatched || j.MergeInfoMetrics != o.MergeInfoMetrics {
+		return false
+	}
+	if j.Histogram != o.Histogram {
 		return false
 	}
 	if j.MetricNameColumn != o.MetricNameColumn ||
