@@ -36,7 +36,10 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
     ('mvv_mul_a_hist_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0,  0, 0, 0, [6],           0, []),
     ('mvv_mul_b_base_exp_hist', map('service', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []);
 -- expected_rows --
-[]
+[
+  ["", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 31.748021039363987, 63.496042078727974, 0, [95.24406311809196], [], 0, 0, 0, 0, 1],
+  ["", {"service": "web"}, "2026-01-01T00:00:01Z", 0, 12.699208415745595, 25.39841683149119, 0, [38.097625247236785], [], 0, 0, 0, 0, 1]
+]
 -- args --
 [0] string = ""
 [1] int64 = 1
