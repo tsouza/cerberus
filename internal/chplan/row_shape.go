@@ -233,6 +233,22 @@ func RowShapeOf(n Node) RowShape {
 		if v.Histogram {
 			return HistogramRowShape
 		}
+	case *TopK:
+		// limitk over a histogram-valued input (cerberus issue #2518):
+		// Histogram is only ever set alongside an empty Columns list (see
+		// [TopK]'s doc comment), so the outer SELECT is a bare `SELECT *`
+		// forwarding Input's own thirteen-column shape verbatim.
+		if v.Histogram {
+			return HistogramRowShape
+		}
+	case *Filter:
+		// limit_ratio over a histogram-valued input (cerberus issue
+		// #2518): Filter's own SELECT is always a passthrough of every
+		// column Input publishes, so a histogram-valued Input keeps
+		// publishing the full thirteen-column shape through the WHERE.
+		if v.Histogram {
+			return HistogramRowShape
+		}
 	case *HistogramVectorJoin:
 		// Its own SELECT exposes `_hq_L_*`/`_hq_R_*` aliases, not the
 		// canonical four names at all — no generic forwarder is ever
