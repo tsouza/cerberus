@@ -3875,12 +3875,15 @@ func topKDomain(kF float64) (k int64, empty bool, err error) {
 // stable across evaluation steps, so the same series survive at every
 // anchor — matching Prom's per-step-but-deterministic behaviour.
 func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	input, err := lower(a.Expr, s, ctx)
+	input, histogram, err := lowerLimitKInput(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
 	// Instant context: the input relation is the canonical Sample shape,
-	// so `__name__` reads straight off the MetricName column.
+	// so `__name__` reads straight off the MetricName column. A
+	// histogram-valued input publishes that same column under the same
+	// name (see [chplan.HistogramProjection]'s output-column contract),
+	// so the offset expression is unchanged either way.
 	offset := func() chplan.Expr {
 		return ratioOffsetExpr(s, &chplan.ColumnRef{Name: s.MetricNameColumn})
 	}
@@ -3888,7 +3891,35 @@ func lowerLimitRatio(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (c
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.Filter{Input: input, Predicate: pred}, nil
+	return &chplan.Filter{Input: input, Predicate: pred, Histogram: histogram}, nil
+}
+
+// lowerLimitKInput lowers the input vector shared by limitk (both the
+// literal-K and computed-K paths) and limit_ratio, reporting whether the
+// input is histogram-valued.
+//
+// Reference Prometheus's LIMITK and LIMIT_RATIO arms of aggregationK
+// (promql/engine.go) build every Sample — float or histogram — from
+// ev.nextValues and push it onto the group heap / ratio sampler
+// unconditionally: neither arm ever branches on `s.H`, unlike TOPK/
+// BOTTOMK's explicit `s.H != nil` ignore-and-annotate branch just above
+// them in the same function (see histogram_native_drop_aggregation.go,
+// which handles the topk/bottomk drop case). A histogram-valued input to
+// limitk/limit_ratio therefore needs the recognise-and-PRESERVE treatment
+// [lowerSortByLabel]'s fix (cerberus issue #2462) established, not the
+// recognise-and-drop treatment topk/bottomk use — cerberus issue #2518.
+func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if hist, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok {
+		if err != nil {
+			return nil, false, err
+		}
+		return hist, true, nil
+	}
+	input, err := lower(expr, s, ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return input, false, nil
 }
 
 // limitRatioPredicate builds the row predicate implementing
@@ -4233,7 +4264,7 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		return nil, err
 	}
 
-	input, err := lower(a.Expr, s, ctx)
+	input, histogram, err := lowerLimitKInput(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -4245,17 +4276,31 @@ func lowerLimitK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chpla
 		return &chplan.Filter{
 			Input:     input,
 			Predicate: &chplan.LitBool{V: false},
+			Histogram: histogram,
 		}, nil
 	}
 
 	by := topKPartition(a, s, ctx)
+
+	// A histogram-valued input always forces `SELECT *`: the explicit
+	// canonical-quartet column list topKOutputColumns would otherwise
+	// declare drops the nine chplan.Histogram*Column outputs the input
+	// actually publishes (see [chplan.TopK]'s doc comment) —
+	// topKOutputColumns has no way to tell a histogram-valued input
+	// apart from a canonical one on its own, so `histogram` is the
+	// explicit signal that overrides it.
+	columns := topKOutputColumns(input, s)
+	if histogram {
+		columns = nil
+	}
 
 	return &chplan.TopK{
 		Input:     input,
 		K:         k,
 		By:        by,
 		Unordered: true,
-		Columns:   topKOutputColumns(input, s),
+		Columns:   columns,
+		Histogram: histogram,
 	}, nil
 }
 
@@ -4404,16 +4449,37 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 		},
 	}
 
-	input, err := lower(a.Expr, s, ctx)
+	// Only limitk ever preserves a histogram-valued input (see
+	// [lowerLimitKInput]'s doc comment) — topk/bottomk's histogram-only
+	// case is always intercepted upstream, ahead of lowerAggregate, by
+	// droppingAggregationOverExpHistogram (histogram_native_drop_
+	// aggregation.go), so `input` here is never histogram-valued for
+	// them and the plain [lower] dispatch is unchanged for that path.
+	var input chplan.Node
+	var histogram bool
+	if a.Op == parser.LIMITK {
+		input, histogram, err = lowerLimitKInput(a.Expr, s, ctx)
+	} else {
+		input, err = lower(a.Expr, s, ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
 
+	// See lowerLimitK's matching comment: a histogram-valued input always
+	// forces `SELECT *` rather than the explicit canonical-quartet column
+	// list.
+	columns := topKOutputColumns(input, s)
+	if histogram {
+		columns = nil
+	}
+
 	t := &chplan.TopK{
-		Input:   input,
-		KExpr:   kExpr,
-		By:      topKPartition(a, s, ctx),
-		Columns: topKOutputColumns(input, s),
+		Input:     input,
+		KExpr:     kExpr,
+		By:        topKPartition(a, s, ctx),
+		Columns:   columns,
+		Histogram: histogram,
 	}
 	if a.Op == parser.LIMITK {
 		// limitk keeps K arbitrary series per group — no ranking, so the
