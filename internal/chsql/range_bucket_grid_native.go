@@ -288,9 +288,25 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// for why the guard sits HERE, upstream of the expensive native
 	// aggregate, rather than downstream of it the way lwrFanoutBoundedSourceFrag's
 	// usual placement would put it.
-	grids := NewQuery().From(bucketGridGroupCountBoundedSourceFrag(
+	axis1Guarded := bucketGridGroupCountBoundedSourceFrag(
 		rungs.Frag(), keyCols, r.NumAnchors(), maxRangeBucketGridNativeRows, RangeBucketGridNativeBudgetMessage,
-	))
+	)
+	// Density guard (issue #2523) — a SECOND, independent bound layered on
+	// top of axis1Guarded: see range_bucket_grid_native_bound.go's own doc
+	// for why `groups x anchors` alone is not a complete cost model and what
+	// the combined formula this wraps in is calibrated against. inner is
+	// rendered a THIRD time here (Level 0's own unnest already renders it
+	// once, bucketGridGroupCountBoundedSourceFrag's axis1 probe/guard pair
+	// renders rungs — and so inner transitively — twice more) — safe per
+	// this file's own "inner is pre-rendered SQL text, safe for repeat
+	// splices" precedent (subqueryFrag), at the cost of a third copy of the
+	// Input subplan's own SQL text in the emitted query.
+	densityGuarded := bucketGridDensityBoundedSourceFrag(
+		axis1Guarded, rungs.Frag(), keyCols, inner, r.TimestampCol, r.ExplicitBoundsCol,
+		r.Start, r.End, offsetNS, r.Range.Nanoseconds(), r.NumAnchors(),
+		maxRangeBucketGridNativeDensityUnits, RangeBucketGridNativeDensityBudgetMessage,
+	)
+	grids := NewQuery().From(densityGuarded)
 	grids.Select(keyCols...)
 	grids.Select(Col(bucketGridLeAlias))
 	grids.Select(As(Parametric(bucketGridRateFn, gridParams,
