@@ -98,8 +98,8 @@
       "tracking_issue": 2498,
       "evidence": {
         "guard": [
-          "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion && s.IsExpHistogramMetric(bare) && s.ExpHistogramTable != \"\"",
-          "if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange"
+          "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
+          "if s.IsExpHistogramMetric(metricName) \u0026\u0026 !ctx.metadataFullRange"
         ],
         "callers": [
           "resolveSelectorRouting"
@@ -281,6 +281,7 @@
           "past returning if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok",
+          "past returning if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
@@ -311,6 +312,7 @@
           "lowerRoot",
           "mathFnOverMixedExpHistogramSetOp",
           "mixedExpHistogramSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
           "tsOfFirstLastOverExpHistogram",
@@ -332,6 +334,7 @@
           "past returning if agg, b, ok := sumOrAvgOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if call, b, ok := labelCallOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok",
+          "past returning if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if b, op, scalar, scalarOnLeft, ok := arithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if b, op, scalar, scalarOnLeft, returnBool, ok := comparisonOverMixedExpHistogramSetOp(expr, s, ctx); ok",
           "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
@@ -361,6 +364,7 @@
           "lowerRoot",
           "mathFnOverMixedExpHistogramSetOp",
           "mixedExpHistogramSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
           "tsOfFirstLastOverExpHistogram",

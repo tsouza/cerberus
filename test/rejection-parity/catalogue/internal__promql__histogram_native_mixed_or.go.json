@@ -39,6 +39,7 @@
           "lowerComparisonOverMixedExpHistogramSetOp",
           "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerMathFnOverMixedExpHistogramSetOp",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
           "lowerRoot"
         ],
         "cited": [
@@ -51,10 +52,12 @@
           "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerMathFnOverMixedExpHistogramSetOp",
           "lowerMixedExpHistogramSetOp",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
           "lowerRoot",
           "lowerVectorSetOp",
           "mathFnOverMixedExpHistogramSetOp",
-          "mixedExpHistogramSetOp"
+          "mixedExpHistogramSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp"
         ]
       }
     }
