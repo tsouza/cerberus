@@ -172,6 +172,24 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		return isExpHistogramValuedShape(agg.Expr, s, ctx)
 	}
+	// `<exp-hist shape> (*|/) <float-VECTOR shape>` — the vector-scaling
+	// sibling of the compile-time-literal case just below (cerberus issue
+	// #2540), answered by [expHistogramFloatVectorScalingBinop]
+	// (histogram_native_float_vector_scaling_binop.go, cerberus issues
+	// #2339/#2342/#2537). Its result is a *chplan.HistogramProjection
+	// rooted in a *chplan.HistogramFloatVectorJoin — exactly as
+	// histogram-valued as the literal-scalar case below — so an
+	// aggregation wrapping it must see it here too, or every aggregation
+	// recognizer that gates on this predicate falls through to the
+	// generic lowering and hits [expHistogramSelectorRouting]'s catch-all
+	// rejection on the bare histogram operand underneath. Checked BEFORE
+	// the literal-scalar block below: that block's own `return scalar`
+	// hard-returns false the instant its LHS is histogram-valued,
+	// regardless of what the RHS is, which would shadow this shape (a
+	// non-literal, non-scalar RHS) before it is ever reached.
+	if _, _, _, ok := expHistogramFloatVectorScalingBinop(expr, s, ctx); ok {
+		return true
+	}
 	if b, ok := unwrapBinaryExpr(expr); ok {
 		if b.Op == parser.MUL {
 			if _, scalar := tryScalarLiteral(b.LHS); scalar && isExpHistogramValuedShape(b.RHS, s, ctx) {
