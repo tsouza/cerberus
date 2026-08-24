@@ -72,7 +72,6 @@ var derivedShapeVerdicts = map[string]bool{
 	"Project":                  false,
 	"RangeBucketFanout":        false,
 	"RangeBucketGridNative":    false,
-	"RangeBucketWindowSlide":   false,
 	"RangeLWR":                 false,
 	"RangeWindowStaleResample": false,
 	"Scan":                     false,

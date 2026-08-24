@@ -104,19 +104,15 @@ var nativeStrategies = []nativeStrategy{
 	{
 		field:   "ClassicHistogram",
 		section: "experimental_ts_grid_histogram",
-		// Fallback chains through WindowSlideClassicHistogramWindowLowerer,
-		// not straight to the bare fan-out — matching cmd/cerberus's own
-		// nativeRangeLowerers chain exactly (Native{Fallback: WindowSlide{
-		// Fallback: Fanout{}}}), since window-slide is chopt.AlwaysAvailable
-		// and wired unconditionally in production regardless of whether the
-		// (separately gated) native rate ladder is enabled. See
-		// wireNativeStrategies's own seeding for the case where this row's
-		// section is absent entirely.
+		// Fallback chains straight to the bare fan-out — matching
+		// cmd/cerberus's own nativeRangeLowerers chain exactly
+		// (Native{Fallback: Fanout{}}). The window-slide link this row
+		// used to route through was removed by #2511's root-cause
+		// investigation (structural over-read of the base table — see
+		// main.go's nativeRangeLowerers doc).
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
 			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
-				Fallback: promql.WindowSlideClassicHistogramWindowLowerer{
-					Fallback: promql.FanoutClassicHistogramWindowLowerer{},
-				},
+				Fallback: promql.FanoutClassicHistogramWindowLowerer{},
 			}
 		},
 	},
@@ -125,21 +121,10 @@ var nativeStrategies = []nativeStrategy{
 // wireNativeStrategies builds the dispatch table for a fixture from the
 // marker sections it carries. Any field left nil after the loop below is
 // resolved to its concrete fan-out impl at the lowering entry, so a fixture
-// with no marker section lowers exactly as it did before the table existed
-// — EXCEPT ClassicHistogram, seeded below with the window-slide-or-fanout
-// chain unconditionally: window-slide has no chopt feature gate of its own
-// (cmd/cerberus wires it into every deployment, native-rate-ladder on or
-// off), so a fixture that carries no experimental_ts_grid_histogram marker
-// still needs to match production for any query window-slide alone is
-// eligible for. The loop's own experimental_ts_grid_histogram row (when its
-// marker IS present) overwrites this seed with the deeper Native{Fallback:
-// WindowSlide{...}} chain, matching cmd/cerberus's exact composition either
-// way.
+// with no marker section lowers exactly as it did before the table existed.
 func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 	var l promql.RangeLowerers
-	l.ClassicHistogram = promql.WindowSlideClassicHistogramWindowLowerer{
-		Fallback: promql.FanoutClassicHistogramWindowLowerer{},
-	}
+	l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
 	for _, ns := range nativeStrategies {
 		if has(ns.section) {
 			ns.wire(&l, has)

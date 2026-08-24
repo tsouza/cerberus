@@ -9,9 +9,8 @@ import (
 // merge (histogram_quantile.go / histogram_quantile_range.go — the shaping
 // classicBucketMergeShaping builds, consumed by classicBucketUnionBoundsExpr
 // and classicBucketMergedLadderExpr) runs identically regardless of which
-// per-series lowering mechanism feeds it — fan-out, the native rate ladder
-// (#2401), or window-slide (#2493, now gated off for sum_over_time by
-// #2512) — and had NO resource bound of its own. A real, independently
+// per-series lowering mechanism feeds it — fan-out or the native rate ladder
+// (#2401) — and had NO resource bound of its own. A real, independently
 // audited benchmark (real ClickHouse 25.9-alpine via testcontainers,
 // production-shaped data) found this stage is why memory barely moves
 // before/after either shipped per-series fix at realistic query width: the

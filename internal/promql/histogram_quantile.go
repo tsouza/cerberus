@@ -1344,12 +1344,11 @@ const (
 // it into the layout union unfiltered leaks it into the node's own
 // output ExplicitBounds, where emitHistogramQuantile's overflow-bucket
 // clamp (internal/chsql/histogram_quantile.go's highestBound) can return
-// it directly as the answered quantile (#2495). This mirrors the
-// window-slide path's arrayFilter(isFinite, ...) fix
-// (internal/chsql/range_bucket_window_slide.go's
-// windowSlideCanonBySeriesFrag) at the chplan level, where the sealed Fn
-// vocabulary exposes isNaN / isInfinite as separate symbols rather than
-// a combined isFinite one.
+// it directly as the answered quantile (#2495). This mirrors the same
+// isFinite-filtering fix the (since-removed, #2511) window-slide path
+// applied at the chplan level, where the sealed Fn vocabulary exposes
+// isNaN / isInfinite as separate symbols rather than a combined isFinite
+// one.
 func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{
 		&chplan.Binary{

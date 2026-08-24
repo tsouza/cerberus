@@ -4008,10 +4008,10 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 // anchor too (the deltaAnchorLevelsAlias contract every consumer expects),
 // it is UNION ALL'd against a zero-valued "carrier" row per (series,
 // anchor) already present in regroupSource before the cumulative window
-// runs — the same anchor-injection idea range_bucket_window_slide.go's
-// own doc explains was proven exact where an ASOF JOIN was tried and found
-// wrong, applied here to a plain running total instead of a sliding
-// RANGE-frame window.
+// runs — an anchor-injection shape (materialise a sentinel row per anchor
+// so a windowed aggregate can be evaluated AT the anchor's own position,
+// rather than nearest-preceding via a JOIN) applied here to a plain
+// running total instead of a sliding RANGE-frame window.
 //
 // A series absent from the aggregate table entirely (never backfilled)
 // degrades gracefully: the aggregate stream's fan-out simply never

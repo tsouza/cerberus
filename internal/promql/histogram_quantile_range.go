@@ -341,8 +341,8 @@ func lowerHistogramQuantileClassicAggRange(
 	// Bound the cross-series merge before the union/ladder Projects below
 	// ever read it — issue #2408's own audited "Proposed next step": this
 	// stage is the shared, previously-unguarded dominant cost regardless of
-	// which per-series mechanism fed perSeries (fan-out, native rate ladder,
-	// or window-slide). See classic_bucket_merge_bound.go.
+	// which per-series mechanism fed perSeries (fan-out or the native rate
+	// ladder). See classic_bucket_merge_bound.go.
 	guardedCollapse := wrapClassicBucketMergeBudgetGuard(collapse)
 
 	rebuilt, cumulative := shaping.reshape(guardedCollapse, []chplan.Projection{

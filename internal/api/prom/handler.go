@@ -1233,7 +1233,7 @@ func classifyThrowIfGuardError(err error) *apiError {
 	// Same family again: the classic-histogram cross-series bucket merge
 	// (#2408) planted its own throwIf — the shared classicBucketMergeShaping
 	// stage every per-series lowering mechanism (fan-out, native rate
-	// ladder, window-slide) feeds, found by a real audited benchmark to be
+	// ladder) feeds, found by a real audited benchmark to be
 	// the dominant unguarded cost at realistic query width. Same 422
 	// errorType=execution "resource exhausted" shape as the histogram
 	// merge guard above.

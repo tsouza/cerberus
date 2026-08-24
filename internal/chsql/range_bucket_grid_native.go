@@ -59,9 +59,7 @@ const (
 	// bucketGridOwnCountParam are bucketGridRungsFrag's own has-gated
 	// filter-sum params — see that function's doc for why the cumulative
 	// reading at each of a row's own bounds is computed this way rather
-	// than via a positional arrayCumSum. Named distinctly from the
-	// window-slide sibling's rws* params (they never appear in the same
-	// expression tree) but mirror that file's rob/roc/rk naming.
+	// than via a positional arrayCumSum.
 	bucketGridUnionBoundParam = "hub"
 	bucketGridOwnBoundParam   = "hob"
 	bucketGridOwnCountParam   = "hoc"
@@ -260,10 +258,9 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// wrap below renders the WHOLE rungs subquery chain — Level 0 included —
 	// TWICE (its own group-count probe plus the guarded pass-through), and
 	// collectGroupByFrags's Frags bind their args ONCE, at Go call time, on
-	// the promise the returned text is spliced EXACTLY once — see
-	// range_bucket_window_slide.go's identical "GROUP-BY / JOIN key
-	// rendering" note (the review fix that same file's own doc comment
-	// documents) for the fuller rationale.
+	// the promise the returned text is spliced EXACTLY once — that promise
+	// does not hold once a single group-key Frag needs to render into more
+	// than one independent statement, which is exactly this shape.
 	unnest := NewQuery().From(inner)
 	for i, g := range r.GroupBy {
 		unnest.Select(As(bucketGridGroupKeyFrag(g), r.GroupByAliases[i]))
@@ -379,8 +376,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 // bucketGridGroupKeyFrag returns a FRESH Frag on every call — see
 // emitRangeBucketGridNative's own "Level 0" comment for why a single shared
 // Frag (chsql's usual collectGroupByFrags) is unsafe once this node's own
-// resource bound renders Level 0 more than once. Mirrors
-// range_bucket_window_slide.go's identical windowSlideGroupKeyFrag.
+// resource bound renders Level 0 more than once.
 func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
 	return func(b *Builder) { _ = b.Expr(expr) }
 }
@@ -400,9 +396,7 @@ func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
 // THIS ROW's own (bound, count) pairs whose bound is <= the rung being
 // evaluated — internal/promql's classicBucketRowCumulativeExpr applied to
 // the row's own bounds as their own union set — never a positional
-// `arrayCumSum`. This is issue #2492's fix, mirroring the identical fix
-// already applied to the sibling anchor-injection shape's
-// hasGatedExtendedArrayFrag (range_bucket_window_slide.go): a positional
+// `arrayCumSum`. This is issue #2492's fix: a positional
 // cumulative sum assumes ExplicitBounds is strictly ascending, and while
 // OTLP's wire format expects that, it does not enforce it — real,
 // unvalidated OTLP data can and does produce an out-of-order or duplicate
@@ -415,8 +409,7 @@ func bucketGridGroupKeyFrag(expr chplan.Expr) Frag {
 // OTLP-to-Prometheus conversion would emit for such a row are the same
 // label set that `sum by(le)` adds together.
 //
-// No has()-gate is needed here the way the window-slide sibling's
-// per-SERIES canonical bound set needs one: this function evaluates
+// No has()-gate is needed here: this function evaluates
 // entirely over ONE row's own bounds against themselves (the outer map's
 // `hub` ranges over the same `<bounds>` the inner filter-sum reads), so
 // every union-bound position this row contributes to is trivially one it

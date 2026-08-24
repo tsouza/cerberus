@@ -101,17 +101,14 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
 
-	// The anchor-injection window-slide mechanism has no chopt feature gate
-	// (chopt.AlwaysAvailable), so it is wired unconditionally as the link
-	// between the rate-only native ladder and the fan-out fallback — see
-	// main.go's nativeRangeLowerers doc for the full formula.
-	windowSlideOrFanout := promql.ClassicHistogramWindowLowerer(promql.WindowSlideClassicHistogramWindowLowerer{
-		Fallback: promql.FanoutClassicHistogramWindowLowerer{},
-	})
+	// The anchor-injection window-slide mechanism was removed by #2511's
+	// root-cause investigation (structural over-read, see main.go's
+	// nativeRangeLowerers doc) — fan-out is the sole fallback below the
+	// rate-only native ladder.
 	if set.Has(chopt.FeatureTSGridHistogram) {
-		l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{Fallback: windowSlideOrFanout}
+		l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{Fallback: promql.FanoutClassicHistogramWindowLowerer{}}
 	} else {
-		l.ClassicHistogram = windowSlideOrFanout
+		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
 	}
 
 	return l

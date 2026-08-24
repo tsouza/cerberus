@@ -70,13 +70,6 @@ func allNodeKinds() []chplan.Node {
 			AnchorAlias: "anchor_ts", TimestampCol: "TimeUnix",
 			BucketCountsCol: "BucketCounts", ExplicitBoundsCol: "ExplicitBounds",
 		},
-		&chplan.RangeBucketWindowSlide{
-			Input: leaf, Range: 5 * time.Minute, Step: time.Minute,
-			Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
-			GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},
-			AnchorAlias: "anchor_ts", TimestampCol: "TimeUnix",
-			BucketCountsCol: "BucketCounts", ExplicitBoundsCol: "ExplicitBounds",
-		},
 		&chplan.StepGrid{Start: time.Unix(1, 0).UTC(), End: time.Unix(2, 0).UTC(), Step: time.Second},
 		&chplan.AbsentOverTime{Input: leaf, SynthLabels: []chplan.SynthLabel{{Key: "k", Value: "v"}}, Range: 5 * time.Minute},
 		&chplan.TopK{Input: leaf, K: 3, By: []chplan.Expr{expr}, SortExpr: &chplan.ColumnRef{Name: "Value"}, Columns: []string{"Value"}},

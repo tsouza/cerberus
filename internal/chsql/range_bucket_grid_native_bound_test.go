@@ -14,6 +14,25 @@ import (
 	"github.com/tsouza/cerberus/internal/chsqltest"
 )
 
+// rangeBucketGridNativeBoundDDL is the minimal classic-histogram table shape
+// RangeBucketGridNative reads. No Map-typed Attributes / ResourceAttributes /
+// ServiceName columns: the plan node is built directly (bypassing PromQL
+// lowering) with a bare ColumnRef group key over a plain String series id, so
+// none of the schema-driven canonicalisation those columns feed is exercised
+// here — this test is about the resource bound, not the lowering. (A
+// Map(String,String) group key was tried first and dropped: the chdb-go
+// driver's row scan cannot decode a Map column when iterating with
+// rows.Next()/rows.Err() alone, unrelated to this bound.)
+const rangeBucketGridNativeBoundDDL = `
+CREATE OR REPLACE TABLE otel_metrics_histogram (
+    MetricName String,
+    SeriesID String,
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, SeriesID, TimeUnix);
+`
+
 // gridNativeBoundBoundsCount is the number of finite ExplicitBounds every
 // seeded series carries, so each series contributes
 // gridNativeBoundBoundsCount+1 rungs (the +Inf overflow) to Level 1's
@@ -28,11 +47,8 @@ const gridNativeBoundBoundsCount = 50
 
 // buildGridNativePlan constructs a bare chplan.RangeBucketGridNative over a
 // plain Scan directly (bypassing PromQL lowering, matching this package's
-// own emit-level test style elsewhere — see buildWindowSlidePlan's
-// identical rationale) with the given anchor count, and returns the
-// rendered (sql, args). Reuses rangeBucketWindowSlideBoundDDL
-// (range_bucket_window_slide_bound_test.go): both nodes read the identical
-// minimal classic-histogram table shape.
+// own emit-level test style elsewhere) with the given anchor count, and
+// returns the rendered (sql, args).
 func buildGridNativePlan(t *testing.T, numAnchors int) (string, []any) {
 	t.Helper()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -117,7 +133,7 @@ func seedGridNativeSeries(t *testing.T, exec func(string) error, seriesCount int
 // presence coverage across it either.
 func TestRangeBucketGridNativeBound_ThrowsWhenOversized(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
@@ -147,7 +163,7 @@ func TestRangeBucketGridNativeBound_ThrowsWhenOversized(t *testing.T) {
 // this emitter's SQL would hit.
 func TestRangeBucketGridNativeBound_PassesWhenUnderBudget(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
@@ -192,7 +208,7 @@ func TestRangeBucketGridNativeBound_PassesWhenUnderBudget(t *testing.T) {
 // throwIf firing.
 func TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
@@ -269,7 +285,7 @@ FROM numbers(%d)`,
 // ClickHouse calibration this is grounded in.
 func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
@@ -307,7 +323,7 @@ func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *tes
 // would hit at this shape regardless of row count.
 func TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
@@ -353,7 +369,7 @@ func TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity(t *testin
 // of them to independently cross maxRangeBucketGridNativeDensityUnits.
 func TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
-	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
 	}
 	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {

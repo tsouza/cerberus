@@ -63,8 +63,6 @@ func nodeExprs(n Node, visit func(Expr)) {
 		visitAggFuncs(v.AggFuncs, visit)
 	case *RangeBucketGridNative:
 		visitExprs(v.GroupBy, visit)
-	case *RangeBucketWindowSlide:
-		visitExprs(v.GroupBy, visit)
 	case *HistogramQuantile:
 		visitExpr(v.PhiExpr, visit)
 		visitExprs(v.GroupBy, visit)
