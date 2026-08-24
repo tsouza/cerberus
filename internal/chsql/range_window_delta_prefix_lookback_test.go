@@ -199,6 +199,106 @@ func TestDeltaPrefixLookback_MatrixScan_AddsLowerBound(t *testing.T) {
 // / emitWindowedArrayExtrapolatedMatrix are only reachable when
 // TemporalityColumn is set, so a plan without one never touches this code
 // path at all, and the lookback ctx value is simply never consulted.
+// TestExtrapolatedInstantDeltaPrefixAggregateGate is
+// TestExtrapolatedMatrixDeltaPrefixAggregateGate's instant-mode sibling,
+// pinning emitWindowedArrayExtrapolated's own
+//
+//	if r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled {
+//
+// gate independently on each operand — gremlins found this exact shape's
+// `&&` survives mutation to `||` with no instant-path test distinguishing
+// "populated but not enabled" / "enabled but not populated" from "both",
+// even though TestExtrapolatedMatrixDeltaPrefixAggregateGate already pins
+// the identical three-case pattern for the matrix-mode gate a few lines
+// away. Mirrors that test's byte-for-byte comparison strategy exactly, so
+// a boolean-operator mutation on either operand is guaranteed to flip at
+// least one case's expected outcome.
+func TestExtrapolatedInstantDeltaPrefixAggregateGate(t *testing.T) {
+	t.Parallel()
+
+	baseline, _, err := Emit(context.Background(), deltaCapableInstantWindow())
+	if err != nil {
+		t.Fatalf("Emit(aggInput=nil, readEnabled=false): %v", err)
+	}
+
+	withReadEnabledNoInput, _, err := Emit(
+		WithDeltaPrefixReadEnabled(context.Background(), true),
+		deltaCapableInstantWindow(),
+	)
+	if err != nil {
+		t.Fatalf("Emit(aggInput=nil, readEnabled=true): %v", err)
+	}
+	if withReadEnabledNoInput != baseline {
+		t.Errorf("DeltaPrefixAggregateInput=nil, readEnabled=true must match the baseline SQL exactly "+
+			"(no DELTA-prefix table named by this schema means nothing to read) — got a DIFFERENT query:\nbaseline: %s\ngot:      %s",
+			baseline, withReadEnabledNoInput)
+	}
+
+	withInputNoReadEnabled, _, err := Emit(context.Background(), deltaPrefixAggregateCapableWindow())
+	if err != nil {
+		t.Fatalf("Emit(aggInput=set, readEnabled=false): %v", err)
+	}
+	if withInputNoReadEnabled != baseline {
+		t.Errorf("DeltaPrefixAggregateInput populated but readEnabled=false must match the baseline SQL exactly "+
+			"(the flag, not the field, gates consumption) — got a DIFFERENT query:\nbaseline: %s\ngot:      %s",
+			baseline, withInputNoReadEnabled)
+	}
+
+	withBoth, _, err := Emit(
+		WithDeltaPrefixReadEnabled(context.Background(), true),
+		deltaPrefixAggregateCapableWindow(),
+	)
+	if err != nil {
+		t.Fatalf("Emit(aggInput=set, readEnabled=true): %v", err)
+	}
+	if withBoth == baseline {
+		t.Error("DeltaPrefixAggregateInput populated AND readEnabled=true must emit a DIFFERENT query than the " +
+			"baseline — the exact-aggregate mechanism never fired")
+	}
+	if !strings.Contains(withBoth, "otel_metrics_sum_delta_prefix") {
+		t.Errorf("DeltaPrefixAggregateInput populated AND readEnabled=true must scan the aggregate table by name\nSQL: %s", withBoth)
+	}
+}
+
+// TestDeltaPrefixAggregateSource_GroupColumnsBranch pins
+// deltaPrefixAggregateSource's `if len(groupColumns) == 0` branch in BOTH
+// directions: an empty GroupBy (e.g. `sum(rate(m[5m]))` with no `by(...)`)
+// must CROSS JOIN the aggregate/raw-remainder terms, and a non-empty
+// GroupBy (every other test in this file) must LEFT JOIN them keyed on the
+// group columns. Gremlins found the `== 0` survives mutation to `!= 0`
+// with no test exercising the empty-GroupBy shape at all — every other
+// case in this file sets a non-empty GroupBy, so a mutant that swaps which
+// branch fires for which case still emits valid, plausible-looking SQL and
+// was never caught.
+func TestDeltaPrefixAggregateSource_GroupColumnsBranch(t *testing.T) {
+	t.Parallel()
+
+	keyed := deltaPrefixAggregateCapableWindow()
+	keyedSQL, _, err := Emit(WithDeltaPrefixReadEnabled(context.Background(), true), keyed)
+	if err != nil {
+		t.Fatalf("Emit (non-empty GroupBy): %v", err)
+	}
+	if !strings.Contains(keyedSQL, "LEFT JOIN") {
+		t.Errorf("non-empty GroupBy must LEFT JOIN the aggregate/raw-remainder terms\nSQL: %s", keyedSQL)
+	}
+	if strings.Contains(keyedSQL, "CROSS JOIN") {
+		t.Errorf("non-empty GroupBy must not CROSS JOIN\nSQL: %s", keyedSQL)
+	}
+
+	unkeyed := deltaPrefixAggregateCapableWindow()
+	unkeyed.GroupBy = nil
+	unkeyedSQL, _, err := Emit(WithDeltaPrefixReadEnabled(context.Background(), true), unkeyed)
+	if err != nil {
+		t.Fatalf("Emit (empty GroupBy): %v", err)
+	}
+	if got := strings.Count(unkeyedSQL, "CROSS JOIN"); got != 2 {
+		t.Errorf("empty GroupBy must CROSS JOIN both the aggregate and raw-remainder terms, found %d\nSQL: %s", got, unkeyedSQL)
+	}
+	if strings.Contains(unkeyedSQL, "LEFT JOIN") {
+		t.Errorf("empty GroupBy must not LEFT JOIN\nSQL: %s", unkeyedSQL)
+	}
+}
+
 func TestDeltaPrefixLookback_CumulativeOnlyOutputUnaffected(t *testing.T) {
 	t.Parallel()
 
