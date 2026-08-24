@@ -519,6 +519,7 @@ sort_by_label_desc_tiebreak.txtar
 sort_by_label_natural_order.txtar
 sort_by_label_no_label.txtar
 sort_desc_descending.txtar
+sort_of_dropping_binop_exp_histogram.txtar
 sqrt_metric.txtar
 stddev_by_job.txtar
 stddev_over_time_window.txtar
@@ -607,6 +608,7 @@ sum_by_rate_range_offset.txtar
 sum_by_rate_range_offset_negative.txtar
 sum_by_rate_range_step.txtar
 sum_by_underscored_otel_label.txtar
+sum_of_dropping_binop_exp_histogram.txtar
 sum_without_empty.txtar
 sum_without_instance.txtar
 sum_without_two_labels.txtar
