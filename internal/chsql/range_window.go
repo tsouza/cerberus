@@ -244,6 +244,44 @@ const (
 	deltaPrefixStepAlias = "delta_prefix_step"
 )
 
+// deltaMatrixLevelSourceAggregate's own aliases (cerberus issue #2389's
+// matrix-path exact mechanism — the sibling of deltaPrefixAggregateSource's
+// instant-path aliases above). None of these escape
+// deltaMatrixLevelSourceAggregate: its outer join re-aliases the combined
+// result to deltaAnchorLevelsAlias, the SAME name deltaMatrixLevelSource's
+// approximation already produces, so every downstream reader
+// (deltaFirstValFrag, emitWindowedArrayExtrapolatedMatrix) stays oblivious
+// to which of the two mechanisms produced the value.
+const (
+	// deltaPrefixAnchorDayAlias is toStartOfDay(rangeStart(anchor_ts)) —
+	// the day each anchor's own window starts in. Partitioning the raw
+	// stream's cumulative window by (groupFrags, deltaPrefixAnchorDayAlias)
+	// resets that running total at every day boundary: a day's raw
+	// contribution never survives past that day's own anchors, since the
+	// aggregate stream below is what carries a CLOSED day's total forward
+	// instead.
+	deltaPrefixAnchorDayAlias = "delta_prefix_anchor_day"
+	// deltaPrefixRawDayLevelAlias is the raw stream's own day-reset
+	// cumulative total — deltaMatrixLevelSourceAggregate's raw-side
+	// counterpart to deltaAnchorLevelsAlias, added to
+	// deltaPrefixAggregateMatrixLevelAlias to produce the final
+	// reconstructed level.
+	deltaPrefixRawDayLevelAlias = "delta_prefix_raw_day_level"
+	// deltaPrefixAggregateMatrixStepAlias / deltaPrefixAggregateMatrixLevelAlias
+	// are the aggregate stream's per-anchor day-bucket contribution and its
+	// running total (PARTITIONED BY groupFrags alone — no day reset, since
+	// an aggregate-table bucket's contribution, once eligible, carries
+	// forward across every later day exactly like deltaAnchorLevelsAlias's
+	// own unbounded running sum does today).
+	deltaPrefixAggregateMatrixStepAlias  = "delta_prefix_aggregate_matrix_step"
+	deltaPrefixAggregateMatrixLevelAlias = "delta_prefix_aggregate_matrix_level"
+	// deltaPrefixAggregateMatrixKeyAliasPrefix names the JOIN/UNION key
+	// columns the aggregate stream projects — distinct from the raw side's
+	// own plain group-column names, mirroring deltaPrefixAggregateSource's
+	// delta_prefix_agg_key_%d convention (internal/chsql/range_window.go).
+	deltaPrefixAggregateMatrixKeyAliasPrefix = "delta_prefix_aggregate_matrix_key_"
+)
+
 // windowTemporalityRef returns the Frag the per-window value expression
 // should branch on for r, or nil when r's Input carries no
 // AggregationTemporality column at all (a Gauge-table scan, a
@@ -1599,12 +1637,22 @@ func anchorFanoutFrag(end Frag, stepNS, numAnchors int64) Frag {
 	)
 }
 
+// anchorAtIdxFrag renders `<end> - toIntervalNanosecond(<idx> * <stepNS>)`
+// — the idx-th grid anchor walking back from the eval-grid base, for an
+// arbitrary idx Frag. anchorBaseAtIdxFrag is the common case (idx is the
+// enclosing Lambda1 param); deltaPrefixAggregateRawAnchorArrayFrag calls
+// this directly with a scalar prefixAnchorIndexFrag result, outside any
+// arrayMap lambda.
+func anchorAtIdxFrag(end Frag, stepNS int64, idx Frag) Frag {
+	return Sub(end, Call("toIntervalNanosecond", Mul(idx, InlineLit(stepNS))))
+}
+
 // anchorBaseAtIdxFrag renders the arrayMap body shared by every anchor
 // fan-out: `<end> - toIntervalNanosecond(i * <stepNS>)` — the i-th grid
 // anchor walking back from the eval-grid base. `i` is the enclosing
 // Lambda1 param (BareIdent("i")).
 func anchorBaseAtIdxFrag(end Frag, stepNS int64) Frag {
-	return Sub(end, Call("toIntervalNanosecond", Mul(BareIdent("i"), InlineLit(stepNS))))
+	return anchorAtIdxFrag(end, stepNS, BareIdent("i"))
 }
 
 // sampleAnchorFanoutFrag returns a Frag rendering the SAMPLE-SIDE
@@ -1660,6 +1708,51 @@ func sampleAnchorFanoutArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64
 	)
 }
 
+// prefixAnchorIndexFrag renders the clamped index of the FIRST anchor
+// (ascending anchor_ts order) whose window left edge (rangeStart) is at or
+// after ts — the shared "assign this contribution to its first-eligible
+// anchor" index shared by every DELTA-prefix fan-out array:
+// deltaPrefixAnchorArrayFrag's raw-sample assignment,
+// deltaPrefixAggregateRawAnchorArrayFrag's day-scoped sibling (cerberus
+// issue #2389's matrix exact mechanism), and
+// deltaPrefixAggregateBucketAnchorArrayFrag's aggregate day-bucket
+// assignment. Observations before the earliest left edge clamp into its
+// bucket (the `greatest(0, …)` term); observations past the newest anchor
+// clamp into numAnchors-1 too, which is why every caller ALSO gates its own
+// prefixArrayFrag condition on `ts <= rangeStart(end, rangeNS)` — the clamp
+// alone would otherwise assign a too-recent ts to the newest anchor's
+// bucket regardless of whether it actually precedes that anchor's window.
+func prefixAnchorIndexFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	dist := distBehindAnchorFrag(ts, end)
+	return Call(
+		"least",
+		InlineLit(numAnchors-1),
+		Call(
+			"greatest",
+			InlineLit(int64(0)),
+			Sub(anchorGridFloorIdxFrag(dist, -rangeNS, stepNS), InlineLit(int64(1))),
+		),
+	)
+}
+
+// prefixArrayFrag renders the 0-or-1-element anchor array every
+// DELTA-prefix fan-out arrayJoins: `[anchorAtIdx(prefixIndex)]` when
+// condition holds, `[]` otherwise. Shared by deltaPrefixAnchorArrayFrag,
+// deltaPrefixAggregateRawAnchorArrayFrag, and
+// deltaPrefixAggregateBucketAnchorArrayFrag — each supplies its own
+// prefixIndex (via prefixAnchorIndexFrag) and eligibility condition.
+func prefixArrayFrag(end Frag, stepNS int64, prefixIndex, condition Frag) Frag {
+	return Call(
+		"arrayMap",
+		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
+		Call(
+			"range",
+			prefixIndex,
+			Add(prefixIndex, If(condition, InlineLit(int64(1)), InlineLit(int64(0)))),
+		),
+	)
+}
+
 // deltaPrefixAnchorArrayFrag emits at most one DELTA prefix-bucket anchor.
 // Prefix buckets are keyed by the first anchor whose left edge is at or after
 // the sample timestamp; summing buckets in ascending anchor order reconstructs
@@ -1669,29 +1762,64 @@ func deltaPrefixAnchorArrayFrag(
 	end, ts, temporality Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) Frag {
-	dist := distBehindAnchorFrag(ts, end)
-	prefixIndex := Call(
-		"least",
-		InlineLit(numAnchors-1),
-		Call(
-			"greatest",
-			InlineLit(int64(0)),
-			Sub(anchorGridFloorIdxFrag(dist, -rangeNS, stepNS), InlineLit(int64(1))),
-		),
-	)
+	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
 	prefixCondition := And(
 		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
 		Lte(ts, rangeStartFrag(end, rangeNS)),
 	)
-	return Call(
-		"arrayMap",
-		Lambda1("i", anchorBaseAtIdxFrag(end, stepNS)),
-		Call(
-			"range",
-			prefixIndex,
-			Add(prefixIndex, If(prefixCondition, InlineLit(int64(1)), InlineLit(int64(0)))),
-		),
-	)
+	return prefixArrayFrag(end, stepNS, prefixIndex, prefixCondition)
+}
+
+// deltaPrefixAggregateRawAnchorArrayFrag is deltaPrefixAnchorArrayFrag's
+// day-scoped sibling for the exact DELTA-prefix aggregate mechanism's
+// matrix path (cerberus issue #2389). It assigns a raw sample to its
+// prefix-owning anchor via the SAME first-anchor-at-or-after index
+// (prefixAnchorIndexFrag), but ADDITIONALLY requires the assigned anchor's
+// OWN day (toStartOfDay(rangeStart(anchor))) to equal the sample's own day
+// (toStartOfDay(ts)).
+//
+// A sample whose first eligible anchor falls on a LATER day is dropped
+// entirely (empty array) rather than assigned there: that later day's
+// aggregate-table bucket, once backfilled, already carries this sample's
+// full contribution via deltaMatrixLevelSourceAggregate's aggregate
+// stream, so counting it again here would double the reconstructed level.
+// This is the correctness-load-bearing guard the matrix exact mechanism
+// depends on — see deltaMatrixLevelSourceAggregate's doc for the full
+// two-stream accounting it composes with.
+//
+// The temporality gate deltaPrefixAnchorArrayFrag applies is dropped here:
+// the fanout's own r.TemporalityColumn read already gates which
+// per-series window ever CONSUMES the reconstructed level
+// (deltaFirstValFrag), and the aggregate table is DELTA-only by
+// construction (see schema.Metrics.DeltaPrefixTable's doc) — filtering
+// this stream on temporality too would only prune rows a CUMULATIVE
+// series' scan never needed contributing to in the first place, mirroring
+// instantDeltaPrefixSource's / deltaPrefixAggregateSource's own
+// no-per-row-temporality-filter convention.
+func deltaPrefixAggregateRawAnchorArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
+	assignedAnchor := anchorAtIdxFrag(end, stepNS, prefixIndex)
+	sameDay := Eq(Call("toStartOfDay", ts), Call("toStartOfDay", rangeStartFrag(assignedAnchor, rangeNS)))
+	condition := And(sameDay, Lte(ts, rangeStartFrag(end, rangeNS)))
+	return prefixArrayFrag(end, stepNS, prefixIndex, condition)
+}
+
+// deltaPrefixAggregateBucketAnchorArrayFrag emits at most one anchor per
+// r.DeltaPrefixAggregateInput day-bucket row: the FIRST anchor (ascending
+// anchor_ts) whose OWN day is strictly after the bucket's day — the anchor
+// at which this whole day's PartialSum first becomes eligible for the
+// `BucketStart < day(rangeStart)` aggregate term, matching
+// deltaPrefixAggregateSource's instant-path bound exactly. Unlike the raw
+// sample case, a bucket row's own timestamp (bucketStart) IS a whole day
+// boundary already, so assigning it via "first anchor whose rangeStart is
+// at or after bucketStart + 1 day" carries none of
+// deltaPrefixAggregateRawAnchorArrayFrag's cross-day misattribution risk —
+// no additional day-match gate is needed.
+func deltaPrefixAggregateBucketAnchorArrayFrag(end, bucketStart Frag, stepNS, rangeNS, numAnchors int64) Frag {
+	ts := Add(bucketStart, Call("toIntervalDay", InlineLit(int64(1))))
+	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
+	condition := Lte(ts, rangeStartFrag(end, rangeNS))
+	return prefixArrayFrag(end, stepNS, prefixIndex, condition)
 }
 
 // stepAlignGrid centralises the StepAlign branch shared by the three
@@ -3833,6 +3961,233 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 	return levels.Frag()
 }
 
+// deltaMatrixLevelSourceAggregate is deltaMatrixLevelSource's sibling for
+// the exact, retention-independent DELTA-prefix aggregate mechanism
+// (cerberus issue #2389) in query_range (matrix) mode — selected only when
+// e.deltaPrefixReadEnabled AND r.DeltaPrefixAggregateInput != nil (see
+// emitWindowedArrayExtrapolatedMatrix's useAggregateDeltaPrefix gate),
+// mirroring exactly how deltaPrefixAggregateSource relates to
+// instantDeltaPrefixSource for the instant path. deltaMatrixLevelSource
+// itself is UNTOUCHED — every deployment that has not opted in keeps
+// emitting exactly the SQL it emits today.
+//
+// Produces the SAME output shape as deltaMatrixLevelSource (groupFrags,
+// anchor_ts, windowTemporalityAlias, window_pairs, deltaAnchorLevelsAlias)
+// so the caller's downstream mid / extrap / outer layers need no changes —
+// only how deltaAnchorLevelsAlias is computed differs.
+//
+// Two DISJOINT, per-anchor cumulative streams are summed, mirroring
+// deltaPrefixAggregateSource's own two-term split:
+//
+//   - the aggregate stream: each r.DeltaPrefixAggregateInput day-bucket row
+//     (collapsed per (series, day) first, since DeltaPrefixSumColumn is a
+//     SimpleAggregateFunction that may still hold several not-yet-merged
+//     physical rows for one bucket) is assigned via
+//     deltaPrefixAggregateBucketAnchorArrayFrag to the FIRST anchor
+//     (ascending anchor_ts) whose OWN day is strictly after the bucket's
+//     day. A running sum ordered by anchor_ts, PARTITIONED BY groupFrags
+//     alone (no reset — a closed day's total carries forward across every
+//     later day, exactly like deltaMatrixLevelSource's own unbounded
+//     running sum), then carries that contribution to every later anchor.
+//     Bucket rows are day-granular by construction, so this assignment
+//     carries none of the raw stream's cross-day misattribution risk (see
+//     deltaPrefixAggregateRawAnchorArrayFrag's doc).
+//
+//   - the raw stream: regroupSource's OWN deltaPrefixPairsAlias — already
+//     fanned out by the caller via deltaPrefixAggregateRawAnchorArrayFrag,
+//     restricted to same-day assignment — summed per anchor
+//     (deltaPrefixStepAlias) and run through a cumulative window
+//     PARTITIONED BY (groupFrags, deltaPrefixAnchorDayAlias): the day term
+//     resets the running total at every day boundary, so a day's raw
+//     contribution never survives past that day's own anchors — the
+//     strictly-earlier-days total is the aggregate stream's job instead.
+//
+// The aggregate stream's own (series, anchor) key set is sparse — only
+// anchors where a day-crossing actually lands ever get a row from the
+// bucket fan-out. To carry the running total forward to every OTHER
+// anchor too (the deltaAnchorLevelsAlias contract every consumer expects),
+// it is UNION ALL'd against a zero-valued "carrier" row per (series,
+// anchor) already present in regroupSource before the cumulative window
+// runs — the same anchor-injection idea range_bucket_window_slide.go's
+// own doc explains was proven exact where an ASOF JOIN was tried and found
+// wrong, applied here to a plain running total instead of a sliding
+// RANGE-frame window.
+//
+// A series absent from the aggregate table entirely (never backfilled)
+// degrades gracefully: the aggregate stream's fan-out simply never
+// produces a row for it, so its running sum reads 0 throughout (the LEFT
+// JOIN's ifNull below) and the reconstructed level is the raw, day-bounded
+// remainder alone — an UNDER-count relative to the OLD lookback-bounded
+// approximation for a long-lived series, the SAME documented operational
+// tradeoff deltaPrefixAggregateSource's own doc accepts for the instant
+// path (see docs/operations.md's DELTA-prefix backfill runbook).
+func (e *emitter) deltaMatrixLevelSourceAggregate(
+	r *chplan.RangeWindow,
+	regroupSource Frag,
+	groupFrags []Frag,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+) (Frag, error) {
+	groupColumns, err := plainGroupColumnNames(r.GroupBy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Raw stream — deltaMatrixLevelSource's own shape, but the cumulative
+	// window resets at every day boundary.
+	increments := NewQuery().From(regroupSource)
+	increments.Select(groupFrags...)
+	increments.Select(Col("anchor_ts"))
+	increments.Select(Col(windowTemporalityAlias))
+	increments.Select(Col("window_pairs"))
+	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
+	increments.Select(As(
+		deltaPrefixBucketStartFrag(rangeStartFrag(Col("anchor_ts"), rangeNS)),
+		deltaPrefixAnchorDayAlias,
+	))
+
+	rawPartition := make([]Frag, 0, len(groupFrags)+1)
+	rawPartition = append(rawPartition, groupFrags...)
+	rawPartition = append(rawPartition, Col(deltaPrefixAnchorDayAlias))
+	rawLevels := NewQuery().From(increments.Frag())
+	rawLevels.Select(groupFrags...)
+	rawLevels.Select(Col("anchor_ts"))
+	rawLevels.Select(Col(windowTemporalityAlias))
+	rawLevels.Select(Col("window_pairs"))
+	rawLevels.Select(As(
+		Window(
+			Call("sum", Col(deltaPrefixStepAlias)),
+			rawPartition,
+			[]OrderKey{{Expr: Col("anchor_ts")}},
+		),
+		deltaPrefixRawDayLevelAlias,
+	))
+
+	// Aggregate stream — day-bucket rows fanned to their first-eligible
+	// anchor. Pruned on a CUMULATIVE-only metric exactly like
+	// deltaPresenceGuardFrag's instant-path callers: the guard's own probe
+	// spans the WHOLE matrix scan range (matrixWindowScanBoundsFrags), not
+	// one anchor's window.
+	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
+	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
+	if err != nil {
+		return nil, err
+	}
+	latestDay := deltaPrefixBucketStartFrag(rangeStartFrag(end, rangeNS))
+
+	aggInput, err := e.subqueryFrag(r.DeltaPrefixAggregateInput)
+	if err != nil {
+		return nil, err
+	}
+	aggDaily := NewQuery().From(aggInput)
+	aggDailyKeys := make([]string, len(groupFrags))
+	for i, groupFrag := range groupFrags {
+		aggDailyKeys[i] = fmt.Sprintf("%s%d", deltaPrefixAggregateMatrixKeyAliasPrefix, i)
+		aggDaily.Select(As(groupFrag, aggDailyKeys[i]))
+	}
+	aggDaily.Select(Col(deltaPrefixAggregateBucketColumn))
+	aggDaily.Select(As(Call("sum", Col(deltaPrefixAggregateSumColumn)), "day_sum"))
+	aggDaily.Where(Lt(Col(deltaPrefixAggregateBucketColumn), latestDay))
+	if guard != nil {
+		aggDaily.Where(guard)
+	}
+	dailyGroupBy := make([]Frag, 0, len(groupFrags)+1)
+	dailyGroupBy = append(dailyGroupBy, groupFrags...)
+	dailyGroupBy = append(dailyGroupBy, Col(deltaPrefixAggregateBucketColumn))
+	aggDaily.GroupBy(dailyGroupBy...)
+
+	aggFanout := NewQuery().From(aggDaily.Frag())
+	for _, key := range aggDailyKeys {
+		aggFanout.Select(Col(key))
+	}
+	aggFanout.Select(As(
+		Call("arrayJoin", deltaPrefixAggregateBucketAnchorArrayFrag(
+			end, Col(deltaPrefixAggregateBucketColumn), stepNS, rangeNS, numAnchors,
+		)),
+		"anchor_ts",
+	))
+	aggFanout.Select(As(Col("day_sum"), deltaPrefixAggregateMatrixStepAlias))
+
+	// Carrier — one zero-valued row per (series, anchor) regroupSource
+	// already needs, so the union below is dense across every anchor the
+	// final output could ever surface, the same density guarantee
+	// deltaMatrixLevelSource's plain single-stream cumulative sum gets for
+	// free from regroupSource alone.
+	carrier := NewQuery().From(regroupSource)
+	for i, groupFrag := range groupFrags {
+		carrier.Select(As(groupFrag, aggDailyKeys[i]))
+	}
+	carrier.Select(Col("anchor_ts"))
+	carrier.Select(As(InlineLit(0), deltaPrefixAggregateMatrixStepAlias))
+
+	combined := NewQuery().From(Paren(UnionAll(aggFanout.Frag(), carrier.Frag())))
+	keyCols := make([]Frag, len(aggDailyKeys))
+	for i, key := range aggDailyKeys {
+		keyCols[i] = Col(key)
+		combined.Select(Col(key))
+	}
+	combined.Select(Col("anchor_ts"))
+	combined.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
+	combinedGroupBy := make([]Frag, 0, len(keyCols)+1)
+	combinedGroupBy = append(combinedGroupBy, keyCols...)
+	combinedGroupBy = append(combinedGroupBy, Col("anchor_ts"))
+	combined.GroupBy(combinedGroupBy...)
+
+	aggLevels := NewQuery().From(combined.Frag())
+	for _, key := range aggDailyKeys {
+		aggLevels.Select(Col(key))
+	}
+	aggLevels.Select(Col("anchor_ts"))
+	aggLevels.Select(As(
+		Window(
+			Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)),
+			keyCols,
+			[]OrderKey{{Expr: Col("anchor_ts")}},
+		),
+		deltaPrefixAggregateMatrixLevelAlias,
+	))
+
+	// Final join — add the two streams. ifNull guards a LEFT JOIN miss the
+	// same way deltaPrefixAggregateSource's own instant-path join does
+	// (join_use_nulls=1 safety): the carrier makes a miss unreachable in
+	// practice, but the guard costs nothing and keeps this join honest if
+	// that invariant is ever weakened.
+	joined := NewQuery().From(aliasedFrag(rawLevels.Frag(), "w"))
+	for _, col := range groupColumns {
+		joined.Select(As(Qual("w", col), col))
+	}
+	joined.Select(As(Qual("w", "anchor_ts"), "anchor_ts"))
+	joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
+	joined.Select(As(Qual("w", "window_pairs"), "window_pairs"))
+	joined.Select(As(
+		Add(
+			Call("ifNull", Qual("w", deltaPrefixRawDayLevelAlias), InlineLit(0)),
+			Call("ifNull", Qual("a", deltaPrefixAggregateMatrixLevelAlias), InlineLit(0)),
+		),
+		deltaAnchorLevelsAlias,
+	))
+	onConds := make([]Frag, 0, len(groupColumns)+1)
+	onConds = append(onConds, Eq(Qual("w", "anchor_ts"), Qual("a", "anchor_ts")))
+	for i, col := range groupColumns {
+		onConds = append(onConds, Eq(Qual("w", col), Qual("a", aggDailyKeys[i])))
+	}
+	joined.Join(LeftJoin, aliasedFrag(aggLevels.Frag(), "a"), And(onConds...))
+	return joined.Frag(), nil
+}
+
+// matrixWindowScanBoundsFrags returns the two scan-prune predicates that
+// bound the WHOLE matrix anchor grid's span (rangeStart(earliestAnchor),
+// end] — deltaMatrixLevelSourceAggregate's / applyMatrixFanoutScanBoundAggregate's
+// DELTA-presence guard probe window, wider than
+// instantWindowScanBoundsFrags' single-anchor window but the same
+// earliestAnchor derivation applyMatrixFanoutScanBound already uses.
+func matrixWindowScanBoundsFrags(tsCol string, end Frag, stepNS, rangeNS, numAnchors int64) (Frag, Frag) {
+	earliestAnchor := Sub(end, Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)))
+	lo := Gt(Col(tsCol), rangeStartFrag(earliestAnchor, rangeNS))
+	hi := Lte(Col(tsCol), end)
+	return lo, hi
+}
+
 // applyMatrixFanoutScanBound restricts fanout's input scan to the
 // offset-shifted (Start - Offset - range, End - Offset] window the anchor
 // grid covers — same pushdown as emitWindowedArrayMatrix, against srcTs (the
@@ -3873,6 +4228,41 @@ func (e *emitter) applyMatrixFanoutScanBound(
 	)
 }
 
+// applyMatrixFanoutScanBoundAggregate is applyMatrixFanoutScanBound's
+// sibling for the exact DELTA-prefix aggregate mechanism (cerberus issue
+// #2389). Unlike the OLD approximation's unbounded-below DELTA branch, the
+// exact mechanism's raw term only ever needs the CURRENT, still-open day of
+// EVERY anchor in the grid — deltaMatrixLevelSourceAggregate's aggregate
+// stream supplies every full day strictly before it — so the bound is a
+// single tight `srcTs >= toStartOfDay(rangeStart(earliestAnchor))`, not
+// e.deltaPrefixLookbackNS (a knob this mechanism does not consult at all,
+// exactly like deltaPrefixAggregateSource's instant-path raw-remainder
+// term). The presence guard mirrors deltaPresenceGuardFrag's instant-path
+// callers, pruning the whole scan on a CUMULATIVE-only metric.
+func (e *emitter) applyMatrixFanoutScanBoundAggregate(
+	fanout *QueryBuilder,
+	r *chplan.RangeWindow,
+	srcTs string,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+) error {
+	earliestAnchor := Sub(end, Call("toIntervalNanosecond", InlineLit((numAnchors-1)*stepNS)))
+	earliestDay := deltaPrefixBucketStartFrag(rangeStartFrag(earliestAnchor, rangeNS))
+	fanout.Where(
+		Lte(Col(srcTs), end),
+		Gte(Col(srcTs), earliestDay),
+	)
+	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
+	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
+	if err != nil {
+		return err
+	}
+	if guard != nil {
+		fanout.Where(guard)
+	}
+	return nil
+}
+
 // emitWindowedArrayExtrapolatedMatrix is the OuterRange > 0 variant of
 // emitWindowedArrayExtrapolated. Each series emits one row per anchor
 // (across [End-OuterRange, End] spaced by Step, end-inclusive) whose
@@ -3889,16 +4279,17 @@ func (e *emitter) applyMatrixFanoutScanBound(
 // sampled_interval / duration_to_start / duration_to_end) see exactly
 // the per-anchor sample sets Prom's extrapolatedRate contract pins.
 //
-// DELTA-prefix reconstruction here (needsDeltaFirstLevel below) is STILL
+// DELTA-prefix reconstruction here (needsDeltaFirstLevel below) defaults to
 // the query_range matrix path's own deltaPrefixAnchorArrayFrag /
 // deltaMatrixLevelSource shape, bounded by e.deltaPrefixLookbackNS exactly
-// as before cerberus issue #2389's exact mechanism — it does NOT consult
-// r.DeltaPrefixAggregateInput even when populated and
-// e.deltaPrefixReadEnabled is true. The instant path's
-// deltaPrefixAggregateSource (see emitWindowedArrayExtrapolated) is the
-// only consumer today; extending the exact mechanism to this matrix path
-// is tracked as remaining scope under #2389, not implemented by this
-// function.
+// as before cerberus issue #2389's exact mechanism — that shape is
+// UNCHANGED and stays the fallback whenever r.DeltaPrefixAggregateInput is
+// nil or e.deltaPrefixReadEnabled is false. When both are set,
+// useAggregateDeltaPrefix below selects deltaPrefixAggregateRawAnchorArrayFrag
+// / deltaMatrixLevelSourceAggregate instead — the matrix-path sibling of the
+// instant path's deltaPrefixAggregateSource (see
+// emitWindowedArrayExtrapolated), completing #2389's query-path integration
+// for both eval shapes.
 func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
@@ -3921,6 +4312,14 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 	hasTemporality := windowTemporalityProjected(r)
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
+	// useAggregateDeltaPrefix selects the exact, retention-independent
+	// DELTA-prefix aggregate mechanism (cerberus issue #2389) for THIS
+	// matrix query, mirroring emitWindowedArrayExtrapolated's own
+	// r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled gate.
+	// false falls through to deltaPrefixAnchorArrayFrag /
+	// deltaMatrixLevelSource UNCHANGED — the default for every deployment
+	// that hasn't opted in, byte-identical to pre-#2389 SQL.
+	useAggregateDeltaPrefix := needsDeltaFirstLevel && r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled
 
 	// Sample-fanout SELECT — one row per (sample, covered anchor).
 	fanout := NewQuery().From(innerSub)
@@ -3931,15 +4330,27 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		fanout.Select(Col(r.TemporalityColumn))
 	}
 	if needsDeltaFirstLevel {
+		prefixArray := deltaPrefixAnchorArrayFrag(
+			end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
+		)
+		if useAggregateDeltaPrefix {
+			// The exact mechanism's raw term only ever needs the CURRENT,
+			// still-open day's contribution (deltaMatrixLevelSourceAggregate's
+			// aggregate stream supplies every full day strictly before it) —
+			// deltaPrefixAggregateRawAnchorArrayFrag additionally requires the
+			// assigned anchor to share the sample's own day, dropping (never
+			// double-counting) a sample whose first-eligible anchor would
+			// otherwise land on a later day already covered by the aggregate
+			// table.
+			prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
+		}
 		fanout.Select(As(
 			Call(
 				"arrayJoin",
 				Call(
 					"arrayConcat",
 					sampleAnchorFanoutArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-					deltaPrefixAnchorArrayFrag(
-						end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
-					),
+					prefixArray,
 				),
 			),
 			"anchor_ts",
@@ -3955,7 +4366,13 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
 	// (the timestamp column present in the fanout's FROM). See
 	// maybePushInnerScanTimeBounds.
-	e.applyMatrixFanoutScanBound(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
+	if useAggregateDeltaPrefix {
+		if err := e.applyMatrixFanoutScanBoundAggregate(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors); err != nil {
+			return err
+		}
+	} else {
+		e.applyMatrixFanoutScanBound(fanout, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
+	}
 
 	fanoutSource := fanout.Frag()
 	// #2429: cap how many (series, anchor) fanout rows can ever reach the
@@ -4020,7 +4437,14 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		regroup.Frag(), groupFrags, true, hasTemporality, extraColumns...,
 	)
 	if needsDeltaFirstLevel {
-		regroupSource = deltaMatrixLevelSource(regroupSource, groupFrags)
+		if useAggregateDeltaPrefix {
+			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, end, stepNS, rangeNS, numAnchors)
+			if err != nil {
+				return err
+			}
+		} else {
+			regroupSource = deltaMatrixLevelSource(regroupSource, groupFrags)
+		}
 	}
 
 	// Mid SELECT — window_vals + counter_delta + first/last_ts + first_val.
