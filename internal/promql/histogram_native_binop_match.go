@@ -18,8 +18,9 @@ import (
 // histogram_native_binop_card.go (cerberus issue #2328).
 //
 // Both callers already collapse each operand to one row per FULL
-// Attributes key ([lowerExpHistogramValuedOperand]'s
-// *chplan.HistogramProjection cap) before merging/comparing the two
+// Attributes key ([lowerExpHistogramValuedOperand]'s histogram-shaped
+// cap — a *chplan.HistogramProjection, or since cerberus issue #2559 a
+// nested *chplan.VectorSetOp) before merging/comparing the two
 // sides via a `UnionAll` + single `Aggregate` grouped on the (by
 // default, full) Attributes column with a `having count() = 2` guard
 // standing in for VectorJoin's INNER JOIN (see histogram_native_binop.go's
@@ -80,7 +81,16 @@ func histogramMatchKeyAggExpr(vm *parser.VectorMatching) *parser.AggregateExpr {
 // "guard-then-any" pattern [duplicate_labelset_guard.go] and
 // [duplicateLabelsetGuardExpr] apply for the unrelated name-drop /
 // label-rewrite collision guards.
-func applyVectorMatchToHistogramOperand(hp *chplan.HistogramProjection, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) *chplan.HistogramProjection {
+//
+// hp is typed as a plain chplan.Node — not *chplan.HistogramProjection —
+// so a set-op operand (*chplan.VectorSetOp, cerberus issue #2559) composes
+// here too: every field this function reads off hp is read by its fixed
+// Histogram*Column alias through the wrapping Aggregate's Input, never via
+// a Go struct field, so hp's concrete type never mattered structurally,
+// only its published column shape (chplan.HistogramRowShape) does — the
+// same contract [lowerExpHistogramValuedOperand] now enforces on every
+// caller's behalf.
+func applyVectorMatchToHistogramOperand(hp chplan.Node, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	if isDefaultMatching(vm) {
 		return hp
 	}

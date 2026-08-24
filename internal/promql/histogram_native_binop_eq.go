@@ -261,7 +261,13 @@ const (
 //     dropped to "", matching reference's dropMetricName rule for a
 //     `bool`-modified V-V binop) rather than a HistogramProjection: the
 //     result is FLOAT-valued, not histogram-valued.
-func compareTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, ne, returnBool bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
+//
+// hpL/hpR are typed as plain chplan.Node — not *chplan.HistogramProjection
+// — so a set-op operand (*chplan.VectorSetOp, cerberus issue #2559)
+// composes here too: [projectHistogramCompareSide] reads every field off
+// each side by its fixed Histogram*Column alias, never via a Go struct
+// field.
+func compareTwoHistogramProjections(hpL, hpR chplan.Node, ne, returnBool bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	histSchema := histogramProjectionSchema(s)
 	stepAligned := ctx.step > 0
 
@@ -337,7 +343,7 @@ func compareTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, ne, re
 // mode), and every field [histogramCompareFieldColumns] names — plus the
 // literal [histEqSideAlias] discriminator, so both operands expose an
 // IDENTICAL column set/order for the UnionAll below to combine.
-func projectHistogramCompareSide(hp *chplan.HistogramProjection, side int64, histSchema schema.Metrics, stepAligned bool) *chplan.Project {
+func projectHistogramCompareSide(hp chplan.Node, side int64, histSchema schema.Metrics, stepAligned bool) *chplan.Project {
 	cols := []string{histSchema.MetricNameColumn, histSchema.AttributesColumn}
 	if stepAligned {
 		cols = append(cols, histSchema.TimestampColumn)
