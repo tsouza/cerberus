@@ -220,3 +220,184 @@ func TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape(t *testi
 		t.Fatal("expected at least one row from the low-cardinality/wide-anchor query")
 	}
 }
+
+// seedGridNativeDensity bulk-inserts seriesCount x rowsPerSeries rows, EACH
+// carrying a boundsCount-finite-bound layout, via a single vectorized
+// `INSERT ... SELECT ... FROM numbers(...)` rather than seedGridNativeSeries'
+// own one-literal-tuple-per-row string build — the row counts this file's
+// density-guard tests need (tens of thousands) would make the latter slow
+// for no reason, since every row is identical apart from its series id and
+// timestamp and neither value needs to vary meaningfully for the guard's
+// own probes (a plain count() and a max(length(...)), per
+// range_bucket_grid_native_bound.go's own "Density guard" doc). Every row
+// is stamped at the SAME timestamp (seedTS, inside the caller's own scan
+// window) — sufficient for both probes, which only count rows and measure
+// array length, never distinctness or ordering.
+func seedGridNativeDensity(t *testing.T, exec func(string) error, seriesCount, rowsPerSeries, boundsCount int, seedTS time.Time) {
+	t.Helper()
+	bounds := make([]string, boundsCount)
+	for i := range bounds {
+		bounds[i] = fmt.Sprintf("%d.0", i+1)
+	}
+	boundsLit := "[" + strings.Join(bounds, ",") + "]"
+	counts := make([]string, boundsCount+1)
+	for i := range counts {
+		counts[i] = "1"
+	}
+	countsLit := "[" + strings.Join(counts, ",") + "]"
+
+	seedSQL := fmt.Sprintf(`INSERT INTO otel_metrics_histogram (MetricName, SeriesID, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT 'http_server_request_duration', concat('svc-', toString(number %% %d)), toDateTime64('%s', 9), %s, %s
+FROM numbers(%d)`,
+		seriesCount, seedTS.Format("2006-01-02 15:04:05.000000000"), countsLit, boundsLit, seriesCount*rowsPerSeries)
+	if err := exec(seedSQL); err != nil {
+		t.Fatalf("seed density insert: %v", err)
+	}
+}
+
+// TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity is
+// issue #2523's own regression pin: at a `groups x anchors` value trivially
+// far under maxRangeBucketGridNativeRows (10 series x 51 rungs x 10 anchors
+// = 5,100, vs the 20,000,000 axis1 ceiling), a HIGH raw-row density alone
+// must still trip the density guard — proving `groups x anchors` was never
+// a complete cost model on its own (this file's header doc's own "A
+// genuinely separate finding"). 35,000 raw rows x 50-finite-bound width^2
+// (2,500) = 87,500,000 density-marginal units, comfortably past
+// maxRangeBucketGridNativeDensityUnits (85,000,000) even before adding the
+// (here trivial) groups x anchors term — see
+// range_bucket_grid_native_bound.go's own "Density guard" doc for the real
+// ClickHouse calibration this is grounded in.
+func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 10
+	const numAnchors = 10 // groups x anchors = 10 * 51 * 10 = 5,100, trivial vs the 20,000,000 axis1 ceiling
+	const rowsPerSeries = 3_500
+	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
+		seriesCount, rowsPerSeries, gridNativeBoundBoundsCount, seedStart)
+
+	sqlStr, args := buildGridNativePlan(t, numAnchors)
+	_, err := db.Query(sqlStr, args...)
+	if err == nil {
+		t.Fatal("expected the density guard's throwIf to fire for a high-raw-row-density query, got no error")
+	}
+	if !strings.Contains(err.Error(), chsql.RangeBucketGridNativeDensityBudgetMessage) {
+		t.Errorf("query failed, but not with the expected DENSITY guard message %q: %v",
+			chsql.RangeBucketGridNativeDensityBudgetMessage, err)
+	}
+	if strings.Contains(err.Error(), chsql.RangeBucketGridNativeBudgetMessage) {
+		t.Errorf("query failed with axis1's OWN groups-x-anchors message, not the density guard's — "+
+			"axis1 should never fire at this trivial groups x anchors (5,100): %v", err)
+	}
+}
+
+// TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity is the
+// negative control for TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity:
+// the IDENTICAL groups x anchors shape (5,100), but floor raw-row density
+// (2 rows/series, matching seedGridNativeSeries' own floor) — must NOT trip
+// either guard, proving the density guard's rejection above is really the
+// density term firing and not some unrelated failure this emitter's SQL
+// would hit at this shape regardless of row count.
+func TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 10
+	const numAnchors = 10
+	const rowsPerSeries = 2
+	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
+		seriesCount, rowsPerSeries, gridNativeBoundBoundsCount, seedStart)
+
+	sqlStr, args := buildGridNativePlan(t, numAnchors)
+	rows, err := db.Query(sqlStr, args...)
+	if err != nil {
+		t.Fatalf("low-density query unexpectedly failed: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+}
+
+// TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape
+// is a CI-speed-scaled reproduction of issue #2523's own reference
+// real-ClickHouse finding: test/perf/nightly/sentinels.go's
+// classic_histogram_quantile_by_route sentinel's real shape (3,741 series,
+// 11 finite ExplicitBounds -- 12 rungs -- 60 anchors, ~350 samples/series)
+// genuinely OOMs real ClickHouse at `groups x anchors` = 2,693,520,
+// comfortably UNDER maxRangeBucketGridNativeRows (20,000,000) — the exact
+// gap this file's density guard exists to close. This test keeps the SAME
+// 12-rung layout (boundsCount=11, matching the real sentinel's own
+// ExplicitBounds width) and a `groups x anchors` an order of magnitude
+// below the axis1 ceiling, scaled down from 3,741 series to 100 (fast to
+// seed) while keeping enough raw rows to cross the density guard's own
+// threshold at that width — see range_bucket_grid_native_bound.go's own
+// "Density guard" doc for why 11-finite-bound rows need roughly 700,000+
+// of them to independently cross maxRangeBucketGridNativeDensityUnits.
+func TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketWindowSlideBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 100
+	const boundsCount = 11 // matches classic_histogram_quantile_by_route's own 11 finite bounds (12 rungs)
+	const numAnchors = 20  // groups x anchors = 100 * 12 * 20 = 24,000, trivial vs the 20,000,000 axis1 ceiling
+	const rowsPerSeries = 7_500
+	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
+		seriesCount, rowsPerSeries, boundsCount, seedStart)
+
+	start := seedStart
+	step := time.Minute
+	end := start.Add(time.Duration(numAnchors-1) * step)
+	node := &chplan.RangeBucketGridNative{
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_histogram",
+			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+		},
+		Start:             start,
+		End:               end,
+		Step:              step,
+		Range:             5 * time.Minute,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "SeriesID"}},
+		GroupByAliases:    []string{"SeriesID"},
+		AnchorAlias:       "anchor_ts",
+		TimestampCol:      "TimeUnix",
+		BucketCountsCol:   "BucketCounts",
+		ExplicitBoundsCol: "ExplicitBounds",
+	}
+	sqlStr, args, err := chsql.Emit(context.Background(), node)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	_, err = db.Query(sqlStr, args...)
+	if err == nil {
+		t.Fatal("expected the density guard's throwIf to fire for the scaled #2486/#2408 reference density, got no error")
+	}
+	if !strings.Contains(err.Error(), chsql.RangeBucketGridNativeDensityBudgetMessage) {
+		t.Errorf("query failed, but not with the expected DENSITY guard message %q: %v",
+			chsql.RangeBucketGridNativeDensityBudgetMessage, err)
+	}
+}
