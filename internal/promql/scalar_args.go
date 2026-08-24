@@ -104,7 +104,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 				return nil, fmt.Errorf("promql: scalar() expects 1 argument, got %d", len(v.Args))
 			}
 			if ctx.scalarsBindPerStep() {
-				inner, err := lower(v.Args[0], s, ctx)
+				inner, err := lowerScalarVectorArg(v.Args[0], s, ctx)
 				if err != nil {
 					return nil, err
 				}
@@ -115,7 +115,7 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 			// whole story.
 			scalarCtx := ctx
 			scalarCtx.step = 0
-			inner, err := lower(v.Args[0], s, scalarCtx)
+			inner, err := lowerScalarVectorArg(v.Args[0], s, scalarCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -165,6 +165,40 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 		return nil, fmt.Errorf("promql: %s() is not a supported scalar argument", v.Func.Name)
 	}
 	return nil, fmt.Errorf("promql: unsupported scalar argument %T", e)
+}
+
+// lowerScalarVectorArg lowers `scalar(v)`'s vector argument, recognising a
+// histogram-valued v before falling through to the generic lower()
+// dispatch.
+//
+// Reference Prometheus's funcScalar (promql/functions.go) walks the
+// argument vector's samples and skips every one whose H field is set —
+// only a FLOAT sample can be "the" single sample scalar() reduces to.
+// Since a bare exp-histogram selector's samples are ALL histogram-shaped
+// (cerberus's schema model never mixes the two under one metric name),
+// funcScalar sees zero float samples for that input and answers NaN —
+// never an error. Generic lower() has no such carve-out: a
+// histogram-valued expression falls straight through to
+// expHistogramSelectorRouting's catch-all rejection (cerberus issue
+// #2515).
+//
+// scalarValuePlan/scalarStepPlan already implement exactly the "zero
+// float samples → NaN" rule via their count()==1 ? value : NaN
+// reduction, so recognising the histogram shape and routing it through
+// dropExpHistogramSamples — the same "answer the canonical float-Sample
+// shape with zero selected rows" helper the unary math functions
+// (#2221), clamp (#2345), sort (#2456) and the date-component functions
+// (#2498) all reuse — reproduces funcScalar's NaN answer for free: the
+// wrapping reduction counts zero rows and falls into its own NaN branch,
+// no separate NaN-literal special case needed here.
+func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if hist, ok, err := lowerExpHistogramValuedShape(v, s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropExpHistogramSamples(hist, s), nil
+	}
+	return lower(v, s, ctx)
 }
 
 // lowerScalarTopLevel lowers a bare top-level scalar-returning call —
