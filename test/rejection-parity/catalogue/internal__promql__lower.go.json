@@ -321,7 +321,8 @@
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
           "tsOfFirstLastOverExpHistogram",
-          "unwrapBinaryExpr"
+          "unwrapBinaryExpr",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
         ]
       }
     },
@@ -374,7 +375,8 @@
           "peelWrappers",
           "sumOrAvgOverMixedExpHistogramSetOp",
           "tsOfFirstLastOverExpHistogram",
-          "unwrapBinaryExpr"
+          "unwrapBinaryExpr",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
         ]
       }
     },
