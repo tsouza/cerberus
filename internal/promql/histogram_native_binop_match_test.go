@@ -40,8 +40,12 @@ func TestApplyVectorMatchToHistogramOperand_AddsAmbiguityGuard(t *testing.T) {
 	hp := &chplan.HistogramProjection{Input: &chplan.Scan{Table: s.ExpHistogramTable}}
 	vm := &parser.VectorMatching{Card: parser.CardOneToOne, On: true, MatchingLabels: []string{"service"}}
 
-	prepHP := applyVectorMatchToHistogramOperand(hp, vm, s, lowerCtx{})
+	prepared := applyVectorMatchToHistogramOperand(hp, vm, s, lowerCtx{})
 
+	prepHP, ok := prepared.(*chplan.HistogramProjection)
+	if !ok {
+		t.Fatalf("applyVectorMatchToHistogramOperand(...) = %T, want *chplan.HistogramProjection", prepared)
+	}
 	reshape, ok := prepHP.Input.(*chplan.Project)
 	if !ok {
 		t.Fatalf("prepared HistogramProjection.Input is %T, want *chplan.Project", prepHP.Input)

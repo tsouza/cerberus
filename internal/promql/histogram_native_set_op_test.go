@@ -132,10 +132,11 @@ func TestLower_ExpHistogram_MixedSetOp_AndUnless(t *testing.T) {
 // operand of an OUTER set op (a chain, `a or b or c`, parsed left-assoc
 // as `(a or b) or c`) and it can be wrapped in a further `sum`/`avg` —
 // both routes go through [lowerExpHistogramValuedShape]'s recursive
-// dispatch rather than [lowerExpHistogramSetOp]'s stricter sibling
-// [lowerExpHistogramValuedOperand] (which requires a literal
-// *chplan.HistogramProjection operand and would reject a nested
-// *chplan.VectorSetOp).
+// dispatch. [lowerExpHistogramValuedOperand] (the +/-/==/!= binop sibling
+// of [lowerExpHistogramSetOpOperand]) also accepts a nested
+// *chplan.VectorSetOp operand since cerberus issue #2559 — see
+// histogram_native_binop_test.go's own set-op-operand coverage for that
+// path.
 func TestLower_ExpHistogram_SetOpComposes(t *testing.T) {
 	t.Parallel()
 

@@ -1,0 +1,39 @@
+-- query.promql --
+(hist_setop_a1_exp_hist and hist_setop_a2_exp_hist) + (hist_setop_b1_exp_hist and hist_setop_b2_exp_hist)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- Binary `+` between two `and` SET-OP results (cerberus issue #2559): each
+-- operand — `(a1 and a2)` / `(b1 and b2)` — lowers to a *chplan.VectorSetOp,
+-- not a literal *chplan.HistogramProjection, and used to hit
+-- lowerExpHistogramValuedOperand's old type assertion with an
+-- "internal invariant violated" error leaking that Go type name to the API
+-- caller. `and` never merges values — it keeps the LHS row unchanged when
+-- the RHS shares its label signature — so a1's own row (Scale=1,
+-- PositiveOffset=0, [1,2,3,4]) and b1's own row (Scale=0, PositiveOffset=0,
+-- [5,10]) are what the outer `+` actually reconciles, matching
+-- exp_histogram_binop_add.txtar's own downscale fold: server=[1,2,3,4]@
+-- Scale1 downscales to Scale0 as [3,7]; merged with [5,10] = [8,17].
+-- a2/b2 exist purely to keep a1/b1's rows alive through their own `and`.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('hist_setop_a1_exp_hist', map('series', 'shared'), toDateTime64('2026-01-01 00:00:00', 9), 10, 1.0, 1, 0, 0, [1, 2, 3, 4], 0, []),
+    ('hist_setop_a2_exp_hist', map('series', 'shared'), toDateTime64('2026-01-01 00:00:00', 9), 1,  0.1, 0, 0, 0, [1],           0, []),
+    ('hist_setop_b1_exp_hist', map('series', 'shared'), toDateTime64('2026-01-01 00:00:00', 9), 15, 2.0, 0, 0, 0, [5, 10],       0, []),
+    ('hist_setop_b2_exp_hist', map('series', 'shared'), toDateTime64('2026-01-01 00:00:00', 9), 1,  0.1, 0, 0, 0, [1],           0, []);
+-- expected_rows --
+[]

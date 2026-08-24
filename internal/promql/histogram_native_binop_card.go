@@ -120,8 +120,13 @@ func histogramCardFromVectorMatching(vm *parser.VectorMatching) chplan.VectorCar
 }
 
 // newHistogramVectorJoin builds the chplan.HistogramVectorJoin both the
-// merge and compare card paths share.
-func newHistogramVectorJoin(hpL, hpR *chplan.HistogramProjection, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) *chplan.HistogramVectorJoin {
+// merge and compare card paths share. hpL/hpR are plain chplan.Node —
+// [chplan.HistogramVectorJoin.Left]/[.Right] are typed Node themselves, and
+// its own emitter reads both sides by column name through a subquery
+// boundary (internal/chsql's histogramFieldsJoinSideFrag), so a set-op
+// operand (*chplan.VectorSetOp, cerberus issue #2559) composes exactly like
+// a *chplan.HistogramProjection one.
+func newHistogramVectorJoin(hpL, hpR chplan.Node, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) *chplan.HistogramVectorJoin {
 	return &chplan.HistogramVectorJoin{
 		Left:             hpL,
 		Right:            hpR,
@@ -163,7 +168,7 @@ func histJoinArrayPair(col string) chplan.Expr {
 // wrapping Project, so histogramBinopMergeProjections needs no changes at
 // all — it cannot tell the difference between a two-row aggregation and a
 // two-element array literal.
-func mergeTwoHistogramProjectionsCard(hpL, hpR *chplan.HistogramProjection, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMatching, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	histSchema := histogramProjectionSchema(s)
 	join := newHistogramVectorJoin(hpL, hpR, vm, s, ctx)
 	stepAligned := ctx.step > 0
@@ -263,7 +268,7 @@ func histogramCompareOutputProjectionsCard(s schema.Metrics) []chplan.Projection
 // function's doc for the returnBool branch's genuinely different output
 // shape (float-valued 1.0/0.0 vs. the non-bool structural filter's
 // histogram-valued LHS passthrough) — both apply identically here.
-func compareTwoHistogramProjectionsCard(hpL, hpR *chplan.HistogramProjection, vm *parser.VectorMatching, ne, returnBool bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func compareTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMatching, ne, returnBool bool, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	histSchema := histogramProjectionSchema(s)
 	join := newHistogramVectorJoin(hpL, hpR, vm, s, ctx)
 	stepAligned := ctx.step > 0
