@@ -157,6 +157,44 @@ func lowerExpHistogramCountOrGroupOverPlan(agg *parser.AggregateExpr, input chpl
 	}, nil
 }
 
+// lowerExpHistogramCountFamily recognises and lowers `count()`/`group()`
+// over an exp-histogram shape — either a bare selector
+// ([countOverExpHistogram]) or any already histogram-valued expression
+// ([countOrGroupOverExpHistogramValue]) — trying the two recognisers in
+// the same order [lowerHistogramNativeRoot] always has.
+//
+// It is factored out purely so [lowerHistogramNativeRoot]'s own dispatch
+// table and [lowerAggregate]'s generic fallback can share one
+// recogniser/lowering pair rather than drifting apart: this closes
+// cerberus issue #2549's `count()`/`group()` half — `count(m_exp_hist) *
+// 2`, `group(m_exp_hist) * 2`, `count(rate(m_exp_hist[5m])) * 2` and
+// their aggregation-wrapper siblings (`sum(count(m_exp_hist))`,
+// `abs(count(m_exp_hist))`) previously fell through
+// [lowerAggregate]'s own `lower(a.Expr, ...)` fallback into the generic
+// descent, which lowers the inner selector via [lowerVectorSelector]'s
+// ordinary path and hard-rejects it via [expHistogramSelectorRouting] —
+// the exact gap class [resetsOrChangesOverExpHistogram] closes for
+// `resets()`/`changes()` (see [lowerRangeVectorCall]'s own nested-retry
+// check), just for an AggregateExpr root rather than a Call root.
+func lowerExpHistogramCountFamily(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if agg, vs, ok := countOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramCount(agg, vs, s, ctx)
+		return plan, true, err
+	}
+	if agg, ok := countOrGroupOverExpHistogramValue(expr, s, ctx); ok {
+		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
+		if err != nil {
+			return nil, true, err
+		}
+		if !matched {
+			return nil, true, fmt.Errorf("promql: internal invariant violated: count/group input is not histogram-valued: %v", agg.Expr)
+		}
+		plan, err := lowerExpHistogramCountOrGroupOverPlan(agg, input, s)
+		return plan, true, err
+	}
+	return nil, false, nil
+}
+
 // lowerExpHistogramCount lowers the `count()` shape across the three
 // evaluation shapes [rangeGridShapeFor] distinguishes, the same three
 // its siblings handle — see [lowerExpHistogramBare] for what each means.
