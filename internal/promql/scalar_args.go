@@ -192,11 +192,13 @@ func lowerScalarArg(e parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr,
 // wrapping reduction counts zero rows and falls into its own NaN branch,
 // no separate NaN-literal special case needed here.
 func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if hist, ok, err := lowerExpHistogramValuedShape(v, s, ctx); ok {
-		if err != nil {
-			return nil, err
-		}
-		return dropExpHistogramSamples(hist, s), nil
+	// funcScalar counts zero float samples for an already-empty argument
+	// (histogram-valued, or a nested drop-family shape — cerberus issue
+	// #2528, e.g. `scalar(demo_latency_exp_hist + 0)`) the same way it does
+	// for a bare all-histogram selector, answering NaN via the wrapping
+	// count()==1 ? value : NaN reduction.
+	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(v, s, ctx); ok {
+		return node, err
 	}
 	return lower(v, s, ctx)
 }

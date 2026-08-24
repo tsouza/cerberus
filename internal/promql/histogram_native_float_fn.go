@@ -73,11 +73,22 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 // reaches the wire, and the literal Value avoids treating the histogram
 // projection's compatibility placeholder as a real sample.
 func dropExpHistogramSamples(input chplan.Node, s schema.Metrics) chplan.Node {
+	return floatShapedExpHistogramDrop(&chplan.Filter{
+		Input:     input,
+		Predicate: &chplan.LitBool{V: false},
+	}, s)
+}
+
+// floatShapedExpHistogramDrop reprojects an ALREADY-empty (constant-false
+// filtered) plan onto the canonical float-Sample quartet — the shared
+// projection list [dropExpHistogramSamples] and
+// [lowerExpHistogramDroppingShape] (histogram_native_dropping_shape.go,
+// cerberus issue #2528) both apply, the latter over a plan its OWN drop
+// recognizers already capped with a constant-false Filter, so it must not
+// add a second, redundant one.
+func floatShapedExpHistogramDrop(alreadyEmpty chplan.Node, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
-		Input: &chplan.Filter{
-			Input:     input,
-			Predicate: &chplan.LitBool{V: false},
-		},
+		Input: alreadyEmpty,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
@@ -85,4 +96,28 @@ func dropExpHistogramSamples(input chplan.Node, s schema.Metrics) chplan.Node {
 			{Expr: &chplan.LitFloat{V: 0}, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// lowerExpHistogramArgAsCanonicalFloat is the shared "argument opt-in" every
+// float-only wrapper in this package threads before falling back to the
+// generic [lower] dispatcher (cerberus issues #2221/#2345/#2456/#2498, and
+// — for the drop-family half — #2528): arg may be histogram-VALUED (the
+// "preserve" family, reprojected to the canonical empty float quartet via
+// [dropExpHistogramSamples], since these wrappers read only Value) or
+// itself one of the "drop" family's shapes (already reprojected the
+// identical way by [lowerExpHistogramDroppingShape]). Folding both checks
+// into one function — rather than two sequential `if …, ok := …; ok { … }`
+// blocks at every callsite — keeps each callsite a single flat branch
+// instead of tripping golangci-lint's nestif complexity gate.
+func lowerExpHistogramArgAsCanonicalFloat(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
+		if err != nil {
+			return nil, true, err
+		}
+		return dropExpHistogramSamples(hist, s), true, nil
+	}
+	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
+		return dropped, true, err
+	}
+	return nil, false, nil
 }

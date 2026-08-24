@@ -69,6 +69,15 @@ func lowerTimestampOverExpHistogram(arg parser.Expr, s schema.Metrics, ctx lower
 		}
 		return projectExpHistogramEvalInstant(hist, s, ctx), true, nil
 	}
+	// A nested drop-family argument (cerberus issue #2528) — e.g.
+	// `timestamp(demo_latency_exp_hist + 0)`. The dropped result is
+	// already an empty float vector, so no row ever surfaces a value for
+	// [dateFnExpr]'s "timestamp" rewrite to apply to; the canonical
+	// empty shape [lowerExpHistogramDroppingShape] already built is the
+	// answer as-is.
+	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
+		return dropped, true, err
+	}
 	return nil, false, nil
 }
 
