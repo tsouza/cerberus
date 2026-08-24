@@ -6,7 +6,7 @@
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
       "class": "divergence",
       "trigger_query": "max_over_time((demo_latency_exp_hist)[5m:1m])",
-      "tracking_issue": 2545,
+      "tracking_issue": 2563,
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
