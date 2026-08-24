@@ -18,14 +18,16 @@ import (
 // genuinely float-valued (a histogram_quantile() over the same series).
 const mixedOrExpr = `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))`
 
-// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorFloatOnlyArithmetic pins
-// cerberus issue #2449's seventh wrapper family for `+`/`-`: reference
-// Prometheus keeps ONLY the float,float combination for these two ops
-// (histogram_native_mixed_or_vector_arithmetic.go's header has the full
-// four-combination accounting), so the lowered plan is a PLAIN canonical
-// quartet — no discriminator, [chplan.SampleRowShape] — unlike the
-// MUL/DIV case below.
-func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorFloatOnlyArithmetic(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorAdditiveArithmetic pins
+// cerberus issue #2449's histogram,histogram `+`/`-` wrapper family:
+// reference Prometheus keeps the float,float combination (plain float
+// arithmetic) AND the histogram,histogram combination (a genuine merge,
+// histogram_native_mixed_or_vector_arithmetic.go's header has the full
+// four-combination accounting) for these two ops, so the lowered plan is
+// the full fourteen-column Mixed shape — like the MUL/DIV case below,
+// but with an extra Project stage between the keep Filter and the join
+// (mixedVVHistMergeInputProjections's merge-array materialisation).
+func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorAdditiveArithmetic(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -45,15 +47,15 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorFloatOnlyArithmetic(t *test
 			if err != nil {
 				t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
 			}
-			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
-				t.Fatalf("lower(%q): plan root publishes %s, want %s (only float,float survives +/-)", query, shape, chplan.SampleRowShape)
+			if shape := chplan.RowShapeOf(plan); shape != chplan.MixedRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s (float,float AND histogram,histogram survive +/-)", query, shape, chplan.MixedRowShape)
 			}
 			proj, ok := plan.(*chplan.Project)
 			if !ok {
 				t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", query, plan)
 			}
-			if len(proj.Projections) != 4 {
-				t.Fatalf("lower(%q): plan root projects %d columns, want 4 (the plain canonical quartet)", query, len(proj.Projections))
+			if len(proj.Projections) != 14 {
+				t.Fatalf("lower(%q): plan root projects %d columns, want 14 (the fourteen-column Mixed shape)", query, len(proj.Projections))
 			}
 			if proj.Projections[0].Alias != s.MetricNameColumn {
 				t.Fatalf("lower(%q): first projection alias = %q, want %q", query, proj.Projections[0].Alias, s.MetricNameColumn)
@@ -62,12 +64,20 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorFloatOnlyArithmetic(t *test
 			if !ok || lit.V != "" {
 				t.Fatalf("lower(%q): __name__ projection = %#v, want an empty LitString", query, proj.Projections[0].Expr)
 			}
+			last := proj.Projections[len(proj.Projections)-1]
+			if last.Alias != chplan.MixedDiscriminatorColumn {
+				t.Fatalf("lower(%q): last projection alias = %q, want %q", query, last.Alias, chplan.MixedDiscriminatorColumn)
+			}
 			filter, ok := proj.Input.(*chplan.Filter)
 			if !ok {
-				t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter (float,float keep predicate)", query, proj.Input)
+				t.Fatalf("lower(%q): Project.Input is %T, want *chplan.Filter (the same-type keep predicate)", query, proj.Input)
 			}
-			if _, ok := filter.Input.(*chplan.MixedVectorJoin); !ok {
-				t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.MixedVectorJoin", query, filter.Input)
+			mergeInputs, ok := filter.Input.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): Filter.Input is %T, want *chplan.Project (the merge-array materialisation)", query, filter.Input)
+			}
+			if _, ok := mergeInputs.Input.(*chplan.MixedVectorJoin); !ok {
+				t.Fatalf("lower(%q): merge-input Project.Input is %T, want *chplan.MixedVectorJoin", query, mergeInputs.Input)
 			}
 		})
 	}
@@ -126,10 +136,11 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorScaledArithmetic(t *testing
 // Vector-vector COMPARISONS over two mixed `or` operands are implemented
 // by histogram_native_mixed_or_vector_comparison.go, whose own test file
 // (histogram_native_mixed_or_vector_comparison_test.go) pins the
-// four-combination plan shape. group_left()/group_right() and the
-// histogram,histogram `+`/`-` merge remain cerberus issue #2449's open
-// scope (see this package's histogram_native_mixed_or_vector_arithmetic.go
-// header for the full accounting).
+// four-combination plan shape. `^`/`%`/`atan2` over two mixed `or`
+// operands, and a mixed `or` operand paired with a plain (non-mixed)
+// vector, remain cerberus issue #2449's open scope (see this package's
+// histogram_native_mixed_or_vector_arithmetic.go header for the full
+// accounting).
 
 // TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowStillRejects pins
 // that `^`/`%`/`atan2` over two mixed `or` operands remain unimplemented

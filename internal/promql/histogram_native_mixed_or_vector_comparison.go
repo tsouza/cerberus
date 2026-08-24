@@ -94,7 +94,8 @@ import (
 // name to "" for EVERY surviving row (`dropMetricName := ...&&
 // returnBool`) — the output is always FLOAT-valued, a plain 4-column
 // Sample [chplan.RowShapeOf] resolves to [chplan.SampleRowShape] via its
-// default case, mirroring [lowerMixedVVFloatOnlyArithmetic]'s own shape.
+// default case, mirroring histogram_native_mixed_or_arithmetic.go's own
+// drop-family Project.
 // The Value fold is `if(<bothFloat>, toFloat64(<float compare>),
 // toFloat64(<histogram field compare>))` for `==`/`!=` (the only two ops
 // where the histogram,histogram branch can ever be reached — the `if`'s
