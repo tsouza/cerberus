@@ -35,14 +35,16 @@ import (
 // so the two recognisers stay disjoint without an explicit exclusion
 // here.
 //
-// on()/ignoring() reduced-key matching and the "histogram is the many
-// side" group_left()/group_right() broadcast are recognised as of
-// cerberus issue #2342, by threading vm's Match/Card/Include straight
-// onto [chplan.HistogramFloatVectorJoin] — that node's own Match field
-// and the chsql emitter's shared join-key helpers (matchKeyGroupExprFrag,
-// vectorMatchPredicateFrag, outputMatchSetFrag) already generalise over
-// chplan.VectorMatch / chplan.VectorCard, so widening needed no new
-// chplan/chsql join mechanics — see internal/chsql/histogram_float_
+// on()/ignoring() reduced-key matching and the group_left()/
+// group_right() broadcast — in EITHER direction, regardless of which
+// side of the PromQL expression the histogram operand was written on —
+// are recognised as of cerberus issues #2342 and #2537, by threading
+// vm's Match/Card/Include onto [chplan.HistogramFloatVectorJoin]. That
+// node's own Match field and the chsql emitter's shared join-key helpers
+// (matchKeyGroupExprFrag, vectorMatchPredicateFrag, outputMatchSetFrag)
+// already generalise over chplan.VectorMatch / chplan.VectorCard, so
+// this widening needed no new chplan/chsql join mechanics beyond the
+// CardOneToMany role split — see internal/chsql/histogram_float_
 // vector_join.go's own header doc for the per-side role split this
 // unlocks.
 //
@@ -50,32 +52,29 @@ import (
 // PromQL AST's actual LHS/RHS (`group_left()` keeps the syntactic LHS
 // many; `group_right()` keeps the syntactic RHS many), but
 // chplan.HistogramFloatVectorJoin.Left is ALWAYS the histogram operand
-// regardless of which side of `*`/`/` it was written on. The `histIsLHS`
-// check below resolves that: only the shape where the histogram operand is
-// the AST's "many" side is supported — `demo_latency_exp_hist * on(job)
-// group_left() float_vec` (hist LHS, group_left) and its mirror-image
-// operand order `float_vec * on(job) group_right() demo_latency_exp_hist`
-// (hist RHS, group_right) both map onto chplan.CardManyToOne (Left many,
-// Right one); the reverse cardinality — the histogram side broadcasting
-// as the "one" against many float rows — is not supported and falls
-// through to the pre-existing catch-all rejection rather than being
-// silently mis-joined.
+// regardless of which side of `*`/`/` it was written on. The `histLHS`
+// flag computed below resolves that mismatch by picking the chplan Card
+// that keeps the SAME physical role the PromQL cardinality keyword
+// names: `demo_latency_exp_hist * on(job) group_left() float_vec` (hist
+// LHS, group_left) and its mirror-image operand order `float_vec *
+// on(job) group_right() demo_latency_exp_hist` (hist RHS, group_right)
+// both keep the histogram "many", so both map onto chplan.CardManyToOne
+// (Left many, Right one); `float_vec * on(job) group_left()
+// demo_latency_exp_hist` (hist RHS, group_left) and `demo_latency_exp_hist
+// * on(job) group_right() float_vec` (hist LHS, group_right) both keep
+// the histogram "one" — broadcasting the single matched histogram across
+// every matching float row — so both map onto chplan.CardOneToMany (Left
+// one, Right many).
 //
-// CardOneToOne with an on()/ignoring() reduced key has the same
-// asymmetry for a different reason: Prometheus's resultMetric reduces
-// the ACTUAL SYNTACTIC LHS operand's own labels (Keep for on(),
-// Del for ignoring()), and chplan.HistogramFloatVectorJoin always
-// publishes the reduction over Left (the histogram side)'s own
-// Attributes — see internal/chsql's histogramFloatVectorJoinOutputAttributesFrag.
-// So a reduced-key CardOneToOne match is only recognised when the
-// histogram operand IS the syntactic LHS; the mirror MUL order (`float_vec
-// * on(job) demo_latency_exp_hist`, no group modifier) falls through to
-// the catch-all rejection rather than reducing the wrong operand's
-// labels. DEFAULT (full-Attributes) CardOneToOne matching is unaffected
-// by this restriction — Keep/Del is then a no-op, so it makes no
-// difference which operand's Attributes the (byte-identical) output
-// derives from, and both MUL orders stay supported exactly as #2339
-// shipped them.
+// CardOneToOne with an on()/ignoring() reduced key needs no such
+// operand-order tracking, even though Prometheus's resultMetric reduces
+// the ACTUAL SYNTACTIC LHS operand's own labels (Keep for on(), Del for
+// ignoring()) while chplan.HistogramFloatVectorJoin.Left is always the
+// histogram side: as [chplan.HistogramFloatVectorJoin]'s own doc proves,
+// the join's ON-clause equality already forces both sides' reduced
+// Attributes to be byte-identical for any row that joins at all, so the
+// emitter reduces Left unconditionally and both MUL/DIV operand orders
+// stay supported without the recognizer having to pick a side.
 //
 // Wired at [lowerRoot] ahead of [expHistogramDroppingVectorBinop] — the
 // same TOP-LEVEL-only dispatch point as its siblings, mirroring how the
@@ -125,7 +124,7 @@ func expHistogramFloatVectorScalingBinop(expr parser.Expr, s schema.Metrics, ctx
 	default:
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
-	histIsLHS := hist == b.LHS
+	histLHS := hist == b.LHS
 
 	vm := b.VectorMatching
 	promCard := parser.CardOneToOne
@@ -135,13 +134,6 @@ func expHistogramFloatVectorScalingBinop(expr parser.Expr, s schema.Metrics, ctx
 
 	switch promCard {
 	case parser.CardOneToOne:
-		if vm != nil && (len(vm.MatchingLabels) > 0 || vm.On) && !histIsLHS {
-			// See this file's header doc: a reduced-key CardOneToOne
-			// match must reduce the syntactic LHS operand's own
-			// labels, which the emitter only knows how to do for the
-			// histogram (Left) side.
-			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
-		}
 		m := chplan.VectorMatch{}
 		if vm != nil {
 			m.Labels = append([]string(nil), vm.MatchingLabels...)
@@ -149,29 +141,36 @@ func expHistogramFloatVectorScalingBinop(expr parser.Expr, s schema.Metrics, ctx
 		}
 		return hist, float, chOp, m, chplan.CardOneToOne, nil, true
 	case parser.CardManyToOne:
-		// group_left() keeps the syntactic LHS "many" — only supported
-		// when the histogram operand IS that LHS.
-		if !histIsLHS {
-			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
+		// group_left() keeps the syntactic LHS "many". When the
+		// histogram operand IS that LHS, the histogram stays "many" —
+		// chplan.CardManyToOne (Left/histogram many, Right/float one).
+		// Otherwise the histogram operand is the RHS, which group_left()
+		// keeps as the "one" side — chplan.CardOneToMany (Left/histogram
+		// one, broadcasting across every matching Right/float row).
+		m := chplan.VectorMatch{Labels: append([]string(nil), vm.MatchingLabels...), On: vm.On}
+		inc := append([]string(nil), vm.Include...)
+		chCard := chplan.CardOneToMany
+		if histLHS {
+			chCard = chplan.CardManyToOne
 		}
+		return hist, float, chOp, m, chCard, inc, true
 	case parser.CardOneToMany:
-		// group_right() keeps the syntactic RHS "many" — only
-		// supported when the histogram operand IS that RHS.
-		if histIsLHS {
-			return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
+		// group_right() keeps the syntactic RHS "many". When the
+		// histogram operand is that RHS, the histogram stays "many" —
+		// chplan.CardManyToOne (Left/histogram many, Right/float one).
+		// Otherwise the histogram operand is the LHS, which
+		// group_right() keeps as the "one" side — chplan.CardOneToMany
+		// (Left/histogram one, broadcast).
+		m := chplan.VectorMatch{Labels: append([]string(nil), vm.MatchingLabels...), On: vm.On}
+		inc := append([]string(nil), vm.Include...)
+		chCard := chplan.CardManyToOne
+		if histLHS {
+			chCard = chplan.CardOneToMany
 		}
+		return hist, float, chOp, m, chCard, inc, true
 	default:
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
-	// Both branches above land here only once confirmed hist-many:
-	// chplan.HistogramFloatVectorJoin.Left is ALWAYS the histogram
-	// operand, so CardManyToOne (hist LHS) and CardOneToMany (hist RHS)
-	// both map onto the SAME chplan.CardManyToOne (Left many, Right
-	// one) regardless of which PromQL cardinality keyword produced
-	// them.
-	m := chplan.VectorMatch{Labels: append([]string(nil), vm.MatchingLabels...), On: vm.On}
-	inc := append([]string(nil), vm.Include...)
-	return hist, float, chOp, m, chplan.CardManyToOne, inc, true
 }
 
 // lowerExpHistogramFloatVectorScalingBinop lowers the shape
