@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:lowerBinary#47ece6fd",
+      "message": "promql: scalar-only binary expression not folded (op %s) — internal invariant violation",
+      "class": "internal",
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch",
+      "evidence": {
+        "guard": [
+          "past returning if v, ok := TryFoldScalar(b); ok",
+          "past returning if b.Op.IsSetOperator()",
+          "past returning if err != nil",
+          "case lhsIsScalar \u0026\u0026 rhsIsScalar of switch"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverBinary"
+        ]
+      }
+    }
+  ]
+}

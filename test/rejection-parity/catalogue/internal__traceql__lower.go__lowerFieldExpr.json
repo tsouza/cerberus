@@ -1,0 +1,27 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerFieldExpr#3f3859bf",
+      "message": "traceql: field expression %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every field-expression type the pinned grammar produces is handled",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := e.(type) over [case *traceql.BinaryOperation; case *traceql.UnaryOperation; case traceql.UnaryOperation; case *traceql.Attribute; case traceql.Attribute; case *traceql.Static; case traceql.Static]"
+        ],
+        "callers": [
+          "lowerBooleanFieldExpr",
+          "lowerGroup",
+          "lowerMetricsCompare",
+          "lowerNestedAttrBinary",
+          "lowerNestedIntrinsicBinary",
+          "lowerNestedSetBinary",
+          "lowerTraceScopedBinary",
+          "lowerUnaryMinus",
+          "scalarAggLeaf"
+        ]
+      }
+    }
+  ]
+}

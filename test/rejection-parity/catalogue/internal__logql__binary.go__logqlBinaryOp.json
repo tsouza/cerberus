@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlBinaryOp#5dca11c4",
+      "message": "logql: unknown binary op %s",
+      "class": "internal",
+      "rationale": "unreachable: the parser produces only the 12 arithmetic/comparison ops (all mapped) plus and/or/unless, which lowerBinary routes to lowerVectorSetOp before this map is consulted",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpTypeAdd; case syntax.OpTypeSub; case syntax.OpTypeMul; case syntax.OpTypeDiv; case syntax.OpTypeMod; case syntax.OpTypePow; case syntax.OpTypeCmpEQ; case syntax.OpTypeNEQ; case syntax.OpTypeLT; case syntax.OpTypeLTE; case syntax.OpTypeGT; case syntax.OpTypeGTE]"
+        ],
+        "callers": [
+          "lowerBinary"
+        ],
+        "cited": [
+          "lowerBinary",
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}

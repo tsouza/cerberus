@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:labelFiltererLower#6274bc0d",
+      "message": "logql: unsupported label filterer %T",
+      "class": "internal",
+      "rationale": "unreachable: all seven parser-producible LabelFilterer types are handled (String, LineFilter, Binary, Numeric, Duration, Bytes, IP); NoopLabelFilter only arises from stage-building (ReduceAndLabelFilter on an empty list), never from the AST",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := lf.(type) over [case *syntax.StringLabelFilter; case *syntax.BinaryLabelFilter; case *syntax.NumericLabelFilter; case *syntax.DurationLabelFilter; case *syntax.BytesLabelFilter; case *syntax.IPLabelFilter]"
+        ],
+        "callers": [
+          "applyUnwrapPostFilters",
+          "labelFiltererLower",
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    }
+  ]
+}

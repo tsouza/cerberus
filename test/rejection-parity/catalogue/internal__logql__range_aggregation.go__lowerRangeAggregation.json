@@ -1,0 +1,42 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#1a3d0c76",
+      "message": "logql: quantile_over_time requires a phi parameter",
+      "class": "internal",
+      "rationale": "the parser rejects quantile_over_time without a parameter before lowering",
+      "evidence": {
+        "guard": [
+          "past returning if e.Left == nil",
+          "past returning if e.Operation == syntax.OpRangeTypeAbsent",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if e.Operation == syntax.OpRangeTypeQuantile",
+          "if e.Params == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/range_aggregation.go:lowerRangeAggregation#de7d6b8c",
+      "message": "logql: range-aggregation has nil inner",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a range aggregation with a nil inner",
+      "evidence": {
+        "guard": [
+          "if e.Left == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    }
+  ]
+}

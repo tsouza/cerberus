@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:requirePositiveInnerRange#4050ccb7",
+      "message": "promql: inner subquery range must be positive, got %s",
+      "class": "internal",
+      "rationale": "the parser rejects non-positive subquery ranges (\"duration must be greater than 0\")",
+      "evidence": {
+        "guard": [
+          "if innerSub.Range \u003c= 0"
+        ],
+        "callers": [
+          "lowerSubqueryOverCallSubquery",
+          "lowerSubqueryOverSubquery"
+        ]
+      }
+    }
+  ]
+}

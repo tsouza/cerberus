@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFnHistogramValuedArg#9dc0372b",
+      "message": "promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T",
+      "class": "internal",
+      "rationale": "lowerExpHistogramValuedShape's every matched branch (histogram_native_float_fn.go) answers with a producer whose chplan.RowShapeOf is HistogramRowShape — a *chplan.HistogramProjection directly, or a *chplan.VectorSetOp/*chplan.NaryVectorSetOp/*chplan.InfoJoin/*chplan.TopK with its own Histogram flag set, each of which chplan.RowShapeOf recognises as HistogramRowShape by construction (internal/chplan/row_shape.go). matched=true therefore guarantees the shape check below it, so this arm cannot fire for any currently-matched shape.",
+      "evidence": {
+        "guard": [
+          "past returning if !matched",
+          "past returning if err != nil",
+          "if chplan.RowShapeOf(hist) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerHistogramValueFn"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    }
+  ]
+}

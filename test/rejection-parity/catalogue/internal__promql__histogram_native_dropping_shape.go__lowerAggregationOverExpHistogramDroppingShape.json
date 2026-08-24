@@ -1,0 +1,26 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_dropping_shape.go:lowerAggregationOverExpHistogramDroppingShape#5842fa26",
+      "message": "promql: internal invariant violated: aggregation input is not a known exp-histogram dropping shape: %v",
+      "class": "internal",
+      "rationale": "this lowerer's sole caller, lowerExpHistogramDroppingShape, only invokes it after aggregationOverExpHistogramDroppingShape's own isExpHistogramDroppingShape(agg.Expr, s, ctx) predicate has already proven agg.Expr matches one of lowerExpHistogramDroppingShape's own recognized shapes — isExpHistogramDroppingShape and lowerExpHistogramDroppingShape dispatch the identical ordered set of recognizers, so a positive predicate guarantees the immediately-following lowering call also matches.",
+      "evidence": {
+        "guard": [
+          "past returning if err := validateHistogramDroppingAggregationParam(agg, s, ctx); err != nil",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerExpHistogramDroppingShape"
+        ],
+        "cited": [
+          "aggregationOverExpHistogramDroppingShape",
+          "isExpHistogramDroppingShape",
+          "lowerExpHistogramDroppingShape"
+        ]
+      }
+    }
+  ]
+}

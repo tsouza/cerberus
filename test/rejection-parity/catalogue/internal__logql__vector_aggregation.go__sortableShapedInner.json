@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:sortableShapedInner#4f64fcaa",
+      "message": "logql: vector-aggregation inner is not an Expr (%T)",
+      "class": "internal",
+      "rationale": "internal invariant: the parser's vector-aggregation inner always implements syntax.Expr (mirror of lowerVectorAggregation#4f64fcaa)",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerSort",
+          "lowerTopK"
+        ],
+        "cited": [
+          "lowerVectorAggregation"
+        ]
+      }
+    }
+  ]
+}

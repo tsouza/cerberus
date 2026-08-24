@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/sort.go:lowerSortByLabel#e60a47b8",
+      "message": "promql: %s expects at least 1 argument (vector[, label…]), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: sort_by_label is declared Variadic -1 over one mandatory instant-vector argument, so a zero-argument call never parses",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

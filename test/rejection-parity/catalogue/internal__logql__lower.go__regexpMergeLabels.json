@@ -1,0 +1,73 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#6038cf5d",
+      "message": "logql: `| regexp` pattern %q has no named captures",
+      "class": "internal",
+      "rationale": "the parser pre-validates capture-less regexp patterns as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "past returning if err != nil",
+          "if len(named) == 0"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#83255883",
+      "message": "logql: invalid `| regexp` pattern %q: %w",
+      "class": "internal",
+      "rationale": "the parser pre-validates the regexp; a compile failure is a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#e2424d2e",
+      "message": "logql: `| regexp` pattern has duplicate named capture %q",
+      "class": "internal",
+      "rationale": "the parser pre-validates duplicate named captures as a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if pattern == \"\"",
+          "past returning if err != nil",
+          "if _, dup := seen[n]; dup"
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:regexpMergeLabels#fabd1568",
+      "message": "logql: `| regexp` requires a non-empty pattern",
+      "class": "internal",
+      "rationale": "the parser pre-validates `| regexp \"\"` (\"at least one named capture must be supplied\") as a parse error",
+      "evidence": {
+        "guard": [
+          "if pattern == \"\""
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    }
+  ]
+}

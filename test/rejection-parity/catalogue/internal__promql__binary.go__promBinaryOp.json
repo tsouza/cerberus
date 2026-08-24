@@ -1,0 +1,76 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promBinaryOp#2d85dac3",
+      "message": "promql: vector set op %s should route through lowerVectorSetOp",
+      "class": "internal",
+      "rationale": "internal routing invariant: set operators are dispatched to lowerVectorSetOp before op mapping, for every caller — lowerBinary and lowerScalarArg route a parser.BinaryExpr's own set-operator check first, and expHistogramScalarBinop (cerberus issue #2087) never reaches this function with a set-operator op at all: it calls promBinaryOp only after confirming b.Op is MUL or DIV. expHistogramFloatVectorScalingBinop (cerberus issue #2339) holds to the same constraint: it guards `b.Op != parser.MUL \u0026\u0026 b.Op != parser.DIV` before ever reaching the promBinaryOp call, so it cannot pass a set-operator op either. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) holds the identical constraint: it returns early on `b.Op.IsSetOperator()` before its own promBinaryOp call, so it too can never pass a set-operator op through. comparisonOverMixedExpHistogramSetOp (cerberus issue #2449) only proceeds past its own `!b.Op.IsComparisonOperator()` guard for one of the six comparison ItemTypes, none of which IsSetOperator answers true for (LAND/LOR/LUNLESS are the only set operators, disjoint from the comparison set), so it too can never pass a set-operator op through. mulOrDivScaleOverMixedExpHistogramSetOp (cerberus issue #2449) returns early unless `b.Op == parser.MUL || b.Op == parser.DIV`, neither of which IsSetOperator answers true for, before ever reaching the promBinaryOp call, so it too can never pass a set-operator op through. vectorVectorArithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) returns early on `b.Op.IsSetOperator()` — the identical guard arithmeticOverMixedExpHistogramSetOp uses — before its own promBinaryOp call, so it too can never pass a set-operator op through. comparisonVectorVectorOverMixedExpHistogramSetOp (cerberus issue #2449) is the newest caller: it holds the identical `!b.Op.IsComparisonOperator()` guard comparisonOverMixedExpHistogramSetOp uses, restricting it to the same six comparison ItemTypes disjoint from LAND/LOR/LUNLESS, so it too can never pass a set-operator op through.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
+          "if op.IsSetOperator()"
+        ],
+        "callers": [
+          "arithmeticOverMixedExpHistogramSetOp",
+          "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
+          "expHistogramFloatVectorScalingBinop",
+          "expHistogramScalarBinop",
+          "lowerBinary",
+          "lowerScalarArg",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ],
+        "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
+          "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
+          "expHistogramFloatVectorScalingBinop",
+          "expHistogramScalarBinop",
+          "lowerBinary",
+          "lowerScalarArg",
+          "lowerVectorSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
+          "promBinaryOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promBinaryOp#63a5ec6e",
+      "message": "promql: binary op %s unsupported",
+      "class": "internal",
+      "rationale": "Every binary operator the PromQL parser produces now maps to a chplan op (arithmetic including pow and atan2, all six comparisons); set operators route through lowerVectorSetOp before this function is called — no parseable operator reaches the default arm. expHistogramScalarBinop (cerberus issue #2087) narrows further still: it only ever calls promBinaryOp with MUL or DIV, both already covered by the switch above. expHistogramFloatVectorScalingBinop (cerberus issue #2339) holds the identical narrowing: its own MUL/DIV guard runs before the promBinaryOp call, so it too only ever supplies an operator the switch already covers. arithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) only ever calls promBinaryOp with an operator promBinaryOp's own switch above already maps — it rejects comparison ops and set ops before reaching that call, and every arithmetic op it forwards (ADD, SUB, MUL, DIV, MOD, POW, ATAN2) is already covered. comparisonOverMixedExpHistogramSetOp (cerberus issue #2449) only ever calls promBinaryOp after its own `b.Op.IsComparisonOperator()` guard confirms one of EQLC/NEQ/LSS/LTE/GTR/GTE — all six already covered by the switch above. mulOrDivScaleOverMixedExpHistogramSetOp (cerberus issue #2449) only ever calls promBinaryOp with MUL or DIV, both already covered by the switch above — it returns early on every other operator before reaching that call. vectorVectorArithmeticOverMixedExpHistogramSetOp (cerberus issue #2449) only ever calls promBinaryOp with one of ADD, SUB, MUL, DIV — its own leading switch falls through unmatched for every other operator, including MOD/POW/ATAN2, before reaching the promBinaryOp call — and all four are already covered by the switch above. comparisonVectorVectorOverMixedExpHistogramSetOp (cerberus issue #2449) is the newest caller: it holds the identical `b.Op.IsComparisonOperator()` guard comparisonOverMixedExpHistogramSetOp uses, so it too only ever supplies one of the six comparison ItemTypes the switch above already covers.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.ADD; case parser.SUB; case parser.MUL; case parser.DIV; case parser.MOD; case parser.POW; case parser.ATAN2; case parser.EQLC; case parser.NEQ; case parser.LSS; case parser.LTE; case parser.GTR; case parser.GTE]",
+          "past returning if op.IsSetOperator()"
+        ],
+        "callers": [
+          "arithmeticOverMixedExpHistogramSetOp",
+          "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
+          "expHistogramFloatVectorScalingBinop",
+          "expHistogramScalarBinop",
+          "lowerBinary",
+          "lowerScalarArg",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ],
+        "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
+          "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
+          "expHistogramFloatVectorScalingBinop",
+          "expHistogramScalarBinop",
+          "lowerVectorSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
+          "promBinaryOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

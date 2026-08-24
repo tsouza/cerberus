@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantiles#b20609dc",
+      "message": "promql: histogram_quantiles expects at least %d arguments (vector, label, phi...), got %d",
+      "class": "internal",
+      "rationale": "parser-enforced minimum arity: histogram_quantiles is declared with 4 ArgTypes (vector, string, scalar, scalar) and Variadic:9, so the parser rejects fewer than len(ArgTypes)-1 = 3 arguments (\"expected at least 3 argument(s)\") before lowering runs.",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) \u003c histogramQuantilesMinArgs"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

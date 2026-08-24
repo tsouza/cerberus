@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerStaticArray#d179f2fa",
+      "message": "traceql: IN comparison RHS literal type %s is not an array",
+      "class": "internal",
+      "rationale": "Defensive: only invoked for an OpIn/OpNotIn RHS, which the parser guarantees is an array-typed Static, so the non-array branch is unreachable.",
+      "evidence": {
+        "guard": [
+          "past returning if strs, ok := st.StringArray(); ok",
+          "past returning if ints, ok := st.IntArray(); ok",
+          "past returning if floats, ok := st.FloatArray(); ok",
+          "past returning if bools, ok := st.BooleanArray(); ok"
+        ],
+        "callers": [
+          "lowerInOperation"
+        ]
+      }
+    }
+  ]
+}

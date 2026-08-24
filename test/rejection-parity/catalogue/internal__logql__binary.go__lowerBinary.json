@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#4879747f",
+      "message": "logql: binary expression has nil leg(s)",
+      "class": "internal",
+      "rationale": "internal invariant: the pinned parser never yields a binary expression with nil legs",
+      "evidence": {
+        "guard": [
+          "if b.SampleExpr == nil || b.RHS == nil"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:lowerBinary#e16a89f2",
+      "message": "logql: scalar-only binary expression not folded (op %s) — internal invariant violation",
+      "class": "internal",
+      "rationale": "internal invariant (the message says so): scalar-only binaries are constant-folded before this branch",
+      "evidence": {
+        "guard": [
+          "past returning if b.SampleExpr == nil || b.RHS == nil",
+          "past returning if syntax.IsLogicalBinOp(b.Op)",
+          "past returning if err != nil",
+          "case lhsIsLit \u0026\u0026 rhsIsLit of switch"
+        ],
+        "callers": [
+          "lower"
+        ]
+      }
+    }
+  ]
+}

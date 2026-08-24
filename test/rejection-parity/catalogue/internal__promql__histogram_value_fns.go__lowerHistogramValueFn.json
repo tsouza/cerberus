@@ -1,0 +1,36 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#5337b47e",
+      "message": "promql: histogram_fraction expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for histogram_fraction at parse time; a wrong-arity call never reaches lowering.",
+      "evidence": {
+        "guard": [
+          "if c.Func.Name == \"histogram_fraction\"",
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#749adc13",
+      "message": "promql: %s expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "The PromQL parser enforces builtin arity for the one-argument histogram value functions at parse time; a wrong-arity call never reaches lowering.",
+      "evidence": {
+        "guard": [
+          "else of if c.Func.Name == \"histogram_fraction\"",
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

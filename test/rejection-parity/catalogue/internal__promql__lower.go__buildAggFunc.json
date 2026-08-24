@@ -1,0 +1,93 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#4353c2b3",
+      "message": "promql: %s must be lowered by lowerCountValues, not the generic aggregate path",
+      "class": "internal",
+      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted. lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG (expHistogramAggOpIsMergeable), never COUNT_VALUES, so it cannot reach this branch either",
+      "evidence": {
+        "guard": [
+          "case parser.COUNT_VALUES of switch a.Op"
+        ],
+        "callers": [
+          "lowerAggregate",
+          "lowerPlainAggOverMixedFloatArm"
+        ],
+        "cited": [
+          "buildAggFunc",
+          "expHistogramAggOpIsMergeable",
+          "lowerCountValues",
+          "lowerPlainAggOverMixedFloatArm",
+          "lowerSubqueryOverCountValues",
+          "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#54d1c35e",
+      "message": "promql: aggregation %s does not take a parameter",
+      "class": "internal",
+      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Param sumOrAvgOverMixedExpHistogramSetOp already confirmed is nil, so it cannot reach this branch either",
+      "evidence": {
+        "guard": [
+          "case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR of switch a.Op",
+          "if a.Param != nil"
+        ],
+        "callers": [
+          "lowerAggregate",
+          "lowerPlainAggOverMixedFloatArm"
+        ],
+        "cited": [
+          "lowerPlainAggOverMixedFloatArm",
+          "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#80287dba",
+      "message": "promql: group() does not take a parameter",
+      "class": "internal",
+      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG (expHistogramAggOpIsMergeable), never GROUP, so it cannot reach this branch either",
+      "evidence": {
+        "guard": [
+          "case parser.GROUP of switch a.Op",
+          "if a.Param != nil"
+        ],
+        "callers": [
+          "lowerAggregate",
+          "lowerPlainAggOverMixedFloatArm"
+        ],
+        "cited": [
+          "expHistogramAggOpIsMergeable",
+          "lowerPlainAggOverMixedFloatArm",
+          "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
+      "message": "promql: aggregation op %s is not yet supported",
+      "class": "internal",
+      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered. lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG — both handled by the switch's first case — so it cannot reach this default arm either",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch a.Op over [case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR; case parser.GROUP; case parser.QUANTILE; case parser.COUNT_VALUES]"
+        ],
+        "callers": [
+          "lowerAggregate",
+          "lowerPlainAggOverMixedFloatArm"
+        ],
+        "cited": [
+          "buildAggFunc",
+          "lowerAggregate",
+          "lowerPlainAggOverMixedFloatArm",
+          "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

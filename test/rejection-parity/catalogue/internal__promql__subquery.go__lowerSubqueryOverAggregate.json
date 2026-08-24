@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverAggregate#534fdfbe",
+      "message": "promql: subquery over %s aggregation is not supported",
+      "class": "internal",
+      "rationale": "every parser aggregation op is dispatched by the switch above this default arm (the eight per-bucket reducers plus quantile, topk/bottomk/limitk, limit_ratio and count_values), so no parseable query reaches it",
+      "evidence": {
+        "guard": [
+          "default of switch agg.Op over [case parser.TOPK, parser.BOTTOMK, parser.LIMITK; case parser.COUNT_VALUES; case parser.LIMIT_RATIO; case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR, parser.GROUP, parser.QUANTILE; default]"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ]
+      }
+    }
+  ]
+}

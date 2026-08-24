@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:mapSecondStageOp#76dac09c",
+      "message": "traceql: second-stage op %s is not supported",
+      "class": "internal",
+      "rationale": "the grammar's metrics second stages are exactly topk / bottomk, both mapped",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case traceql.OpTopK; case traceql.OpBottomK]"
+        ],
+        "callers": [
+          "lowerTopKBottomK"
+        ]
+      }
+    }
+  ]
+}

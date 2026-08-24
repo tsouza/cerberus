@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:evalIntCmp#e6d8e3f6",
+      "message": "traceql: operator %s is unsupported on nestedSetParent",
+      "class": "internal",
+      "rationale": "non-comparison operators never reach the nested-set evaluation: regex / arithmetic shapes fail the integer-literal check first",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case chplan.OpEq; case chplan.OpNe; case chplan.OpLt; case chplan.OpLe; case chplan.OpGt; case chplan.OpGe]"
+        ],
+        "callers": [
+          "rootnessReduction"
+        ]
+      }
+    }
+  ]
+}

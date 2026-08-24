@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/instant_fns.go:lowerInstantFn#ce14c98d",
+      "message": "promql: %s with %d arguments is unsupported (instant math fns are unary)",
+      "class": "internal",
+      "rationale": "parser-enforced arity: the unary instant math functions are pinned at one argument in parser.Functions",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall"
+        ]
+      }
+    }
+  ]
+}

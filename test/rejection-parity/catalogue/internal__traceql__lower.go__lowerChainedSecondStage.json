@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#9a3a2523",
+      "message": "traceql: chained second-stage element/separator length mismatch (%d vs %d)",
+      "class": "internal",
+      "rationale": "internal invariant: upstream's ChainedSecondStage keeps Elements and Separators in lock-step",
+      "evidence": {
+        "guard": [
+          "past returning if len(elements) == 0",
+          "if seps := c.Separators(); len(seps) != len(elements)"
+        ],
+        "callers": [
+          "lowerMetricsSecondStage"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerChainedSecondStage#add566ca",
+      "message": "traceql: chained second-stage has no elements",
+      "class": "internal",
+      "rationale": "internal invariant: the parser never yields a chained second stage with zero elements",
+      "evidence": {
+        "guard": [
+          "if len(elements) == 0"
+        ],
+        "callers": [
+          "lowerMetricsSecondStage"
+        ]
+      }
+    }
+  ]
+}

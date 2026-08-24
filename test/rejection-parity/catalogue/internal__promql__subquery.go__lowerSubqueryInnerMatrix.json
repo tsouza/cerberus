@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryInnerMatrix#3a78d724",
+      "message": "promql: subquery over aggregation of %T is unsupported",
+      "class": "internal",
+      "rationale": "An aggregation's argument must type-check as an instant vector, and every instant-vector AST shape is dispatched (paren, call, selector, binary, unary, nested aggregate); scalar- and string-typed inners are parse-time type errors.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch inner := expr.(type) over [case *parser.ParenExpr; case *parser.Call; case *parser.VectorSelector; case *parser.BinaryExpr; case *parser.UnaryExpr; case *parser.AggregateExpr]"
+        ],
+        "callers": [
+          "lowerSubqueryInnerMatrix",
+          "lowerSubqueryOverAggregate",
+          "lowerSubqueryOverCountValues",
+          "lowerSubqueryOverLimitRatio",
+          "lowerSubqueryOverTopK"
+        ]
+      }
+    }
+  ]
+}

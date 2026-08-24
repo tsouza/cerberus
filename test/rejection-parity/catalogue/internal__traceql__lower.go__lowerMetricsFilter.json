@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#20c8f8b5",
+      "message": "traceql: metrics filter operator %s is not a supported threshold comparison",
+      "class": "internal",
+      "rationale": "the grammar restricts metrics-filter operators to the six threshold comparisons, all of which pass isThresholdBinaryOp",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if !isThresholdBinaryOp(op)"
+        ],
+        "callers": [
+          "lowerMetricsSecondStage"
+        ],
+        "cited": [
+          "isThresholdBinaryOp"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsFilter#b2411d4d",
+      "message": "traceql: metrics filter operator %s: %w",
+      "class": "internal",
+      "rationale": "error-propagation wrapper (%w): the grammar restricts metrics-filter operators to the six threshold comparisons, all mapped",
+      "evidence": {
+        "guard": [
+          "if err != nil"
+        ],
+        "callers": [
+          "lowerMetricsSecondStage"
+        ]
+      }
+    }
+  ]
+}

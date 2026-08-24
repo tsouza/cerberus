@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerTopKBottomK#78efd9fa",
+      "message": "traceql: %s(%d): limit must be \u003e 0",
+      "class": "rejection",
+      "trigger_query": "{} | rate() by (span.name) | topk(0)",
+      "endpoint": "traceql_metrics",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "if limit \u003c= 0"
+        ],
+        "callers": [
+          "lowerMetricsSecondStage"
+        ]
+      }
+    }
+  ]
+}

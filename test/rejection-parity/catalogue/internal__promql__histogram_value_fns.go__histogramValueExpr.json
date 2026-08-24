@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:histogramValueExpr#1a671757",
+      "message": "promql: %s is not a native-histogram value function",
+      "class": "internal",
+      "rationale": "Dispatch invariant: lowerCall routes exactly the six native-histogram value-function names here, so the default arm cannot fire from a parseable query. lowerHistogramValueFnOverProjection (cerberus issue #2554) is a second caller as of this change, but it receives the identical *parser.Call c the bare-selector path already threads through the same lowerCall dispatch — it does not widen the set of Func.Name values that reach this switch.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch c.Func.Name over [case \"histogram_count\"; case \"histogram_sum\"; case \"histogram_avg\"; case \"histogram_stddev\"; case \"histogram_stdvar\"; case \"histogram_fraction\"]"
+        ],
+        "callers": [
+          "lowerHistogramValueFn",
+          "lowerHistogramValueFnOverProjection"
+        ],
+        "cited": [
+          "lowerCall",
+          "lowerHistogramValueFnOverProjection"
+        ]
+      }
+    }
+  ]
+}

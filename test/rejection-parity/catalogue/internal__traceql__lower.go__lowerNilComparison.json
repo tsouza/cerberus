@@ -1,0 +1,38 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#dbf30854",
+      "message": "traceql: nil comparison on %s.%s is unsupported — the configured schema has no %s column",
+      "class": "internal",
+      "rationale": "the default OTel-CH traces schema configures attribute columns for every scope this branch checks; reachable only under a schema override that drops one",
+      "evidence": {
+        "guard": [
+          "past returning if attr.Intrinsic != traceql.IntrinsicNone",
+          "past returning if op == traceql.OpNotExists \u0026\u0026 attr.Scope == traceql.AttributeScopeResource \u0026\u0026 attr.Name == \"service.name\"",
+          "if attr.Scope == traceql.AttributeScopeLink || attr.Scope == traceql.AttributeScopeEvent",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerUnaryOperation"
+        ]
+      }
+    },
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerNilComparison#fca86ae4",
+      "message": "traceql: %s = nil is not valid because resource.service.name cannot be nil",
+      "class": "rejection",
+      "trigger_query": "{ resource.service.name = nil }",
+      "evidence": {
+        "guard": [
+          "past returning if attr.Intrinsic != traceql.IntrinsicNone",
+          "if op == traceql.OpNotExists \u0026\u0026 attr.Scope == traceql.AttributeScopeResource \u0026\u0026 attr.Name == \"service.name\""
+        ],
+        "callers": [
+          "lowerUnaryOperation"
+        ]
+      }
+    }
+  ]
+}

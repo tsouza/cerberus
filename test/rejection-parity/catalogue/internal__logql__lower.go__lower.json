@@ -1,0 +1,26 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lower#5da77ba7",
+      "message": "logql: unsupported expression %T",
+      "class": "internal",
+      "rationale": "type-switch default: every top-level expression the pinned parser produces is handled (matchers / pipeline / range- and vector-aggregation / literal / vector / binop / label_replace / multi-variant); the default arm is unreachable from any wire query",
+      "evidence": {
+        "guard": [
+          "default of switch e := expr.(type) over [case *syntax.MatchersExpr; case *syntax.PipelineExpr; case *syntax.RangeAggregationExpr; case *syntax.VectorAggregationExpr; case *syntax.LiteralExpr; case *syntax.VectorExpr; case *syntax.BinOpExpr; case *syntax.LabelReplaceExpr; case *syntax.MultiVariantExpr; default]"
+        ],
+        "callers": [
+          "lowerLabelReplace",
+          "lowerMultiVariant",
+          "lowerVectorAggregation",
+          "lowerVectorScalar",
+          "lowerVectorSetOp",
+          "lowerVectorVector",
+          "lowerWithCtx",
+          "sortableShapedInner"
+        ]
+      }
+    }
+  ]
+}

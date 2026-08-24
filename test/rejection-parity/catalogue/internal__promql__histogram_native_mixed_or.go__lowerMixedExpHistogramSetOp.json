@@ -1,0 +1,47 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), so b.ReturnBool can never be true for the `or` BinaryExpr this function receives — a parser-level fact independent of which function calls it. Since cerberus issue #2528, lowerMixedExpHistogramFamily replaces lowerRoot as the direct caller (split out of lowerRoot's own body purely to keep that function's golangci-lint maintainability-index score over the repo's floor), and lowerLabelCallOverMixedExpHistogramSetOp, lowerMathFnOverMixedExpHistogramSetOp, lowerMulOrDivScaleOverMixedExpHistogramSetOp, lowerArithmeticOverMixedExpHistogramSetOp, lowerComparisonOverMixedExpHistogramSetOp and lowerVectorVectorArithmeticOverMixedExpHistogramSetOp remain the second through seventh callers (cerberus issue #2449) — all seven still hand this function the identical parser-produced BinaryExpr their own labelCallOverMixedExpHistogramSetOp, mathFnOverMixedExpHistogramSetOp, mulOrDivScaleOverMixedExpHistogramSetOp, arithmeticOverMixedExpHistogramSetOp and comparisonOverMixedExpHistogramSetOp recognizers only ever matched via mixedExpHistogramSetOp — the same node lowerRoot's own dispatch (now lowerMixedExpHistogramFamily's) would have received — so the claim is unchanged, the same way lowerVectorSetOp's identical check for the float case and lowerExpHistogramSetOp's identical check for the both-histogram case already establish. lowerVectorVectorArithmeticOverMixedExpHistogramSetOp and the eighth caller, lowerComparisonVectorVectorOverMixedExpHistogramSetOp (cerberus issue #2449's vector-vector comparison piece), each call this function TWICE per query (once for each operand's own mixed `or`), but every call passes one of the two inner `or` BinaryExprs vectorVectorArithmeticOverMixedExpHistogramSetOp / comparisonVectorVectorOverMixedExpHistogramSetOp matched via mixedExpHistogramSetOp — never the outer vector-vector BinaryExpr itself — so the identical reasoning holds for all four calls. In particular, comparisonOverMixedExpHistogramSetOp's and lowerComparisonVectorVectorOverMixedExpHistogramSetOp's own ReturnBool (set when the OUTER comparison carries `bool`) is never forwarded here: both callers pass only the inner `or` BinaryExpr mixedExpHistogramSetOp matched — the outer comparison's own BinaryExpr (whose ReturnBool may be true) is a distinct AST node this function never sees.",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerMathFnOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
+          "lowerVectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ],
+        "cited": [
+          "arithmeticOverMixedExpHistogramSetOp",
+          "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
+          "labelCallOverMixedExpHistogramSetOp",
+          "lowerArithmeticOverMixedExpHistogramSetOp",
+          "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
+          "lowerExpHistogramSetOp",
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerMathFnOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily",
+          "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
+          "lowerRoot",
+          "lowerVectorSetOp",
+          "lowerVectorVectorArithmeticOverMixedExpHistogramSetOp",
+          "mathFnOverMixedExpHistogramSetOp",
+          "mixedExpHistogramSetOp",
+          "mulOrDivScaleOverMixedExpHistogramSetOp",
+          "vectorVectorArithmeticOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}

@@ -75,21 +75,21 @@ func TestCatalogueIsRegenerable(t *testing.T) {
 	}
 }
 
-// TestShardNamesRoundTrip pins the shard-naming rule: every source file
-// the scan reaches maps to a shard name that maps back to the same
-// path, and the mapping refuses a path it could not represent
-// reversibly. Injectivity is the load-bearing half — two source files
-// sharing a shard would let one file's regeneration silently delete the
-// other's entries.
+// TestShardNamesRoundTrip pins the shard-naming rule: every site the
+// scan reaches maps to a shard name that maps back to the same
+// (file, function) key, and the mapping refuses a key it could not
+// represent reversibly. Injectivity is the load-bearing half — two
+// distinct (file, function) pairs sharing a shard would let one pair's
+// regeneration silently delete the other's entries.
 func TestShardNamesRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	cat := loadCatalogue(t)
 	owners := map[string]string{}
 	for _, e := range cat.Entries {
-		src, err := siteSourceFile(e.Site.Site)
+		src, err := siteShardKey(e.Site.Site)
 		if err != nil {
-			t.Fatalf("siteSourceFile(%q): %v", e.Site.Site, err)
+			t.Fatalf("siteShardKey(%q): %v", e.Site.Site, err)
 		}
 		name, err := shardName(src)
 		if err != nil {
@@ -97,12 +97,12 @@ func TestShardNamesRoundTrip(t *testing.T) {
 		}
 		if prev, ok := owners[name]; ok && prev != src {
 			t.Fatalf("shard %s is claimed by both %s and %s — the mapping is not injective, so one "+
-				"source file's regeneration would drop the other's entries", name, prev, src)
+				"(file, function) pair's regeneration would drop the other's entries", name, prev, src)
 		}
 		owners[name] = src
-		back, err := shardSourcePath(name)
+		back, err := shardSourceKey(name)
 		if err != nil {
-			t.Fatalf("shardSourcePath(%q): %v", name, err)
+			t.Fatalf("shardSourceKey(%q): %v", name, err)
 		}
 		if back != src {
 			t.Fatalf("shard %s reverses to %s, want %s", name, back, src)
@@ -115,24 +115,27 @@ func TestShardNamesRoundTrip(t *testing.T) {
 
 // TestShardNameRejectsAmbiguousPaths proves the injectivity guard is
 // not hollow: a path component carrying the separator, or an empty
-// component, is refused rather than aliased onto another file's shard.
+// component, is refused rather than aliased onto another shard.
 func TestShardNameRejectsAmbiguousPaths(t *testing.T) {
 	t.Parallel()
 
 	for _, bad := range []string{
-		"internal/promql/sub" + shardPathSeparator + "query.go",
-		"internal//lower.go",
+		"internal/promql/sub" + shardPathSeparator + "query.go/lowerSubquery",
+		"internal//lower.go/lowerCall",
 		"",
 	} {
 		if name, err := shardName(bad); err == nil {
 			t.Errorf("shardName(%q) = %q, want an error — the mapping cannot represent it reversibly", bad, name)
 		}
 	}
-	if _, err := shardSourcePath("internal__promql__lower.go"); err == nil {
-		t.Error("shardSourcePath accepted a name with no .json suffix, which is not a shard file")
+	if _, err := shardSourceKey("internal__promql__lower.go__lowerCall"); err == nil {
+		t.Error("shardSourceKey accepted a name with no .json suffix, which is not a shard file")
 	}
-	if _, err := siteSourceFile("no-colon-here"); err == nil {
-		t.Error("siteSourceFile accepted a key with no source-path prefix")
+	if _, err := siteShardKey("no-colon-here"); err == nil {
+		t.Error("siteShardKey accepted a key with no source-path prefix")
+	}
+	if _, err := siteShardKey("internal/promql/lower.go:no-hash-here"); err == nil {
+		t.Error("siteShardKey accepted a key with no #-separated function name")
 	}
 }
 
@@ -153,9 +156,9 @@ func TestWriteCataloguePrunesEmptiedShards(t *testing.T) {
 	if err := WriteCatalogue(dir, before); err != nil {
 		t.Fatalf("WriteCatalogue(before): %v", err)
 	}
-	gone := filepath.Join(dir, "internal__promql__b.go.json")
+	gone := filepath.Join(dir, "internal__promql__b.go__fnB.json")
 	if _, err := os.Stat(gone); err != nil {
-		t.Fatalf("shard for internal/promql/b.go was not written: %v", err)
+		t.Fatalf("shard for internal/promql/b.go:fnB was not written: %v", err)
 	}
 
 	after := &Catalogue{Entries: before.Entries[:1]}

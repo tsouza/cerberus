@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lowerStage#0809f4e6",
+      "message": "logql: pipeline stage %T is not yet supported",
+      "class": "internal",
+      "rationale": "type-switch default: every pipeline-stage type the pinned parser produces is handled",
+      "evidence": {
+        "guard": [
+          "default of switch st := stage.(type) over [case *syntax.LineFilterExpr; case *syntax.LabelFilterExpr; case *syntax.LineFmtExpr; case *syntax.DecolorizeExpr; case *syntax.LabelFmtExpr; case *syntax.LineParserExpr; case *syntax.LogfmtParserExpr; case *syntax.JSONExpressionParserExpr; case *syntax.LogfmtExpressionParserExpr; case *syntax.DropLabelsExpr; case *syntax.KeepLabelsExpr; default]"
+        ],
+        "callers": [
+          "lowerPipelineWithLabels"
+        ]
+      }
+    },
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:lowerStage#a7242d58",
+      "message": "logql: parser stage `| %s` is not yet supported",
+      "class": "internal",
+      "rationale": "every LineParserExpr op the pinned grammar produces (json / regexp / unpack / pattern) has its own case; bare `| logfmt` parses as LogfmtParserExpr",
+      "evidence": {
+        "guard": [
+          "case *syntax.LineParserExpr of switch st := stage.(type)",
+          "past exhaustive switch st.Op over [case syntax.OpParserTypePattern; case syntax.OpParserTypeUnpack; case syntax.OpParserTypeJSON; case syntax.OpParserTypeRegexp]"
+        ],
+        "callers": [
+          "lowerPipelineWithLabels"
+        ]
+      }
+    }
+  ]
+}

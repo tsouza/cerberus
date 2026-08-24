@@ -1,0 +1,35 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "count_values(\"\", up)",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
+    }
+  ]
+}

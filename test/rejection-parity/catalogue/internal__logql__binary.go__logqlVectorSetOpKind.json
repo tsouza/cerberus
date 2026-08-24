@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/binary.go:logqlVectorSetOpKind#a8c6abd9",
+      "message": "logql: not a vector set operator: %s",
+      "class": "internal",
+      "rationale": "unreachable: only called when syntax.IsLogicalBinOp(op) is true, and the three logical ops are all mapped",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case syntax.OpTypeAnd; case syntax.OpTypeOr; case syntax.OpTypeUnless]"
+        ],
+        "callers": [
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}

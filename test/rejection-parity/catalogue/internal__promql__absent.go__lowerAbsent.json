@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/absent.go:lowerAbsent#079d2385",
+      "message": "promql: absent() expects 1 argument, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins absent at exactly one argument",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 1"
+        ],
+        "callers": [
+          "lowerCall",
+          "lowerSubqueryOverAbsent"
+        ]
+      }
+    }
+  ]
+}

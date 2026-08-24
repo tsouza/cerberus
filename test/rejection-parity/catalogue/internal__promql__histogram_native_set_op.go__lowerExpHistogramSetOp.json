@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerVectorSetOp's identical check for the float case",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}

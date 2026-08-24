@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_quantile.go:lowerHistogramQuantile#afa8cb1f",
+      "message": "promql: histogram_quantile expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: parser.Functions pins histogram_quantile at exactly two arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 2"
+        ],
+        "callers": [
+          "lowerCall",
+          "lowerHistogramQuantiles"
+        ]
+      }
+    }
+  ]
+}

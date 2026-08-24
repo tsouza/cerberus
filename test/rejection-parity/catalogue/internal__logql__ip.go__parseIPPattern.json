@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/ip.go:parseIPPattern#a3ece11b",
+      "message": "logql: ip: invalid pattern %q",
+      "class": "rejection",
+      "trigger_query": "{app=\"x\"} |= ip(\"not-an-ip\")",
+      "evidence": {
+        "guard": [
+          "past returning if addr, err := netip.ParseAddr(pattern); err == nil",
+          "past returning if pfx, err := netip.ParsePrefix(pattern); err == nil",
+          "past returning if r, err := netipx.ParseIPRange(pattern); err == nil"
+        ],
+        "callers": [
+          "MatchesIPPattern",
+          "ipLabelFilterExpr",
+          "ipLineFilterExpr"
+        ]
+      }
+    }
+  ]
+}

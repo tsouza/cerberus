@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/vector_aggregation.go:buildVectorAggFunc#3cb2166f",
+      "message": "logql: aggregation operation %q is unsupported",
+      "class": "internal",
+      "rationale": "every vector-aggregation op the LogQL grammar accepts is handled: sum/avg/min/max/count/stddev/stdvar build an AggFunc here, and topk/bottomk/sort/sort_desc/approx_topk route to lowerTopK/lowerSort before this switch. The only remaining op constant (__count_min_sketch__) is a shard-mapper internal the parser never yields from a wire query, so the default arm is unreachable.",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch e.Operation over [case syntax.OpTypeSum; case syntax.OpTypeAvg; case syntax.OpTypeMin; case syntax.OpTypeMax; case syntax.OpTypeCount; case syntax.OpTypeStddev; case syntax.OpTypeStdvar]"
+        ],
+        "callers": [
+          "lowerVectorAggregation"
+        ],
+        "cited": [
+          "lowerSort",
+          "lowerTopK"
+        ]
+      }
+    }
+  ]
+}

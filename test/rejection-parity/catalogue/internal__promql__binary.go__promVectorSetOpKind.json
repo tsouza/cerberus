@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/binary.go:promVectorSetOpKind#46b4e78e",
+      "message": "promql: not a vector set operator: %s",
+      "class": "internal",
+      "rationale": "internal routing invariant: only parser set-operator tokens (LAND/LOR/LUNLESS) reach this mapper, from either lowerVectorSetOp or lowerExpHistogramSetOp, both of which check b.Op.IsSetOperator() before calling it",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch op over [case parser.LAND; case parser.LOR; case parser.LUNLESS]"
+        ],
+        "callers": [
+          "lowerExpHistogramSetOp",
+          "lowerVectorSetOp"
+        ],
+        "cited": [
+          "lowerExpHistogramSetOp",
+          "lowerVectorSetOp"
+        ]
+      }
+    }
+  ]
+}

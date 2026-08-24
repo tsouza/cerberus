@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/range_fns.go:lowerHoltWinters#ceef5c3b",
+      "message": "promql: holt_winters expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments",
+      "evidence": {
+        "guard": [
+          "if len(c.Args) != 3"
+        ],
+        "callers": [
+          "lowerRangeVectorCall"
+        ]
+      }
+    }
+  ]
+}

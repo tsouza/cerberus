@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/lower.go:lowerMetricsSecondStage#86ae75c3",
+      "message": "traceql: metrics second-stage element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics second-stage element type the pinned grammar produces is handled",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch v := ss.(type) over [case *traceql.TopKBottomK; case *traceql.MetricsFilter; case traceql.ChainedSecondStage; case *traceql.ChainedSecondStage]"
+        ],
+        "callers": [
+          "lowerChainedSecondStage",
+          "lowerRoot"
+        ]
+      }
+    }
+  ]
+}

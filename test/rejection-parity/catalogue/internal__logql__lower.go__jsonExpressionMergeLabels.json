@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "site": "internal/logql/lower.go:jsonExpressionMergeLabels#9cb94bcf",
+      "message": "logql: `| json` expression has empty identifier",
+      "class": "internal",
+      "rationale": "the grammar requires a non-empty identifier on `| json foo=...` expression stages; an empty identifier is a parse error",
+      "evidence": {
+        "guard": [
+          "past returning if len(exprs) == 0",
+          "if ext.Identifier == \"\""
+        ],
+        "callers": [
+          "lowerStage",
+          "pipelineStageLabels"
+        ]
+      }
+    }
+  ]
+}

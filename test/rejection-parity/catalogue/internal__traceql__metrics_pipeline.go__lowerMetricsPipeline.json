@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "site": "internal/traceql/metrics_pipeline.go:lowerMetricsPipeline#d4c9f593",
+      "message": "traceql: metrics pipeline element %T is unsupported",
+      "class": "internal",
+      "rationale": "type-switch default: every metrics pipeline element type the pinned grammar produces is handled",
+      "evidence": {
+        "guard": [
+          "past returning if v, ok := mp.(*traceql.MetricsAggregate); ok",
+          "past returning if v, ok := mp.(*traceql.AverageOverTimeAggregator); ok",
+          "past returning if v, ok := mp.(*traceql.MetricsCompare); ok"
+        ],
+        "callers": [
+          "lowerRoot"
+        ]
+      }
+    }
+  ]
+}
