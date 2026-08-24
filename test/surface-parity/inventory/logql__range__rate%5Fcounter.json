@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "range:rate_counter",
+      "kind": "range-agg",
+      "probe": "rate_counter({service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

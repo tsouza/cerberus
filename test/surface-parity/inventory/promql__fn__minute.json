@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:minute",
+      "kind": "function",
+      "probe": "minute(up)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

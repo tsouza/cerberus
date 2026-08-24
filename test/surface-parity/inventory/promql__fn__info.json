@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:info",
+      "kind": "function",
+      "probe": "info(http_server_request_duration_count)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ name: coverage
 # profile (default-tag + chdb-tagged lanes), uploads the cover-merged.out
 # artifact, and — via .github/scripts/coverage-summary.mjs, which `just
 # coverage` invokes — writes the per-package summary into the step summary and
-# holds every package to its floor in test/coverage-floor.json.
+# holds every package to its floor in test/coverage-floor/ (one shard file per package).
 #
 # The floor is what makes this a gate. The lane used to print a table nothing
 # compared against, so coverage could rot one package at a time with every run
@@ -131,7 +131,7 @@ jobs:
 
       # `just coverage` ends by running .github/scripts/coverage-summary.mjs,
       # which writes the step summary AND holds every package to the floor
-      # committed in test/coverage-floor.json. COVERAGE_REQUIRE_LANES makes the
+      # committed in test/coverage-floor/. COVERAGE_REQUIRE_LANES makes the
       # gate refuse to run at all on a profile missing the chdb lane: without
       # it, a `just chdb-install` that fails soft would leave the script
       # comparing a narrower profile — so it skips the comparison, and the lane

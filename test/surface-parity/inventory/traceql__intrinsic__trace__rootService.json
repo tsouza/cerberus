@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:trace:rootService",
+      "kind": "intrinsic",
+      "probe": "{ trace:rootService = \"gateway\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

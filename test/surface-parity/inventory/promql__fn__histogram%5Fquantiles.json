@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:histogram_quantiles",
+      "kind": "function",
+      "probe": "histogram_quantiles(showcase_latency_exp_hist, \"q\", 0.5, 0.9)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

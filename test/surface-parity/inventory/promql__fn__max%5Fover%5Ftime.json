@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:max_over_time",
+      "kind": "function",
+      "probe": "max_over_time(up[5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

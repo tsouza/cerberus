@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:duration",
+      "kind": "intrinsic",
+      "probe": "{ span:duration \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

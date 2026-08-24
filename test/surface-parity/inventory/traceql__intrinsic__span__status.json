@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:span:status",
+      "kind": "intrinsic",
+      "probe": "{ span:status = error }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

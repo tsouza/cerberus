@@ -2,7 +2,8 @@
 """Regenerate the per-function coverage tables in docs/coverage.md from the
 test/surface-parity conformance ledger.
 
-The surface-parity inventory (test/surface-parity/inventory.json) is a
+The surface-parity inventory (test/surface-parity/inventory/, one JSON shard
+per (head, symbol) pair — see test/surface-parity/inventory_shard.go) is a
 machine-readable conformance LEDGER: every grammar symbol the three upstream
 parsers expose, paired with cerberus's accept/reject verdict and the reference
 backend's verdict, classified four ways (parity-accept / parity-reject /
@@ -16,14 +17,28 @@ tables between the AUTOGEN markers in docs/coverage.md.
 Usage:  python3 scripts/gen-coverage.py        # rewrites docs/coverage.md tables
         python3 scripts/gen-coverage.py --check # exit 1 if the doc is stale
 """
+import glob
 import json
 import os
 import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INVENTORY = os.path.join(ROOT, "test", "surface-parity", "inventory.json")
+INVENTORY_DIR = os.path.join(ROOT, "test", "surface-parity", "inventory")
 DOC = os.path.join(ROOT, "docs", "coverage.md")
+
+
+def load_inventory_entries():
+    """Merge every shard in INVENTORY_DIR into one flat entry list — the same
+    value a single-file artifact would have parsed to. Each shard holds
+    exactly one {"entries": [<Entry>]} record (see inventory_shard.go's
+    inventoryShard)."""
+    entries = []
+    for path in sorted(glob.glob(os.path.join(INVENTORY_DIR, "*.json"))):
+        with open(path) as f:
+            shard = json.load(f)
+        entries.extend(shard["entries"])
+    return entries
 
 BEGIN = "<!-- BEGIN AUTOGEN: coverage-tables (scripts/gen-coverage.py) -->"
 END = "<!-- END AUTOGEN: coverage-tables -->"
@@ -166,9 +181,7 @@ def build_glance(entries):
 
 
 def build():
-    with open(INVENTORY) as f:
-        inv = json.load(f)
-    e = inv["entries"]
+    e = load_inventory_entries()
     blocks = []
     for head, label in HEAD_LABELS:
         he = [x for x in e if x["head"] == head]
@@ -183,8 +196,7 @@ def splice(doc, begin, end, body):
 
 
 def main():
-    with open(INVENTORY) as f:
-        entries = json.load(f)["entries"]
+    entries = load_inventory_entries()
     with open(DOC) as f:
         doc = f.read()
     new = splice(doc, GLANCE_BEGIN, GLANCE_END, build_glance(entries))

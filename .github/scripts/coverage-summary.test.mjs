@@ -8,14 +8,24 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { compare, floorFor, nextFloors, packageOf, parseProfile, resolveLanes, rows } from './coverage-summary.mjs';
+import {
+  compare,
+  floorFor,
+  nextFloors,
+  packageKeySegments,
+  packageOf,
+  parseProfile,
+  resolveLanes,
+  rows,
+} from './coverage-summary.mjs';
+import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./coverage-summary.mjs', import.meta.url));
 
@@ -30,24 +40,26 @@ function profile(blocks) {
   return `${lines.join('\n')}\n`;
 }
 
-// fixture lays down a profile and a floor ledger in a scratch directory.
+// fixture lays down a profile and a sharded floor ledger in a scratch
+// directory — one shard file per package, matching the on-disk shape
+// coverage-summary.mjs now reads/writes (see lib/sharded-json.mjs).
 function fixture(blocks, floors) {
   const dir = mkdtempSync(path.join(tmpdir(), 'coverage-floor-'));
   const profilePath = path.join(dir, 'cover-merged.out');
-  const floorsPath = path.join(dir, 'coverage-floor.json');
+  const floorsDir = path.join(dir, 'coverage-floor');
   writeFileSync(profilePath, profile(blocks));
-  if (floors !== undefined) writeFileSync(floorsPath, `${JSON.stringify(floors, null, 2)}\n`);
-  return { dir, profilePath, floorsPath };
+  if (floors !== undefined) writeShardedMap(floorsDir, floors, packageKeySegments);
+  return { dir, profilePath, floorsDir };
 }
 
-function run(profilePath, floorsPath, env = {}) {
+function run(profilePath, floorsDir, env = {}) {
   const res = spawnSync(process.execPath, [SCRIPT], {
     encoding: 'utf8',
     env: {
       ...process.env,
       GITHUB_STEP_SUMMARY: '',
       COVERAGE_PROFILE: profilePath,
-      COVERAGE_FLOORS: floorsPath,
+      COVERAGE_FLOORS: floorsDir,
       COVERAGE_LANES: 'default+chdb',
       COVERAGE_REQUIRE_LANES: '',
       COVERAGE_UPDATE_FLOORS: '',
@@ -196,9 +208,9 @@ test('a lane set narrower than the caller requires fails instead of disarming th
 });
 
 test('end to end: a drop below the floor exits 1 and names the package', () => {
-  const { dir, profilePath, floorsPath } = fixture([['internal/thin/a.go', 10, 0]], { 'internal/thin': 80 });
+  const { dir, profilePath, floorsDir } = fixture([['internal/thin/a.go', 10, 0]], { 'internal/thin': 80 });
   try {
-    const { status, out } = run(profilePath, floorsPath);
+    const { status, out } = run(profilePath, floorsDir);
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /internal\/thin: 0\.00% < floor 80%/);
   } finally {
@@ -214,12 +226,12 @@ test('end to end: a freshly updated ledger passes the comparison on the same pro
     ['internal/a/two.go', 3, 0],
     ['internal/b/one.go', 5, 2],
   ];
-  const { dir, profilePath, floorsPath } = fixture(blocks, {});
+  const { dir, profilePath, floorsDir } = fixture(blocks, {});
   try {
-    assert.equal(run(profilePath, floorsPath, { COVERAGE_UPDATE_FLOORS: '1' }).status, 0);
-    const written = JSON.parse(readFileSync(floorsPath, 'utf8'));
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' }).status, 0);
+    const written = loadShardedMap(floorsDir);
     assert.deepEqual(Object.keys(written), ['internal/a', 'internal/b']);
-    const { status, out } = run(profilePath, floorsPath);
+    const { status, out } = run(profilePath, floorsDir);
     assert.equal(status, 0, `gate rejected a freshly updated ledger:\n${out}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -227,12 +239,12 @@ test('end to end: a freshly updated ledger passes the comparison on the same pro
 });
 
 test('end to end: an update that would lower a floor exits 1 and leaves the ledger alone', () => {
-  const { dir, profilePath, floorsPath } = fixture([['internal/thin/a.go', 10, 0]], { 'internal/thin': 80 });
+  const { dir, profilePath, floorsDir } = fixture([['internal/thin/a.go', 10, 0]], { 'internal/thin': 80 });
   try {
-    const { status, out } = run(profilePath, floorsPath, { COVERAGE_UPDATE_FLOORS: '1' });
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /reviewable line/);
-    assert.equal(JSON.parse(readFileSync(floorsPath, 'utf8'))['internal/thin'], 80);
+    assert.equal(loadShardedMap(floorsDir)['internal/thin'], 80);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -241,11 +253,11 @@ test('end to end: an update that would lower a floor exits 1 and leaves the ledg
 test('end to end: a 0 floor on a statement-carrying package exits 1', () => {
   // The negative control for the whole change. Before it, this exact ledger
   // was green, and stayed green with every statement in the package deleted.
-  const { dir, profilePath, floorsPath } = fixture([['test/spec/promqlsweep/sweep.go', 61, 1]], {
+  const { dir, profilePath, floorsDir } = fixture([['test/spec/promqlsweep/sweep.go', 61, 1]], {
     'test/spec/promqlsweep': 0,
   });
   try {
-    const { status, out } = run(profilePath, floorsPath);
+    const { status, out } = run(profilePath, floorsDir);
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /floor of 0/);
     assert.match(out, /test\/spec\/promqlsweep/);
@@ -255,22 +267,22 @@ test('end to end: a 0 floor on a statement-carrying package exits 1', () => {
 });
 
 test('end to end: an update refuses to record a 0 floor and leaves the ledger alone', () => {
-  const { dir, profilePath, floorsPath } = fixture([['internal/untested/a.go', 10, 0]], {});
+  const { dir, profilePath, floorsDir } = fixture([['internal/untested/a.go', 10, 0]], {});
   try {
-    const { status, out } = run(profilePath, floorsPath, { COVERAGE_UPDATE_FLOORS: '1' });
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /0 is not a floor/);
     assert.match(out, /internal\/untested: 0\.00% of 10 statements/);
-    assert.deepEqual(JSON.parse(readFileSync(floorsPath, 'utf8')), {}, 'the ledger gained no entry');
+    assert.deepEqual(loadShardedMap(floorsDir), {}, 'the ledger gained no entry');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('end to end: a package with no floor fails rather than being waved through', () => {
-  const { dir, profilePath, floorsPath } = fixture([['internal/new/a.go', 10, 1]], {});
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {});
   try {
-    const { status, out } = run(profilePath, floorsPath);
+    const { status, out } = run(profilePath, floorsDir);
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /no floor/);
     assert.match(out, /internal\/new/);

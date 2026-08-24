@@ -30,7 +30,8 @@
 // Reference oracle:
 //
 //   - PromQL: the FLAG-ENABLED reference Prometheus HTTP verdict, pinned
-//     in promql-reference-verdicts.json. A real prom/prometheus started
+//     in promql-reference-verdicts/ (one shard file per symbol; metadata
+//     in the promql-reference-verdicts.json manifest). A real prom/prometheus started
 //     with --enable-feature=promql-experimental-functions is driven over
 //     /api/v1/query for every parser.Functions symbol + the two
 //     experimental aggregators (2xx => accept, 4xx => reject). This

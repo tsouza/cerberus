@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:statusMessage",
+      "kind": "intrinsic",
+      "probe": "{ statusMessage = \"card declined\" }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:label_replace",
+      "kind": "function",
+      "probe": "label_replace(up, \"dst\", \"$1\", \"job\", \"(.*)\")",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

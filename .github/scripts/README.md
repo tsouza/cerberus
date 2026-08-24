@@ -635,7 +635,7 @@ what actually runs.
     left every corpus-adding PR hand-carrying two extra files and
     conflicting with any other such PR.
   - **surface-parity glance table** — tallies the `class` field of
-    `test/surface-parity/inventory.json` per head and asserts all sixteen
+    `test/surface-parity/inventory/` per head and asserts all sixteen
     cells of the "Coverage at a glance" table in `docs/coverage.md`. The fold
     mirrors `scripts/gen-coverage.py` (`parity-accept` + `wrong-accept` →
     supported, `parity-reject` → intentionally rejected, `wrong-reject` →
@@ -759,7 +759,7 @@ what actually runs.
   coverage` recipe rather than as its own workflow step (so a local run gets the
   same verdict CI does). Renders the per-package coverage table into the step
   summary AND holds every package to the floor committed in
-  `test/coverage-floor.json`. The floor is what makes the lane a gate: it used
+  `test/coverage-floor/` (one shard file per package). The floor is what makes the lane a gate: it used
   to print an awk-built table nothing compared against, so coverage could rot
   one package at a time with every run green. The comparison runs in BOTH
   directions — a package below its floor, a package carrying statements with no
@@ -770,7 +770,7 @@ what actually runs.
   hand-edited, reviewable line in the diff. `coverage-summary.test.mjs` is the
   `node --test` guard.
   - Env: `COVERAGE_PROFILE` (default `cover-merged.out`), `COVERAGE_FLOORS`
-    (default `test/coverage-floor.json`), `COVERAGE_LANES` (`default+chdb` or
+    (default `test/coverage-floor`), `COVERAGE_LANES` (`default+chdb` or
     `default`; the Justfile sets it from whether libchdb.so was found),
     `COVERAGE_REQUIRE_LANES` (CI sets `default+chdb` so a soft-failing chdb
     install cannot silently downgrade the gate to a skip),
@@ -782,14 +782,14 @@ what actually runs.
   every PR. Enumerates the default and `chdb,agpl_oracle,chdb_agpl_oracle`
   builds with `go list`, asks `go tool cover` whether each active source file
   carries statements, and requires every statement-carrying package to have a
-  positive entry in `test/coverage-floor.json`; it also rejects a floor whose
+  positive entry in `test/coverage-floor/`; it also rejects a floor whose
   statement-carrying package vanished. Declaration-only packages need no entry.
   This catches structural drift before merge without running tests or installing
   chDB; the full push/nightly/release lane remains responsible for measured
   coverage. `coverage-package-floor.test.mjs`
   exercises a hermetic temporary Go module with statement and declaration-only
   packages.
-  - Env: `COVERAGE_FLOORS` (default `test/coverage-floor.json`),
+  - Env: `COVERAGE_FLOORS` (default `test/coverage-floor`),
     `COVERAGE_PACKAGE_PATTERN` (default `./...`; test-fixture override).
   - Exit: `0` when every statement-carrying full-lane package has a
     positive floor and every floor names a live package, `1` on
@@ -1454,7 +1454,9 @@ what actually runs.
   wrong-reject (a silent coverage gap), on artifact drift, or on a
   showcase declared-rejection panel the reference accepts.
   - Env: `PROM_IMAGE` (default `prom/prometheus:v3.11.3`), `REF_PORT`
-    (default `39090`), `INVENTORY`, `ARTIFACT`, `SHOWCASE` (defaults under
+    (default `39090`), `INVENTORY` (the shard directory), `ARTIFACT` (the
+    small reference/oracle/generated_by manifest), `ARTIFACT_DIR` (the
+    per-symbol verdict shard directory), `SHOWCASE` (defaults under
     `test/surface-parity/` + the compose showcase dashboard), `REGENERATE`
     (`1` rewrites the verdict artifact from the live reference + exits),
     `KEEP_REF` (`1` leaves the reference container up for local debugging).

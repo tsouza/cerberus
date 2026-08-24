@@ -516,7 +516,7 @@ bench:
 # compilations). Writes cover.out, cover-chdb.out, and cover-merged.out, then
 # hands the merged profile to coverage-summary.mjs, which prints the total + a
 # per-package summary sorted by coverage AND fails on a package below its floor
-# in test/coverage-floor.json.
+# in test/coverage-floor/ (one shard file per package).
 #
 # Requires chDB for the second lane (`just chdb-install`). If libchdb.so isn't
 # present, the recipe still emits cover.out and treats cover-merged.out as
@@ -623,7 +623,7 @@ coverage:
     echo; \
     COVERAGE_LANES="$LANES" node .github/scripts/coverage-summary.mjs
 
-# Raise test/coverage-floor.json to what the tree currently achieves. Reads the
+# Raise test/coverage-floor/ to what the tree currently achieves. Reads the
 # profile `just coverage` leaves behind, so run that first. The ledger is a
 # ratchet: this recipe never lowers a floor — a package that has dropped is
 # reported and the run fails, because a tool that rewrites a floor to match a
@@ -642,7 +642,7 @@ update-coverage-floor:
     @COVERAGE_UPDATE_FLOORS=1 node .github/scripts/coverage-summary.mjs
     @echo
     @echo "Diff of regenerated floors:"
-    @git --no-pager diff --stat test/coverage-floor.json || true
+    @git --no-pager diff --stat test/coverage-floor/ || true
 
 # Regenerate the exact per-head roster of TXTAR fixtures carrying a live
 # reference parity contract. The assertion mode never writes; this recipe is
@@ -741,14 +741,14 @@ update-parity-enrolment-baseline:
 update-golden *shards:
     @GOLDEN_SHARDS="{{shards}}" CHDB_INSTALL_PATH="{{CHDB_INSTALL_PATH}}" JUST_EXECUTABLE="{{just_executable()}}" node .github/scripts/golden-update.mjs
 
-# Regenerate the parser-surface parity ledgers: test/surface-parity/inventory.json
+# Regenerate the parser-surface parity ledgers: test/surface-parity/inventory/
 # (every PromQL / LogQL / TraceQL symbol the three parsers expose, with the
-# in-process cerberus verdict for each) and test/rejection-parity/catalogue/
-# (every rejection site in internal/{promql,logql,traceql}, one JSON shard per
-# lowering source file). Both re-probe the
-# parsers directly, so they drift on a PARSER-SURFACE change rather than a
-# plan-shape one — a different trigger from the TXTAR goldens, the same failure
-# shape if nobody regenerates them (#1595).
+# in-process cerberus verdict for each, one JSON shard per (head, symbol) pair)
+# and test/rejection-parity/catalogue/ (every rejection site in
+# internal/{promql,logql,traceql}, one JSON shard per lowering source file).
+# Both re-probe the parsers directly, so they drift on a PARSER-SURFACE change
+# rather than a plan-shape one — a different trigger from the TXTAR goldens,
+# the same failure shape if nobody regenerates them (#1595).
 #
 # Curation survives: a site already in the catalogue keeps its class, trigger
 # query, endpoint and rationale. A site whose key MOVED — the key is derived
@@ -757,12 +757,13 @@ update-golden *shards:
 # is the loud outcome, and it is why this is worth chaining rather than leaving
 # to be rediscovered on a CI lane.
 #
-# test/surface-parity/promql-reference-verdicts.json is deliberately NOT here:
-# `REGENERATE=1 node .github/scripts/promql-surface-gate.mjs` probes a live
-# prom/prometheus container started with --enable-feature=promql-experimental-functions,
-# so it needs Docker and a network pull. That is a heavier prerequisite than
-# `update-golden` assumes, which puts it with the k3d/compose inventories and
-# the compat parity baseline rather than in this recipe.
+# test/surface-parity/promql-reference-verdicts.json / promql-reference-verdicts/
+# are deliberately NOT here: `REGENERATE=1 node .github/scripts/promql-surface-gate.mjs`
+# probes a live prom/prometheus container started with
+# --enable-feature=promql-experimental-functions, so it needs Docker and a
+# network pull. That is a heavier prerequisite than `update-golden` assumes,
+# which puts it with the k3d/compose inventories and the compat parity
+# baseline rather than in this recipe.
 #
 # test/surface-parity/logql-reference-verdicts.json and
 # traceql-reference-verdicts.json are ALSO deliberately not here, for the

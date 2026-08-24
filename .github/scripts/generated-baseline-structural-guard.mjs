@@ -116,6 +116,7 @@ import process from 'node:process';
 
 import { loadParityBaseline } from './lib/compat-baseline.mjs';
 import { error, log, notice } from './lib/gh.mjs';
+import { segmentsFromShardFileName } from './lib/sharded-json.mjs';
 
 // get() descends a path of object keys. An empty path returns the root
 // value unchanged, which is what the two top-level-array targets need.
@@ -303,6 +304,63 @@ function runRecordShardedTarget(t, { readFile, readDirRecursive }) {
   return problems;
 }
 
+// runMapShardedTarget is the ONE-ENTRY-PER-FILE map variant
+// (test/surface-parity/promql-reference-verdicts/, see
+// .github/scripts/lib/sharded-json.mjs): every .json file holds a single
+// {"<key>": <value>} object rather than a record or an array element.
+//
+// A shard's file name IS its key, percent-escaped by
+// lib/sharded-json.mjs's shardFileName/segmentsFromShardFileName — the same
+// injective, reversible mapping the writer uses — so decoding the name and
+// comparing it against the object's own (and only) key is a real
+// content<->path invariant, the map-shard analogue of runRecordShardedTarget's
+// `record[t.key] === filename stem` check.
+function runMapShardedTarget(t, { readFile, readDir }) {
+  const names = readDir(t.path).filter((n) => n.endsWith(SHARD_EXT)).sort();
+  if (names.length === 0) {
+    return [`${t.path}: holds no ${SHARD_EXT} shard — a sharded target that reads nothing checks nothing`];
+  }
+
+  const problems = [];
+  const owner = new Map();
+  for (const name of names) {
+    const shardPath = `${t.path}/${name}`;
+    const obj = JSON.parse(readFile(shardPath));
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+      problems.push(`${shardPath}: expected one {key: value} object, got ${Array.isArray(obj) ? 'array' : typeof obj}`);
+      continue;
+    }
+    const keys = Object.keys(obj);
+    if (keys.length !== 1) {
+      problems.push(
+        `${shardPath}: holds ${keys.length} top-level key(s), want exactly 1 — a map shard is one entry, and a ` +
+          'second key sharing the file is exactly the kind of blend this guard exists to catch',
+      );
+      continue;
+    }
+    const [key] = keys;
+    let want;
+    try {
+      want = segmentsFromShardFileName(name).join(t.keySeparator);
+    } catch (e) {
+      problems.push(`${shardPath}: ${e.message}`);
+      continue;
+    }
+    if (want !== key) {
+      problems.push(
+        `${shardPath}: holds key ${JSON.stringify(key)}, but the file name decodes to ${JSON.stringify(want)} — ` +
+          "a shard's path IS its key",
+      );
+    }
+    if (owner.has(key)) {
+      problems.push(`${t.path}: key ${JSON.stringify(key)} appears in both ${owner.get(key)} and ${shardPath}`);
+    } else {
+      owner.set(key, shardPath);
+    }
+  }
+  return problems;
+}
+
 // TARGETS — every entry's shape was checked by hand against the committed
 // file before being added here (see the file doc above for the ones left
 // out and why). `arrayPath` / `dictPath` are lists of keys to descend from
@@ -360,9 +418,9 @@ export const TARGETS = [
     kind: 'lines',
   },
   {
-    path: 'test/surface-parity/promql-reference-verdicts.json',
-    kind: 'dict-keys',
-    dictPath: ['verdicts'],
+    path: 'test/surface-parity/promql-reference-verdicts',
+    kind: 'map-shards',
+    keySeparator: ':',
   },
 ];
 
@@ -399,6 +457,9 @@ export function runTarget(
   }
   if (t.kind === 'record-shards') {
     return runRecordShardedTarget(t, { readFile, readDirRecursive });
+  }
+  if (t.kind === 'map-shards') {
+    return runMapShardedTarget(t, { readFile, readDir });
   }
   if (t.kind === 'lines') {
     const text = readFile(t.path);

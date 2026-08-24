@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "parser:logfmt",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"gateway\"} | logfmt",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

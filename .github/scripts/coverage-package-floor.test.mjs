@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { compareEnrollment, coverBlockCount, mergePackageLanes, parsePackageRows } from './coverage-package-floor.mjs';
+import { packageKeySegments } from './coverage-summary.mjs';
+import { writeShardedMap } from './lib/sharded-json.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./coverage-package-floor.mjs', import.meta.url));
 const FILE_SEPARATOR = '\u001f';
@@ -76,12 +78,12 @@ function fixture() {
 }
 
 function run(dir, floors) {
-  const floorFile = path.join(dir, 'floors.json');
-  writeFileSync(floorFile, `${JSON.stringify(floors)}\n`);
+  const floorsDir = path.join(dir, 'floors');
+  writeShardedMap(floorsDir, floors, packageKeySegments);
   const result = spawnSync(process.execPath, [SCRIPT], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, COVERAGE_FLOORS: floorFile, COVERAGE_PACKAGE_PATTERN: './...' },
+    env: { ...process.env, COVERAGE_FLOORS: floorsDir, COVERAGE_PACKAGE_PATTERN: './...' },
   });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }

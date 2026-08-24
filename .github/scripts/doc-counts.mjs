@@ -47,7 +47,7 @@
 //   5. surface-parity "Coverage at a glance" — docs/coverage.md publishes a
 //      four-column per-head table (symbols probed / supported / intentionally
 //      rejected / wrong-rejected). Every cell is a tally over the `class` field
-//      of test/surface-parity/inventory.json, folded exactly the way
+//      of test/surface-parity/inventory/, folded exactly the way
 //      scripts/gen-coverage.py folds it for the per-symbol tables
 //      (parity-accept + wrong-accept -> supported, parity-reject ->
 //      intentionally rejected, wrong-reject -> wrong-rejected). The gate
@@ -81,6 +81,7 @@ import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { error, notice, log } from './lib/gh.mjs';
 import { loadParityBaseline } from './lib/compat-baseline.mjs';
+import { loadShardedEntries } from './lib/sharded-json.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -105,7 +106,7 @@ const PARITY_BASELINE_REF = 'compatibility/parity-baseline/';
 // not a count.
 const PARITY_BASELINE_FIELDS = ['passed', 'total'];
 const COVERAGE_DOC = join(REPO, 'docs', 'coverage.md');
-const SURFACE_INVENTORY = join(REPO, 'test', 'surface-parity', 'inventory.json');
+const SURFACE_INVENTORY_DIR = join(REPO, 'test', 'surface-parity', 'inventory');
 const REJECTION_CATALOGUE_DIR = join(REPO, 'test', 'rejection-parity', 'catalogue');
 const DIVERGENCE_CEILING = join(REPO, 'test', 'rejection-parity', 'divergence-ceiling.json');
 
@@ -468,7 +469,7 @@ export function compareGlance(live, rows, report = error) {
       if (row[key] !== live[head][key]) {
         report(
           `surface-parity-glance: docs/coverage.md says ${head} "${column}" = ${row[key]} but ` +
-            `test/surface-parity/inventory.json tallies ${live[head][key]}`,
+            `test/surface-parity/inventory/ tallies ${live[head][key]}`,
           { file: 'docs/coverage.md' },
         );
         ok = false;
@@ -479,7 +480,7 @@ export function compareGlance(live, rows, report = error) {
 }
 
 function assertSurfaceParityGlance() {
-  const live = surfaceParityTotals(JSON.parse(readFileSync(SURFACE_INVENTORY, 'utf8')));
+  const live = surfaceParityTotals({ entries: loadShardedEntries(SURFACE_INVENTORY_DIR) });
   return compareGlance(live, glanceTableRows(readFileSync(COVERAGE_DOC, 'utf8')), error);
 }
 
@@ -879,7 +880,7 @@ function selfTest() {
     !compareGlance(fakeTotals, {}, () => {}),
   );
   // The REAL ledger must match the REAL doc — the assertion the gate runs.
-  check('real docs/coverage.md glance table matches test/surface-parity/inventory.json', assertSurfaceParityGlance());
+  check('real docs/coverage.md glance table matches test/surface-parity/inventory/', assertSurfaceParityGlance());
 
   // 7. The shape-divergence count is a SECOND measurement, and the doc must
   //    state it rather than let the symbol-level zero stand in for it.

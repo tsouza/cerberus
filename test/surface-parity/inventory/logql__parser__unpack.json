@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "parser:unpack",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"packer\"} | unpack",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

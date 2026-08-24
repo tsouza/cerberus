@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "range:quantile_over_time",
+      "kind": "range-agg",
+      "probe": "quantile_over_time(0.9, {service_name=\"gateway\"} | logfmt | unwrap status [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

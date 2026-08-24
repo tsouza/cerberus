@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "intrinsic:event:timeSinceStart",
+      "kind": "intrinsic",
+      "probe": "{ event:timeSinceStart \u003e 1ms }",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

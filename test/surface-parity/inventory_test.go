@@ -2,16 +2,16 @@ package surfaceparity
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 )
 
-const inventoryPath = "inventory.json"
-
 // TestInventoryIsRegenerable re-probes the three parser symbol tables,
 // re-runs the cerberus + reference verdicts, and diffs the regenerated
-// inventory byte-for-byte against the checked-in JSON. Set
+// inventory byte-for-byte against the checked-in shard directory
+// (test/surface-parity/inventory/, see inventory_shard.go). Set
 // CERBERUS_UPDATE_INVENTORY=1 to rewrite the artifact (the same
 // update-via-env convention as test/rejection-parity + test/inventory).
 // Because every field is mechanically derived, any drift — a parser
@@ -25,27 +25,149 @@ func TestInventoryIsRegenerable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want, err := MarshalInventory(inv)
-	if err != nil {
-		t.Fatalf("MarshalInventory: %v", err)
-	}
 
 	if os.Getenv("CERBERUS_UPDATE_INVENTORY") != "" {
-		if err := os.WriteFile(inventoryPath, want, 0o644); err != nil {
-			t.Fatalf("write %s: %v", inventoryPath, err)
+		if err := WriteInventoryDir(inventoryDir, inv); err != nil {
+			t.Fatalf("write %s: %v", inventoryDir, err)
 		}
-		t.Logf("rewrote %s (%d entries)", inventoryPath, len(inv.Entries))
+		t.Logf("rewrote %s (%d entries)", inventoryDir, len(inv.Entries))
 		return
 	}
 
-	got, err := os.ReadFile(inventoryPath)
+	want, err := ShardInventory(inv)
 	if err != nil {
-		t.Fatalf("read %s (rerun with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", inventoryPath, err)
+		t.Fatalf("ShardInventory: %v", err)
 	}
-	if string(got) != string(want) {
+	diffs, err := DiffInventoryShards(inventoryDir, want)
+	if err != nil {
+		t.Fatalf("DiffInventoryShards: %v", err)
+	}
+	if len(diffs) > 0 {
 		t.Fatalf("%s is stale relative to the parser symbol tables / cerberus lowering — "+
-			"rerun with CERBERUS_UPDATE_INVENTORY=1, review the diff, and commit it.\n"+
-			"--- want %d bytes, got %d bytes", inventoryPath, len(want), len(got))
+			"rerun with CERBERUS_UPDATE_INVENTORY=1, review the diff, and commit it.\n%s",
+			inventoryDir, strings.Join(diffs, "\n"))
+	}
+}
+
+// TestInventoryShardNamesRoundTrip proves inventoryShardName is injective
+// and reversible over the live inventory's own (head, symbol) pairs —
+// mirroring test/rejection-parity/catalogue_test.go's
+// TestShardNamesRoundTrip for the sibling ledger.
+func TestInventoryShardNamesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	inv, err := LoadInventoryDir(inventoryDir)
+	if err != nil {
+		t.Fatalf("LoadInventoryDir(%s): %v", inventoryDir, err)
+	}
+	owners := map[string]string{}
+	for _, e := range inv.Entries {
+		name, err := inventoryShardName(e.Head, e.Symbol)
+		if err != nil {
+			t.Fatalf("inventoryShardName(%q, %q): %v", e.Head, e.Symbol, err)
+		}
+		key := e.Head + ":" + e.Symbol
+		if prev, ok := owners[name]; ok && prev != key {
+			t.Fatalf("shard %s is claimed by both %s and %s — the mapping is not injective", name, prev, key)
+		}
+		owners[name] = key
+		head, symbol, err := inventoryShardHeadSymbol(name)
+		if err != nil {
+			t.Fatalf("inventoryShardHeadSymbol(%q): %v", name, err)
+		}
+		if head != e.Head || symbol != e.Symbol {
+			t.Fatalf("shard %s reverses to (%s, %s), want (%s, %s)", name, head, symbol, e.Head, e.Symbol)
+		}
+	}
+	if len(owners) == 0 {
+		t.Fatal("no shard names derived — the inventory lost its entries")
+	}
+}
+
+// TestWriteInventoryDirPrunesEmptiedShards is the pruning pin: when a
+// symbol drops out of the live inventory, its shard must be REMOVED, not
+// left on disk. A lingering shard is a silent correctness hole —
+// LoadInventoryDir merges whatever it finds, so the stale verdict would go
+// on being asserted long after the symbol it names stopped existing.
+// Mirrors catalogue_test.go's TestWriteCataloguePrunesEmptiedShards.
+func TestWriteInventoryDirPrunesEmptiedShards(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	before := &Inventory{Entries: []Entry{
+		{Head: "promql", Symbol: "fn:a", Kind: "function", Probe: "a()", Cerberus: VerdictAccept, Reference: VerdictAccept, Class: ClassParityAccept},
+		{Head: "promql", Symbol: "fn:b", Kind: "function", Probe: "b()", Cerberus: VerdictAccept, Reference: VerdictAccept, Class: ClassParityAccept},
+	}}
+	if err := WriteInventoryDir(dir, before); err != nil {
+		t.Fatalf("WriteInventoryDir(before): %v", err)
+	}
+	goneName, err := inventoryShardName("promql", "fn:b")
+	if err != nil {
+		t.Fatalf("inventoryShardName: %v", err)
+	}
+	gone := filepath.Join(dir, goneName)
+	if _, err := os.Stat(gone); err != nil {
+		t.Fatalf("shard for promql/fn:b was not written: %v", err)
+	}
+
+	after := &Inventory{Entries: before.Entries[:1]}
+	if err := WriteInventoryDir(dir, after); err != nil {
+		t.Fatalf("WriteInventoryDir(after): %v", err)
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Fatalf("stat %s = %v, want a not-exist error — a shard for a symbol dropped from the "+
+			"inventory must be pruned, or LoadInventoryDir keeps merging a verdict nobody regenerates "+
+			"any more", gone, err)
+	}
+
+	reloaded, err := LoadInventoryDir(dir)
+	if err != nil {
+		t.Fatalf("LoadInventoryDir: %v", err)
+	}
+	if len(reloaded.Entries) != len(after.Entries) {
+		t.Fatalf("reloaded %d entries, want %d — the pruned shard is still contributing", len(reloaded.Entries), len(after.Entries))
+	}
+
+	// The same emptied-shard state must be a FAILURE for the
+	// regenerate-and-diff test, not merely repaired by regeneration.
+	if err := os.WriteFile(gone, []byte(`{"entries":[]}`+"\n"), inventoryShardFileMode); err != nil {
+		t.Fatalf("re-plant stale shard: %v", err)
+	}
+	want, err := ShardInventory(after)
+	if err != nil {
+		t.Fatalf("ShardInventory: %v", err)
+	}
+	diffs, err := DiffInventoryShards(dir, want)
+	if err != nil {
+		t.Fatalf("DiffInventoryShards: %v", err)
+	}
+	if len(diffs) != 1 || !strings.Contains(diffs[0], "stale shard") {
+		t.Fatalf("DiffInventoryShards reported %v, want exactly one stale-shard difference", diffs)
+	}
+}
+
+// TestLoadInventoryDirMergesShardsInOrder pins the invariant every
+// downstream consumer rests on: the merged value is sorted (head, then
+// symbol) regardless of which shard each entry came from.
+func TestLoadInventoryDirMergesShardsInOrder(t *testing.T) {
+	t.Parallel()
+
+	inv, err := LoadInventoryDir(inventoryDir)
+	if err != nil {
+		t.Fatalf("LoadInventoryDir(%s): %v", inventoryDir, err)
+	}
+	for i := 1; i < len(inv.Entries); i++ {
+		a, b := inv.Entries[i-1], inv.Entries[i]
+		if headOrder(a.Head) > headOrder(b.Head) || (a.Head == b.Head && a.Symbol >= b.Symbol) {
+			t.Fatalf("entries out of order at index %d: %s/%s then %s/%s", i, a.Head, a.Symbol, b.Head, b.Symbol)
+		}
+	}
+	shards, err := listInventoryShards(inventoryDir)
+	if err != nil {
+		t.Fatalf("listInventoryShards: %v", err)
+	}
+	if len(shards) < 2 {
+		t.Fatalf("found %d shard(s) in %s — the merge path is not being exercised", len(shards), inventoryDir)
 	}
 }
 
@@ -78,9 +200,9 @@ func TestWrongAcceptsAreRatcheted(t *testing.T) {
 func assertRatchet(t *testing.T, class Classification) {
 	t.Helper()
 
-	pinned, err := LoadInventory(inventoryPath)
+	pinned, err := LoadInventoryDir(inventoryDir)
 	if err != nil {
-		t.Fatalf("load %s (rerun TestInventoryIsRegenerable with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", inventoryPath, err)
+		t.Fatalf("load %s (rerun TestInventoryIsRegenerable with CERBERUS_UPDATE_INVENTORY=1 to generate): %v", inventoryDir, err)
 	}
 	live, err := Generate()
 	if err != nil {
@@ -136,12 +258,12 @@ func classSet(inv *Inventory, head string, class Classification) map[string]bool
 func TestInventoryShapeInvariants(t *testing.T) {
 	t.Parallel()
 
-	inv, err := LoadInventory(inventoryPath)
+	inv, err := LoadInventoryDir(inventoryDir)
 	if err != nil {
-		t.Fatalf("load %s: %v", inventoryPath, err)
+		t.Fatalf("load %s: %v", inventoryDir, err)
 	}
 	if len(inv.Entries) == 0 {
-		t.Fatalf("%s is empty", inventoryPath)
+		t.Fatalf("%s is empty", inventoryDir)
 	}
 	seen := map[string]bool{}
 	for _, e := range inv.Entries {

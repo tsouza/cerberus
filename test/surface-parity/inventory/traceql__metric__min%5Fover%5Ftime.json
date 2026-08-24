@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "metric:min_over_time",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | min_over_time(duration)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

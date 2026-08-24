@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "conv:duration_seconds",
+      "kind": "conv-fn",
+      "probe": "sum_over_time({service_name=\"gateway\"} | logfmt | unwrap duration_seconds(took) [5m])",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

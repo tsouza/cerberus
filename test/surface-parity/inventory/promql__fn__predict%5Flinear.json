@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:predict_linear",
+      "kind": "function",
+      "probe": "predict_linear(http_server_request_duration_count[5m], 0.5)",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

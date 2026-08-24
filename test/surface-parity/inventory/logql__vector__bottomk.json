@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "vector:bottomk",
+      "kind": "vector-agg",
+      "probe": "bottomk(3, count_over_time({service_name=\"gateway\"}[5m]))",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

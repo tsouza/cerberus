@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:end",
+      "kind": "function",
+      "probe": "end()",
+      "cerberus": "reject",
+      "reference": "reject",
+      "class": "parity-reject",
+      "cerberus_error": "promql: function end() is only valid inside an @ modifier (e.g. up @ end()), not as a standalone call"
+    }
+  ]
+}

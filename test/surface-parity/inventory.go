@@ -1,9 +1,7 @@
 package surfaceparity
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 )
 
@@ -87,8 +85,11 @@ type Entry struct {
 	Note string `json:"note,omitempty"`
 }
 
-// Inventory is the checked-in JSON artifact
-// (test/surface-parity/inventory.json).
+// Inventory is the merged, in-memory view of the checked-in artifact — the
+// shard directory test/surface-parity/inventory/ (see inventory_shard.go),
+// one shard file per (Head, Symbol) pair. Consumers see this one flat value
+// regardless of how many shards it was assembled from — sharding is an
+// on-disk concurrency measure, not a semantic split.
 type Inventory struct {
 	Source  string  `json:"source"`
 	Entries []Entry `json:"entries"`
@@ -149,31 +150,6 @@ func probeHead(head string) ([]Entry, error) {
 		return probeTraceQL()
 	}
 	return nil, fmt.Errorf("unknown head %q", head)
-}
-
-// LoadInventory reads + parses the checked-in artifact.
-func LoadInventory(path string) (*Inventory, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // repo-relative artifact path
-	if err != nil {
-		return nil, err
-	}
-	var inv Inventory
-	if err := json.Unmarshal(raw, &inv); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return &inv, nil
-}
-
-// MarshalInventory renders the canonical on-disk JSON form (2-space
-// indent + trailing newline) so the regenerate-and-diff test compares
-// byte-for-byte. Mirrors test/rejection-parity.ShardCatalogue's
-// per-shard rendering.
-func MarshalInventory(inv *Inventory) ([]byte, error) {
-	b, err := json.MarshalIndent(inv, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(b, '\n'), nil
 }
 
 // WrongRejections returns the wrong-reject entries for a head, in

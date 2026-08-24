@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "traceql",
+      "symbol": "metric:compare",
+      "kind": "metrics-op",
+      "probe": "{ resource.service.name = \"gateway\" } | compare({ status = error })",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}

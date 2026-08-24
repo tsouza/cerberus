@@ -145,7 +145,7 @@
 //     (an entry gets fixed or reclassified) is free and self-tightens:
 //     CERBERUS_UPDATE_INVENTORY=1 (the same regen convention
 //     TestCatalogueIsRegenerable uses) lowers the ceiling to match, but
-//     — mirroring test/coverage-floor.json's floor ratchet in the
+//     — mirroring test/coverage-floor/'s floor ratchet in the
 //     opposite direction — NextDivergenceCeiling refuses to RAISE it
 //     automatically. An increase is only ever a reviewable line a human
 //     wrote.

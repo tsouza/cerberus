@@ -123,7 +123,6 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/perf/perf-smoke-baseline.json", "just update-perf-smoke-baseline"},
 	{"test/perf/nightly-baseline.json", "just update-nightly-perf-baseline"},
 	{"test/perf/metadata-query-size-baseline.json", "just update-metadata-query-size-baseline"},
-	{"test/coverage-floor.json", "just update-coverage-floor"},
 
 	{"compatibility/loki/upstream-skip-baseline.txt", "-regen-baseline"},
 
@@ -163,7 +162,6 @@ var generatedArtifacts = []generatedArtifact{
 	{"test/e2e/grafana/ql-inventory/promql-feature-inventory.json", inventoryUpdateEnv},
 	{"test/e2e/grafana/ql-inventory/logql-feature-inventory.json", inventoryUpdateEnv},
 	{"test/e2e/grafana/ql-inventory/traceql-feature-inventory.json", inventoryUpdateEnv},
-	{"test/surface-parity/inventory.json", inventoryUpdateEnv},
 	{"test/surface-parity/promql-reference-verdicts.json", "promql-surface-gate.mjs"},
 	{"test/surface-parity/logql-reference-verdicts.json", logqlReferenceVerdictsEnv},
 	{"test/surface-parity/traceql-reference-verdicts.json", traceqlReferenceVerdictsEnv},
@@ -213,6 +211,18 @@ var shardTrees = []shardTree{
 	// (test/perf/baseline_shards_test.go owns both mappings).
 	{"test/perf/cardinality-baseline", "just update-cardinality-baseline", "profiled fixture"},
 	{"test/perf/solver-decision-baseline", "just update-solver-decision-baseline", "classified query"},
+	// #2565: the coverage floor ledger, one shard per Go package
+	// (.github/scripts/lib/sharded-json.mjs owns the mapping).
+	{"test/coverage-floor", "just update-coverage-floor", "package floor"},
+	// #2565: the surface-parity symbol inventory, one shard per (head,
+	// symbol) pair (test/surface-parity/inventory_shard.go owns the mapping).
+	{"test/surface-parity/inventory", inventoryUpdateEnv, "surface symbol"},
+	// #2565: the flag-enabled PromQL reference verdict ledger, one shard per
+	// symbol (.github/scripts/lib/sharded-json.mjs owns the mapping). The
+	// small promql-reference-verdicts.json manifest above stays a single
+	// file — it carries only reference/oracle/generated_by metadata that
+	// moves in lock-step with a PROM_IMAGE bump, never per-symbol.
+	{"test/surface-parity/promql-reference-verdicts", "promql-surface-gate.mjs", "reference verdict"},
 }
 
 // rosterArtifacts returns the hand-written roster with every shard tree

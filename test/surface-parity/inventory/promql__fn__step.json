@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:step",
+      "kind": "function",
+      "probe": "step()",
+      "cerberus": "accept",
+      "reference": "reject",
+      "class": "wrong-accept"
+    }
+  ]
+}

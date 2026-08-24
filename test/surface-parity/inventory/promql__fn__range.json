@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "symbol": "fn:range",
+      "kind": "function",
+      "probe": "range()",
+      "cerberus": "accept",
+      "reference": "reject",
+      "class": "wrong-accept"
+    }
+  ]
+}

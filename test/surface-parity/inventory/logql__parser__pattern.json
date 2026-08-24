@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "head": "logql",
+      "symbol": "parser:pattern",
+      "kind": "parser-stage",
+      "probe": "{service_name=\"proxy\"} | pattern \"\u003cmethod\u003e \u003cpath\u003e\"",
+      "cerberus": "accept",
+      "reference": "accept",
+      "class": "parity-accept"
+    }
+  ]
+}
