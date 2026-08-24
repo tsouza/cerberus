@@ -163,9 +163,25 @@ func lowerExpHistogramHistogramBinop(lhsExpr, rhsExpr parser.Expr, sub bool, vm 
 }
 
 // lowerExpHistogramValuedOperand lowers one binop operand through its own
-// histogram-valued recogniser and asserts the shared HistogramProjection
-// cap every such lowering publishes.
-func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*chplan.HistogramProjection, error) {
+// histogram-valued recogniser and asserts the shared histogram-shaped
+// output contract every such lowering publishes.
+//
+// This accepts any histogram-shaped [chplan.Node] — not literally a
+// *chplan.HistogramProjection — mirroring
+// [lowerExpHistogramSetOpOperand] (histogram_native_set_op.go): an
+// operand can itself be a *chplan.VectorSetOp (a nested `and`/`or`/
+// `unless`, cerberus issue #2324) or, for the scalar-vector scaling
+// family, a *chplan.HistogramFloatVectorJoin, and every consumer below
+// this call (mergeTwoHistogramProjections and its Card sibling,
+// compareTwoHistogramProjections and its Card/bool siblings,
+// applyVectorMatchToHistogramOperand, the two drop-family lowerings)
+// only ever reads its operands by the canonical Sample column names
+// plus the fixed Histogram*Column aliases — never by Go type — so a
+// concrete *chplan.HistogramProjection was never required, merely
+// assumed (cerberus issue #2559: `(<histA> and <histB>) + (<histC> and
+// <histD>)` used to leak this assumption as an "internal invariant
+// violated" error instead of lowering correctly).
+func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	node, matched, err := lowerExpHistogramValuedShape(expr, s, ctx)
 	if err != nil {
 		return nil, err
@@ -173,11 +189,13 @@ func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowe
 	if !matched {
 		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram binop operand matched no known histogram-valued shape for %v", expr)
 	}
-	hp, ok := node.(*chplan.HistogramProjection)
-	if !ok {
-		return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram binop operand lowering did not cap with *chplan.HistogramProjection, got %T", node)
+	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf(
+			"promql: internal invariant violated: exp-histogram binop operand lowering published %s row shape (%T), want %s",
+			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+		)
 	}
-	return hp, nil
+	return node, nil
 }
 
 // expHistogramDroppingHistogramBinop recognises `<exp-hist shape> OP
@@ -230,10 +248,11 @@ func expHistogramHistogramBinopDrops(op parser.ItemType) bool {
 // unmodified, exactly as [lowerExpHistogramHistogramBinop] does for the
 // merge shape — so a nested lowering error in either operand still
 // surfaces normally rather than being silently swallowed by the drop.
-// Only the LHS's HistogramProjection caps the resulting constant-false
-// Filter; which side is chosen is arbitrary; since every row is filtered
-// out, cerberus never uses the RHS lowering's rows, but the RHS lowering
-// still runs so its own errors are still caught before the drop applies.
+// Only the LHS's histogram-shaped lowering caps the resulting
+// constant-false Filter; which side is chosen is arbitrary; since every
+// row is filtered out, cerberus never uses the RHS lowering's rows, but
+// the RHS lowering still runs so its own errors are still caught before
+// the drop applies.
 func lowerExpHistogramDroppingHistogramBinop(lhsExpr, rhsExpr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	hpL, err := lowerExpHistogramValuedOperand(lhsExpr, s, ctx)
 	if err != nil {
@@ -255,7 +274,15 @@ func lowerExpHistogramDroppingHistogramBinop(lhsExpr, rhsExpr parser.Expr, s sch
 // reconciliation the cross-series merges apply. See this file's doc for
 // why the join collapses to a `having count() = 2` guard rather than a
 // VectorJoin.
-func mergeTwoHistogramProjections(hpL, hpR *chplan.HistogramProjection, s schema.Metrics, ctx lowerCtx) chplan.Node {
+//
+// hpL/hpR are typed as plain chplan.Node — not *chplan.HistogramProjection —
+// because [lowerExpHistogramValuedOperand] now accepts any histogram-shaped
+// operand (cerberus issue #2559); every reference to either operand below
+// reads it by the fixed Histogram*Column aliases through the UnionAll's
+// column-name-matched output, never via a Go struct field, so a
+// *chplan.VectorSetOp operand composes exactly like a
+// *chplan.HistogramProjection one.
+func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	histSchema := histogramProjectionSchema(s)
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
 		nil, &chplan.ColumnRef{Name: histSchema.AttributesColumn}, histSchema,
