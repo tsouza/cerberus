@@ -3770,6 +3770,35 @@ const rangeBucketAlias = "bucket_ts"
 // aggregations drop `__name__`, so the projected MetricName is the empty
 // string; the projected Attributes is built from the group-key columns.
 func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// min/max/stddev/stdvar/quantile/topk/bottomk over a histogram-VALUED
+	// argument (or over an already-dropped nested shape), NESTED under a
+	// further wrapper (cerberus issue #2562) —
+	// `histogram_quantile(0.5, topk(1, demo_latency_exp_hist))`,
+	// `sum(min(demo_latency_exp_hist))`, `abs(stddev(rate(demo_latency_exp_hist[5m])))`,
+	// … . [lowerHistogramNativeRoot] only tries this dispatch when the
+	// aggregation IS the query's own root; every wrapper reaches its
+	// operand through this function's own op-specific dispatch below —
+	// TOPK/BOTTOMK straight to [lowerTopK], the rest through the generic
+	// `lower(a.Expr, ...)` fallback further down — both of which would
+	// otherwise reach [lowerVectorSelector]'s ordinary path and
+	// [expHistogramSelectorRouting]'s hard rejection on the histogram
+	// selector underneath, rather than the reference "drop the sample,
+	// evaluate to empty" answer these ops get at the query root.
+	// [lowerExpHistogramDroppingShape] is the same reusable recogniser
+	// [lowerHistogramNativeRoot] itself calls (histogram_native_dropping_
+	// shape.go) — reusing it here, rather than only
+	// [droppingAggregationOverExpHistogram], also reshapes the result to
+	// the composable canonical float shape (floatShapedExpHistogramDrop)
+	// so a further wrapper around THIS aggregation keeps working, and
+	// picks up `topk(3, hist + 1)`-style nested-drop-family arguments too.
+	// Checked first, ahead of every op-specific branch, so it closes the
+	// nested gap for the five non-early-dispatched ops (min/max/stddev/
+	// stdvar/quantile) that reach the generic `lower(a.Expr, ...)` path as
+	// well — mirroring how [lowerExpHistogramCountFamily] is threaded both
+	// here and in lowerHistogramNativeRoot for count()/group().
+	if plan, ok, err := lowerExpHistogramDroppingShape(a, s, ctx); ok {
+		return plan, err
+	}
 	if a.Op == parser.TOPK || a.Op == parser.BOTTOMK {
 		return lowerTopK(a, s, ctx)
 	}
@@ -4785,8 +4814,10 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 
 	// Only limitk ever preserves a histogram-valued input (see
 	// [lowerLimitKInput]'s doc comment) — topk/bottomk's histogram-only
-	// case is always intercepted upstream, ahead of lowerAggregate, by
-	// droppingAggregationOverExpHistogram (histogram_native_drop_
+	// case is always intercepted upstream, at the top of lowerAggregate
+	// (root OR nested, cerberus issue #2562) or, when this aggregation is
+	// itself the query's root, even earlier by lowerHistogramNativeRoot,
+	// by droppingAggregationOverExpHistogram (histogram_native_drop_
 	// aggregation.go), so `input` here is never histogram-valued for
 	// them and the plain [lower] dispatch is unchanged for that path.
 	var input chplan.Node

@@ -5,8 +5,8 @@
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59",
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
       "class": "divergence",
-      "trigger_query": "histogram_quantile(0.5, topk(1, demo_latency_exp_hist))",
-      "tracking_issue": 2562,
+      "trigger_query": "histogram_quantile(0.5, count_values(\"v\", demo_latency_exp_hist))",
+      "tracking_issue": 2568,
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
