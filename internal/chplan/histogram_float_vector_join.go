@@ -5,8 +5,10 @@ import "slices"
 // HistogramFloatVectorJoin implements MUL (either operand order) and
 // histogram-left DIV histogram-SCALING by a genuine per-series float-
 // VECTOR operand (cerberus issue #2339), widened to on()/ignoring()
-// reduced-key matching and the "histogram is the many side"
-// group_left()/group_right() broadcast (cerberus issue #2342).
+// reduced-key matching and group_left()/group_right() broadcast in
+// either direction — histogram-many or histogram-one — regardless of
+// which side of the PromQL expression the histogram operand was written
+// on (cerberus issue #2342, further widened by #2537).
 // [expHistogramScalarBinop]'s scaling machinery
 // (internal/promql/histogram_native_scalar_binop.go, #2087) already
 // folds a compile-time scalar LITERAL scale factor into every histogram
@@ -42,30 +44,51 @@ import "slices"
 // CardManyToOne keeps Left (the histogram side) at full per-series
 // granularity — the "many" — while Right (the float side) collapses to
 // one row per matching key — the "one" — with Include copying named
-// labels from Right onto the output Attributes. Left is ALWAYS the
-// histogram-valued operand regardless of which operand PromQL's
-// group_left()/group_right() syntax names as "many", so a caller that
-// recognises the mirror-image shape (float LHS, `group_right()`,
-// histogram RHS) still sets Card to CardManyToOne — the emitter's Card
-// vocabulary describes Left/Right roles, not PromQL's original operand
-// order. CardOneToMany (the histogram side broadcasting as the "one"
-// against many float rows) is not supported: the emitter rejects it
-// outright rather than silently mis-joining.
+// labels from Right onto the output Attributes. CardOneToMany is the
+// mirror image: Right (the float side) stays "many" while Left (the
+// histogram side) collapses to one row per matching key — broadcasting
+// that single matched histogram across every matching float row — with
+// Include copying named labels from Left onto the output Attributes
+// (cerberus issue #2537). Left is ALWAYS the histogram-valued operand
+// regardless of which operand PromQL's group_left()/group_right() syntax
+// names as "many", so a caller resolves its own PromQL cardinality
+// keyword against which operand carries the histogram: `group_left()`
+// with the histogram as the syntactic LHS, or `group_right()` with the
+// histogram as the syntactic RHS, both set Card to CardManyToOne (hist
+// many); the mirror-image operand orders — `group_left()` with the
+// histogram on the RHS, or `group_right()` with the histogram on the
+// LHS — set Card to CardOneToMany (hist one, broadcast) instead. The
+// emitter's Card vocabulary describes Left/Right roles, not PromQL's
+// original operand order.
+//
+// CardOneToOne needs no such Left/Right role bit, even though
+// Prometheus's own resultMetric reduces the SYNTACTIC LHS operand's
+// labels (Keep for on(), Del for ignoring()) while Left here is always
+// the histogram operand: the join's own ON-clause equality (see
+// internal/chsql's matchKeyPredicateFrag) already forces L's and R's
+// on()/ignoring()-reduced Attributes to be identical for any row that
+// joins at all — on() keeps only the named labels, whose VALUES the ON
+// clause requires equal per label; ignoring() keeps everything else, and
+// the ON clause requires that entire reduced map to be equal as a whole.
+// Either side therefore reduces to the byte-identical output, so the
+// emitter always reduces Left — see internal/chsql's
+// histogramFloatVectorJoinOutputAttributesFrag — without needing to know
+// which operand PromQL originally wrote first.
 type HistogramFloatVectorJoin struct {
 	Left  Node // *HistogramProjection, the histogram-valued operand.
 	Right Node // The plain float-valued operand.
 
 	Match VectorMatch
 
-	// Card is the cardinality modifier; default CardOneToOne. Only
-	// CardOneToOne and CardManyToOne are supported — see the type doc.
+	// Card is the cardinality modifier; default CardOneToOne.
+	// CardOneToOne, CardManyToOne, and CardOneToMany are all supported —
+	// see the type doc.
 	Card VectorCard
 	// Include is the group_left(<labels>)/group_right(<labels>) extra-
-	// label list, copied from Right (the float side, always the "one"
-	// under the only supported CardManyToOne shape) onto the output
-	// Attributes. Nil/empty when no Include was specified, or when
-	// Card is CardOneToOne (Include is a group_left/group_right-only
-	// modifier).
+	// label list, copied from the "one" side (Right under CardManyToOne,
+	// Left under CardOneToMany) onto the output Attributes. Nil/empty
+	// when no Include was specified, or when Card is CardOneToOne
+	// (Include is a group_left/group_right-only modifier).
 	Include []string
 
 	// StepAligned mirrors VectorJoin.StepAligned / HistogramVectorJoin.
