@@ -306,6 +306,21 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if call, b, chFn, ok := mathFnOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
 	}
+	// Scalar `*` / histogram-left `/` wrapping that same mixed shape
+	// (cerberus issue #2449 — the sixth wrapper family, and the piece
+	// histogram_native_mixed_or_arithmetic.go's own header explicitly
+	// named as out of ITS scope because these two ops SCALE the
+	// histogram-shaped rows rather than dropping them). Checked ahead of
+	// the drop-family recognizer just below, mirroring
+	// [expHistogramScalarBinop]'s own precedence over
+	// [expHistogramDroppingScalarBinop] for the bare-histogram case: a
+	// scalable shape keeps its value rather than falling into the
+	// broader drop recognizer. histogram_native_mixed_or_scale.go has the
+	// composition's own doc comment for why no discriminator-keyed
+	// chplan.Case is needed to scale both arms safely.
+	if b, op, scalar, scalarOnLeft, ok := mulOrDivScaleOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, op, scalar, scalarOnLeft, s, ctx)
+	}
 	// A scalar arithmetic binop (`+`, `-`, `*`, `/`, `%`, `^`, `atan2`)
 	// wrapping that same mixed shape (cerberus issue #2449 — the fourth
 	// wrapper family, and the issue's own originally-named example,
