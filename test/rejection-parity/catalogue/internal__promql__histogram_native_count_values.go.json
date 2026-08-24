@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#30cc8718",
       "message": "promql: internal invariant violated: count_values native-histogram input is %T with %s row shape",
       "class": "internal",
-      "rationale": "countValuesOverExpHistogramValue admits a histogram-valued operand and lowerRoot lowers that same operand through lowerExpHistogramValuedShape and its histogram-row contract",
+      "rationale": "countValuesOverExpHistogramValue admits a histogram-valued operand and lowerHistogramNativeRoot (reached from lowerRoot for a query's own root, and from lowerHistogramNativeSubqueryInner for a bare subquery's own inner expression as of cerberus issue #2543) lowers that same operand through lowerExpHistogramValuedShape and its histogram-row contract.",
       "evidence": {
         "guard": [
           "past returning if !ok",
@@ -13,11 +13,13 @@
           "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
         ],
         "callers": [
-          "lowerRoot"
+          "lowerHistogramNativeRoot"
         ],
         "cited": [
           "countValuesOverExpHistogramValue",
           "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot",
+          "lowerHistogramNativeSubqueryInner",
           "lowerRoot"
         ]
       }
@@ -27,12 +29,16 @@
       "site": "internal/promql/histogram_native_count_values.go:lowerExpHistogramCountValuesOverPlan#49c20b7b",
       "message": "promql: count_values requires a string-literal label name as the first arg",
       "class": "internal",
-      "rationale": "the PromQL typechecker admits only a string literal as count_values' parameter",
+      "rationale": "the PromQL typechecker admits only a string literal as count_values' parameter; this holds identically regardless of whether the enclosing count_values(...) reached this lowerer via lowerRoot (a query's own root) or lowerHistogramNativeSubqueryInner (a bare subquery's own inner expression, cerberus issue #2543), since the typechecker runs during parsing, before either entry point is reached.",
       "evidence": {
         "guard": [
           "if !ok"
         ],
         "callers": [
+          "lowerHistogramNativeRoot"
+        ],
+        "cited": [
+          "lowerHistogramNativeSubqueryInner",
           "lowerRoot"
         ]
       }
@@ -49,7 +55,7 @@
           "if label == \"\""
         ],
         "callers": [
-          "lowerRoot"
+          "lowerHistogramNativeRoot"
         ]
       }
     }

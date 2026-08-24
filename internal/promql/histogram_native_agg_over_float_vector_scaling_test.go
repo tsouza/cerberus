@@ -123,19 +123,24 @@ func TestLower_ExpHistogram_AggregationOverFloatVectorScalingBinop(t *testing.T)
 	}
 }
 
+// TestLower_ExpHistogram_SubqueryOverFloatVectorScalingBinop documents the
+// boundary the test above deliberately stayed inside of when it was
+// written: a subquery wrapping the SAME scaling-join shape (cerberus
+// issue #2540's own "subquery-wrapping variant" open question, split out
+// as cerberus issue #2543 since it turned out to be a genuinely separate,
+// broader root cause — lowerSubquery's own per-inner-type dispatch never
+// consulted lowerRoot's histogram-native table for ANY histogram-native
+// shape, not only this one, so a BARE `(demo_latency_exp_hist)[5m:1m]`
+// and `sum(demo_latency_exp_hist)[5m:1m]` rejected the identical way).
+// #2543's own fix taught lowerSubquery to try that table against a
+// subquery's own inner expression, so this shape now lowers successfully
+// too — this test was
 // TestLower_ExpHistogram_SubqueryOverFloatVectorScalingBinopStillRejected
-// documents the boundary the test above deliberately stays inside of: a
-// subquery wrapping the SAME scaling-join shape (cerberus issue #2540's
-// own "subquery-wrapping variant" open question) still hits the
-// identical expHistogramSelectorRouting catch-all after this fix — not
-// because the scaling-join recognizer regressed, but because
-// lowerSubquery's own per-inner-type dispatch never consults lowerRoot
-// (or isExpHistogramValuedShape) for ANY histogram-native shape, not
-// only this one (probing also found a BARE `(demo_latency_exp_hist)
-// [5m:1m]` and `sum(demo_latency_exp_hist)[5m:1m]` still rejected the
-// same way). That is a separate, broader root cause, tracked by its own
-// issue rather than folded into this one.
-func TestLower_ExpHistogram_SubqueryOverFloatVectorScalingBinopStillRejected(t *testing.T) {
+// before that fix landed. TestSubqueryHistogramFloatVectorScalingJoin_ChDB
+// (subquery_histogram_native_chdb_test.go) covers the same shape with real
+// chDB execution and numeric verification; this sibling stays as the fast,
+// no-chDB row-shape pin the rest of this file's cases already use.
+func TestLower_ExpHistogram_SubqueryOverFloatVectorScalingBinop(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -148,7 +153,11 @@ func TestLower_ExpHistogram_SubqueryOverFloatVectorScalingBinopStillRejected(t *
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAtRange(context.Background(), expr, s, start, end, 30*time.Second); err == nil {
-		t.Fatalf("LowerAtRange(%q): got no error, want the subquery-wrapping gap to still be open (tracked separately)", query)
+	plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, 30*time.Second)
+	if err != nil {
+		t.Fatalf("LowerAtRange(%q): %v", query, err)
+	}
+	if got := chplan.RowShapeOf(plan); got != chplan.HistogramRowShape {
+		t.Errorf("LowerAtRange(%q): row shape = %v, want %v", query, got, chplan.HistogramRowShape)
 	}
 }
