@@ -99,23 +99,8 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 		// selector's own newest-sample collapse does, rather than
 		// treating it as a provably-float pipeline (cerberus issue
 		// #2554).
-		if hist, matched, err := lowerExpHistogramValuedShape(c.Args[vecIdx], s, ctx); matched {
-			if err != nil {
-				return nil, err
-			}
-			// RowShapeOf, not a *chplan.HistogramProjection type
-			// assertion: a set-op operand (histogram_native_set_op.go)
-			// answers histogram-valued as a *chplan.VectorSetOp with
-			// Histogram=true, publishing the identical nine-column
-			// contract under a different node type, and RowShapeOf is
-			// this package's own shared test for "is this the
-			// thirteen-column histogram row shape" across every such
-			// producer (mirrors lowerExpHistogramCountOrGroupOverPlan's
-			// identical check).
-			if chplan.RowShapeOf(hist) != chplan.HistogramRowShape {
-				return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T", hist)
-			}
-			return lowerHistogramValueFnOverProjection(c, hist, s, ctx)
+		if node, matched, err := lowerHistogramValueFnHistogramValuedArg(c, c.Args[vecIdx], s, ctx); matched {
+			return node, err
 		}
 
 		// Float pipelines (aggregations, arithmetic, vector(), …)
@@ -242,6 +227,42 @@ func lowerHistogramValueFnPerSample(
 			{Expr: value, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// lowerHistogramValueFnHistogramValuedArg is lowerHistogramValueFn's own
+// "try the HISTOGRAM-VALUED retry" opt-in, factored out of that function's
+// non-bare-selector branch to keep it a single flat check — mirroring the
+// `if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(...); ok { … }`
+// shape every float-only wrapper in this package already uses at its own
+// callsite (e.g. lowerInstantFn in instant_fns.go) — rather than nesting
+// the match/error/shape checks inline, which golangci-lint's nestif gate
+// flags past a threshold. matched=false leaves the caller's own
+// float-pipeline fallback untouched.
+func lowerHistogramValueFnHistogramValuedArg(
+	c *parser.Call,
+	arg parser.Expr,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (node chplan.Node, matched bool, err error) {
+	hist, matched, err := lowerExpHistogramValuedShape(arg, s, ctx)
+	if !matched {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	// RowShapeOf, not a *chplan.HistogramProjection type assertion: a
+	// set-op operand (histogram_native_set_op.go) answers histogram-valued
+	// as a *chplan.VectorSetOp with Histogram=true, publishing the
+	// identical nine-column contract under a different node type, and
+	// RowShapeOf is this package's own shared test for "is this the
+	// thirteen-column histogram row shape" across every such producer
+	// (mirrors lowerExpHistogramCountOrGroupOverPlan's identical check).
+	if chplan.RowShapeOf(hist) != chplan.HistogramRowShape {
+		return nil, true, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T", hist)
+	}
+	node, err = lowerHistogramValueFnOverProjection(c, hist, s, ctx)
+	return node, true, err
 }
 
 // lowerHistogramValueFnOverProjection is the nested-argument counterpart
