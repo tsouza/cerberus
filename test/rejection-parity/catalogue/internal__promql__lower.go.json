@@ -168,13 +168,17 @@
           "lowerVectorVector"
         ],
         "cited": [
+          "dropExpHistogramSamples",
           "lower",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerExpHistogramFloatVectorScalingBinop",
+          "lowerExpHistogramValuedShape",
           "lowerHistogramQuantileClassicFloat",
           "lowerMixedExpHistogramOperands",
           "lowerMixedExpHistogramSetOp",
           "lowerRoot",
+          "lowerScalarArg",
+          "lowerScalarVectorArg",
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
           "lowerVectorSetOp",
           "lowerVectorSetOpOperand"

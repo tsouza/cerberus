@@ -489,6 +489,7 @@ scalar_lt_vector.txtar
 scalar_many_series_nan.txtar
 scalar_minus_vector.txtar
 scalar_mul_rate.txtar
+scalar_over_exp_histogram.txtar
 scalar_single_series.txtar
 scan_unions_gauge_for_suffixed_standalone_gauge.txtar
 scan_unions_gauge_sum_for_unsuffixed_metric.txtar
