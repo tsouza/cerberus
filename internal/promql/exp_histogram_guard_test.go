@@ -16,10 +16,13 @@ import (
 // TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly pins issue #1704:
 // every PromQL shape over a pinned exponential-histogram selector OTHER
 // than histogram_quantile() / histogram_count() / histogram_sum(), the
-// `_count` / `_sum` companion selectors, and the three top-level
-// histogram-VALUED shapes issue #1967 answers — a BARE selector
-// (TestLower_ExpHistogram_BareSelectorIsHistogramValued), `sum()` over
-// one and its `avg()` twin (TestLower_ExpHistogram_SumIsHistogramValued,
+// `_count` / `_sum` companion selectors, and the top-level
+// histogram-VALUED shapes issue #1967 (and its follow-ons) answer — a BARE
+// selector (TestLower_ExpHistogram_BareSelectorIsHistogramValued), a bare
+// top-level RANGE-VECTOR selector
+// (TestLower_ExpHistogram_BareMatrixSelectorIsHistogramValued, cerberus
+// issue #2548), `sum()` over one and its `avg()` twin
+// (TestLower_ExpHistogram_SumIsHistogramValued,
 // TestLower_ExpHistogram_AvgIsHistogramValued), the five native-histogram-
 // valued range functions over one
 // (TestLower_ExpHistogram_RangeFunctionsAreHistogramValued), and float-only
@@ -54,7 +57,10 @@ func TestLower_ExpHistogram_UnsupportedShapesRejectExplicitly(t *testing.T) {
 		name  string
 		query string
 	}{
-		{name: "raw range vector", query: `latency_exp_hist[5m]`},
+		// A bare top-level raw range vector (`latency_exp_hist[5m]`) is
+		// answered since cerberus issue #2548 — see
+		// TestLower_ExpHistogram_BareMatrixSelectorIsHistogramValued — so
+		// it is deliberately no longer a case here.
 		{name: "subquery", query: `max_over_time(latency_exp_hist[5m:1m])`},
 
 		// `resets()` / `changes()` / `count()` over a bare selector ARE

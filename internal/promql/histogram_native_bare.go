@@ -203,6 +203,83 @@ func nativeExpHistValuedLatestAggs(s schema.Metrics) []chplan.AggFunc {
 	)
 }
 
+// bareExpHistogramMatrixSelector reports whether expr is a bare
+// TOP-LEVEL range-vector selector (`demo_latency_exp_hist[5m]`, cerberus
+// issue #2548) over an exp-histogram metric — the range-vector sibling
+// of [bareExpHistogramSelector]. Reference Prometheus answers this shape
+// with resultType "matrix": every RAW in-window native-histogram
+// sample, original timestamps preserved — see
+// [lowerExpHistogramBareMatrix].
+//
+// It is deliberately asked only from [lowerHistogramNativeRoot], never
+// from [lowerExpHistogramValuedShape]'s recursive dispatch. A
+// *parser.MatrixSelector reaches the parser tree in exactly two shapes:
+// as a range-vector function's Call argument (`rate(m[5m])`), which
+// lowerCall intercepts before [lower]'s own switch ever sees it, or as
+// the WHOLE top-level query (`m[5m]` sent bare to /api/v1/query — no
+// other PromQL construct can wrap a range-vector operand). So unlike
+// [bareExpHistogramSelector], no wrapper composition can ever nest this
+// shape, and it needs no recursive reach into
+// [lowerExpHistogramValuedShape].
+func bareExpHistogramMatrixSelector(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.MatrixSelector, *parser.VectorSelector, bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, nil, false
+	}
+	ms, ok := expr.(*parser.MatrixSelector)
+	if !ok {
+		return nil, nil, false
+	}
+	vs, ok := ms.VectorSelector.(*parser.VectorSelector)
+	if !ok {
+		return nil, nil, false
+	}
+	if !s.IsExpHistogramMetric(metricNameFromMatchers(vs.LabelMatchers)) {
+		return nil, nil, false
+	}
+	return ms, vs, true
+}
+
+// lowerExpHistogramBareMatrix lowers a bare top-level range-vector
+// selector over an exp-histogram metric (cerberus issue #2548): every
+// RAW sample in `(anchor − range, anchor]` per series, ORIGINAL
+// timestamps preserved — the exact "raw range vector" contract
+// [lowerMatrixSelector]'s own doc comment describes for a float metric
+// (lower.go), carried over to the histogram-valued row shape via
+// [nativeHistogramProjection].
+//
+// Unlike [lowerExpHistogramBare]'s three grid shapes (gridFanout /
+// gridBroadcast / gridSingleAnchor), each of which collapses to ONE row
+// per (series, anchor) via [latestSampleAgg]'s argMax, this lowering
+// applies NO per-series collapse: [nativeHistogramProjection] caps the
+// filtered scan directly, so its Timestamp column reads each row's own
+// TimeUnix value rather than now64() or a grid anchor — every raw
+// sample in the window survives, exactly as many as the scan itself
+// finds. It never runs in range-query mode: query_range traffic rejects
+// a matrix-typed top-level expression before lowering ever starts (see
+// [lowerMatrixSelector]'s own doc), so ctx.step is always zero here.
+func lowerExpHistogramBareMatrix(ms *parser.MatrixSelector, vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	anchor, err := anchorFromSelector(vs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if anchor.End.IsZero() && !ctx.end.IsZero() {
+		anchor.End = ctx.end.UTC()
+	}
+
+	// (anchor − range, anchor] window — left-open / right-closed, the
+	// same PromQL range-selector contract [lowerMatrixSelector] applies
+	// for a float metric.
+	pred := andExpr(buildPredicate(vs.LabelMatchers, s), timeBoundExpr(s.TimestampColumn, anchor))
+	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, ms.Range))
+
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = scan
+	if pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	return nativeHistogramProjection(input, bareExpHistogramNameExpr(s), &chplan.ColumnRef{Name: s.TimestampColumn}, s), nil
+}
+
 // nativeHistogramProjection caps input with the
 // [chplan.HistogramProjection] that publishes the thirteen-column
 // histogram row: the canonical sample quartet first — with nameExpr

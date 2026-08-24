@@ -284,6 +284,16 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // lowerVectorSetOp rejection, tracked as an open divergence in
 // test/rejection-parity/catalogue under #2449.
 func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	// A bare top-level range-vector selector over an exp-histogram
+	// metric (`demo_latency_exp_hist[5m]`, cerberus issue #2548) —
+	// checked first because a *parser.MatrixSelector is disjoint from
+	// every other recognizer's AST node type below and, unlike a bare
+	// VectorSelector, can never appear nested under a wrapper (see
+	// [bareExpHistogramMatrixSelector]'s own doc for why).
+	if ms, vs, ok := bareExpHistogramMatrixSelector(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramBareMatrix(ms, vs, s, ctx)
+		return plan, true, err
+	}
 	if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerLabelReplaceOverExpHistogram(call, s, ctx)
 		return plan, true, err

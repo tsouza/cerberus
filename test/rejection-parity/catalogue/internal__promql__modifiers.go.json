@@ -5,7 +5,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#394bcda7",
       "message": "promql: `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) is a new caller as of this change — the bare top-level range-vector selector over an exp-histogram metric — but it resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no path that reaches this switch with an empty range context either.",
       "evidence": {
         "guard": [
           "case parser.END of switch vs.StartOrEnd",
@@ -16,6 +16,7 @@
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
+          "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",
           "lowerHoltWinters",
@@ -27,8 +28,12 @@
         ],
         "cited": [
           "Lower",
+          "LowerAt",
           "LowerAtRange",
+          "anchorFromSelector",
           "expHistogramRangeFnWindowed",
+          "lowerExpHistogramBareMatrix",
+          "lowerMatrixSelector",
           "lowerRoot"
         ]
       }
@@ -38,7 +43,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#91490634",
       "message": "promql: `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context.",
+      "rationale": "the query endpoints always lower via LowerAtRange with the request window, so range context is always present; plain Lower is reached only from the matcher-metadata path, which carries no @ modifiers. Re-verified after expHistogramRangeFnWindowed replaced expHistogramRateWindowed: it resolves its anchor from the same lowerRoot dispatch under the same entry points, so it adds no path that reaches this switch with an empty range context. lowerExpHistogramBareMatrix (cerberus issue #2548) is a new caller as of this change — the bare top-level range-vector selector over an exp-histogram metric — but it resolves its anchor from vs via this same anchorFromSelector under the identical LowerAt/LowerAtRange entry points its float-selector sibling lowerMatrixSelector already uses, so it adds no path that reaches this switch with an empty range context either.",
       "evidence": {
         "guard": [
           "case parser.START of switch vs.StartOrEnd",
@@ -49,6 +54,7 @@
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
+          "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",
           "lowerHoltWinters",
@@ -60,8 +66,12 @@
         ],
         "cited": [
           "Lower",
+          "LowerAt",
           "LowerAtRange",
+          "anchorFromSelector",
           "expHistogramRangeFnWindowed",
+          "lowerExpHistogramBareMatrix",
+          "lowerMatrixSelector",
           "lowerRoot"
         ]
       }
@@ -71,7 +81,7 @@
       "site": "internal/promql/modifiers.go:anchorFromSelector#df7f6e9a",
       "message": "promql: unexpected StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so the expanded histogram range-function caller set cannot bear on it.",
+      "rationale": "the parser yields only START / END / 0 in StartOrEnd. The claim is a property of the parser rather than of any caller, so the expanded histogram range-function caller set cannot bear on it. lowerExpHistogramBareMatrix (cerberus issue #2548) is a new caller as of this change, but the claim is still purely a parser property and does not depend on which caller supplies vs, so the new caller does not affect it either.",
       "evidence": {
         "guard": [
           "default of switch vs.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
@@ -81,6 +91,7 @@
           "expHistogramRangeFnWindowed",
           "expHistogramResetsWindowed",
           "lowerAbsentOverTime",
+          "lowerExpHistogramBareMatrix",
           "lowerHistogramQuantileAgg",
           "lowerHistogramQuantileNativeAgg",
           "lowerHoltWinters",
@@ -89,6 +100,9 @@
           "lowerQuantileOverTime",
           "lowerRangeVectorCall",
           "selectorAnchor"
+        ],
+        "cited": [
+          "lowerExpHistogramBareMatrix"
         ]
       }
     }
