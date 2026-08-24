@@ -98,8 +98,8 @@
       "tracking_issue": 2528,
       "evidence": {
         "guard": [
-          "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion && s.IsExpHistogramMetric(bare) && s.ExpHistogramTable != \"\"",
-          "if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange"
+          "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
+          "if s.IsExpHistogramMetric(metricName) \u0026\u0026 !ctx.metadataFullRange"
         ],
         "callers": [
           "resolveSelectorRouting"
@@ -168,17 +168,22 @@
         ],
         "cited": [
           "dropExpHistogramSamples",
+          "droppingAggregationOverExpHistogram",
           "lower",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerExpHistogramFloatVectorScalingBinop",
           "lowerExpHistogramValuedShape",
           "lowerHistogramQuantileClassicFloat",
+          "lowerLimitK",
+          "lowerLimitKInput",
+          "lowerLimitRatio",
           "lowerMixedExpHistogramOperands",
           "lowerMixedExpHistogramSetOp",
           "lowerRoot",
           "lowerScalarArg",
           "lowerScalarVectorArg",
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "lowerTopKComputed",
           "lowerVectorSetOp",
           "lowerVectorSetOpOperand"
         ]
