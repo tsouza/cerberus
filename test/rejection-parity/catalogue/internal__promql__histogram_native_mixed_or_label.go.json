@@ -5,19 +5,21 @@
       "site": "internal/promql/histogram_native_mixed_or_label.go:lowerLabelCallOverMixedExpHistogramSetOp#82719db8",
       "message": "promql: internal invariant violated: %s is not a label-only mixed set-op consumer",
       "class": "internal",
-      "rationale": "labelCallOverMixedExpHistogramSetOp admits only label_replace and label_join before calling lowerLabelCallOverMixedExpHistogramSetOp, the same arity/name gate histogram_native_label_replace.go's identical labelCallOverExpHistogram/lowerLabelCallOverExpHistogram pair carries for the pure-histogram case",
+      "rationale": "labelCallOverMixedExpHistogramSetOp admits only label_replace and label_join before calling lowerLabelCallOverMixedExpHistogramSetOp, the same arity/name gate histogram_native_label_replace.go's identical labelCallOverExpHistogram/lowerLabelCallOverExpHistogram pair carries for the pure-histogram case. Since cerberus issue #2528, lowerMixedExpHistogramFamily replaces lowerRoot as the direct caller (split out of lowerRoot's own body purely to keep that function's golangci-lint maintainability-index score over the repo's floor) — the same labelCallOverMixedExpHistogramSetOp-matched Call flows through unchanged, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "default of switch call.Func.Name over [case \"label_replace\"; case \"label_join\"; default]"
         ],
         "callers": [
-          "lowerRoot"
+          "lowerMixedExpHistogramFamily"
         ],
         "cited": [
           "labelCallOverExpHistogram",
           "labelCallOverMixedExpHistogramSetOp",
           "lowerLabelCallOverExpHistogram",
-          "lowerLabelCallOverMixedExpHistogramSetOp"
+          "lowerLabelCallOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily",
+          "lowerRoot"
         ]
       }
     }

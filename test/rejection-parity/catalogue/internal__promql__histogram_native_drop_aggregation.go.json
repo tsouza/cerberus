@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_drop_aggregation.go:lowerExpHistogramDroppingAggregation#c2a441b1",
       "message": "promql: internal invariant violated: histogram-dropping aggregation input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "droppingAggregationOverExpHistogram already proves agg.Expr histogram-valued; this lowerer reuses lowerExpHistogramValuedShape for that same expression",
+      "rationale": "droppingAggregationOverExpHistogram already proves agg.Expr histogram-valued; this lowerer reuses lowerExpHistogramValuedShape for that same expression. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerRoot as a second caller, but it calls this lowerer only immediately after its own droppingAggregationOverExpHistogram(expr, s, ctx) check has returned ok, the identical precondition lowerRoot already established, so the claim is unaffected by the new caller.",
       "evidence": {
         "guard": [
           "past returning if err := validateHistogramDroppingAggregationParam(agg, s, ctx); err != nil",
@@ -13,11 +13,14 @@
           "if !matched"
         ],
         "callers": [
+          "lowerExpHistogramDroppingShape",
           "lowerRoot"
         ],
         "cited": [
           "droppingAggregationOverExpHistogram",
-          "lowerExpHistogramValuedShape"
+          "lowerExpHistogramDroppingShape",
+          "lowerExpHistogramValuedShape",
+          "lowerRoot"
         ]
       }
     }
