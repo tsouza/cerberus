@@ -143,6 +143,7 @@ exp_histogram_binop_add_group_left.txtar
 exp_histogram_binop_add_group_right.txtar
 exp_histogram_binop_add_on_matching.txtar
 exp_histogram_binop_add_range.txtar
+exp_histogram_binop_add_setop_operand.txtar
 exp_histogram_binop_eq.txtar
 exp_histogram_binop_eq_bool.txtar
 exp_histogram_binop_eq_bool_group_right.txtar
