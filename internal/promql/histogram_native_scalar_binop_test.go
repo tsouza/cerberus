@@ -134,6 +134,115 @@ func TestLower_ExpHistogram_ScalarBinopIsHistogramValued(t *testing.T) {
 	}
 }
 
+// TestLower_ExpHistogram_ScalarBinopOverSetOpIsHistogramValued pins
+// cerberus issue #2557: `<exp-hist shape> (*|/) <scalar>` composes with a
+// `and`/`or`/`unless` set-op result (cerberus issue #2324) the same way
+// it already composes with a bare selector / sum() / avg() / rate().
+//
+// Before the fix, [isExpHistogramValuedShape] — the very recognizer
+// [expHistogramScalarBinop] gates on to decide the histogram side is
+// eligible — reported a set-op result histogram-valued, but
+// [lowerExpHistogramScalarBinop]'s own consumer required the histogram
+// side's lowering to cap with literally a *chplan.HistogramProjection; a
+// set op lowers to a *chplan.VectorSetOp instead, so the mismatch
+// surfaced as an "internal invariant violated" lowering error — a clean
+// HTTP 422 (the promql "lower" stage error mapping), not a process crash
+// or an unrecovered panic — instead of the two shapes composing.
+func TestLower_ExpHistogram_ScalarBinopOverSetOpIsHistogramValued(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{name: "and times scalar", query: `(latency_exp_hist and other_exp_hist) * 2`},
+		{name: "scalar times and", query: `2 * (latency_exp_hist and other_exp_hist)`},
+		{name: "or divided by scalar", query: `(latency_exp_hist or other_exp_hist) / 4`},
+		{name: "unless times scalar", query: `(latency_exp_hist unless other_exp_hist) * 2`},
+		{name: "on() and times scalar", query: `(latency_exp_hist and on(service) other_exp_hist) * 2`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want histogram", tc.query, shape)
+			}
+			hp, ok := plan.(*chplan.HistogramProjection)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.HistogramProjection", tc.query, plan)
+			}
+			reshape, ok := hp.Input.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): HistogramProjection.Input is %T, want *chplan.Project", tc.query, hp.Input)
+			}
+			setOp, ok := reshape.Input.(*chplan.VectorSetOp)
+			if !ok {
+				t.Fatalf("lower(%q): the scaling Project's Input is %T, want *chplan.VectorSetOp", tc.query, reshape.Input)
+			}
+			if !setOp.Histogram {
+				t.Fatalf("lower(%q): VectorSetOp.Histogram = false, want true", tc.query)
+			}
+		})
+	}
+}
+
+// TestLower_ExpHistogram_DroppingScalarBinopOverSetOpDoesNotError pins
+// the "drop family" (cerberus issue #2189) sibling of the same #2557
+// gap: `<set-op result> (+|-|^|%|==|!=|>|<|>=|<=|atan2) <scalar>` (and
+// scalar-left `/`) must answer reference's empty keep=false result
+// through the same constant-false [chplan.Filter] the drop family always
+// builds, not the "internal invariant violated" lowering error.
+func TestLower_ExpHistogram_DroppingScalarBinopOverSetOpDoesNotError(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	queries := []string{
+		`(latency_exp_hist and other_exp_hist) + 1`,
+		`(latency_exp_hist or other_exp_hist) == 1`,
+		`2 / (latency_exp_hist unless other_exp_hist)`,
+	}
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+			}
+			filter, ok := plan.(*chplan.Filter)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want constant-false *chplan.Filter", query, plan)
+			}
+			predicate, ok := filter.Predicate.(*chplan.LitBool)
+			if !ok || predicate.V {
+				t.Fatalf("lower(%q): filter predicate is %#v, want false literal", query, filter.Predicate)
+			}
+			if shape := chplan.RowShapeOf(filter.Input); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): filtered input publishes %s, want histogram", query, shape)
+			}
+		})
+	}
+}
+
 func TestLower_ExpHistogram_IncompatibleScalarBinopDropsSamples(t *testing.T) {
 	t.Parallel()
 
