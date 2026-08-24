@@ -174,6 +174,9 @@ func TestVectorVectorCompareOverMixedSetOpOr_ChDB_NoBool(t *testing.T) {
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	const lhsQuantile = 6.3496042078727974 // histogram_quantile(0.5, [1,2,3,4]/10/10.0)
 	const rhsQuantile = 12.699208415745595 // histogram_quantile(0.5, [2,4,6,8]/10/20.0) — exactly double lhsQuantile.
+	if got, want := rhsQuantile, 2*lhsQuantile; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("fixture invariant violated: rhsQuantile (%v) is not exactly double lhsQuantile (%v) — the \"ff\" series's orderability assumption below no longer holds", got, want)
+	}
 
 	t.Run("==", func(t *testing.T) {
 		rows := mvcRunQuery(t, fixture, s, p, mvcLHSExpr()+" == "+mvcRHSExpr())
