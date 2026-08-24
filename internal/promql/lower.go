@@ -367,6 +367,25 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if lhs, rhs, op, match, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		return lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, s, ctx)
 	}
+	// Vector-vector `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`,
+	// where BOTH operands are themselves a mixed `or` — neither side a
+	// scalar literal (cerberus issue #2449, the eighth wrapper family, and
+	// the piece PR #2521's own vector-vector arithmetic pass named as its
+	// next remaining scope). Checked here for the identical reason every
+	// sibling recognizer above is: a mixed `or` operand never resolves as
+	// purely histogram-valued, so nothing above this line can have
+	// consumed the shape yet, and this recognizer's own scalar-literal
+	// exclusion keeps it disjoint from
+	// [comparisonOverMixedExpHistogramSetOp] just above (that one requires
+	// exactly one side to fold to a scalar; this one requires neither side
+	// to). histogram_native_mixed_or_vector_comparison.go has the
+	// composition's own doc comment for the four-combination semantics
+	// decision — notably, that reference's `bool` modifier does NOT keep
+	// every matched pair regardless of type compatibility, contrary to
+	// what the arithmetic pass's own header had assumed.
+	if lhs, rhs, op, match, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, returnBool, s, ctx)
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
 	}

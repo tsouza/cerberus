@@ -29,7 +29,7 @@
       "site": "internal/promql/histogram_native_mixed_or.go:lowerMixedExpHistogramSetOp#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), so b.ReturnBool can never be true for the `or` BinaryExpr this function receives — a parser-level fact independent of which function calls it. Since cerberus issue #2449, lowerLabelCallOverMixedExpHistogramSetOp, lowerMathFnOverMixedExpHistogramSetOp, lowerMulOrDivScaleOverMixedExpHistogramSetOp, lowerArithmeticOverMixedExpHistogramSetOp, lowerComparisonOverMixedExpHistogramSetOp and lowerVectorVectorArithmeticOverMixedExpHistogramSetOp join lowerRoot as the second through seventh callers, but all six hand this function the identical parser-produced BinaryExpr their own labelCallOverMixedExpHistogramSetOp, mathFnOverMixedExpHistogramSetOp, mulOrDivScaleOverMixedExpHistogramSetOp, arithmeticOverMixedExpHistogramSetOp and comparisonOverMixedExpHistogramSetOp recognizers only ever matched via mixedExpHistogramSetOp — the same node lowerRoot's direct dispatch would have received — so the claim is unchanged, the same way lowerVectorSetOp's identical check for the float case and lowerExpHistogramSetOp's identical check for the both-histogram case already establish. lowerVectorVectorArithmeticOverMixedExpHistogramSetOp calls this function TWICE per query (once for each operand's own mixed `or`), but both calls pass one of the two inner `or` BinaryExprs vectorVectorArithmeticOverMixedExpHistogramSetOp matched via mixedExpHistogramSetOp — never the outer vector-vector arithmetic BinaryExpr itself — so the identical reasoning holds for both calls. In particular, comparisonOverMixedExpHistogramSetOp's own ReturnBool (set when the OUTER comparison carries `bool`) is never forwarded here: lowerComparisonOverMixedExpHistogramSetOp passes only `setOp`, the inner `or` BinaryExpr mixedExpHistogramSetOp matched, to lowerMixedExpHistogramSetOp — the outer comparison's own BinaryExpr (whose ReturnBool may be true) is a distinct AST node this function never sees.",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), so b.ReturnBool can never be true for the `or` BinaryExpr this function receives — a parser-level fact independent of which function calls it. Since cerberus issue #2449, lowerLabelCallOverMixedExpHistogramSetOp, lowerMathFnOverMixedExpHistogramSetOp, lowerMulOrDivScaleOverMixedExpHistogramSetOp, lowerArithmeticOverMixedExpHistogramSetOp, lowerComparisonOverMixedExpHistogramSetOp, lowerVectorVectorArithmeticOverMixedExpHistogramSetOp and lowerComparisonVectorVectorOverMixedExpHistogramSetOp join lowerRoot as the second through eighth callers, but all seven hand this function the identical parser-produced BinaryExpr their own labelCallOverMixedExpHistogramSetOp, mathFnOverMixedExpHistogramSetOp, mulOrDivScaleOverMixedExpHistogramSetOp, arithmeticOverMixedExpHistogramSetOp, comparisonOverMixedExpHistogramSetOp, vectorVectorArithmeticOverMixedExpHistogramSetOp and comparisonVectorVectorOverMixedExpHistogramSetOp recognizers only ever matched via mixedExpHistogramSetOp — the same node lowerRoot's direct dispatch would have received — so the claim is unchanged, the same way lowerVectorSetOp's identical check for the float case and lowerExpHistogramSetOp's identical check for the both-histogram case already establish. lowerVectorVectorArithmeticOverMixedExpHistogramSetOp and lowerComparisonVectorVectorOverMixedExpHistogramSetOp each call this function TWICE per query (once for each operand's own mixed `or`), but both calls pass one of the two inner `or` BinaryExprs their own vectorVectorArithmeticOverMixedExpHistogramSetOp / comparisonVectorVectorOverMixedExpHistogramSetOp matched via mixedExpHistogramSetOp — never the outer vector-vector BinaryExpr itself — so the identical reasoning holds for all four calls. In particular, comparisonOverMixedExpHistogramSetOp's and comparisonVectorVectorOverMixedExpHistogramSetOp's own ReturnBool (set when the OUTER comparison carries `bool`) is never forwarded here: lowerComparisonOverMixedExpHistogramSetOp and lowerComparisonVectorVectorOverMixedExpHistogramSetOp each pass only the inner `or` BinaryExpr(s) mixedExpHistogramSetOp matched to lowerMixedExpHistogramSetOp — the outer comparison's own BinaryExpr (whose ReturnBool may be true) is a distinct AST node this function never sees.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
@@ -37,6 +37,7 @@
         "callers": [
           "lowerArithmeticOverMixedExpHistogramSetOp",
           "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
           "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerMathFnOverMixedExpHistogramSetOp",
           "lowerMulOrDivScaleOverMixedExpHistogramSetOp",
@@ -46,9 +47,11 @@
         "cited": [
           "arithmeticOverMixedExpHistogramSetOp",
           "comparisonOverMixedExpHistogramSetOp",
+          "comparisonVectorVectorOverMixedExpHistogramSetOp",
           "labelCallOverMixedExpHistogramSetOp",
           "lowerArithmeticOverMixedExpHistogramSetOp",
           "lowerComparisonOverMixedExpHistogramSetOp",
+          "lowerComparisonVectorVectorOverMixedExpHistogramSetOp",
           "lowerExpHistogramSetOp",
           "lowerLabelCallOverMixedExpHistogramSetOp",
           "lowerMathFnOverMixedExpHistogramSetOp",
