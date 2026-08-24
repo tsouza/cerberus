@@ -4329,38 +4329,10 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if hasTemporality {
 		fanout.Select(Col(r.TemporalityColumn))
 	}
-	if needsDeltaFirstLevel {
-		prefixArray := deltaPrefixAnchorArrayFrag(
-			end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
-		)
-		if useAggregateDeltaPrefix {
-			// The exact mechanism's raw term only ever needs the CURRENT,
-			// still-open day's contribution (deltaMatrixLevelSourceAggregate's
-			// aggregate stream supplies every full day strictly before it) —
-			// deltaPrefixAggregateRawAnchorArrayFrag additionally requires the
-			// assigned anchor to share the sample's own day, dropping (never
-			// double-counting) a sample whose first-eligible anchor would
-			// otherwise land on a later day already covered by the aggregate
-			// table.
-			prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
-		}
-		fanout.Select(As(
-			Call(
-				"arrayJoin",
-				Call(
-					"arrayConcat",
-					sampleAnchorFanoutArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-					prefixArray,
-				),
-			),
-			"anchor_ts",
-		))
-	} else {
-		fanout.Select(As(
-			sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
-			"anchor_ts",
-		))
-	}
+	fanout.Select(As(
+		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix),
+		"anchor_ts",
+	))
 	// Restrict the input scan to the offset-shifted
 	// (Start - Offset - range, End - Offset] window the anchor grid
 	// covers — same pushdown as emitWindowedArrayMatrix, against srcTs
@@ -4503,6 +4475,44 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	outer.Where(windowLenAtLeastFrag("window_vals", 2))
 
 	return e.emitSelect(outer)
+}
+
+// windowedMatrixFanoutAnchorTsFrag renders the per-sample anchor_ts fanout
+// expression for emitWindowedArrayExtrapolatedMatrix's sample-fanout SELECT
+// — an arrayJoin over every anchor a sample covers, plus (when
+// needsDeltaFirstLevel) the counter-reset prefix anchors
+// deltaPrefixAnchorArrayFrag / deltaPrefixAggregateRawAnchorArrayFrag
+// contribute. Split out of emitWindowedArrayExtrapolatedMatrix to keep that
+// function under golangci-lint's funlen ceiling.
+func windowedMatrixFanoutAnchorTsFrag(
+	r *chplan.RangeWindow, end Frag, srcTs string, stepNS, rangeNS, numAnchors int64,
+	needsDeltaFirstLevel, useAggregateDeltaPrefix bool,
+) Frag {
+	if !needsDeltaFirstLevel {
+		return sampleAnchorFanoutFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
+	}
+	prefixArray := deltaPrefixAnchorArrayFrag(
+		end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors,
+	)
+	if useAggregateDeltaPrefix {
+		// The exact mechanism's raw term only ever needs the CURRENT,
+		// still-open day's contribution (deltaMatrixLevelSourceAggregate's
+		// aggregate stream supplies every full day strictly before it) —
+		// deltaPrefixAggregateRawAnchorArrayFrag additionally requires the
+		// assigned anchor to share the sample's own day, dropping (never
+		// double-counting) a sample whose first-eligible anchor would
+		// otherwise land on a later day already covered by the aggregate
+		// table.
+		prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
+	}
+	return Call(
+		"arrayJoin",
+		Call(
+			"arrayConcat",
+			sampleAnchorFanoutArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors),
+			prefixArray,
+		),
+	)
 }
 
 // firstTsFrag renders `tupleElement(window_pairs[1], 1)` — the first
