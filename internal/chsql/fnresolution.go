@@ -164,6 +164,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 
 	// Math functions.
 	chplan.FnAbs:           {Name: "abs"},
+	chplan.FnBitShiftLeft:  {Name: "bitShiftLeft"},
 	chplan.FnBitShiftRight: {Name: "bitShiftRight"},
 	chplan.FnCeil:          {Name: "ceil"},
 	chplan.FnExp:           {Name: "exp"},
