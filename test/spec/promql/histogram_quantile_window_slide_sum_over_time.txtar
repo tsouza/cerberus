@@ -9,9 +9,19 @@
 # version floor for it), so cmd/cerberus wires
 # WindowSlideClassicHistogramWindowLowerer unconditionally, and
 # wireNativeStrategies (internal/promql/native_strategy_coverage_test.go)
-# seeds every fixture with the same chain regardless of marker sections —
-# this fixture carries no `experimental_*` section at all, and still lowers
-# through chplan.RangeBucketWindowSlide.
+# seeds every fixture with the same chain regardless of marker sections.
+#
+# windowSlideEligible (internal/promql/histogram_quantile_window_slide.go)
+# is currently gated off unconditionally by windowSlideDisabledPending2511:
+# a real chDB/testcontainers benchmark against production-shaped data found
+# this mechanism OOMs at every tested Lookback/Step ratio for sum_over_time,
+# including this fixture's own 10:1 ratio — see issue #2511. So this query
+# currently lowers through the plain chplan.RangeBucketFanout fallback, not
+# chplan.RangeBucketWindowSlide, even though its shape clears every other
+# windowSlideShapeEligible guard. Once #2511 is root-caused and
+# windowSlideDisabledPending2511 is flipped back to false, this fixture's
+# `-- chplan --` section needs regenerating back to the RangeBucketWindowSlide
+# shape (see git history for that shape, e.g. the state before #2511's fix).
 #
 # The seed and grid are IDENTICAL to
 # histogram_quantile_native_ladder_range_step.txtar's, with `rate` swapped
