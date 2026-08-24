@@ -69,7 +69,7 @@ func histogramMergeBoundRow(series string, offset int) string {
 // histogramMergeBoundRowWide is [histogramMergeBoundRow] with a
 // caller-chosen PositiveBucketCounts width instead of a fixed single
 // bucket, so a test can isolate the rows axis of the
-// `rows x width^3` cost model (histogram_merge_bound.go) by fixing width
+// `rows x width^2` cost model (histogram_merge_bound.go) by fixing width
 // and scaling rows, rather than needing an impractically large row count
 // at width 1.
 func histogramMergeBoundRowWide(series string, offset, width int) string {
@@ -141,10 +141,10 @@ func runHistogramMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 }
 
 // TestHistogramMergeBudget_ChDB_BucketWidthExceeded seeds two series whose
-// PositiveOffset diverges enough (0 vs 500, both Scale 0, one bucket each)
-// that the merged bucket ladder spans 501 buckets — past the point where
-// `rows(2) x width(501)^3` crosses maxHistogramMergeCostUnits
-// (70,000,000; 2 x 501^3 = ~251M) — and asserts the query aborts with the
+// PositiveOffset diverges enough (0 vs 6000, both Scale 0, one bucket each)
+// that the merged bucket ladder spans 6001 buckets — past the point where
+// `rows(2) x width(6001)^2` crosses maxHistogramMergeCostUnits
+// (60,000,000; 2 x 6001^2 = ~72M) — and asserts the query aborts with the
 // budget guard's own throwIf, not a ClickHouse crash and not a silent
 // wrong answer. This isolates the WIDTH factor of the cost model: 2 rows
 // alone (histogramBinopOperandCount's own fixed row count) never trips it
@@ -154,12 +154,12 @@ func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	b.WriteString(histogramMergeBoundSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
 	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
-	b.WriteString("    " + histogramMergeBoundRow("far", 500) + ";\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", 6000) + ";\n")
 	fixture := newChDBFixture(t, b.String())
 
 	err := runHistogramMergeBoundQuery(t, fixture)
 	if err == nil {
-		t.Fatal("expected the merge budget guard to abort the query (2 rows x width 501^3 exceeds the cost budget), got no error")
+		t.Fatal("expected the merge budget guard to abort the query (2 rows x width 6001^2 exceeds the cost budget), got no error")
 	}
 	// This test drives chdb-go's raw driver handle directly (see
 	// runHistogramMergeBoundQuery), never through chclient — the typed
@@ -174,21 +174,24 @@ func TestHistogramMergeBudget_ChDB_BucketWidthExceeded(t *testing.T) {
 	}
 }
 
-// TestHistogramMergeBudget_ChDB_RowCountExceeded seeds 100 series sharing
-// an IDENTICAL 100-bucket layout (same PositiveOffset, same width, so the
-// merged width stays 100 regardless of row count — isolating the ROWS
-// factor of the cost model exactly the way issue #2490's own real-CH repro
-// did) — `rows(100) x width(100)^3` = 100,000,000, past
-// maxHistogramMergeCostUnits (70,000,000). Every series shares no `by()`
-// label, so all 100 land in the query's one output group. This is the
-// shape #2385's original independent series-count axis (capped at 4096)
-// would have let straight through: 100 rows sits nowhere near that old
-// cap, which is exactly why issue #2490 found real ClickHouse OOMs the old
-// guard never caught.
+// TestHistogramMergeBudget_ChDB_RowCountExceeded seeds 2,500 series sharing
+// an IDENTICAL 160-bucket layout (same PositiveOffset, same width — a
+// realistic OTel SDK default histogram width, so the merged width stays 160
+// regardless of row count — isolating the ROWS factor of the cost model
+// exactly the way issue #2490's own real-CH repro did) — `rows(2500) x
+// width(160)^2` = 64,000,000, past maxHistogramMergeCostUnits (60,000,000),
+// while staying well under maxHistogramMergeRowCountOverflowGuard (4096) so
+// this exercises the COST FORMULA, not the row-count overflow backstop
+// [TestHistogramMergeBudget_ChDB_RowCountOverflowGuard] isolates below.
+// Every series shares no `by()` label, so all 2,500 land in the query's one
+// output group. This is the shape #2385's original independent
+// series-count axis (capped at 4096) would have let straight through: even
+// 2,500 rows sits nowhere near that old cap, which is exactly why issue
+// #2490 found real ClickHouse OOMs the old guard never caught.
 func TestHistogramMergeBudget_ChDB_RowCountExceeded(t *testing.T) {
 	const (
-		rowsOverBudget = 100
-		perRowWidth    = 100
+		rowsOverBudget = 2500
+		perRowWidth    = 160
 		sharedOffset   = 0 // identical layout across every row
 	)
 
@@ -204,7 +207,7 @@ func TestHistogramMergeBudget_ChDB_RowCountExceeded(t *testing.T) {
 
 	err := runHistogramMergeBoundQuery(t, fixture)
 	if err == nil {
-		t.Fatal("expected the merge budget guard to abort the query (100 rows x width 100^3 exceeds the cost budget), got no error")
+		t.Fatal("expected the merge budget guard to abort the query (2500 rows x width 160^2 exceeds the cost budget), got no error")
 	}
 	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
 		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
@@ -215,8 +218,8 @@ func TestHistogramMergeBudget_ChDB_RowCountExceeded(t *testing.T) {
 // one past histogram_merge_bound.go's unexported
 // maxHistogramMergeRowCountOverflowGuard (4096) — sharing an IDENTICAL
 // single-bucket layout, so the merged width stays 1 and the real cost
-// (`rows x width^3` = 4,097 x 1 = 4,097) sits nowhere near
-// maxHistogramMergeCostUnits (70,000,000): the cost-formula disjunct alone
+// (`rows x width^2` = 4,097 x 1 = 4,097) sits nowhere near
+// maxHistogramMergeCostUnits (60,000,000): the cost-formula disjunct alone
 // would NOT reject this query. This isolates the OVERFLOW-SAFETY disjunct
 // histogramMergeCostOverBudgetExpr ORs in ahead of the cost multiply —
 // proving it independently forces rejection past the row count where the

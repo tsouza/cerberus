@@ -462,6 +462,9 @@ const (
 	// abs(x) — the absolute value of a numeric x.
 	FnAbs Fn = "abs"
 
+	// bitShiftLeft(x, n) — x left-shifted by n bits (integer operand).
+	FnBitShiftLeft Fn = "bitShiftLeft"
+
 	// bitShiftRight(x, n) — x right-shifted by n bits (integer operand).
 	FnBitShiftRight Fn = "bitShiftRight"
 
