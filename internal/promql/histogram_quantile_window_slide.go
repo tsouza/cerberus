@@ -105,6 +105,22 @@ func (w WindowSlideClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in
 // numbers above.
 const windowSlideMinLookbackStepRatio = 10
 
+// windowSlideDisabledPending2511 gates the whole anchor-injection mechanism
+// off, unconditionally, until issue #2511 is root-caused. A real
+// chDB/testcontainers benchmark against production-shaped data (run as part
+// of issue #2408's own follow-up impact measurement) found this mechanism
+// OOMs (100% memory, HTTP 422) for sum_over_time at EVERY tested
+// Lookback/Step ratio from windowSlideMinLookbackStepRatio (10) through
+// 120 — the entire eligible range — reading roughly 5x more bytes than the
+// FanoutClassicHistogramWindowLowerer path it exists to improve on, which
+// itself completes cleanly (or fails fast and cheaply via its own existing
+// guard) at every one of those same ratios. No safe ratio threshold was
+// found within realistic bounds, so this disables the mechanism entirely
+// rather than raising windowSlideMinLookbackStepRatio to an unproven value.
+// Flip back to false once #2511's root cause is fixed and re-verified
+// against a real benchmark.
+const windowSlideDisabledPending2511 = true
+
 // windowSlideMaxLookbackMs is the largest Range issue #2408's Task-1 spike
 // confirmed the ceil-to-ms encoding + numeric RANGE frame can express
 // against real ClickHouse: the frame offset cap
@@ -113,7 +129,17 @@ const windowSlideMinLookbackStepRatio = 10
 // argument can carry is one more than that.
 const windowSlideMaxLookbackMs = 2147483647
 
-// windowSlideEligible is the intrinsic SHAPE check, mirroring
+// windowSlideEligible gates windowSlideShapeEligible behind
+// windowSlideDisabledPending2511 — see that constant's own doc for why the
+// mechanism is currently disabled unconditionally.
+func windowSlideEligible(in classicHistogramWindowInput) bool {
+	if windowSlideDisabledPending2511 {
+		return false
+	}
+	return windowSlideShapeEligible(in)
+}
+
+// windowSlideShapeEligible is the intrinsic SHAPE check, mirroring
 // nativeClassicHistogramEligible's own structure exactly. Each clause
 // names a semantic the anchor-injection aggregate cannot reproduce or a
 // scope boundary the plan draws deliberately, never a feature flag:
@@ -151,7 +177,7 @@ const windowSlideMaxLookbackMs = 2147483647
 //   - the Lookback/Step ratio must clear windowSlideMinLookbackStepRatio
 //     — see that constant's own doc for the measured curve this threshold
 //     is picked from.
-func windowSlideEligible(in classicHistogramWindowInput) bool {
+func windowSlideShapeEligible(in classicHistogramWindowInput) bool {
 	if in.shape.windowFn != sumOverTimeWindowFn {
 		return false
 	}

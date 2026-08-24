@@ -92,56 +92,14 @@ func TestLower_ExpHistogram_MixedSetOpOr_ArithmeticWrapped(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_MulStillRejects pins that `*` —
-// which SCALES the histogram side rather than dropping it (reference's
-// `hlhs.Copy().Mul(rhs)`) — is deliberately NOT widened by this
-// recognizer: it would need the histogram side's own nine
-// Histogram*Column outputs actually scaled, a materially different
-// lowering from the single float Project this file's recognizer builds.
-// Tracked by test/rejection-parity/catalogue's rotated trigger under
-// cerberus issue #2449.
-func TestLower_ExpHistogram_MixedSetOpOr_MulStillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	query := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) * 2`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	_, err = promql.LowerAt(context.Background(), expr, s, at, at)
-	if err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
-	}
-	const want = "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them"
-	if err.Error() != want {
-		t.Fatalf("lower(%q): error = %q, want %q", query, err.Error(), want)
-	}
-}
-
-// TestLower_ExpHistogram_MixedSetOpOr_HistogramLeftDivStillRejects pins
-// the same scaling exclusion for histogram-left `/` (reference's
-// `hlhs.Copy().Div(rhs)`) — only scalar-left `/` (histogram on the
-// right, denominator drop) is in this recognizer's drop family.
-func TestLower_ExpHistogram_MixedSetOpOr_HistogramLeftDivStillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	query := `(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist)) / 2`
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		t.Fatalf("ParseExpr(%q): %v", query, err)
-	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
-	}
-}
+// MUL and histogram-left DIV over a mixed `or` are no longer rejected —
+// cerberus issue #2449's sixth wrapper family
+// (histogram_native_mixed_or_scale.go) now scales the histogram-shaped
+// rows instead of dropping them; see
+// TestLower_ExpHistogram_MixedSetOpOr_ScaleWrapped in
+// histogram_native_mixed_or_scale_test.go for that lowering's own
+// coverage, including a chDB-verified fixture pinning the scaled output
+// values.
 
 // TestLower_ExpHistogram_MixedSetOpOr_ComparisonNowComposes pins that
 // comparison ops — which [expHistogramScalarOpDropsSample] classifies as

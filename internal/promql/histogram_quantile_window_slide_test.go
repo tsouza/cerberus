@@ -6,11 +6,19 @@ import (
 )
 
 // windowSlideEligibleBaseCase returns a classicHistogramWindowInput that
-// clears every windowSlideEligible guard — the control every negative case
-// below flips exactly ONE field away from. If this base case itself is not
-// eligible, every negative test below is vacuous (it would pass whether or
-// not its own guard actually fires), so TestWindowSlideEligible_BaseCaseIsEligible
-// pins it directly.
+// clears every windowSlideShapeEligible guard — the control every negative
+// case below flips exactly ONE field away from. If this base case itself is
+// not shape-eligible, every negative test below is vacuous (it would pass
+// whether or not its own guard actually fires), so
+// TestWindowSlideShapeEligible_BaseCaseIsEligible pins it directly.
+//
+// All of the tests in this file exercise windowSlideShapeEligible directly,
+// NOT windowSlideEligible — windowSlideEligible additionally gates on
+// windowSlideDisabledPending2511 (currently true, see that constant's own
+// doc for why), which would make every guard-clause assertion below
+// vacuously true regardless of whether its own guard fires.
+// TestWindowSlideEligible_DisabledPending2511 covers that outer gate
+// separately.
 func windowSlideEligibleBaseCase() classicHistogramWindowInput {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	return classicHistogramWindowInput{
@@ -28,18 +36,18 @@ func windowSlideEligibleBaseCase() classicHistogramWindowInput {
 	}
 }
 
-func TestWindowSlideEligible_BaseCaseIsEligible(t *testing.T) {
-	if !windowSlideEligible(windowSlideEligibleBaseCase()) {
+func TestWindowSlideShapeEligible_BaseCaseIsEligible(t *testing.T) {
+	if !windowSlideShapeEligible(windowSlideEligibleBaseCase()) {
 		t.Fatal("base case (every guard satisfied) is not eligible — every negative case below " +
 			"is vacuous until this passes")
 	}
 }
 
-// TestWindowSlideEligible_Refusals covers one refusal per guard. Each case
+// TestWindowSlideShapeEligible_Refusals covers one refusal per guard. Each case
 // starts from windowSlideEligibleBaseCase() and flips exactly the ONE field
 // the guard it names reads, so a passing test here is evidence THAT guard —
 // not some other one — is what makes windowSlideEligible answer false.
-func TestWindowSlideEligible_Refusals(t *testing.T) {
+func TestWindowSlideShapeEligible_Refusals(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(in *classicHistogramWindowInput)
@@ -136,14 +144,14 @@ func TestWindowSlideEligible_Refusals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := windowSlideEligibleBaseCase()
 			tc.mutate(&in)
-			if windowSlideEligible(in) {
-				t.Errorf("windowSlideEligible(%+v) = true, want false — this guard is not enforced", in)
+			if windowSlideShapeEligible(in) {
+				t.Errorf("windowSlideShapeEligible(%+v) = true, want false — this guard is not enforced", in)
 			}
 		})
 	}
 }
 
-// TestWindowSlideEligible_RatioBoundary pins the exact threshold RELATIVE
+// TestWindowSlideShapeEligible_RatioBoundary pins the exact threshold RELATIVE
 // TO ITS OWN CURRENT VALUE: a ratio one below windowSlideMinLookbackStepRatio
 // refuses, the ratio AT the threshold accepts. This catches the threshold
 // moving in EITHER direction relative to itself — but NOT every constant
@@ -152,42 +160,69 @@ func TestWindowSlideEligible_Refusals(t *testing.T) {
 // refuses — so a change from 10 straight to 1 does not reliably flip the
 // "below" assertion here (confirmed by deliberately setting the constant to
 // 1 while developing this test: every case still passed). See
-// TestWindowSlideEligible_ModalPanelShapeStaysOnFanout for a check that is
+// TestWindowSlideShapeEligible_ModalPanelShapeStaysOnFanout for a check that is
 // NOT derived from the constant's own current value and so is not subject
 // to that degeneracy.
-func TestWindowSlideEligible_RatioBoundary(t *testing.T) {
+func TestWindowSlideShapeEligible_RatioBoundary(t *testing.T) {
 	base := windowSlideEligibleBaseCase()
 
 	below := base
 	below.win.lookback = (windowSlideMinLookbackStepRatio - 1) * base.ctx.step
-	if windowSlideEligible(below) {
+	if windowSlideShapeEligible(below) {
 		t.Errorf("ratio %d (one below the threshold) is eligible; want refused", windowSlideMinLookbackStepRatio-1)
 	}
 
 	at := base
 	at.win.lookback = windowSlideMinLookbackStepRatio * base.ctx.step
-	if !windowSlideEligible(at) {
+	if !windowSlideShapeEligible(at) {
 		t.Errorf("ratio %d (exactly the threshold) is refused; want eligible", windowSlideMinLookbackStepRatio)
 	}
 }
 
-// TestWindowSlideEligible_ModalPanelShapeStaysOnFanout pins a FIXED,
+// TestWindowSlideShapeEligible_ModalPanelShapeStaysOnFanout pins a FIXED,
 // non-degenerate ratio (5 — the plan's own cited "modal Grafana panel
 // shape", 5-minute lookback at 1-minute step) as ineligible, independent of
 // windowSlideMinLookbackStepRatio's own current value. Deliberately NOT
 // derived from the constant: this is what actually catches the constant
 // being weakened to something at or below 5 (confirmed: setting it to 1
 // while developing this test flips this assertion, where
-// TestWindowSlideEligible_RatioBoundary's "below" case does not — see that
+// TestWindowSlideShapeEligible_RatioBoundary's "below" case does not — see that
 // test's own doc). The business requirement this defends is stated in the
 // plan itself: the modal panel shape's real speedup was measured at only
 // 1.12x, explicitly not worth the design's own correctness surface and
 // maintenance cost, so this ratio must stay on the fan-out.
-func TestWindowSlideEligible_ModalPanelShapeStaysOnFanout(t *testing.T) {
+func TestWindowSlideShapeEligible_ModalPanelShapeStaysOnFanout(t *testing.T) {
 	in := windowSlideEligibleBaseCase()
 	in.win.lookback = 5 * in.ctx.step // ratio 5, e.g. 5m lookback / 1m step
-	if windowSlideEligible(in) {
+	if windowSlideShapeEligible(in) {
 		t.Error("the modal 5:1 Lookback/Step panel shape is eligible for window-slide; " +
 			"the plan's own measured 1.12x speedup there does not justify it")
+	}
+}
+
+// TestWindowSlideEligible_DisabledPending2511 pins the outer gate
+// windowSlideEligible adds on top of windowSlideShapeEligible: even a
+// shape-eligible input (windowSlideEligibleBaseCase's own base case) must
+// be refused by windowSlideEligible while windowSlideDisabledPending2511 is
+// true — see that constant's own doc for the real OOM regression
+// (issue #2511) this gate exists to stop. This test asserts
+// windowSlideDisabledPending2511 is true directly, so it fails loudly
+// (rather than silently going vacuous) the moment someone flips the
+// constant back without also updating this test — expected, as part of
+// re-enabling the mechanism once #2511 is root-caused and re-verified
+// against a real benchmark.
+func TestWindowSlideEligible_DisabledPending2511(t *testing.T) {
+	if !windowSlideDisabledPending2511 {
+		t.Fatal("windowSlideDisabledPending2511 is false — issue #2511's mitigation has been " +
+			"reverted; update or remove this test as part of that change")
+	}
+	base := windowSlideEligibleBaseCase()
+	if !windowSlideShapeEligible(base) {
+		t.Fatal("base case is not even shape-eligible — this test cannot distinguish the " +
+			"outer gate from a shape refusal until TestWindowSlideShapeEligible_BaseCaseIsEligible passes")
+	}
+	if windowSlideEligible(base) {
+		t.Error("windowSlideEligible(base case) = true while windowSlideDisabledPending2511 is true; " +
+			"the outer gate is not being enforced")
 	}
 }

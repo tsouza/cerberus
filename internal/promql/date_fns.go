@@ -75,6 +75,25 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		if node, ok, err := lowerTimestampOverExpHistogram(c.Args[0], s, ctx); ok {
 			return node, err
 		}
+	} else {
+		// Reference Prometheus routes year/month/day_of_month/day_of_year/
+		// day_of_week/days_in_month/hour/minute through a shared dateWrapper
+		// helper (promql/functions.go) that explicitly skips every sample
+		// whose H field is set before computing the date component from F —
+		// the same "process only float samples, drop the rest" rule
+		// simpleFloatFunc applies for abs/ceil/floor/round/etc (issue
+		// #2221) and clamp/sort already mirror (issues #2345, #2456).
+		// These eight never routed their argument through
+		// lowerExpHistogramValuedShape, so a histogram-valued argument fell
+		// through to the generic lower() dispatch below and hit
+		// expHistogramSelectorRouting's catch-all rejection instead of
+		// Prom's drop-and-answer-empty semantics (cerberus issue #2498).
+		if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
+			if err != nil {
+				return nil, err
+			}
+			return dropExpHistogramSamples(hist, s), nil
+		}
 	}
 
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's

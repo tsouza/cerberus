@@ -1,8 +1,8 @@
 {
   "fixture": "promql/histogram_quantile_window_slide_sum_over_time",
-  "fan_factor": 3.25,
-  "scan_rows": 4,
-  "peak_intermediate": 13,
+  "fan_factor": 10,
+  "scan_rows": 2,
+  "peak_intermediate": 20,
   "has_cross_join": false,
   "has_array_join": true,
   "has_recursive_cte": false,
