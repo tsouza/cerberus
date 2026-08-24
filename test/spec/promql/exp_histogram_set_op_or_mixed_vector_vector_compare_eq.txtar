@@ -1,0 +1,39 @@
+-- query.promql --
+(mvc_fx_lhs_hist_exp_hist or histogram_quantile(0.5, mvc_fx_lhs_base_exp_hist)) == (mvc_fx_rhs_hist_exp_hist or histogram_quantile(0.5, mvc_fx_rhs_base_exp_hist))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- `(<LHS hist> or <LHS quantile>) == (<RHS hist> or <RHS quantile>)` —
+-- cerberus issue #2449's eighth wrapper family, vector-vector `==` over
+-- TWO independently mixed float/histogram `or` operands. Reference
+-- Prometheus's vectorElemBinop (histogram_native_mixed_or_vector_
+-- comparison.go's own header has the full four-combination accounting):
+--   - series "match": both operands resolve HISTOGRAM, with BIT-
+--     IDENTICAL payloads -> kept, structural-equality filter passes,
+--     surviving row's payload is LHS's own histogram, unchanged.
+--   - series "typemismatch": LHS resolves float (the quantile arm), RHS
+--     resolves histogram -> DROPPED outright — reference answers every
+--     float/histogram comparison with an incompatible-types error,
+--     `==`/`!=` included, regardless of the `bool` modifier.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('mvc_fx_lhs_hist_exp_hist', map('series', 'match'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0, 0, 0, 0, [6], 0, []),
+    ('mvc_fx_rhs_hist_exp_hist', map('series', 'match'), toDateTime64('2026-01-01 00:00:00', 9), 2, 4.0, 0, 0, 0, [6], 0, []),
+    ('mvc_fx_lhs_base_exp_hist', map('series', 'typemismatch'), toDateTime64('2026-01-01 00:00:00', 9), 10, 10.0, 0, 0, 0, [1, 2, 3, 4], 0, []),
+    ('mvc_fx_rhs_hist_exp_hist', map('series', 'typemismatch'), toDateTime64('2026-01-01 00:00:00', 9), 5, 10.0, 0, 0, 0, [15], 0, []);
+-- expected_rows --
+[]

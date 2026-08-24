@@ -122,34 +122,13 @@ func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorScaledArithmetic(t *testing
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_VectorVectorComparisonStillRejects
-// pins that vector-vector COMPARISONS over two mixed `or` operands remain
-// unimplemented — cerberus issue #2449's own remaining scope after this
-// PR, alongside group_left()/group_right() and the histogram,histogram
-// `+`/`-` merge (see this package's histogram_native_mixed_or_vector_
-// arithmetic.go header for the full accounting).
-func TestLower_ExpHistogram_MixedSetOpOr_VectorVectorComparisonStillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	for _, op := range []string{"==", "!=", "<", "<=", ">", ">="} {
-		op := op
-		t.Run(op, func(t *testing.T) {
-			t.Parallel()
-			query := mixedOrExpr + " " + op + " " + mixedOrExpr
-			expr, err := p.ParseExpr(query)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", query, err)
-			}
-			if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-				t.Fatalf("lower(%q): expected an error, got none (vector-vector comparisons over a mixed or remain unimplemented)", query)
-			}
-		})
-	}
-}
+// Vector-vector COMPARISONS over two mixed `or` operands are implemented
+// by histogram_native_mixed_or_vector_comparison.go, whose own test file
+// (histogram_native_mixed_or_vector_comparison_test.go) pins the
+// four-combination plan shape. group_left()/group_right() and the
+// histogram,histogram `+`/`-` merge remain cerberus issue #2449's open
+// scope (see this package's histogram_native_mixed_or_vector_arithmetic.go
+// header for the full accounting).
 
 // TestLower_ExpHistogram_MixedSetOpOr_VectorVectorPowStillRejects pins
 // that `^`/`%`/`atan2` over two mixed `or` operands remain unimplemented
