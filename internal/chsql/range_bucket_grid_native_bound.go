@@ -1,5 +1,7 @@
 package chsql
 
+import "time"
+
 // range_bucket_grid_native_bound.go closes issue #2486: before this file
 // existed, RangeBucketGridNative's per-(series, `le` rung) native aggregate
 // (Level 1 of emitRangeBucketGridNative's own doc comment —
@@ -163,11 +165,12 @@ package chsql
 // headroom rather than sitting right at its own edge.
 //
 // A genuinely separate finding surfaced by this same investigation, NOT
-// fixed here: `groups x anchors` alone is not a complete cost model — a
-// HIGH-density, comparatively LOW-groups-x-anchors query can independently
-// OOM. Reproduced directly: 3,741 series x 12 rungs x 60 anchors
-// (2,693,520 groups x anchors — under BOTH the old 4,000,000 and this
-// file's new 20,000,000 threshold) genuinely hit a real ClickHouse
+// fixed here (fixed by issue #2523, see this file's own "Density guard"
+// section below): `groups x anchors` alone is not a complete cost model —
+// a HIGH-density, comparatively LOW-groups-x-anchors query can
+// independently OOM. Reproduced directly: 3,741 series x 12 rungs x 60
+// anchors (2,693,520 groups x anchors — under BOTH the old 4,000,000 and
+// this file's new 20,000,000 threshold) genuinely hit a real ClickHouse
 // code-241 MEMORY_LIMIT_EXCEEDED at ~350 samples/series density (matching
 // the ORIGINAL #2486 production sample's own row/series ratio), while the
 // identical shape at floor density (2 rows/series) used only ~11% of cap.
@@ -175,11 +178,6 @@ package chsql
 // and after this recalibration — does not actually protect the real
 // #2486 production incident's own density profile at realistic scale; it
 // only ever exercised the axis this file bounds, never the density axis.
-// Tracked separately (see the issue this recalibration's own PR files)
-// rather than folded into this fix, because closing it properly needs a
-// density-aware (or raw-row-volume-aware) second guard with its own
-// dedicated real-ClickHouse calibration sweep, not a threshold number on
-// this same single axis.
 //
 // Recalibrate by binary search against a real ClickHouse if this drifts —
 // see lwr_fanout_bound.go's own harness-pitfall note (unique query_id per
@@ -260,6 +258,228 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 			Gt(Mul(Subquery(probeCount), InlineLit(numAnchors)), InlineLit(maxRows)),
 			InlineLit(message),
 		),
+		InlineLit(int64(0)),
+	)
+}
+
+// # Density guard (issue #2523)
+//
+// bucketGridGroupCountBoundedSourceFrag's own `groups x anchors` axis above
+// is NOT a complete cost model on its own — see this file's header doc's
+// own "A genuinely separate finding" paragraph. Real ClickHouse 25.9-alpine
+// measurement (a `docker run` container, 1 GiB `max_memory_usage` cap —
+// matching CERBERUS_CH_QUERY_MAX_MEMORY's default — sweeping BOTH the
+// `groups x anchors` axis AND raw scanned-row density together, NOT
+// trusting issue #2523's own prose alone) found the real interaction is
+// genuinely two-part and ADDITIVE, not a single product of the two axes:
+//
+//  1. Level 0's bucketGridRungsFrag computes, for every stored row, a
+//     per-rung cumulative reading via an O(width) filter-sum evaluated
+//     ONCE PER RUNG the row itself carries — an O(width^2) cost PER ROW,
+//     paid entirely upstream of Level 1's GROUP BY and of
+//     bucketGridGroupCountBoundedSourceFrag's own probe. This term is
+//     `rawRows x width^2` and is essentially INDEPENDENT of `groups x
+//     anchors` (it never touches an anchor at all).
+//  2. Level 1's own native aggregate (timeSeriesRateToGrid /
+//     timeSeriesResetsToGrid) turns out NOT to be "unconditional on how
+//     many raw samples fed that group" the way this file's original #2486
+//     design doc assumed — real measurement directly refutes that: at a
+//     `groups x anchors` value already close to
+//     maxRangeBucketGridNativeRows (17,625,600 — the exact #2522 pinned
+//     regression shape, TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape),
+//     adding as few as 30,000 raw rows (500 samples/series, nowhere near
+//     the ~350-samples/series #2486 reference density) was ALREADY enough
+//     to hit a real ClickHouse code-241 MEMORY_LIMIT_EXCEEDED inside
+//     AggregatingTransform — the `groups x anchors` skeleton alone already
+//     consumes most of the 1 GiB budget near that ceiling, leaving very
+//     little headroom for ANY additional raw-row cost.
+//
+// # Calibration
+//
+// 16 real ClickHouse 25.9-alpine points (docker run, 1 GiB cap), combining
+// `costUnits = (groups x anchors) + (rawRows x width^2)` where rawRows is
+// the COUNT of raw stored rows the scan actually reads (bucketGridDensityBoundedSourceFrag's
+// own probe over the SAME Input source Level 0 unnests, under the SAME
+// scan time bound) and width is the real per-row `length(ExplicitBounds)`
+// (max over the scanned rows, not assumed uniform — see "Generalising to
+// heterogeneous widths" below):
+//
+//	shape (groups x anchors)   raw rows    width   costUnits      real result
+//	2,693,520 (3,741s x 12r x 60a)  7,482      11    3,598,842      safe (d2, floor)
+//	2,693,520                      74,820      11   11,746,740      safe (d20)
+//	2,693,520                     187,050      11   25,326,570      safe (d50)
+//	2,693,520                     336,690      11   43,433,010      safe (d90)
+//	2,693,520                     654,675      11   81,909,195      safe (d175)
+//	2,693,520                     785,610      11   97,752,330      OOM  (d210)
+//	2,693,520                     935,250      11  115,858,770      OOM  (d250)
+//	2,693,520                   1,309,350      11  161,124,870      OOM  (d350 -- the
+//	                                                                  real #2486/#2408
+//	                                                                  reference density)
+//	17,625,600 (60s x 51r x 5,760a)   120      50   17,925,600      safe (floor -- the
+//	                                                                  #2522 pinned
+//	                                                                  regression itself)
+//	17,625,600                     30,000      50   92,625,600      OOM  (d500)
+//	17,625,600                    300,000      50  767,625,600      OOM  (d5000)
+//	17,625,600                    900,000      50  2,282,625,600    OOM  (d15000)
+//	9,216,000 (100s x 16r x 5,760a) 12,000      15   11,916,000      safe (d120, the
+//	                                                                  #2522 REALISTIC-
+//	                                                                  density shape)
+//	72,000 (60s x 12r x 100a)       60,000      11    7,332,000      safe (isolation
+//	                                                                  sweep)
+//
+// Every safe point's costUnits sits below 81,909,195 (the tightest: 3,741
+// series x 12 rungs x 60 anchors at density 175). Every OOM point's
+// costUnits sits above 92,625,600 (the tightest: the #2522 pinned-regression
+// SHAPE at density 500 — 17,625,600 groups x anchors leaves so little
+// headroom that even this modest density trips it). [maxRangeBucketGridNativeDensityUnits]
+// is set at 85,000,000 — inside that gap, ~4% above the tightest confirmed-safe
+// point and ~8% below the tightest confirmed-OOM point — rather than at either
+// edge, and correctly classifies all 16 points above including BOTH of this
+// issue's own required checks: the real #2486/#2408 reference density (d350,
+// 161,124,870, comfortably rejected) and the #2522 pinned regression itself
+// (17,925,600, comfortably passed, ~4.75x headroom below the threshold).
+//
+// A pure single-axis model on EITHER quantity alone was tried first and
+// discarded: raw-rows-alone, width^2-alone, `(groups x anchors) x rawRows`,
+// and `anchors x rawRows` were each checked against the same 16 points and
+// each produced either a false positive against the #2522 pinned regression
+// or a false negative against one of the two OOM shapes above (`anchors x
+// rawRows` in particular wrongly flags the #2522 REALISTIC-density shape:
+// 5,760 x 12,000 = 69,120,000, close to where that model would need to
+// reject the real #2486 density too) — the additive two-term form is the
+// only one of the tried candidates consistent with every measured point.
+//
+// # Generalising to heterogeneous per-row widths
+//
+// Real ExplicitBounds length can vary row-to-row (a `by(route)` group can
+// mix producers with different bucket configurations) — bucketGridDensityBoundedSourceFrag's
+// own probe reads `max(length(ExplicitBounds))` over the ACTUAL scanned
+// rows, the same "widest row governs" generalisation classic_bucket_merge_bound.go's
+// widestRowBucketWidthExpr already established for the cross-series merge
+// stage: `rawRows x maxWidth^2 >= rawRows x avgWidth^2` for any real
+// distribution of per-row widths, so a heterogeneous scan is judged AT
+// LEAST as costly as its average-width equivalent, never less.
+//
+// # Overflow safety
+//
+// [maxRangeBucketGridNativeDensityClampedRows] / [maxRangeBucketGridNativeDensityClampedWidth]
+// clamp rawRows and width BEFORE the square + multiply — width^2 alone
+// could otherwise overflow a pathological/malformed ExplicitBounds length
+// long before any real query reaches it. 100,000,000 x 100,000^2 =
+// 1 x 10^18, comfortably under Int64's ~9.2x10^18 ceiling, while both caps
+// sit orders of magnitude above any width or raw-row count this
+// calibration or any legitimate production workload reaches.
+//
+// # Placement
+//
+// Wired via bucketGridDensityBoundedSourceFrag, layered on top of (NOT
+// replacing) bucketGridGroupCountBoundedSourceFrag's own axis1 guard —
+// see emitRangeBucketGridNative's own call site. Both guards fire from
+// independent, cheap probes upstream of Level 1's expensive native
+// aggregate; axis1 alone already rejects anything with `groups x anchors`
+// past maxRangeBucketGridNativeRows regardless of density, so this second
+// guard's only NEW effect is catching density-driven danger axis1 alone
+// passes through — exactly this issue's own gap.
+//
+// Recalibrate by binary search against a real ClickHouse (not chDB) if
+// this drifts — same harness-pitfall caveat (unique query_id per run) as
+// this file's own axis1 calibration above. The calibration harness itself
+// (a throwaway `docker run clickhouse/clickhouse-server` test, not
+// TestCalibrate2523) was deleted before this fix merged, per this file's
+// own established precedent — this doc comment is the retained record.
+const (
+	// maxRangeBucketGridNativeDensityUnits bounds `(groups x anchors) +
+	// (rawRows x width^2)` — see this file's own "Density guard" doc above
+	// for the real ClickHouse calibration this was picked against.
+	maxRangeBucketGridNativeDensityUnits = 85_000_000
+
+	// maxRangeBucketGridNativeDensityClampedRows / …ClampedWidth are NOT
+	// behavioral thresholds — see this file's "Overflow safety" doc above.
+	// They exist purely so `rawRows x width^2` can never overflow Int64
+	// arithmetic; a query anywhere near these scales is already rejected
+	// by maxRangeBucketGridNativeDensityUnits (or by
+	// maxRangeBucketGridNativeRows) long before either clamp matters.
+	maxRangeBucketGridNativeDensityClampedRows  = 100_000_000
+	maxRangeBucketGridNativeDensityClampedWidth = 100_000
+)
+
+// RangeBucketGridNativeDensityBudgetMessage is the throwIf message
+// bucketGridDensityGuardFrag raises when the density guard fires. Distinct
+// text from RangeBucketGridNativeBudgetMessage (axis1's own message) so a
+// rejection's error message alone says which of the TWO independent
+// RangeBucketGridNative bounds fired.
+const RangeBucketGridNativeDensityBudgetMessage = "classic-histogram native rate grid exceeds the " +
+	"density-weighted raw-row resource bound"
+
+// bucketGridDensityBoundedSourceFrag wraps source — the axis1-guarded
+// rungs-consuming source bucketGridGroupCountBoundedSourceFrag already
+// returned — with a SECOND throwIf guard combining a fresh groups probe
+// (mirrors bucketGridGroupCountBoundedSourceFrag's own probeGroups/probeCount
+// shape, over groupsSource / keyCols) with a raw-row-density probe read
+// directly off inputSource (the RangeBucketGridNative.Input subplan Level 0
+// itself unnests, under the identical scan time bound
+// maybePushRangeScanTimeBound already pushes onto Level 0 — tsCol / start /
+// end / offsetNS / rangeNS mirror that call exactly). numAnchors / maxUnits
+// / message parallel bucketGridGroupCountBoundedSourceFrag's own numAnchors
+// / maxRows / message.
+//
+// Both probes are cheap: the groups probe is the SAME no-aggregate
+// DISTINCT-group-count shape axis1 already uses (re-derived fresh rather
+// than reusing axis1's own probe subquery, matching this file's own
+// established "render fresh, don't share a Frag across an unrelated second
+// use" caution), and the density probe is a plain `count()` + `max(length(...))`
+// over inputSource with no arrayJoin, no GROUP BY, and no native aggregate
+// at all — strictly cheaper than either axis1's probe or Level 0's own
+// unnest.
+func bucketGridDensityBoundedSourceFrag(
+	source, groupsSource Frag, keyCols []Frag,
+	inputSource Frag, tsCol, boundsCol string, start, end time.Time, offsetNS, rangeNS int64,
+	numAnchors, maxUnits int64, message string,
+) Frag {
+	probeGroups := NewQuery().From(groupsSource)
+	probeGroups.Select(keyCols...)
+	probeGroups.Select(Col(bucketGridLeAlias))
+	probeGroups.GroupBy(append(append([]Frag{}, keyCols...), Col(bucketGridLeAlias))...)
+	probeGroupsCount := NewQuery().From(probeGroups.Frag())
+	probeGroupsCount.Select(As(Call("count"), "n"))
+
+	rawRowsProbe := NewQuery().From(inputSource)
+	rawRowsProbe.Select(As(Call("count"), "n"))
+	maybePushRangeScanTimeBound(rawRowsProbe, tsCol, start, end, offsetNS, rangeNS)
+
+	maxWidthProbe := NewQuery().From(inputSource)
+	maxWidthProbe.Select(As(Call("max", Call("length", Col(boundsCol))), "w"))
+	maybePushRangeScanTimeBound(maxWidthProbe, tsCol, start, end, offsetNS, rangeNS)
+
+	guarded := NewQuery().From(source)
+	guarded.Select(Star())
+	guarded.Where(bucketGridDensityGuardFrag(probeGroupsCount, rawRowsProbe, maxWidthProbe, numAnchors, maxUnits, message))
+	return guarded.Frag()
+}
+
+// bucketGridDensityGuardFrag renders the WHERE predicate that aborts the
+// query when the combined cost this file's "Density guard" doc calibrates
+// — `(groupsProbe x numAnchors) + (clamp(rawRowsProbe) x clamp(maxWidthProbe)^2)`
+// — would exceed maxUnits:
+//
+//	throwIf((<groupsProbe>) * numAnchors +
+//	        least(<rawRowsProbe>, clampRows) * least(<maxWidthProbe>, clampWidth) ^ 2
+//	        > maxUnits, message) = 0
+//
+// The `groups x anchors` term is intentionally NOT clamped here — it
+// mirrors bucketGridGroupCountGuardFrag's own unclamped construct exactly
+// (same probe shape, same lack-of-clamp precedent: numAnchors is a
+// plan-time-bounded constant and probeGroups is bounded by real scanned row
+// cardinality). Only the NEW rawRows/width quantities this guard
+// introduces are clamped — see this file's "Overflow safety" doc.
+func bucketGridDensityGuardFrag(groupsProbe, rawRowsProbe, maxWidthProbe *QueryBuilder, numAnchors, maxUnits int64, message string) Frag {
+	groupsXAnchors := Mul(Subquery(groupsProbe), InlineLit(numAnchors))
+	clampedRows := Call("least", Subquery(rawRowsProbe), InlineLit(int64(maxRangeBucketGridNativeDensityClampedRows)))
+	clampedWidth := Call("least", Subquery(maxWidthProbe), InlineLit(int64(maxRangeBucketGridNativeDensityClampedWidth)))
+	marginal := Mul(clampedRows, Mul(clampedWidth, clampedWidth))
+	cost := Add(groupsXAnchors, marginal)
+	return Eq(
+		Call("throwIf", Gt(cost, InlineLit(maxUnits)), InlineLit(message)),
 		InlineLit(int64(0)),
 	)
 }

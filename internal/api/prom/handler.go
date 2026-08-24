@@ -1259,6 +1259,20 @@ func classifyThrowIfGuardError(err error) *apiError {
 			Err:    errors.New(chsql.RangeBucketGridNativeBudgetMessage),
 			Status: http.StatusUnprocessableEntity,
 		}
+	// RangeBucketGridNative's SECOND, density-aware bound (issue #2523):
+	// `groups x anchors` alone is not a complete cost model — a
+	// high-raw-row-density query can OOM real ClickHouse at a `groups x
+	// anchors` value the guard above treats as trivially safe (see
+	// range_bucket_grid_native_bound.go's own "Density guard" doc). Wired
+	// into this switch from the start, unlike RangeBucketGridNativeBudgetMessage
+	// above, so this guard never repeats #2522's own "guard exists but
+	// falls through to a generic 502" gap.
+	case throwIfMessageMatches(err, chsql.RangeBucketGridNativeDensityBudgetMessage):
+		return &apiError{
+			Kind:   ErrExecution,
+			Err:    errors.New(chsql.RangeBucketGridNativeDensityBudgetMessage),
+			Status: http.StatusUnprocessableEntity,
+		}
 	}
 	return nil
 }
