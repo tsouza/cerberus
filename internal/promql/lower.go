@@ -290,8 +290,8 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	// decision — notably, that reference's `bool` modifier does NOT keep
 	// every matched pair regardless of type compatibility, contrary to
 	// what the arithmetic pass's own header had assumed.
-	if lhs, rhs, op, match, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, returnBool, s, ctx)
+	if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		return lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
 	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		return lowerExpHistogramOverTime(shape, s, ctx)
@@ -494,11 +494,11 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// exactly one side to fold to a scalar; this one requires neither
 	// side to). histogram_native_mixed_or_vector_arithmetic.go has the
 	// composition's own doc comment for the four-combination semantics
-	// decision and what remains out of scope (comparisons,
-	// group_left()/group_right(), and the histogram-histogram ADD/SUB
-	// merge).
-	if lhs, rhs, op, match, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
-		plan, err := lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, s, ctx)
+	// decision, group_left()/group_right() support (cerberus issue
+	// #2449's ninth wrapper family), and what remains out of scope
+	// (the histogram-histogram ADD/SUB merge).
+	if lhs, rhs, op, match, card, include, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, s, ctx)
 		return plan, true, err
 	}
 	return nil, false, nil

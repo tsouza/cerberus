@@ -1,5 +1,7 @@
 package chplan
 
+import "slices"
+
 // MixedVectorJoin joins two already-lowered Mixed [VectorSetOp] results
 // (each the fourteen-column float/histogram shape [MixedDiscriminatorColumn]
 // discriminates — see that node's own Mixed-field doc) on labels, for a
@@ -18,32 +20,51 @@ package chplan
 // mixed_vector_join.go's emitter), with no notion of which arithmetic op
 // is being computed or which of the four float/histogram payload
 // combinations a given matched pair turns out to carry at runtime. The
-// caller (internal/promql's histogram_native_mixed_or_vector_arithmetic.go)
-// builds the per-combination Value/Histogram*/discriminator fold as
-// ordinary chplan.Expr projections over those aliases — a
-// discriminator-keyed `if`/`multiIf` (chplan.FnIf / chplan.FnMultiIf), the
-// mechanism issue #2449 itself named — reusing the SAME per-field
-// scale-fold helpers (histogram_native_scalar_binop.go's
-// scaleHistogramScalarExpr / scaleHistogramLadderExpr) the MUL/DIV scalar
-// scaling lowering (histogram_native_mixed_or_scale.go) already uses,
-// rather than duplicating them.
+// caller (internal/promql's histogram_native_mixed_or_vector_arithmetic.go
+// / histogram_native_mixed_or_vector_comparison.go) builds the
+// per-combination Value/Histogram*/discriminator fold as ordinary
+// chplan.Expr projections over those aliases — a discriminator-keyed
+// `if`/`multiIf` (chplan.FnIf / chplan.FnMultiIf), the mechanism issue
+// #2449 itself named — reusing the SAME per-field scale-fold helpers
+// (histogram_native_scalar_binop.go's scaleHistogramScalarExpr /
+// scaleHistogramLadderExpr) the MUL/DIV scalar scaling lowering
+// (histogram_native_mixed_or_scale.go) already uses, rather than
+// duplicating them.
 //
-// Deliberately CardOneToOne only: unlike HistogramVectorJoin/
-// HistogramFloatVectorJoin (which exist BECAUSE the one-to-one path
-// couldn't express group_left()/group_right()), this node's one-to-one
-// join is the ONLY cardinality it supports — group_left()/group_right()
-// over two independently-mixed operands would need the "many" side kept
-// at full per-series granularity while STILL discriminating each row's
-// own payload, compounding the four-combination fold with the Include-
-// label broadcast; internal/promql's recognizer rejects that shape
-// outright rather than mis-widening it, tracked as remaining scope under
-// #2449 rather than attempted here. There is accordingly no Card/Include
-// field on this type at all — unlike its two siblings, which default to
-// (and in HistogramVectorJoin's case, require) a many-to-one cardinality.
+// Card + Include support group_left()/group_right() over two
+// independently-mixed operands (cerberus issue #2449's ninth wrapper
+// family) the identical way [HistogramFloatVectorJoin] widened past its
+// own original CardOneToOne-only shape for #2342: CardManyToOne
+// (`group_left`) keeps Left at full per-series granularity (the "many")
+// while Right collapses to one row per matching key (the "one");
+// CardOneToMany (`group_right`) mirrors with roles swapped. The per-row
+// four-combination fold this node stays deliberately blind to (see above)
+// is UNCHANGED by cardinality — broadcasting the "one" side's collapsed
+// row against each of the "many" side's own rows still hands the caller
+// one L/R pair per output row, each still carrying its own independent
+// discriminator pair, so the SAME Value/Histogram*/discriminator
+// projections this node's callers already build for CardOneToOne compose
+// unmodified; only the caller's OWN output-Attributes fold needs to learn
+// the manySide+Include overlay (mirroring
+// internal/promql/histogram_native_binop_card.go's
+// histogramCardOutputAttributesExpr for [HistogramVectorJoin]'s identical
+// shape). Default CardOneToOne.
 type MixedVectorJoin struct {
 	Left, Right Node // each an already-lowered Mixed VectorSetOp.
 
 	Match VectorMatch
+
+	// Card is the cardinality modifier; default CardOneToOne. All three
+	// VectorCard values are supported (CardManyToMany can never reach
+	// this node — the parser only ever sets it for the `and`/`or`/
+	// `unless` set operators, which internal/promql's mixed-or
+	// vector-vector recognizers never claim in the first place).
+	Card VectorCard
+	// Include is the group_left(<labels>)/group_right(<labels>)
+	// extra-label list, copied from the "one" side onto the "many"
+	// side's output Attributes. Nil/empty when no Include was specified,
+	// or when Card is CardOneToOne.
+	Include []string
 
 	// StepAligned mirrors VectorJoin.StepAligned / HistogramVectorJoin.
 	// StepAligned: true in range mode, so the emitter keeps TimestampColumn
@@ -68,6 +89,9 @@ func (j *MixedVectorJoin) Equal(other Node) bool {
 		return false
 	}
 	if !j.Match.Equal(o.Match) || j.StepAligned != o.StepAligned {
+		return false
+	}
+	if j.Card != o.Card || !slices.Equal(j.Include, o.Include) {
 		return false
 	}
 	if j.MetricNameColumn != o.MetricNameColumn ||
