@@ -74,7 +74,7 @@ var resourceBoundClassification = map[string]struct {
 	"NaryVectorSetOp":          {boundStructural, "≤ sum of the bounded operand vectors"},
 
 	// Per-row compute — axis 7, runtime net.
-	"HistogramQuantile":       {boundRuntimeNet, "axis 7: per-row quantile over the bounded bucket set"},
+	"HistogramQuantile":       {boundRuntimeNet, "axis 7: per-row quantile over the bounded bucket set; when its Input is the classic-histogram classicBucketMergeShaping cross-series merge (sum by(le)(...) aggregated paths, both instant and range mode), that merge's own groupArray Aggregate is itself gated by promql's wrapClassicBucketMergeBudgetGuard (bucket-volume-times-widest-row throwIf, #2408) before this node ever reads a row"},
 	"HistogramQuantileNative": {boundRuntimeNet, "axis 7: native per-row histogram quantile over the bounded input; its Input's across-series exponential-histogram merge is itself gated by promql's wrapExpHistogramMergeBudgetGuard (series-per-group x merged-bucket-width throwIf, #2385) before this node ever reads a row"},
 	"HistogramProjection":     {boundStructural, "1:1 row map — publishes the bounded input's native-histogram structural columns verbatim (no fan-out, no aggregation, no per-row quantile compute); same shape as Project"},
 
