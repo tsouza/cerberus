@@ -87,6 +87,37 @@ func lowerHistogramValueFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpl
 	arg := unwrapParens(c.Args[vecIdx])
 	vs, ok := arg.(*parser.VectorSelector)
 	if !ok {
+		// The argument may itself be one of the HISTOGRAM-VALUED shapes
+		// this package already knows how to lower — sum()/avg() over a
+		// native histogram, rate()/increase() over one, a
+		// histogram-histogram binop, a scalar-scaled histogram, …
+		// (isExpHistogramValuedShape / lowerExpHistogramValuedShape,
+		// histogram_native_float_fn.go). Those shapes carry exactly the
+		// merged distribution a bare selector does — sum(m), avg(m),
+		// rate(m[5m]) all answer histogram-valued under reference
+		// Prometheus — so this function reads it the same way a bare
+		// selector's own newest-sample collapse does, rather than
+		// treating it as a provably-float pipeline (cerberus issue
+		// #2554).
+		if hist, matched, err := lowerExpHistogramValuedShape(c.Args[vecIdx], s, ctx); matched {
+			if err != nil {
+				return nil, err
+			}
+			// RowShapeOf, not a *chplan.HistogramProjection type
+			// assertion: a set-op operand (histogram_native_set_op.go)
+			// answers histogram-valued as a *chplan.VectorSetOp with
+			// Histogram=true, publishing the identical nine-column
+			// contract under a different node type, and RowShapeOf is
+			// this package's own shared test for "is this the
+			// thirteen-column histogram row shape" across every such
+			// producer (mirrors lowerExpHistogramCountOrGroupOverPlan's
+			// identical check).
+			if chplan.RowShapeOf(hist) != chplan.HistogramRowShape {
+				return nil, fmt.Errorf("promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T", hist)
+			}
+			return lowerHistogramValueFnOverProjection(c, hist, s, ctx)
+		}
+
 		// Float pipelines (aggregations, arithmetic, vector(), …)
 		// provably carry no native-histogram samples; the reference
 		// skips float samples, so fold to the empty vector while
@@ -211,6 +242,43 @@ func lowerHistogramValueFnPerSample(
 			{Expr: value, Alias: s.ValueColumn},
 		},
 	}
+}
+
+// lowerHistogramValueFnOverProjection is the nested-argument counterpart
+// to lowerHistogramValueFnInstant / lowerHistogramValueFnRange: hp is an
+// ALREADY-lowered histogram-valued plan (sum()/avg()/rate()/a
+// histogram-histogram binop/a set-op/…), whose own lowering already
+// resolved instant-vs-range mode, the newest-sample collapse, and (for a
+// merging shape) the cross-series distribution add. Every
+// [chplan.HistogramRowShape] producer (HistogramProjection, a
+// Histogram-flagged VectorSetOp, …) publishes its nine structural
+// columns under the FIXED chplan.Histogram*Column aliases rather than
+// the schema's own raw column names (see chsql's emitHistogramProjection
+// / emitVectorSetOp) — so histogramValueExpr's column references must
+// resolve against [histogramProjectionSchema], not s itself, or they'd
+// name columns hp never publishes. MetricName/Attributes/Timestamp/Value
+// stay under s's own names: those come from hp's GroupByAliases, which
+// every histogram-valued lowering threads from the ORIGINAL schema
+// unchanged (see nativeHistogramProjection).
+func lowerHistogramValueFnOverProjection(
+	c *parser.Call,
+	hp chplan.Node,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
+	value, err := histogramValueExpr(c, histogramProjectionSchema(s), ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &chplan.Project{
+		Input: hp,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: value, Alias: s.ValueColumn},
+		},
+	}, nil
 }
 
 // histogramValueLatestAggs renders the per-series newest-sample

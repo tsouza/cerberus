@@ -5,16 +5,18 @@
       "site": "internal/promql/histogram_value_fns.go:histogramValueExpr#1a671757",
       "message": "promql: %s is not a native-histogram value function",
       "class": "internal",
-      "rationale": "Dispatch invariant: lowerCall routes exactly the six native-histogram value-function names here, so the default arm cannot fire from a parseable query.",
+      "rationale": "Dispatch invariant: lowerCall routes exactly the six native-histogram value-function names here, so the default arm cannot fire from a parseable query. lowerHistogramValueFnOverProjection (cerberus issue #2554) is a second caller as of this change, but it receives the identical *parser.Call c the bare-selector path already threads through the same lowerCall dispatch — it does not widen the set of Func.Name values that reach this switch.",
       "evidence": {
         "guard": [
           "past exhaustive switch c.Func.Name over [case \"histogram_count\"; case \"histogram_sum\"; case \"histogram_avg\"; case \"histogram_stddev\"; case \"histogram_stdvar\"; case \"histogram_fraction\"]"
         ],
         "callers": [
-          "lowerHistogramValueFn"
+          "lowerHistogramValueFn",
+          "lowerHistogramValueFnOverProjection"
         ],
         "cited": [
-          "lowerCall"
+          "lowerCall",
+          "lowerHistogramValueFnOverProjection"
         ]
       }
     },
@@ -47,6 +49,27 @@
         ],
         "callers": [
           "lowerCall"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_value_fns.go:lowerHistogramValueFn#9dc0372b",
+      "message": "promql: internal invariant violated: exp-histogram lowering did not produce a histogram-shaped plan, got %T",
+      "class": "internal",
+      "rationale": "lowerExpHistogramValuedShape's every matched branch (histogram_native_float_fn.go) answers with a producer whose chplan.RowShapeOf is HistogramRowShape — a *chplan.HistogramProjection directly, or a *chplan.VectorSetOp/*chplan.NaryVectorSetOp/*chplan.InfoJoin/*chplan.TopK with its own Histogram flag set, each of which chplan.RowShapeOf recognises as HistogramRowShape by construction (internal/chplan/row_shape.go). matched=true therefore guarantees the shape check below it, so this arm cannot fire for any currently-matched shape.",
+      "evidence": {
+        "guard": [
+          "if !ok",
+          "if hist, matched, err := lowerExpHistogramValuedShape(c.Args[vecIdx], s, ctx); matched",
+          "past returning if err != nil",
+          "if chplan.RowShapeOf(hist) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerCall"
+        ],
+        "cited": [
+          "lowerExpHistogramValuedShape"
         ]
       }
     }
