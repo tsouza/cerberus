@@ -78,6 +78,8 @@ func (e *emitter) validateMixedVectorJoinCols(j *chplan.MixedVectorJoin) error {
 		return fmt.Errorf("%w: MixedVectorJoin.TimestampColumn unset", ErrUnsupported)
 	case j.ValueColumn == "":
 		return fmt.Errorf("%w: MixedVectorJoin.ValueColumn unset", ErrUnsupported)
+	case j.Card != chplan.CardOneToOne && j.Card != chplan.CardManyToOne && j.Card != chplan.CardOneToMany:
+		return fmt.Errorf("%w: MixedVectorJoin.Card must be CardOneToOne, CardManyToOne, or CardOneToMany", ErrUnsupported)
 	}
 	return nil
 }
