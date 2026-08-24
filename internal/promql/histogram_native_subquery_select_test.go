@@ -142,11 +142,11 @@ func TestLower_ExpHistogram_DropFamilyEmptyOverSubquery(t *testing.T) {
 				t.Errorf("lower(%q) range RowShape = %s, want %s", tc.query, got, chplan.SampleRowShape)
 			}
 
-			pinned := fmt.Sprintf(`%s @ %s`, tc.query, pinnedAt)
 			// predict_linear / quantile_over_time / holt_winters carry the
 			// subquery as an inner argument rather than the whole call, so
 			// `@` cannot pin the whole expression the way the select-family
 			// test above does; pin the subquery itself instead.
+			var pinned string
 			switch tc.name {
 			case "predict_linear":
 				pinned = fmt.Sprintf(`predict_linear((latency_exp_hist)[5m:1m] @ %s, 60)`, pinnedAt)
