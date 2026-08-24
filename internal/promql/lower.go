@@ -331,6 +331,17 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		plan, err := lowerComparisonVectorVectorOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, returnBool, s, ctx)
 		return plan, true, err
 	}
+	// `==`/`!=`/`<`/`<=`/`>`/`>=`, with or without `bool`, where exactly
+	// ONE operand is a mixed `or` and the OTHER is an ordinary, non-mixed,
+	// non-histogram-valued vector (cerberus issue #2449's tenth and final
+	// wrapper family's comparison half). Checked here for the identical
+	// reason its both-mixed sibling just above is, with the same
+	// disjointness guarantee. histogram_native_mixed_or_vector_plain_comparison.go
+	// has the composition's own doc comment.
+	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, ok := comparisonVectorPlainOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, s, ctx)
+		return plan, true, err
+	}
 	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramOverTime(shape, s, ctx)
 		return plan, true, err
@@ -556,6 +567,21 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 	// (the histogram-histogram ADD/SUB merge).
 	if lhs, rhs, op, match, card, include, ok := vectorVectorArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
 		plan, err := lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhs, rhs, op, match, card, include, s, ctx)
+		return plan, true, err
+	}
+	// Vector-vector `+`/`-`/`*`/`/`/`^`/`%`/`atan2` where exactly ONE
+	// operand is a mixed `or` and the OTHER is an ordinary, non-mixed,
+	// non-histogram-valued vector (cerberus issue #2449 — the tenth and
+	// final wrapper family, e.g. `(a or b) * demo_num_cpus`). Checked
+	// after the both-mixed recognizer just above so a both-mixed pair
+	// always resolves there first; this recognizer's own disjointness
+	// check (`lhsOk == rhsOk` rejects) keeps the two mutually exclusive
+	// regardless of order. histogram_native_mixed_or_vector_plain_arithmetic.go
+	// has the composition's own doc comment for why the plain side is
+	// simply the degenerate always-float-discriminator case of the
+	// existing four-combination fold, needing no new fold logic at all.
+	if mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, ok := vectorPlainArithmeticOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerVectorPlainArithmeticOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, s, ctx)
 		return plan, true, err
 	}
 	return nil, false, nil
