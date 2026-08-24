@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#03401a30",
       "message": "promql: internal invariant violated: exp-histogram lowering did not cap with *chplan.HistogramProjection, got %T",
       "class": "internal",
-      "rationale": "expHistogramScalarBinop and expHistogramDroppingScalarBinop admit only isExpHistogramValuedShape operands, whose lowerExpHistogramValuedShape producer contract ends in HistogramProjection. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerRoot as a second caller of the drop path (drop=true), but it calls lowerExpHistogramScalarBinop only immediately after its own expHistogramDroppingScalarBinop(expr, s, ctx) check has returned ok — the same isExpHistogramValuedShape-gated histSide lowerRoot already passes — so the claim is unaffected by the new caller.",
+      "rationale": "expHistogramScalarBinop and expHistogramDroppingScalarBinop admit only isExpHistogramValuedShape operands, whose lowerExpHistogramValuedShape producer contract ends in HistogramProjection. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path (drop=true), but it calls lowerExpHistogramScalarBinop only immediately after its own expHistogramDroppingScalarBinop(expr, s, ctx) check has returned ok — the same isExpHistogramValuedShape-gated histSide lowerHistogramNativeRoot already passes — so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a third caller of lowerHistogramNativeRoot as of this change, reached for a bare subquery's own inner expression; it reaches this lowerer through the identical isExpHistogramValuedShape-gated dispatch, so it does not affect the claim either.",
       "evidence": {
         "guard": [
           "past returning if !matched",
@@ -15,7 +15,7 @@
         "callers": [
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramValuedShape",
-          "lowerRoot"
+          "lowerHistogramNativeRoot"
         ],
         "cited": [
           "expHistogramDroppingScalarBinop",
@@ -24,7 +24,8 @@
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramScalarBinop",
           "lowerExpHistogramValuedShape",
-          "lowerRoot"
+          "lowerHistogramNativeRoot",
+          "lowerHistogramNativeSubqueryInner"
         ]
       }
     },
@@ -33,7 +34,7 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#d112d97a",
       "message": "promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "the scalar-binop recognizers and lowerExpHistogramValuedShape share isExpHistogramValuedShape for the identical histogram operand. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerRoot as a second caller of the drop path, but — same as the sibling site just above — it only reaches this lowerer via expHistogramDroppingScalarBinop's own isExpHistogramValuedShape-gated histSide, so the claim is unaffected by the new caller.",
+      "rationale": "the scalar-binop recognizers and lowerExpHistogramValuedShape share isExpHistogramValuedShape for the identical histogram operand. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path, but — same as the sibling site just above — it only reaches this lowerer via expHistogramDroppingScalarBinop's own isExpHistogramValuedShape-gated histSide, so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a third caller of lowerHistogramNativeRoot as of this change, reached for a bare subquery's own inner expression, and reaches this lowerer through the identical gated dispatch, so it does not affect the claim either.",
       "evidence": {
         "guard": [
           "if !matched"
@@ -41,14 +42,15 @@
         "callers": [
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramValuedShape",
-          "lowerRoot"
+          "lowerHistogramNativeRoot"
         ],
         "cited": [
           "expHistogramDroppingScalarBinop",
           "isExpHistogramValuedShape",
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramValuedShape",
-          "lowerRoot"
+          "lowerHistogramNativeRoot",
+          "lowerHistogramNativeSubqueryInner"
         ]
       }
     }
