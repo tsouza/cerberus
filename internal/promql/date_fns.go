@@ -94,6 +94,19 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 			}
 			return dropExpHistogramSamples(hist, s), nil
 		}
+		// A nested drop-family argument (cerberus issue #2528) — e.g.
+		// `day_of_month(demo_latency_exp_hist + 0)`. That argument
+		// already evaluates to an empty vector under reference
+		// Prometheus, so this eight-function family's own "process only
+		// float samples" drop is a no-op on top of it; the canonical
+		// empty shape [lowerExpHistogramDroppingShape] already built is
+		// the answer as-is.
+		if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+			if err != nil {
+				return nil, err
+			}
+			return dropped, nil
+		}
 	}
 
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's

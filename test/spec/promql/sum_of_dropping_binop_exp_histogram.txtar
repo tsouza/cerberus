@@ -1,0 +1,39 @@
+# sum() wrapping a NESTED exp-histogram "drop"-family binop (cerberus
+# issue #2528). `demo_latency_exp_hist + 0` alone already lowers cleanly
+# to an empty result — reference Prometheus's ADD between a
+# histogram-valued vector and a scalar is an incompatible-types
+# combination that drops the sample and emits an info annotation
+# (expHistogramDroppingScalarBinop). Before this fix, wrapping that same
+# binop in sum() hard-rejected at expHistogramSelectorRouting's catch-all
+# instead of composing to the same empty answer: lowerRoot's drop-family
+# recognisers ran only against the whole query, never against a nested
+# sub-expression a wrapper's own generic lowering recurses into.
+# lowerExpHistogramDroppingShape (histogram_native_dropping_shape.go)
+# closes that gap the same way lowerExpHistogramValuedShape already does
+# for the "preserve" family — sum() over an already-empty argument
+# answers empty for the same reason every aggregation operator does.
+
+-- query.promql --
+sum(demo_latency_exp_hist + 0)
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[]

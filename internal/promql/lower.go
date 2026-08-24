@@ -437,6 +437,23 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if histSide, floatSide, ok := expHistogramDroppingVectorBinop(expr, s, ctx); ok {
 		return lowerExpHistogramDroppingVectorBinop(histSide, floatSide, s, ctx)
 	}
+	// A wrapper around a NESTED drop-family shape (cerberus issue #2528):
+	// an aggregation of ANY operator, or label_replace/label_join, whose
+	// own argument is itself one of the four drop shapes just above —
+	// `sum(demo_latency_exp_hist + 0)`, `topk(3, ...)`, `count(...)`,
+	// `label_replace(demo_latency_exp_hist + 0, ...)`. None of the four
+	// direct dispatches above match here because THEY key off the whole
+	// expression being a bare binop or a restricted aggregation-op set;
+	// this composes those same recognisers one level down through
+	// [lowerExpHistogramDroppingShape] (histogram_native_dropping_shape.go)
+	// — the "drop" family's own reusable recogniser/lowering pair, the
+	// sibling [lowerExpHistogramValuedShape] has had since the "preserve"
+	// family's earliest fix. See that function's own doc for why its
+	// result composes under further wrapping without needing a bespoke
+	// recogniser per wrapper.
+	if plan, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
+		return plan, err
+	}
 	return lower(expr, s, ctx)
 }
 
@@ -4056,6 +4073,17 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 			return nil, false, err
 		}
 		return hist, true, nil
+	}
+	// A nested drop-family shape (cerberus issue #2528) — e.g.
+	// `limitk(3, demo_latency_exp_hist + 0)`. The result is already the
+	// canonical float-Value row shape [lowerExpHistogramDroppingShape]
+	// produces, so it is not histogram-valued for this function's own
+	// "was the input histogram-shaped" contract.
+	if dropped, ok, err := lowerExpHistogramDroppingShape(expr, s, ctx); ok {
+		if err != nil {
+			return nil, false, err
+		}
+		return dropped, false, nil
 	}
 	input, err := lower(expr, s, ctx)
 	if err != nil {

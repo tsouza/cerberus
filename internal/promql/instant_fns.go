@@ -65,6 +65,14 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 				}
 				return dropExpHistogramSamples(hist, s), nil
 			}
+			// Nested drop-family argument (cerberus issue #2528) — see
+			// the unary-function branch below for the full rationale.
+			if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+				if err != nil {
+					return nil, err
+				}
+				return dropped, nil
+			}
 			return lowerRoundToNearest(c, s, ctx)
 		}
 	}
@@ -78,6 +86,19 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 			return nil, err
 		}
 		return dropExpHistogramSamples(hist, s), nil
+	}
+	// A nested drop-family argument (cerberus issue #2528) — e.g.
+	// `abs(demo_latency_exp_hist + 0)`. Reference's simpleFloatFunc skips
+	// every H-set sample regardless of how the argument's own value was
+	// derived, so an already-empty argument stays empty; the canonical
+	// empty shape [lowerExpHistogramDroppingShape] already built is the
+	// answer as-is, with no chFn(Value) rewrite to apply since no row
+	// survives to read it.
+	if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropped, nil
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
@@ -189,6 +210,18 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				return nil, err
 			}
 			return dropExpHistogramSamples(hist, s), nil
+		}
+		// A nested drop-family argument (cerberus issue #2528) — e.g.
+		// `clamp_min(demo_latency_exp_hist + 0, 1)`. See lowerInstantFn's
+		// own comment for the shared rationale: an already-empty argument
+		// composes for free, so the canonical empty shape
+		// [lowerExpHistogramDroppingShape] already built is the answer
+		// as-is.
+		if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+			if err != nil {
+				return nil, err
+			}
+			return dropped, nil
 		}
 	}
 	switch c.Func.Name {

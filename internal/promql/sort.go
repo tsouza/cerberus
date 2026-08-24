@@ -58,6 +58,18 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		}
 		return dropExpHistogramSamples(hist, s), nil
 	}
+	// A nested drop-family argument (cerberus issue #2528) — e.g.
+	// `sort(demo_latency_exp_hist + 0)`. filterFloats already drops every
+	// H-set sample before sorting; an already-empty argument stays empty,
+	// so the canonical empty shape [lowerExpHistogramDroppingShape]
+	// already built is the answer as-is (an OrderBy over zero rows is a
+	// no-op).
+	if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropped, nil
+	}
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
@@ -139,6 +151,18 @@ func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 			return nil, err
 		}
 		inner = hist
+	} else if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+		// A nested drop-family argument (cerberus issue #2528) — e.g.
+		// `sort_by_label(demo_latency_exp_hist + 0, "job")`. Unlike
+		// `sort`/`sort_desc`, funcSortByLabel never filters on H/F, but a
+		// drop-family argument has already evaluated to empty before
+		// reaching here, so the natural-sort key machinery below simply
+		// sorts zero rows; the canonical empty shape
+		// [lowerExpHistogramDroppingShape] already built is that input.
+		if err != nil {
+			return nil, err
+		}
+		inner = dropped
 	} else {
 		lowered, err := lower(c.Args[0], s, ctx)
 		if err != nil {

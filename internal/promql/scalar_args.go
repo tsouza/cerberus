@@ -198,6 +198,18 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 		}
 		return dropExpHistogramSamples(hist, s), nil
 	}
+	// A nested drop-family argument (cerberus issue #2528) — e.g.
+	// `scalar(demo_latency_exp_hist + 0)`. funcScalar counts zero float
+	// samples for an already-empty argument the same way it does for a
+	// bare all-histogram selector, answering NaN via the wrapping
+	// count()==1 ? value : NaN reduction; the canonical empty shape
+	// [lowerExpHistogramDroppingShape] already built is the answer as-is.
+	if dropped, ok, err := lowerExpHistogramDroppingShape(v, s, ctx); ok {
+		if err != nil {
+			return nil, err
+		}
+		return dropped, nil
+	}
 	return lower(v, s, ctx)
 }
 

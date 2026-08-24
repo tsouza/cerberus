@@ -73,11 +73,22 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 // reaches the wire, and the literal Value avoids treating the histogram
 // projection's compatibility placeholder as a real sample.
 func dropExpHistogramSamples(input chplan.Node, s schema.Metrics) chplan.Node {
+	return floatShapedExpHistogramDrop(&chplan.Filter{
+		Input:     input,
+		Predicate: &chplan.LitBool{V: false},
+	}, s)
+}
+
+// floatShapedExpHistogramDrop reprojects an ALREADY-empty (constant-false
+// filtered) plan onto the canonical float-Sample quartet — the shared
+// projection list [dropExpHistogramSamples] and
+// [lowerExpHistogramDroppingShape] (histogram_native_dropping_shape.go,
+// cerberus issue #2528) both apply, the latter over a plan its OWN drop
+// recognizers already capped with a constant-false Filter, so it must not
+// add a second, redundant one.
+func floatShapedExpHistogramDrop(alreadyEmpty chplan.Node, s schema.Metrics) chplan.Node {
 	return &chplan.Project{
-		Input: &chplan.Filter{
-			Input:     input,
-			Predicate: &chplan.LitBool{V: false},
-		},
+		Input: alreadyEmpty,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},

@@ -107,6 +107,14 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		if err == nil && !matched {
 			err = fmt.Errorf("promql: internal invariant violated: info() base is not a known histogram-valued shape: %v", c.Args[0])
 		}
+	} else if dropped, ok, dErr := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
+		// A nested drop-family base (cerberus issue #2528) — e.g.
+		// `info(demo_latency_exp_hist + 0)`. Reference joins the info
+		// series onto whatever base vector it is given; an already-empty
+		// base joins to nothing, so the canonical empty shape
+		// [lowerExpHistogramDroppingShape] already built is the base
+		// input as-is.
+		base, err = dropped, dErr
 	} else {
 		base, err = lower(c.Args[0], s, ctx)
 	}
