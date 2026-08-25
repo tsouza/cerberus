@@ -402,6 +402,15 @@ const nativeHistogramQuantileULPTolerance = 2
 // upstream of the interpolation arithmetic and not chaseable there.
 const classicHistogramRateQuantileULPTolerance = 2
 
+// powULPTolerance is the maximum ULP distance permitted between cerberus's
+// `^` (pow) answer and the reference engine's. It is the same class of
+// relaxation as [atan2ULPTolerance] — see [EqualPowValues]. Issue #2598's
+// own pinned pair (125061.4728613401 vs 125061.47286134012) measures TWO
+// ULPs apart, not the one the issue title's shorthand suggested; the ULP
+// count below is the one actually verified by ulpDistance on those two
+// values, not the issue's own characterization.
+const powULPTolerance = 2
+
 // EqualAtan2Values reports whether two float samples PRODUCED BY EVALUATING
 // PROMQL'S atan2 agree within [atan2ULPTolerance] ULPs. NaN==NaN is TRUE
 // here for the same reason it is in EqualValues.
@@ -453,6 +462,41 @@ func EqualAtan2Values(a, b float64) bool {
 		return false
 	}
 	return ulpDistance(a, b) <= atan2ULPTolerance
+}
+
+// EqualPowValues reports whether two float samples PRODUCED BY EVALUATING
+// PROMQL'S `^` (pow) binary operator agree within [powULPTolerance] ULPs.
+// NaN==NaN is TRUE here for the same reason it is in EqualValues.
+//
+// # Why pow gets the same treatment as atan2
+//
+// This is the same class of divergence [EqualAtan2Values] documents, and
+// earns its place the same way: a NAMED exception for a SINGLE operator,
+// adopted only after independent proof, not adopted speculatively.
+//
+// exp_histogram_set_op_or_mixed_vector_vector_pow.txtar (issue #2598)
+// evaluates `(histogram_quantile(...) or ...) ^ (histogram_quantile(...) or
+// ...)`, where both operands resolve to plain floats before `^` is applied.
+// The reference engine calls Go's math.Pow; cerberus lowers the
+// vector-involving case to ClickHouse's own SQL pow(), evaluated by
+// ClickHouse's libm. The two disagree near the last bit of the mantissa —
+// reference 125061.4728613401 versus cerberus 125061.47286134012, measured
+// as [powULPTolerance] ULPs apart — which is exactly the same "faithfully
+// rounded, not bit-identical" behaviour permitted between two independent
+// libm implementations of a transcendental function that atan2ULPTolerance's
+// doc comment explains. That is a fact about floating-point arithmetic, not
+// a lowering bug.
+//
+// Do not widen powULPTolerance's scope, and do not add a second named
+// tolerance without the same measured evidence this one has.
+func EqualPowValues(a, b float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return false
+	}
+	return ulpDistance(a, b) <= powULPTolerance
 }
 
 // EqualExponentialHistogramInterpolationValues reports whether two float

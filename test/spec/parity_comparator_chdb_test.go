@@ -46,8 +46,11 @@ func TestCompareValues(t *testing.T) {
 		{"composed classic rate quantile stays exact", "histogram_quantile(0.5, rate(latency_bucket[5m])) + up", classicHistogramSeed, base, oneULP, false},
 		{"composed native quantile stays exact", "histogram_quantile(0.95, latency_exp_hist) + up", expHistogramSeed, base, oneULP, false},
 		{"ordinary log2 stays exact", "log2(up)", expHistogramSeed, base, oneULP, false},
-		{"ordinary power stays exact", "up ^ 2", expHistogramSeed, base, oneULP, false},
 		{"atan2 retains one ULP bound", "2 atan2 up", expHistogramSeed, base, twoULPs, false},
+		{"pow gets ULP tolerance", "up ^ 2", expHistogramSeed, base, twoULPs, true},
+		{"pow rejects beyond tolerance", "up ^ 2", expHistogramSeed, base, fiveULPs, false},
+		{"pow inside a nested expression still gets ULP tolerance", "up ^ 2 + 1", expHistogramSeed, base, twoULPs, true},
+		{"regex anchor caret is not the pow operator", `up{job=~"^api$"}`, expHistogramSeed, base, oneULP, false},
 	}
 
 	for _, tc := range cases {
