@@ -82,12 +82,22 @@ func TestLower_ExpHistogram_MixedSetOpOr_MathFnWrapped(t *testing.T) {
 	}
 }
 
-// TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestStillRejects pins
-// that round()'s 2-arg to_nearest form is deliberately NOT widened by
-// this recognizer — it takes a further bound argument and is lowered by
-// lowerRoundToNearest, a different code path this issue's PR did not
-// teach the mixed-`or` shape.
-func TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestStillRejects(t *testing.T) {
+// TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestComposes pins
+// cerberus issue #2578: round()'s 2-arg to_nearest form directly
+// wrapping a mixed float/histogram `or` now composes instead of
+// rejecting, mirroring TestLower_ExpHistogram_MixedSetOpOr_MathFnWrapped's
+// "round with implicit 1-arg to_nearest" case above but through the
+// dedicated to_nearest recognizer/lowering pair
+// (roundToNearestOverMixedExpHistogramSetOp /
+// lowerRoundToNearestOverMixedExpHistogramSetOp in
+// histogram_native_mixed_or_math_fn.go) that a further bound argument
+// needs.
+//
+// This test previously pinned the OPPOSITE behaviour — a rejection — as
+// TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestStillRejects, back
+// when round()'s 2-arg form was the one wrapper family this file's
+// recognizer deliberately left unattempted.
+func TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestComposes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
@@ -99,8 +109,19 @@ func TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestStillRejects(t *testing.T
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	if _, err := promql.LowerAt(context.Background(), expr, s, at, at); err == nil {
-		t.Fatalf("lower(%q): expected an error, got none", query)
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+	}
+	if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
+		t.Fatalf("lower(%q): plan root publishes %s, want %s (round() drops the histogram rows)", query, shape, chplan.SampleRowShape)
+	}
+	proj, ok := plan.(*chplan.Project)
+	if !ok {
+		t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", query, plan)
+	}
+	if _, ok := proj.Input.(*chplan.Filter); !ok {
+		t.Fatalf("lower(%q): plan root's input is %T, want *chplan.Filter (narrowing to the float-shaped rows)", query, proj.Input)
 	}
 }
 
