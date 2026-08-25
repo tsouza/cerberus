@@ -38,20 +38,22 @@
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
       "class": "divergence",
-      "trigger_query": "max_over_time((demo_latency_exp_hist)[5m:1m])",
-      "tracking_issue": 2545,
+      "trigger_query": "last_over_time((sum by (series) ((demo_latency_exp_hist) or (demo_num_cpus)))[5m:1m])",
+      "tracking_issue": 2615,
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
           "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))",
           "past returning if err != nil",
-          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape"
+          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape",
+          "if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name)"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerCallOverSubquery"
         ]
       },
-      "since": "2026-08-24"
+      "since": "2026-08-25"
     },
     {
       "head": "promql",
@@ -65,7 +67,8 @@
           "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerCallOverSubquery"
         ],
         "cited": [
           "canonicalRangeWindowFunc",
@@ -192,6 +195,30 @@
         "callers": [
           "lowerSubquery",
           "lowerSubqueryInnerMatrix"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverBinary#1c929908",
+      "message": "promql: histogram-valued subquery set operator requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, matching lowerExpHistogramRangeFnOverSubquery's identical eval-time guard",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past returning if err != nil",
+          "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape"
+        ],
+        "callers": [
+          "lowerSubquery",
+          "lowerSubqueryInnerMatrix"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "lowerExpHistogramRangeFnOverSubquery"
         ]
       }
     },
@@ -378,7 +405,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
       "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "case parser.START of switch e.StartOrEnd",
@@ -395,11 +422,15 @@
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery",
           "lowerSubqueryOverVectorSelector",
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
         "cited": [
-          "LowerAtRange"
+          "LowerAtRange",
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn"
         ]
       }
     },
@@ -408,7 +439,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
       "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "case parser.END of switch e.StartOrEnd",
@@ -425,11 +456,15 @@
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery",
           "lowerSubqueryOverVectorSelector",
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
         "cited": [
-          "LowerAtRange"
+          "LowerAtRange",
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn"
         ]
       }
     },
@@ -438,7 +473,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
       "message": "promql: unexpected subquery StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the PromQL parser yields only START, END, or zero in StartOrEnd",
+      "rationale": "the PromQL parser yields only START, END, or zero in StartOrEnd. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go), both threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "default of switch e.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
@@ -454,8 +489,14 @@
           "lowerSubqueryOverCallSubquery",
           "lowerSubqueryOverSubquery",
           "lowerSubqueryOverVectorSelector",
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
+        ],
+        "cited": [
+          "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn"
         ]
       }
     },
@@ -464,13 +505,14 @@
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2b0de462",
       "message": "promql: predict_linear expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
       "evidence": {
         "guard": [
           "case \"predict_linear\" of switch outer.Func.Name",
           "if len(outer.Args) != 2"
         ],
         "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"
@@ -482,13 +524,14 @@
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#682124f4",
       "message": "promql: quantile_over_time expects 2 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
       "evidence": {
         "guard": [
           "case \"quantile_over_time\" of switch outer.Func.Name",
           "if len(outer.Args) != 2"
         ],
         "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"
@@ -500,13 +543,14 @@
       "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#ceef5c3b",
       "message": "promql: holt_winters expects 3 arguments, got %d",
       "class": "internal",
-      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so the subquery-argument lowering path can never observe a call with a different count",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
       "evidence": {
         "guard": [
           "case \"holt_winters\", \"double_exponential_smoothing\" of switch outer.Func.Name",
           "if len(outer.Args) != 3"
         ],
         "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
           "lowerOuterRangeFnOverSubquery",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery"

@@ -2,6 +2,25 @@
   "entries": [
     {
       "head": "promql",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"). This function's sole caller, lowerExpHistogramValuedShape (histogram_native_float_fn.go), obtains `b` via [expHistogramSetOp]'s own match, which requires `b.Op.IsSetOperator()` (and/or/unless) before returning true — none of the three set operators is a comparison operator, so the parser can never have set ReturnBool on a BinaryExpr with that Op.",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "expHistogramSetOp",
+          "lowerExpHistogramValuedShape"
+        ]
+      }
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#8deac7ac",
       "message": "promql: internal invariant violated: exp-histogram set-op operand lowering published %s row shape (%T), want %s",
       "class": "internal",
@@ -57,6 +76,66 @@
           "lowerExpHistogramValuedShape",
           "lowerMixedExpHistogramOperands",
           "lowerVectorSetOpOperand"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#0d60b83a",
+      "message": "promql: internal invariant violated: mixed exp-histogram operand matched neither isExpHistogramValuedShape nor isExpHistogramForwardedThroughSetOp for %v",
+      "class": "internal",
+      "rationale": "internal invariant (cerberus issue #2571): lowerExpHistogramValuedOrForwardedOperand's only caller, lowerMixedExpHistogramOperands, selects histExpr (and so the operand passed here) via isExpHistogramValuedOrForwarded(b.LHS) -- literally isExpHistogramValuedShape(b.LHS) || isExpHistogramForwardedThroughSetOp(b.LHS) -- to decide histOnLeft, and picks the OTHER side as histExpr when histOnLeft is false, so whichever side is named histExpr already satisfies that same disjunction by construction. This function returns above (never reaching this guard) when its own isExpHistogramValuedShape(expr) check is true, so the only way to reach this line is for that check to be false -- and by the caller's selection invariant, when the first disjunct is false the second (isExpHistogramForwardedThroughSetOp(expr)) must be true, since mixedExpHistogramSetOp (which lowerMixedExpHistogramOperands's own caller used to accept b in the first place) requires isExpHistogramValuedOrForwarded to hold for exactly one side. So this guard's negation can never hold.",
+      "evidence": {
+        "guard": [
+          "past returning if isExpHistogramValuedShape(expr, s, ctx)",
+          "if !isExpHistogramForwardedThroughSetOp(expr, s, ctx)"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "isExpHistogramForwardedThroughSetOp",
+          "isExpHistogramValuedOrForwarded",
+          "isExpHistogramValuedShape",
+          "lowerExpHistogramValuedOrForwardedOperand",
+          "lowerMixedExpHistogramOperands",
+          "mixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramValuedOrForwardedOperand#87a59c1f",
+      "message": "promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s row shape (%T), want %s",
+      "class": "internal",
+      "rationale": "internal invariant (cerberus issue #2571): this guard is reached only when isExpHistogramForwardedThroughSetOp(expr) already confirmed expr unwraps to an and/unless BinaryExpr whose LHS is, recursively, either isExpHistogramValuedShape or itself isExpHistogramForwardedThroughSetOp. lower(expr) on that shape always dispatches through lowerBinary to lowerVectorSetOp (TryFoldScalar never folds a set-operator BinaryExpr, and b.Op.IsSetOperator() is true), which for a non-Or kind unconditionally returns Histogram: leftHistogram computed from chplan.RowShapeOf(lowerVectorSetOpOperand(b.LHS)). By induction on the recursion isExpHistogramForwardedThroughSetOp itself walks: the base case (b.LHS directly isExpHistogramValuedShape) routes lowerVectorSetOpOperand through lowerExpHistogramSetOpOperand, whose own paired invariant (histogram_native_set_op.go:lowerExpHistogramSetOpOperand) already guarantees HistogramRowShape; the inductive case (b.LHS itself isExpHistogramForwardedThroughSetOp) falls through lowerVectorSetOpOperand's own isExpHistogramValuedShape check (false) and mixedExpHistogramSetOp check (b.LHS's own Op is AND/UNLESS, never LOR, so mixedExpHistogramSetOp's b.Op != parser.LOR guard always declines) to lower(b.LHS, ...), recursing into this exact reasoning one level down. lowerExpHistogramDroppingShape, checked before that fallthrough inside lowerVectorSetOpOperand, cannot intercept an and/unless BinaryExpr either: droppingAggregationOverExpHistogram / aggregationOverExpHistogramDroppingShape / labelCallOverExpHistogramDroppingShape each require an AggregateExpr or Call shape, and expHistogramDroppingScalarBinop / expHistogramDroppingHistogramBinop / expHistogramDroppingVectorBinop each require b.Op to be one of ADD/SUB/POW/MOD/DIV/EQLC/NEQ/GTR/LSS/GTE/LTE/ATAN2/MUL -- never LAND/LOR/LUNLESS -- so it always falls through unchanged. So the lowered node's RowShapeOf is always HistogramRowShape, and this guard can never fire.",
+      "evidence": {
+        "guard": [
+          "past returning if isExpHistogramValuedShape(expr, s, ctx)",
+          "past returning if !isExpHistogramForwardedThroughSetOp(expr, s, ctx)",
+          "past returning if err != nil",
+          "if chplan.RowShapeOf(node) != chplan.HistogramRowShape"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramOperands"
+        ],
+        "cited": [
+          "TryFoldScalar",
+          "aggregationOverExpHistogramDroppingShape",
+          "droppingAggregationOverExpHistogram",
+          "expHistogramDroppingHistogramBinop",
+          "expHistogramDroppingScalarBinop",
+          "expHistogramDroppingVectorBinop",
+          "isExpHistogramForwardedThroughSetOp",
+          "isExpHistogramValuedShape",
+          "labelCallOverExpHistogramDroppingShape",
+          "lower",
+          "lowerBinary",
+          "lowerExpHistogramDroppingShape",
+          "lowerExpHistogramSetOpOperand",
+          "lowerVectorSetOp",
+          "lowerVectorSetOpOperand",
+          "mixedExpHistogramSetOp"
         ]
       }
     }

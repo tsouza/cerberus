@@ -38,6 +38,27 @@
           "lowerCall"
         ]
       }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/date_fns.go:lowerDateFnNoArg#2f3ea020",
+      "message": "promql: unknown date function %s",
+      "class": "internal",
+      "rationale": "lowerDateFnNoArg's sole caller, lowerDateFn, is reached only for the nine names lowerCall's switch routes to it (year, month, day_of_month, day_of_week, day_of_year, days_in_month, hour, minute, timestamp), and only when len(c.Args)==0. The vendored parser's function table (promql/parser/functions.go) pins `timestamp` at exactly one required argument (ArgTypes has length 1, no Variadic) — it can never reach lowerDateFn with zero args — while the other eight are Variadic:1 over a single ValueTypeVector ArgTypes slot, so the parser accepts them with 0 or 1 argument only; `name` therefore always comes from that same eight-name set when len(c.Args)==0. dateFnExpr's switch has an explicit case for each of those eight names (plus timestamp, which cannot reach it this way), so `dateFnExpr(name, now, now)` cannot return nil for any name lowerDateFnNoArg can be called with.",
+      "evidence": {
+        "guard": [
+          "if expr == nil"
+        ],
+        "callers": [
+          "lowerDateFn"
+        ],
+        "cited": [
+          "dateFnExpr",
+          "lowerCall",
+          "lowerDateFn",
+          "lowerDateFnNoArg"
+        ]
+      }
     }
   ]
 }

@@ -5,7 +5,7 @@
       "site": "internal/promql/lower.go:buildAggFunc#4353c2b3",
       "message": "promql: %s must be lowered by lowerCountValues, not the generic aggregate path",
       "class": "internal",
-      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted. lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG (expHistogramAggOpIsMergeable), never COUNT_VALUES, so it cannot reach this branch either",
+      "rationale": "count_values is intercepted by lowerCountValues / lowerSubqueryOverCountValues on every parser-producible path before buildAggFunc is consulted. lowerPlainAggOverMixedFloatArm (histogram_native_mixed_or_aggregate.go) is the second caller, reached by sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346, SUM/AVG only), countOrGroupOverMixedExpHistogramSetOp (cerberus issue #2595, COUNT/GROUP only), and floatOnlyAggOverMixedExpHistogramSetOp (cerberus issue #2595, MIN/MAX/STDDEV/STDVAR only) — never COUNT_VALUES. count_values over the identical mixed-or shape has its own dedicated caller instead (countValuesOverMixedExpHistogramSetOp, histogram_native_mixed_or_aggregate_count_values.go), which never calls buildAggFunc at all, so it cannot reach this branch either",
       "evidence": {
         "guard": [
           "case parser.COUNT_VALUES of switch a.Op"
@@ -16,7 +16,9 @@
         ],
         "cited": [
           "buildAggFunc",
-          "expHistogramAggOpIsMergeable",
+          "countOrGroupOverMixedExpHistogramSetOp",
+          "countValuesOverMixedExpHistogramSetOp",
+          "floatOnlyAggOverMixedExpHistogramSetOp",
           "lowerCountValues",
           "lowerPlainAggOverMixedFloatArm",
           "lowerSubqueryOverCountValues",
@@ -29,7 +31,7 @@
       "site": "internal/promql/lower.go:buildAggFunc#54d1c35e",
       "message": "promql: aggregation %s does not take a parameter",
       "class": "internal",
-      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Param sumOrAvgOverMixedExpHistogramSetOp already confirmed is nil, so it cannot reach this branch either",
+      "rationale": "the parser rejects a parameter on non-parameterised aggregations (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (histogram_native_mixed_or_aggregate.go) is the second caller, and every recognizer that reaches it — sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346), countOrGroupOverMixedExpHistogramSetOp, and floatOnlyAggOverMixedExpHistogramSetOp (both cerberus issue #2595) — already confirmed agg.Param is nil before matching, so it cannot reach this branch either",
       "evidence": {
         "guard": [
           "case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR of switch a.Op",
@@ -40,6 +42,8 @@
           "lowerPlainAggOverMixedFloatArm"
         ],
         "cited": [
+          "countOrGroupOverMixedExpHistogramSetOp",
+          "floatOnlyAggOverMixedExpHistogramSetOp",
           "lowerPlainAggOverMixedFloatArm",
           "sumOrAvgOverMixedExpHistogramSetOp"
         ]
@@ -50,7 +54,7 @@
       "site": "internal/promql/lower.go:buildAggFunc#80287dba",
       "message": "promql: group() does not take a parameter",
       "class": "internal",
-      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG (expHistogramAggOpIsMergeable), never GROUP, so it cannot reach this branch either",
+      "rationale": "the parser rejects a parameter on group() (\"wrong number of arguments for aggregate expression\"). lowerPlainAggOverMixedFloatArm (histogram_native_mixed_or_aggregate.go) is the second caller; its sumOrAvgOverMixedExpHistogramSetOp caller (cerberus issue #2346) only ever passes SUM/AVG (expHistogramAggOpIsMergeable), never GROUP, and its countOrGroupOverMixedExpHistogramSetOp caller (cerberus issue #2595, histogram_native_mixed_or_aggregate_presence.go) DOES pass GROUP but already confirmed agg.Param is nil before matching, so neither reaches this branch",
       "evidence": {
         "guard": [
           "case parser.GROUP of switch a.Op",
@@ -61,6 +65,7 @@
           "lowerPlainAggOverMixedFloatArm"
         ],
         "cited": [
+          "countOrGroupOverMixedExpHistogramSetOp",
           "expHistogramAggOpIsMergeable",
           "lowerPlainAggOverMixedFloatArm",
           "sumOrAvgOverMixedExpHistogramSetOp"
@@ -72,7 +77,7 @@
       "site": "internal/promql/lower.go:buildAggFunc#a6e9df79",
       "message": "promql: aggregation op %s is not yet supported",
       "class": "internal",
-      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered. lowerPlainAggOverMixedFloatArm (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller, and only ever passes an agg whose Op sumOrAvgOverMixedExpHistogramSetOp already confirmed is SUM or AVG — both handled by the switch's first case — so it cannot reach this default arm either",
+      "rationale": "defensive fallback: every PromQL aggregator the parser emits (sum/avg/count/min/max/group/stddev/stdvar/topk/bottomk/count_values/quantile/limitk/limit_ratio) is dispatched by lowerAggregate or handled in buildAggFunc's switch, so no wire-reachable query reaches this branch. It guards against a future parser op landing unlowered. lowerPlainAggOverMixedFloatArm (histogram_native_mixed_or_aggregate.go) is the second caller, and every recognizer that reaches it only ever passes an Op the switch's first two cases already handle: sumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346) passes SUM/AVG, countOrGroupOverMixedExpHistogramSetOp passes COUNT/GROUP, and floatOnlyAggOverMixedExpHistogramSetOp passes MIN/MAX/STDDEV/STDVAR (both cerberus issue #2595) — so none of them reach this default arm either",
       "evidence": {
         "guard": [
           "past exhaustive switch a.Op over [case parser.SUM, parser.COUNT, parser.AVG, parser.MIN, parser.MAX, parser.STDDEV, parser.STDVAR; case parser.GROUP; case parser.QUANTILE; case parser.COUNT_VALUES]"
@@ -83,6 +88,8 @@
         ],
         "cited": [
           "buildAggFunc",
+          "countOrGroupOverMixedExpHistogramSetOp",
+          "floatOnlyAggOverMixedExpHistogramSetOp",
           "lowerAggregate",
           "lowerPlainAggOverMixedFloatArm",
           "sumOrAvgOverMixedExpHistogramSetOp"
@@ -93,19 +100,18 @@
       "head": "promql",
       "site": "internal/promql/lower.go:expHistogramSelectorRouting#bf746b59",
       "message": "promql: %q is an exponential histogram metric; only a bare %q selector, sum()/avg()/count() over one, rate()/increase()/delta()/irate()/idelta()/sum_over_time()/avg_over_time()/resets()/changes() over one, histogram_quantile(), histogram_count(), histogram_sum(), and the %q/%q companion selectors are supported",
-      "class": "divergence",
-      "trigger_query": "histogram_quantile(0.5, topk(1, demo_latency_exp_hist))",
-      "tracking_issue": 2562,
+      "class": "internal",
+      "rationale": "this catch-all's own reachability is not disputed — every prior trigger this session (issue #2571, then #2578→#2583→#2590→#2591→#2602 in sequence) closed by teaching a new composability path, and each closure exposed the next live query that still hit it. After #2602's fix (absent() over a subquery-wrapped bare exp-histogram selector) closes the query that most recently triggered it, three independent systematic sweeps of the vendored PromQL parser's function table — roughly 700 combined probe queries across bare/subquery/nested/aggregation/binop/label-fn/@-modifier/offset combinations — found no remaining shape that reaches this site. That is a claim about current EXHAUSTION, not about PROVABLE unreachability: the guard is still live code on a still-reachable wire path, and a future PromQL feature or an uncomposed corner this sweep missed could resurrect a real trigger. Classified internal as the closest fit among this catalogue's three classes rather than fabricating a trigger_query; TestRejectionTriggersExerciseSites has no way to assert a negative (\"no query reaches this\"), so this entry stays honest by declaring the empirical state plainly instead of forcing a stale or contrived divergence.",
       "evidence": {
         "guard": [
           "past returning if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion \u0026\u0026 s.IsExpHistogramMetric(bare) \u0026\u0026 s.ExpHistogramTable != \"\"",
+          "past returning if s.IsExpHistogramMetric(metricName) \u0026\u0026 ctx.infoMetricSelector \u0026\u0026 s.ExpHistogramTable != \"\"",
           "if s.IsExpHistogramMetric(metricName) \u0026\u0026 !ctx.metadataFullRange"
         ],
         "callers": [
           "resolveSelectorRouting"
         ]
-      },
-      "since": "2026-08-24"
+      }
     },
     {
       "head": "promql",
@@ -129,7 +135,7 @@
       "site": "internal/promql/lower.go:lower#d33d0084",
       "message": "promql: unsupported expression %T",
       "class": "internal",
-      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) and lowerMixedExpHistogramOperands (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering — cerberus issue #2346 — can share the same operand lowering) re-enter lower() for one BinaryExpr operand of an already-parsed vector-vector query apiece, likewise typechecker-constrained to a vector, so neither widens the set either; the #2346 split adds lowerSumOrAvgOverMixedExpHistogramSetOp as a second CALLER of lowerMixedExpHistogramOperands, but not a new re-entry into lower() itself — the operand it forwards is unchanged. lowerVectorSetOpOperand (cerberus issue #2325) replaces binary.go's lowerVectorSetOp as the direct caller: lowerVectorSetOp no longer calls lower() itself, routing both its and/or/unless operands through this helper instead, which forwards to lower() only the operand it has itself confirmed is NOT exp-histogram-valued — the same already-parsed, typechecker-constrained-to-vector expr lowerVectorSetOp used to pass straight through — so it narrows rather than widens too. lowerExpHistogramFloatVectorScalingBinop (cerberus issue #2339) re-enters lower() only for the float-valued operand of an already-parsed MUL/DIV BinaryExpr, likewise typechecker-constrained to a vector, so it doesn't widen the set either. lowerScalarVectorArg (cerberus issue #2515) replaces lowerScalarArg's own direct lower() call for scalar()'s vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and answers via dropExpHistogramSamples, forwarding to lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector scalar() argument lowerScalarArg used to pass straight through — so it narrows rather than widens too. lowerLimitKInput (cerberus issue #2518) replaces lowerLimitK's and lowerLimitRatio's own direct lower() calls for their vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and forwards the input unchanged, calling lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector aggregate argument lowerLimitK/lowerLimitRatio used to pass straight through — so it narrows rather than widens too. lowerTopKComputed's own direct lower() call is unchanged for topk/bottomk (a purely histogram-valued input is intercepted upstream by droppingAggregationOverExpHistogram before ever reaching it); for limitk it now routes through lowerLimitKInput exactly as the literal-K path does. lowerScalarBinopOperand and lowerVectorVectorOperand (cerberus issue #2534, binary.go) replace lowerVectorScalar's and lowerVectorVector's own direct lower() calls for their vector operand(s): lowerScalarBinopOperand recognises an exp-histogram preserve- or drop-family argument via lowerExpHistogramArgAsCanonicalFloat first, forwarding to lower() only when that check comes back unmatched, and lowerVectorVectorOperand recognises a drop-family argument via lowerExpHistogramDroppingShape first — deliberately not the preserve family, since a directly-valued vector-vector operand is always already claimed by one of lowerRoot's own matching-mode-aware dispatches before lowerVectorVector's generic fallback runs, see lowerVectorVectorOperand's own doc comment — forwarding to lower() only when that check comes back unmatched too. In both cases the argument lower() ultimately receives is the identical already-parsed, typechecker-constrained-to-vector operand lowerVectorScalar/lowerVectorVector used to pass straight through before this issue's fix, so neither widens the set either.",
+      "rationale": "Every expression shape reaching lower() through the HTTP handlers is dispatched (top-level matrix selectors included). The remaining inhabitants — NumberLiteral and StringLiteral, answered by the handler's constant fold / string shortcut before the engine runs, and StepInvariantExpr, which only parser.PreprocessExpr mints and cerberus never calls — cannot arrive here from the wire. The query entry points now reach this switch through lowerRoot, which peels off exactly one shape (a bare exp-histogram selector, answered by a histogram-valued lowering) and otherwise delegates unchanged, so it narrows the set of expressions that arrive rather than widening it. Re-verified across the in-package callers that re-enter lower() with a sub-expression, lowerHistogramQuantileClassicFloat included: each passes an operand of an already-parsed query whose position the upstream typechecker constrains to a vector, so no caller widens the set of shapes that reach the default arm. lowerExpHistogramDroppingVectorBinop (cerberus issue #2331) and lowerMixedExpHistogramOperands (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering — cerberus issue #2346 — can share the same operand lowering) re-enter lower() for one BinaryExpr operand of an already-parsed vector-vector query apiece, likewise typechecker-constrained to a vector, so neither widens the set either; the #2346 split adds lowerSumOrAvgOverMixedExpHistogramSetOp as a second CALLER of lowerMixedExpHistogramOperands, but not a new re-entry into lower() itself — the operand it forwards is unchanged. lowerVectorSetOpOperand (cerberus issue #2325) replaces binary.go's lowerVectorSetOp as the direct caller: lowerVectorSetOp no longer calls lower() itself, routing both its and/or/unless operands through this helper instead, which forwards to lower() only the operand it has itself confirmed is NOT exp-histogram-valued — the same already-parsed, typechecker-constrained-to-vector expr lowerVectorSetOp used to pass straight through — so it narrows rather than widens too. lowerExpHistogramFloatVectorScalingBinop (cerberus issue #2339) re-enters lower() only for the float-valued operand of an already-parsed MUL/DIV BinaryExpr, likewise typechecker-constrained to a vector, so it doesn't widen the set either. lowerScalarVectorArg (cerberus issue #2515) replaces lowerScalarArg's own direct lower() call for scalar()'s vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and answers via dropExpHistogramSamples, forwarding to lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector scalar() argument lowerScalarArg used to pass straight through — so it narrows rather than widens too. lowerLimitKInput (cerberus issue #2518) replaces lowerLimitK's and lowerLimitRatio's own direct lower() calls for their vector argument: it recognises a histogram-valued argument via lowerExpHistogramValuedShape first and forwards the input unchanged, calling lower() only when that check comes back unmatched — the same already-parsed, typechecker-constrained-to-vector aggregate argument lowerLimitK/lowerLimitRatio used to pass straight through — so it narrows rather than widens too. lowerTopKComputed's own direct lower() call is unchanged for topk/bottomk (a purely histogram-valued input is intercepted upstream by droppingAggregationOverExpHistogram before ever reaching it); for limitk it now routes through lowerLimitKInput exactly as the literal-K path does. lowerScalarBinopOperand and lowerVectorVectorOperand (cerberus issue #2534, binary.go) replace lowerVectorScalar's and lowerVectorVector's own direct lower() calls for their vector operand(s): lowerScalarBinopOperand recognises an exp-histogram preserve- or drop-family argument via lowerExpHistogramArgAsCanonicalFloat first, forwarding to lower() only when that check comes back unmatched, and lowerVectorVectorOperand recognises a drop-family argument via lowerExpHistogramDroppingShape first — deliberately not the preserve family, since a directly-valued vector-vector operand is always already claimed by one of lowerRoot's own matching-mode-aware dispatches before lowerVectorVector's generic fallback runs, see lowerVectorVectorOperand's own doc comment — forwarding to lower() only when that check comes back unmatched too. In both cases the argument lower() ultimately receives is the identical already-parsed, typechecker-constrained-to-vector operand lowerVectorScalar/lowerVectorVector used to pass straight through before this issue's fix, so neither widens the set either. lowerExpHistogramValuedOrForwardedOperand (cerberus issue #2571, histogram_native_set_op.go) re-enters lower() only for the operand lowerMixedExpHistogramOperands selected as the histogram side (histExpr) when it is NOT directly isExpHistogramValuedShape but IS isExpHistogramForwardedThroughSetOp — an and/unless BinaryExpr whose own LHS is, recursively, either isExpHistogramValuedShape or itself isExpHistogramForwardedThroughSetOp, itself already-parsed and typechecker-constrained to a vector — so it doesn't widen the set of shapes reaching the default arm either; the resulting lowerVectorSetOp call this re-entry reaches never itself calls lower() with anything OTHER than a further and/unless operand routed the identical way (see lowerVectorSetOpOperand's own entry above), so the recursion bottoms out without introducing a new unconstrained shape. lowerMixedOrSubqueryOuterFn (cerberus issue #2577, histogram_native_mixed_or_subquery_range_fn.go) re-enters lower() only in its own non-histogram fallback branch, with a SYNTHETIC `*parser.BinaryExpr{Op: parser.LOR}` — never produced by the parser — built from two synthetic `*parser.Call` nodes wrapping the two arms of a mixed `or` matched (by mixedExpHistogramSetOp) inside a subquery's own inner expression. That synthetic node does not need the typechecker-constrained-to-vector argument every other caller above relies on: `*parser.BinaryExpr` is already one of this switch's own explicitly-dispatched cases (routed to lowerBinary), so no value of that Go type can ever reach the default arm regardless of whether the parser or this package's own lowering minted it. A mixed-or operand paired with a plain, non-mixed vector had, at one point, its own dedicated wrapper family re-entering lower() for the plain side; that family is gone from the package as of the current source. Composing a mixed `or` operand against ANOTHER vector (rather than a scalar) is a deliberately unattempted shape (TestLower_ExpHistogram_MixedSetOpOr_ComparisonVectorVectorStillRejects pins the rejection), so there is no such re-entry into lower() to account for.",
       "evidence": {
         "guard": [
           "default of switch e := expr.(type) over [case *parser.VectorSelector; case *parser.Call; case *parser.AggregateExpr; case *parser.ParenExpr; case *parser.BinaryExpr; case *parser.SubqueryExpr; case *parser.MatrixSelector; case *parser.UnaryExpr; default]"
@@ -144,6 +150,7 @@
           "lowerDateFn",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerExpHistogramFloatVectorScalingBinop",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerHistogramQuantile",
           "lowerHistogramQuantileClassicFloat",
           "lowerHistogramValueFn",
@@ -154,12 +161,13 @@
           "lowerLimitKInput",
           "lowerMetadataCatalog",
           "lowerMixedExpHistogramOperands",
+          "lowerMixedOrSubqueryOuterFn",
           "lowerRoot",
           "lowerRoundToNearest",
           "lowerScalarBinopOperand",
           "lowerScalarVectorArg",
           "lowerSort",
-          "lowerSortByLabel",
+          "lowerSortByLabelArg",
           "lowerTopK",
           "lowerTopKComputed",
           "lowerUnary",
@@ -169,11 +177,15 @@
         "cited": [
           "dropExpHistogramSamples",
           "droppingAggregationOverExpHistogram",
+          "isExpHistogramForwardedThroughSetOp",
+          "isExpHistogramValuedShape",
           "lower",
+          "lowerBinary",
           "lowerExpHistogramArgAsCanonicalFloat",
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramDroppingVectorBinop",
           "lowerExpHistogramFloatVectorScalingBinop",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerExpHistogramValuedShape",
           "lowerHistogramQuantileClassicFloat",
           "lowerLimitK",
@@ -181,6 +193,7 @@
           "lowerLimitRatio",
           "lowerMixedExpHistogramOperands",
           "lowerMixedExpHistogramSetOp",
+          "lowerMixedOrSubqueryOuterFn",
           "lowerRoot",
           "lowerScalarArg",
           "lowerScalarBinopOperand",
@@ -191,7 +204,8 @@
           "lowerVectorSetOp",
           "lowerVectorSetOpOperand",
           "lowerVectorVector",
-          "lowerVectorVectorOperand"
+          "lowerVectorVectorOperand",
+          "mixedExpHistogramSetOp"
         ]
       }
     },
@@ -252,6 +266,32 @@
     },
     {
       "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#53e0f9b3",
+      "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
+      "class": "internal",
+      "rationale": "countValuesOverExpHistogramValue's own match predicate IS isExpHistogramValuedShape(agg.Expr, s, ctx) — the identical predicate lowerExpHistogramValuedShape's own dispatch table is built to answer matched=true for (cerberus issue #2568, threading the same countValuesOverExpHistogramValue / lowerExpHistogramValuedShape pairing lowerHistogramNativeRoot already uses into lowerCountValues so a count_values(...) NESTED under a further wrapper resolves too). So whenever the caller above reaches this branch, lowerExpHistogramValuedShape reporting matched=false here would mean the two predicates disagree about the same expression — an invariant this guard states explicitly rather than one that can actually be observed at runtime.",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "past returning if label == \"\"",
+          "if agg, ok := countValuesOverExpHistogramValue(a, s, ctx); ok",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "cited": [
+          "countValuesOverExpHistogramValue",
+          "isExpHistogramValuedShape",
+          "lowerCountValues",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/lower.go:lowerCountValues#fc5b1a1a",
       "message": "promql: count_values requires a non-empty label name",
       "class": "rejection",
@@ -271,18 +311,15 @@
       "site": "internal/promql/lower.go:lowerHistogramNativeRoot#53e0f9b3",
       "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
       "class": "internal",
-      "rationale": "bareExpHistogramMatrixSelector, checked FIRST in lowerHistogramNativeRoot's chain as of cerberus issue #2548, type-asserts expr as *parser.MatrixSelector before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which is never a *parser.MatrixSelector, so it cannot intercept this shape either, and does not affect this claim. countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched. lowerMixedExpHistogramFamily, checked earlier in lowerHistogramNativeRoot's chain (cerberus issues #2330/#2346/#2449, split out of lowerRoot's own body as of cerberus issue #2528 purely to keep lowerRoot's maintainability-index score over golangci-lint's floor, then re-homed onto lowerHistogramNativeRoot as of cerberus issue #2543 when lowerRoot's own histogram-native dispatch table was factored out so a subquery's inner expression could reuse it — see that function's own doc comment for the per-recognizer detail this paragraph used to carry inline here), only recognises mixedExpHistogramSetOp's own `or` VectorSetOp BinaryExpr with exactly one histogram-valued operand, or a *parser.Call/*parser.BinaryExpr shape wrapping one — count_values's top-level expr is an *parser.AggregateExpr with Op=COUNT_VALUES, which is none of those shapes, so no branch inside it can intercept this shape either, and does not affect this claim. countPresentOverExpHistogram and lastFirstOverExpHistogram (cerberus issue #2480), checked immediately after that, each type-assert peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time or last_over_time/first_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so neither can intercept this shape either. tsOfFirstLastOverExpHistogram (cerberus issue #2482), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named ts_of_first_over_time/ts_of_last_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either. selectFnOverExpHistogramSubquery (cerberus issue #2545), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named one of count_over_time/present_over_time/last_over_time/first_over_time/resets/changes/ts_of_first_over_time/ts_of_last_over_time whose sole argument is itself a *parser.SubqueryExpr before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either. lowerExpHistogramCountFamily (cerberus issue #2549, replacing the two inline countOverExpHistogram / countOrGroupOverExpHistogramValue checks this site's guard used to spell directly), checked immediately after that, requires agg.Op to be COUNT or GROUP with a nil Param — count_values's top-level expr has Op=COUNT_VALUES and a non-nil Param (the target label), so neither of its two recognisers can intercept this shape either. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a second direct caller as of that change, reached when a bare top-level subquery's own inner expression matches this same recognizer chain; it supplies a different `expr` value (the subquery's inner) but the claim above reasons only about the SHAPE of whatever `expr` reaches this guard, not about which entry point supplied it, so the new caller does not affect it.",
+      "rationale": "bareExpHistogramMatrixSelector, checked FIRST in lowerHistogramNativeRoot's chain as of cerberus issue #2548, type-asserts expr as *parser.MatrixSelector before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which is never a *parser.MatrixSelector, so it cannot intercept this shape either, and does not affect this claim. countValuesOverExpHistogramValue already ran isExpHistogramValuedShape to decide ok=true, so the immediately following lowerExpHistogramValuedShape call on the same agg.Expr cannot come back unmatched — as of cerberus issue #2619, that includes the overTimeOverExpHistogram (sum_over_time/avg_over_time) and lastFirstOverExpHistogram (last_over_time/first_over_time) bare-selector producers, which moved from this function's own chain into lowerExpHistogramValuedShape precisely so isExpHistogramValuedShape and lowerExpHistogramValuedShape agree on every shape count_values's operand can take, this one included. lowerMixedExpHistogramFamily, checked earlier in lowerHistogramNativeRoot's chain (cerberus issues #2330/#2346/#2449, split out of lowerRoot's own body as of cerberus issue #2528 purely to keep lowerRoot's maintainability-index score over golangci-lint's floor, then re-homed onto lowerHistogramNativeRoot as of cerberus issue #2543 when lowerRoot's own histogram-native dispatch table was factored out so a subquery's inner expression could reuse it — see that function's own doc comment for the per-recognizer detail this paragraph used to carry inline here), only recognises mixedExpHistogramSetOp's own `or` VectorSetOp BinaryExpr with exactly one histogram-valued operand, or a *parser.Call/*parser.BinaryExpr shape wrapping one — count_values's top-level expr is an *parser.AggregateExpr with Op=COUNT_VALUES, which is none of those shapes, so no branch inside it can intercept this shape either, and does not affect this claim. countPresentOverExpHistogram (cerberus issue #2480), checked immediately after that, type-asserts peelWrappers(expr) as a *parser.Call named count_over_time/present_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either. tsOfFirstLastOverExpHistogram (cerberus issue #2482), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named ts_of_first_over_time/ts_of_last_over_time before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either. selectFnOverExpHistogramSubquery (cerberus issue #2545), checked immediately after that, likewise type-asserts peelWrappers(expr) as a *parser.Call named one of count_over_time/present_over_time/last_over_time/first_over_time/resets/changes/ts_of_first_over_time/ts_of_last_over_time whose sole argument is itself a *parser.SubqueryExpr before doing anything else — count_values's top-level expr is an *parser.AggregateExpr, which peelWrappers never turns into a Call, so it cannot intercept this shape either. lowerExpHistogramCountFamily (cerberus issue #2549, replacing the two inline countOverExpHistogram / countOrGroupOverExpHistogramValue checks this site's guard used to spell directly), checked immediately after that, requires agg.Op to be COUNT or GROUP with a nil Param — count_values's top-level expr has Op=COUNT_VALUES and a non-nil Param (the target label), so neither of its two recognisers can intercept this shape either. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a second direct caller as of that change, reached when a bare top-level subquery's own inner expression matches this same recognizer chain; it supplies a different `expr` value (the subquery's inner) but the claim above reasons only about the SHAPE of whatever `expr` reaches this guard, not about which entry point supplied it, so the new caller does not affect it. Two further guard arms handling vector-vector and vector-plain composition over a mixed `or` were checked here at one point; neither exists in the current source — vector-vector/vector-plain composition over a mixed `or` stays a deliberately unattempted shape (TestLower_ExpHistogram_MixedSetOpOr_ComparisonVectorVectorStillRejects pins the rejection) — so there is no such arm for count_values's AggregateExpr shape to (fail to) match here.",
       "evidence": {
         "guard": [
           "past returning if ms, vs, ok := bareExpHistogramMatrixSelector(expr, s, ctx); ok",
           "past returning if call, ok := labelReplaceOverExpHistogram(expr, s, ctx); ok",
           "past returning if plan, ok, err := lowerExpHistogramValuedShape(expr, s, ctx); ok",
           "past returning if plan, ok, err := lowerMixedExpHistogramFamily(expr, s, ctx); ok",
-          "past returning if lhs, rhs, op, match, card, include, returnBool, ok := comparisonVectorVectorOverMixedExpHistogramSetOp(expr, s, ctx); ok",
-          "past returning if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok",
           "past returning if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok",
-          "past returning if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok",
           "past returning if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok",
           "past returning if shape, ok := selectFnOverExpHistogramSubquery(expr, s, ctx); ok",
           "past returning if plan, ok, err := lowerExpHistogramCountFamily(expr, s, ctx); ok",
@@ -309,6 +346,7 @@
           "lowerMixedExpHistogramFamily",
           "lowerRoot",
           "mixedExpHistogramSetOp",
+          "overTimeOverExpHistogram",
           "peelWrappers",
           "selectFnOverExpHistogramSubquery",
           "tsOfFirstLastOverExpHistogram"
