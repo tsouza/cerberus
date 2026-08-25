@@ -320,9 +320,10 @@ jobs:
     # promql moved to its own `roundtrip-promql-shard` matrix (#2629), so
     # logql and traceql — whose whole JOBS finish in 173-181s per
     # chdb-roundtrip.mjs's own FANOUT comment — no longer need anywhere near
-    # this ceiling. Left unchanged rather than retuned speculatively: a
-    # follow-up can lower it once it has real CI timing for the
-    # logql/traceql-only job.
+    # this ceiling. Left unchanged rather than retuned speculatively
+    # (#2629's own acceptance notes this is a safe later reduction, not a
+    # requirement of the split itself): a future change can lower it once it
+    # has real CI timing for the logql/traceql-only job.
     timeout-minutes: 35
     strategy:
       fail-fast: false
