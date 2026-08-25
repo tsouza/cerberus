@@ -98,6 +98,21 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		}
 	}
 
+	// `or` between a float-valued operand and a histogram-valued operand
+	// (cerberus issue #2330) directly wrapped by one of the eight
+	// value-reading date functions, reached from ANY nesting depth since
+	// [lowerCall] is the single generic dispatch point for this function
+	// regardless of whether it sits at the query root or nested under
+	// another wrapper (cerberus issue #2609). See
+	// histogram_native_mixed_or_datefn.go's own doc comment for why
+	// reference's dateWrapper drop rule composes with no reduction
+	// machinery at all — just the shadow-resolved float arm fed into the
+	// same value projection this function's own non-mixed path builds
+	// below.
+	if b, ok := dateFnOverMixedExpHistogramSetOp(c, s, ctx); ok {
+		return lowerDateFnOverMixedExpHistogramSetOp(c, b, s, ctx)
+	}
+
 	// The argument is lowered under an ARGUMENT ctx rather than the caller's
 	// own, because `timestamp(<vector-selector>)` needs the selector seam to
 	// publish a column no other consumer asks for. Every other function/shape
