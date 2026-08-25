@@ -15,6 +15,7 @@
         "callers": [
           "buildAggFunc",
           "buildSubqueryAggFunc",
+          "buildTopKComputed",
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
@@ -29,7 +30,6 @@
           "lowerScalarArg",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "lowerVector",
           "scalarGuardPlan",
           "threadOuterRangeFnScalars",
@@ -55,6 +55,7 @@
         "callers": [
           "buildAggFunc",
           "buildSubqueryAggFunc",
+          "buildTopKComputed",
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
@@ -69,7 +70,6 @@
           "lowerScalarArg",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "lowerVector",
           "scalarGuardPlan",
           "threadOuterRangeFnScalars",
@@ -94,6 +94,7 @@
         "callers": [
           "buildAggFunc",
           "buildSubqueryAggFunc",
+          "buildTopKComputed",
           "histogramFractionBound",
           "holtWintersFactors",
           "limitRatioPredicate",
@@ -108,7 +109,6 @@
           "lowerScalarArg",
           "lowerScalarTopLevel",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "lowerVector",
           "scalarGuardPlan",
           "threadOuterRangeFnScalars",

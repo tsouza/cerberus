@@ -11,8 +11,8 @@
           "case mx \u003e= aggParamMaxInt64 of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
         ]
       }
@@ -32,8 +32,8 @@
           "case mn \u003c= aggParamMinInt64 of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
         ]
       }
@@ -49,8 +49,8 @@
           "case hasAnyNaN(values) of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
         ]
       }
