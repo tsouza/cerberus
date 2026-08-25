@@ -21,6 +21,10 @@ test('pull_request and merge_group are unchanged: release/*-headed runs heavy, e
   assert.equal(decide({ eventName: 'pull_request', headRef: 'release/1.14.x' }).runHeavy, true);
   assert.equal(decide({ eventName: 'pull_request', headRef: 'fix/some-bug' }).runHeavy, false);
   assert.equal(decide({ eventName: 'pull_request', headRef: '' }).runHeavy, false);
+  // A merge_group event never actually carries a head_ref in production (GitHub
+  // does not populate one for a batch), so this is always false in practice —
+  // runsFullLane applies the identical rule regardless, exactly as the old
+  // inline GHA expression did.
   assert.equal(decide({ eventName: 'merge_group', headRef: '' }).runHeavy, false);
 });
 
