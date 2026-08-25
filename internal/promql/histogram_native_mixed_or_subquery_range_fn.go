@@ -73,16 +73,42 @@ import (
 // label_replace/label_join DIRECTLY wrapping [mixedExpHistogramSetOp]'s own
 // bare shape — `<fn>((label_replace((a) or (b), ...))[range:step])` — via
 // [wrapMixedOrSubqueryInner]'s rebuild closure, below. Still narrower than
-// #2569's own pure-histogram-inner sibling in one respect: a subquery inner
-// wrapped in sum()/avg() or nested under a further and/or/unless
-// (histogram_native_mixed_or_aggregate.go / [mixedExpHistogramSetOp]'s own
-// doc) stays unrecognised here and continues to reject through
-// [lowerOuterRangeFnOverSubquery]'s existing guard — deliberately, not an
-// oversight: see [wrapMixedOrSubqueryInner]'s own doc for why a sum/avg
-// wrapper cannot be admitted through this same distribute-then-recombine
-// mechanism without silently disagreeing with reference on a colliding
-// group. Tracked as an open divergence under #2581 in
-// test/rejection-parity/catalogue.
+// #2569's own pure-histogram-inner sibling in two respects, both
+// deliberate, not oversights:
+//
+//   - sum()/avg() [by/without] wrapping the mixed `or`
+//     (histogram_native_mixed_or_aggregate.go) — see
+//     [wrapMixedOrSubqueryInner]'s own doc for why that wrapper cannot be
+//     admitted through this same distribute-then-recombine mechanism
+//     without silently disagreeing with reference on a colliding group.
+//   - A further `and`/`or`/`unless` wrapping the mixed `or`
+//     ([mixedExpHistogramSetOp]'s own doc names this as the THIRD wrapper
+//     family, cerberus issues #2346/#2449/#2555). Investigated for THIS
+//     file's own composition and found already fully accounted for by
+//     cerberus issue #2589's fix (PR #2597), needing no new recognizer
+//     here at all:
+//     TestFurtherSetOpRHS_AlreadyComposes
+//     (histogram_native_mixed_or_subquery_further_setop_test.go) proves
+//     the mixed `or` on the RIGHT of `and`/`unless` already composes —
+//     `and`/`unless` forward the LEFT operand's row shape unconditionally,
+//     so the subquery inner is always plain float regardless of the mixed
+//     `or`'s own type. TestFurtherSetOpLHS_CleanlyRejects proves the mixed
+//     `or` on the LEFT still rejects cleanly, for the identical reason PR
+//     #2597's own TestOuterRangeFnOverAndUnlessMixedSubquery_CleanRejection
+//     (subquery_and_unless_mixed_histogram_outer_test.go) already pins for
+//     a bare-selector `and`/`unless`-forwarded histogram subquery inner —
+//     none of the fifteen SELECT/FOLD-family names has a dedicated
+//     recognizer for an `and`/`unless`-FORWARDED (as opposed to directly)
+//     histogram-valued subquery inner, and widening
+//     [rangeFnOverExpHistogramSubquery] / [selectFnOverExpHistogramSubquery]
+//     to add one would reverse that already-merged decision rather than
+//     extend it. A further `or` (either order) rejects too — `or`, unlike
+//     `and`/`unless`, genuinely propagates the mixed `or`'s own type, so
+//     there is no plain-float escape hatch (TestFurtherSetOpOr_CleanlyRejects).
+//
+// Both stay unrecognised here and continue to reject through
+// [lowerOuterRangeFnOverSubquery]'s existing guard. Tracked as an open
+// divergence under #2581 in test/rejection-parity/catalogue.
 func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.SubqueryExpr, *parser.BinaryExpr, func(parser.Expr) parser.Expr, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return nil, nil, nil, false
