@@ -154,47 +154,34 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 // [chplan.RowShapeOf]'s OrderBy arm forwards [chplan.HistogramRowShape]
 // through unchanged so the wire layer keeps every histogram column
 // instead of re-projecting down to the canonical float quartet.
+// lowerSortByLabelArg resolves sort_by_label/sort_by_label_desc's first
+// (vector) argument, split out of [lowerSortByLabel] to keep that
+// function's cyclomatic complexity in check (nestif). Tries, in order: a
+// bare exp-histogram-valued shape (preserved, not dropped — see
+// [lowerSortByLabel]'s own doc comment for why sort_by_label's rule is the
+// opposite of sort/sort_desc's), a mixed float/histogram `or` (cerberus
+// issue #2611), a nested drop-family shape (cerberus issue #2528), and
+// finally the generic dispatch.
+func lowerSortByLabelArg(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
+		return hist, err
+	}
+	if b, ok := sortByLabelArgOverMixedExpHistogramSetOp(arg, s, ctx); ok {
+		return lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
+	}
+	if dropped, ok, err := lowerExpHistogramDroppingShape(arg, s, ctx); ok {
+		return dropped, err
+	}
+	return lower(arg, s, ctx)
+}
+
 func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	if len(c.Args) < 1 {
 		return nil, fmt.Errorf("promql: %s expects at least 1 argument (vector[, label…]), got %d", c.Func.Name, len(c.Args))
 	}
-	var inner chplan.Node
-	if hist, ok, err := lowerExpHistogramValuedShape(c.Args[0], s, ctx); ok {
-		if err != nil {
-			return nil, err
-		}
-		inner = hist
-	} else if b, ok := sortByLabelArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok {
-		// A mixed float/histogram `or` argument (cerberus issue #2330),
-		// reached from ANY nesting depth since [lowerCall] is the single
-		// generic dispatch point for sort_by_label/sort_by_label_desc
-		// regardless of nesting (cerberus issue #2611). See
-		// histogram_native_mixed_or_sort_by_label.go's own doc comment for
-		// why every row from BOTH arms survives unchanged, the opposite
-		// composition from sort()/sort_desc()'s own filterFloats rule.
-		mixed, err := lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		inner = mixed
-	} else if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
-		// A nested drop-family argument (cerberus issue #2528) — e.g.
-		// `sort_by_label(demo_latency_exp_hist + 0, "job")`. Unlike
-		// `sort`/`sort_desc`, funcSortByLabel never filters on H/F, but a
-		// drop-family argument has already evaluated to empty before
-		// reaching here, so the natural-sort key machinery below simply
-		// sorts zero rows; the canonical empty shape
-		// [lowerExpHistogramDroppingShape] already built is that input.
-		if err != nil {
-			return nil, err
-		}
-		inner = dropped
-	} else {
-		lowered, err := lower(c.Args[0], s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		inner = lowered
+	inner, err := lowerSortByLabelArg(c.Args[0], s, ctx)
+	if err != nil {
+		return nil, err
 	}
 	if len(c.Args) == 1 {
 		// No sort key: identity ordering, per funcSortByLabel's
