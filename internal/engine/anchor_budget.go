@@ -72,8 +72,8 @@ func requireSubquerySampleBudget(plan chplan.Node, maxSamples int64) error {
 // input subtree does. Saturates at math.MaxInt64 so a deeply nested product can
 // never wrap negative and slip under the budget.
 //
-// [chplan.RangeBucketFanout], [chplan.RangeLWR] and [chplan.RangeBucketGridNative]
-// contribute their own NumAnchors the same way (#2408): each materialises
+// [chplan.RangeBucketFanout] and [chplan.RangeLWR] contribute their own
+// NumAnchors the same way (#2408): each materialises
 // exactly the same "one row per Step across [Start, End]" per-series
 // intermediate RangeWindow does, and the histogram range-function lowerings
 // (internal/promql) build one of these DIRECTLY off a subquery's own
@@ -101,8 +101,6 @@ func subqueryAnchorLoad(n chplan.Node) int64 {
 	case *chplan.RangeBucketFanout:
 		self = v.NumAnchors()
 	case *chplan.RangeLWR:
-		self = v.NumAnchors()
-	case *chplan.RangeBucketGridNative:
 		self = v.NumAnchors()
 	}
 	// The heaviest nested load among the input subtree(s).
