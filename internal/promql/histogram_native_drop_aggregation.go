@@ -21,11 +21,19 @@ import (
 //
 // A selector that can match both float and histogram series already follows
 // the generic lowering: regex routing contributes the ordinary float arms and
-// deliberately contributes no bare native-histogram arm. This root-only path
+// deliberately contributes no bare native-histogram arm. This path
 // supplies the missing histogram-only half. It lowers the histogram selector
 // through its canonical native-histogram path and caps it with a false filter,
 // preserving instant/range/@ evaluation validation while publishing no
 // samples.
+//
+// droppingAggregationOverExpHistogram is reached from two callsites — both
+// [lowerHistogramNativeRoot] (when the aggregation is the query's own root)
+// and, since cerberus issue #2562, the top of [lowerAggregate] via
+// [lowerExpHistogramDroppingShape] (when it is NESTED under a further
+// wrapper, e.g. `histogram_quantile(0.5, topk(1, demo_latency_exp_hist))`)
+// — the same root+nested threading [lowerExpHistogramCountFamily] already
+// has for count()/group().
 
 // droppingAggregationOverExpHistogram recognizes a histogram-dropping
 // aggregation directly over a bare exponential-histogram selector.
