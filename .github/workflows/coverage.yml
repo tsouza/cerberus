@@ -97,6 +97,7 @@ jobs:
 
       - name: Test coverage gates
         run: |
+          node --test .github/scripts/lib/sharded-json.test.mjs
           node --test .github/scripts/coverage-summary.test.mjs
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs

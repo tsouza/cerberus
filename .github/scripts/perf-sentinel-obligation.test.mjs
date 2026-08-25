@@ -76,6 +76,20 @@ test('waiverRefs handles null/undefined input without throwing', () => {
   assert.deepEqual(waiverRefs(null), []);
 });
 
+test('waiverRefs ignores a citation quoted inside a fenced code block', () => {
+  // A commit message quoting another commit (a revert, a copy-pasted
+  // template) can legitimately contain the waiver string without the
+  // author actually citing it. Matches forbid-deferral.mjs's own
+  // stripFencedBlocks treatment of quoted material.
+  const text = ['This reverts commit abc123.', '', '```', 'PERF-SENTINEL-WAIVER: #1535', '```'].join('\n');
+  assert.deepEqual(waiverRefs(text), []);
+});
+
+test('waiverRefs still finds a real citation sitting outside a fenced block in the same text', () => {
+  const text = ['PERF-SENTINEL-WAIVER: #1486', '', '```', 'PERF-SENTINEL-WAIVER: #1535', '```'].join('\n');
+  assert.deepEqual(waiverRefs(text), [1486]);
+});
+
 // --- needsObligation / satisfiesViaSentinel -----------------------------------
 
 test('needsObligation is true when a trigger file is in the changed set', () => {

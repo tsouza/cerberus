@@ -771,6 +771,13 @@ jobs:
       - name: Assert the nightly-health notifier cannot go silently hollow
         run: node --test .github/scripts/notify-nightly-failure.test.mjs
 
+      # runNotifyMain itself — the create/comment/close/noop orchestration
+      # and its `gh` shell-out — was previously exercised only indirectly,
+      # through its pure helpers. This drives it directly via its injected
+      # captureImpl/exit seams (still no real `gh` subprocess spawned).
+      - name: Assert the shared nightly-health-notify orchestration itself
+        run: node --test .github/scripts/lib/nightly-health-notify.test.mjs
+
       # Same #1861 mechanism, second consumer (#2370's perf-nightly lane) —
       # asserts the shared lib/nightly-health-notify.mjs generalisation and
       # perf-nightly's own wiring didn't silently drift from e2e's.

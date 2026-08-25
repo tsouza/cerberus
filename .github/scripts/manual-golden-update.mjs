@@ -49,11 +49,31 @@
 //     TARGET_ROOT, PATCH_ROOT, BRANCH, DEFAULT_BRANCH, SHARDS_INPUT, TARGET_SHA,
 //     GITHUB_OUTPUT
 //
+//   MODE=apply-predecessors
+//     TARGET_ROOT, PATCH_ROOT, PREDECESSORS (space-separated shard names)
+//     `cardinality-leg`'s own "Apply predecessor context" step: applies and
+//     commits (into TARGET_ROOT, uncommitted otherwise) whichever selected
+//     predecessor shards' patches this leg needs already-materialised —
+//     empty/missing patches (a predecessor whose regeneration produced no
+//     change) are skipped, and nothing is committed at all when every one
+//     was. The commit exists only so `assertOwnedChanges` (MODE=package,
+//     below) sees this leg's OWN changes as the only uncommitted ones; it is
+//     never pushed anywhere.
+//
+//   MODE=apply-legs
+//     TARGET_ROOT, PATCH_ROOT
+//     `cardinality-seal`'s own "Apply every leg's patch" step: applies every
+//     `*.patch` file under PATCH_ROOT (one per cardinality-leg, downloaded
+//     flat by `gh run download`), skipping empty ones, uncommitted — the
+//     seal's own packaging step re-stages from scratch before diffing, so
+//     nothing here needs to already be committed.
+//
 // Exits non-zero on an unsafe branch/ref, an invalid shard set, a patch that
 // touches another shard, a missing/duplicate patch, or target-branch movement.
 
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -427,11 +447,54 @@ function applyAndPush(env) {
   writeOutput('new_sha', git(targetRoot, ['rev-parse', 'HEAD']).stdout.trim(), env.GITHUB_OUTPUT);
 }
 
+/**
+ * MODE=apply-predecessors — see the file header. Empty (never split into
+ * zero-length tokens by stray whitespace) and missing-or-empty-file are both
+ * treated as "nothing to apply for this predecessor", matching the original
+ * `[ ! -s "$patch" ]` shell test this replaces.
+ */
+function applyPredecessors(env) {
+  const targetRoot = required(env, 'TARGET_ROOT');
+  const patchRoot = path.resolve(required(env, 'PATCH_ROOT'));
+  const predecessors = required(env, 'PREDECESSORS')
+    .split(/\s+/)
+    .filter((s) => s.length > 0);
+
+  let applied = false;
+  for (const shard of predecessors) {
+    const patch = path.join(patchRoot, `golden-patch-${shard}`, `${shard}.patch`);
+    if (!existsSync(patch) || statSync(patch).size === 0) continue;
+    git(targetRoot, ['apply', '--index', patch]);
+    applied = true;
+  }
+  if (applied) {
+    git(targetRoot, ['config', 'user.name', 'github-actions[bot]']);
+    git(targetRoot, ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
+    git(targetRoot, ['commit', '--quiet', '-m', 'predecessor context for cardinality-leg (not published)']);
+  }
+}
+
+/**
+ * MODE=apply-legs — see the file header. Reuses walkPatchFiles (the same
+ * recursive, sorted, symlink-refusing *.patch collector applyAndPush uses
+ * for its own shard patches) rather than re-deriving a second patch-glob.
+ */
+function applyLegPatches(env) {
+  const targetRoot = required(env, 'TARGET_ROOT');
+  const patchRoot = path.resolve(required(env, 'PATCH_ROOT'));
+  for (const patch of walkPatchFiles(patchRoot)) {
+    if (statSync(patch).size === 0) continue;
+    git(targetRoot, ['apply', '--index', patch]);
+  }
+}
+
 export function main(env = process.env) {
   const mode = required(env, 'MODE');
   if (mode === 'plan') return plan(env);
   if (mode === 'package') return packagePatch(env);
   if (mode === 'apply-push') return applyAndPush(env);
+  if (mode === 'apply-predecessors') return applyPredecessors(env);
+  if (mode === 'apply-legs') return applyLegPatches(env);
   fail(`unknown MODE ${JSON.stringify(mode)}`);
 }
 

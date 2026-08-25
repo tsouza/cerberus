@@ -119,14 +119,67 @@ test('classifyBlob only sniffs the leading window (the bound is real)', () => {
   assert.equal(classifyBlob(inside).binary, true, 'a NUL at the last sniffed byte must be read');
 });
 
-test('isLfsPointer matches only the exact pointer preamble', () => {
-  assert.equal(
-    isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 4\n')),
-    true,
-  );
+// A real oid: 64 lowercase hex characters, matching the spec's sha256 format.
+const validOid = 'a'.repeat(64);
+const validPointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${validOid}\nsize 4\n`;
+
+test('isLfsPointer accepts a well-formed three-line pointer body', () => {
+  assert.equal(isLfsPointer(Buffer.from(validPointer)), true);
+});
+
+test('isLfsPointer rejects non-pointer content', () => {
   assert.equal(isLfsPointer(syntheticElf()), false);
   assert.equal(isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v2\n')), false);
   assert.equal(isLfsPointer(Buffer.from('')), false);
+});
+
+test('isLfsPointer rejects a blob with just the version line and garbage after it', () => {
+  // Finding: the old check only compared the FIRST line against the
+  // preamble, so a blob committed directly (bypassing LFS) whose first line
+  // happened to match was silently exempted regardless of what followed.
+  assert.equal(
+    isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v1\nnot an oid line at all\n')),
+    false,
+  );
+  assert.equal(
+    isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v1\n' + 'x'.repeat(500))),
+    false,
+  );
+});
+
+test('isLfsPointer rejects a malformed oid (wrong length, uppercase, or non-hex)', () => {
+  assert.equal(
+    isLfsPointer(Buffer.from('version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 4\n')),
+    false,
+  );
+  assert.equal(
+    isLfsPointer(Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${'A'.repeat(64)}\nsize 4\n`)),
+    false,
+  );
+  assert.equal(
+    isLfsPointer(
+      Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${'g'.repeat(64)}\nsize 4\n`),
+    ),
+    false,
+  );
+});
+
+test('isLfsPointer rejects a malformed size line', () => {
+  assert.equal(
+    isLfsPointer(Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${validOid}\nsize four\n`)),
+    false,
+  );
+  assert.equal(
+    isLfsPointer(Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${validOid}\n`)),
+    false,
+  );
+});
+
+test('isLfsPointer rejects a valid-looking pointer with trailing content appended', () => {
+  // The pointer body must be the object's ENTIRE content, not merely a
+  // prefix of it — otherwise a forged blob could pad a real pointer with
+  // extra bytes and still slip through.
+  assert.equal(isLfsPointer(Buffer.from(validPointer + 'extra trailing content\n')), false);
 });
 
 test('diffAllowlist reports a stray root entry and a rotted allow-list entry', () => {
@@ -170,11 +223,26 @@ test('the CLI FAILS on a committed binary, naming the file and the format', () =
 test('the CLI PASSES on a working-tree-smudged LFS pointer (object store holds the pointer)', () => {
   const { dir, stage } = newFixtureRepo();
   const lfsPath = join(dir, 'perf-profile');
-  writeFileSync(lfsPath, 'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 4\n');
+  writeFileSync(lfsPath, validPointer);
   stage();
   writeFileSync(lfsPath, syntheticElf());
   const { status, out } = runGate('binary', dir);
   assert.equal(status, 0, `an LFS pointer smudged to binary in the working tree must still pass; got:\n${out}`);
+});
+
+// A blob committed directly (bypassing the LFS filter entirely) whose first
+// line happens to equal the pointer preamble, but whose object-store content
+// is not a well-formed pointer, must still be caught by the binary gate —
+// the whole point of finding #4's fix.
+test('the CLI FAILS on a forged LFS-preamble blob that is not a real pointer', () => {
+  const { dir, stage } = newFixtureRepo();
+  const forgedPath = join(dir, 'perf-profile');
+  writeFileSync(forgedPath, 'version https://git-lfs.github.com/spec/v1\nnot a real pointer body\n');
+  stage();
+  writeFileSync(forgedPath, syntheticElf());
+  const { status, out } = runGate('binary', dir);
+  assert.equal(status, 1, `a forged non-pointer blob must not be exempted; got:\n${out}`);
+  assert.match(out, /perf-profile/);
 });
 
 // #1938: every scan used to read the tracked INDEX only (`git ls-files`),
