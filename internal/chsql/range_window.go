@@ -4028,6 +4028,83 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 // approximation for a long-lived series, the SAME documented operational
 // tradeoff deltaPrefixAggregateSource's own doc accepts for the instant
 // path (see docs/operations.md's DELTA-prefix backfill runbook).
+// deltaMatrixLevelSourceAggregateDailyFanout builds
+// deltaMatrixLevelSourceAggregate's aggregate stream: day-bucket rows fanned
+// to their first-eligible anchor and collapsed onto that anchor, keyed by
+// the returned aggDailyKeys aliases (parallel to groupFrags). Pruned on a
+// CUMULATIVE-only metric exactly like deltaPresenceGuardFrag's instant-path
+// callers: the guard's own probe spans the WHOLE matrix scan range
+// (matrixWindowScanBoundsFrags), not one anchor's window. Split out of
+// deltaMatrixLevelSourceAggregate itself only to keep that function's own
+// three other stages (raw stream, density join, final select) readable —
+// see its doc for the full two-stream design this is one half of.
+func (e *emitter) deltaMatrixLevelSourceAggregateDailyFanout(
+	r *chplan.RangeWindow,
+	groupFrags []Frag,
+	end Frag,
+	stepNS, rangeNS, numAnchors int64,
+) (*QueryBuilder, []string, error) {
+	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
+	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
+	if err != nil {
+		return nil, nil, err
+	}
+	latestDay := deltaPrefixBucketStartFrag(rangeStartFrag(end, rangeNS))
+
+	aggInput, err := e.subqueryFrag(r.DeltaPrefixAggregateInput)
+	if err != nil {
+		return nil, nil, err
+	}
+	aggDaily := NewQuery().From(aggInput)
+	aggDailyKeys := make([]string, len(groupFrags))
+	for i, groupFrag := range groupFrags {
+		aggDailyKeys[i] = fmt.Sprintf("%s%d", deltaPrefixAggregateMatrixKeyAliasPrefix, i)
+		aggDaily.Select(As(groupFrag, aggDailyKeys[i]))
+	}
+	aggDaily.Select(Col(deltaPrefixAggregateBucketColumn))
+	aggDaily.Select(As(Call("sum", Col(deltaPrefixAggregateSumColumn)), "day_sum"))
+	aggDaily.Where(Lt(Col(deltaPrefixAggregateBucketColumn), latestDay))
+	if guard != nil {
+		aggDaily.Where(guard)
+	}
+	dailyGroupBy := make([]Frag, 0, len(groupFrags)+1)
+	dailyGroupBy = append(dailyGroupBy, groupFrags...)
+	dailyGroupBy = append(dailyGroupBy, Col(deltaPrefixAggregateBucketColumn))
+	aggDaily.GroupBy(dailyGroupBy...)
+
+	aggFanout := NewQuery().From(aggDaily.Frag())
+	for _, key := range aggDailyKeys {
+		aggFanout.Select(Col(key))
+	}
+	aggFanout.Select(As(
+		Call("arrayJoin", deltaPrefixAggregateBucketAnchorArrayFrag(
+			end, Col(deltaPrefixAggregateBucketColumn), stepNS, rangeNS, numAnchors,
+		)),
+		"anchor_ts",
+	))
+	aggFanout.Select(As(Col("day_sum"), deltaPrefixAggregateMatrixStepAlias))
+
+	// A bucket-day can fan out to the SAME anchor as another bucket-day
+	// (anchors spaced further apart than a day, so more than one day's
+	// contribution lands on one anchor) — collapse those here, entirely
+	// within the small aggregate-table-derived stream, before the density
+	// join in the caller so that join can never fan rawLevels' own rows out.
+	aggFanoutSummed := NewQuery().From(aggFanout.Frag())
+	aggFanoutKeyCols := make([]Frag, len(aggDailyKeys))
+	for i, key := range aggDailyKeys {
+		aggFanoutKeyCols[i] = Col(key)
+		aggFanoutSummed.Select(Col(key))
+	}
+	aggFanoutSummed.Select(Col("anchor_ts"))
+	aggFanoutSummed.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
+	aggFanoutGroupBy := make([]Frag, 0, len(aggFanoutKeyCols)+1)
+	aggFanoutGroupBy = append(aggFanoutGroupBy, aggFanoutKeyCols...)
+	aggFanoutGroupBy = append(aggFanoutGroupBy, Col("anchor_ts"))
+	aggFanoutSummed.GroupBy(aggFanoutGroupBy...)
+
+	return aggFanoutSummed, aggDailyKeys, nil
+}
+
 func (e *emitter) deltaMatrixLevelSourceAggregate(
 	r *chplan.RangeWindow,
 	regroupSource Frag,
@@ -4070,68 +4147,12 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 		deltaPrefixRawDayLevelAlias,
 	))
 
-	// Aggregate stream — day-bucket rows fanned to their first-eligible
-	// anchor. Pruned on a CUMULATIVE-only metric exactly like
-	// deltaPresenceGuardFrag's instant-path callers: the guard's own probe
-	// spans the WHOLE matrix scan range (matrixWindowScanBoundsFrags), not
-	// one anchor's window.
-	windowLo, windowHi := matrixWindowScanBoundsFrags(r.TimestampColumn, end, stepNS, rangeNS, numAnchors)
-	guard, err := e.deltaPresenceGuardFrag(r, windowLo, windowHi)
+	aggFanoutSummed, aggDailyKeys, err := e.deltaMatrixLevelSourceAggregateDailyFanout(
+		r, groupFrags, end, stepNS, rangeNS, numAnchors,
+	)
 	if err != nil {
 		return nil, err
 	}
-	latestDay := deltaPrefixBucketStartFrag(rangeStartFrag(end, rangeNS))
-
-	aggInput, err := e.subqueryFrag(r.DeltaPrefixAggregateInput)
-	if err != nil {
-		return nil, err
-	}
-	aggDaily := NewQuery().From(aggInput)
-	aggDailyKeys := make([]string, len(groupFrags))
-	for i, groupFrag := range groupFrags {
-		aggDailyKeys[i] = fmt.Sprintf("%s%d", deltaPrefixAggregateMatrixKeyAliasPrefix, i)
-		aggDaily.Select(As(groupFrag, aggDailyKeys[i]))
-	}
-	aggDaily.Select(Col(deltaPrefixAggregateBucketColumn))
-	aggDaily.Select(As(Call("sum", Col(deltaPrefixAggregateSumColumn)), "day_sum"))
-	aggDaily.Where(Lt(Col(deltaPrefixAggregateBucketColumn), latestDay))
-	if guard != nil {
-		aggDaily.Where(guard)
-	}
-	dailyGroupBy := make([]Frag, 0, len(groupFrags)+1)
-	dailyGroupBy = append(dailyGroupBy, groupFrags...)
-	dailyGroupBy = append(dailyGroupBy, Col(deltaPrefixAggregateBucketColumn))
-	aggDaily.GroupBy(dailyGroupBy...)
-
-	aggFanout := NewQuery().From(aggDaily.Frag())
-	for _, key := range aggDailyKeys {
-		aggFanout.Select(Col(key))
-	}
-	aggFanout.Select(As(
-		Call("arrayJoin", deltaPrefixAggregateBucketAnchorArrayFrag(
-			end, Col(deltaPrefixAggregateBucketColumn), stepNS, rangeNS, numAnchors,
-		)),
-		"anchor_ts",
-	))
-	aggFanout.Select(As(Col("day_sum"), deltaPrefixAggregateMatrixStepAlias))
-
-	// A bucket-day can fan out to the SAME anchor as another bucket-day
-	// (anchors spaced further apart than a day, so more than one day's
-	// contribution lands on one anchor) — collapse those here, entirely
-	// within the small aggregate-table-derived stream, before the density
-	// join below so that join can never fan rawLevels' own rows out.
-	aggFanoutSummed := NewQuery().From(aggFanout.Frag())
-	aggFanoutKeyCols := make([]Frag, len(aggDailyKeys))
-	for i, key := range aggDailyKeys {
-		aggFanoutKeyCols[i] = Col(key)
-		aggFanoutSummed.Select(Col(key))
-	}
-	aggFanoutSummed.Select(Col("anchor_ts"))
-	aggFanoutSummed.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
-	aggFanoutGroupBy := make([]Frag, 0, len(aggFanoutKeyCols)+1)
-	aggFanoutGroupBy = append(aggFanoutGroupBy, aggFanoutKeyCols...)
-	aggFanoutGroupBy = append(aggFanoutGroupBy, Col("anchor_ts"))
-	aggFanoutSummed.GroupBy(aggFanoutGroupBy...)
 
 	// Density — LEFT JOIN the (small, aggregate-table-derived) aggFanoutSummed
 	// stream directly onto rawLevels' OWN (series, anchor) rows, instead of
