@@ -40,10 +40,10 @@
 // produced this EXACT sha survives it.
 //
 // Imports only node: builtins (Node ships `fetch`), matching the house style
-// in release-preflight.mjs. Run `node .github/scripts/lib/resolve-source-pr.mjs
-// --self-test` directly, or `node --test .github/scripts/lib/resolve-source-pr.test.mjs`.
-
-import process from 'node:process';
+// in release-preflight.mjs. Exercised by
+// `node --test .github/scripts/lib/resolve-source-pr.test.mjs`, wired into
+// ci.yml as "resolve-source-pr self-test (fail-closed PR-match guard)" — the
+// real test surface; this module carries no test scaffold of its own.
 
 // selectSourcePR — pure. `pulls` is the raw array returned by
 // `GET /repos/{owner}/{repo}/commits/{sha}/pulls`; `sha` is the commit being
@@ -92,97 +92,4 @@ export async function resolveSourcePR({ repo, sha, apiBase = 'https://api.github
     page += 1;
   }
   return selectSourcePR(out, sha);
-}
-
-// ---------------------------------------------------------------------------
-// self-test
-// ---------------------------------------------------------------------------
-
-function ghNotice(msg) {
-  process.stdout.write(`::notice::${String(msg).replace(/\r?\n/g, '%0A')}\n`);
-}
-
-function ghError(msg) {
-  process.stdout.write(`::error::${String(msg).replace(/\r?\n/g, '%0A')}\n`);
-}
-
-function selfTest() {
-  const assert = (c, m) => {
-    if (!c) throw new Error('self-test: ' + m);
-  };
-
-  const pr = (overrides = {}) => ({
-    number: 2393,
-    merged_at: '2026-08-19T12:00:00Z',
-    merge_commit_sha: 'merged0000000000000000000000000000000000',
-    head: { sha: 'head000000000000000000000000000000000000', ref: 'release/v1.15.3' },
-    base: { ref: 'main' },
-    ...overrides,
-  });
-
-  // The headline case: one merged PR whose merge_commit_sha matches exactly.
-  let r = selectSourcePR([pr()], 'merged0000000000000000000000000000000000');
-  assert(r !== null, 'an exact single match must resolve');
-  assert(r.number === 2393, 'resolves the right PR number');
-  assert(r.headSha === 'head000000000000000000000000000000000000', 'resolves the PR head sha, not the merge sha');
-  assert(r.headRef === 'release/v1.15.3', 'carries the head ref through');
-  assert(r.baseRef === 'main', 'carries the base ref through');
-
-  // No candidates at all -> null.
-  assert(selectSourcePR([], 'abc') === null, 'empty pulls array -> null');
-  assert(selectSourcePR(null, 'abc') === null, 'null pulls -> null');
-
-  // An OPEN PR (merged_at null) whose branch happens to contain the sha in
-  // its ancestry must NOT be mistaken for the source PR.
-  r = selectSourcePR([pr({ merged_at: null, merge_commit_sha: null })], 'merged0000000000000000000000000000000000');
-  assert(r === null, 'an unmerged PR must not resolve, even if listed');
-
-  // A MERGED PR whose merge_commit_sha does not match the target sha (it
-  // merely contains the target commit in its ancestry, e.g. it branched from
-  // main after the target commit landed) must not resolve either.
-  r = selectSourcePR([pr({ merge_commit_sha: 'some-other-sha' })], 'merged0000000000000000000000000000000000');
-  assert(r === null, 'a merged PR with a DIFFERENT merge_commit_sha must not resolve');
-
-  // Two DIFFERENT PRs both somehow reporting the same merge_commit_sha (should
-  // never happen on a real repo, but ambiguity must still refuse, not guess).
-  r = selectSourcePR(
-    [pr({ number: 1 }), pr({ number: 2 })],
-    'merged0000000000000000000000000000000000',
-  );
-  assert(r === null, 'more than one exact match is ambiguous -> null, not a guess');
-
-  // A merged PR with no head sha available (malformed/partial API response)
-  // must not resolve — nothing to read check-runs from.
-  r = selectSourcePR([pr({ head: { sha: null, ref: 'x' } })], 'merged0000000000000000000000000000000000');
-  assert(r === null, 'a merged match with no head sha must not resolve');
-
-  // A mix of one exact match plus unrelated noise (an open PR, a merged PR
-  // pointing elsewhere) still resolves the one real match.
-  r = selectSourcePR(
-    [
-      pr({ number: 10, merged_at: null, merge_commit_sha: null }),
-      pr({ number: 11, merge_commit_sha: 'unrelated' }),
-      pr({ number: 12 }),
-    ],
-    'merged0000000000000000000000000000000000',
-  );
-  assert(r !== null && r.number === 12, 'the one exact match resolves despite unrelated noise');
-
-  ghNotice('resolve-source-pr --self-test: all assertions passed');
-}
-
-// ---------------------------------------------------------------------------
-// dispatcher
-// ---------------------------------------------------------------------------
-
-const invokedDirectly = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
-
-if (invokedDirectly && process.argv.includes('--self-test')) {
-  try {
-    selfTest();
-    process.exit(0);
-  } catch (e) {
-    ghError(e.message);
-    process.exit(1);
-  }
 }
