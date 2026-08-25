@@ -2563,9 +2563,11 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	// rather than a pure histogram-native shape — see
 	// histogram_native_mixed_or_subquery_range_fn.go's own doc for why
 	// this is a genuinely different recognizer/lowering rather than a
-	// widening of the two calls just above.
-	if sub, b, ok := mixedOrSubqueryOuterFn(c, s, ctx); ok {
-		return lowerMixedOrSubqueryOuterFn(c, sub, b, s, ctx)
+	// widening of the two calls just above. Since cerberus issue #2581,
+	// also matches when that mixed `or` is itself directly wrapped in
+	// label_replace/label_join.
+	if sub, b, rebuild, ok := mixedOrSubqueryOuterFn(c, s, ctx); ok {
+		return lowerMixedOrSubqueryOuterFn(c, sub, b, rebuild, s, ctx)
 	}
 	// `<range-vector-fn>(<subquery>)` — the canonical Grafana shape
 	// `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a chained RangeWindow:
