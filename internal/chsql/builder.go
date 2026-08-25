@@ -1358,11 +1358,18 @@ func ddlToken(s string) Frag {
 }
 
 // BareIdent returns a Frag that emits name literally — no backtick
-// quoting. The narrow trust contract: name MUST be a CH-safe bare
-// identifier (the CH grammar requires it to match
-// `[a-zA-Z_][a-zA-Z0-9_]*`). Used for lambda parameter names
-// (`mapFilter((k, v) -> k IN (?), col)` — `k` is not a column) and
-// other emitter-controlled bare tokens.
+// quoting. The narrow trust contract: name MUST be emitter/operator-fixed
+// text, never user or query data — never a value that could carry
+// attacker- or tenant-controlled bytes through to raw SQL. The typical
+// shape is a CH-safe bare identifier (the CH grammar requires
+// `[a-zA-Z_][a-zA-Z0-9_]*`) — lambda parameter names
+// (`mapFilter((k, v) -> k IN (?), col)` — `k` is not a column) and other
+// emitter-controlled bare tokens. One documented exception: a
+// data-skipping index TYPE clause (AddIndexBuilder.frag, indexType) may
+// legitimately be a parametrized CH type keyword like `set(100)` rather
+// than a bare identifier — still safe under this contract (indexType is
+// always a fixed, code-authored string, never data), just outside the
+// identifier grammar the common case follows.
 //
 // Prefer Col / Qual for genuine column references — they apply the
 // backtick quoting CH expects. BareIdent is for parameter / synthetic

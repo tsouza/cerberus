@@ -43,6 +43,29 @@ func TestDeltaPrefixAnchorArrayEmitsAtMostOneConditionalEvent(t *testing.T) {
 	}
 }
 
+// TestDeltaPrefixAggregateRawAnchorArrayRequiresDeltaTemporality pins the
+// fix for a bug where deltaPrefixAggregateRawAnchorArrayFrag (the exact
+// DELTA-prefix aggregate mechanism's matrix-path raw-remainder term)
+// rendered with NO temporality gate at all — every CUMULATIVE sample on a
+// mixed-temporality table produced an unused prefix-array entry, inflating
+// the #2429 fanout row budget for no correctness benefit (only a genuinely
+// DELTA series' reconstructed level is ever consumed, via
+// deltaFirstValFrag). The sibling deltaPrefixAnchorArrayFrag has always
+// carried this gate; this function must too.
+func TestDeltaPrefixAggregateRawAnchorArrayRequiresDeltaTemporality(t *testing.T) {
+	t.Parallel()
+
+	got := renderFragToSQL(deltaPrefixAggregateRawAnchorArrayFrag(
+		Col("query_end"), Col("sample_ts"), Col("temporality"),
+		int64(time.Minute), int64(5*time.Minute), 6,
+	))
+
+	if !strings.Contains(got, "`temporality` = 1") {
+		t.Errorf("aggregate-mechanism raw anchor array is missing the DELTA-temporality gate — every "+
+			"CUMULATIVE sample would also fan into an unused prefix-array row\nSQL: %s", got)
+	}
+}
+
 func TestDeltaPrefixSumDeduplicatesTimestampBeforeSumming(t *testing.T) {
 	t.Parallel()
 

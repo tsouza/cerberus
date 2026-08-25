@@ -2150,6 +2150,37 @@ func getNonNegativeDuration(v *viper.Viper, key string) (time.Duration, error) {
 	return d, nil
 }
 
+// minRenderableSchemaDuration is the finest interval bucket
+// internal/chsql's ttlInterval ever renders (toIntervalSecond's own unit,
+// its coarsest-common-denominator fallback) — the floor below which a TTL
+// or storage-tiering age silently disappears from the emitted DDL.
+const minRenderableSchemaDuration = time.Second
+
+// getNonNegativeTTLDuration is getNonNegativeDuration's sibling for a knob
+// that flows into a ClickHouse TTL age (internal/chsql's ttlAge /
+// ttlInterval): a retention (CERBERUS_SCHEMA_TTL*) or a storage-tiering
+// move-after (CERBERUS_SCHEMA_TIER_AFTER*). ttlInterval's finest bucket is
+// toIntervalSecond, so a duration in (0, 1s) truncates to
+// toIntervalSecond(0) — a TTL clause that looks configured but silently
+// expires every part at insert time, or a tiering rule that fires
+// immediately. Rejecting it here, at config-validation time, turns that
+// silent-data-loss footgun into a fail-fast startup error naming the env
+// var, instead of a truncation ttlInterval has no way to detect (by the
+// time it runs, "the operator meant 500ms" and "the operator meant 0s" are
+// indistinguishable — both arrive as a positive time.Duration that divides
+// to zero seconds).
+func getNonNegativeTTLDuration(v *viper.Viper, key string) (time.Duration, error) {
+	d, err := getNonNegativeDuration(v, key)
+	if err != nil {
+		return 0, err
+	}
+	if d > 0 && d < minRenderableSchemaDuration {
+		return 0, fmt.Errorf("%s: %s is below the %s floor a ClickHouse TTL clause can render — "+
+			"it would silently truncate to no retention/tiering at all", key, d, minRenderableSchemaDuration)
+	}
+	return d, nil
+}
+
 // bootFlags groups the boolean boot-time toggles FromEnv resolves: the
 // auto-create-schema hook, the auto-create-database sub-toggle, the
 // requirements preflight, and the experimental native-rate path. Grouping
@@ -2322,35 +2353,35 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttl, err := getNonNegativeDuration(v, envSchemaTTL)
+	ttl, err := getNonNegativeTTLDuration(v, envSchemaTTL)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlMetrics, err := getNonNegativeDuration(v, envSchemaTTLMetrics)
+	ttlMetrics, err := getNonNegativeTTLDuration(v, envSchemaTTLMetrics)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlLogs, err := getNonNegativeDuration(v, envSchemaTTLLogs)
+	ttlLogs, err := getNonNegativeTTLDuration(v, envSchemaTTLLogs)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	ttlTraces, err := getNonNegativeDuration(v, envSchemaTTLTraces)
+	ttlTraces, err := getNonNegativeTTLDuration(v, envSchemaTTLTraces)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	tierAfter, err := getNonNegativeDuration(v, envSchemaTierAfter)
+	tierAfter, err := getNonNegativeTTLDuration(v, envSchemaTierAfter)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	tierAfterMetrics, err := getNonNegativeDuration(v, envSchemaTierAfterMetrics)
+	tierAfterMetrics, err := getNonNegativeTTLDuration(v, envSchemaTierAfterMetrics)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	tierAfterLogs, err := getNonNegativeDuration(v, envSchemaTierAfterLogs)
+	tierAfterLogs, err := getNonNegativeTTLDuration(v, envSchemaTierAfterLogs)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
-	tierAfterTraces, err := getNonNegativeDuration(v, envSchemaTierAfterTraces)
+	tierAfterTraces, err := getNonNegativeTTLDuration(v, envSchemaTierAfterTraces)
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}

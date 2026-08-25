@@ -337,6 +337,14 @@ func TestDeltaMatrixAggregateSource_JoinUseNulls1DoesNotPropagateNull(t *testing
 // day-bucket scan (deltaMatrixLevelSourceAggregate's aggDaily query) must be
 // pruned to near-zero read_rows, while the SAME emitted query with only the
 // guard clause(s) removed (stripPresenceGuard) reads the full seeded corpus.
+//
+// It also proves the guard prunes ONLY that aggregate-table scan, never the
+// CUMULATIVE job's own sample fanout (applyMatrixFanoutScanBoundAggregate):
+// a guard mistakenly ANDed onto the raw fanout instead of OR'd against an
+// ordinary-row term folds to a constant false on this all-CUMULATIVE
+// series and silently empties its whole result matrix — read_rows on the
+// aggregate table alone cannot catch that, only inspecting the 'cumonly'
+// job's own result rows can.
 func TestDeltaMatrixAggregateSource_PresenceGuardPrunesCumulativeOnlyScan(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 	deltaPrefixAggregateSeedDDL(t, db)
@@ -389,6 +397,32 @@ FROM numbers(%d)`, deltaPrefixCumulativeOnlyAggregateSeriesCount, deltaPrefixCum
 	if guardedRows*maxGuardedFraction >= unguardedRows {
 		t.Errorf("guarded read_rows=%d not far below unguarded read_rows=%d (want guarded*%d < unguarded) — the matrix presence guard is not pruning the CUMULATIVE-only scan",
 			guardedRows, unguardedRows, maxGuardedFraction)
+	}
+
+	// Result-set correctness: the 'cumonly' job's own rate() rows must
+	// survive the guard, and match the un-aggregated (pre-#2389) mechanism
+	// exactly — that mechanism's fanout is never guarded, so it is
+	// unaffected by a mis-scoped guard and serves as the oracle here.
+	oracleWindow := deltaPrefixCanonicalizedMatrixWindow(
+		deltaMatrixTestStart, deltaMatrixTestEnd, deltaMatrixTestStep, deltaMatrixTestRange, "",
+	)
+	oracle := runDeltaMatrixPrefixQuery(t, db, oracleWindow, 0, false)["cumonly"]
+	got := runDeltaMatrixPrefixQuery(t, db, r, 0, true)["cumonly"]
+
+	if len(oracle) != 2 {
+		t.Fatalf("oracle: got %d anchors for cumonly, want 2 (%v)", len(oracle), oracle)
+	}
+	if len(got) != 2 {
+		t.Fatalf("guarded matrix query: got %d anchors for cumonly, want 2 (%v) — the presence guard emptied the CUMULATIVE-only series' own result matrix", len(got), got)
+	}
+	for anchorMs, oracleVal := range oracle {
+		gotVal, ok := got[anchorMs]
+		if !ok {
+			t.Fatalf("guarded matrix query: no row for cumonly anchor %d", anchorMs)
+		}
+		if math.Abs(oracleVal-gotVal) > 1e-9 {
+			t.Errorf("cumonly anchor %d: guarded = %v, oracle (unguarded, pre-#2389 mechanism) = %v — must match exactly", anchorMs, gotVal, oracleVal)
+		}
 	}
 }
 
@@ -497,5 +531,40 @@ func TestDeltaMatrixAggregateSource_CrossDayAnchorAssignmentDoesNotDoubleCount(t
 				"adversarial Jan-14-tail sample's 500-unit contribution was double-counted (or dropped) across "+
 				"the day boundary in the RECONSTRUCTED LEVEL itself", anchorMs, gotVal, oracleVal)
 		}
+	}
+}
+
+// TestDeltaMatrixAggregateSource_DoesNotDoubleScanInput pins
+// deltaMatrixLevelSourceAggregate's own regroupSource read count at exactly
+// ONE reference (see that function's density-join doc): before this fix, a
+// "carrier" query UNION-ALL'd density rows in by re-splicing regroupSource a
+// SECOND time, textually duplicating the WHOLE upstream fanout/regroup
+// chain (including rateWindowFanoutBoundedSourceFrag's own — separately
+// accepted — two independent reads of r.Input for the #2429 resource-bound
+// LIMIT) — quadrupling the query's actual reads of r.Input instead of the
+// intended doubling.
+//
+// windowedMatrixFanoutAnchorTsFrag's anchor-array expression
+// ("arrayConcat(arrayMap(i -> ...") is rendered exactly once per physical
+// copy of the sample fanout, so counting its occurrences in the emitted SQL
+// is a direct, implementation-stable proxy for how many times r.Input's
+// fanout is actually read: 2 is correct (rateWindowFanoutBoundedSourceFrag's
+// own doubling only); 4 is the regression this test catches.
+func TestDeltaMatrixAggregateSource_DoesNotDoubleScanInput(t *testing.T) {
+	r := deltaPrefixCanonicalizedMatrixWindow(
+		deltaMatrixTestStart, deltaMatrixTestEnd, deltaMatrixTestStep, deltaMatrixTestRange,
+		"otel_metrics_sum_delta_prefix",
+	)
+	ctx := WithDeltaPrefixReadEnabled(context.Background(), true)
+	sqlText, _, err := Emit(ctx, r)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	const anchorFanoutMarker = "arrayConcat(arrayMap(i ->"
+	const wantFanoutReads = 2
+	if got := strings.Count(sqlText, anchorFanoutMarker); got != wantFanoutReads {
+		t.Errorf("sample fanout rendered %d times, want %d — deltaMatrixLevelSourceAggregate is re-splicing "+
+			"regroupSource more than once (the carrier-union regression this test guards against):\n%s",
+			got, wantFanoutReads, sqlText)
 	}
 }

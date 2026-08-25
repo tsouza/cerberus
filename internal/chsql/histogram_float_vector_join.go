@@ -168,16 +168,7 @@ func histogramFloatVectorJoinOutputAttributesFrag(j *chplan.HistogramFloatVector
 	if manySide == "R" {
 		oneSide = "L"
 	}
-	includes := make([]Frag, len(j.Include))
-	for i, lbl := range j.Include {
-		includes[i] = Lit(lbl)
-	}
-	overlay := Call(
-		"mapFilter",
-		Lambda2("k", "v", In(BareIdent("k"), includes...)),
-		qualColFrag(oneSide, attrs),
-	)
-	return Call("mapConcat", qualColFrag(manySide, attrs), overlay)
+	return includeOverlayAttributesFrag(manySide, oneSide, attrs, j.Include)
 }
 
 // histogramFloatVectorJoinHistCols lists every field the join's Left

@@ -143,6 +143,23 @@ func TestMatchRangeLWRFusion_Declines(t *testing.T) {
 			},
 		},
 		{
+			// GroupBy omits the per-step anchor key (lwr.TimestampCol):
+			// only the label key survives. Both fused renderers GROUP BY
+			// a.GroupBy verbatim, so fusing this shape would group across
+			// the WHOLE grid instead of one row per anchor — count()'s
+			// uniqExact would report "distinct series present ANYWHERE in
+			// the grid" once per label instead of the correct per-anchor
+			// row count. Must decline and fall back to the unfused path.
+			name: "GroupBy omits the anchor key",
+			make: func() *chplan.Aggregate {
+				lwr := rangeLWRFusionTestLWR()
+				a := rangeLWRFusionTestAggregate(chplan.FnSum, lwr)
+				a.GroupBy = a.GroupBy[:1]
+				a.GroupByAliases = a.GroupByAliases[:1]
+				return a
+			},
+		},
+		{
 			name: "sum() over a computed expression, not the bare Value column",
 			make: func() *chplan.Aggregate {
 				lwr := rangeLWRFusionTestLWR()
@@ -212,6 +229,32 @@ func TestEmitAggregateRangeLWRFused_CountSkipsArgMaxCollapse(t *testing.T) {
 	}
 	if !strings.Contains(sql, "toFloat64(") {
 		t.Errorf("fused count() SQL did not wrap uniqExact's UInt64 result in toFloat64:\n%s", sql)
+	}
+}
+
+// TestEmitAggregateRangeLWRFused_CountWithoutAnchorGroupUsesUnfusedPath
+// proves the fix for the undercount bug matchRangeLWRFusion used to allow:
+// a count() Aggregate whose GroupBy omits the per-step anchor key must NOT
+// take the uniqExact fast path (which GROUPs BY a.GroupBy verbatim and
+// would then count "distinct series present ANYWHERE in the grid" once per
+// label instead of once per (label, anchor)) — it must fall back to the
+// ordinary emitAggregate path's plain count(), which is exactly as correct
+// for this unusual GroupBy shape as the fused path is for the normal one.
+func TestEmitAggregateRangeLWRFused_CountWithoutAnchorGroupUsesUnfusedPath(t *testing.T) {
+	lwr := rangeLWRFusionTestLWR()
+	a := rangeLWRFusionTestAggregate(chplan.FnCount, lwr)
+	a.GroupBy = a.GroupBy[:1]
+	a.GroupByAliases = a.GroupByAliases[:1]
+
+	sql, _, err := Emit(context.Background(), a)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if strings.Contains(sql, "uniqExact(") {
+		t.Errorf("count() without the anchor key in GroupBy took the fused uniqExact path — this undercounts whenever the same series appears at multiple anchors:\n%s", sql)
+	}
+	if !strings.Contains(sql, "count(") {
+		t.Errorf("count() without the anchor key in GroupBy did not render a plain count():\n%s", sql)
 	}
 }
 

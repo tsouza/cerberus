@@ -184,7 +184,17 @@ func reanchorRangeWindow(v *RangeWindow, start, end time.Time) (Node, error) {
 	}
 	// Clone only this spine node; GroupBy / Scalars / ScalarExprs are off-grid
 	// immutable, so share the original slice headers (the shard re-grids
-	// Start/End/OuterRange only — it never mutates these).
+	// Start/End/OuterRange only — it never mutates these). DeltaPrefixAggregateInput
+	// is shared unexamined too (c := *v below forwards it verbatim, with no
+	// recursive reanchor call of its own) — safe because that subtree
+	// carries no embedded time bound of its own to begin with
+	// (buildDeltaPrefixAggregateArm only ever wraps a Scan in a metric-name
+	// Filter, never a time-range one); the ONLY bound ever applied to it is
+	// derived at EMIT time in chsql from THIS RangeWindow's own (already
+	// correctly reanchored) End/Range fields
+	// (deltaMatrixLevelSourceAggregate's `latestDay`). If this field ever
+	// grows its own independent time bound, that safety argument breaks and
+	// this field must be reanchored explicitly, the same as Input below.
 	c := *v
 	c.Start = start
 	c.End = end

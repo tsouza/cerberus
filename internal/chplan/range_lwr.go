@@ -131,10 +131,7 @@ func (r *RangeLWR) Children() []Node { return []Node{r.Input} }
 // needs its own charge in [requireSubquerySampleBudget] rather than relying
 // on an ancestor [RangeWindow].
 func (r *RangeLWR) NumAnchors() int64 {
-	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
-		return 0
-	}
-	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
+	return numAnchorsFromGrid(r.Start, r.End, r.Step)
 }
 
 func (r *RangeLWR) Equal(other Node) bool {

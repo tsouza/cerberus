@@ -639,20 +639,32 @@ func outputAttributesFrag(j *chplan.VectorJoin) Frag {
 	if manySide == "R" {
 		oneSide = "L"
 	}
-	includes := make([]Frag, len(j.Include))
-	for i, lbl := range j.Include {
+	return As(includeOverlayAttributesFrag(manySide, oneSide, attrs, j.Include), attrs)
+}
+
+// includeOverlayAttributesFrag renders the group_left(<labels>) /
+// group_right(<labels>) Include-label overlay every card-changing vector
+// join with a non-empty Include list emits:
+//
+//	mapConcat(<manySide>.<attrs>, mapFilter((k, v) -> k IN (...), <oneSide>.<attrs>))
+//
+// CH's later-argument-wins map merge, so the "one" side's Include labels
+// win over any same-named key the "many" side already carries. Shared by
+// outputAttributesFrag (plain VectorJoin) and
+// histogramFloatVectorJoinOutputAttributesFrag (HistogramFloatVectorJoin) —
+// the identical shape, differing only in whether the caller wraps the
+// result in an `AS <attrs>` alias.
+func includeOverlayAttributesFrag(manySide, oneSide, attrs string, include []string) Frag {
+	includes := make([]Frag, len(include))
+	for i, lbl := range include {
 		includes[i] = Lit(lbl)
 	}
-	merged := Call(
-		"mapConcat",
-		qualColFrag(manySide, attrs),
-		Call(
-			"mapFilter",
-			Lambda2("k", "v", In(BareIdent("k"), includes...)),
-			qualColFrag(oneSide, attrs),
-		),
+	overlay := Call(
+		"mapFilter",
+		Lambda2("k", "v", In(BareIdent("k"), includes...)),
+		qualColFrag(oneSide, attrs),
 	)
-	return As(merged, attrs)
+	return Call("mapConcat", qualColFrag(manySide, attrs), overlay)
 }
 
 // outputMetricNameFrag returns a Frag for the joined output's
