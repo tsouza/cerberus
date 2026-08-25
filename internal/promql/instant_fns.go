@@ -126,15 +126,9 @@ func mathFnValueExpr(chFn chplan.Fn, valueExpr chplan.Expr) chplan.Expr {
 // propagates NaN through the arithmetic, matching Prom's
 // `math.Floor(v/toNearest+0.5)*toNearest` with a NaN operand.
 func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	var tn chplan.Expr
-	if toNearest, ok := tryScalarLiteral(c.Args[1]); ok {
-		tn = &chplan.LitFloat{V: toNearest}
-	} else {
-		computed, err := lowerScalarArg(c.Args[1], s, ctx)
-		if err != nil {
-			return nil, err
-		}
-		tn = computed
+	tn, err := lowerRoundToNearestBound(c.Args[1], s, ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	inner, err := lower(c.Args[0], s, ctx)
@@ -142,14 +136,33 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 		return nil, err
 	}
 
-	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+	newValue := roundToNearestValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, tn)
+	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+}
 
+// lowerRoundToNearestBound lowers round()'s second argument — the
+// to_nearest bound — shared by [lowerRoundToNearest] (a bare/derived
+// float vector argument) and
+// histogram_native_mixed_or_math_fn.go's [lowerRoundToNearestOverMixedExpHistogramSetOp]
+// (cerberus issue #2578), which needs the identical literal/computed
+// split over a differently-shaped vector argument.
+func lowerRoundToNearestBound(arg parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Expr, error) {
+	if toNearest, ok := tryScalarLiteral(arg); ok {
+		return &chplan.LitFloat{V: toNearest}, nil
+	}
+	return lowerScalarArg(arg, s, ctx)
+}
+
+// roundToNearestValueExpr builds `round(valueExpr / tn) * tn` — the CH
+// expression for PromQL's `round(v, to_nearest)` kernel. Shared by
+// [lowerRoundToNearest] and histogram_native_mixed_or_math_fn.go's mixed-
+// `or` composition, which apply it over differently-shaped inputs.
+func roundToNearestValueExpr(valueExpr, tn chplan.Expr) chplan.Expr {
 	rounded := &chplan.FuncCall{
 		Fn:   chplan.FnRound,
-		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueRef, Right: tn}},
+		Args: []chplan.Expr{&chplan.Binary{Op: chplan.OpDiv, Left: valueExpr, Right: tn}},
 	}
-	newValue := &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
-	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+	return &chplan.Binary{Op: chplan.OpMul, Left: rounded, Right: tn}
 }
 
 // lowerClamp implements the PromQL clamp family:
