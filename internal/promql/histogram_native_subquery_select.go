@@ -74,11 +74,30 @@ type histogramSubquerySelectShape struct {
 // ts_of_first_over_time / ts_of_last_over_time over a subquery whose inner
 // expression is already histogram-valued. Mirrors
 // [rangeFnOverExpHistogramSubquery]'s own recognizer shape rung for rung,
-// differing only in which function names it admits and that its match
-// composes with [lowerHistogramNativeRoot] rather than
-// [lowerExpHistogramValuedShape] — see this file's own doc for why: unlike
-// the FOLD family, none of these eight functions' bare (non-subquery)
-// siblings are wired for further recursive composition either.
+// differing only in which function names it admits.
+//
+// Its match composes two different ways depending on the matched name's
+// OWN output shape (cerberus issue #2569, the generic-composition sibling
+// of #2545's original root-only fix):
+//
+//   - The six names whose output is an ordinary FLOAT sample
+//     (count_over_time, present_over_time, resets, changes,
+//     ts_of_first_over_time, ts_of_last_over_time) need no histogram-aware
+//     downstream handling at all once matched — any wrapper that reaches
+//     this shape through the generic `lower()` → [lowerCall] path (an
+//     aggregation's own generic fallback, a scalar math function, …) gets
+//     back a plain [chplan.SampleRowShape] node it already knows how to
+//     consume. [lowerCall] retries this recognizer directly for exactly
+//     that reason.
+//   - The two names whose output PRESERVES the window's own histogram
+//     sample (last_over_time, first_over_time) must never reach a
+//     consumer that lowers generically without a histogram-shape guard —
+//     see [selectFnHistogramPreservingSubquery], which narrows this same
+//     match to those two names and is threaded into
+//     [lowerExpHistogramValuedShape] / [isExpHistogramValuedShape]
+//     instead, mirroring how [rangeFnOverExpHistogramSubquery] (the FOLD
+//     family, entirely histogram-preserving) is threaded there rather than
+//     into [lowerCall].
 func selectFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubquerySelectShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return histogramSubquerySelectShape{}, false
@@ -100,6 +119,39 @@ func selectFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lo
 		return histogramSubquerySelectShape{}, false
 	}
 	return histogramSubquerySelectShape{sub: sub, windowFn: call.Func.Name}, true
+}
+
+// selectFnHistogramPreservingSubquery narrows [selectFnOverExpHistogramSubquery]'s
+// eight-function match to last_over_time / first_over_time — the two names
+// whose result is itself a published histogram sample rather than a float
+// (cerberus issue #2569). Threaded into [lowerExpHistogramValuedShape] /
+// [isExpHistogramValuedShape] rather than [lowerCall]: unlike the other six
+// names in that switch, a caller reaching either of these through the fully
+// generic `lower()` path with no histogram-shape awareness (for example
+// [lowerLabelReplace]'s own inner lowering, or an ordinary
+// [chplan.Aggregate]'s AggFunc, both of which read `Value` unconditionally)
+// would either read the wrong column or hit
+// [projectAttributesOverInner]'s histogram-shape guard — see that
+// function's own doc for the ClickHouse-level failure this narrowing
+// avoids. Every existing [lowerExpHistogramValuedShape] consumer already
+// knows how to carry a [chplan.HistogramRowShape] node forward (that is
+// the whole point of the shared recognizer), so matching there instead
+// gives last_over_time/first_over_time-over-subquery the SAME recursive
+// reach [rangeFnOverExpHistogramSubquery] already has for the FOLD family
+// — nested under sum()/avg() via [mergeableExpHistogramAggregate],
+// label_replace/label_join via [labelCallOverExpHistogram], and every
+// other consumer this file's own package documents.
+func selectFnHistogramPreservingSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubquerySelectShape, bool) {
+	shape, ok := selectFnOverExpHistogramSubquery(expr, s, ctx)
+	if !ok {
+		return histogramSubquerySelectShape{}, false
+	}
+	switch shape.windowFn {
+	case lastOverTimeWindowFn, firstOverTimeWindowFn:
+		return shape, true
+	default:
+		return histogramSubquerySelectShape{}, false
+	}
 }
 
 // lowerSelectFnOverExpHistogramSubquery lowers the recognised shape. The
