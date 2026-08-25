@@ -4171,6 +4171,50 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 	return input, false, nil
 }
 
+// limitKOrRatioOverExpHistogram recognises `limitk(K, <exp-hist shape>)` /
+// `limit_ratio(R, <exp-hist shape>)` as a shape whose OWN result is
+// histogram-valued — the gap cerberus issue #2575 reports as a panic.
+//
+// [lowerLimitKInput] (cerberus issue #2518) already preserves a
+// histogram-valued operand when limitk/limit_ratio is lowered — reachable
+// either as the query root (via [lowerHistogramNativeRoot]'s op-specific
+// dispatch) or nested under another wrapper's generic `lower(a.Expr, ...)`
+// fallback inside [lowerAggregate]. What it does NOT do is tell the
+// PREDICATE side — [isExpHistogramValuedShape] — that `limitk(K, m)` is
+// itself one of the shapes a FURTHER wrapper (`abs(limitk(2, m))`,
+// `limitk(2, m) + 0`, `label_replace(limitk(2, m), ...)`) needs to route
+// through the shared recognizer set instead of the generic dispatcher.
+// Without this recognizer, a float-only wrapper's own opt-in
+// ([lowerExpHistogramArgAsCanonicalFloat]) sees `isExpHistogramValuedShape`
+// answer false for a `limitk`/`limit_ratio` operand, falls through to the
+// plain `lower()` path, and receives the SAME histogram-shaped plan
+// [lowerLimitKInput] always produced — just without ever being told to
+// expect it, tripping [assertValueShapedInput]'s panic in
+// histogram_shape_guard.go instead of dropping the sample the way
+// reference's float-only functions do for every other histogram-valued
+// operand.
+//
+// The recursive [isExpHistogramValuedShape] check on agg.Expr is what
+// keeps this narrow to the PRESERVE case: when agg.Expr is instead one of
+// the drop family's shapes (`limitk(2, demo_latency_exp_hist + 0)`),
+// [lowerLimitKInput] already answers histogram=false — an ordinary
+// canonical float-Value plan needing no special routing here — so this
+// recognizer correctly reports false and leaves that shape to the
+// generic dispatcher, unchanged.
+func limitKOrRatioOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
+	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+		return nil, false
+	}
+	agg, ok := unwrapAggregateExpr(expr)
+	if !ok || (agg.Op != parser.LIMITK && agg.Op != parser.LIMIT_RATIO) {
+		return nil, false
+	}
+	if !isExpHistogramValuedShape(agg.Expr, s, ctx) {
+		return nil, false
+	}
+	return agg, true
+}
+
 // limitRatioPredicate builds the row predicate implementing
 // HashRatioSampler's keep rule for ratio expression `param`, given a
 // factory that mints a fresh per-series offset expression.

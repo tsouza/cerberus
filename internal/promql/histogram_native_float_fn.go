@@ -58,6 +58,24 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramScalarBinop(histSide, op, scale, s, ctx, false)
 		return plan, true, err
 	}
+	// limitk(K, <exp-hist shape>) / limit_ratio(R, <exp-hist shape>)
+	// (cerberus issue #2575) — see [limitKOrRatioOverExpHistogram]'s doc
+	// for why this dispatch is needed even though [lowerLimitKInput]
+	// already preserves the histogram shape on its own. Delegating to
+	// [lowerLimitK]/[lowerLimitRatio] reuses that exact preserving
+	// lowering unchanged — a query where limitk/limit_ratio is itself the
+	// root, or reached through [lowerAggregate]'s own op-specific
+	// dispatch, lowers byte-for-byte the same way it always has.
+	if agg, ok := limitKOrRatioOverExpHistogram(expr, s, ctx); ok {
+		var plan chplan.Node
+		var err error
+		if agg.Op == parser.LIMITK {
+			plan, err = lowerLimitK(agg, s, ctx)
+		} else {
+			plan, err = lowerLimitRatio(agg, s, ctx)
+		}
+		return plan, true, err
+	}
 	// The vector-scaling sibling of the literal-scalar case just above
 	// (cerberus issue #2540, widening #2339/#2342/#2537's own recognizer
 	// into this shared dispatch table): threading it in here is what lets
