@@ -16,6 +16,15 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerLabelCallOverExpHistogram(call, s, ctx)
 		return plan, true, err
 	}
+	// info() / sort_by_label() / sort_by_label_desc() over an already
+	// histogram-valued base (cerberus issue #2618) — see
+	// histogram_native_value_producing_call.go's own doc for why this
+	// registration is the mirror of [labelCallOverExpHistogram] just
+	// above.
+	if call, ok := histogramValuedProducerCall(expr, s, ctx); ok {
+		plan, err := lowerHistogramValuedProducerCall(call, s, ctx)
+		return plan, true, err
+	}
 	// Unary `+`/`-` over an already histogram-valued operand (cerberus
 	// issue #2583) — see histogram_native_unary.go's own doc comment for
 	// why registering the producer here, rather than patching

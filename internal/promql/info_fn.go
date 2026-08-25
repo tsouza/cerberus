@@ -84,6 +84,17 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return nil, fmt.Errorf("promql: info expects 1 or 2 arguments, got %d", len(c.Args))
 	}
 
+	// A mixed float/histogram `or` base (cerberus issue #2618) — reference
+	// Prometheus's evalInfo copies both a base sample's F and H fields
+	// through unchanged, so a mixed base's own result must stay mixed; see
+	// histogram_native_mixed_or_info.go's own doc for why splitting the
+	// base into its two partitions and running each through this
+	// function's own enrichment pipeline independently is what that
+	// requires.
+	if b, ok := infoArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok {
+		return lowerInfoOverMixedExpHistogramSetOp(c, b, s, ctx)
+	}
+
 	// A histogram-valued base (a bare exponential-histogram selector,
 	// sum()/avg() over one, or any other shape lowerExpHistogramValuedShape
 	// recognises) needs the histogram-aware lowering path rather than the
@@ -122,19 +133,9 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return nil, err
 	}
 
-	var nameMatchers, dataMatchers []*labels.Matcher
-	if len(c.Args) == 2 {
-		sel, ok := c.Args[1].(*parser.VectorSelector)
-		if !ok {
-			return nil, fmt.Errorf("promql: info(...) second argument must be a label selector, got %T", c.Args[1])
-		}
-		for _, m := range sel.LabelMatchers {
-			if m.Name == model.MetricNameLabel {
-				nameMatchers = append(nameMatchers, m)
-				continue
-			}
-			dataMatchers = append(dataMatchers, m)
-		}
+	nameMatchers, dataMatchers, err := infoSecondArgMatchers(c)
+	if err != nil {
+		return nil, err
 	}
 	nameMatchers = effectiveInfoNameMatchers(nameMatchers)
 
@@ -153,6 +154,49 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerInfoJoin(base, histogramBase, nameMatchers, dataMatchers, s, ctx)
 	}
 
+	return lowerInfoNonStaticBase(base, histogramBase, nameMatchers, dataMatchers, s, ctx)
+}
+
+// infoSecondArgMatchers splits info()'s optional second-argument label
+// selector into its `__name__` matchers and its data-label matchers. Split
+// out of [lowerInfo] so histogram_native_mixed_or_info.go's mixed-`or` base
+// composition (cerberus issue #2618) can compute the identical matcher sets
+// once and feed them to [lowerInfoNonStaticBase] twice — once per base
+// partition — without re-deriving them.
+func infoSecondArgMatchers(c *parser.Call) (nameMatchers, dataMatchers []*labels.Matcher, err error) {
+	if len(c.Args) != 2 {
+		return nil, nil, nil
+	}
+	sel, ok := c.Args[1].(*parser.VectorSelector)
+	if !ok {
+		return nil, nil, fmt.Errorf("promql: info(...) second argument must be a label selector, got %T", c.Args[1])
+	}
+	for _, m := range sel.LabelMatchers {
+		if m.Name == model.MetricNameLabel {
+			nameMatchers = append(nameMatchers, m)
+			continue
+		}
+		dataMatchers = append(dataMatchers, m)
+	}
+	return nameMatchers, dataMatchers, nil
+}
+
+// lowerInfoNonStaticBase builds info()'s enrichment join/union over an
+// ALREADY-lowered base whose static metric name [staticBaseMetricName]
+// cannot determine — [lowerInfo]'s own tail once its one decidable-statically
+// shortcut is ruled out, factored out so histogram_native_mixed_or_info.go's
+// mixed-`or` base composition (cerberus issue #2618) can apply the identical
+// pipeline to EACH partition of a mixed base independently: neither
+// partition is ever itself a literal VectorSelector AST node (both are
+// derived from a BinaryExpr operand), so both always take this same path
+// [lowerInfo] itself takes whenever staticBaseMetricName fails.
+func lowerInfoNonStaticBase(
+	base chplan.Node,
+	histogramBase bool,
+	nameMatchers, dataMatchers []*labels.Matcher,
+	s schema.Metrics,
+	ctx lowerCtx,
+) (chplan.Node, error) {
 	if histogramBase {
 		// Every OTHER histogram-valued shape lowerExpHistogramValuedShape
 		// recognises (sum()/avg(), rate()/increase(), …) reaches here
@@ -169,7 +213,7 @@ func lowerInfo(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		// canonical quartet and would silently drop the nine histogram
 		// columns): every histogram-valued base of this kind always
 		// enriches.
-		return lowerInfoJoin(base, histogramBase, nameMatchers, dataMatchers, s, ctx)
+		return lowerInfoJoin(base, true, nameMatchers, dataMatchers, s, ctx)
 	}
 
 	// Undecidable statically (the base selects several metric names, or is

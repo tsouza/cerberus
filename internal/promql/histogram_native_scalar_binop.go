@@ -157,6 +157,12 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if call, ok := labelCallOverExpHistogram(expr, s, ctx); ok {
 		return isExpHistogramValuedShape(call.Args[0], s, ctx)
 	}
+	// info() / sort_by_label() / sort_by_label_desc() over an already
+	// histogram-valued base (cerberus issue #2618) — see
+	// histogram_native_value_producing_call.go's own doc.
+	if _, ok := histogramValuedProducerCall(expr, s, ctx); ok {
+		return true
+	}
 	// `-<exp-hist shape>` / `+<exp-hist shape>` (cerberus issue #2583) —
 	// see histogram_native_unary.go.
 	if _, _, ok := unaryOverExpHistogram(expr, s, ctx); ok {

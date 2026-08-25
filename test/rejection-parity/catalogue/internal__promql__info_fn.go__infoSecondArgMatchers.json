@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/info_fn.go:infoSecondArgMatchers#a1d855c7",
+      "message": "promql: info(...) second argument must be a label selector, got %T",
+      "class": "internal",
+      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast.",
+      "evidence": {
+        "guard": [
+          "past returning if len(c.Args) != 2",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerInfo",
+          "lowerInfoOverMixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}
