@@ -118,8 +118,18 @@ func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*
 	if !isBin || b.Op != parser.LOR {
 		return nil, false
 	}
-	lhsHist := isExpHistogramValuedShape(b.LHS, s, ctx)
-	rhsHist := isExpHistogramValuedShape(b.RHS, s, ctx)
+	// cerberus issue #2571: either side may only become histogram-valued
+	// once LOWERED — an `and`/`unless` chain forwarding a histogram-
+	// valued LHS arbitrarily many levels deep — which
+	// [isExpHistogramValuedShape] alone cannot see (it is paired 1:1
+	// with [lowerExpHistogramValuedShape], which has no lowering branch
+	// for that shape). [isExpHistogramValuedOrForwarded]
+	// (histogram_native_set_op.go) widens the check to also recognise
+	// it; [lowerMixedExpHistogramOperands] below re-derives histOnLeft
+	// with the identical combined check so the two functions cannot
+	// disagree about which side is which.
+	lhsHist := isExpHistogramValuedOrForwarded(b.LHS, s, ctx)
+	rhsHist := isExpHistogramValuedOrForwarded(b.RHS, s, ctx)
 	if lhsHist == rhsHist {
 		// Both histogram-valued is [expHistogramSetOp]'s shape; neither
 		// histogram-valued is the plain float [lowerVectorSetOp] path.
@@ -204,13 +214,18 @@ func lowerMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx low
 func lowerMixedExpHistogramOperands(
 	b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx,
 ) (histNode, floatNode chplan.Node, histOnLeft bool, err error) {
-	histOnLeft = isExpHistogramValuedShape(b.LHS, s, ctx)
+	// cerberus issue #2571: re-derive histOnLeft with the SAME combined
+	// check [mixedExpHistogramSetOp] used to recognise b in the first
+	// place ([isExpHistogramValuedOrForwarded]) — not the narrower
+	// [isExpHistogramValuedShape] alone — so this function cannot pick
+	// the opposite side from what the recognizer saw.
+	histOnLeft = isExpHistogramValuedOrForwarded(b.LHS, s, ctx)
 	histExpr, floatExpr := b.LHS, b.RHS
 	if !histOnLeft {
 		histExpr, floatExpr = b.RHS, b.LHS
 	}
 
-	histNode, err = lowerExpHistogramSetOpOperand(histExpr, s, ctx)
+	histNode, err = lowerExpHistogramValuedOrForwardedOperand(histExpr, s, ctx)
 	if err != nil {
 		return nil, nil, false, err
 	}
