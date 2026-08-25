@@ -653,6 +653,28 @@ func lowerSubqueryOverInstantCall(
 // only samples that satisfied the predicate — matching Prom's "drop
 // non-matching samples then take the latest" semantics for
 // `(up > 0.5)[5m:1m]`.
+//
+// A `b` shaped as `and`/`or`/`unless` between a histogram-valued (or
+// mixed float/histogram) operand and a plain float operand is NOT
+// caught by [lowerHistogramNativeSubqueryInner]'s own dispatch table
+// (cerberus issue #2589): [expHistogramSetOp] only recognises BOTH
+// operands histogram-valued, and [mixedExpHistogramSetOp] only
+// recognises `or` — neither covers a mixed-type `and`/`unless`. That
+// recognition lives only in [lowerVectorSetOpOperand]
+// (histogram_native_set_op.go), reachable exclusively through the
+// generic [lowerBinary] → [lowerVectorSetOp] path this function itself
+// calls below — so `lowerBinary(b, s, grid)` CAN and DOES return a
+// genuinely [chplan.HistogramRowShape] / [chplan.MixedRowShape] node
+// for that shape. Re-projecting such a node through
+// [subqueryAnchorShape]'s four-column Sample quartet would silently
+// discard its nine Histogram*Column outputs (or the Mixed
+// discriminator) and leave every consumer reading the meaningless
+// placeholder Value column instead — the exact silent-wrong-answer
+// class cerberus issue #2543 fixed for the bare-subquery-inner case.
+// The guard below is the same RowShapeOf dispatch
+// [lowerHistogramNativeSubqueryInner] already applies to its own
+// result, so a histogram/mixed-shaped set-op composes exactly like a
+// pure histogram-native subquery inner does.
 func lowerSubqueryOverBinary(
 	sub *parser.SubqueryExpr,
 	b *parser.BinaryExpr,
@@ -669,7 +691,12 @@ func lowerSubqueryOverBinary(
 		if err != nil {
 			return nil, err
 		}
-		return subqueryAnchorShape(inner, s), nil
+		switch chplan.RowShapeOf(inner) {
+		case chplan.HistogramRowShape, chplan.MixedRowShape:
+			return inner, nil
+		default:
+			return subqueryAnchorShape(inner, s), nil
+		}
 	}
 
 	// Synthetic operands such as time() materialize their own StepGrid.
@@ -681,6 +708,17 @@ func lowerSubqueryOverBinary(
 	inner, err := lowerBinary(b, s, rangeCtx)
 	if err != nil {
 		return nil, err
+	}
+	// No query eval-time context is threaded through (a bare [Lower] call,
+	// never a real HTTP entry point — see [subqueryHasEvalAnchor]'s doc):
+	// [wrapSubqueryIdentity] below re-projects through the same lossy
+	// Sample quartet [subqueryAnchorShape] does above, so a
+	// histogram/mixed-shaped result must be rejected rather than silently
+	// collapsed. This branch has no grid to evaluate a per-anchor
+	// composition against even in principle, so there is no sound
+	// alternative to offer here.
+	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+		return nil, fmt.Errorf("promql: histogram-valued subquery set operator requires query eval-time context (use LowerAt)")
 	}
 	return wrapSubqueryIdentity(sub, inner, step, s, ctx)
 }
