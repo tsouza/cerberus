@@ -149,18 +149,91 @@ func lowerHistogramNativeSubqueryInner(sub *parser.SubqueryExpr, step time.Durat
 	}
 
 	plan, matched, herr := lowerHistogramNativeRoot(innerExpr, s, grid)
+	if matched {
+		if herr != nil {
+			return nil, true, herr
+		}
+		switch chplan.RowShapeOf(plan) {
+		case chplan.HistogramRowShape, chplan.MixedRowShape:
+			return plan, true, nil
+		default:
+			return subqueryAnchorShape(plan, s), true, nil
+		}
+	}
+	// The eleven-function drop-family range-vector reducer vocabulary
+	// (max_over_time, min_over_time, deriv, predict_linear,
+	// double_exponential_smoothing, quantile_over_time, stddev_over_time,
+	// stdvar_over_time, mad_over_time, ts_of_max_over_time,
+	// ts_of_min_over_time) whose OWN MatrixSelector argument is a bare
+	// exp-histogram selector never reaches [lowerHistogramNativeRoot]'s
+	// chain above — none of its recognisers key off a bare *parser.Call
+	// wrapping a MatrixSelector, only [lowerRangeVectorCall] and the
+	// three dedicated range_fns.go lowerers do, via
+	// dropExpHistogramSamplesForRangeVector, and neither is reached from
+	// here. Without this second check, `max_over_time(demo_latency_exp_hist[5m])[10m:1m]`
+	// fell through to [lowerSubqueryOverCall]'s own generic
+	// RangeWindow-reducer path, which calls lowerVectorSelector directly
+	// on the bare selector with no histogram opt-in and hits
+	// expHistogramSelectorRouting's catch-all rejection (cerberus issue
+	// #2590) — the SUBQUERY-INNER sibling of cerberus issue #2563's
+	// [lowerOuterRangeFnOverSubquery] handling for the mirror-image
+	// "outer wraps subquery" composition.
+	if plan, matched, err := dropFamilyRangeVectorCallOverExpHistogramSubqueryInner(innerExpr, s, grid); matched {
+		if err != nil {
+			return nil, true, err
+		}
+		return subqueryAnchorShape(plan, s), true, nil
+	}
+	return nil, false, nil
+}
+
+// dropFamilyRangeVectorCallOverExpHistogramSubqueryInner recognises a
+// SUBQUERY's own inner expression as a bare Call to one of
+// [histogramSubqueryFloatOnlyDropFunc]'s eleven float-only range-vector
+// reducers, wrapping a MatrixSelector argument whose selector is itself
+// a bare exp-histogram metric — see
+// [lowerHistogramNativeSubqueryInner]'s own doc for why this needs a
+// dedicated check rather than composing through
+// [lowerHistogramNativeRoot] (cerberus issue #2590).
+//
+// matched is false whenever expr is not such a Call, its argument count
+// doesn't match the function's own arity (the caller's ordinary
+// [lowerSubqueryOverCall] path then raises the identical arity error
+// itself), or its MatrixSelector argument's selector is not
+// exp-histogram-valued — in every case the caller falls through to its
+// own unchanged lowering.
+func dropFamilyRangeVectorCallOverExpHistogramSubqueryInner(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	call, ok := peelWrappers(expr).(*parser.Call)
+	if !ok || !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
+		return nil, false, nil
+	}
+	arity, matrixArg := subqueryInnerRangeFnShape(call.Func.Name)
+	if len(call.Args) != arity {
+		return nil, false, nil
+	}
+	ms, ok := peelWrappers(call.Args[matrixArg]).(*parser.MatrixSelector)
+	if !ok {
+		return nil, false, nil
+	}
+	node, matched, err := dropExpHistogramSamplesForRangeVector(ms, s, ctx)
 	if !matched {
 		return nil, false, nil
 	}
-	if herr != nil {
-		return nil, true, herr
+	if err != nil {
+		return nil, true, err
 	}
-	switch chplan.RowShapeOf(plan) {
-	case chplan.HistogramRowShape, chplan.MixedRowShape:
-		return plan, true, nil
-	default:
-		return subqueryAnchorShape(plan, s), true, nil
+	// Validate the call's own scalar parameter(s) — predict_linear's
+	// horizon, holt_winters' smoothing factors, quantile_over_time's phi
+	// — before answering empty: reference validates them BEFORE ever
+	// walking the window's samples, mirroring
+	// [lowerOuterRangeFnOverSubquery]'s identical param-before-drop
+	// discipline for the mirror-image composition. A throwaway
+	// RangeWindow absorbs the mutation since nothing downstream reads it
+	// — the result is unconditionally empty either way.
+	if _, _, err := threadOuterRangeFnScalars(call, &chplan.RangeWindow{}, s, ctx); err != nil {
+		return nil, true, err
 	}
+	return node, true, nil
 }
 
 // lowerSubqueryOverUnary — `(-<expr>)[range:step]` / `(+<expr>)[range:step]`.
