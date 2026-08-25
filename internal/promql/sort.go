@@ -70,6 +70,19 @@ func lowerSort(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		}
 		return dropped, nil
 	}
+	// `or` between a float-valued operand and a histogram-valued operand
+	// (cerberus issue #2330) directly wrapped by sort()/sort_desc(),
+	// reached from ANY nesting depth since [lowerCall] is the single
+	// generic dispatch point for this function regardless of whether it
+	// sits at the query root or nested under another wrapper (cerberus
+	// issue #2605). See histogram_native_mixed_or_sort.go's own doc
+	// comment for why reference's filterFloats rule composes with no
+	// reduction machinery at all — just the shadow-resolved float arm fed
+	// into the same OrderBy this function's own non-mixed path builds
+	// below.
+	if b, ok := sortOverMixedExpHistogramSetOp(c, s, ctx); ok {
+		return lowerSortOverMixedExpHistogramSetOp(c, b, s, ctx)
+	}
 	inner, err := lower(c.Args[0], s, ctx)
 	if err != nil {
 		return nil, err
