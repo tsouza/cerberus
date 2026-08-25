@@ -268,32 +268,38 @@ const exponentialHistogramMetricSuffix = "_exp_hist"
 // interpolation and histogram_quantile over a rate()/increase()'d classic
 // bucket selector are the only classes besides atan2 and pow with measured
 // cross-implementation divergence.
-func compareValues(query, seed string) (func(a, b float64) bool, error) {
+//
+// This selection runs for every head's RunParity call, not only PromQL's:
+// LogQL and TraceQL fixtures reach it too. A query that fails to parse as
+// PromQL is therefore not a comparator error — it is proof the query is not
+// PromQL, so none of the PromQL-specific tolerance shapes below can apply,
+// and the exact comparator is the correct answer.
+func compareValues(query, seed string) func(a, b float64) bool {
 	if atan2QueryPattern.MatchString(query) {
-		return oracle.EqualAtan2Values, nil
+		return oracle.EqualAtan2Values
 	}
 
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(query)
 	if err != nil {
-		return nil, fmt.Errorf("parse comparator query: %w", err)
+		return oracle.EqualValues
 	}
 	if usesPowOperator(expr) {
-		return oracle.EqualPowValues, nil
+		return oracle.EqualPowValues
 	}
 
 	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
 	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
 	if !hasExponential && !hasClassic {
-		return oracle.EqualValues, nil
+		return oracle.EqualValues
 	}
 	if hasExponential && isExponentialHistogramInterpolation(expr) {
-		return oracle.EqualExponentialHistogramInterpolationValues, nil
+		return oracle.EqualExponentialHistogramInterpolationValues
 	}
 	if hasClassic && isClassicHistogramRateQuantile(expr) {
-		return oracle.EqualClassicHistogramRateQuantileValues, nil
+		return oracle.EqualClassicHistogramRateQuantileValues
 	}
-	return oracle.EqualValues, nil
+	return oracle.EqualValues
 }
 
 // usesPowOperator reports whether expr contains PromQL's `^` (pow) binary
@@ -943,10 +949,7 @@ func compareAgainstReference(
 		)
 	}
 
-	equalValues, err := compareValues(query, rt.Seed)
-	if err != nil {
-		t.Fatalf("fixture %s: %v", c.Name, err)
-	}
+	equalValues := compareValues(query, rt.Seed)
 
 	for i := range got {
 		g, w := got[i], want[i]
