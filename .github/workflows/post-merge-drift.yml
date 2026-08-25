@@ -40,7 +40,19 @@ jobs:
     # is a fixture-only or docs-only push that regenerates nothing at all. This
     # budget covers the worst case: a change to internal/chsql, which reaches
     # every head and implies every shard.
-    timeout-minutes: 45
+    #
+    # Bumped from 45 to 90 on 2026-08-25: the worst case now runs the WHOLE
+    # regeneration SERIALLY on one runner (no per-shard fan-out, unlike
+    # update-golden.yml's own CI dispatch), and the promql fixture corpus grew
+    # past 700 TXTAR files during the #2624 audit-fix batch — the same growth
+    # that forced chdb.yml's roundtrip job from 20 to 35 minutes
+    # (chdb-roundtrip.mjs). Observed directly: eight of the day's pushes to
+    # main hit the exact 45m0s cap ("The job has exceeded the maximum
+    # execution time of 45m0s"), including the merge that landed #2630, while
+    # the successful runs on the same day already ran 30-40 minutes — headroom
+    # this thin means routine merges lose real drift coverage, not just large
+    # ones.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:

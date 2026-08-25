@@ -73,7 +73,13 @@ jobs:
     # push / nightly / dispatch / release PRs, so a wider ceiling costs
     # nothing on the PR path — and a timeout here lands red on main, where
     # nobody's PR was ever asked to catch it.
-    timeout-minutes: 60
+    #
+    # Bumped from 60 to 90 on 2026-08-25: every one of this session's large
+    # merges to main (#2624, #2627, #2628, #2630) hit or exceeded the 60m
+    # cap, including the merge that landed #2630 (ran the full 60m0s and was
+    # killed) — the same fixture-corpus growth already documented on
+    # post-merge-drift.yml and chdb.yml's roundtrip job.
+    timeout-minutes: 90
     # RUN_HEAVY gates the measured profile: true on push / schedule / dispatch
     # (unless a resolved source PR proves this push redundant — see the
     # `decide run_heavy` step below), and on a release PR (head branch
