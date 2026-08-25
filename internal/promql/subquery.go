@@ -790,41 +790,64 @@ func lowerOuterRangeFnOverSubquery(
 		return nil, err
 	}
 	// A subquery whose OWN inner expression resolved histogram-native
-	// (cerberus issue #2543, [lowerHistogramNativeSubqueryInner]) is a
-	// deliberately unsupported composition for the functions that reach
-	// this point: this reducer's RangeWindow below folds over
-	// TimestampColumn "anchor_ts" / ValueColumn s.ValueColumn, and a
-	// histogram-shaped row publishes neither meaningfully — Value is only
-	// the placeholder [chplan.HistogramProjection] always carries
-	// alongside its real nine Histogram*Column fields (see that type's own
-	// doc comment). Rejecting explicitly here, rather than letting the
-	// RangeWindow below reference a column the histogram-shaped relation
-	// never publishes, turns what would otherwise be a ClickHouse "Unknown
-	// identifier" 502 into a clear promql-level error.
+	// (cerberus issue #2543, [lowerHistogramNativeSubqueryInner]) reaches
+	// this reducer's RangeWindow below, which folds over TimestampColumn
+	// "anchor_ts" / ValueColumn s.ValueColumn — columns a histogram-shaped
+	// row publishes neither meaningfully (Value is only the placeholder
+	// [chplan.HistogramProjection] always carries alongside its real nine
+	// Histogram*Column fields; see that type's own doc comment). The
+	// RangeWindow below must never be built over one, on pain of a
+	// ClickHouse "Unknown identifier" 502.
 	//
-	// This is reachable ONLY for the functions reference Prometheus itself
-	// defines no real histogram semantics for — max_over_time,
-	// min_over_time, stddev_over_time, stdvar_over_time,
+	// max_over_time, min_over_time, stddev_over_time, stdvar_over_time,
 	// quantile_over_time, mad_over_time, deriv, predict_linear,
 	// double_exponential_smoothing (holt_winters), ts_of_max_over_time,
-	// ts_of_min_over_time — each of which reads only
+	// ts_of_min_over_time are the functions reference Prometheus itself
+	// defines no real histogram semantics for — each reads only
 	// `matrixVal[0].Floats` in reference (tsouza/prometheus's
 	// promql/functions.go), so an all-histogram window has nothing for
-	// them to answer. Cerberus issue #2545 gave the REMAINING functions
-	// that do have real histogram semantics — count_over_time,
-	// present_over_time, last_over_time, first_over_time, resets, changes,
+	// them to answer and reference itself answers EMPTY (annotated with a
+	// "histogram(s) ignored" warning cerberus has no wire channel for),
+	// never an error. [histogramSubqueryFloatOnlyDropFunc] names exactly
+	// this eleven-function set — cerberus issue #2563, the
+	// subquery-composition sibling of [rangeVectorFloatOnlyDropFuncs] /
+	// [dropExpHistogramSamplesForRangeVector]'s identical plain
+	// MatrixSelector coverage (range_fns.go) — and this branch answers the
+	// canonical drop-and-empty plan [dropExpHistogramSamples] builds,
+	// after validating the outer call's own scalar parameter(s) exactly as
+	// the plain-matrix siblings do: reference validates predict_linear's
+	// horizon / holt_winters' smoothing factors / quantile_over_time's phi
+	// BEFORE ever walking the window's samples, so an invalid parameter
+	// must still surface as an error even though every window is about to
+	// answer empty (mirrors
+	// [validateHistogramDroppingAggregationParam]'s identical
+	// param-before-drop discipline, histogram_native_drop_aggregation.go).
+	// A throwaway RangeWindow absorbs [threadOuterRangeFnScalars]'s
+	// mutations since nothing downstream ever reads them: an empty result
+	// has no row for any Value expression — original or phi-folded — to
+	// appear on.
+	//
+	// Cerberus issue #2545 gave the REMAINING functions that DO have real
+	// histogram semantics — count_over_time, present_over_time,
+	// last_over_time, first_over_time, resets, changes,
 	// ts_of_first_over_time, ts_of_last_over_time — their own dedicated
 	// lowering ([selectFnOverExpHistogramSubquery] /
 	// [lowerSelectFnOverExpHistogramSubquery],
 	// histogram_native_subquery_select.go), dispatched from
 	// [lowerHistogramNativeRoot] ahead of the generic `lower()` path that
 	// reaches this function, so none of those eight names can reach this
-	// guard any more. rate/increase/delta/irate/idelta/sum_over_time/
+	// branch any more. rate/increase/delta/irate/idelta/sum_over_time/
 	// avg_over_time are intercepted the same way, one level earlier
 	// still, by [rangeFnOverExpHistogramSubquery] /
 	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
 	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
-		return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
+		if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
+			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
+		}
+		if _, _, err := threadOuterRangeFnScalars(outer, &chplan.RangeWindow{}, s, ctx); err != nil {
+			return nil, err
+		}
+		return dropExpHistogramSamples(inner, s), nil
 	}
 
 	anchor, err := subqueryAnchor(sub, ctx)
@@ -1295,6 +1318,37 @@ func canonicalRangeWindowFunc(name string) string {
 		return "holt_winters"
 	}
 	return name
+}
+
+// histogramSubqueryFloatOnlyDropFunc answers whether outerFn is one of the
+// eleven range-vector reducers reference Prometheus defines no real
+// histogram semantics for — the subquery-composition sibling of
+// [rangeVectorFloatOnlyDropFuncs] (range_fns.go), which names the identical
+// vocabulary for the plain-MatrixSelector shape (cerberus issue #2563).
+//
+// Eight names (deriv, mad_over_time, stddev_over_time, stdvar_over_time,
+// min_over_time, max_over_time, ts_of_max_over_time, ts_of_min_over_time)
+// are exactly [rangeVectorFloatOnlyDropFuncs]'s own vocabulary, reused
+// directly rather than duplicated. The remaining three — predict_linear,
+// holt_winters (and its `double_exponential_smoothing` parse spelling,
+// hence the [canonicalRangeWindowFunc] normalisation), quantile_over_time —
+// are excluded from that map only because they resolve their own
+// MatrixSelector argument at their own dedicated call site rather than
+// through lowerRangeVectorCall's generic fallthrough (see that map's own
+// doc); range_fns.go's own [dropExpHistogramSamplesForRangeVector] call
+// sites for those three establish the identical Floats-only read for their
+// plain-matrix-selector form, which this widens to the
+// subquery-wraps-subquery composition.
+func histogramSubqueryFloatOnlyDropFunc(outerFn string) bool {
+	if rangeVectorFloatOnlyDropFuncs[outerFn] {
+		return true
+	}
+	switch canonicalRangeWindowFunc(outerFn) {
+	case "predict_linear", "holt_winters", "quantile_over_time":
+		return true
+	default:
+		return false
+	}
 }
 
 // threadOuterRangeFnScalars extracts and validates the extra scalar
