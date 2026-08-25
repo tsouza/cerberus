@@ -492,7 +492,7 @@ func discoverTaggedTestInvocations(t *testing.T, root string) ([]taggedTestInvoc
 							continue
 						}
 						body := justRecipeBodyWithDeps(t, justfile, recipe)
-						coverageJoin := recipe != "coverage" || taggedCoverageJoinIsFailClosed(body)
+						coverageJoin := taggedCoverageRecipeJoinIsFailClosed(recipe, body)
 						recipeInvocations, recipeProblems := taggedGoTestsInRecipe(body, workflowPath, jobID, recipe)
 						for _, invocation := range recipeInvocations {
 							if problem := taggedRecipeEvidenceProblem(
@@ -1383,6 +1383,39 @@ func taggedCoverageJoinIsFailClosed(body string) bool {
 	return joins == 1
 }
 
+// taggedCoverageChdbLaneIsFailClosed mirrors taggedCoverageJoinIsFailClosed
+// for the coverage-chdb recipe tsouza/cerberus#2634 split out of the old
+// combined `coverage` recipe (so CI can run the default-tag and chdb-tagged
+// lanes as parallel jobs). The chdb-tagged `go test` still sits inside a
+// conditional (`if [ -e libchdb.so ]`) so a bare local `just coverage-chdb`
+// can gracefully skip it, but CI's caller sets
+// COVERAGE_REQUIRE_LANES=default+chdb, and the recipe's own unconditional
+// tail — reached whether or not that conditional ran — refuses to let that
+// combination pass without cover-chdb.out actually existing. That is the
+// same fail-closed shape taggedCoverageJoinIsFailClosed checks for the old
+// recipe's LANES/coverage-summary.mjs join, just anchored to a different,
+// self-contained guard instead of a downstream script call.
+func taggedCoverageChdbLaneIsFailClosed(body string) bool {
+	return strings.Contains(body, `"${COVERAGE_REQUIRE_LANES:-}" = "default+chdb"`) &&
+		strings.Contains(body, "! -s cover-chdb.out") &&
+		strings.Contains(body, "exit 1")
+}
+
+// taggedCoverageRecipeJoinIsFailClosed dispatches to the right fail-closed
+// check for a `just`-invoked recipe carrying a conditionally-executed
+// chdb-tagged coverage `go test`, or reports true (no check needed) for
+// every other recipe.
+func taggedCoverageRecipeJoinIsFailClosed(recipe, body string) bool {
+	switch recipe {
+	case "coverage":
+		return taggedCoverageJoinIsFailClosed(body)
+	case "coverage-chdb":
+		return taggedCoverageChdbLaneIsFailClosed(body)
+	default:
+		return true
+	}
+}
+
 func taggedMergedEnv(environments ...map[string]string) map[string]string {
 	merged := map[string]string{}
 	for _, environment := range environments {
@@ -1456,10 +1489,14 @@ func taggedRecipeEvidenceProblem(
 	if contextProblem == "" {
 		return ""
 	}
-	// The measured coverage recipe intentionally keeps its chDB half optional
-	// for local use. Its CI caller turns that branch into fail-closed evidence:
-	// coverage-summary rejects any result that did not execute both named lanes.
-	if recipe == "coverage" && coverageJoin && environment["COVERAGE_REQUIRE_LANES"] == "default+chdb" &&
+	// The measured coverage recipe(s) intentionally keep their chDB half
+	// optional for local use — both the combined `coverage` recipe and its
+	// split-out `coverage-chdb` half (tsouza/cerberus#2634). CI's caller
+	// turns that branch into fail-closed evidence either way: `coverage`
+	// via its LANES/coverage-summary.mjs join, `coverage-chdb` via its own
+	// unconditional COVERAGE_REQUIRE_LANES tail check — see
+	// taggedCoverageRecipeJoinIsFailClosed.
+	if (recipe == "coverage" || recipe == "coverage-chdb") && coverageJoin && environment["COVERAGE_REQUIRE_LANES"] == "default+chdb" &&
 		strings.Contains(contextProblem, "unmodeled shell control flow") &&
 		invocation.ExplicitTag["chdb"] && invocation.ExplicitTag["agpl_oracle"] &&
 		invocation.ExplicitTag["chdb_agpl_oracle"] {

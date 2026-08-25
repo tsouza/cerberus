@@ -1662,8 +1662,8 @@
       "description": "Ordinary-PR structural enrollment of every production package in a positive floor.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage"],
-        "producer_jobs": [],
+        "jobs": ["coverage-plan", "coverage"],
+        "producer_jobs": ["coverage-plan"],
         "context_job": "coverage"
       },
       "executions": ["default"],
@@ -1691,8 +1691,8 @@
       "description": "Merged default-tag and chDB profiles held to per-package floors; absent on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage"],
-        "producer_jobs": [],
+        "jobs": ["coverage-default", "coverage-chdb", "coverage"],
+        "producer_jobs": ["coverage-default", "coverage-chdb"],
         "context_job": "coverage"
       },
       "executions": ["default"],
@@ -1716,8 +1716,8 @@
         "12"
       ],
       "oracle_class": "coverage",
-      "recipes": ["coverage"],
-      "command": "just coverage",
+      "recipes": ["coverage-default", "coverage-chdb", "coverage-merge"],
+      "command": "just coverage-merge",
       "build_tags": ["agpl_oracle", "chdb", "chdb_agpl_oracle"],
       "package_globs": ["cmd/**", "internal/**", "test/**"],
       "substrate": "chdb",
@@ -1791,7 +1791,7 @@
       "description": "Regenerate every golden shard implied by the landed merge and fail on drift.",
       "owner": {
         "workflow": ".github/workflows/post-merge-drift.yml",
-        "jobs": ["drift"],
+        "jobs": ["plan", "regenerate", "cardinality-leg", "cardinality-seal", "drift"],
         "producer_jobs": [],
         "context_job": "drift"
       },

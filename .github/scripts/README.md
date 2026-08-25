@@ -311,26 +311,40 @@ what actually runs.
   inputs.
   - Exit: `0` clean (or self-test passed), `1` on a structural violation or
     an unreadable/unparseable file.
-- **`post-merge-golden-drift.mjs`** — `post-merge-drift.yml`, the `drift` job
-  step "Regenerate what this merge implied and diff it". Runs on every push to
-  `main`. Derives which golden shards the merge could have staled (via
-  `lib/golden-shards.mjs`'s `impliedShards`, so an ordinary push regenerates
-  little or nothing), runs each one's real regeneration command, and fails if
+- **`post-merge-golden-drift.mjs`** — `post-merge-drift.yml`, two roles
+  selected by `MODE`. Runs on every push to `main`. `MODE=plan` (the `plan`
+  job) diffs the push's `before`/`after` commits, derives which golden shards
+  the merge could have staled (via `lib/golden-shards.mjs`'s `impliedShards`,
+  so an ordinary push implies little or nothing) and emits the per-shard
+  matrix (plus a `cardinality` fan-out flag) the rest of the workflow fans out
+  over — one CI job per implied shard, mirroring `update-golden.yml`'s own
+  `plan` → per-shard-matrix structure (below) for the identical regeneration
+  work. Unset `MODE` (the `regenerate` matrix, scoped to one shard via
+  `POST_MERGE_SHARDS`, and the `cardinality-seal` job) runs that shard's real
+  regeneration command — skipped when `POST_MERGE_SKIP_REGENERATE=1`, which is
+  how `cardinality-seal` reuses this same reporting path after its own
+  `cardinality-leg` matrix has already regenerated the shard — and fails if
   the tree moved. Exists because branch protection has `strict: false`: a PR's
   regenerate-and-diff ratchets run against its own merge base, so two PRs each
-  green in isolation can produce a `main` neither validated (#1877). It reports
-  on the merge commit, so it is not a required check — the failure message
-  names the artefact, the regeneration command, and both commits whose
-  interleaving produced the drift.
-  - Env: `POST_MERGE_BEFORE` (required, `github.event.before`),
-    `POST_MERGE_AFTER` (default `HEAD`), `POST_MERGE_SHARDS` (optional, an
-    explicit shard set replacing the derived one — used by the pins),
-    `JUST_EXECUTABLE`.
+  green in isolation can produce a `main` neither validated (#1877). It
+  reports on the merge commit, so it is not a required check, and it never
+  publishes anything — every job runs with read-only `contents: read` — the
+  failure message names the artefact, the regeneration command, and both
+  commits whose interleaving produced the drift, and (with `fail-fast: false`
+  across every matrix) one shard's drift never cancels another's still-running
+  check.
+  - Env: `MODE` (`plan` or unset), `POST_MERGE_BEFORE` (required,
+    `github.event.before`), `POST_MERGE_AFTER` (default `HEAD`),
+    `POST_MERGE_SHARDS` (optional, an explicit shard set replacing the derived
+    one — used by the pins and by a matrix job to scope itself to one shard),
+    `POST_MERGE_SKIP_REGENERATE` (optional, skips straight to diffing —
+    `cardinality-seal`'s own path), `JUST_EXECUTABLE`.
   - Exit: `0` nothing implied, or every implied shard regenerates to the
     committed bytes; `1` on drift, on a failed regeneration command, or on
     unusable inputs.
   - Pinned by `post-merge-golden-drift.test.mjs` (`ci.yml`, the `forbid-skip`
-    job), which drives it over a real git repository in both directions.
+    job), which drives it over a real git repository in both directions,
+    including `MODE=plan`'s matrix shape and `POST_MERGE_SKIP_REGENERATE`.
 - **`forbid-skip.mjs`** — `ci.yml`, the `forbid-skip` discipline scans;
   `compatibility.yml`, the cheap-first `gate`.
   - Env: `CHECK` is `all` (every scan, in registry order) or one of `t-skip`,
@@ -755,6 +769,31 @@ what actually runs.
     flag first).
   - Exit: `0` when every scanned issue was classified and its missing labels
     applied, `1` on any vacuity guard, unclassifiable issue, or API error.
+- **`coverage-aggregate.mjs`** — `coverage.yml`, the `coverage` aggregator job.
+  `coverage` used to be one job running `just coverage` (the default-tag AND
+  chdb-tagged lanes, serially) on a single runner, and it repeatedly hit or
+  came within minutes of its 60-minute timeout as the package/fixture corpus
+  grew (tsouza/cerberus#2634) — `-coverpkg` instrumentation makes the job's
+  cost scale with the WHOLE package graph, not just the packages under active
+  test. The fix splits the two lanes into parallel `coverage-default` /
+  `coverage-chdb` jobs and keeps ONE aggregator named exactly `coverage` — the
+  name branch protection and release.yml's RELEASE_REQUIRED_CHECKS both
+  resolve by exact text — mirroring `perf-guards-shard`/`perf-guards` in
+  chdb.yml and `profile-shard`/`profile` in perf-profile.yml, one level
+  simpler: two named `needs` results to reconcile instead of one matrix
+  roll-up. Tells a legitimate skip (ordinary PR, neither lane ran, nothing to
+  merge) apart from an illegitimate one (a heavy run where a lane never ran,
+  or failed, or was cancelled by its own timeout), and treats `coverage-plan`
+  (the leading job computing RUN_HEAVY) not succeeding as its own hard
+  failure regardless of the other facts — otherwise an unset RUN_HEAVY output
+  would read identically to an ordinary PR's legitimate no-op.
+  `coverage-aggregate.test.mjs` is the `node --test` guard.
+  - Env: `PLAN_RESULT` (`needs.coverage-plan.result`), `RUN_HEAVY`
+    (`needs.coverage-plan.outputs.run_heavy`), `DEFAULT_RESULT`
+    (`needs.coverage-default.result`), `CHDB_RESULT`
+    (`needs.coverage-chdb.result`).
+  - Exit: `0` when it is safe to proceed (merge on a heavy run, or report the
+    no-op on a non-heavy one), `1` otherwise.
 - **`coverage-summary.mjs`** — `coverage.yml`, invoked at the end of the `just
   coverage` recipe rather than as its own workflow step (so a local run gets the
   same verdict CI does). Renders the per-package coverage table into the step
@@ -794,23 +833,27 @@ what actually runs.
   - Exit: `0` when every statement-carrying full-lane package has a
     positive floor and every floor names a live package, `1` on
     listing/instrumentation/input failure or structural drift.
-- **`coverage-run-heavy.mjs`** — `coverage.yml`, the `decide run_heavy` step.
-  Decides whether the job's heavy lane (`just coverage`: the full instrumented
-  test run + chdb install) does real work for this event
-  (tsouza/cerberus#2416, part 2 of #2394). `pull_request` / `merge_group` /
-  `schedule` / `workflow_dispatch` are unchanged from the old inline GHA
-  expression — delegated to `lib/scope-gate.mjs`'s `runsFullLane`, the same
-  helper `mutation.yml` and `compose-smoke-scope.mjs` share. A `push` gets an
-  ADDITIONAL check: it resolves the PR that produced the pushed commit
-  (`lib/resolve-source-pr.mjs`'s exact `merged && merge_commit_sha` match) and
-  skips the heavy run ONLY when that PR resolved AND its own head ref started
-  with `release/` — i.e. only when the identical tree already ran heavy and
-  posted `coverage`'s check-run somewhere `release-preflight.mjs`'s SOURCE-PR
-  CREDIT will find it. Every other push (an ordinary-PR merge, an unresolved
-  match, a maintenance-line hotfix with no PR at all) still runs heavy —
-  fail-safe by construction. `coverage-run-heavy.test.mjs` pins the decision
-  table; it runs inside `coverage.yml`'s own always-on "Test coverage gates"
-  step (that workflow has a `pull_request:` trigger, unlike release.yml, so it
+- **`coverage-run-heavy.mjs`** — `coverage.yml`, the leading `coverage-plan`
+  job's `decide run_heavy` step (split out of the old single `coverage` job
+  by tsouza/cerberus#2634's lane sharding, the same way perf-profile.yml's
+  `decide-run-heavy` sits ahead of its `profile-shard` matrix). Decides
+  whether the `coverage-default` / `coverage-chdb` lane jobs (`just
+  coverage-default` + `just coverage-chdb`: the full instrumented test runs +
+  chdb install) do real work for this event (tsouza/cerberus#2416, part 2 of
+  #2394). `pull_request` / `merge_group` / `schedule` / `workflow_dispatch`
+  are unchanged from the old inline GHA expression — delegated to
+  `lib/scope-gate.mjs`'s `runsFullLane`, the same helper `mutation.yml` and
+  `compose-smoke-scope.mjs` share. A `push` gets an ADDITIONAL check: it
+  resolves the PR that produced the pushed commit (`lib/resolve-source-pr.mjs`'s
+  exact `merged && merge_commit_sha` match) and skips the heavy run ONLY when
+  that PR resolved AND its own head ref started with `release/` — i.e. only
+  when the identical tree already ran heavy and posted `coverage`'s
+  check-run somewhere `release-preflight.mjs`'s SOURCE-PR CREDIT will find
+  it. Every other push (an ordinary-PR merge, an unresolved match, a
+  maintenance-line hotfix with no PR at all) still runs heavy — fail-safe by
+  construction. `coverage-run-heavy.test.mjs` pins the decision table; it
+  runs inside `coverage-plan`'s own always-on "Test coverage gates" step
+  (that workflow has a `pull_request:` trigger, unlike release.yml, so it
   needs no separate ci.yml wiring).
   - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
     `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
@@ -2252,8 +2295,15 @@ what actually runs.
   `update-golden.yml` and `cardinality-baseline-update.mjs`'s header. Those jobs
   still finish by calling this same controller's ordinary `MODE=package`
   (`SHARD=cardinality`), so `publish` needed no cardinality-specific code at all.
-  - Env: `MODE` (`plan`, `package`, `apply-push`) plus the mode-specific inputs
-    documented at the top of the script.
+  `post-merge-drift.yml` (#2635) reuses `MODE=package` and `MODE=apply-legs`
+  for the identical `cardinality-leg`/`cardinality-seal` split on its own
+  diff-only path — that workflow never dispatches `MODE=plan` or
+  `MODE=apply-push` at all, since it has no branch to plan against and nothing
+  to push; it only ever packages one leg's slice and applies every leg's patch
+  back together before diffing the result.
+  - Env: `MODE` (`plan`, `package`, `apply-push`, `apply-predecessors`,
+    `apply-legs`) plus the mode-specific inputs documented at the top of the
+    script.
   - Exit: `0` only for a valid plan, a shard-owned patch, or an atomic publish;
     branch movement, missing/duplicate patches, unexpected paths and unsafe refs
     fail closed before the push.
@@ -2284,8 +2334,8 @@ what actually runs.
     is after `MAX_WAIT_MS` (default 60 minutes — `update-golden.yml`'s own
     regenerate legs are capped at 45), or the API calls themselves failed.
 
-- **`cardinality-baseline-update.mjs`** — two callers. Unmoded (default), it is
-  the script a contributor runs by hand, through `just update-cardinality-
+- **`cardinality-baseline-update.mjs`** — three callers. Unmoded (default), it
+  is the script a contributor runs by hand, through `just update-cardinality-
   baseline`: it regenerates `test/perf/cardinality-baseline/` by fanning the
   chDB profile pass out across the same 8 legs `perf-guards-shard` uses for the
   gating pass — LOCAL PROCESSES within this one invocation — each leg owning a
@@ -2303,7 +2353,12 @@ what actually runs.
   `PERF_SHARD_COUNT`, no local GOMAXPROCS division — a CI runner owns its cores
   outright); `MODE=seal` runs `TestCardinalityBaselineCoversTheCorpus` once,
   against whatever every leg's downloaded-and-applied patch already put on
-  disk — the cross-JOB analogue of the local closing step.
+  disk — the cross-JOB analogue of the local closing step. `post-merge-
+  drift.yml` (#2635) is the third caller, dispatching the same `MODE=leg`/
+  `MODE=seal` pair for its own `cardinality-leg`/`cardinality-seal` jobs — the
+  identical partition, just profiling the already-committed tree at
+  `github.sha` instead of a branch mid-regeneration, so a leg here needs no
+  predecessor patch applied first.
   - Env: `CHDB_INSTALL_PATH`, `CARDINALITY_BASELINE_TIMEOUT` (per leg),
     `CARDINALITY_BASELINE_FANOUT` (optional, local mode only; for measuring the
     split on a differently shaped machine — the plan printed WITHOUT it is what
@@ -2318,10 +2373,12 @@ what actually runs.
     so asserts instead of rewriting), a missing closing step, and the leg count
     drifting from the count `test/perf/profile/shard_test.go` asserts the
     partition's cover and balance at. `test/regression/cardinality_ci_matrix_
-    test.go` pins the CI-matrix side the same way: the `cardinality-leg`/
-    `cardinality-seal` jobs exist and are wired into `publish`, the leg matrix
-    is a contiguous `1..N` at that same partition count, and the `MODE=leg`/
-    `MODE=seal` env contract with this script matches.
+    test.go` pins the CI-matrix side the same way, over BOTH
+    `update-golden.yml` and `post-merge-drift.yml`: the `cardinality-leg`/
+    `cardinality-seal` jobs exist and are wired into whichever job consumes the
+    sealed result (`publish` there, this script's own diff-and-report step
+    here), the leg matrix is a contiguous `1..N` at that same partition count,
+    and the `MODE=leg`/`MODE=seal` env contract with this script matches.
   - `lib/spawn-tagged.mjs` holds the child-process runners this and
     `golden-update.mjs` fan out with (line-tagged, streamed output; every leg
     allowed to finish before the group's verdict), plus `runLegBuffered`, the

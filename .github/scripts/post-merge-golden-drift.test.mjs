@@ -25,13 +25,15 @@
 // test/e2e/migration/lib's TestAssertGoldenUnderCIComparesRatherThanRefusingOnSight.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+
+import { SHARD_NAMES } from './lib/golden-shards.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./post-merge-golden-drift.mjs', import.meta.url));
 
@@ -234,4 +236,142 @@ test('a missing POST_MERGE_BEFORE fails closed', (t) => {
   });
   assert.equal(r.status, 1, 'a gate with no merge to validate must not report success');
   assert.match(r.stdout, /POST_MERGE_BEFORE is unset/);
+});
+
+// MODE=plan — the derivation post-merge-drift.yml's own `plan` job runs to
+// build the per-shard matrix the `regenerate` job fans out over, and the
+// `cardinality_selected` flag its `cardinality-leg`/`cardinality-seal` jobs
+// gate on. These pin the OUTPUT SHAPE; the underlying derivation
+// (`shardsToCheck`) is exercised for real by the tests above.
+
+function readOutputs(outputPath) {
+  const out = new Map();
+  let content;
+  try {
+    content = readFileSync(outputPath, 'utf8');
+  } catch {
+    return out; // Nothing was ever written — a legitimate outcome for a bare `fail()`.
+  }
+  for (const line of content.split('\n')) {
+    if (!line.includes('=')) continue;
+    const i = line.indexOf('=');
+    out.set(line.slice(0, i), line.slice(i + 1));
+  }
+  return out;
+}
+
+function runPlan({ dir, before, after, just }, extraEnv = {}) {
+  const outputs = path.join(dir, '..', 'github_output');
+  const r = spawnSync(process.execPath, [SCRIPT], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MODE: 'plan',
+      POST_MERGE_BEFORE: before,
+      POST_MERGE_AFTER: after,
+      JUST_EXECUTABLE: just,
+      GITHUB_OUTPUT: outputs,
+      ...extraEnv,
+    },
+  });
+  return { r, outputs: readOutputs(outputs) };
+}
+
+test('MODE=plan builds a regenerate matrix row per shard, excluding cardinality', (t) => {
+  const fx = fixture({ regenerates: COMMITTED_GOLDEN });
+  t.after(() => rmSync(fx.root, { recursive: true, force: true }));
+
+  const { r, outputs } = runPlan(fx, { POST_MERGE_SHARDS: 'migration cardinality' });
+  assert.equal(r.status, 0, `expected plan to succeed, got:\n${r.stdout}\n${r.stderr}`);
+
+  assert.equal(outputs.get('nothing'), 'false');
+  // Stage-ordered: migration (STAGE_PRE) before cardinality (STAGE_POST).
+  assert.equal(outputs.get('shards'), 'migration cardinality');
+  assert.equal(outputs.get('cardinality_selected'), 'true');
+  assert.equal(outputs.get('has_regenerate_rows'), 'true');
+
+  const matrix = JSON.parse(outputs.get('matrix'));
+  assert.deepEqual(matrix, { include: [{ shard: 'migration', needs_chdb: false }] });
+});
+
+test('MODE=plan reports nothing=true for a push that implies no shard', (t) => {
+  const fx = fixture({ regenerates: COMMITTED_GOLDEN });
+  t.after(() => rmSync(fx.root, { recursive: true, force: true }));
+
+  // No POST_MERGE_SHARDS override: the real derivation runs over a diff that
+  // touches only docs/, same as the equivalent non-plan test above.
+  const { r, outputs } = runPlan(fx, { POST_MERGE_SHARDS: '' });
+  assert.equal(r.status, 0, `expected an empty implication to pass, got:\n${r.stdout}\n${r.stderr}`);
+  assert.equal(outputs.get('nothing'), 'true');
+  assert.equal(outputs.get('matrix'), undefined);
+});
+
+test('MODE=plan reports nothing=true when the push created the ref', (t) => {
+  const fx = fixture({ regenerates: COMMITTED_GOLDEN });
+  t.after(() => rmSync(fx.root, { recursive: true, force: true }));
+
+  const { r, outputs } = runPlan(fx, {
+    POST_MERGE_BEFORE: '0'.repeat(40),
+    POST_MERGE_SHARDS: '',
+  });
+  assert.equal(r.status, 0, `expected a ref-creation push to pass, got:\n${r.stdout}\n${r.stderr}`);
+  assert.equal(outputs.get('nothing'), 'true');
+});
+
+// POST_MERGE_SKIP_REGENERATE=1 — the `cardinality-seal` job's own path:
+// its `cardinality-leg` matrix already regenerated the shard (on a DIFFERENT
+// runner, merged back in by applying every leg's patch), so this script must
+// diff the tree it is handed rather than invoking the regeneration command a
+// second time. The stub `just` here exits non-zero if ever invoked, so these
+// only pass if regeneration was genuinely skipped.
+
+test('POST_MERGE_SKIP_REGENERATE=1 diffs the tree as handed, never invoking the regenerator', (t) => {
+  const fx = fixture({ regenerates: COMMITTED_GOLDEN });
+  t.after(() => rmSync(fx.root, { recursive: true, force: true }));
+  writeFileSync(fx.just, '#!/bin/sh\necho "regenerator invoked but should have been skipped" >&2\nexit 9\n');
+  chmodSync(fx.just, 0o755);
+
+  const r = run(fx, { POST_MERGE_SKIP_REGENERATE: '1' });
+  assert.equal(r.status, 0, `expected a clean pre-regenerated tree to pass, got:\n${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /Skipping regeneration/);
+  assert.doesNotMatch(r.stdout, new RegExp(`==> ${SHARD}:`));
+});
+
+test('POST_MERGE_SKIP_REGENERATE=1 still reports drift already present in the tree', (t) => {
+  const fx = fixture({ regenerates: COMMITTED_GOLDEN });
+  t.after(() => rmSync(fx.root, { recursive: true, force: true }));
+  writeFileSync(fx.just, '#!/bin/sh\necho "regenerator invoked but should have been skipped" >&2\nexit 9\n');
+  chmodSync(fx.just, 0o755);
+
+  // Simulate the leg-merge already having left the working tree drifted,
+  // without this script ever running a regeneration command itself.
+  write(fx.dir, GOLDEN, 'SELECT already_regenerated_by_the_leg_matrix FROM golden\n');
+
+  const r = run(fx, { POST_MERGE_SKIP_REGENERATE: '1' });
+  assert.equal(r.status, 1, `expected the pre-existing drift to fail, got:\n${r.stdout}\n${r.stderr}`);
+  assert.doesNotMatch(r.stdout, new RegExp(`==> ${SHARD}:`));
+  assert.match(r.stdout, new RegExp(`\`${SHARD}\` shard on \`main\` is not what its generator`));
+});
+
+test('dump mode writes the full regenerate matrix catalogue to stdout as JSON and nothing else', () => {
+  // test/regression/release_required_checks_test.go's `generatedMatrices` runs
+  // this to expand post-merge-drift.yml#regenerate's plan-derived
+  // `strategy.matrix` — an expression over the `plan` job's output, which a
+  // static reader of the workflow YAML alone cannot enumerate — mirroring
+  // manual-golden-update.mjs's identical `dump` mode for
+  // update-golden.yml#regenerate. A stray log line on stdout breaks that
+  // parse, so the contract is pinned here rather than discovered there.
+  const dumped = execFileSync(process.execPath, [SCRIPT, 'dump'], { encoding: 'utf8' });
+  const rows = JSON.parse(dumped);
+
+  // `cardinality` has its own CI-matrix-sharded leg/seal jobs, not a row in
+  // this one — see post-merge-drift.yml's own comments.
+  assert.deepEqual(
+    rows.map((row) => row.shard).sort(),
+    SHARD_NAMES.filter((name) => name !== 'cardinality').sort(),
+  );
+  for (const row of rows) {
+    assert.equal(typeof row.needs_chdb, 'boolean', `dumped row ${row.shard} lost its needs_chdb flag`);
+  }
 });
