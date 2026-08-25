@@ -309,6 +309,20 @@ func lowerAbsentOverTime(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 // particular, this path must never synthesize or reference s.ValueColumn.
 func lowerAbsencePresenceSelector(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	metricName := metricNameFromMatchers(vs.LabelMatchers)
+	if metricName == "" {
+		// Unpinned `__name__` matcher (regex, negated, or absent) —
+		// metricNameFromMatchers can't name a single metric, so
+		// IsExpHistogramMetric below would always see "" and never take
+		// the pinned fast path. lowerVectorSelector routes this shape
+		// through lowerRegexHistogramSelector, whose union already
+		// carries a presence-only bare exp-histogram arm gated on
+		// ctx.absencePresenceSelector (added for this exact caller,
+		// cerberus issue #2443's regex/negated-matcher sibling) — without
+		// it, a regex matching a live exp-histogram metric's own bare
+		// name contributes zero rows and absent()/absent_over_time()
+		// silently reports it ABSENT.
+		return lowerVectorSelector(vs, s, ctx.withAbsencePresenceSelector())
+	}
 	if s.ExpHistogramTable == "" || !s.IsExpHistogramMetric(metricName) {
 		return lowerVectorSelector(vs, s, ctx)
 	}
