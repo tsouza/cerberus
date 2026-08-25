@@ -19,9 +19,24 @@ name: post-merge-drift
 # the one place it exists.
 #
 # It reports on the merge commit rather than on a PR, so it is deliberately NOT
-# a required check: there is no PR left to block by the time it can run. It
-# fails loudly instead, and the failure names the artefact, the command that
+# a required check: there is no PR left to block by the time it can run. Each
+# job fails loudly instead, and the failure names the artefact, the command that
 # regenerates it, and both commits whose interleaving produced the drift.
+#
+# The regeneration itself fans out across one job per implied shard — the same
+# `plan` → per-shard-matrix structure update-golden.yml uses for the identical
+# regeneration work on its own manual dispatch path, including that workflow's
+# further `cardinality-leg`/`cardinality-seal` split for the one shard whose own
+# regeneration is itself CI-matrix-sharded (#2341). Reusing the shape here is
+# what turns this lane from a single serial job — which had repeatedly hit its
+# timeout on a real push implying every shard — into one runner per shard, with
+# no publish step: unlike update-golden.yml this workflow never has anything to
+# push, it only ever diffs a shard's fresh regeneration against what already
+# landed on `main`, so every job here runs with read-only `contents: read` and
+# no `RELEASE_PAT`. The closing `drift` job is not a publish step either — it
+# aggregates nothing and pushes nothing, it is only the lane's single
+# reportable status, matching the one-context-per-lane convention every other
+# multi-job lane in this repo uses (see that job's own comment).
 on:
   push:
     branches: [main]
@@ -33,26 +48,21 @@ concurrency:
   group: post-merge-drift-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  drift:
-    name: drift
+  plan:
+    name: plan
     runs-on: ubuntu-latest
-    # The lane only regenerates the shards the merge implied, so the common case
-    # is a fixture-only or docs-only push that regenerates nothing at all. This
-    # budget covers the worst case: a change to internal/chsql, which reaches
-    # every head and implies every shard.
-    #
-    # Bumped from 45 to 90 on 2026-08-25: the worst case now runs the WHOLE
-    # regeneration SERIALLY on one runner (no per-shard fan-out, unlike
-    # update-golden.yml's own CI dispatch), and the promql fixture corpus grew
-    # past 700 TXTAR files during the #2624 audit-fix batch — the same growth
-    # that forced chdb.yml's roundtrip job from 20 to 35 minutes
-    # (chdb-roundtrip.mjs). Observed directly: eight of the day's pushes to
-    # main hit the exact 45m0s cap ("The job has exceeded the maximum
-    # execution time of 45m0s"), including the merge that landed #2630, while
-    # the successful runs on the same day already ran 30-40 minutes — headroom
-    # this thin means routine merges lose real drift coverage, not just large
-    # ones.
-    timeout-minutes: 90
+    # Diffing two commits and deriving the implied shard set is fast; the only
+    # unbounded input is a pathological git history, so this is a hang
+    # detector, not an estimate.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      nothing: ${{ steps.plan.outputs.nothing }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+      has_regenerate_rows: ${{ steps.plan.outputs.has_regenerate_rows }}
+      cardinality_selected: ${{ steps.plan.outputs.cardinality_selected }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,15 +76,145 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Derive the shards this merge implies
+        id: plan
+        env:
+          MODE: plan
+          POST_MERGE_BEFORE: ${{ github.event.before }}
+          POST_MERGE_AFTER: ${{ github.sha }}
+        run: node .github/scripts/post-merge-golden-drift.mjs
+
+  # One matrix row per implied shard EXCEPT `cardinality`, which is sharded
+  # further into its own `cardinality-leg`/`cardinality-seal` matrix below,
+  # mirroring update-golden.yml's identical split (#2341) — see that
+  # workflow's comments.
+  #
+  # The `if:` also requires has_regenerate_rows: a push implying only
+  # `cardinality` leaves this matrix empty, and an EMPTY strategy.matrix never
+  # creates a job run at all (it reports `skipped`, not `success`) — gating the
+  # job itself off the same way keeps that a deliberate, legible skip rather
+  # than a matrix silently expanding to zero.
+  regenerate:
+    name: regenerate (${{ matrix.shard }})
+    if: needs.plan.outputs.nothing == 'false' && needs.plan.outputs.has_regenerate_rows == 'true'
+    needs: plan
+    runs-on: ubuntu-latest
+    # The lane only regenerates the shards the merge implied, so the common
+    # case is a fixture-only or docs-only push whose matrix is empty and this
+    # job never runs at all. This budget covers one shard's worst case: a
+    # change to internal/chsql, which reaches every head's SQL and so implies
+    # every spec shard — but each shard now runs on its OWN runner, not all of
+    # them serially on one.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      # One shard's drift or failure must not cancel every other concurrent
+      # shard's in-progress check: each row is independent, so cancelling one
+      # that would otherwise have finished discards its whole budget for
+      # nothing, and a push that drifted two artefacts should report both.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # culpritCommits (post-merge-golden-drift.mjs) walks history back
+          # from `before` to name the commit that staled this shard's inputs,
+          # so a shallow checkout would leave a real drift unable to name it.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
           tool: just
 
-      # The cardinality shard profiles fixtures through chDB, so it cannot
-      # regenerate without libchdb.so — and a shard that cannot regenerate is a
-      # drift this lane would report as a broken generator rather than silently
-      # skip. Cached against the recipe's pinned version, so the common path is
-      # a cache hit and the install a no-op.
+      # Cached against the recipe's pinned version, so the common path (a shard
+      # that does not need chDB at all) is a cache hit the install step below
+      # skips outright.
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        if: matrix.needs_chdb
+        run: just chdb-install
+
+      - name: Regenerate this shard and diff it against what landed
+        env:
+          POST_MERGE_BEFORE: ${{ github.event.before }}
+          POST_MERGE_AFTER: ${{ github.sha }}
+          POST_MERGE_SHARDS: ${{ matrix.shard }}
+        run: node .github/scripts/post-merge-golden-drift.mjs
+
+  # `cardinality-leg` / `cardinality-seal` — the CI-matrix split of the
+  # `cardinality` shard's own regeneration (#2341), mirroring update-golden.yml's
+  # identical jobs (and, one level further back, mutation.yml's `mutate`/
+  # `mutation` phase-matrix/aggregator shape):
+  #
+  #   cardinality-leg   the matrix; each leg profiles ONLY the corpus slice its
+  #                     PERF_SHARD_INDEX names, on its OWN runner, against the
+  #                     ALREADY-COMMITTED tree at `github.sha` — unlike
+  #                     update-golden.yml's leg, there is no predecessor
+  #                     shard's freshly regenerated-but-uncommitted `-- sql --`
+  #                     to apply first, because this workflow never regenerates
+  #                     anything that is not already on `main`.
+  #   cardinality-seal  downloads and applies every leg's patch, re-runs
+  #                     TestCardinalityBaselineCoversTheCorpus (the same
+  #                     closing assertion `just update-cardinality-baseline`
+  #                     runs locally) to turn "every leg exited 0" into "the
+  #                     legs together covered the corpus", then diffs the
+  #                     result against what landed and reports drift exactly
+  #                     as the `regenerate` matrix does for its own shard —
+  #                     reusing post-merge-golden-drift.mjs's default mode with
+  #                     POST_MERGE_SKIP_REGENERATE=1, since the legs already
+  #                     did the regeneration this job would otherwise redo.
+  cardinality-leg:
+    name: cardinality-leg (${{ matrix.leg }})
+    needs: plan
+    if: needs.plan.outputs.nothing == 'false' && needs.plan.outputs.cardinality_selected == 'true'
+    runs-on: ubuntu-latest
+    # Same ceiling as perf-guards-shard's per-leg profiling pass (chdb.yml) —
+    # this runs the identical TestCardinalityRatchet call, just in UPDATE mode,
+    # over the same partition. A leg finishes in a couple of minutes at today's
+    # corpus size; the bound is a hang detector, not an estimate.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      # MANDATORY, matching the `regenerate` matrix above: one leg's failure
+      # must not cancel its siblings mid-profile.
+      fail-fast: false
+      matrix:
+        # The leg count. Matches BASELINE_FANOUT (cardinality-baseline-
+        # update.mjs), productionShardCount (test/perf/profile/shard_test.go),
+        # and update-golden.yml's own `cardinality-leg` matrix — an inline
+        # literal by the same precedent as that workflow's `leg: [1..8]` list:
+        # the partition is computed at RUN TIME from the fixture id, so the
+        # matrix carries no membership information and there is nothing for a
+        # generator script to compute.
+        # test/regression/cardinality_ci_matrix_test.go pins this list against
+        # that same count from the Go side.
+        leg: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
       - name: Cache libchdb.so
         uses: actions/cache@v6
         with:
@@ -84,8 +224,134 @@ jobs:
       - name: Install libchdb.so
         run: just chdb-install
 
-      - name: Regenerate what this merge implied and diff it
+      - name: Profile this leg's corpus slice
+        env:
+          MODE: leg
+          CHDB_INSTALL_PATH: /usr/local/lib/libchdb.so
+          PERF_SHARD_INDEX: ${{ matrix.leg }}
+          PERF_SHARD_COUNT: ${{ strategy.job-total }}
+        run: node .github/scripts/cardinality-baseline-update.mjs
+
+      - name: Package only this leg's generated paths
+        env:
+          MODE: package
+          TARGET_ROOT: .
+          SHARD: cardinality
+          ALLOWED_SHARDS: cardinality
+          OUTPUT_PATH: patches-out/cardinality-leg-${{ matrix.leg }}.patch
+        run: node .github/scripts/manual-golden-update.mjs
+
+      - name: Upload leg patch
+        uses: actions/upload-artifact@v7
+        with:
+          name: cardinality-leg-patch-${{ matrix.leg }}
+          path: patches-out/cardinality-leg-${{ matrix.leg }}.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  cardinality-seal:
+    name: cardinality-seal
+    needs: [plan, cardinality-leg]
+    # Every leg must have actually run for the seal to mean anything: an empty
+    # or partially-skipped leg matrix here is the "leg never dispatched" hazard
+    # the seal test's own doc comment describes, and `success` is the only
+    # leg-matrix result that says every one of the 8 ran and wrote its slice.
+    # `always()` is still needed so this job can see and report that gap (a
+    # REAL leg failure) rather than being cascaded to `skipped` itself.
+    if: |
+      always() &&
+      needs.plan.outputs.nothing == 'false' &&
+      needs.plan.outputs.cardinality_selected == 'true' &&
+      needs.cardinality-leg.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # actions: read is what lets `gh run download` (below) read this run's
+      # own artifacts.
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          # culpritCommits (post-merge-golden-drift.mjs) needs history back
+          # from `before` to name the commit that staled the cardinality
+          # baseline's inputs.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Download every leg's patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} --pattern 'cardinality-leg-patch-*' --dir patches
+
+      - name: Apply every leg's patch
+        env:
+          MODE: apply-legs
+          TARGET_ROOT: .
+          PATCH_ROOT: patches
+        run: node .github/scripts/manual-golden-update.mjs
+
+      - name: Assert the legs together covered the corpus
+        env:
+          MODE: seal
+          CHDB_INSTALL_PATH: /usr/local/lib/libchdb.so
+        run: node .github/scripts/cardinality-baseline-update.mjs
+
+      - name: Diff the regenerated cardinality baseline against what landed
         env:
           POST_MERGE_BEFORE: ${{ github.event.before }}
           POST_MERGE_AFTER: ${{ github.sha }}
+          POST_MERGE_SHARDS: cardinality
+          POST_MERGE_SKIP_REGENERATE: '1'
         run: node .github/scripts/post-merge-golden-drift.mjs
+
+  # The lane's single reportable status, matching the one-context-per-lane
+  # convention update-golden.yml's `publish` and mutation.yml's `mutation`
+  # already use (.github/ci-lanes.json's `quality.post-merge-drift` entry).
+  # No job above is individually the lane's pass/fail signal: `regenerate` and
+  # `cardinality-leg` are matrices, and every job past `plan` can legitimately
+  # report `skipped` (an ordinary push implies nothing, or implies shards but
+  # not `cardinality`).
+  #
+  # `always()` is load-bearing: a bare custom `if:` is implicitly ANDed with
+  # `success()`, so `needs.regenerate.result == 'skipped'` would never even be
+  # evaluated and this job would silently not run, cascading the skip instead
+  # of the explicit per-need checks below deciding — the same rebuild
+  # `publish`'s own comment in update-golden.yml documents. This job never
+  # posts red itself: a real drift or failure leaves one of its dependencies
+  # failed, which is where the report already lives (see that job's own log),
+  # and leaves THIS job `skipped` rather than green — the same shape
+  # `publish` takes when `regenerate` fails there.
+  drift:
+    name: drift
+    needs: [plan, regenerate, cardinality-leg, cardinality-seal]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      (needs.regenerate.result == 'success' || needs.regenerate.result == 'skipped') &&
+      (needs.cardinality-leg.result == 'success' || needs.cardinality-leg.result == 'skipped') &&
+      (needs.cardinality-seal.result == 'success' || needs.cardinality-seal.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: >-
+          echo "post-merge-drift: every implied shard regenerates to the committed bytes (or
+          nothing was implied)."

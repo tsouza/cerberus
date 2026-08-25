@@ -443,8 +443,9 @@ func matrixComboList(t *testing.T, path, jobID, key string, n yaml.Node) []map[s
 // is what a check-name index wants; a run selecting a subset of them posts a
 // subset of these names, never a name outside them.
 var generatedMatrices = map[string][]string{
-	"mutation.yml#mutate":          {"node", ".github/scripts/mutation-matrix.mjs", "dump"},
-	"update-golden.yml#regenerate": {"node", ".github/scripts/manual-golden-update.mjs", "dump"},
+	"mutation.yml#mutate":             {"node", ".github/scripts/mutation-matrix.mjs", "dump"},
+	"update-golden.yml#regenerate":    {"node", ".github/scripts/manual-golden-update.mjs", "dump"},
+	"post-merge-drift.yml#regenerate": {"node", ".github/scripts/post-merge-golden-drift.mjs", "dump"},
 }
 
 // generatedMatrixCombos runs a registered generator and renders its rows as
