@@ -200,6 +200,15 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	if node, ok, err := lowerExpHistogramArgAsCanonicalFloat(v, s, ctx); ok {
 		return node, err
 	}
+	// A mixed float/histogram `or` argument (cerberus issue #2330),
+	// reached from ANY nesting depth since [lowerScalarVectorArg] is
+	// `scalar`'s single generic dispatch point (cerberus issue #2611).
+	// See histogram_native_mixed_or_scalar.go's own doc comment for why
+	// the histogram side is discarded entirely rather than merely
+	// dropped-then-counted.
+	if b, ok := scalarArgOverMixedExpHistogramSetOp(v, s, ctx); ok {
+		return lowerScalarArgOverMixedExpHistogramSetOp(b, s, ctx)
+	}
 	return lower(v, s, ctx)
 }
 
