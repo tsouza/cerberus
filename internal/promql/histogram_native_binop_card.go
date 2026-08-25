@@ -206,9 +206,24 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 	}
 	staged := &chplan.Project{Input: join, Projections: stage1}
 
+	// The identical unbounded arrayMap(range(mergedLength), ...) bucket
+	// ladder [histogramBinopMergeProjections] is about to fold below needs
+	// the same budget guard the one-to-one path attaches to its Aggregate's
+	// Having (histogramBinopMergeHavingGuard's bucket-width conjunct) — see
+	// this file's own doc and histogramBinopBucketWidthBudgetGuardExpr's.
+	// This path has no Aggregate to hang a HAVING on, but `staged` above
+	// already projects the SAME six aliases
+	// (hqAggScalesArrayAlias/hqAggMergedScaleAlias/hqAggPos*/hqAggNeg*)
+	// histogramBinopBucketWidthBudgetGuardExpr reads, so a Filter mirrors
+	// wrapExpHistogramMergeBudgetGuard's Filter-based wiring for the
+	// cross-series merge: unlike a pruneable unread SELECT column, a
+	// Filter's predicate is always evaluated to decide row survival, so the
+	// throwIf(...) side effect cannot be optimised away.
+	guarded := chplan.Node(&chplan.Filter{Input: staged, Predicate: histogramBinopBucketWidthBudgetGuardExpr()})
+
 	projs := []chplan.Projection{{Expr: &chplan.ColumnRef{Name: histSchema.AttributesColumn}, Alias: histSchema.AttributesColumn}}
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)
-	reshaped := &chplan.Project{Input: staged, Projections: projs}
+	reshaped := &chplan.Project{Input: guarded, Projections: projs}
 
 	tsExpr := chplan.Expr(chplan.NowNano())
 	if stepAligned {

@@ -341,7 +341,7 @@ func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.FuncCall{Fn: chplan.FnCount},
-		Right: &chplan.LitInt{V: 2},
+		Right: &chplan.LitInt{V: histogramBinopOperandCount},
 	}
 }
 

@@ -144,6 +144,20 @@ func guardKeysOnTimestamp(inner chplan.Node, s schema.Metrics) bool {
 		return guardKeysOnTimestamp(v.Input, s)
 	case *chplan.Project:
 		return guardKeysOnTimestamp(v.Input, s)
+	case *chplan.VectorSetOp:
+		// Mirrors the Aggregate case above: StepAligned is set-op's own
+		// "already per-step" signal (see its doc comment) exactly the way
+		// an Aggregate's GroupByAliases containing the timestamp column
+		// is. An instant-mode set op (StepAligned == false) carries one
+		// row per series, each with its own arm-local sample timestamp —
+		// keying on it here would split every colliding pair apart the
+		// same way it would for an ungrouped-on-timestamp Aggregate. A
+		// range-mode set op (StepAligned == true) carries many rows per
+		// series at distinct step anchors sharing one grid, so the
+		// timestamp IS the step identity and must join the key.
+		return v.StepAligned
+	case *chplan.NaryVectorSetOp:
+		return v.StepAligned
 	}
 	return true
 }
