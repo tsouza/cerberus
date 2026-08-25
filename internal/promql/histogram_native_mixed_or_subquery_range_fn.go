@@ -69,32 +69,93 @@ import (
 //     [mixedExpHistogramSetOp] itself builds for a bare `(a) or (b))`, one
 //     level up.
 //
-// Deliberately narrower than #2569's own pure-histogram-inner sibling in
-// one respect: this recognizer only admits sub.Expr shaped exactly as
-// [mixedExpHistogramSetOp] itself matches — a BARE `X or Y` with exactly
-// one side histogram-valued (or forwarded through and/unless, cerberus
-// issue #2571). A subquery inner that is some OTHER mixed-or composition
-// (wrapped in sum()/avg(), label_replace/label_join, or nested under a
-// further and/or/unless — histogram_native_mixed_or_aggregate.go /
-// _label.go / [mixedExpHistogramSetOp]'s own doc) stays unrecognised here
-// and continues to reject through [lowerOuterRangeFnOverSubquery]'s
-// existing guard, exactly as it did before this file existed.
-func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.SubqueryExpr, *parser.BinaryExpr, bool) {
+// Widened by cerberus issue #2581 to also admit sub.Expr shaped as
+// label_replace/label_join DIRECTLY wrapping [mixedExpHistogramSetOp]'s own
+// bare shape — `<fn>((label_replace((a) or (b), ...))[range:step])` — via
+// [wrapMixedOrSubqueryInner]'s rebuild closure, below. Still narrower than
+// #2569's own pure-histogram-inner sibling in one respect: a subquery inner
+// wrapped in sum()/avg() or nested under a further and/or/unless
+// (histogram_native_mixed_or_aggregate.go / [mixedExpHistogramSetOp]'s own
+// doc) stays unrecognised here and continues to reject through
+// [lowerOuterRangeFnOverSubquery]'s existing guard — deliberately, not an
+// oversight: see [wrapMixedOrSubqueryInner]'s own doc for why a sum/avg
+// wrapper cannot be admitted through this same distribute-then-recombine
+// mechanism without silently disagreeing with reference on a colliding
+// group. Tracked as an open divergence under #2581 in
+// test/rejection-parity/catalogue.
+func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.SubqueryExpr, *parser.BinaryExpr, func(parser.Expr) parser.Expr, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	if len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name) {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	sub, ok := peelWrappers(c.Args[0]).(*parser.SubqueryExpr)
 	if !ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx) {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	b, ok := mixedExpHistogramSetOp(sub.Expr, s, ctx)
+	b, rebuild, ok := wrapMixedOrSubqueryInner(sub.Expr, s, ctx)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
-	return sub, b, true
+	return sub, b, rebuild, true
+}
+
+// wrapMixedOrSubqueryInner recognises inner — a subquery's own Expr — as
+// EITHER a bare mixed float/histogram `or` ([mixedExpHistogramSetOp]'s own
+// shape) OR that same shape wrapped in a DIRECT label_replace/label_join
+// call ([labelCallOverMixedExpHistogramSetOp]'s shape, cerberus issue
+// #2449) — the first of the three wrapper families
+// histogram_native_mixed_or.go's own doc comment names that cerberus issue
+// #2581 threads through this file's subquery composition. rebuild takes one
+// of b's two operands and re-applies whatever wrapper matched (identity for
+// the bare case, the SAME label_replace/label_join call with its first
+// argument replaced for the wrapped case) — [lowerMixedOrSubqueryOuterFn]
+// calls it once per synthetic arm so each arm keeps the wrapper the
+// original expression had.
+//
+// label_replace/label_join is a sound choice for this distribute-then-
+// recombine mechanism because it is a per-ROW rewrite that never reads or
+// combines across rows: `<fn>((label_replace((a) or (b), args))[5m:1m])`
+// distributes to `<fn>((label_replace(a, args))[5m:1m]) or
+// <fn>((label_replace(b, args))[5m:1m])` for the identical reason the bare
+// (unwrapped) case already does — inserting a stateless label rewrite
+// inside each per-anchor evaluation commutes with both the subquery's own
+// per-anchor re-evaluation and the outer window fold. `sum`/`avg`
+// [by/without] (histogram_native_mixed_or_aggregate.go, cerberus issue
+// #2346) is deliberately NOT admitted here despite being the OTHER
+// wrapper family with an existing root-only recognizer: distributing a
+// GROUPING aggregate per arm and recombining with `mixedExpHistogramSetOp`'s
+// ordinary shadow-priority `or` (LHS wins on a shared group) does not
+// reproduce reference's own `sum`/`avg` semantics — a group that receives
+// contributions from BOTH the histogram arm and the float arm at the SAME
+// subquery anchor must be DROPPED entirely (a
+// `MixedFloatsHistogramsAggWarning`, [combineMixedAggregateBranches]'s own
+// doc), not resolved by picking one side, and a `series`-only (or any
+// non-injective) `by`/`without` clause can absolutely put histogram- and
+// float-typed rows from the two DIFFERENT source metrics into the same
+// group despite the two metrics never sharing a full label signature. A
+// correct composition needs the outer window fold to run directly over the
+// already-per-anchor-correct Mixed relation [lowerHistogramNativeSubqueryInner]
+// already builds via [lowerSumOrAvgOverMixedExpHistogramSetOp], not a
+// second, independent per-arm aggregation — real new machinery, not a cheap
+// extension of this file's existing mechanism, so it stays an open
+// divergence under cerberus issue #2581 rather than a silently-wrong
+// recognizer.
+func wrapMixedOrSubqueryInner(inner parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, func(parser.Expr) parser.Expr, bool) {
+	if b, ok := mixedExpHistogramSetOp(inner, s, ctx); ok {
+		return b, func(operand parser.Expr) parser.Expr { return operand }, true
+	}
+	if call, b, ok := labelCallOverMixedExpHistogramSetOp(inner, s, ctx); ok {
+		return b, func(operand parser.Expr) parser.Expr {
+			rebuilt := *call
+			args := append(parser.Expressions(nil), call.Args...)
+			args[0] = operand
+			rebuilt.Args = args
+			return &rebuilt
+		}, true
+	}
+	return nil, nil, false
 }
 
 // isHistogramSubqueryOuterFnName reports whether name is one of the
@@ -119,22 +180,24 @@ func isHistogramSubqueryOuterFnName(name string) bool {
 
 // lowerMixedOrSubqueryOuterFn lowers the shape [mixedOrSubqueryOuterFn]
 // recognised: c applied to a subquery whose own inner is b, a mixed
-// float/histogram `or`. It rewrites the expression into
-// `<fn>(<subquery over b.LHS>) or <fn>(<subquery over b.RHS>)` — a
-// synthetic AST, never seen by the parser — and hands it to the SAME
-// recombination logic [mixedExpHistogramSetOp] /
-// [lowerMixedExpHistogramSetOp] use for a bare mixed `or`, deriving
-// "which side is histogram" the identical way: from the ACTUAL
-// [chplan.RowShapeOf] of each arm's own lowering, not a second static
-// judgement that could disagree with the first. b.LHS / b.RHS keep their
-// SOURCE order (not reordered by which side is histogram) so a genuine
-// same-series overlap between the two arms resolves through the shadow
-// rule exactly as the un-rewritten expression would.
-func lowerMixedOrSubqueryOuterFn(c *parser.Call, sub *parser.SubqueryExpr, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+// float/histogram `or`, optionally wrapped by rebuild (identity for the
+// bare case; re-applies label_replace/label_join for the wrapped case,
+// cerberus issue #2581 — see [wrapMixedOrSubqueryInner]'s own doc). It
+// rewrites the expression into `<fn>(<subquery over
+// rebuild(b.LHS)>) or <fn>(<subquery over rebuild(b.RHS)>)` — a synthetic
+// AST, never seen by the parser — and hands it to the SAME recombination
+// logic [mixedExpHistogramSetOp] / [lowerMixedExpHistogramSetOp] use for a
+// bare mixed `or`, deriving "which side is histogram" the identical way:
+// from the ACTUAL [chplan.RowShapeOf] of each arm's own lowering, not a
+// second static judgement that could disagree with the first. b.LHS / b.RHS
+// keep their SOURCE order (not reordered by which side is histogram) so a
+// genuine same-series overlap between the two arms resolves through the
+// shadow rule exactly as the un-rewritten expression would.
+func lowerMixedOrSubqueryOuterFn(c *parser.Call, sub *parser.SubqueryExpr, b *parser.BinaryExpr, rebuild func(parser.Expr) parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	synthetic := &parser.BinaryExpr{
 		Op:             parser.LOR,
-		LHS:            &parser.Call{Func: c.Func, Args: parser.Expressions{subqueryWithExpr(sub, b.LHS)}},
-		RHS:            &parser.Call{Func: c.Func, Args: parser.Expressions{subqueryWithExpr(sub, b.RHS)}},
+		LHS:            &parser.Call{Func: c.Func, Args: parser.Expressions{subqueryWithExpr(sub, rebuild(b.LHS))}},
+		RHS:            &parser.Call{Func: c.Func, Args: parser.Expressions{subqueryWithExpr(sub, rebuild(b.RHS))}},
 		VectorMatching: b.VectorMatching,
 	}
 	if mb, ok := mixedExpHistogramSetOp(synthetic, s, ctx); ok {
