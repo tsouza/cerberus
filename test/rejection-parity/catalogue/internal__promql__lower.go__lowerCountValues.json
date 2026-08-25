@@ -1,0 +1,61 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument",
+      "evidence": {
+        "guard": [
+          "if !ok"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#53e0f9b3",
+      "message": "promql: internal invariant violated: count_values input is not histogram-valued: %v",
+      "class": "internal",
+      "rationale": "countValuesOverExpHistogramValue's own match predicate IS isExpHistogramValuedShape(agg.Expr, s, ctx) — the identical predicate lowerExpHistogramValuedShape's own dispatch table is built to answer matched=true for (cerberus issue #2568, threading the same countValuesOverExpHistogramValue / lowerExpHistogramValuedShape pairing lowerHistogramNativeRoot already uses into lowerCountValues so a count_values(...) NESTED under a further wrapper resolves too). So whenever the caller above reaches this branch, lowerExpHistogramValuedShape reporting matched=false here would mean the two predicates disagree about the same expression — an invariant this guard states explicitly rather than one that can actually be observed at runtime.",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "past returning if label == \"\"",
+          "if agg, ok := countValuesOverExpHistogramValue(a, s, ctx); ok",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerAggregate"
+        ],
+        "cited": [
+          "countValuesOverExpHistogramValue",
+          "isExpHistogramValuedShape",
+          "lowerCountValues",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/lower.go:lowerCountValues#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "count_values(\"\", up)",
+      "evidence": {
+        "guard": [
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerAggregate"
+        ]
+      }
+    }
+  ]
+}

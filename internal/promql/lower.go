@@ -3779,6 +3779,31 @@ func lowerCountValues(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (
 		return nil, fmt.Errorf("promql: count_values requires a non-empty label name")
 	}
 
+	// count_values over an expression whose result has already crossed the
+	// native-histogram row boundary, NESTED under a further wrapper
+	// (cerberus issue #2568) — `histogram_quantile(0.5, count_values("v",
+	// <exp-histogram selector>))`. [lowerHistogramNativeRoot] only tries
+	// [countValuesOverExpHistogramValue] when count_values IS the query's
+	// own root; every wrapper reaches count_values through this function's
+	// own generic `lower(a.Expr, ...)` fallback below, which would
+	// otherwise hit [lowerVectorSelector]'s ordinary path and
+	// [expHistogramSelectorRouting]'s hard rejection instead of the real
+	// answer bare `count_values("v", <exp-histogram selector>)` gets — the
+	// same bug class as #2562, but count_values belongs to the "preserve"
+	// family ([lowerExpHistogramValuedShape]) rather than the "drop" one
+	// ([lowerExpHistogramDroppingShape]), so it is threaded here rather
+	// than through [lowerAggregate]'s own drop-family dispatch.
+	if agg, ok := countValuesOverExpHistogramValue(a, s, ctx); ok {
+		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !matched {
+			return nil, fmt.Errorf("promql: internal invariant violated: count_values input is not histogram-valued: %v", agg.Expr)
+		}
+		return lowerExpHistogramCountValuesOverPlan(agg, input, s, ctx)
+	}
+
 	input, err := lower(a.Expr, s, ctx)
 	if err != nil {
 		return nil, err
