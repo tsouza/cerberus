@@ -105,3 +105,41 @@ func TestEmitRangeLWR_RejectsZeroStep(t *testing.T) {
 		t.Errorf("RangeLWR with Step=0 should error")
 	}
 }
+
+// TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne kills the two ARITHMETIC_BASE
+// mutants at lwr_fanout_bound.go:213:24 and :224:22 (`maxRows + 1`, in
+// lwrFanoutBoundedSourceFrag's bounded-read LIMIT and its independent
+// truncation-probe LIMIT). The "+1" is the whole truncation-detection
+// mechanism: a returned probe count landing exactly on maxRows+1 can only
+// happen if the true fanned-out row count reached or exceeded that LIMIT. A
+// `+`->`-` flip renders `maxRows - 1` instead, a directly observable
+// literal change in the emitted SQL (maxRangeLWRFanoutRows = 40_000_000, so
+// the correct literal is 40000001, not 39999999).
+func TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	plan := &chplan.RangeLWR{
+		Input:         &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:         start,
+		End:           start.Add(5 * time.Minute),
+		Step:          30 * time.Second,
+		Lookback:      5 * time.Minute,
+		MetricNameCol: "MetricName",
+		AttributesCol: "Attributes",
+		TimestampCol:  "TimeUnix",
+		ValueCol:      "Value",
+	}
+	sql, _, err := chsql.Emit(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	const wantLimit = "LIMIT 40000001"
+	if got := strings.Count(sql, wantLimit); got != 2 {
+		t.Errorf("expected %q exactly twice (bounded read + truncation probe), got %d occurrences; SQL:\n%s", wantLimit, got, sql)
+	}
+	for _, bad := range []string{"LIMIT 39999999", "LIMIT 40000000"} {
+		if strings.Contains(sql, bad) {
+			t.Errorf("unexpected %q in SQL (maxRows+1 arithmetic flipped?):\n%s", bad, sql)
+		}
+	}
+}

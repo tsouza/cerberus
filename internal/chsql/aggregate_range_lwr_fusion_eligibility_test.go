@@ -296,3 +296,27 @@ func TestEmitAggregateRangeLWRFused_DeclinedShapeStillEmits(t *testing.T) {
 		t.Errorf("declined avg() shape did not render avg():\n%s", sql)
 	}
 }
+
+// TestGroupBySelectFrags_BucketKeyContinuesLoop kills the INVERT_LOOPCTRL
+// mutant at aggregate_range_lwr_fusion.go:259 (`continue` -> `break`) inside
+// groupBySelectFrags. rangeLWRFusionTestAggregate puts the anchor/bucket key
+// LAST in GroupBy, which makes a `break` mutant a no-op there (nothing
+// follows it to skip) — this reorders the bucket key to FIRST so a `break`
+// mutant stops the loop right after handling it, silently dropping every
+// GroupBy entry that follows (here, the label key) from the fused SELECT
+// list.
+func TestGroupBySelectFrags_BucketKeyContinuesLoop(t *testing.T) {
+	lwr := rangeLWRFusionTestLWR()
+	a := rangeLWRFusionTestAggregate(chplan.FnSum, lwr)
+	// Default order: [label, bucket]. Reorder to [bucket, label].
+	a.GroupBy = []chplan.Expr{a.GroupBy[1], a.GroupBy[0]}
+	a.GroupByAliases = []string{a.GroupByAliases[1], a.GroupByAliases[0]}
+
+	sql, _, err := Emit(context.Background(), a)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(sql, "AS `gkey_0`") {
+		t.Errorf("label group key (gkey_0) missing from fused SELECT list — loop stopped early after the bucket key?\n%s", sql)
+	}
+}

@@ -346,6 +346,73 @@ func TestEmitFusedVariantsMatrix_AnchorCountArithmetic(t *testing.T) {
 	}
 }
 
+// TestGroupArrayVariantTupleFrag_EmptyValCols kills the ARITHMETIC_BASE
+// mutant at range_window_variants.go:129:39 (`len(valCols)+1`, the capacity
+// hint for the tuple-parts slice). With valCols empty, len(valCols)+1 == 1,
+// a harmless capacity; a `+`->`-` flip instead computes -1, which panics
+// make() immediately. Production never calls this with an empty valCols
+// (checkFusedVariants requires every arm to name a ValueColumn), so this
+// calls the helper directly to force the boundary.
+func TestGroupArrayVariantTupleFrag_EmptyValCols(t *testing.T) {
+	t.Parallel()
+	got := groupArrayVariantTupleFrag("Timestamp", nil)
+	b := &Builder{}
+	got(b)
+	sql, _, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !strings.Contains(sql, "arraySort(groupArray(") {
+		t.Errorf("unexpected SQL: %s", sql)
+	}
+}
+
+// TestEmitFusedVariantsInstant_CompletesAllSteps kills the four
+// CONDITIONALS_NEGATION mutants at range_window_variants.go:232:9, 236:9,
+// 249:9 and 256:66 — the four `if err != nil { return err }` guards inside
+// emitRangeWindowVariantsInstant. Every one of those checks genuinely
+// succeeds on this well-formed plan, so a `!= nil` -> `== nil` mutant at any
+// one of them turns "keep going on success" into "return nil immediately
+// after this step succeeds" — the function would return before ever
+// reaching arrayJoinVariants (the ARRAY JOIN unpivot near the end), so its
+// absence from the SQL is the shared tripwire for all four sites.
+func TestEmitFusedVariantsInstant_CompletesAllSteps(t *testing.T) {
+	t.Parallel()
+	r := fusedTestWindow()
+	r.OuterRange = 0 // instant path
+	sql, _, err := Emit(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "ARRAY JOIN") {
+		t.Errorf("instant fused variants SQL missing ARRAY JOIN unpivot — an early return before completion?\nSQL: %s", sql)
+	}
+	for _, v := range r.Variants {
+		if !strings.Contains(sql, v.ValueColumn) {
+			t.Errorf("missing arm value column %q — Emit returned early?\nSQL: %s", v.ValueColumn, sql)
+		}
+	}
+}
+
+// TestEmitFusedVariantsMatrix_UngroupedRegroupKeysCapacity kills the
+// ARITHMETIC_BASE mutant at range_window_variants.go:333:48
+// (`len(groupFrags)+1`, the capacity hint for regroupKeys). An ungrouped
+// fused matrix window has zero groupFrags, so len(groupFrags)+1 == 1 (the
+// anchor_ts key alone); a `+`->`-` flip computes -1, panicking make()
+// before the query can even be assembled.
+func TestEmitFusedVariantsMatrix_UngroupedRegroupKeysCapacity(t *testing.T) {
+	t.Parallel()
+	r := fusedTestWindow()
+	r.GroupBy = nil // OuterRange > 0 stays (matrix path)
+	sql, _, err := Emit(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "ARRAY JOIN") {
+		t.Errorf("ungrouped matrix fused variants missing ARRAY JOIN\nSQL: %s", sql)
+	}
+}
+
 // TestEmitFusedVariantsReusesSingleArmReducers pins that each arm's reducer is
 // the SAME expression the single-arm path emits, over that arm's own values
 // array — the property that keeps the fused and unfused answers equal without
