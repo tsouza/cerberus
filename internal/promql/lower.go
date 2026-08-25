@@ -2810,48 +2810,58 @@ func matrixSelectorArg(c *parser.Call) (*parser.MatrixSelector, *parser.VectorSe
 	return ms, vs, nil
 }
 
+// histogramNativeRangeVectorRetry gives a range-vector call reached through
+// the generic [lower] dispatcher — nested under a wrapper (scalar
+// arithmetic, an aggregation, an instant math function, unary minus...)
+// rather than being the query's own root — the same retry against the
+// native-histogram recognizers [lowerHistogramNativeRoot] already tries at
+// the root. matched reports whether a recognizer claimed the call; when it
+// did not, the caller falls through to its own generic dispatch.
+//
+// resets()/changes() (cerberus issue #2549): every such wrapper's own
+// operand lowering falls back to the generic dispatcher, which reaches
+// [lowerRangeVectorCall] (every resets()/changes() call carries a
+// MatrixSelector argument) before its own switch ever sees it. Both
+// functions already answer a plain FLOAT sample once resolved
+// (histogram_native_resets.go's own doc explains why nothing about them
+// needs the histogram-VALUED family's
+// [lowerExpHistogramArgAsCanonicalFloat] "preserve"/"drop" opt-in) — they
+// just need the same chance to retry as histogram-native that a query's
+// root always had.
+//
+// count_over_time()/present_over_time() (cerberus issue #2591):
+// [lowerHistogramNativeRoot] only tries [countPresentOverExpHistogram]
+// when the call IS the query's own root (or a subquery's own inner). The
+// moment it is wrapped by anything else — unary minus
+// (`-present_over_time(m[5m])`), an aggregation, an instant math function
+// — every such wrapper's own operand lowering falls back to the generic
+// dispatcher, which reaches [lowerRangeVectorCall] before its own switch
+// ever sees it, and that switch has no histogram-aware opt-in for either
+// name — it falls into the generic RangeWindow path and hits
+// [expHistogramSelectorRouting]'s catch-all rejection. Retrying the
+// recognizer here, exactly like [resetsOrChangesOverExpHistogram] above,
+// closes the gap the same way cerberus issue #2549 closed it for
+// count()/group().
+func histogramNativeRangeVectorRetry(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
+	if shape, ok := resetsOrChangesOverExpHistogram(c, s, ctx); ok {
+		node, err := lowerExpHistogramResetsOrChanges(shape, s, ctx)
+		return node, true, err
+	}
+	if fn, ms, vs, ok := countPresentOverExpHistogram(c, s, ctx); ok {
+		node, err := lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+		return node, true, err
+	}
+	return nil, false, nil
+}
+
 // lowerRangeVectorCall handles range-vector functions: rate, increase,
 // delta, and the `*_over_time` family. The single argument is a
 // MatrixSelector wrapping a VectorSelector; we lower the VectorSelector
 // and wrap the result in a RangeWindow capturing the function name +
 // range duration.
 func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	// resets()/changes() over a NESTED exp-histogram selector (cerberus
-	// issue #2549): [lowerHistogramNativeRoot] only tries
-	// [resetsOrChangesOverExpHistogram] when the call IS the query's own
-	// root. The moment it is wrapped by anything else — scalar
-	// arithmetic (`resets(m[5m]) * 2`), an aggregation
-	// (`sum(resets(m[5m]))`), an instant math function
-	// (`abs(changes(m[5m]))`) — every such wrapper's own operand lowering
-	// falls back to the generic [lower] dispatcher, which reaches THIS
-	// function (every resets()/changes() call carries a MatrixSelector
-	// argument) before the switch below ever sees it. Both functions
-	// already answer a plain FLOAT sample once resolved
-	// (histogram_native_resets.go's own doc explains why nothing about
-	// them needs the histogram-VALUED family's
-	// [lowerExpHistogramArgAsCanonicalFloat] "preserve"/"drop" opt-in) —
-	// they just need the same chance to retry as histogram-native that a
-	// query's root always had.
-	if shape, ok := resetsOrChangesOverExpHistogram(c, s, ctx); ok {
-		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
-	}
-	// count_over_time()/present_over_time() over a NESTED exp-histogram
-	// selector (cerberus issue #2591): [lowerHistogramNativeRoot] only
-	// tries [countPresentOverExpHistogram] when the call IS the query's
-	// own root (or a subquery's own inner). The moment it is wrapped by
-	// anything else — unary minus (`-present_over_time(m[5m])`), an
-	// aggregation, an instant math function — every such wrapper's own
-	// operand lowering falls back to the generic [lower] dispatcher, which
-	// reaches THIS function (both functions carry a MatrixSelector
-	// argument) before the switch below ever sees it, and the switch has
-	// no histogram-aware opt-in for either name — it falls into the
-	// generic RangeWindow path below and hits
-	// [expHistogramSelectorRouting]'s catch-all rejection. Retrying the
-	// recognizer here, exactly like [resetsOrChangesOverExpHistogram] just
-	// above, closes the gap the same way cerberus issue #2549 closed it
-	// for count()/group().
-	if fn, ms, vs, ok := countPresentOverExpHistogram(c, s, ctx); ok {
-		return lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+	if node, matched, err := histogramNativeRangeVectorRetry(c, s, ctx); matched {
+		return node, err
 	}
 	switch c.Func.Name {
 	case "predict_linear":
