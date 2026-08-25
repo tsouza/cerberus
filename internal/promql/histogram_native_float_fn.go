@@ -16,6 +16,16 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerLabelCallOverExpHistogram(call, s, ctx)
 		return plan, true, err
 	}
+	// Unary `+`/`-` over an already histogram-valued operand (cerberus
+	// issue #2583) — see histogram_native_unary.go's own doc comment for
+	// why registering the producer here, rather than patching
+	// unary.go's lowerUnary directly, is what makes it compose under
+	// every wrapper that already threads its own argument through this
+	// function.
+	if operand, op, ok := unaryOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerUnaryOverExpHistogram(operand, op, s, ctx)
+		return plan, true, err
+	}
 	if vs, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramBare(vs, s, ctx)
 		return plan, true, err

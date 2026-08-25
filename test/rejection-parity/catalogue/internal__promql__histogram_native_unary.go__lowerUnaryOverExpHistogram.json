@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_unary.go:lowerUnaryOverExpHistogram#3f85e848",
+      "message": "promql: internal invariant violated: unary + histogram operand matched no known histogram-valued shape for %v",
+      "class": "internal",
+      "rationale": "unaryOverExpHistogram admits the operand through isExpHistogramValuedShape and this lowerer consults lowerExpHistogramValuedShape for that same operand — the identical recognizer/producer pairing labelCallOverExpHistogram / lowerLabelCallOverExpHistogram already rely on for label_replace/label_join, so the two functions can never disagree about whether operand is histogram-valued.",
+      "evidence": {
+        "guard": [
+          "if op == parser.ADD",
+          "past returning if err != nil",
+          "if !matched"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "isExpHistogramValuedShape",
+          "labelCallOverExpHistogram",
+          "lowerExpHistogramValuedShape",
+          "lowerLabelCallOverExpHistogram",
+          "unaryOverExpHistogram"
+        ]
+      }
+    }
+  ]
+}
