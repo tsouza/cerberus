@@ -753,9 +753,23 @@ func lowerHistogramSelectorInput(
 // before this function existed — the exp-histogram table can't join that
 // merge() fan-out (disjoint row shape, see TablesForUnknownName) — a
 // separate, already-documented gap this function doesn't newly introduce.
+//
+// info()'s second-argument (info-metric) selector is likewise exempted
+// (ctx.infoMetricSelector — cerberus issue #2574): unlike metadata
+// enumeration it DOES need real Attributes data from the exp-histogram
+// table (the identity-label join reads them), so it routes to
+// ExpHistogramTable rather than falling back to Gauge/Sum. It reuses the
+// `_count`/`_sum` companion machinery with an arbitrary real column
+// (CountColumn) standing in for Value — chplan.InfoJoin never reads the
+// info side's Value for real (see its own doc comment), so which column
+// backs the placeholder is immaterial, only that lowerVectorSelector's
+// ordinary Sample-shape / LWR pipeline has something to project.
 func expHistogramSelectorRouting(metricName string, s schema.Metrics, ctx lowerCtx, matchers []*labels.Matcher) (tables []string, newMatchers []*labels.Matcher, companionValueColumn, companionBare string, ok bool, err error) {
 	if bare, col, hasCompanion := s.HistogramCompanionColumn(metricName); hasCompanion && s.IsExpHistogramMetric(bare) && s.ExpHistogramTable != "" {
 		return []string{s.ExpHistogramTable}, rewriteMetricName(matchers, bare), col, bare, true, nil
+	}
+	if s.IsExpHistogramMetric(metricName) && ctx.infoMetricSelector && s.ExpHistogramTable != "" {
+		return []string{s.ExpHistogramTable}, matchers, s.CountColumn, metricName, true, nil
 	}
 	if s.IsExpHistogramMetric(metricName) && !ctx.metadataFullRange {
 		return nil, nil, "", "", true, fmt.Errorf(

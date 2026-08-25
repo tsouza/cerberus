@@ -382,6 +382,14 @@ func infoDropsUnmatched(dataMatchers []*labels.Matcher) bool {
 // collapseInfoSeriesBySignature — because lowerVectorSelector's
 // per-series-latest shape is keyed on the FULL label set, one level
 // finer than the signature upstream's info() enrichment keys on.
+//
+// ctx is lowered with withInfoMetricSelector() set: only this selector's
+// LABELS matter for the identity-label join (chplan.InfoJoin never reads
+// the info side's Value for real), so a `__name__` that happens to name
+// an exponential-histogram metric must not hit
+// expHistogramSelectorRouting's ordinary hard rejection — that rejection
+// exists for consumers that DO need a real scalar Value, which this one
+// never does (cerberus issue #2574).
 func lowerInfoMetric(nameMatchers, dataMatchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	matchers := make([]*labels.Matcher, 0, len(nameMatchers)+len(dataMatchers))
 	matchers = append(matchers, nameMatchers...)
@@ -393,7 +401,7 @@ func lowerInfoMetric(nameMatchers, dataMatchers []*labels.Matcher, s schema.Metr
 		Name:          metricNameFromMatchers(matchers),
 		LabelMatchers: matchers,
 	}
-	node, err := lowerVectorSelector(sel, s, ctx)
+	node, err := lowerVectorSelector(sel, s, ctx.withInfoMetricSelector())
 	if err != nil {
 		return nil, err
 	}
