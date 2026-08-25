@@ -441,6 +441,16 @@ func lowerHistogramQuantileClassicBare(
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	input = classicBucketLeRestriction(input, leMatchers, s)
+	// classicBucketLeRestriction narrows by `le` MATCHER (and is a no-op
+	// entirely when leMatchers is empty — the common, no-`le`-matcher
+	// case this function primarily serves); neither branch filters a
+	// literal non-finite value out of the row's own storage
+	// ExplicitBounds. classicBucketFiniteBoundsRestriction closes that
+	// gap unconditionally — see its own doc comment for why the
+	// aggregated/merge path (classicBucketUnionBoundsExpr,
+	// classicBucketRowCumulativeExpr, #2495) already had this and the
+	// bare-selector path here did not.
+	input = classicBucketFiniteBoundsRestriction(input, s)
 
 	hq := &chplan.HistogramQuantile{
 		Input:                latestSampleAgg(input, classicBucketLatestAggs(s), s),
@@ -1370,6 +1380,67 @@ func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
 			Right: &chplan.FuncCall{Fn: chplan.FnIsInfinite, Args: []chplan.Expr{v}},
 		},
 	}}
+}
+
+// classicBucketFiniteBoundsRestriction narrows a classic-histogram row's
+// BucketCounts x ExplicitBounds arrays to drop any INTERIOR non-finite
+// bound (and its paired per-bucket count) — the bare-selector sibling of
+// #2495's fix (classicBucketUnionBoundsExpr / classicBucketRowCumulativeExpr
+// above), a pre-release audit finding: `histogram_quantile(0.9, m_bucket)`
+// (no `le` matcher, routed through lowerHistogramQuantileClassicBare) had
+// no finite-filtering at all, while `histogram_quantile(0.9, sum by(le)
+// (rate(m_bucket[5m])))` (the aggregated/merge path) already did — a real
+// OTLP row can carry a malformed non-finite `le` boundary inside its
+// storage ExplicitBounds, and forwarding it unfiltered leaks it into the
+// node's own output ExplicitBounds where emitHistogramQuantile's
+// overflow-bucket clamp can return it directly as the answered quantile.
+//
+// Unlike the merge path (which folds MANY rows' layouts into one union),
+// this operates on ONE row's own already-paired arrays: ExplicitBounds
+// has length n, BucketCounts has length n+1 (the trailing, unpaired
+// overflow bucket — "observations above every explicit bound"). Dropping
+// interior position i from ExplicitBounds drops BucketCounts[i] too, in
+// lockstep, so the two stay paired; the trailing overflow count is
+// forwarded unconditionally via a negative-offset arraySlice (never
+// subscripts, so an all-non-finite or empty row still answers cleanly
+// through HistogramQuantile's own existing NaN guards instead of
+// throwing). Mirrors hqFloatPairedLadderExpr's identical "drop interior
+// pairs, keep the trailing rung" shape for the float-domain path
+// (histogram_quantile_float.go) — the same invariant, two different
+// physical array layouts (this one already has BucketCounts one longer
+// than ExplicitBounds by construction; the float domain's sorted pair
+// starts equal-length and has to slice the trailing rung off first).
+func classicBucketFiniteBoundsRestriction(input chplan.Node, s schema.Metrics) chplan.Node {
+	eb := chplan.Expr(&chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+	bc := chplan.Expr(&chplan.ColumnRef{Name: s.BucketCountsColumn})
+
+	finiteBounds := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramFiniteBound},
+			Body:   classicBucketFiniteExpr(&chplan.BareIdent{Name: paramFiniteBound}),
+		},
+		eb,
+	}}
+	pairedCounts := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramBucketCount, paramFiniteBound},
+			Body:   classicBucketFiniteExpr(&chplan.BareIdent{Name: paramFiniteBound}),
+		},
+		arraySliceButLast(bc),
+		eb,
+	}}
+	trailingCount := &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+		bc, &chplan.LitInt{V: -1},
+	}}
+	newBucketCounts := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedCounts, trailingCount}}
+
+	return &chplan.Project{
+		Input: input,
+		Replacements: []chplan.Projection{
+			{Expr: newBucketCounts, Alias: s.BucketCountsColumn},
+			{Expr: finiteBounds, Alias: s.ExplicitBoundsColumn},
+		},
+	}
 }
 
 // classicBucketShaping bundles a classic-histogram group's bucket
