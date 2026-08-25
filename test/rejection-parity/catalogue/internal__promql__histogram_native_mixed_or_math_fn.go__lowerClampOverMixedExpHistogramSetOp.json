@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_math_fn.go:lowerClampOverMixedExpHistogramSetOp#e15d3cf4",
+      "message": "promql: unknown clamp function %s",
+      "class": "internal",
+      "rationale": "internal dispatch: clampOverMixedExpHistogramSetOp (lowerMixedExpHistogramFamily's own recognizer) matches only clamp / clamp_min / clamp_max before this lowering ever runs",
+      "evidence": {
+        "guard": [
+          "past returning if err != nil",
+          "past exhaustive switch call.Func.Name over [case \"clamp_max\", \"clamp_min\"; case \"clamp\"]"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "clampOverMixedExpHistogramSetOp",
+          "lowerMixedExpHistogramFamily"
+        ]
+      }
+    }
+  ]
+}

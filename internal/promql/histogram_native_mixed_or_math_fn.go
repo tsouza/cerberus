@@ -1,6 +1,8 @@
 package promql
 
 import (
+	"fmt"
+
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -52,13 +54,23 @@ import (
 // instant_fns.go's round-to-nearest value rewrite instead of a plain
 // chFn(Value) — round()'s to_nearest bound (Args[1]) is unrelated to the
 // mixed shape and is lowered exactly as [lowerRoundToNearest] lowers it.
-// The clamp family (further bound arguments of its own, lowered by
-// lowerClamp) and arbitrary arithmetic binops directly wrapping a mixed
-// `or` (`(a or b) + 1`, taught instead by
-// histogram_native_mixed_or_arithmetic.go, cerberus issue #2449's fourth
-// pass) are the remaining wrapper shapes this file does not attempt;
-// anything else still falls through to internal/promql/binary.go's
-// lowerVectorSetOp rejection unchanged — see
+//
+// The clamp family ALSO composes over this shape, since cerberus issue
+// #2587 — [clampOverMixedExpHistogramSetOp] and
+// [lowerClampOverMixedExpHistogramSetOp] further below are its own
+// recognizer/lowering pair, reusing the identical float-rows-only
+// scaffolding but applying instant_fns.go's [lowerClamp] literal/computed
+// bound logic (the least/greatest rewrite, the NaN-bound guard, and the
+// maxVal < minVal degenerate-bounds Filter) instead of a plain chFn(Value)
+// — clamp's bound argument(s) are unrelated to the mixed shape and are
+// lowered exactly as [lowerClamp] lowers them for a bare/derived float
+// vector argument.
+//
+// Arbitrary arithmetic binops directly wrapping a mixed `or` (`(a or b) +
+// 1`, taught instead by histogram_native_mixed_or_arithmetic.go, cerberus
+// issue #2449's fourth pass) are the remaining wrapper shape this file
+// does not attempt; anything else still falls through to
+// internal/promql/binary.go's lowerVectorSetOp rejection unchanged — see
 // test/rejection-parity/catalogue's tracking entry for that site.
 func mathFnOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, *parser.BinaryExpr, chplan.Fn, bool) {
 	call, ok := peelWrappers(expr).(*parser.Call)
@@ -71,8 +83,8 @@ func mathFnOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lo
 		// further bound argument and needs its own value-rewrite —
 		// [roundToNearestOverMixedExpHistogramSetOp] below handles that
 		// shape instead of widening this recognizer. The clamp family
-		// (further bound arguments of its own, lowered by lowerClamp)
-		// remains unattempted here.
+		// (further bound arguments of its own) is handled the identical
+		// way by [clampOverMixedExpHistogramSetOp] further below.
 		return nil, nil, "", false
 	}
 	b, ok := mixedExpHistogramSetOp(call.Args[0], s, ctx)
@@ -196,4 +208,155 @@ func lowerRoundToNearestOverMixedExpHistogramSetOp(call *parser.Call, b *parser.
 
 	newValue := roundToNearestValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, tn)
 	return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+}
+
+// clampOverMixedExpHistogramSetOp recognises `clamp`/`clamp_min`/
+// `clamp_max` directly wrapping a mixed float/histogram `or` as their
+// vector argument (cerberus issue #2587 — the clamp family's own
+// instance of the further-bound-argument shape
+// [roundToNearestOverMixedExpHistogramSetOp] already composes for
+// round()'s 2-arg form). call.Args[0] is checked against
+// [mixedExpHistogramSetOp]; the bound argument(s) — Args[1] for
+// clamp_min/clamp_max, Args[1] and Args[2] for the 3-arg clamp — are
+// unconstrained and lowered independently by
+// [lowerClampOverMixedExpHistogramSetOp] exactly as [lowerClamp]
+// (instant_fns.go) lowers them for a bare/derived float vector argument.
+func clampOverMixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, *parser.BinaryExpr, bool) {
+	call, ok := peelWrappers(expr).(*parser.Call)
+	if !ok {
+		return nil, nil, false
+	}
+	switch call.Func.Name {
+	case "clamp_min", "clamp_max":
+		if len(call.Args) != 2 {
+			return nil, nil, false
+		}
+	case "clamp":
+		if len(call.Args) != 3 {
+			return nil, nil, false
+		}
+	default:
+		return nil, nil, false
+	}
+	b, ok := mixedExpHistogramSetOp(call.Args[0], s, ctx)
+	if !ok {
+		return nil, nil, false
+	}
+	return call, b, true
+}
+
+// lowerClampOverMixedExpHistogramSetOp lowers the shape
+// [clampOverMixedExpHistogramSetOp] recognised: narrow the Mixed
+// [chplan.VectorSetOp] node to its float-shaped rows exactly as
+// [lowerMathFnOverMixedExpHistogramSetOp] does, then apply the SAME
+// literal/computed bound logic [lowerClamp] (instant_fns.go) applies for
+// a bare/derived float vector argument — the least/greatest rewrite, the
+// NaN-bound guard, and (for the 3-arg form) the maxVal < minVal
+// degenerate-bounds Filter that answers an empty vector — over that
+// float-rows-only input instead of over [lower](call.Args[0], ...)'s
+// ordinary result.
+//
+// Unlike [lowerClamp]'s own bare-argument path, this composition does not
+// route the result through [guardedValueProjection]'s duplicate-labelset
+// Aggregate: [projectCanonicalFloatValue] is used instead, identical to
+// [lowerMathFnOverMixedExpHistogramSetOp] and
+// [lowerRoundToNearestOverMixedExpHistogramSetOp] just above — see
+// [projectCanonicalFloatValue]'s own doc comment for why every wrapper
+// composed over this Mixed-set-op shape shares that choice.
+func lowerClampOverMixedExpHistogramSetOp(call *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	floatRowsOnly, err := floatRowsOnlyOverMixedExpHistogramSetOp(b, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	valueRef := &chplan.ColumnRef{Name: s.ValueColumn}
+
+	switch call.Func.Name {
+	case "clamp_max", "clamp_min":
+		fnName := chplan.FnLeast
+		if call.Func.Name == "clamp_min" {
+			fnName = chplan.FnGreatest
+		}
+		if bound, ok := tryScalarLiteral(call.Args[1]); ok {
+			newValue := &chplan.FuncCall{
+				Fn:   fnName,
+				Args: []chplan.Expr{valueRef, &chplan.LitFloat{V: bound}},
+			}
+			return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+		}
+		boundE, err := lowerScalarArg(call.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		newValue := nanIfExpr(isNaNExpr(boundE), &chplan.FuncCall{
+			Fn:   fnName,
+			Args: []chplan.Expr{valueRef, boundE},
+		})
+		return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+
+	case "clamp":
+		minB, okMin := tryScalarLiteral(call.Args[1])
+		maxB, okMax := tryScalarLiteral(call.Args[2])
+		if okMin && okMax {
+			// Mirrors lowerClamp's own maxVal < minVal fold (cerberus
+			// issue #2345's compat-lane finding): Prom's funcClamp
+			// short-circuits to an empty Vector rather than clamping
+			// every sample to minB.
+			if maxB < minB {
+				empty := &chplan.Filter{
+					Input:     floatRowsOnly,
+					Predicate: &chplan.LitBool{V: false},
+				}
+				return projectCanonicalFloatValue(empty, s, valueRef), nil
+			}
+			newValue := &chplan.FuncCall{
+				Fn: chplan.FnGreatest,
+				Args: []chplan.Expr{
+					&chplan.LitFloat{V: minB},
+					&chplan.FuncCall{
+						Fn:   chplan.FnLeast,
+						Args: []chplan.Expr{&chplan.LitFloat{V: maxB}, valueRef},
+					},
+				},
+			}
+			return projectCanonicalFloatValue(floatRowsOnly, s, newValue), nil
+		}
+
+		minE, err := lowerScalarArg(call.Args[1], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		maxE, err := lowerScalarArg(call.Args[2], s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Runtime mirror of the literal path's maxB < minB fold: keep
+		// rows only while NOT (max < min). NaN bounds compare false —
+		// rows survive and the NaN guard below turns the values NaN,
+		// matching Prom's math.Max(min, math.Min(max, v)).
+		filtered := &chplan.Filter{
+			Input: floatRowsOnly,
+			Predicate: &chplan.FuncCall{
+				Fn: chplan.FnNot,
+				Args: []chplan.Expr{
+					&chplan.Binary{Op: chplan.OpLt, Left: maxE, Right: minE},
+				},
+			},
+		}
+		newValue := nanIfExpr(
+			&chplan.Binary{Op: chplan.OpOr, Left: isNaNExpr(minE), Right: isNaNExpr(maxE)},
+			&chplan.FuncCall{
+				Fn: chplan.FnGreatest,
+				Args: []chplan.Expr{
+					minE,
+					&chplan.FuncCall{
+						Fn:   chplan.FnLeast,
+						Args: []chplan.Expr{maxE, valueRef},
+					},
+				},
+			},
+		)
+		return projectCanonicalFloatValue(filtered, s, newValue), nil
+	}
+	return nil, fmt.Errorf("promql: unknown clamp function %s", call.Func.Name)
 }
