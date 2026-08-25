@@ -16,6 +16,14 @@
 import process from 'node:process';
 import { capture, error, notice } from './gh.mjs';
 
+// The `gh issue list` page size for finding an existing tracking issue.
+// Nowhere near a real "how many incidents could there be" estimate — it is
+// generous headroom over "more than one lane could plausibly have open at
+// once" (each lane's `trackingLabels` filter already narrows the search to
+// its own issues), kept well under gh's own default page size so a single
+// request always suffices.
+const TRACKING_ISSUE_LIST_LIMIT = 30;
+
 /**
  * Pure roll-up over a schedule run's terminal job results. Anything other
  * than `success` — a real `failure`, a `cancelled` kill, or an unexpected
@@ -80,11 +88,11 @@ export function buildRecoveryBody({ laneLabel, runUrl, runId }) {
   ].join('\n');
 }
 
-function ghOrDie(args, failMessage, contextTitle) {
-  const res = capture('gh', args);
+function ghOrDie(args, failMessage, contextTitle, captureImpl, exit) {
+  const res = captureImpl('gh', args);
   if (res.status !== 0) {
     error(`${failMessage}: ${res.stderr.trim() || res.stdout.trim()}`, { title: contextTitle });
-    process.exit(1);
+    exit(1);
   }
   return res.stdout;
 }
@@ -106,6 +114,26 @@ function ghOrDie(args, failMessage, contextTitle) {
  *   lines (e.g. "nightly-health-notify", "perf-nightly-health-notify").
  * failureNoticeTitle: the title used specifically on the create/comment
  *   error() call (e.g. "nightly e2e run failed").
+ * captureImpl / exit: injected seams for `.test.mjs` coverage of this
+ *   orchestration itself, not just its pure helpers — default to the real
+ *   `gh.mjs` capture() and `process.exit` so every production caller is
+ *   unaffected. A test's `exit` stub should THROW rather than return
+ *   normally: this function (like the real process.exit) never expects
+ *   control to come back after calling it, so a non-throwing stub would run
+ *   straight into the next statement using a result that was never valid.
+ *
+ * CONCURRENCY PRECONDITION — this function holds no lock of its own against
+ * two overlapping invocations for the SAME trackingTitle (e.g. two nightly
+ * runs racing, or a manual re-run overlapping the scheduled one): a second
+ * "create" between the first's `gh issue list` read and its `gh issue
+ * create` write would file a duplicate tracking issue instead of finding the
+ * first's. Every caller today relies entirely on the calling WORKFLOW's own
+ * `concurrency:` group to prevent that (see notify-nightly-failure.mjs /
+ * notify-perf-nightly-failure.mjs / notify-perf-nightly-selfcheck-failure.mjs's
+ * own workflows) — a real lock was judged overkill for a scheduled,
+ * low-frequency, single-caller-per-lane path. Removing or narrowing a
+ * caller's `concurrency:` group without adding one here would silently
+ * reopen the duplicate-issue race.
  */
 export function runNotifyMain({
   repo,
@@ -118,21 +146,38 @@ export function runNotifyMain({
   issueRef,
   contextTitle,
   failureNoticeTitle,
+  captureImpl = capture,
+  exit = process.exit,
 }) {
   const health = classifyNightlyHealth(jobResults);
 
   const labelArgs = trackingLabels.flatMap((l) => ['--label', l]);
   const listOut = ghOrDie(
-    ['issue', 'list', '--repo', repo, '--state', 'open', ...labelArgs, '--json', 'number,title', '--limit', '30'],
+    [
+      'issue',
+      'list',
+      '--repo',
+      repo,
+      '--state',
+      'open',
+      ...labelArgs,
+      '--json',
+      'number,title',
+      '--limit',
+      String(TRACKING_ISSUE_LIST_LIMIT),
+    ],
     'gh issue list failed',
     contextTitle,
+    captureImpl,
+    exit,
   );
   let issues;
   try {
     issues = JSON.parse(listOut);
   } catch (err) {
     error(`gh issue list returned unparsable JSON: ${err.message}`, { title: contextTitle });
-    process.exit(1);
+    exit(1);
+    return;
   }
   const existingIssueNumber = findTrackingIssue(issues, trackingTitle);
   const decision = decideNotifyAction({ ok: health.ok, existingIssueNumber });
@@ -144,11 +189,13 @@ export function runNotifyMain({
         ['issue', 'create', '--repo', repo, '--title', trackingTitle, '--body', body, ...labelArgs],
         'gh issue create failed',
         contextTitle,
+        captureImpl,
+        exit,
       );
       error(`nightly ${laneLabel} run did not reach a clean pass (${health.failed.join('; ')}); filed ${out.trim()}`, {
         title: failureNoticeTitle,
       });
-      process.exit(1);
+      exit(1);
       break;
     }
     case 'comment': {
@@ -157,12 +204,14 @@ export function runNotifyMain({
         ['issue', 'comment', String(decision.number), '--repo', repo, '--body', body],
         'gh issue comment failed',
         contextTitle,
+        captureImpl,
+        exit,
       );
       error(
         `nightly ${laneLabel} run did not reach a clean pass (${health.failed.join('; ')}); updated #${decision.number}`,
         { title: failureNoticeTitle },
       );
-      process.exit(1);
+      exit(1);
       break;
     }
     case 'close': {
@@ -171,6 +220,8 @@ export function runNotifyMain({
         ['issue', 'close', String(decision.number), '--repo', repo, '--comment', body],
         'gh issue close failed',
         contextTitle,
+        captureImpl,
+        exit,
       );
       notice(`nightly ${laneLabel} run reached a clean pass; closed tracking issue #${decision.number}.`);
       break;
