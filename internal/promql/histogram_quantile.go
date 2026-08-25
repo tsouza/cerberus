@@ -1874,7 +1874,16 @@ func lowerHistogramQuantileHistogramValuedArg(
 ) (node chplan.Node, matched bool, err error) {
 	hist, matched, err := lowerExpHistogramValuedShape(arg, s, ctx)
 	if !matched {
-		return nil, false, nil
+		// A mixed float/histogram `or` argument (cerberus issue #2618) —
+		// see histogram_native_mixed_or_value_fn.go's own doc for why
+		// reference's "skip every non-histogram row" rule composes by
+		// reducing to just the mixed shape's histogram partition.
+		b, ok := mixedOrHistogramValuedArg(arg, s, ctx)
+		if !ok {
+			return nil, false, nil
+		}
+		hist, err = lowerMixedOrHistogramValuedArg(b, s, ctx)
+		matched = true
 	}
 	if err != nil {
 		return nil, true, err
