@@ -1869,7 +1869,15 @@ func lowerSubqueryOverAbsent(
 	if len(call.Args) == 1 {
 		if vs, ok := unwrapParens(call.Args[0]).(*parser.VectorSelector); ok {
 			vsNoMod, rangeCtx := stripSelectorModifierForRangeVector(vs, ctx)
-			inner, err := lowerVectorSelector(&vsNoMod, s, rangeCtx)
+			// lowerAbsencePresenceSelector, not lowerVectorSelector: this
+			// AbsentOverTime.Input only ever needs the row's existence
+			// (its TimestampColumn), never s.ValueColumn, so an
+			// exponential-histogram selector — which has no Value column
+			// to route through the ordinary Sample-shape pipeline — must
+			// bypass expHistogramSelectorRouting the same way the instant
+			// absent() and absent_over_time() bare-selector arms already
+			// do (cerberus issue #2602, the subquery sibling of #2443).
+			inner, err := lowerAbsencePresenceSelector(&vsNoMod, s, rangeCtx)
 			if err != nil {
 				return nil, err
 			}
