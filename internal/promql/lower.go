@@ -2532,6 +2532,15 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	if shape, ok := rangeFnOverExpHistogramSubquery(c, s, ctx); ok {
 		return lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
 	}
+	// The identical SELECT/FOLD-family composition (cerberus issue #2577),
+	// but for a subquery whose own inner is a MIXED float/histogram `or`
+	// rather than a pure histogram-native shape — see
+	// histogram_native_mixed_or_subquery_range_fn.go's own doc for why
+	// this is a genuinely different recognizer/lowering rather than a
+	// widening of the two calls just above.
+	if sub, b, ok := mixedOrSubqueryOuterFn(c, s, ctx); ok {
+		return lowerMixedOrSubqueryOuterFn(c, sub, b, s, ctx)
+	}
 	// `<range-vector-fn>(<subquery>)` — the canonical Grafana shape
 	// `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a chained RangeWindow:
 	// outer reducer over the inner matrix.
