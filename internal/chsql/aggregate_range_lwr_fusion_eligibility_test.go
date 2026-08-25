@@ -178,6 +178,30 @@ func TestMatchRangeLWRFusion_Declines(t *testing.T) {
 				return a
 			},
 		},
+		{
+			// Combinators alone (Params still empty) must decline on its
+			// own — proves the `||` between the two checks, not just their
+			// conjunction: an `&&` mutant would let this shape through
+			// (Params empty makes the second half of the OR false), since
+			// only Combinators is non-empty here.
+			name: "AggFunc has a combinator, no params",
+			make: func() *chplan.Aggregate {
+				a := rangeLWRFusionTestAggregate(chplan.FnSum, rangeLWRFusionTestLWR())
+				a.AggFuncs[0].Combinators = []chplan.AggCombinator{chplan.CombIf}
+				return a
+			},
+		},
+		{
+			// Params alone (Combinators still empty) must decline on its
+			// own — the OR's other side, proven independently of the
+			// Combinators case above.
+			name: "AggFunc has a param, no combinators",
+			make: func() *chplan.Aggregate {
+				a := rangeLWRFusionTestAggregate(chplan.FnSum, rangeLWRFusionTestLWR())
+				a.AggFuncs[0].Params = []chplan.Expr{&chplan.LitInt{V: 1}}
+				return a
+			},
+		},
 	}
 
 	for _, tc := range cases {
