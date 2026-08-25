@@ -7,11 +7,16 @@ import (
 
 const (
 	coverageWorkflowPath = "../../.github/workflows/coverage.yml"
-	coverageJobName      = "coverage"
-	coverageGateTest     = "node --test .github/scripts/coverage-package-floor.test.mjs"
-	coverageGateRun      = "node .github/scripts/coverage-package-floor.mjs"
-	coverageSetupGo      = "uses: actions/setup-go@v7"
-	coverageHeavyGuard   = "if: steps.run_heavy.outputs.run_heavy == 'true'"
+	// tsouza/cerberus#2634 split coverage.yml's old single `coverage` job into
+	// a leading `coverage-plan` job (the always-on structural checks below)
+	// plus the parallel `coverage-default`/`coverage-chdb` lane jobs and a
+	// `coverage` aggregator. The structural checks this test pins moved to
+	// coverage-plan with them.
+	coverageJobName    = "coverage-plan"
+	coverageGateTest   = "node --test .github/scripts/coverage-package-floor.test.mjs"
+	coverageGateRun    = "node .github/scripts/coverage-package-floor.mjs"
+	coverageSetupGo    = "uses: actions/setup-go@v7"
+	coverageHeavyGuard = "if: steps.run_heavy.outputs.run_heavy == 'true'"
 )
 
 // TestCoveragePRGateIsNotConditionedOnHeavyCoverage pins the ordinary-PR path

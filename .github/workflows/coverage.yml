@@ -1,10 +1,11 @@
 name: coverage
 
-# Coverage floor workflow. Runs `just coverage` to produce a merged coverage
-# profile (default-tag + chdb-tagged lanes), uploads the cover-merged.out
-# artifact, and — via .github/scripts/coverage-summary.mjs, which `just
-# coverage` invokes — writes the per-package summary into the step summary and
-# holds every package to its floor in test/coverage-floor/ (one shard file per package).
+# Coverage floor workflow. Runs the default-tag and chdb-tagged `go test
+# -coverpkg` sweeps `just coverage` used to run serially, produces a merged
+# coverage profile, uploads the cover-merged.out artifact, and — via
+# .github/scripts/coverage-summary.mjs, which `just coverage-merge` invokes —
+# writes the per-package summary into the step summary and holds every
+# package to its floor in test/coverage-floor/ (one shard file per package).
 #
 # The floor is what makes this a gate. The lane used to print a table nothing
 # compared against, so coverage could rot one package at a time with every run
@@ -13,6 +14,50 @@ name: coverage
 # and a floor with no package. Raise the floors with
 # `just update-coverage-floor` — it ratchets up only and never records a 0, so
 # a drop has to be a hand-edited, reviewable line in the diff.
+#
+# # Sharding (tsouza/cerberus#2634)
+#
+# This used to be ONE job running `just coverage` — both lanes, back to back —
+# on a single runner. It repeatedly hit or came within minutes of its
+# 60-minute timeout on real pushes to main as the package/fixture corpus
+# grew, and a stopgap bump to 90 minutes (2026-08-25, after #2624/#2627/#2628
+# both hit or nearly hit the 60m cap and the merge that landed #2630 ran the
+# full 60m0s and was killed) bought only headroom, not a fix: `-coverpkg`
+# instruments every listed package into every test binary and counts every
+# one of them at run time, so the job's cost scales with the WHOLE package
+# graph, not just the packages under active test. That is a capacity
+# problem, not a flake — widening the timeout again on the next regrowth is
+# not a sustainable pattern.
+#
+# The fix mirrors `perf-guards-shard`/`perf-guards` in chdb.yml and
+# `profile-shard`/`profile` in perf-profile.yml: split the WORK across
+# parallel jobs and keep ONE aggregator job named exactly `coverage` — the
+# name branch protection's required-contexts set and release.yml's
+# RELEASE_REQUIRED_CHECKS both resolve by exact text, so neither ever sees a
+# stale or missing context. Unlike those two lanes there is no fixture corpus
+# to partition (yet — see the issue for the finer per-package-group follow-up
+# if splitting the two lanes alone is not enough headroom); the two existing
+# lanes ARE the shards:
+#
+#   coverage-plan     computes RUN_HEAVY once (coverage-run-heavy.mjs) ahead
+#                      of both lane jobs, and runs the always-on structural
+#                      checks (package-floor enrollment, the gate scripts'
+#                      own `node --test` suites) that ran unconditionally in
+#                      the old single job.
+#   coverage-default   the default-tag `go test -coverpkg` lane
+#                      (`just coverage-default`), uploads cover.out.
+#   coverage-chdb       the chdb-tagged lane (`just coverage-chdb`), uploads
+#                      cover-chdb.out.
+#   coverage           the AGGREGATOR. Verifies the two lane jobs rolled up
+#                      the way this run's RUN_HEAVY says they should
+#                      (coverage-aggregate.mjs), then — on a heavy run —
+#                      downloads both lane profiles and runs
+#                      `just coverage-merge`, which folds them into
+#                      cover-merged.out and hands that FULL merged profile to
+#                      coverage-summary.mjs's floor gate. A shard boundary
+#                      must never let a package's coverage go unmeasured, so
+#                      the floor check always runs against the merge of both
+#                      lanes, never a partial profile.
 #
 # Informational on push/nightly, but ALSO a parity lane on the
 # publish-on-merge release flow: it runs on EVERY pull_request so it can be a
@@ -51,9 +96,9 @@ on:
 
 permissions:
   contents: read
-  # coverage-run-heavy.mjs resolves the PR that produced a pushed commit via
-  # GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs) — read-only, and only
-  # exercised on a `push` event.
+  # coverage-run-heavy.mjs (coverage-plan job) resolves the PR that produced
+  # a pushed commit via GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs)
+  # — read-only, and only exercised on a `push` event.
   pull-requests: read
 
 concurrency:
@@ -63,36 +108,18 @@ concurrency:
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
-  coverage:
-    name: coverage
+  # coverage-plan — computes the RUN_HEAVY decision ONCE, ahead of both lane
+  # jobs (whose job-level `if:` needs it before either can even start), and
+  # runs the checks that used to run unconditionally at the top of the old
+  # single job: the gate scripts' own `node --test` suites and the cheap
+  # structural package-floor enrollment check (which must catch an unfloored
+  # new package on EVERY PR, not only on a heavy run).
+  coverage-plan:
+    name: coverage-plan
     runs-on: ubuntu-latest
-    # 30 was already tight: the last pre-`-coverpkg` run took 20m34s of it.
-    # `-coverpkg` over the whole package set links an instrumented copy of
-    # every package into every test binary and counts every one of them at
-    # run time, so both halves of that budget grow. This job only runs on
-    # push / nightly / dispatch / release PRs, so a wider ceiling costs
-    # nothing on the PR path — and a timeout here lands red on main, where
-    # nobody's PR was ever asked to catch it.
-    #
-    # Bumped from 60 to 90 on 2026-08-25: every one of this session's large
-    # merges to main (#2624, #2627, #2628, #2630) hit or exceeded the 60m
-    # cap, including the merge that landed #2630 (ran the full 60m0s and was
-    # killed) — the same fixture-corpus growth already documented on
-    # post-merge-drift.yml and chdb.yml's roundtrip job.
-    timeout-minutes: 90
-    # RUN_HEAVY gates the measured profile: true on push / schedule / dispatch
-    # (unless a resolved source PR proves this push redundant — see the
-    # `decide run_heavy` step below), and on a release PR (head branch
-    # release/*). Every event still runs the structural enrollment check over
-    # both build configurations, so an ordinary PR cannot add code the first
-    # post-merge profile discovers has no floor.
-    #
-    # A merge-queue entry is held to the PR posture, not the push posture. The
-    # queue validates the projected trunk against the SAME contexts branch
-    # protection asks a PR for; a queue that runs work the PR never ran can
-    # dequeue a PR that was green, which is the livelock the queue exists to
-    # remove. The real run is not lost — `main` advances to the merge group's
-    # own head SHA, and the push trigger above sweeps coverage on that commit.
+    timeout-minutes: 10
+    outputs:
+      run_heavy: ${{ steps.run_heavy.outputs.run_heavy }}
     steps:
       - uses: actions/checkout@v7
 
@@ -107,6 +134,7 @@ jobs:
           node --test .github/scripts/coverage-summary.test.mjs
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs
+          node --test .github/scripts/coverage-aggregate.test.mjs
 
       - name: Verify package floor enrollment
         run: node .github/scripts/coverage-package-floor.mjs
@@ -127,34 +155,163 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: node .github/scripts/coverage-run-heavy.mjs
 
-      - if: steps.run_heavy.outputs.run_heavy == 'true'
-        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+  # coverage-default — the default-tag `-coverpkg` lane, split out of the old
+  # single job so it runs in parallel with coverage-chdb below
+  # (tsouza/cerberus#2634). Job-level `if:` (not step-level): skips the WHOLE
+  # job, runner and all, on an ordinary PR/merge-queue entry instead of
+  # spinning one up to immediately no-op.
+  coverage-default:
+    name: coverage-default
+    needs: coverage-plan
+    if: needs.coverage-plan.outputs.run_heavy == 'true'
+    runs-on: ubuntu-latest
+    # `just coverage-default`'s own `go test` is capped at `-timeout 40m`
+    # (see the recipe's comment for why); this leaves headroom for checkout,
+    # Go module/build caching and the recipe's own fold step on top of that,
+    # while still catching a genuine hang well inside the aggregator's own
+    # budget.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
+      - name: Run default-tag coverage lane
+        run: just coverage-default
+
+      - name: Upload default-tag coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-profile-default
+          path: cover.out
+          if-no-files-found: warn
+          retention-days: 1
+
+  # coverage-chdb — the chdb-tagged `-coverpkg` lane, split out the same way
+  # as coverage-default above (tsouza/cerberus#2634).
+  coverage-chdb:
+    name: coverage-chdb
+    needs: coverage-plan
+    if: needs.coverage-plan.outputs.run_heavy == 'true'
+    runs-on: ubuntu-latest
+    # Same reasoning as coverage-default's timeout: `just coverage-chdb`'s
+    # `go test` is capped at `-timeout 40m`, plus the ratchet fan-out
+    # (perf-coverage-fanout.mjs) it also runs.
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
           tool: just
 
       - name: Install libchdb.so
-        if: steps.run_heavy.outputs.run_heavy == 'true'
         run: just chdb-install
 
-      # `just coverage` ends by running .github/scripts/coverage-summary.mjs,
-      # which writes the step summary AND holds every package to the floor
-      # committed in test/coverage-floor/. COVERAGE_REQUIRE_LANES makes the
-      # gate refuse to run at all on a profile missing the chdb lane: without
-      # it, a `just chdb-install` that fails soft would leave the script
-      # comparing a narrower profile — so it skips the comparison, and the lane
-      # reports green having gated nothing.
-      - name: Run coverage
-        if: steps.run_heavy.outputs.run_heavy == 'true'
+      # COVERAGE_REQUIRE_LANES makes the recipe's own tail check fail closed
+      # rather than silently narrowing: a `just chdb-install` that failed
+      # soft would otherwise leave cover-chdb.out missing and this job green
+      # having gated nothing. See the recipe's own comment in the Justfile.
+      - name: Run chdb-tagged coverage lane
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
-        run: just coverage
+        run: just coverage-chdb
+
+      - name: Upload chdb-tagged coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-profile-chdb
+          path: cover-chdb.out
+          if-no-files-found: warn
+          retention-days: 1
+
+  # coverage — the AGGREGATOR, named EXACTLY `coverage` so the required
+  # status check still appears and gates (the lane jobs report as
+  # `coverage-default` / `coverage-chdb`, never `coverage`). `always()` so it
+  # still runs — and still reports — when the lane jobs skipped on an
+  # ordinary PR/merge-queue entry. A required context that goes missing is
+  # indistinguishable from one that is still running.
+  coverage:
+    name: coverage
+    needs: [coverage-plan, coverage-default, coverage-chdb]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read once here (rather than repeating the `needs.coverage-plan...`
+    # expression in every subsequent step's `if:`) because step `if:`s, unlike
+    # a job `if:`, CAN read the `env` context — coverage-aggregate.mjs's own
+    # drift check below needs the identical value verbatim to confirm the two
+    # lane jobs rolled up consistently with coverage-plan's own answer.
+    env:
+      RUN_HEAVY: ${{ needs.coverage-plan.outputs.run_heavy }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fails the job — before anything else runs — unless the two lane jobs
+      # rolled up exactly the way this run's RUN_HEAVY says they should:
+      # both skipped on an ordinary PR, both success on a heavy run. See the
+      # script for the full decision table (a skipped-but-heavy or
+      # ran-but-not-heavy result means the job-level gates drifted apart;
+      # `failure`/`cancelled` means a lane genuinely broke or hung).
+      - name: Verify the coverage lane jobs rolled up cleanly
+        run: node .github/scripts/coverage-aggregate.mjs
+        env:
+          PLAN_RESULT: ${{ needs.coverage-plan.result }}
+          RUN_HEAVY: ${{ needs.coverage-plan.outputs.run_heavy }}
+          DEFAULT_RESULT: ${{ needs.coverage-default.result }}
+          CHDB_RESULT: ${{ needs.coverage-chdb.result }}
+
+      - if: env.RUN_HEAVY == 'true'
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
+      # No `pattern:`-per-name repetition and no explicit `path:` needed:
+      # `merge-multiple: true` drops each artifact's file directly into the
+      # checkout root instead of a per-artifact subdirectory, so cover.out
+      # and cover-chdb.out land exactly where `just coverage-merge` (and a
+      # local run of the same recipe) already expects them.
+      - name: Download coverage lane profiles
+        if: env.RUN_HEAVY == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-profile-*
+          merge-multiple: true
+
+      # `just coverage-merge` folds cover.out + cover-chdb.out into
+      # cover-merged.out and hands that FULL merged profile to
+      # coverage-summary.mjs's floor gate — never a partial, per-lane
+      # profile. COVERAGE_REQUIRE_LANES makes the gate refuse to run at all
+      # on a profile missing the chdb lane: without it, a `just chdb-install`
+      # that failed soft in coverage-chdb (and so uploaded no cover-chdb.out)
+      # would leave this comparing a narrower profile — so it skips the
+      # comparison, and the lane reports green having gated nothing.
+      - name: Merge lane profiles and run coverage floor gate
+        if: env.RUN_HEAVY == 'true'
+        env:
+          COVERAGE_REQUIRE_LANES: default+chdb
+        run: just coverage-merge
 
       - name: Full coverage deferred (ordinary PR / redundant push)
-        if: steps.run_heavy.outputs.run_heavy != 'true'
-        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs (skipped here — see the 'decide run_heavy' step log for why)."
+        if: env.RUN_HEAVY != 'true'
+        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs (skipped here — see coverage-plan's 'decide run_heavy' step log for why)."
 
-      - name: Upload coverage profile
-        if: always() && steps.run_heavy.outputs.run_heavy == 'true'
+      - name: Upload merged coverage profile
+        if: always() && env.RUN_HEAVY == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-profile
