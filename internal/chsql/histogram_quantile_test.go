@@ -1,6 +1,8 @@
 package chsql
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -84,4 +86,75 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 			t.Errorf("computed phi must lead with the isNaN(phi) guard (line 266 flipped?):\n%s", sql)
 		}
 	})
+}
+
+// TestEmitHistogramQuantile_RequiredColumns kills the INVERT_LOGICAL mutant
+// at histogram_quantile.go:92:32 (`h.BucketCountsColumn == "" ||
+// h.ExplicitBoundsColumn == ""` -> `&&`). Each column empty ALONE must
+// still error; an `&&` mutant would require BOTH to be empty
+// simultaneously, letting a plan missing just one of the two through.
+func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.HistogramQuantile {
+		return &chplan.HistogramQuantile{
+			Input:                &chplan.Scan{Table: "otel_metrics_histogram"},
+			Phi:                  0.5,
+			BucketCountsColumn:   "BucketCounts",
+			ExplicitBoundsColumn: "ExplicitBounds",
+		}
+	}
+	cases := []struct {
+		name   string
+		mutate func(*chplan.HistogramQuantile)
+	}{
+		{"BucketCountsColumn empty", func(h *chplan.HistogramQuantile) { h.BucketCountsColumn = "" }},
+		{"ExplicitBoundsColumn empty", func(h *chplan.HistogramQuantile) { h.ExplicitBoundsColumn = "" }},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := base()
+			c.mutate(h)
+			_, _, err := Emit(context.Background(), h)
+			if !errors.Is(err, ErrUnsupported) {
+				t.Errorf("expected ErrUnsupported, got %v", err)
+			}
+		})
+	}
+}
+
+// TestEmitHistogramQuantile_GroupByAliasFallback kills both the
+// CONDITIONALS_BOUNDARY (`<` -> `<=`) and CONDITIONALS_NEGATION (`<` ->
+// `>=`) mutants at histogram_quantile.go:152:8 (`i <
+// len(h.GroupByAliases)`). Placing the alias slice ONE ENTRY SHORT of
+// GroupBy hits the exact boundary index (i == len(h.GroupByAliases)):
+// under either mutant that index tries h.GroupByAliases[i], which is out
+// of range and panics; under the original code it falls back to an
+// unaliased projection.
+func TestEmitHistogramQuantile_GroupByAliasFallback(t *testing.T) {
+	t.Parallel()
+	h := &chplan.HistogramQuantile{
+		Input:                &chplan.Scan{Table: "otel_metrics_histogram"},
+		Phi:                  0.5,
+		BucketCountsColumn:   "BucketCounts",
+		ExplicitBoundsColumn: "ExplicitBounds",
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "ServiceName"},
+			&chplan.ColumnRef{Name: "SpanName"},
+		},
+		// One alias only — the second group key must render unaliased
+		// without panicking.
+		GroupByAliases: []string{"service"},
+	}
+	sql, _, err := Emit(context.Background(), h)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if !strings.Contains(sql, "`ServiceName` AS `service`") {
+		t.Errorf("expected `ServiceName AS service`, SQL=%s", sql)
+	}
+	if !strings.Contains(sql, "`SpanName`") {
+		t.Errorf("expected bare `SpanName` group key, SQL=%s", sql)
+	}
 }

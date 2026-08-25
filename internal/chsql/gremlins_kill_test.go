@@ -4158,3 +4158,183 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (line 1812 flipped?): %s", addNS, got)
 	}
 }
+
+// --- range_window.go prefixAnchorIndexFrag arithmetic (1733:37) ---
+
+// TestPrefixAnchorIndexFrag_NegatesRangeNS kills both the INVERT_NEGATIVES
+// and ARITHMETIC_BASE mutants at range_window.go:1733:37 (the `-rangeNS`
+// unary expression passed as anchorGridFloorIdxFrag's addNS argument). A
+// mutant that drops or otherwise flips that sign feeds anchorGridFloorIdxFrag
+// a POSITIVE offset instead — its own `addNS > 0` branch then renders an
+// ADDITION (`dist + rangeNS`) instead of the correct SUBTRACTION
+// (`dist - rangeNS`), a different SQL shape whenever rangeNS != 0.
+func TestPrefixAnchorIndexFrag_NegatesRangeNS(t *testing.T) {
+	t.Parallel()
+	render := func(f Frag) string {
+		b := &Builder{}
+		f(b)
+		return b.String()
+	}
+
+	end := BareIdent("end_ts")
+	ts := BareIdent("ts")
+	const stepNS = int64(60_000_000_000)   // 1m
+	const rangeNS = int64(300_000_000_000) // 5m
+	const numAnchors = int64(11)
+
+	got := render(prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors))
+
+	// A mutant that removes (or otherwise flips) the negation on rangeNS
+	// collapses to the POSITIVE-offset floor index instead.
+	dist := distBehindAnchorFrag(ts, end)
+	positiveOffset := render(Call(
+		"least", InlineLit(numAnchors-1),
+		Call("greatest", InlineLit(int64(0)),
+			Sub(anchorGridFloorIdxFrag(dist, rangeNS, stepNS), InlineLit(int64(1)))),
+	))
+	if got == positiveOffset {
+		t.Errorf("prefixAnchorIndexFrag matches the POSITIVE-rangeNS form (line 1733 sign flipped?): %s", got)
+	}
+}
+
+// --- range_window.go instantDeltaPrefixSource guard + join dispatch (3562:11, 3574:23) ---
+
+// instantDeltaPrefixSourceStubWindow builds a syntactically valid (but
+// otherwise semantically opaque) *QueryBuilder standing in for the
+// caller-supplied "w" side of instantDeltaPrefixSource's join — the emitter
+// only ever splices it as an aliased subquery, never inspects its content at
+// emit time.
+func instantDeltaPrefixSourceStubWindow() *QueryBuilder {
+	return NewQuery().Select(Star()).From(verbatim("`otel_metrics_sum`"))
+}
+
+// TestInstantDeltaPrefixSource_GuardNilBranch kills the CONDITIONALS_NEGATION
+// mutant at range_window.go:3562:11 (`guard != nil` -> `== nil`). Production
+// never reaches instantDeltaPrefixSource with an empty TemporalityColumn
+// (emitWindowedArrayExtrapolated's needsDeltaFirstLevel gate requires
+// hasTemporality), so this calls it directly to force
+// deltaPresenceGuardFrag's nil branch (range_window.go:3498-3499) and
+// exercise the guard==nil path the mutant inverts. A `== nil` mutant would
+// instead call prefix.Where(nil) here, and that nil Frag panics the moment
+// it is invoked during Build() — a difference this test would catch as a
+// test failure (panic) even though it does not assert on the panic
+// directly.
+func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
+	t.Parallel()
+	e := &emitter{}
+	r := &chplan.RangeWindow{
+		Input:           &chplan.Scan{Table: "otel_metrics_sum"},
+		TimestampColumn: "TimeUnix",
+		ValueColumn:     "Value",
+		// Intentionally empty: forces deltaPresenceGuardFrag to return nil.
+		TemporalityColumn: "",
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+	}
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		t.Fatalf("collectGroupByFrags: %v", err)
+	}
+	frag, err := e.instantDeltaPrefixSource(
+		r, instantDeltaPrefixSourceStubWindow(), groupFrags,
+		InlineLit(int64(0)), InlineLit(int64(0)), 0,
+	)
+	if err != nil {
+		t.Fatalf("instantDeltaPrefixSource: %v", err)
+	}
+	b := &Builder{}
+	frag(b)
+	if _, _, err := b.Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+}
+
+// TestInstantDeltaPrefixSource_JoinDispatch kills the CONDITIONALS_NEGATION
+// mutant at range_window.go:3574:23 (`len(groupColumns) == 0` -> `!= 0`). A
+// grouped call must LEFT JOIN the prefix scan back keyed on the group
+// columns; an ungrouped call must CROSS JOIN it (there is nothing to key
+// on). The mutant swaps which shape each case takes.
+func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
+	t.Parallel()
+	build := func(groupBy []chplan.Expr) string {
+		e := &emitter{}
+		r := &chplan.RangeWindow{
+			Input:             &chplan.Scan{Table: "otel_metrics_sum"},
+			TimestampColumn:   "TimeUnix",
+			ValueColumn:       "Value",
+			TemporalityColumn: "AggregationTemporality",
+			GroupBy:           groupBy,
+		}
+		groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+		if err != nil {
+			t.Fatalf("collectGroupByFrags: %v", err)
+		}
+		frag, err := e.instantDeltaPrefixSource(
+			r, instantDeltaPrefixSourceStubWindow(), groupFrags,
+			InlineLit(int64(0)), InlineLit(int64(0)), 0,
+		)
+		if err != nil {
+			t.Fatalf("instantDeltaPrefixSource: %v", err)
+		}
+		b := &Builder{}
+		frag(b)
+		sql, _, err := b.Build()
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return sql
+	}
+
+	t.Run("grouped -> LEFT JOIN", func(t *testing.T) {
+		t.Parallel()
+		sql := build([]chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}})
+		if !strings.Contains(sql, "LEFT JOIN") {
+			t.Errorf("grouped call must LEFT JOIN; got:\n%s", sql)
+		}
+		if strings.Contains(sql, "CROSS JOIN") {
+			t.Errorf("grouped call must not CROSS JOIN; got:\n%s", sql)
+		}
+	})
+	t.Run("ungrouped -> CROSS JOIN", func(t *testing.T) {
+		t.Parallel()
+		sql := build(nil)
+		if !strings.Contains(sql, "CROSS JOIN") {
+			t.Errorf("ungrouped call must CROSS JOIN; got:\n%s", sql)
+		}
+		if strings.Contains(sql, "LEFT JOIN") {
+			t.Errorf("ungrouped call must not LEFT JOIN; got:\n%s", sql)
+		}
+	})
+}
+
+// --- range_window.go plainGroupColumnNames validation (5104:10, 5104:33) ---
+
+// TestPlainGroupColumnNames_EmptyNameRejected kills the INVERT_LOGICAL
+// mutant at range_window.go:5104:33 (the outer `||` between
+// `ref.Qualifier != ""` and `ref.Name == ""`). A bare ColumnRef with an
+// empty Name is otherwise well-formed (ok==true, Qualifier==""), so only
+// the third disjunct can catch it; an `&&` mutant there requires the first
+// two (already-false) disjuncts to ALSO hold, letting the empty name
+// through silently as a blank column identity.
+func TestPlainGroupColumnNames_EmptyNameRejected(t *testing.T) {
+	t.Parallel()
+	_, err := plainGroupColumnNames([]chplan.Expr{&chplan.ColumnRef{Name: ""}})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for an empty-Name ColumnRef, got %v", err)
+	}
+}
+
+// TestPlainGroupColumnNames_NonColumnRefNoPanic kills the INVERT_LOGICAL
+// mutant at range_window.go:5104:10 (the inner `||` between `!ok` and
+// `ref.Qualifier != ""`). When the group key is not a *chplan.ColumnRef at
+// all, `ref` is a nil *chplan.ColumnRef and only short-circuit evaluation
+// (the original `||`) keeps `ref.Qualifier` from ever being dereferenced.
+// An `&&` mutant forces evaluation of the second operand whenever `!ok` is
+// true, dereferencing the nil pointer and panicking instead of returning
+// the documented ErrUnsupported.
+func TestPlainGroupColumnNames_NonColumnRefNoPanic(t *testing.T) {
+	t.Parallel()
+	_, err := plainGroupColumnNames([]chplan.Expr{&chplan.LitInt{V: 1}})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Errorf("expected ErrUnsupported for a non-ColumnRef group key, got %v", err)
+	}
+}
