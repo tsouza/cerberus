@@ -18,12 +18,13 @@ import (
 // is DISTINCT so a extractor that stamped one hard-coded duration onto every
 // kind — or that read the wrong kind's field — cannot satisfy the table.
 const (
-	geomRangeWindowRange   = 5 * time.Minute
-	geomRangeLWRLookback   = 4 * time.Minute
-	geomNativeRange        = 3 * time.Minute
-	geomResampleLookback   = 2 * time.Minute
-	geomFanoutLookback     = 6 * time.Minute
-	geomAbsentOverTimeSpan = 7 * time.Minute
+	geomRangeWindowRange      = 5 * time.Minute
+	geomRangeLWRLookback      = 4 * time.Minute
+	geomNativeRange           = 3 * time.Minute
+	geomResampleLookback      = 2 * time.Minute
+	geomFanoutLookback        = 6 * time.Minute
+	geomAbsentOverTimeSpan    = 7 * time.Minute
+	geomBucketGridNativeRange = 8 * time.Minute
 )
 
 // geomAnchors is the anchor count of the shared canonical grid: gridStart..gridEnd
@@ -193,7 +194,7 @@ func carrierCases() []carrierCase {
 					Start:             gridStart,
 					End:               gridEnd,
 					Step:              gridStep,
-					Range:             geomFanoutLookback,
+					Range:             geomBucketGridNativeRange,
 					GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 					GroupByAliases:    []string{"Attributes"},
 					AnchorAlias:       "anchor_ts",
@@ -202,7 +203,7 @@ func carrierCases() []carrierCase {
 					ExplicitBoundsCol: "ExplicitBounds",
 				}
 			},
-			wantD:        geomFanoutLookback,
+			wantD:        geomBucketGridNativeRange,
 			wantFanout:   singlePassFanout,
 			reanchorable: false,
 		},

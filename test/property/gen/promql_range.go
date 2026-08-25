@@ -170,7 +170,7 @@ func drawRangeExpr(
 		}
 		innerShape := rapid.SampledFrom(promQLRangeBaseShapeRoster).Draw(t, "rangeLabelReplaceInnerShape")
 		inner := drawRangeExpr(t, name, matchers, groupLabels, innerShape, wrapBudget-1)
-		return drawLabelReplaceWrap(t, inner, groupLabels)
+		return drawLabelReplaceWrap(t, inner, groupLabels, innerShape)
 	}
 	panic("gen/promql-range: unhandled shape " + string(shapeID))
 }

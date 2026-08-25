@@ -182,32 +182,47 @@ func drawExpr(
 		}
 		innerShape := rapid.SampledFrom(promQLBaseShapeRoster).Draw(t, "labelReplaceInnerShape")
 		inner := drawExpr(t, name, matchers, groupLabels, innerShape, wrapBudget-1)
-		return drawLabelReplaceWrap(t, inner, groupLabels)
+		return drawLabelReplaceWrap(t, inner, groupLabels, innerShape)
 	}
 	panic("gen/promql: unhandled shape " + string(shapeID))
 }
 
 // labelReplaceWrap is one (dst, replacement, regex) trio drawLabelReplaceWrap
-// draws from. Both entries in labelReplaceWrapPool are pure copy-or-tag
-// rewrites — neither depends on the source value's content beyond whether it
-// is empty — so every draw is guaranteed to produce a valid, deterministic
-// label_replace call regardless of which src label ends up selected.
+// draws from. labelReplaceWrapCopy and labelReplaceWrapAbsent are both pure
+// copy-or-tag rewrites — neither depends on the source value's content
+// beyond whether it is empty — so every draw is guaranteed to produce a
+// valid, deterministic label_replace call regardless of which src label
+// ends up selected.
 type labelReplaceWrap struct {
 	dst, replacement, regex string
 }
 
-// labelReplaceWrapPool covers both branches evalLabelReplace
-// (test/property/oracle/promql/label_transform.go) implements: a regex that
-// matches any non-empty value and copies it verbatim to dst (the exact
-// "endpoint" rename shape from #2383's own reproducer,
-// `label_replace(sum by (uri)(rate(X[5m])), "endpoint", "$1", "uri",
-// "(.+)")`), and a regex that matches only an ABSENT src label, tagging dst
-// with a fixed sentinel — exercising label_replace's pass-through path when
-// the wrapped inner expression's shape drops the src label entirely (e.g.
-// promQLSumShape, which strips every label).
-var labelReplaceWrapPool = []labelReplaceWrap{
-	{dst: "endpoint", replacement: "$1", regex: "(.+)"},
-	{dst: "region_missing", replacement: "unknown", regex: "^$"},
+// labelReplaceWrapCopy / labelReplaceWrapAbsent are the two branches
+// evalLabelReplace (test/property/oracle/promql/label_transform.go)
+// implements: labelReplaceWrapCopy's regex matches any non-empty value and
+// copies it verbatim to dst (the exact "endpoint" rename shape from #2383's
+// own reproducer, `label_replace(sum by (uri)(rate(X[5m])), "endpoint",
+// "$1", "uri", "(.+)")`); labelReplaceWrapAbsent's regex matches only an
+// ABSENT src label, tagging dst with a fixed sentinel — exercising
+// label_replace's pass-through path when the wrapped inner expression's
+// shape drops the src label entirely.
+var (
+	labelReplaceWrapCopy   = labelReplaceWrap{dst: "endpoint", replacement: "$1", regex: "(.+)"}
+	labelReplaceWrapAbsent = labelReplaceWrap{dst: "region_missing", replacement: "unknown", regex: "^$"}
+)
+
+// promQLLabelStrippingShapes names the promQLBaseShapeRoster entries whose
+// evaluated output drops every label, including __name__ — a bare sum() or
+// sum(rate()) with no by(...) clause (see drawExpr's own doc comment,
+// "Aggregations strip __name__"). drawLabelReplaceWrap consults this so it
+// never pairs labelReplaceWrapCopy with one of these inner shapes: src would
+// be absent regardless of which label got drawn, silently degrading the
+// "rename and copy an existing label" branch into an accidental no-op
+// indistinguishable from labelReplaceWrapAbsent's own dedicated case — the
+// exact regression this map exists to prevent.
+var promQLLabelStrippingShapes = map[ShapeID]bool{
+	promQLSumShape:     true,
+	promQLSumRateShape: true,
 }
 
 // drawLabelReplaceWrap wraps inner in label_replace(inner, dst, replacement,
@@ -216,12 +231,23 @@ var labelReplaceWrapPool = []labelReplaceWrap{
 // match); when the metric carries none, src falls back to "__name__" — a
 // label every selector-derived series always carries — so the wrap never
 // panics on an empty label pool the way promQLSumByShape's inner draw would.
-func drawLabelReplaceWrap(t *rapid.T, inner parser.Expr, groupLabels []string) parser.Expr {
+//
+// innerShape gates which wrap variant can be drawn: when it is one of
+// promQLLabelStrippingShapes, inner has no label left for
+// labelReplaceWrapCopy to actually copy — that branch is forced to
+// labelReplaceWrapAbsent instead of being offered a draw it could only ever
+// degrade into a no-op. Every other inner shape (including ones outside
+// promQLBaseShapeRoster, e.g. drawRangeExpr's roster, which has no fully
+// label-stripping entry) draws uniformly across both variants as before.
+func drawLabelReplaceWrap(t *rapid.T, inner parser.Expr, groupLabels []string, innerShape ShapeID) parser.Expr {
 	src := "__name__"
 	if len(groupLabels) > 0 {
 		src = rapid.SampledFrom(groupLabels).Draw(t, "labelReplaceSrc")
 	}
-	wrap := rapid.SampledFrom(labelReplaceWrapPool).Draw(t, "labelReplaceWrap")
+	wrap := labelReplaceWrapAbsent
+	if !promQLLabelStrippingShapes[innerShape] {
+		wrap = rapid.SampledFrom([]labelReplaceWrap{labelReplaceWrapCopy, labelReplaceWrapAbsent}).Draw(t, "labelReplaceWrap")
+	}
 	return &parser.Call{
 		Func: parser.Functions["label_replace"],
 		Args: parser.Expressions{

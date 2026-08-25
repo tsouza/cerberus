@@ -196,6 +196,13 @@ func TestCardinalityLegAndSealWireTheRunnerScript(t *testing.T) {
 	}
 }
 
+// intsString renders xs as a comma-joined string so two []int slices can be
+// compared (and reported on mismatch) without reflect.DeepEqual's less
+// readable failure output. Shared with TestPerfProfileShardMatrixCoversEverySlice
+// in perf_profile_gate_test.go, which pins the same "declared shard indices
+// are the contiguous 1..N sequence" property for the sibling perf-profile
+// matrix — both live in this package, so this one definition serves both
+// rather than each file growing its own copy of the same idiom.
 func intsString(xs []int) string {
 	parts := make([]string, len(xs))
 	for i, x := range xs {

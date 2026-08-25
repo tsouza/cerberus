@@ -247,7 +247,7 @@ const (
 // truth, so it is intentionally absent here.
 //
 // RequiresExperimentalTSGrid DOES record, data-driven rather than by hardcoded
-// id, WHICH features need that experimental setting stamped — the four native
+// id, WHICH features need that experimental setting stamped — the eight native
 // timeSeries*ToGrid aggregates. The resolver reads this flag to gate those
 // features on the boot capability verdict (Config.Capability): a feature with
 // RequiresExperimentalTSGrid is enabled only when the server both meets its
