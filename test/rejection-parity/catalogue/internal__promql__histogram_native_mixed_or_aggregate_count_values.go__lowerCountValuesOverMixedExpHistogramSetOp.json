@@ -1,0 +1,60 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate_count_values.go:lowerCountValuesOverMixedExpHistogramSetOp#49c20b7b",
+      "message": "promql: count_values requires a string-literal label name as the first arg",
+      "class": "internal",
+      "rationale": "the parser's typechecker admits only a string literal as count_values' first argument, same as lowerCountValues's identical check (internal/promql/lower.go)",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "lowerCountValues"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate_count_values.go:lowerCountValuesOverMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerSumOrAvgOverMixedExpHistogramSetOp's identical check (histogram_native_mixed_or_aggregate.go, cerberus issue #2346) and its histogram_native_mixed_or_aggregate_presence.go / histogram_native_mixed_or_aggregate_float_only.go siblings (cerberus issue #2595). countValuesOverMixedExpHistogramSetOp only ever matches b via mixedExpHistogramSetOp, which requires b.Op == parser.LOR — `or` is a set operator, never a comparison, so the parser can never have set ReturnBool on it.",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "countValuesOverMixedExpHistogramSetOp",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "mixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate_count_values.go:lowerCountValuesOverMixedExpHistogramSetOp#fc5b1a1a",
+      "message": "promql: count_values requires a non-empty label name",
+      "class": "rejection",
+      "trigger_query": "count_values(\"\", demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))",
+      "evidence": {
+        "guard": [
+          "past returning if b.ReturnBool",
+          "past returning if !ok",
+          "if label == \"\""
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ]
+      }
+    }
+  ]
+}
