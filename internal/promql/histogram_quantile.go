@@ -1883,7 +1883,6 @@ func lowerHistogramQuantileHistogramValuedArg(
 			return nil, false, nil
 		}
 		hist, err = lowerMixedOrHistogramValuedArg(b, s, ctx)
-		matched = true
 	}
 	if err != nil {
 		return nil, true, err
