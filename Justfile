@@ -510,31 +510,17 @@ fuzz QL="promql" DURATION="60s":
 bench:
     go test -bench=. -benchmem -benchtime=5x -run='^$' ./...
 
-# Generate the coverage profile and hold it to the committed per-package
-# floors (default-tag + chdb-tagged lanes, merged via in-line awk because
-# gocovmerge can't reconcile block-boundary drift between the two
-# compilations). Writes cover.out, cover-chdb.out, and cover-merged.out, then
-# hands the merged profile to coverage-summary.mjs, which prints the total + a
-# per-package summary sorted by coverage AND fails on a package below its floor
-# in test/coverage-floor/ (one shard file per package).
-#
-# Requires chDB for the second lane (`just chdb-install`). If libchdb.so isn't
-# present, the recipe still emits cover.out and treats cover-merged.out as
-# cover.out — a narrower profile the floors were not measured against, so the
-# comparison reports instead of failing. COVERAGE_LANES tells the script which
-# of the two it got; CI sets COVERAGE_REQUIRE_LANES so a chdb install that
-# quietly no-ops fails the job instead of disarming the gate.
-#
-# `-coverpkg` is what makes the number a fact about the tests rather than about
-# the file layout. Without it a package is measured only by its OWN test
-# binary, so a helper package with no _test.go of its own lands in the profile
-# fully instrumented and entirely unexecuted no matter how hard the rest of the
-# suite drives it — and the floor derived from that zero cannot fail. With it,
-# every test binary reports coverage for every listed package it links, so
-# extracting a helper into its own package no longer resets its measured
-# coverage to nothing. The cost is that each block is then reported once per
-# test binary that linked it; the awk below (and coverage-summary.mjs itself)
-# fold those duplicates by taking the widest count per block.
+# `-coverpkg` (used by both lanes below) is what makes the number a fact about
+# the tests rather than about the file layout. Without it a package is
+# measured only by its OWN test binary, so a helper package with no _test.go
+# of its own lands in the profile fully instrumented and entirely unexecuted
+# no matter how hard the rest of the suite drives it — and the floor derived
+# from that zero cannot fail. With it, every test binary reports coverage for
+# every listed package it links, so extracting a helper into its own package
+# no longer resets its measured coverage to nothing. The cost is that each
+# block is then reported once per test binary that linked it; the fold below
+# (and coverage-summary.mjs itself) collapse those duplicates by taking the
+# widest count per block.
 #
 # The pattern is `go list`'s expansion rather than the literal `./...`, because
 # the two are NOT the same set here: go.mod `ignore`s the vendored upstream
@@ -545,9 +531,26 @@ bench:
 # to the test coverage of somebody else's benchmark suite. Asking `go list` per
 # lane keeps the measured set identical to the tested set, with no exclusion
 # list to maintain or forget.
-coverage:
+
+# Fold a raw -coverpkg profile in place. -coverpkg makes EVERY test binary
+# emit a row for every block it linked, so a raw lane profile is ~200 MB of
+# repeats where the useful content is ~2 MB. One row per block, keeping the
+# widest count, is `mode: set`'s union and loses nothing — it is the same
+# fold `coverage-merge` does, just applied a step earlier, so the on-disk
+# file and the uploaded artifact stay the size they were.
+_coverage-fold FILE:
+    @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' {{FILE}} | sort; } > {{FILE}}.folded && mv {{FILE}}.folded {{FILE}}
+
+# Default-tag coverage lane: writes cover.out. Split out of the chdb-tagged
+# lane (below) and the merge/gate step (`coverage-merge`) so CI can shard the
+# two lanes tsouza/cerberus's coverage.yml used to run serially on one
+# runner across separate jobs/runners (tsouza/cerberus#2634) — that job had
+# repeatedly hit its timeout as the package/fixture corpus grew. `coverage`
+# below still chains all three for a single local command with the same
+# behaviour the old monolithic recipe had.
+coverage-default:
     @echo "==> default-tag coverage"
-    # Both coverage runs fail closed. The repository pins one supported Go
+    # Both coverage lanes fail closed. The repository pins one supported Go
     # toolchain, which includes covdata; a partial profile produced after any
     # package test failure is not evidence and must never reach the floor gate.
     # 40m, not the 25m this lane used before -coverpkg: the heaviest binary
@@ -565,13 +568,28 @@ coverage:
     # a 4 KiB chunk fills, which on a lane this long reads as a hung job.
     go test -timeout 40m -coverpkg="$(go list ./... | paste -sd, -)" -coverprofile=cover.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'
     @test -s cover.out
-    # Fold each lane as soon as it is written. -coverpkg makes EVERY test
-    # binary emit a row for every block it linked, so a raw lane profile is
-    # ~200 MB of repeats where the useful content is ~2 MB. One row per block,
-    # keeping the widest count, is `mode: set`'s union and loses nothing — it
-    # is the same fold the merge below does, just applied a step earlier, so
-    # the on-disk file and the uploaded artifact stay the size they were.
-    @{ echo "mode: set"; awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out | sort; } > cover-folded.out && mv cover-folded.out cover.out
+    @just _coverage-fold cover.out
+
+# chdb-tagged coverage lane: writes cover-chdb.out. Requires libchdb.so
+# (`just chdb-install`) — unlike the default-tag lane, this one skips itself
+# (rather than failing) when the library is absent, so a bare local `just
+# coverage` without chDB installed still produces a default-tag-only profile,
+# same as before this recipe was split out of `coverage`. CI's caller sets
+# COVERAGE_REQUIRE_LANES=default+chdb (below), which turns that same skip
+# into a hard failure: test/regression/tagged_test_enrollment_test.go's
+# static evidence scanner treats the chdb-tagged `go test` here as proven
+# execution only because of that unconditional tail check, the same
+# fail-closed contract `coverage-merge`'s COVERAGE_LANES join to
+# coverage-summary.mjs enforces for the merged profile.
+coverage-chdb:
+    @if [ -e "{{CHDB_INSTALL_PATH}}" ]; then \
+        echo "==> chdb-tagged coverage"; \
+        COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
+        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
+        TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
+    else \
+        echo "==> libchdb.so not found, skipping chdb lane"; \
+    fi
     # This lane's `go test` used to sweep ./... with no shard env, timed out
     # at 40m, the same shape as the default-tag lane above. It stopped
     # fitting that budget once TestCardinalityRatchet's corpus walk
@@ -602,26 +620,57 @@ coverage:
     # count (3) is perf-coverage-fanout.mjs's own RATCHET_FANOUT constant,
     # restated here because Just recipes cannot import a JS constant;
     # perf-coverage-fanout.test.mjs pins the two back together.
-    @if [ -e /usr/local/lib/libchdb.so ]; then \
-        echo "==> chdb-tagged coverage"; \
-        COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
-        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
-        TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
+    @if [ -e cover-chdb.out ]; then \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out cover-chdb-ratchet-*.out | sort; \
-        } > cover-folded.out && mv cover-folded.out cover-chdb.out; \
+        } > cover-chdb.out.folded && mv cover-chdb.out.folded cover-chdb.out; \
+    fi
+    # Unconditional (outside both `if` blocks above, so it runs whether or not
+    # libchdb.so was found): a bare local `just coverage-chdb` stays a graceful
+    # skip, but a caller that opts in via COVERAGE_REQUIRE_LANES=default+chdb
+    # is asserting the chdb lane MUST have produced real evidence — CI sets
+    # this so an install that silently no-ops fails the job here instead of
+    # only surfacing three steps later as a narrower merged profile.
+    @if [ "${COVERAGE_REQUIRE_LANES:-}" = "default+chdb" ] && [ ! -s cover-chdb.out ]; then \
+        echo "error: COVERAGE_REQUIRE_LANES=default+chdb but cover-chdb.out was not produced (libchdb.so missing?)" >&2; \
+        exit 1; \
+    fi
+
+# Merge cover.out (default-tag lane, required) with cover-chdb.out
+# (chdb-tagged lane, optional) into cover-merged.out and run the floor gate.
+# Reads whatever cover.out / cover-chdb.out already sit on disk, so it works
+# equally after running `coverage-default` + `coverage-chdb` locally in the
+# same tree, or after a CI job downloads each lane's profile artifact into
+# one directory (tsouza/cerberus#2634) — either way the merge is a fact about
+# the two files, not about how they got there.
+coverage-merge:
+    @test -s cover.out || { echo "error: cover.out not found — run 'just coverage-default' first" >&2; exit 1; }
+    @if [ -s cover-chdb.out ]; then \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
           awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover.out cover-chdb.out | sort; \
         } > cover-merged.out; \
         LANES=default+chdb; \
     else \
-        echo "==> libchdb.so not found, skipping chdb lane"; \
+        echo "==> no chdb-tagged profile found, merged profile is default-tag only"; \
         cp cover.out cover-merged.out; \
         LANES=default; \
     fi; \
     echo; \
     COVERAGE_LANES="$LANES" node .github/scripts/coverage-summary.mjs
+
+# Generate the coverage profile and hold it to the committed per-package
+# floors, chaining the three recipes above: `coverage-default` writes
+# cover.out, `coverage-chdb` writes cover-chdb.out (skipped without
+# libchdb.so), and `coverage-merge` folds them into cover-merged.out and
+# runs coverage-summary.mjs's floor gate.
+#
+# CI does not call this recipe directly: coverage.yml runs `coverage-default`
+# and `coverage-chdb` as two parallel jobs and `coverage-merge` in a third
+# that depends on both (tsouza/cerberus#2634), so a local `just coverage`
+# and the CI pipeline share every line of test/merge logic without sharing a
+# process.
+coverage: coverage-default coverage-chdb coverage-merge
 
 # Raise test/coverage-floor/ to what the tree currently achieves. Reads the
 # profile `just coverage` leaves behind, so run that first. The ledger is a

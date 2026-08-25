@@ -755,6 +755,31 @@ what actually runs.
     flag first).
   - Exit: `0` when every scanned issue was classified and its missing labels
     applied, `1` on any vacuity guard, unclassifiable issue, or API error.
+- **`coverage-aggregate.mjs`** — `coverage.yml`, the `coverage` aggregator job.
+  `coverage` used to be one job running `just coverage` (the default-tag AND
+  chdb-tagged lanes, serially) on a single runner, and it repeatedly hit or
+  came within minutes of its 60-minute timeout as the package/fixture corpus
+  grew (tsouza/cerberus#2634) — `-coverpkg` instrumentation makes the job's
+  cost scale with the WHOLE package graph, not just the packages under active
+  test. The fix splits the two lanes into parallel `coverage-default` /
+  `coverage-chdb` jobs and keeps ONE aggregator named exactly `coverage` — the
+  name branch protection and release.yml's RELEASE_REQUIRED_CHECKS both
+  resolve by exact text — mirroring `perf-guards-shard`/`perf-guards` in
+  chdb.yml and `profile-shard`/`profile` in perf-profile.yml, one level
+  simpler: two named `needs` results to reconcile instead of one matrix
+  roll-up. Tells a legitimate skip (ordinary PR, neither lane ran, nothing to
+  merge) apart from an illegitimate one (a heavy run where a lane never ran,
+  or failed, or was cancelled by its own timeout), and treats `coverage-plan`
+  (the leading job computing RUN_HEAVY) not succeeding as its own hard
+  failure regardless of the other facts — otherwise an unset RUN_HEAVY output
+  would read identically to an ordinary PR's legitimate no-op.
+  `coverage-aggregate.test.mjs` is the `node --test` guard.
+  - Env: `PLAN_RESULT` (`needs.coverage-plan.result`), `RUN_HEAVY`
+    (`needs.coverage-plan.outputs.run_heavy`), `DEFAULT_RESULT`
+    (`needs.coverage-default.result`), `CHDB_RESULT`
+    (`needs.coverage-chdb.result`).
+  - Exit: `0` when it is safe to proceed (merge on a heavy run, or report the
+    no-op on a non-heavy one), `1` otherwise.
 - **`coverage-summary.mjs`** — `coverage.yml`, invoked at the end of the `just
   coverage` recipe rather than as its own workflow step (so a local run gets the
   same verdict CI does). Renders the per-package coverage table into the step
@@ -794,23 +819,27 @@ what actually runs.
   - Exit: `0` when every statement-carrying full-lane package has a
     positive floor and every floor names a live package, `1` on
     listing/instrumentation/input failure or structural drift.
-- **`coverage-run-heavy.mjs`** — `coverage.yml`, the `decide run_heavy` step.
-  Decides whether the job's heavy lane (`just coverage`: the full instrumented
-  test run + chdb install) does real work for this event
-  (tsouza/cerberus#2416, part 2 of #2394). `pull_request` / `merge_group` /
-  `schedule` / `workflow_dispatch` are unchanged from the old inline GHA
-  expression — delegated to `lib/scope-gate.mjs`'s `runsFullLane`, the same
-  helper `mutation.yml` and `compose-smoke-scope.mjs` share. A `push` gets an
-  ADDITIONAL check: it resolves the PR that produced the pushed commit
-  (`lib/resolve-source-pr.mjs`'s exact `merged && merge_commit_sha` match) and
-  skips the heavy run ONLY when that PR resolved AND its own head ref started
-  with `release/` — i.e. only when the identical tree already ran heavy and
-  posted `coverage`'s check-run somewhere `release-preflight.mjs`'s SOURCE-PR
-  CREDIT will find it. Every other push (an ordinary-PR merge, an unresolved
-  match, a maintenance-line hotfix with no PR at all) still runs heavy —
-  fail-safe by construction. `coverage-run-heavy.test.mjs` pins the decision
-  table; it runs inside `coverage.yml`'s own always-on "Test coverage gates"
-  step (that workflow has a `pull_request:` trigger, unlike release.yml, so it
+- **`coverage-run-heavy.mjs`** — `coverage.yml`, the leading `coverage-plan`
+  job's `decide run_heavy` step (split out of the old single `coverage` job
+  by tsouza/cerberus#2634's lane sharding, the same way perf-profile.yml's
+  `decide-run-heavy` sits ahead of its `profile-shard` matrix). Decides
+  whether the `coverage-default` / `coverage-chdb` lane jobs (`just
+  coverage-default` + `just coverage-chdb`: the full instrumented test runs +
+  chdb install) do real work for this event (tsouza/cerberus#2416, part 2 of
+  #2394). `pull_request` / `merge_group` / `schedule` / `workflow_dispatch`
+  are unchanged from the old inline GHA expression — delegated to
+  `lib/scope-gate.mjs`'s `runsFullLane`, the same helper `mutation.yml` and
+  `compose-smoke-scope.mjs` share. A `push` gets an ADDITIONAL check: it
+  resolves the PR that produced the pushed commit (`lib/resolve-source-pr.mjs`'s
+  exact `merged && merge_commit_sha` match) and skips the heavy run ONLY when
+  that PR resolved AND its own head ref started with `release/` — i.e. only
+  when the identical tree already ran heavy and posted `coverage`'s
+  check-run somewhere `release-preflight.mjs`'s SOURCE-PR CREDIT will find
+  it. Every other push (an ordinary-PR merge, an unresolved match, a
+  maintenance-line hotfix with no PR at all) still runs heavy — fail-safe by
+  construction. `coverage-run-heavy.test.mjs` pins the decision table; it
+  runs inside `coverage-plan`'s own always-on "Test coverage gates" step
+  (that workflow has a `pull_request:` trigger, unlike release.yml, so it
   needs no separate ci.yml wiring).
   - Modes: `verify` (loads the policy, no network) | `emit` (decide + append
     `run_heavy=true|false` to `GITHUB_OUTPUT`; calls the GitHub API only on a
