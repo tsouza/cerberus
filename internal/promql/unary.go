@@ -27,6 +27,14 @@ import (
 // quantile, the right-hand side of an arithmetic op, ...) is unwrapped by
 // `tryScalarLiteral`, which understands UnaryExpr ADD/SUB over a literal —
 // so this lowerer is never invoked for those.
+//
+// A histogram-VALUED operand (cerberus issue #2583, e.g.
+// `-demo_latency_exp_hist`) never reaches this function either:
+// [lowerHistogramNativeRoot] resolves it upstream through
+// [lowerExpHistogramValuedShape]'s own `*parser.UnaryExpr` producer
+// (histogram_native_unary.go), which composes under every wrapper that
+// already threads its argument through that same recogniser. This
+// lowerer keeps handling only the ordinary float-Value case below.
 func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	switch u.Op {
 	case parser.ADD:

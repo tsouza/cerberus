@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#6b279323",
       "message": "promql: internal invariant violated: exp-histogram scalar-binop operand lowering published %s row shape (%T), want %s",
       "class": "internal",
-      "rationale": "expHistogramScalarBinop and expHistogramDroppingScalarBinop admit only isExpHistogramValuedShape operands, and every branch of that recognizer has a matching branch in its producer, lowerExpHistogramValuedShape, that returns a node whose chplan.RowShapeOf reports chplan.HistogramRowShape — the property this guard checks directly, rather than assuming a specific chplan.Node subtype. This site used to assert the stronger, wrong claim that the operand caps with literally a *chplan.HistogramProjection (cerberus issue #2557): the and/or/unless set-op branch (expHistogramSetOp) lowers to a *chplan.VectorSetOp instead, which is HistogramRowShape-shaped but not a HistogramProjection, so that older assertion panicked with this very error on a real, reachable query — the recognizer and the lowering agreed the shape was histogram-valued, they just disagreed on which Go type carried it. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path (drop=true), but it calls lowerExpHistogramScalarBinop only immediately after its own expHistogramDroppingScalarBinop(expr, s, ctx) check has returned ok — the same isExpHistogramValuedShape-gated histSide lowerHistogramNativeRoot already passes — so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a third caller of lowerHistogramNativeRoot, reached for a bare subquery's own inner expression; it reaches this lowerer through the identical isExpHistogramValuedShape-gated dispatch, so it does not affect the claim either.",
+      "rationale": "expHistogramScalarBinop and expHistogramDroppingScalarBinop admit only isExpHistogramValuedShape operands, and every branch of that recognizer has a matching branch in its producer, lowerExpHistogramValuedShape, that returns a node whose chplan.RowShapeOf reports chplan.HistogramRowShape — the property this guard checks directly, rather than assuming a specific chplan.Node subtype. This site used to assert the stronger, wrong claim that the operand caps with literally a *chplan.HistogramProjection (cerberus issue #2557): the and/or/unless set-op branch (expHistogramSetOp) lowers to a *chplan.VectorSetOp instead, which is HistogramRowShape-shaped but not a HistogramProjection, so that older assertion panicked with this very error on a real, reachable query — the recognizer and the lowering agreed the shape was histogram-valued, they just disagreed on which Go type carried it. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path (drop=true), but it calls lowerExpHistogramScalarBinop only immediately after its own expHistogramDroppingScalarBinop(expr, s, ctx) check has returned ok — the same isExpHistogramValuedShape-gated histSide lowerHistogramNativeRoot already passes — so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) reaches this lowerer through the identical isExpHistogramValuedShape-gated dispatch inside lowerHistogramNativeRoot for a bare subquery's own inner expression, so it does not affect the claim either. lowerUnaryOverExpHistogram (cerberus issue #2583) is a fourth direct caller, reached from lowerExpHistogramValuedShape's own unaryOverExpHistogram producer branch for unary minus over a histogram-valued operand: it calls lowerExpHistogramScalarBinop(operand, chplan.OpMul, \u0026chplan.LitFloat{V: -1}, s, ctx, false) only after unaryOverExpHistogram's own isExpHistogramValuedShape(u.Expr, s, ctx) check has already matched that identical operand, so the claim is unaffected by this caller either.",
       "evidence": {
         "guard": [
           "past returning if !matched",
@@ -15,7 +15,8 @@
         "callers": [
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramValuedShape",
-          "lowerHistogramNativeRoot"
+          "lowerHistogramNativeRoot",
+          "lowerUnaryOverExpHistogram"
         ],
         "cited": [
           "expHistogramDroppingScalarBinop",
@@ -26,7 +27,9 @@
           "lowerExpHistogramScalarBinop",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot",
-          "lowerHistogramNativeSubqueryInner"
+          "lowerHistogramNativeSubqueryInner",
+          "lowerUnaryOverExpHistogram",
+          "unaryOverExpHistogram"
         ]
       }
     },
@@ -35,7 +38,7 @@
       "site": "internal/promql/histogram_native_scalar_binop.go:lowerExpHistogramScalarBinop#d112d97a",
       "message": "promql: internal invariant violated: exp-histogram scalar-binop matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "the scalar-binop recognizers and lowerExpHistogramValuedShape share isExpHistogramValuedShape for the identical histogram operand. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path, but — same as the sibling site just above — it only reaches this lowerer via expHistogramDroppingScalarBinop's own isExpHistogramValuedShape-gated histSide, so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) is a third caller of lowerHistogramNativeRoot as of this change, reached for a bare subquery's own inner expression, and reaches this lowerer through the identical gated dispatch, so it does not affect the claim either.",
+      "rationale": "the scalar-binop recognizers and lowerExpHistogramValuedShape share isExpHistogramValuedShape for the identical histogram operand. Since cerberus issue #2528, lowerExpHistogramDroppingShape joins lowerHistogramNativeRoot as a second caller of the drop path, but — same as the sibling site just above — it only reaches this lowerer via expHistogramDroppingScalarBinop's own isExpHistogramValuedShape-gated histSide, so the claim is unaffected by that caller. lowerHistogramNativeSubqueryInner (cerberus issue #2543) reaches this lowerer through the identical gated dispatch inside lowerHistogramNativeRoot for a bare subquery's own inner expression, so it does not affect the claim either. lowerUnaryOverExpHistogram (cerberus issue #2583) is a fourth direct caller: it invokes lowerExpHistogramScalarBinop(operand, chplan.OpMul, \u0026chplan.LitFloat{V: -1}, s, ctx, false) only after unaryOverExpHistogram's own isExpHistogramValuedShape(u.Expr, s, ctx) check has already matched that same operand, so the claim is unaffected by this caller either.",
       "evidence": {
         "guard": [
           "if !matched"
@@ -43,15 +46,19 @@
         "callers": [
           "lowerExpHistogramDroppingShape",
           "lowerExpHistogramValuedShape",
-          "lowerHistogramNativeRoot"
+          "lowerHistogramNativeRoot",
+          "lowerUnaryOverExpHistogram"
         ],
         "cited": [
           "expHistogramDroppingScalarBinop",
           "isExpHistogramValuedShape",
           "lowerExpHistogramDroppingShape",
+          "lowerExpHistogramScalarBinop",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot",
-          "lowerHistogramNativeSubqueryInner"
+          "lowerHistogramNativeSubqueryInner",
+          "lowerUnaryOverExpHistogram",
+          "unaryOverExpHistogram"
         ]
       }
     }

@@ -157,6 +157,11 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if call, ok := labelCallOverExpHistogram(expr, s, ctx); ok {
 		return isExpHistogramValuedShape(call.Args[0], s, ctx)
 	}
+	// `-<exp-hist shape>` / `+<exp-hist shape>` (cerberus issue #2583) —
+	// see histogram_native_unary.go.
+	if _, _, ok := unaryOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
 	if _, ok := bareExpHistogramSelector(expr, s, ctx); ok {
 		return true
 	}
