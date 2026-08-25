@@ -342,39 +342,47 @@ func lowerHistogramNativeRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) 
 		plan, err := lowerComparisonVectorPlainOverMixedExpHistogramSetOp(mixedSetOp, plainExpr, mixedOnLeft, op, match, card, include, returnBool, s, ctx)
 		return plan, true, err
 	}
-	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
-		plan, err := lowerExpHistogramOverTime(shape, s, ctx)
-		return plan, true, err
-	}
+	// sum_over_time() / avg_over_time() and last_over_time() /
+	// first_over_time() over a bare exp-histogram selector used to have
+	// their own direct dispatch entries here (cerberus issue #2480). As of
+	// cerberus issue #2619 both are recognised inside
+	// [lowerExpHistogramValuedShape] instead ([overTimeOverExpHistogram] /
+	// [lastFirstOverExpHistogram], histogram_native_float_fn.go), which
+	// this function already calls just above (the `plan, ok, err :=
+	// lowerExpHistogramValuedShape(expr, s, ctx)` check) — a separate
+	// entry re-testing the identical `expr` here would never fire, since
+	// that earlier call already claims the shape. Moving the recognizers
+	// there rather than duplicating them is what lets
+	// [mergeableExpHistogramAggregate]'s recursive call reach them too, so
+	// `sum(avg_over_time(m_exp_hist[5m]))` / `sum(last_over_time(
+	// m_exp_hist[5m]))` compose the same way `sum(rate(m_exp_hist[5m]))`
+	// already did.
 	if shape, ok := resetsOrChangesOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramResetsOrChanges(shape, s, ctx)
 		return plan, true, err
 	}
 	// count_over_time() / present_over_time() (cerberus issue #2480): the
-	// window-counting sibling of sum_over_time / avg_over_time just above
-	// — see histogram_native_count_present_over_time.go's own doc for why
-	// they need a windowed COUNT rather than either the drop treatment
+	// window-counting sibling of sum_over_time / avg_over_time — see
+	// histogram_native_count_present_over_time.go's own doc for why they
+	// need a windowed COUNT rather than either the drop treatment
 	// (rangeVectorFloatOnlyDropFuncs) or the fold treatment
-	// (overTimeOverExpHistogram) applies.
+	// (overTimeOverExpHistogram, now composed via
+	// [lowerExpHistogramValuedShape] above) applies.
 	if fn, ms, vs, ok := countPresentOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
 		return plan, true, err
 	}
-	// last_over_time() / first_over_time() (cerberus issue #2480): the
-	// histogram-PRESERVING sibling of count_over_time / present_over_time
-	// just above — see histogram_native_last_first_over_time.go's own doc
-	// for why reference selects (rather than drops or counts) the
-	// window's newest/oldest sample.
-	if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
-		plan, err := lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
-		return plan, true, err
-	}
 	// ts_of_first_over_time() / ts_of_last_over_time() (cerberus issue
 	// #2482): the timestamp-reporting siblings of last_over_time /
-	// first_over_time just above — see
-	// histogram_native_ts_of_first_last_over_time.go's own doc for why
-	// they need their own lowering (the output is a float TIMESTAMP
-	// value with `__name__` DROPPED, not a preserved histogram sample).
+	// first_over_time (now composed via [lowerExpHistogramValuedShape]
+	// above) — see histogram_native_ts_of_first_last_over_time.go's own
+	// doc for why they need their own lowering (the output is a float
+	// TIMESTAMP value with `__name__` DROPPED, not a preserved histogram
+	// sample). [histogramNativeRangeVectorRetry] retries this same
+	// recognizer for the NESTED case (cerberus issue #2619) — its output
+	// is a plain float, not histogram-valued, so it does not belong in
+	// [lowerExpHistogramValuedShape]'s producer chain the way its
+	// histogram-preserving siblings do.
 	if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(expr, s, ctx); ok {
 		plan, err := lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
 		return plan, true, err
@@ -2900,6 +2908,18 @@ func matrixSelectorArg(c *parser.Call) (*parser.MatrixSelector, *parser.VectorSe
 // recognizer here, exactly like [resetsOrChangesOverExpHistogram] above,
 // closes the gap the same way cerberus issue #2549 closed it for
 // count()/group().
+//
+// ts_of_first_over_time()/ts_of_last_over_time() (cerberus issue #2619):
+// the identical gap for the last two SELECT-family names
+// [lowerHistogramNativeRoot] only tries at the query's own root (or a
+// subquery's own inner) via [tsOfFirstLastOverExpHistogram]. Unlike
+// last_over_time/first_over_time — which answer a histogram-VALUED sample
+// and so compose through [lowerExpHistogramValuedShape]'s producer chain
+// instead (cerberus issue #2619's other half, histogram_native_float_fn.go)
+// — these two report a plain float TIMESTAMP, so `sum()`/`avg()`/`count()`
+// wrapping them is ordinary float aggregation once the operand itself
+// resolves; retrying the recognizer here, exactly like its two siblings
+// above, is all a wrapper needs.
 func histogramNativeRangeVectorRetry(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, bool, error) {
 	if shape, ok := resetsOrChangesOverExpHistogram(c, s, ctx); ok {
 		node, err := lowerExpHistogramResetsOrChanges(shape, s, ctx)
@@ -2907,6 +2927,10 @@ func histogramNativeRangeVectorRetry(c *parser.Call, s schema.Metrics, ctx lower
 	}
 	if fn, ms, vs, ok := countPresentOverExpHistogram(c, s, ctx); ok {
 		node, err := lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+		return node, true, err
+	}
+	if fn, ms, vs, ok := tsOfFirstLastOverExpHistogram(c, s, ctx); ok {
+		node, err := lowerTsOfFirstLastOverExpHistogram(fn, ms, vs, s, ctx)
 		return node, true, err
 	}
 	return nil, false, nil

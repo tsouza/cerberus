@@ -1,0 +1,181 @@
+-- query.promql --
+count(avg_over_time(request_latency_exp_hist[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- cerberus issue #2619: the count()-outer sibling of
+-- exp_histogram_sum_over_avg_over_time.txtar, same seed. count() is
+-- value-blind (it never merges the histograms avg_over_time folds, just
+-- counts the two series that produced one), so the answer is a plain
+-- float 2 regardless of what avg_over_time computed per series.
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('request_latency_exp_hist', map('instance', 'a'), toDateTime64('2025-12-31 23:59:01', 9),  5, 3.0, 0, 0, 0, [1, 2], 0, []),
+    ('request_latency_exp_hist', map('instance', 'a'), toDateTime64('2026-01-01 00:00:01', 9),  9, 6.0, 0, 0, 0, [3, 4], 0, []),
+    ('request_latency_exp_hist', map('instance', 'b'), toDateTime64('2025-12-31 23:59:01', 9),  7, 4.0, 0, 0, 0, [3, 1], 0, []),
+    ('request_latency_exp_hist', map('instance', 'b'), toDateTime64('2026-01-01 00:00:01', 9), 11, 8.0, 0, 0, 0, [5, 3], 0, []);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:01Z", 2]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = ""
+[3] int64 = 9
+[4] float64 = 0
+[5] string = "sumKahan"
+[6] string = "sumKahan"
+[7] string = "sumKahan"
+[8] string = "sumKahan"
+[9] int64 = 1
+[10] int64 = 2
+[11] float64 = 0
+[12] int64 = 2
+[13] int64 = 1
+[14] int64 = 1
+[15] int64 = 1
+[16] int64 = 1
+[17] int64 = 1
+[18] int64 = 1
+[19] int64 = 1
+[20] int64 = 1
+[21] int64 = 1
+[22] int64 = 0
+[23] int64 = 1
+[24] int64 = 1
+[25] int64 = 1
+[26] int64 = 1
+[27] int64 = 1
+[28] int64 = 1
+[29] float64 = 0
+[30] float64 = 0
+[31] int64 = 1
+[32] int64 = 1
+[33] int64 = 2
+[34] float64 = 0
+[35] int64 = 2
+[36] int64 = 1
+[37] int64 = 1
+[38] int64 = 1
+[39] int64 = 1
+[40] int64 = 1
+[41] int64 = 1
+[42] int64 = 1
+[43] int64 = 1
+[44] int64 = 1
+[45] int64 = 0
+[46] int64 = 1
+[47] int64 = 1
+[48] int64 = 1
+[49] int64 = 1
+[50] int64 = 1
+[51] int64 = 1
+[52] float64 = 0
+[53] float64 = 0
+[54] int64 = 1
+[55] int64 = 0
+[56] int64 = 1
+[57] int64 = 1
+[58] int64 = 1
+[59] string = "sumKahan"
+[60] int64 = 1
+[61] int64 = 2
+[62] float64 = 0
+[63] int64 = 2
+[64] int64 = 1
+[65] int64 = 1
+[66] int64 = 1
+[67] int64 = 1
+[68] int64 = 1
+[69] int64 = 1
+[70] int64 = 1
+[71] int64 = 1
+[72] int64 = 1
+[73] int64 = 0
+[74] int64 = 1
+[75] int64 = 1
+[76] int64 = 1
+[77] int64 = 1
+[78] int64 = 1
+[79] int64 = 1
+[80] float64 = 0
+[81] float64 = 0
+[82] int64 = 1
+[83] int64 = 1
+[84] int64 = 2
+[85] float64 = 0
+[86] int64 = 2
+[87] int64 = 1
+[88] int64 = 1
+[89] int64 = 1
+[90] int64 = 1
+[91] int64 = 1
+[92] int64 = 1
+[93] int64 = 1
+[94] int64 = 1
+[95] int64 = 1
+[96] int64 = 0
+[97] int64 = 1
+[98] int64 = 1
+[99] int64 = 1
+[100] int64 = 1
+[101] int64 = 1
+[102] int64 = 1
+[103] float64 = 0
+[104] float64 = 0
+[105] int64 = 1
+[106] int64 = 0
+[107] int64 = 1
+[108] int64 = 1
+[109] int64 = 1
+[110] string = "service_name"
+[111] string = "service.name"
+[112] string = "service_name"
+[113] string = "service.name"
+[114] string = "service_name"
+[115] string = ""
+[116] string = "service_name"
+[117] string = "request_latency_exp_hist"
+[118] string = "request.latency.exp.hist"
+[119] string = "request.latency.exp/hist"
+[120] string = "request.latency.exp_hist"
+[121] string = "request.latency/exp/hist"
+[122] string = "request.latency/exp_hist"
+[123] string = "request.latency_exp.hist"
+[124] string = "request.latency_exp_hist"
+[125] string = "request/latency/exp/hist"
+[126] string = "request/latency/exp_hist"
+[127] string = "request/latency_exp_hist"
+[128] string = "request_latency.exp.hist"
+[129] string = "request_latency.exp_hist"
+[130] string = "request_latency_exp.hist"
+[131] string = "2026-01-01 00:00:01.000000000"
+[132] int64 = 9
+[133] string = "2026-01-01 00:00:01.000000000"
+[134] int64 = 9
+[135] int64 = 300000000000
+-- chplan --
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[TimeUnix AS TimeUnix] funcs=[FnCount() AS Value]
+    HistogramProjection project=["" AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
+      Project [Attributes AS Attributes, (FnArrayReduce("sumKahan", FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_count_list), _hq_ts_list)) / FnLength(FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_count_list), _hq_ts_list))) AS Count, (FnArrayReduce("sumKahan", FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_sum_list), _hq_ts_list)) / FnLength(FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_sum_list), _hq_ts_list))) AS Sum, _hq_merged_scale AS Scale, (FnArrayReduce("sumKahan", FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_zero_counts), _hq_ts_list)) / FnLength(FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), _hq_zero_counts), _hq_ts_list))) AS ZeroCount, FnArrayMin(FnArrayMap((s, off) -> FnBitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_pos_offsets)) AS PositiveOffset, FnArrayMap(mst -> FnArrayMap(tb -> (FnArrayReduce("sumKahan", FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), FnArrayMap((s, off, arr) -> FnArrayMap(kh_final -> (FnTupleElement(kh_final, 1) + FnTupleElement(kh_final, 2)), FnArray(FnArrayFold((kh_acc, kh_x) -> FnArrayMap(kh_total -> FnTuple(kh_total, FnIf(FnIsInfinite(kh_total), 0, (FnTupleElement(kh_acc, 2) + FnIf((FnAbs(FnTupleElement(kh_acc, 1)) >= FnAbs(kh_x)), ((FnTupleElement(kh_acc, 1) - kh_total) + kh_x), ((kh_x - kh_total) + FnTupleElement(kh_acc, 1)))))), FnArray((FnTupleElement(kh_acc, 1) + kh_x)))[1], FnArraySlice(arr, FnLeast(FnGreatest(((FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale)))) - off) + 1), 1), (FnLength(arr) + 1)), FnGreatest(0, ((FnLeast(((off + FnLength(arr)) - 1), ((((mst + tb) + 1) * FnBitShiftLeft(1, (s - _hq_merged_scale))) - 1)) - FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale))))) + 1))), FnTuple(0, 0))))[1], _hq_scales, _hq_pos_offsets, _hq_pos_buckets)), _hq_ts_list)) / FnLength(FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), FnArrayMap((s, off, arr) -> FnArrayMap(kh_final -> (FnTupleElement(kh_final, 1) + FnTupleElement(kh_final, 2)), FnArray(FnArrayFold((kh_acc, kh_x) -> FnArrayMap(kh_total -> FnTuple(kh_total, FnIf(FnIsInfinite(kh_total), 0, (FnTupleElement(kh_acc, 2) + FnIf((FnAbs(FnTupleElement(kh_acc, 1)) >= FnAbs(kh_x)), ((FnTupleElement(kh_acc, 1) - kh_total) + kh_x), ((kh_x - kh_total) + FnTupleElement(kh_acc, 1)))))), FnArray((FnTupleElement(kh_acc, 1) + kh_x)))[1], FnArraySlice(arr, FnLeast(FnGreatest(((FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale)))) - off) + 1), 1), (FnLength(arr) + 1)), FnGreatest(0, ((FnLeast(((off + FnLength(arr)) - 1), ((((mst + tb) + 1) * FnBitShiftLeft(1, (s - _hq_merged_scale))) - 1)) - FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale))))) + 1))), FnTuple(0, 0))))[1], _hq_scales, _hq_pos_offsets, _hq_pos_buckets)), _hq_ts_list))), FnRange(FnToUInt64(FnGreatest(0, ((FnArrayMax(FnArrayMap((sm, om, am) -> FnBitShiftRight((om + (FnLength(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets, _hq_pos_buckets)) - mst) + 1))))), FnArray(FnArrayMin(FnArrayMap((sm, om) -> FnBitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_pos_offsets))))[1] AS PositiveBucketCounts, FnArrayMin(FnArrayMap((s, off) -> FnBitShiftRight(off, (s - _hq_merged_scale)), _hq_scales, _hq_neg_offsets)) AS NegativeOffset, FnArrayMap(mst -> FnArrayMap(tb -> (FnArrayReduce("sumKahan", FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), FnArrayMap((s, off, arr) -> FnArrayMap(kh_final -> (FnTupleElement(kh_final, 1) + FnTupleElement(kh_final, 2)), FnArray(FnArrayFold((kh_acc, kh_x) -> FnArrayMap(kh_total -> FnTuple(kh_total, FnIf(FnIsInfinite(kh_total), 0, (FnTupleElement(kh_acc, 2) + FnIf((FnAbs(FnTupleElement(kh_acc, 1)) >= FnAbs(kh_x)), ((FnTupleElement(kh_acc, 1) - kh_total) + kh_x), ((kh_x - kh_total) + FnTupleElement(kh_acc, 1)))))), FnArray((FnTupleElement(kh_acc, 1) + kh_x)))[1], FnArraySlice(arr, FnLeast(FnGreatest(((FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale)))) - off) + 1), 1), (FnLength(arr) + 1)), FnGreatest(0, ((FnLeast(((off + FnLength(arr)) - 1), ((((mst + tb) + 1) * FnBitShiftLeft(1, (s - _hq_merged_scale))) - 1)) - FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale))))) + 1))), FnTuple(0, 0))))[1], _hq_scales, _hq_neg_offsets, _hq_neg_buckets)), _hq_ts_list)) / FnLength(FnArraySort((wv, wo) -> wo, FnArrayMap(n -> FnToFloat64(n), FnArrayMap((s, off, arr) -> FnArrayMap(kh_final -> (FnTupleElement(kh_final, 1) + FnTupleElement(kh_final, 2)), FnArray(FnArrayFold((kh_acc, kh_x) -> FnArrayMap(kh_total -> FnTuple(kh_total, FnIf(FnIsInfinite(kh_total), 0, (FnTupleElement(kh_acc, 2) + FnIf((FnAbs(FnTupleElement(kh_acc, 1)) >= FnAbs(kh_x)), ((FnTupleElement(kh_acc, 1) - kh_total) + kh_x), ((kh_x - kh_total) + FnTupleElement(kh_acc, 1)))))), FnArray((FnTupleElement(kh_acc, 1) + kh_x)))[1], FnArraySlice(arr, FnLeast(FnGreatest(((FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale)))) - off) + 1), 1), (FnLength(arr) + 1)), FnGreatest(0, ((FnLeast(((off + FnLength(arr)) - 1), ((((mst + tb) + 1) * FnBitShiftLeft(1, (s - _hq_merged_scale))) - 1)) - FnGreatest(off, ((mst + tb) * FnBitShiftLeft(1, (s - _hq_merged_scale))))) + 1))), FnTuple(0, 0))))[1], _hq_scales, _hq_neg_offsets, _hq_neg_buckets)), _hq_ts_list))), FnRange(FnToUInt64(FnGreatest(0, ((FnArrayMax(FnArrayMap((sm, om, am) -> FnBitShiftRight((om + (FnLength(am) - 1)), (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets, _hq_neg_buckets)) - mst) + 1))))), FnArray(FnArrayMin(FnArrayMap((sm, om) -> FnBitShiftRight(om, (sm - _hq_merged_scale)), _hq_scales, _hq_neg_offsets))))[1] AS NegativeBucketCounts]
+        Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnMin(Scale) AS _hq_merged_scale, FnGroupArray(Scale) AS _hq_scales, FnGroupArray(ZeroCount) AS _hq_zero_counts, FnGroupArray(Count) AS _hq_count_list, FnGroupArray(PositiveOffset) AS _hq_pos_offsets, FnGroupArray(PositiveBucketCounts) AS _hq_pos_buckets, FnGroupArray(NegativeOffset) AS _hq_neg_offsets, FnGroupArray(NegativeBucketCounts) AS _hq_neg_buckets, FnGroupArray(TimeUnix) AS _hq_ts_list, FnGroupArray(Sum) AS _hq_sum_list, FnUniqExact(TimeUnix) AS _hq_samples]
+          Filter predicate=(((MetricName IN ("request_latency_exp_hist", "request.latency.exp.hist", "request.latency.exp/hist", "request.latency.exp_hist", "request.latency/exp/hist", "request.latency/exp_hist", "request.latency_exp.hist", "request.latency_exp_hist", "request/latency/exp/hist", "request/latency/exp_hist", "request/latency_exp_hist", "request_latency.exp.hist", "request_latency.exp_hist", "request_latency_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+            Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `TimeUnix` AS `TimeUnix`, toFloat64(count()) AS `Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT `Attributes` AS `Attributes`, (arrayReduce(?, arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_count_list`), `_hq_ts_list`)) / length(arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_count_list`), `_hq_ts_list`))) AS `Count`, (arrayReduce(?, arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_sum_list`), `_hq_ts_list`)) / length(arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_sum_list`), `_hq_ts_list`))) AS `Sum`, `_hq_merged_scale` AS `Scale`, (arrayReduce(?, arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_zero_counts`), `_hq_ts_list`)) / length(arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), `_hq_zero_counts`), `_hq_ts_list`))) AS `ZeroCount`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`)) AS `PositiveOffset`, arrayMap(mst -> arrayMap(tb -> (arrayReduce(?, arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arrayMap(kh_final -> (tupleElement(kh_final, ?) + tupleElement(kh_final, ?)), array(arrayFold((kh_acc, kh_x) -> arrayMap(kh_total -> tuple(kh_total, if(isInfinite(kh_total), toFloat64(?), (tupleElement(kh_acc, ?) + if((abs(tupleElement(kh_acc, ?)) >= abs(kh_x)), ((tupleElement(kh_acc, ?) - kh_total) + kh_x), ((kh_x - kh_total) + tupleElement(kh_acc, ?)))))), array((tupleElement(kh_acc, ?) + kh_x)))[?], arraySlice(arr, least(greatest(((greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`)))) - off) + ?), ?), (length(arr) + ?)), greatest(?, ((least(((off + length(arr)) - ?), ((((mst + tb) + ?) * bitShiftLeft(?, (s - `_hq_merged_scale`))) - ?)) - greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`))))) + ?))), tuple(toFloat64(?), toFloat64(?)))))[?], `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)), `_hq_ts_list`)) / length(arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arrayMap(kh_final -> (tupleElement(kh_final, ?) + tupleElement(kh_final, ?)), array(arrayFold((kh_acc, kh_x) -> arrayMap(kh_total -> tuple(kh_total, if(isInfinite(kh_total), toFloat64(?), (tupleElement(kh_acc, ?) + if((abs(tupleElement(kh_acc, ?)) >= abs(kh_x)), ((tupleElement(kh_acc, ?) - kh_total) + kh_x), ((kh_x - kh_total) + tupleElement(kh_acc, ?)))))), array((tupleElement(kh_acc, ?) + kh_x)))[?], arraySlice(arr, least(greatest(((greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`)))) - off) + ?), ?), (length(arr) + ?)), greatest(?, ((least(((off + length(arr)) - ?), ((((mst + tb) + ?) * bitShiftLeft(?, (s - `_hq_merged_scale`))) - ?)) - greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`))))) + ?))), tuple(toFloat64(?), toFloat64(?)))))[?], `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)), `_hq_ts_list`))), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`, `_hq_pos_buckets`)) - mst) + ?))))), array(arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_pos_offsets`))))[?] AS `PositiveBucketCounts`, arrayMin(arrayMap((s, off) -> bitShiftRight(off, (s - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`)) AS `NegativeOffset`, arrayMap(mst -> arrayMap(tb -> (arrayReduce(?, arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arrayMap(kh_final -> (tupleElement(kh_final, ?) + tupleElement(kh_final, ?)), array(arrayFold((kh_acc, kh_x) -> arrayMap(kh_total -> tuple(kh_total, if(isInfinite(kh_total), toFloat64(?), (tupleElement(kh_acc, ?) + if((abs(tupleElement(kh_acc, ?)) >= abs(kh_x)), ((tupleElement(kh_acc, ?) - kh_total) + kh_x), ((kh_x - kh_total) + tupleElement(kh_acc, ?)))))), array((tupleElement(kh_acc, ?) + kh_x)))[?], arraySlice(arr, least(greatest(((greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`)))) - off) + ?), ?), (length(arr) + ?)), greatest(?, ((least(((off + length(arr)) - ?), ((((mst + tb) + ?) * bitShiftLeft(?, (s - `_hq_merged_scale`))) - ?)) - greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`))))) + ?))), tuple(toFloat64(?), toFloat64(?)))))[?], `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)), `_hq_ts_list`)) / length(arraySort((wv, wo) -> wo, arrayMap(n -> toFloat64(n), arrayMap((s, off, arr) -> arrayMap(kh_final -> (tupleElement(kh_final, ?) + tupleElement(kh_final, ?)), array(arrayFold((kh_acc, kh_x) -> arrayMap(kh_total -> tuple(kh_total, if(isInfinite(kh_total), toFloat64(?), (tupleElement(kh_acc, ?) + if((abs(tupleElement(kh_acc, ?)) >= abs(kh_x)), ((tupleElement(kh_acc, ?) - kh_total) + kh_x), ((kh_x - kh_total) + tupleElement(kh_acc, ?)))))), array((tupleElement(kh_acc, ?) + kh_x)))[?], arraySlice(arr, least(greatest(((greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`)))) - off) + ?), ?), (length(arr) + ?)), greatest(?, ((least(((off + length(arr)) - ?), ((((mst + tb) + ?) * bitShiftLeft(?, (s - `_hq_merged_scale`))) - ?)) - greatest(off, ((mst + tb) * bitShiftLeft(?, (s - `_hq_merged_scale`))))) + ?))), tuple(toFloat64(?), toFloat64(?)))))[?], `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)), `_hq_ts_list`))), range(toUInt64(greatest(?, ((arrayMax(arrayMap((sm, om, am) -> bitShiftRight((om + (length(am) - ?)), (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`, `_hq_neg_buckets`)) - mst) + ?))))), array(arrayMin(arrayMap((sm, om) -> bitShiftRight(om, (sm - `_hq_merged_scale`)), `_hq_scales`, `_hq_neg_offsets`))))[?] AS `NegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, min(`Scale`) AS `_hq_merged_scale`, groupArray(`Scale`) AS `_hq_scales`, groupArray(`ZeroCount`) AS `_hq_zero_counts`, groupArray(`Count`) AS `_hq_count_list`, groupArray(`PositiveOffset`) AS `_hq_pos_offsets`, groupArray(`PositiveBucketCounts`) AS `_hq_pos_buckets`, groupArray(`NegativeOffset`) AS `_hq_neg_offsets`, groupArray(`NegativeBucketCounts`) AS `_hq_neg_buckets`, groupArray(`TimeUnix`) AS `_hq_ts_list`, groupArray(`Sum`) AS `_hq_sum_list`, uniqExact(`TimeUnix`) AS `_hq_samples` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))) GROUP BY `TimeUnix`)
