@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_value_producing_call.go:lowerHistogramValuedProducerCall#aa93662c",
+      "message": "promql: internal invariant violated: %s is not a histogram-valued-producing call",
+      "class": "internal",
+      "rationale": "histogramValuedProducerCall (cerberus issue #2618) admits only info(), sort_by_label() and sort_by_label_desc() before returning ok=true, so lowerHistogramValuedProducerCall's switch default arm — reached only when call.Func.Name matches none of those three names — is unreachable for any call this recognizer actually matched, mirroring labelCallOverExpHistogram / lowerLabelCallOverExpHistogram's identical \"is not a label-only histogram consumer\" guard (histogram_native_label_replace.go).",
+      "evidence": {
+        "guard": [
+          "past exhaustive switch call.Func.Name over [case \"info\"; case \"sort_by_label\", \"sort_by_label_desc\"]"
+        ],
+        "callers": [
+          "lowerExpHistogramValuedShape"
+        ],
+        "cited": [
+          "histogramValuedProducerCall",
+          "labelCallOverExpHistogram",
+          "lowerHistogramValuedProducerCall",
+          "lowerLabelCallOverExpHistogram"
+        ]
+      }
+    }
+  ]
+}

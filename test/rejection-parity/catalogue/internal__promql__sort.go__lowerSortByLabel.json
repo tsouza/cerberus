@@ -11,7 +11,8 @@
           "if len(c.Args) \u003c 1"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerHistogramValuedProducerCall"
         ]
       }
     }
