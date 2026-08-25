@@ -73,6 +73,7 @@ func guardedValueProjection(
 	newValue chplan.Expr,
 	carry ...string,
 ) chplan.Node {
+	inner = mixedRowsFloatOnly(inner)
 	return projectValueOverInner(guardNameDropCollision(inner, arg, s, carry...), s, newValue)
 }
 

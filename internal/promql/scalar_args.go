@@ -209,7 +209,25 @@ func lowerScalarVectorArg(v parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan
 	if b, ok := scalarArgOverMixedExpHistogramSetOp(v, s, ctx); ok {
 		return lowerScalarArgOverMixedExpHistogramSetOp(b, s, ctx)
 	}
-	return lower(v, s, ctx)
+	node, err := lower(v, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	// A further wrapper nested BETWEEN scalar() and a mixed float/
+	// histogram `or` — e.g. `scalar(sort_by_label(<mixed-or>, label))` —
+	// is invisible to [scalarArgOverMixedExpHistogramSetOp]'s direct-
+	// BinaryExpr check above (the mixed `or` sits one level deeper than a
+	// single BinaryExpr check reaches), so it reaches here as an ordinary
+	// [chplan.MixedRowShape] node. Without narrowing it first,
+	// [scalarValuePlan]/[scalarStepPlan]'s count()/any(Value) reduction
+	// would run over BOTH the float rows and the histogram rows'
+	// meaningless placeholder Value — reading a histogram row into "the"
+	// single sample scalar() reduces to, or inflating the row count past
+	// 1 and answering NaN for a genuinely single-float-sample vector.
+	// [mixedRowsFloatOnly] applies the identical "skip every H-set
+	// sample" narrowing [lowerScalarArgOverMixedExpHistogramSetOp] above
+	// gives the direct shape (cerberus issue #2611's own rule).
+	return mixedRowsFloatOnly(node), nil
 }
 
 // lowerScalarTopLevel lowers a bare top-level scalar-returning call —
