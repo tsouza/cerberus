@@ -51,16 +51,20 @@ func TestCompareValues(t *testing.T) {
 		{"pow rejects beyond tolerance", "up ^ 2", expHistogramSeed, base, fiveULPs, false},
 		{"pow inside a nested expression still gets ULP tolerance", "up ^ 2 + 1", expHistogramSeed, base, twoULPs, true},
 		{"regex anchor caret is not the pow operator", `up{job=~"^api$"}`, expHistogramSeed, base, oneULP, false},
+		// RunParity is shared across all three heads: a LogQL or TraceQL
+		// query is never valid PromQL syntax, so it must fall back to the
+		// exact comparator rather than erroring — a `bool`-modifier LogQL
+		// query used to hit the PromQL parser's own "bool modifier can only
+		// be used on comparison operators" and fail the whole comparison.
+		{"non-PromQL query (LogQL bool modifier) stays exact", `count_over_time({job="x"} | logfmt | code >= 500 [5m])`, expHistogramSeed, base, oneULP, false},
+		{"non-PromQL query (LogQL pipe stage) stays exact", `{job="x"} |= "error" | json`, expHistogramSeed, base, oneULP, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			compare, err := compareValues(tc.query, tc.seed)
-			if err != nil {
-				t.Fatalf("compareValues: %v", err)
-			}
+			compare := compareValues(tc.query, tc.seed)
 			if got := compare(tc.a, tc.b); got != tc.want {
 				t.Fatalf("compareValues(%q)(%v, %v) = %v, want %v", tc.query, tc.a, tc.b, got, tc.want)
 			}
