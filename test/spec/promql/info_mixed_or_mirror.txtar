@@ -30,5 +30,92 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 INSERT INTO otel_metrics_gauge VALUES
     ('up', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0);
 -- expected_rows --
-[]
+[
+  ["latency_exp_hist", {"service": "web"}, "2026-01-01T00:00:01Z", 0, 10, 20, 0, 0, 0, 0, [1,2,3,4], 0, [], 1],
+  ["up", {"job": "api"}, "2026-01-01T00:00:00Z", 1, 0, 0, 0, 0, 0, 0, [], 0, [], 0]
+]
 -- args --
+[0] string = "instance"
+[1] string = "job"
+[2] string = "__name__"
+[3] string = ""
+[4] int64 = 9
+[5] float64 = 0
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = "service.name"
+[10] string = "service_name"
+[11] string = ""
+[12] string = "service_name"
+[13] string = "latency_exp_hist"
+[14] string = "latency.exp.hist"
+[15] string = "latency.exp/hist"
+[16] string = "latency.exp_hist"
+[17] string = "latency/exp/hist"
+[18] string = "latency/exp_hist"
+[19] string = "latency_exp.hist"
+[20] string = "2026-01-01 00:00:01.000000000"
+[21] int64 = 9
+[22] string = "2026-01-01 00:00:01.000000000"
+[23] int64 = 9
+[24] int64 = 300000000000
+[25] string = "instance"
+[26] string = "job"
+[27] string = "service_name"
+[28] string = "service.name"
+[29] string = "service_name"
+[30] string = "service.name"
+[31] string = "service_name"
+[32] string = ""
+[33] string = "service_name"
+[34] string = "target_info"
+[35] string = "target.info"
+[36] string = "target/info"
+[37] string = "2026-01-01 00:00:01.000000000"
+[38] int64 = 9
+[39] string = "2026-01-01 00:00:01.000000000"
+[40] int64 = 9
+[41] int64 = 300000000000
+[42] int64 = 1
+[43] int64 = 0
+[44] string = "instance"
+[45] string = "instance"
+[46] string = "job"
+[47] string = "job"
+[48] string = "service_name"
+[49] string = "service.name"
+[50] string = "service_name"
+[51] string = "service.name"
+[52] string = "service_name"
+[53] string = ""
+[54] string = "service_name"
+[55] string = "up"
+[56] string = "2026-01-01 00:00:01.000000000"
+[57] int64 = 9
+[58] string = "2026-01-01 00:00:01.000000000"
+[59] int64 = 9
+[60] int64 = 300000000000
+-- chplan --
+VectorSetOp op=or match=default
+  InfoJoin identity=[instance, job]
+    HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
+      Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(MetricName, TimeUnix) AS MetricName, FnArgMax(Count, TimeUnix) AS Count, FnArgMax(Sum, TimeUnix) AS Sum, FnArgMax(Scale, TimeUnix) AS Scale, FnArgMax(ZeroCount, TimeUnix) AS ZeroCount, FnArgMax(PositiveOffset, TimeUnix) AS PositiveOffset, FnArgMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, FnArgMax(NegativeOffset, TimeUnix) AS NegativeOffset, FnArgMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+        Filter predicate=(((MetricName IN ("latency_exp_hist", "latency.exp.hist", "latency.exp/hist", "latency.exp_hist", "latency/exp/hist", "latency/exp_hist", "latency_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_exponential_histogram)
+    Project [MetricName AS MetricName, _cerberus_info_winner_attrs AS Attributes, _cerberus_info_winner_ts AS TimeUnix, _cerberus_info_winner_value AS Value]
+      Aggregate groupBy=[MetricName AS MetricName, Attributes["instance"] AS _cerberus_info_sig_0, Attributes["job"] AS _cerberus_info_sig_1] funcs=[FnArgMax(Attributes, TimeUnix) AS _cerberus_info_winner_attrs, FnMax(TimeUnix) AS _cerberus_info_winner_ts, FnArgMax(Value, TimeUnix) AS _cerberus_info_winner_value] having=(FnThrowIf((FnCountEqual(FnGroupArray(TimeUnix), FnMax(TimeUnix)) > 1), "conflicting label") = 0)
+        Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+          Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
+            Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+              Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+                Filter predicate=(MetricName IN ("target_info", "target.info", "target/info"))
+                  Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+  Project [MetricName AS MetricName, Attributes AS Attributes, lwr_ts AS TimeUnix, lwr_value AS Value]
+    Aggregate groupBy=[MetricName AS MetricName, Attributes AS Attributes] funcs=[FnMax(TimeUnix) AS lwr_ts, FnArgMax(Value, TimeUnix) AS lwr_value]
+      Filter predicate=((TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9)) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+        Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+          Filter predicate=(MetricName = "up")
+            Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`)) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, 1 AS `_setop_is_histogram` FROM (SELECT L.`MetricName` AS `MetricName`, mapConcat(mapFilter((k, v) -> NOT (k IN (?, ?, ?)) AND v != ? AND NOT mapContains(L.`Attributes`, k), R.`Attributes`), L.`Attributes`) AS `Attributes`, L.`TimeUnix` AS `TimeUnix`, L.`Value` AS `Value`, L.`HistogramCount` AS `HistogramCount`, L.`HistogramSum` AS `HistogramSum`, L.`HistogramScale` AS `HistogramScale`, L.`HistogramZeroThreshold` AS `HistogramZeroThreshold`, L.`HistogramZeroCount` AS `HistogramZeroCount`, L.`HistogramPositiveOffset` AS `HistogramPositiveOffset`, L.`HistogramPositiveBucketCounts` AS `HistogramPositiveBucketCounts`, L.`HistogramNegativeOffset` AS `HistogramNegativeOffset`, L.`HistogramNegativeBucketCounts` AS `HistogramNegativeBucketCounts` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)) AS L LEFT JOIN (SELECT `MetricName` AS `MetricName`, `_cerberus_info_winner_attrs` AS `Attributes`, `_cerberus_info_winner_ts` AS `TimeUnix`, `_cerberus_info_winner_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes`[?] AS `_cerberus_info_sig_0`, `Attributes`[?] AS `_cerberus_info_sig_1`, argMax(`Attributes`, `TimeUnix`) AS `_cerberus_info_winner_attrs`, max(`TimeUnix`) AS `_cerberus_info_winner_ts`, argMax(`Value`, `TimeUnix`) AS `_cerberus_info_winner_value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`)) GROUP BY `MetricName`, `_cerberus_info_sig_0`, `_cerberus_info_sig_1` HAVING (throwIf((countEqual(groupArray(`TimeUnix`), max(`TimeUnix`)) > ?), 'conflicting label') = ?))) AS R ON L.`Attributes`[?] = R.`Attributes`[?] AND L.`Attributes`[?] = R.`Attributes`[?])))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, toFloat64(0) AS `HistogramCount`, toFloat64(0) AS `HistogramSum`, toInt32(0) AS `HistogramScale`, toFloat64(0) AS `HistogramZeroThreshold`, toFloat64(0) AS `HistogramZeroCount`, toInt32(0) AS `HistogramPositiveOffset`, emptyArrayFloat64() AS `HistogramPositiveBucketCounts`, toInt32(0) AS `HistogramNegativeOffset`, emptyArrayFloat64() AS `HistogramNegativeBucketCounts`, 0 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, `lwr_ts` AS `TimeUnix`, `lwr_value` AS `Value` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, max(`TimeUnix`) AS `lwr_ts`, argMax(`Value`, `TimeUnix`) AS `lwr_value` FROM (SELECT * FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE ((`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?))))) GROUP BY `MetricName`, `Attributes`))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0
