@@ -1787,20 +1787,27 @@ func deltaPrefixAnchorArrayFrag(
 // depends on — see deltaMatrixLevelSourceAggregate's doc for the full
 // two-stream accounting it composes with.
 //
-// The temporality gate deltaPrefixAnchorArrayFrag applies is dropped here:
-// the fanout's own r.TemporalityColumn read already gates which
-// per-series window ever CONSUMES the reconstructed level
-// (deltaFirstValFrag), and the aggregate table is DELTA-only by
-// construction (see schema.Metrics.DeltaPrefixTable's doc) — filtering
-// this stream on temporality too would only prune rows a CUMULATIVE
-// series' scan never needed contributing to in the first place, mirroring
-// instantDeltaPrefixSource's / deltaPrefixAggregateSource's own
-// no-per-row-temporality-filter convention.
-func deltaPrefixAggregateRawAnchorArrayFrag(end, ts Frag, stepNS, rangeNS, numAnchors int64) Frag {
+// Unlike deltaPrefixAggregateBucketAnchorArrayFrag's aggregate-table
+// sibling — which genuinely needs no temporality filter, because
+// r.DeltaPrefixAggregateInput is DELTA-only by construction (see
+// schema.Metrics.DeltaPrefixTable's doc) — this function reads ts off the
+// RAW r.Input fanout, a table that mixes DELTA and CUMULATIVE rows. It
+// therefore keeps the SAME `Eq(temporality, DELTA)` gate
+// deltaPrefixAnchorArrayFrag applies: without it, every CUMULATIVE sample
+// also produces a prefix-array entry that arrayJoin fans into an extra,
+// wholly unused row (deltaFirstValFrag only ever consumes the
+// reconstructed level for a genuinely DELTA series) — inflating the
+// #2429 fanout row budget and regroup cardinality for no correctness
+// benefit on any mixed-temporality table.
+func deltaPrefixAggregateRawAnchorArrayFrag(end, ts, temporality Frag, stepNS, rangeNS, numAnchors int64) Frag {
 	prefixIndex := prefixAnchorIndexFrag(end, ts, stepNS, rangeNS, numAnchors)
 	assignedAnchor := anchorAtIdxFrag(end, stepNS, prefixIndex)
 	sameDay := Eq(Call("toStartOfDay", ts), Call("toStartOfDay", rangeStartFrag(assignedAnchor, rangeNS)))
-	condition := And(sameDay, Lte(ts, rangeStartFrag(end, rangeNS)))
+	condition := And(
+		Eq(temporality, InlineLit(schema.AggregationTemporalityDelta)),
+		sameDay,
+		Lte(ts, rangeStartFrag(end, rangeNS)),
+	)
 	return prefixArrayFrag(end, stepNS, prefixIndex, condition)
 }
 
@@ -4108,71 +4115,97 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	))
 	aggFanout.Select(As(Col("day_sum"), deltaPrefixAggregateMatrixStepAlias))
 
-	// Carrier — one zero-valued row per (series, anchor) regroupSource
-	// already needs, so the union below is dense across every anchor the
-	// final output could ever surface, the same density guarantee
-	// deltaMatrixLevelSource's plain single-stream cumulative sum gets for
-	// free from regroupSource alone.
-	carrier := NewQuery().From(regroupSource)
-	for i, groupFrag := range groupFrags {
-		carrier.Select(As(groupFrag, aggDailyKeys[i]))
-	}
-	carrier.Select(Col("anchor_ts"))
-	carrier.Select(As(InlineLit(0), deltaPrefixAggregateMatrixStepAlias))
-
-	combined := NewQuery().From(Paren(UnionAll(aggFanout.Frag(), carrier.Frag())))
-	keyCols := make([]Frag, len(aggDailyKeys))
+	// A bucket-day can fan out to the SAME anchor as another bucket-day
+	// (anchors spaced further apart than a day, so more than one day's
+	// contribution lands on one anchor) — collapse those here, entirely
+	// within the small aggregate-table-derived stream, before the density
+	// join below so that join can never fan rawLevels' own rows out.
+	aggFanoutSummed := NewQuery().From(aggFanout.Frag())
+	aggFanoutKeyCols := make([]Frag, len(aggDailyKeys))
 	for i, key := range aggDailyKeys {
-		keyCols[i] = Col(key)
-		combined.Select(Col(key))
+		aggFanoutKeyCols[i] = Col(key)
+		aggFanoutSummed.Select(Col(key))
 	}
-	combined.Select(Col("anchor_ts"))
-	combined.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
-	combinedGroupBy := make([]Frag, 0, len(keyCols)+1)
-	combinedGroupBy = append(combinedGroupBy, keyCols...)
-	combinedGroupBy = append(combinedGroupBy, Col("anchor_ts"))
-	combined.GroupBy(combinedGroupBy...)
+	aggFanoutSummed.Select(Col("anchor_ts"))
+	aggFanoutSummed.Select(As(Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)), deltaPrefixAggregateMatrixStepAlias))
+	aggFanoutGroupBy := make([]Frag, 0, len(aggFanoutKeyCols)+1)
+	aggFanoutGroupBy = append(aggFanoutGroupBy, aggFanoutKeyCols...)
+	aggFanoutGroupBy = append(aggFanoutGroupBy, Col("anchor_ts"))
+	aggFanoutSummed.GroupBy(aggFanoutGroupBy...)
 
-	aggLevels := NewQuery().From(combined.Frag())
-	for _, key := range aggDailyKeys {
-		aggLevels.Select(Col(key))
+	// Density — LEFT JOIN the (small, aggregate-table-derived) aggFanoutSummed
+	// stream directly onto rawLevels' OWN (series, anchor) rows, instead of
+	// UNION-ing in a synthetic zero-valued "carrier" scanned fresh from
+	// regroupSource: rawLevels already IS that dense key set, and it is
+	// referenced exactly ONCE in this whole function (right here) — a
+	// second, independent regroupSource splice used to double this
+	// function's own read of r.Input on top of rateWindowFanoutBoundedSourceFrag's
+	// existing two reads (cerberus issue #2429's read budget). ifNull below
+	// makes every row's contribution 0, never NULL, when aggFanoutSummed
+	// has no hit for that (series, anchor) — density the union used to
+	// provide via the carrier's own zero rows.
+	preJoin := NewQuery().From(aliasedFrag(rawLevels.Frag(), "w"))
+	for _, col := range groupColumns {
+		preJoin.Select(As(Qual("w", col), col))
+	}
+	preJoin.Select(As(Qual("w", "anchor_ts"), "anchor_ts"))
+	preJoin.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
+	preJoin.Select(As(Qual("w", "window_pairs"), "window_pairs"))
+	preJoin.Select(As(Qual("w", deltaPrefixRawDayLevelAlias), deltaPrefixRawDayLevelAlias))
+	preJoin.Select(As(
+		Call("ifNull", Qual("af", deltaPrefixAggregateMatrixStepAlias), InlineLit(0)),
+		deltaPrefixAggregateMatrixStepAlias,
+	))
+	onConds := make([]Frag, 0, len(groupColumns)+1)
+	onConds = append(onConds, Eq(Qual("w", "anchor_ts"), Qual("af", "anchor_ts")))
+	for i, col := range groupColumns {
+		onConds = append(onConds, Eq(Qual("w", col), Qual("af", aggDailyKeys[i])))
+	}
+	preJoin.Join(LeftJoin, aliasedFrag(aggFanoutSummed.Frag(), "af"), And(onConds...))
+
+	aggLevels := NewQuery().From(preJoin.Frag())
+	for _, col := range groupColumns {
+		aggLevels.Select(Col(col))
 	}
 	aggLevels.Select(Col("anchor_ts"))
+	aggLevels.Select(Col(windowTemporalityAlias))
+	aggLevels.Select(Col("window_pairs"))
+	aggLevels.Select(Col(deltaPrefixRawDayLevelAlias))
+	partition := make([]Frag, 0, len(groupColumns))
+	for _, col := range groupColumns {
+		partition = append(partition, Col(col))
+	}
 	aggLevels.Select(As(
 		Window(
 			Call("sum", Col(deltaPrefixAggregateMatrixStepAlias)),
-			keyCols,
+			partition,
 			[]OrderKey{{Expr: Col("anchor_ts")}},
 		),
 		deltaPrefixAggregateMatrixLevelAlias,
 	))
 
-	// Final join — add the two streams. ifNull guards a LEFT JOIN miss the
-	// same way deltaPrefixAggregateSource's own instant-path join does
-	// (join_use_nulls=1 safety): the carrier makes a miss unreachable in
-	// practice, but the guard costs nothing and keeps this join honest if
-	// that invariant is ever weakened.
-	joined := NewQuery().From(aliasedFrag(rawLevels.Frag(), "w"))
+	// Final SELECT — add the two streams. aggLevels already carries both
+	// the raw stream's own passthrough columns and the aggregate stream's
+	// running total on the SAME row (the join above happened before the
+	// window sum, not after), so no further join is needed here. ifNull
+	// guards stay for parity with the join-miss safety the old two-stream
+	// join relied on, even though preJoin's own ifNull already makes a
+	// miss unreachable before the window sum ever runs.
+	final := NewQuery().From(aggLevels.Frag())
 	for _, col := range groupColumns {
-		joined.Select(As(Qual("w", col), col))
+		final.Select(Col(col))
 	}
-	joined.Select(As(Qual("w", "anchor_ts"), "anchor_ts"))
-	joined.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
-	joined.Select(As(Qual("w", "window_pairs"), "window_pairs"))
-	joined.Select(As(
+	final.Select(Col("anchor_ts"))
+	final.Select(Col(windowTemporalityAlias))
+	final.Select(Col("window_pairs"))
+	final.Select(As(
 		Add(
-			Call("ifNull", Qual("w", deltaPrefixRawDayLevelAlias), InlineLit(0)),
-			Call("ifNull", Qual("a", deltaPrefixAggregateMatrixLevelAlias), InlineLit(0)),
+			Call("ifNull", Col(deltaPrefixRawDayLevelAlias), InlineLit(0)),
+			Call("ifNull", Col(deltaPrefixAggregateMatrixLevelAlias), InlineLit(0)),
 		),
 		deltaAnchorLevelsAlias,
 	))
-	onConds := make([]Frag, 0, len(groupColumns)+1)
-	onConds = append(onConds, Eq(Qual("w", "anchor_ts"), Qual("a", "anchor_ts")))
-	for i, col := range groupColumns {
-		onConds = append(onConds, Eq(Qual("w", col), Qual("a", aggDailyKeys[i])))
-	}
-	joined.Join(LeftJoin, aliasedFrag(aggLevels.Frag(), "a"), And(onConds...))
-	return joined.Frag(), nil
+	return final.Frag(), nil
 }
 
 // matrixWindowScanBoundsFrags returns the two scan-prune predicates that
@@ -4237,8 +4270,21 @@ func (e *emitter) applyMatrixFanoutScanBound(
 // single tight `srcTs >= toStartOfDay(rangeStart(earliestAnchor))`, not
 // e.deltaPrefixLookbackNS (a knob this mechanism does not consult at all,
 // exactly like deltaPrefixAggregateSource's instant-path raw-remainder
-// term). The presence guard mirrors deltaPresenceGuardFrag's instant-path
-// callers, pruning the whole scan on a CUMULATIVE-only metric.
+// term).
+//
+// Unlike deltaPresenceGuardFrag's instant-path callers — which apply the
+// guard to a prefix-reconstruction-ONLY scan that a CUMULATIVE series never
+// consumes — fanout here is the primary per-series sample source: it also
+// supplies window_pairs for the ordinary CUMULATIVE case (the common one),
+// not just the DELTA-reconstruction remainder. ANDing the guard directly
+// onto fanout therefore prunes the ENTIRE fanout, CUMULATIVE rows included,
+// whenever the window carries no DELTA row at all — an empty matrix for
+// every rate()/increase() query against an all-CUMULATIVE counter. The
+// guard is instead OR'd against "this row's own temporality isn't DELTA":
+// an ordinary CUMULATIVE row always survives regardless of the guard, and a
+// DELTA row survives only when the guard confirms the window actually
+// carries DELTA rows (always true for a DELTA row already inside the
+// window this guard probes).
 func (e *emitter) applyMatrixFanoutScanBoundAggregate(
 	fanout *QueryBuilder,
 	r *chplan.RangeWindow,
@@ -4258,7 +4304,10 @@ func (e *emitter) applyMatrixFanoutScanBoundAggregate(
 		return err
 	}
 	if guard != nil {
-		fanout.Where(guard)
+		fanout.Where(Paren(Or(
+			guard,
+			Neq(Col(r.TemporalityColumn), InlineLit(schema.AggregationTemporalityDelta)),
+		)))
 	}
 	return nil
 }
@@ -4503,7 +4552,7 @@ func windowedMatrixFanoutAnchorTsFrag(
 		// double-counting) a sample whose first-eligible anchor would
 		// otherwise land on a later day already covered by the aggregate
 		// table.
-		prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), stepNS, rangeNS, numAnchors)
+		prefixArray = deltaPrefixAggregateRawAnchorArrayFrag(end, Col(srcTs), Col(r.TemporalityColumn), stepNS, rangeNS, numAnchors)
 	}
 	return Call(
 		"arrayJoin",

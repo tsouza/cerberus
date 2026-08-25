@@ -127,13 +127,18 @@ func (e *emitter) emitInfoJoin(j *chplan.InfoJoin) error {
 
 // infoJoinHistogramCols lists the nine fixed chplan.Histogram*Column
 // names an [chplan.InfoJoin] with Histogram set forwards from its Input
-// (L) side alongside the canonical quartet — byte-identical to the field
-// list [histogramFloatVectorJoinHistCols] reads off its own histogram
-// Left arm, since both nodes join a histogram-shaped side against a
-// plain float-shaped one and forward the nine columns under their PLAIN
-// canonical names rather than a `_hq_*`-prefixed pair. Info (R) never
-// carries these — an info metric like `target_info` is conventionally a
-// plain Gauge — so only L needs qualifying.
+// (L) side alongside the canonical quartet. This list is NOT the same
+// slice as [histogramFloatVectorJoinHistCols]'s: that one returns TWELVE
+// entries (MetricNameColumn/AttributesColumn/TimestampColumn prepended
+// ahead of the nine histogram fields, for its own join-side-column-list
+// use) and orders the shared nine differently (Scale/Count/Sum and
+// ZeroCount/ZeroThreshold swapped relative to here). Both nodes DO join a
+// histogram-shaped side against a plain float-shaped one and forward the
+// nine columns under their PLAIN canonical names rather than a
+// `_hq_*`-prefixed pair — that convention is shared; the concrete column
+// list is not. Info (R) never carries these — an info metric like
+// `target_info` is conventionally a plain Gauge — so only L needs
+// qualifying.
 //
 // When [chplan.InfoJoin.MergeInfoMetrics] also folds several
 // per-info-metric join rows back into one, these columns join the GROUP

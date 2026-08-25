@@ -258,6 +258,34 @@ func TestReanchorRange_OffSpineIsShared(t *testing.T) {
 	}
 }
 
+// TestReanchorRange_DeltaPrefixAggregateInputIsShared pins
+// reanchorRangeWindow's handling of RangeWindow.DeltaPrefixAggregateInput:
+// forwarded verbatim (same pointer, no recursive reanchor call of its own),
+// exactly like the other off-spine fields TestReanchorRange_OffSpineIsShared
+// covers. Safe only because that subtree carries no embedded time bound of
+// its own — buildDeltaPrefixAggregateArm (internal/promql/lower.go) only
+// ever wraps a Scan in a metric-name Filter, never a time-range one; the
+// only bound ever applied to it is derived at chsql emit time from THIS
+// RangeWindow's own (already correctly reanchored) End/Range fields. If
+// this field ever grows its own independent time bound, this test's
+// same-pointer assertion is the first thing that must change, alongside
+// reanchorRangeWindow itself.
+func TestReanchorRange_DeltaPrefixAggregateInputIsShared(t *testing.T) {
+	t.Parallel()
+
+	in := matrixWindow(5*time.Minute, time.Minute, 0)
+	in.DeltaPrefixAggregateInput = &chplan.Scan{Table: "metrics_delta_prefix"}
+
+	out, err := chplan.ReanchorRange(in, time.Unix(1000, 0).UTC(), time.Unix(4600, 0).UTC())
+	if err != nil {
+		t.Fatalf("ReanchorRange: %v", err)
+	}
+	rw := out.(*chplan.RangeWindow)
+	if rw.DeltaPrefixAggregateInput != in.DeltaPrefixAggregateInput {
+		t.Fatal("DeltaPrefixAggregateInput was copied or dropped; it must be forwarded verbatim (same pointer)")
+	}
+}
+
 // TestReanchorRange_PropertyBounds is the rapid property test: over random
 // (range, step, anchor-count, offset) the single-level re-anchored window
 // always lands exactly on the requested grid, and the nested-spine inner

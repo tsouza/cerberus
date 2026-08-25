@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/schema"
@@ -761,8 +762,14 @@ type AddIndexBuilder struct {
 // index named <name> over expr on [<database>.]<table>, of the given
 // ClickHouse index type ("minmax", "set(N)", "bloom_filter", …) and
 // GRANULARITY. An empty database emits no qualifier, so a table the
-// connection's own database owns is referenced bare.
+// connection's own database owns is referenced bare. granularity must be
+// positive — GRANULARITY 0 or negative is not a valid ClickHouse skip-index
+// clause, so a non-positive value panics at construction time rather than
+// rendering DDL ClickHouse would reject at apply time.
 func AlterTableAddIndex(database, table, name string, expr Frag, indexType string, granularity int) *AddIndexBuilder {
+	if granularity <= 0 {
+		panic(fmt.Sprintf("chsql: AlterTableAddIndex granularity must be positive, got %d", granularity))
+	}
 	return &AddIndexBuilder{database: database, table: table, name: name, expr: expr, indexType: indexType, granularity: granularity}
 }
 
@@ -915,7 +922,19 @@ func (c *CreateMaterializedViewBuilder) frag() Frag {
 
 // SQL renders the CREATE MATERIALIZED VIEW statement to ClickHouse text via
 // RenderDDL (which asserts the no-positional-bindings DDL invariant).
+// Panics if To or As was never called: without a target table, frag would
+// render a bare ` TO  AS ...` with an empty identifier — syntactically
+// invalid SQL that ClickHouse would only reject at apply time; without a
+// body, frag's writeInto call on a nil *QueryBuilder panics anyway, just
+// with a far less legible stack. Both fail fast, at statement-construction
+// time, with a message naming the missing call.
 func (c *CreateMaterializedViewBuilder) SQL() string {
+	if c.toTable == "" {
+		panic("chsql: CreateMaterializedViewBuilder.SQL called without To(...) — the view has no target table")
+	}
+	if c.body == nil {
+		panic("chsql: CreateMaterializedViewBuilder.SQL called without As(...) — the view has no SELECT body")
+	}
 	return RenderDDL(c.frag())
 }
 

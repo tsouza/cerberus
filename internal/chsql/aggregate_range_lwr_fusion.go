@@ -117,10 +117,27 @@ func matchRangeLWRFusion(a *chplan.Aggregate) (*chplan.RangeLWR, rangeLWRFusionK
 			return nil, rangeLWRFusionNone
 		}
 	}
+	hasAnchorKey := false
 	for _, g := range a.GroupBy {
 		if !rangeLWRFusionSafeGroupKey(g, lwr) {
 			return nil, rangeLWRFusionNone
 		}
+		if isRangeLWRBucketKey(g, lwr) {
+			hasAnchorKey = true
+		}
+	}
+	// Both fused renderers GROUP BY a.GroupBy verbatim (translating only the
+	// bucket key). If the caller's GroupBy omits the per-step anchor key,
+	// that GROUP BY spans the WHOLE grid instead of one row per (outer key,
+	// anchor) — count()'s uniqExact fusion would then report "distinct
+	// series with an in-window sample ANYWHERE in the grid" once per outer
+	// group instead of the correct per-anchor row count (a hard undercount
+	// relative to the unfused path's per-anchor COUNT(Value)), and sum()'s
+	// fusion would sum every anchor's values together into one row instead
+	// of emitting one summed row per anchor. Decline and fall back to the
+	// unfused path whenever the anchor key isn't part of the grouping.
+	if !hasAnchorKey {
+		return nil, rangeLWRFusionNone
 	}
 
 	if len(a.AggFuncs) != 1 {
