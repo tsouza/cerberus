@@ -125,6 +125,71 @@ func TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestComposes(t *testing.T) {
 	}
 }
 
+// TestLower_ExpHistogram_MixedSetOpOr_ClampFamilyComposes pins cerberus
+// issue #2587: the clamp family (clamp_max/clamp_min/the 3-arg clamp)
+// directly wrapping a mixed float/histogram `or` now composes instead of
+// rejecting, through its own dedicated recognizer/lowering pair
+// (clampOverMixedExpHistogramSetOp /
+// lowerClampOverMixedExpHistogramSetOp in
+// histogram_native_mixed_or_math_fn.go) that mirrors
+// TestLower_ExpHistogram_MixedSetOpOr_RoundToNearestComposes above —
+// clamp's bound argument(s), like round()'s to_nearest bound, take a
+// further argument [mathFnOverMixedExpHistogramSetOp]'s 1-arg recognizer
+// deliberately leaves unattempted.
+func TestLower_ExpHistogram_MixedSetOpOr_ClampFamilyComposes(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "clamp_max",
+			query: `clamp_max(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`,
+		},
+		{
+			name:  "clamp_min",
+			query: `clamp_min(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`,
+		},
+		{
+			name:  "clamp",
+			query: `clamp(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5, 10)`,
+		},
+		{
+			name:  "clamp with computed bounds",
+			query: `clamp(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), scalar(sum(up)), scalar(sum(up)) + 10)`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.SampleRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s (the clamp family drops the histogram rows)", tc.query, shape, chplan.SampleRowShape)
+			}
+			proj, ok := plan.(*chplan.Project)
+			if !ok {
+				t.Fatalf("lower(%q): plan root is %T, want *chplan.Project", tc.query, plan)
+			}
+			if _, ok := proj.Input.(*chplan.Filter); !ok {
+				t.Fatalf("lower(%q): plan root's input is %T, want *chplan.Filter (narrowing to the float-shaped rows)", tc.query, proj.Input)
+			}
+		})
+	}
+}
+
 // Plain arithmetic over a mixed `or` (`(a or b) + 1`) was pinned as
 // staying out of scope here by this file's own
 // ArithmeticBinopStillRejects test. Cerberus issue #2449's fourth pass
