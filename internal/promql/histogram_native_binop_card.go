@@ -185,6 +185,13 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 			Alias: hqAggMergedScaleAlias,
 		},
 		{Expr: histJoinArrayPair(histSchema.ZeroCountColumn), Alias: hqMergeZeroCountsArrayAlias},
+		// Unconditional, unlike histogramBinopMergeProjections'/
+		// histogramCompareFieldColumns' own `if s.ZeroThresholdColumn !=
+		// ""` guards (histogram_native_binop.go, histogram_native_binop_eq.go)
+		// — harmless only because the same invariant holds here too:
+		// histSchema.ZeroThresholdColumn is never "" in practice
+		// (histogramProjectionSchema always sets it to a non-empty
+		// canonical alias).
 		{
 			Expr: &chplan.FuncCall{
 				Fn:   chplan.FnGreatest,

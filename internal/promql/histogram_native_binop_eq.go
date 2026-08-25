@@ -366,6 +366,10 @@ func projectHistogramCompareSide(hp chplan.Node, side int64, histSchema schema.M
 // the output row, so it never needs to agree with anything else.
 func histogramCompareFieldColumns(s schema.Metrics) []string {
 	cols := []string{s.ScaleColumn, s.CountColumn, s.SumColumn, s.ZeroCountColumn}
+	// s.ZeroThresholdColumn is never "" in practice — see
+	// histogramBinopMergeProjections's identical comment
+	// (histogram_native_binop.go) for why this guard is dead today and
+	// left in anyway.
 	if s.ZeroThresholdColumn != "" {
 		cols = append(cols, s.ZeroThresholdColumn)
 	}
