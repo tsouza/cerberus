@@ -277,6 +277,59 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+// erroringRows is a driver.Rows that fails on either Scan or Err (never
+// both) instead of yielding real data, for exercising scanTotals' two
+// per-row failure branches directly — fakeRows never fails either, so
+// neither is otherwise reachable.
+type erroringRows struct {
+	driver.Rows
+	hasRow   bool
+	scanErr  error
+	finalErr error
+	yielded  bool
+}
+
+func (r *erroringRows) Next() bool {
+	if !r.hasRow || r.yielded {
+		return false
+	}
+	r.yielded = true
+	return true
+}
+
+func (r *erroringRows) Scan(...any) error { return r.scanErr }
+func (r *erroringRows) Err() error        { return r.finalErr }
+func (r *erroringRows) Close() error      { return nil }
+
+// singleRowsConn is a Conn whose Query always returns one fixed driver.Rows,
+// for pairing with erroringRows.
+type singleRowsConn struct{ rows driver.Rows }
+
+func (c *singleRowsConn) Exec(context.Context, string, ...any) error { return nil }
+
+func (c *singleRowsConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+	return c.rows, nil
+}
+
+// twoCallConn succeeds on its first Query and fails on its second — the
+// shape Verify's own two reads (aggregate table, then base table) need to
+// reach its second error-wrap branch. TestVerify_PropagatesQueryError
+// already covers the first (fakeConn.rowsErr fails immediately).
+type twoCallConn struct {
+	calls int
+	err   error
+}
+
+func (c *twoCallConn) Exec(context.Context, string, ...any) error { return nil }
+
+func (c *twoCallConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+	c.calls++
+	if c.calls == 2 {
+		return nil, c.err
+	}
+	return &fakeRows{}, nil
+}
+
 // TestBackfill_ExecutesRenderedSQL confirms Backfill hands conn EXACTLY the
 // statement + args BackfillSQL renders, and wraps a real Exec failure with
 // enough context to identify which table failed.
@@ -341,5 +394,40 @@ func TestVerify_PropagatesQueryError(t *testing.T) {
 	conn := &fakeConn{rowsErr: errors.New("connection reset")}
 	if _, err := Verify(context.Background(), conn, c, testBefore, 0.01); err == nil {
 		t.Fatal("expected an error from a failing Query")
+	}
+}
+
+// TestVerify_PropagatesBaseTableQueryError confirms the SECOND read (the
+// base/SumTable one) wraps its own failure with c.SumTable, not just the
+// first (aggregate/DeltaPrefixTable) read TestVerify_PropagatesQueryError
+// already covers.
+func TestVerify_PropagatesBaseTableQueryError(t *testing.T) {
+	c := testColumns()
+	conn := &twoCallConn{err: errors.New("connection reset")}
+	_, err := Verify(context.Background(), conn, c, testBefore, 0.01)
+	if err == nil {
+		t.Fatal("expected an error from the base-table read failing")
+	}
+	if !contains(err.Error(), c.SumTable) {
+		t.Errorf("Verify error %q does not name the base table %q", err.Error(), c.SumTable)
+	}
+}
+
+// TestScanTotals_PropagatesScanError confirms a Scan failure on a row
+// surfaces as an error rather than a silently-partial map.
+func TestScanTotals_PropagatesScanError(t *testing.T) {
+	conn := &singleRowsConn{rows: &erroringRows{hasRow: true, scanErr: errors.New("bad column type")}}
+	if _, err := scanTotals(context.Background(), conn, "SELECT 1", nil); err == nil {
+		t.Fatal("expected an error from a failing Scan")
+	}
+}
+
+// TestScanTotals_PropagatesRowsErr confirms a trailing rows.Err() — the
+// driver's way of reporting a mid-stream failure Next()'s own bool return
+// can't distinguish from ordinary exhaustion — surfaces as an error too.
+func TestScanTotals_PropagatesRowsErr(t *testing.T) {
+	conn := &singleRowsConn{rows: &erroringRows{finalErr: errors.New("stream reset")}}
+	if _, err := scanTotals(context.Background(), conn, "SELECT 1", nil); err == nil {
+		t.Fatal("expected an error from a failing rows.Err()")
 	}
 }
