@@ -2828,6 +2828,15 @@ func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Met
 	if sub, b, rebuild, ok := mixedOrSubqueryOuterFn(c, s, ctx); ok {
 		return lowerMixedOrSubqueryOuterFn(c, sub, b, rebuild, s, ctx)
 	}
+	// The `sum`/`avg`-wrapped sibling of the mixed-or-subquery composition
+	// just above (cerberus issue #2581) — see
+	// histogram_native_mixed_or_subquery_aggregate_range_fn.go's own doc for
+	// why this needs a genuinely different lowering (window-purity
+	// collision drop) rather than the distribute-and-recombine
+	// [lowerMixedOrSubqueryOuterFn] uses.
+	if shape, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(c, s, ctx); ok {
+		return lowerSumOrAvgMixedOrSubqueryOuterFn(shape, s, ctx)
+	}
 	// `<range-vector-fn>(<subquery>)` — the canonical Grafana shape
 	// `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a chained RangeWindow:
 	// outer reducer over the inner matrix.

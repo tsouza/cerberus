@@ -1,0 +1,66 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubqueryOuterFn#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerSumOrAvgOverMixedExpHistogramSetOp's identical check for the root-only sibling composition (histogram_native_mixed_or_aggregate.go) and lowerMixedExpHistogramSetOp's identical check for the leaf mixed-or case — shape.b is the SAME sumOrAvgOverMixedExpHistogramSetOp-matched `or` BinaryExpr, which the parser can never hand a `bool` modifier.",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "past returning if !ok",
+          "if shape.b.ReturnBool"
+        ],
+        "callers": [
+          "lowerCallOverSubquery"
+        ],
+        "cited": [
+          "lowerMixedExpHistogramSetOp",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "sumOrAvgOverMixedExpHistogramSetOp"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubqueryOuterFn#91084197",
+      "message": "promql: subquery step must be positive, got %s",
+      "class": "internal",
+      "rationale": "the PromQL parser rejects negative subquery steps; zero is the valid default handled before this guard",
+      "evidence": {
+        "guard": [
+          "if step \u003c 0"
+        ],
+        "callers": [
+          "lowerCallOverSubquery"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerSumOrAvgMixedOrSubqueryOuterFn#d4ecb9e5",
+      "message": "promql: histogram-valued subquery requires query eval-time context (use LowerAt)",
+      "class": "internal",
+      "rationale": "query handlers always supply evaluation context through LowerAt or LowerAtRange; only the raw test and tooling Lower entry can omit it, and sumOrAvgMixedOrSubqueryOuterFnRecognized's own subqueryHasEvalAnchor check already declines to match in that case, so this branch is unreachable even from that entry point",
+      "evidence": {
+        "guard": [
+          "past returning if step \u003c 0",
+          "past returning if err != nil",
+          "if !ok"
+        ],
+        "callers": [
+          "lowerCallOverSubquery"
+        ],
+        "cited": [
+          "Lower",
+          "LowerAt",
+          "LowerAtRange",
+          "subqueryHasEvalAnchor",
+          "sumOrAvgMixedOrSubqueryOuterFnRecognized"
+        ]
+      }
+    }
+  ]
+}
