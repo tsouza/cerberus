@@ -16,7 +16,8 @@
           "if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name)"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerCallOverSubquery"
         ]
       },
       "since": "2026-08-25"
@@ -33,7 +34,8 @@
           "if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerCallOverSubquery"
         ],
         "cited": [
           "canonicalRangeWindowFunc",

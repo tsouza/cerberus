@@ -11,7 +11,7 @@
           "if step \u003c 0"
         ],
         "callers": [
-          "lowerCall",
+          "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot"
         ]
@@ -32,7 +32,7 @@
           "if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape"
         ],
         "callers": [
-          "lowerCall",
+          "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot"
         ],
@@ -56,7 +56,7 @@
           "if !ok"
         ],
         "callers": [
-          "lowerCall",
+          "lowerCallOverSubquery",
           "lowerExpHistogramValuedShape",
           "lowerHistogramNativeRoot"
         ],
