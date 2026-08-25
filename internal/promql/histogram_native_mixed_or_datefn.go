@@ -67,11 +67,7 @@ func dateFnOverMixedExpHistogramSetOp(c *parser.Call, s schema.Metrics, ctx lowe
 // date-component value projection, already answers reference's
 // semantics.
 func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if b.ReturnBool {
-		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
-	}
-
-	_, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
+	floatForAgg, err := shadowResolveFloatArmChecked(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}

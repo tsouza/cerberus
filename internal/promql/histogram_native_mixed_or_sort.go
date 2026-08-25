@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -78,11 +76,7 @@ func sortOverMixedExpHistogramSetOp(c *parser.Call, s schema.Metrics, ctx lowerC
 // why the shadow-resolved float arm alone, fed through an ordinary
 // ORDER BY, already answers reference's semantics.
 func lowerSortOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if b.ReturnBool {
-		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
-	}
-
-	_, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
+	floatForAgg, err := shadowResolveFloatArmChecked(b, s, ctx)
 	if err != nil {
 		return nil, err
 	}
