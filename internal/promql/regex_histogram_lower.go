@@ -166,6 +166,48 @@ func buildRegexHistogramBucketArm(
 	return input
 }
 
+// buildRegexExpHistogramBareArm builds an info()-second-argument-only arm
+// that reads the BARE exp-histogram row's identity Attributes with a
+// placeholder Value — the regex/negated-matcher counterpart of
+// expHistogramSelectorRouting's ctx.infoMetricSelector case (lower.go,
+// cerberus issue #2574). The companion arms above
+// (buildRegexExpHistogramCompanionArm) only ever synthesize a
+// `<base>_count`/`<base>_sum` suffixed name, so a `__name__` matcher that
+// is a regex or negation (routed here rather than through
+// expHistogramSelectorRouting — see hasUnpinnedMetricNameMatcher) and
+// matches an exp-histogram metric's own BARE name never gets an arm to
+// join through, even though info()'s join only ever reads the info
+// side's LABELS (chplan.InfoJoin never reads its Value for real — see
+// lowerInfoMetric's doc comment). Cerberus issue #2584.
+//
+// Gated on ctx.infoMetricSelector for the identical reason the pinned
+// path is: this exemption only holds for a consumer that never reads a
+// real Value, and sourceColumn mirrors expHistogramSelectorRouting's
+// choice of s.CountColumn as the placeholder.
+func buildRegexExpHistogramBareArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher, sourceColumn string) chplan.Node {
+	scan := &chplan.Scan{Table: s.ExpHistogramTable}
+	var input chplan.Node = scan
+	if pred := buildPredicate(matchers, s); pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	projections := []chplan.Projection{
+		{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+	}
+	projections = append(projections, catalogAttributesProjections(cat, s, selectorAttributesSource(cat, s))...)
+	projections = append(
+		projections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+		chplan.Projection{
+			Expr: &chplan.FuncCall{
+				Fn:   chplan.FnToFloat64,
+				Args: []chplan.Expr{&chplan.ColumnRef{Name: sourceColumn}},
+			},
+			Alias: s.ValueColumn,
+		},
+	)
+	return &chplan.Project{Input: input, Projections: projections}
+}
+
 func buildRegexMetricArm(s schema.Metrics, cat *metadataCatalog, matchers []*labels.Matcher) chplan.Node {
 	scan := scanFromTables(s.TablesForUnknownName())
 	var input chplan.Node = scan
@@ -208,6 +250,17 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 				continue
 			}
 			inputs = append(inputs, buildRegexExpHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
+		}
+
+		// info()'s second-argument selector only (ctx.infoMetricSelector —
+		// cerberus issue #2584, the regex/negated-matcher sibling of #2574):
+		// a bare exp-histogram row itself, matched by its own unsuffixed
+		// name, gets an arm too — see buildRegexExpHistogramBareArm. Every
+		// OTHER consumer of an unpinned selector still gets none: that row
+		// shape has no scalar Value column, and this exemption exists only
+		// because info()'s join never reads one.
+		if ctx.infoMetricSelector {
+			inputs = append(inputs, buildRegexExpHistogramBareArm(s, ctx.catalog, v.LabelMatchers, s.CountColumn))
 		}
 	}
 

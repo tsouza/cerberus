@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/prometheus/model/labels"
+
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
@@ -47,13 +49,18 @@ const (
 )
 
 // readSeededNativeHistograms reads each seeded exponential-histogram row
-// back out as one histogram-valued sample on its series.
+// back out as one histogram-valued sample on its series — except a name
+// matched by infoSecondArg, which is loaded as a plain float (the row's raw
+// Count) instead, because info() never consumes that argument's value and
+// real Prometheus's own info() rejects a histogram-valued sample outright.
+// See [infoSecondArgHistogramMatchers].
 //
 // A fixture that never created the table is not an error: most of the
 // corpus seeds only the tables its own query needs.
 func readSeededNativeHistograms(
 	db *sql.DB, rt *RoundTripSections, allow resourceAllowlist, byKey map[string]*oracle.Series,
-	nameRestorer *metricNameRestorer, exactNames, deltaSeries map[string]bool,
+	nameRestorer *metricNameRestorer, exactNames map[string]bool, infoSecondArg []*labels.Matcher,
+	deltaSeries map[string]bool,
 ) error {
 	seedCols := testsql.SeedTableColumns(rt.Seed)[nativeHistogramTable]
 	if len(seedCols) == 0 {
@@ -130,7 +137,28 @@ func readSeededNativeHistograms(
 			h.Count = totalObservations(h)
 		}
 
-		if exactNames == nil || exactNames[normalizeMetricName(name)] {
+		isInfoSecondArg := false
+		for _, m := range infoSecondArg {
+			if m.Matches(normalizeMetricName(name)) {
+				isInfoSecondArg = true
+				break
+			}
+		}
+
+		switch {
+		case isInfoSecondArg:
+			if err := nameRestorer.record(lbls, name); err != nil {
+				return err
+			}
+			key := labelKey(lbls)
+			s, ok := byKey[key]
+			if !ok {
+				s = &oracle.Series{Labels: lbls}
+				byKey[key] = s
+			}
+			s.Points = append(s.Points, oracle.Point{TMillis: tsMillis, Value: count})
+			markDeltaSeries(deltaSeries, key, temporality)
+		case exactNames == nil || exactNames[normalizeMetricName(name)]:
 			if err := nameRestorer.record(lbls, name); err != nil {
 				return err
 			}

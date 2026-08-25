@@ -506,7 +506,7 @@ INSERT INTO otel_metrics_exponential_histogram VALUES
 			byKey := map[string]*oracle.Series{}
 			nameRestorer := newMetricNameRestorer()
 			if err := readSeededNativeHistograms(
-				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, nil, map[string]bool{},
+				db, &RoundTripSections{Seed: tc.seed}, nil, byKey, &nameRestorer, nil, nil, map[string]bool{},
 			); err != nil {
 				t.Fatalf("readSeededNativeHistograms: %v", err)
 			}
