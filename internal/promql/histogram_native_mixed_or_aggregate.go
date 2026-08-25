@@ -118,23 +118,9 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 	// path now accepts a windowed float side exactly like the root-only
 	// leaf recognizer (issue #2333) does — see
 	// lowerMixedExpHistogramOperands's own doc comment.
-	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
+	histForAgg, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	// Resolve the `or`'s own shadow rule BEFORE aggregating: the side
-	// that is LHS in the source AST keeps every row; the RHS side keeps
-	// only the rows whose label signature has no match on the LHS side.
-	// This is the identical mixed-type UNLESS #2337 already ships for
-	// `and`/`unless` between a histogram-valued and a float-valued
-	// operand — reused verbatim rather than re-derived.
-	orMatch := mixedExpHistogramMatch(b)
-	histForAgg, floatForAgg := histNode, floatNode
-	if histOnLeft {
-		floatForAgg = mixedOrShadowUnless(floatNode, histNode, false, orMatch, s, ctx)
-	} else {
-		histForAgg = mixedOrShadowUnless(histNode, floatNode, true, orMatch, s, ctx)
 	}
 
 	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(agg, histForAgg, s)
@@ -147,6 +133,38 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 	}
 
 	return combineMixedAggregateBranches(histBranch, floatBranch, s, ctx), nil
+}
+
+// shadowResolveMixedExpHistogramOperands lowers b's two operands
+// ([lowerMixedExpHistogramOperands]) and resolves the `or`'s own shadow
+// rule BEFORE any aggregation reduction runs: the side that is LHS in the
+// source AST keeps every row; the RHS side keeps only the rows whose
+// label signature has no match on the LHS side. This is the identical
+// mixed-type UNLESS #2337 already ships for `and`/`unless` between a
+// histogram-valued and a float-valued operand — reused verbatim rather
+// than re-derived.
+//
+// Split out of [lowerSumOrAvgOverMixedExpHistogramSetOp] so cerberus issue
+// #2595's sibling aggregate families (histogram_native_mixed_or_aggregate_
+// presence.go's count()/group(), histogram_native_mixed_or_aggregate_
+// float_only.go's min()/max()/stddev()/stdvar(), and histogram_native_
+// mixed_or_aggregate_count_values.go's count_values()) can build the SAME
+// two shadow-resolved arms without duplicating the histogram-valued /
+// float-valued dispatch or the shadow-rule application.
+func shadowResolveMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (histForAgg, floatForAgg chplan.Node, err error) {
+	histNode, floatNode, histOnLeft, err := lowerMixedExpHistogramOperands(b, s, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	orMatch := mixedExpHistogramMatch(b)
+	histForAgg, floatForAgg = histNode, floatNode
+	if histOnLeft {
+		floatForAgg = mixedOrShadowUnless(floatNode, histNode, false, orMatch, s, ctx)
+	} else {
+		histForAgg = mixedOrShadowUnless(histNode, floatNode, true, orMatch, s, ctx)
+	}
+	return histForAgg, floatForAgg, nil
 }
 
 // mixedOrShadowUnless builds the [chplan.VectorSetOp] UNLESS that keeps
@@ -209,8 +227,7 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 	}
 }
 
-// lowerPlainAggOverMixedFloatArm reduces input — the shadow-resolved
-// float-valued arm of a mixed `or` — with the SAME `sum`/`avg` CH-native
+// lowerPlainAggOverMixedFloatArm reduces input with the SAME CH-native
 // aggregate an ordinary (non-histogram) PromQL aggregation uses
 // ([aggregateGroupBy], [buildAggFunc], [promAggregateAttributesExpr]),
 // grouped by the evaluation Timestamp in addition to the user's
@@ -219,16 +236,47 @@ func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema
 // input's own SELECT regardless of which of the three RowShapes
 // [lowerMixedExpHistogramOperands] accepted for it.
 //
-// Grouping by Timestamp unconditionally (not only when ctx.step > 0)
-// mirrors [lowerExpHistogramSumOrAvgOverPlan]'s identical choice for the
-// histogram sibling this function's output is matched against in
-// [combineMixedAggregateBranches]: cerberus's canonical TimeUnix column
-// is, after canonicalisation, either a real per-step anchor (matrix
-// input, one value per grid row — the correct per-step key in range
-// mode) or a synthesised, per-query-uniform anchor (canonical-shape or
-// reduced/derived input, which [chplan.RowShapeOf] only reports for an
-// instant-mode arm — see [rangeGridShapeFor]'s gridSingleAnchor case —
-// so grouping by it is a no-op there), on both branches identically.
+// Despite the name (kept for [combineMixedAggregateBranches]'s SUM/AVG
+// callers, where input genuinely is the shadow-resolved float-valued arm
+// alone), this function is agnostic to what input actually is:
+// [buildAggFunc] dispatches on agg.Op alone, so cerberus issue #2595's
+// sibling aggregate families reuse it unchanged for two OTHER shapes —
+// count()/group() (histogram_native_mixed_or_aggregate_presence.go) pass
+// the FULL shadow-resolved Mixed union ([lowerMixedExpHistogramSetOp]'s
+// own leaf output) because those two ops read no per-row value at all
+// (COUNT counts [chplan.VectorSetOp.Mixed]'s placeholder-safe Value
+// column; GROUP ignores Value entirely — see [histogramSampleValuePlaceholder]'s
+// own doc for why a placeholder Value is safe to count but not to
+// transform), while min()/max()/stddev()/stdvar()
+// (histogram_native_mixed_or_aggregate_float_only.go) pass the
+// shadow-resolved float arm alone, exactly like the SUM/AVG callers, but
+// with no histogram branch or [combineMixedAggregateBranches] recombine
+// at all — those four ops DROP histogram samples in reference rather than
+// merging them (see that file's own doc for the citation).
+//
+// Grouping by Timestamp ONLY when ctx.step > 0 (range mode) mirrors the
+// ordinary, non-histogram aggregate path's own identical choice
+// ([lowerAggregate]'s `rangeBucketed` in lower.go) — matrix input
+// publishes a real per-step anchor there, the correct per-step key to
+// preserve range-mode granularity by. At instant mode this function used
+// to group by Timestamp unconditionally too (cerberus issue #2346's
+// original shape), on the theory that a canonical-shape or
+// reduced/derived arm's Timestamp is always a synthesised, per-query-
+// uniform value there — true for [chplan.ReducedWindowRowShape] (which
+// [canonicalizeMixedFloatArmForAgg] widens onto that exact convention)
+// but FALSE for a bare [chplan.SampleRowShape] selector arm or the full
+// Mixed union count()/group() (histogram_native_mixed_or_aggregate_
+// presence.go, cerberus issue #2595) pass here: a bare selector's
+// instant-mode Timestamp is the REAL per-series collapsed-to-latest
+// sample time (verified directly against chDB — two series scraped a
+// second apart keep two different Timestamp values there), and the
+// histogram branch's own Timestamp is always a synthesised "now" —
+// mixing either of those into the group key silently splits what
+// reference treats as ONE group into several, or drops the group
+// entirely when [combineMixedAggregateBranches]'s two sub-branches no
+// longer agree row-for-row. Not grouping by Timestamp at instant mode —
+// exactly the ordinary aggregate path's own rule — removes the hazard
+// instead of relying on every caller's input happening to be uniform.
 func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	input = canonicalizeMixedFloatArmForAgg(input, s)
 
@@ -243,8 +291,14 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 		return nil, err
 	}
 
-	groupBy := append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, labelGroupBy...)
-	groupByAliases := append([]string{s.TimestampColumn}, labelAliases...)
+	const bucketAlias = "mixed_agg_bucket_ts"
+	rangeBucketed := ctx.step > 0
+	groupBy := labelGroupBy
+	groupByAliases := labelAliases
+	if rangeBucketed {
+		groupBy = append([]chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}}, groupBy...)
+		groupByAliases = append([]string{bucketAlias}, groupByAliases...)
+	}
 	merged := &chplan.Aggregate{
 		Input:              input,
 		GroupBy:            groupBy,
@@ -253,12 +307,21 @@ func lowerPlainAggOverMixedFloatArm(agg *parser.AggregateExpr, input chplan.Node
 		DropEmptyOnNoGroup: true,
 	}
 
+	// Instant mode stamps the query's own uniform evaluation instant
+	// (chplan.NowNano(), matching [wrapAggregateForSample]'s identical
+	// choice for the ordinary aggregate path); range mode forwards the
+	// per-step anchor the GroupBy above just captured.
+	tsExpr := chplan.NowNano()
+	if rangeBucketed {
+		tsExpr = &chplan.ColumnRef{Name: bucketAlias}
+	}
+
 	return &chplan.Project{
 		Input: merged,
 		Projections: []chplan.Projection{
 			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
 			{Expr: promAggregateAttributesExpr(agg, labelAliases), Alias: s.AttributesColumn},
-			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
+			{Expr: tsExpr, Alias: s.TimestampColumn},
 			{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
 		},
 	}, nil
