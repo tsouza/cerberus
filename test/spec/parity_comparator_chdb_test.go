@@ -36,6 +36,8 @@ func TestCompareValues(t *testing.T) {
 	}{
 		{"native histogram_fraction", "histogram_fraction(0.5, 3, latency_exp_hist)", expHistogramSeed, base, fiveULPs, true},
 		{"native histogram_quantile", "histogram_quantile(0.95, latency_exp_hist)", expHistogramSeed, base, fiveULPs, true},
+		{"native histogram_quantiles (multi-phi) gets ULP tolerance", `histogram_quantiles(latency_exp_hist, "q", 0.5, 0.9)`, expHistogramSeed, base, fiveULPs, true},
+		{"native histogram_quantiles over a mixed or gets ULP tolerance", `histogram_quantiles((latency_exp_hist or up), "q", 0.5, 0.9)`, expHistogramSeed, base, fiveULPs, true},
 		{"classic histogram_quantile stays exact", "histogram_quantile(0.95, latency_bucket)", classicHistogramSeed, base, oneULP, false},
 		{"mixed tables classic quantile stays exact", "histogram_quantile(0.95, latency_bucket)", mixedHistogramSeed, base, oneULP, false},
 		{"classic histogram_quantile over rate gets ULP tolerance", "histogram_quantile(0.5, rate(latency_bucket[5m]))", classicHistogramSeed, base, twoULPs, true},

@@ -331,10 +331,26 @@ func usesPowOperator(expr parser.Expr) bool {
 	return found
 }
 
-// isExponentialHistogramInterpolation proves that a complete query result is
-// one native exponential-histogram interpolation. A comparator applies to the
-// whole result vector, so merely finding an interpolation below a binary or
-// aggregation expression would also relax unrelated output samples.
+// isExponentialHistogramInterpolation proves that a complete query result
+// involves at least one native exponential-histogram interpolation. A
+// comparator applies to the whole result vector, so merely finding an
+// interpolation below a binary or aggregation expression would also relax
+// unrelated output samples — the tolerance is still correct to apply to the
+// whole vector in that case, since the rows it doesn't need it for compare
+// exactly anyway (1-5 ULPs of headroom is negligible against an exact
+// match), and rows it DOES need it for are exactly the ones the tolerance
+// exists to cover.
+//
+// histogram_quantiles is the multi-phi sibling of histogram_quantile —
+// same interpolation math, same divergence source, over Args[0] rather than
+// Args[1] (histogram_quantiles(label, phi..., v) puts the label first).
+//
+// "At least one" rather than "every" selector must be exponential: a mixed
+// `(exp_hist_metric or plain_metric)` operand — histogram_quantiles(...) over
+// an `or` is a real, exercised shape (histogram_quantiles_mixed_or) — answers
+// SOME rows via the interpolation this tolerance covers and others via the
+// plain float side untouched by it, and compareValues selects one comparator
+// for the whole result vector, not per-row.
 func isExponentialHistogramInterpolation(expr parser.Expr) bool {
 	call, ok := expr.(*parser.Call)
 	if !ok {
@@ -347,24 +363,25 @@ func isExponentialHistogramInterpolation(expr parser.Expr) bool {
 		histogramArg = call.Args[2]
 	case "histogram_quantile":
 		histogramArg = call.Args[1]
+	case "histogram_quantiles":
+		histogramArg = call.Args[0]
 	default:
 		return false
 	}
 
-	var selectors int
-	allExponential := true
+	var selectors, exponential int
 	parser.Inspect(histogramArg, func(node parser.Node, _ []parser.Node) error {
 		selector, ok := node.(*parser.VectorSelector)
 		if !ok {
 			return nil
 		}
 		selectors++
-		if !strings.HasSuffix(selector.Name, exponentialHistogramMetricSuffix) {
-			allExponential = false
+		if strings.HasSuffix(selector.Name, exponentialHistogramMetricSuffix) {
+			exponential++
 		}
 		return nil
 	})
-	return selectors > 0 && allExponential
+	return selectors > 0 && exponential > 0
 }
 
 // isClassicHistogramRateQuantile proves that a complete query result is a
