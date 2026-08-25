@@ -496,22 +496,36 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 // histogram selector) since [lowerRoot]'s own histogram-valued dispatch
 // only recognises the shape where BOTH sides are histogram-valued
 // (cerberus issue #2324 / #2326, histogram_native_set_op.go's
-// [expHistogramSetOp]) and falls through to this generic path otherwise.
+// [expHistogramSetOp]) and falls through to this generic path otherwise
+// — and, since cerberus issue #2555, for an operand that is itself a
+// MIXED `or` (histogram_native_mixed_or.go's [mixedExpHistogramSetOp]),
+// nested here rather than only reachable at the query root.
 //
-// The resulting VectorSetOp.Histogram flag — which shape the emitter's
-// per-arm canonicalisation and the OUTER SELECT's column list both use —
-// is decided from the ACTUAL lowered shape of each side
+// The resulting VectorSetOp.Histogram / Mixed flags — which shape the
+// emitter's per-arm canonicalisation and the OUTER SELECT's column list
+// both use — are decided from the ACTUAL lowered shape of each side
 // ([chplan.RowShapeOf]), not from a pre-lowering AST guess: `and` /
 // `unless` forward exactly one side's rows verbatim (the other side's
 // own value type never reaches the wire, only its label signature does),
-// so the output is that FORWARDED side's shape regardless of what the
-// other side is. `or` unions both sides' rows, which cerberus cannot
-// represent when the two sides disagree on shape — the whole-query
-// row-shape decision ([chplan.RowShapeOf] feeding
+// so the output is that FORWARDED (left) side's shape regardless of what
+// the other side is — Mixed included, since a Mixed-shaped forwarded
+// operand's own fourteen columns flow through the semi-/anti-join
+// unchanged exactly like a Histogram-shaped one already did. `or` unions
+// both sides' rows, which cerberus cannot represent when the two sides
+// disagree between the two PURE shapes (Histogram vs Sample) — the
+// whole-query row-shape decision ([chplan.RowShapeOf] feeding
 // internal/api/prom/handler.go's wrapWithSampleProjection) and the
 // emitter's positional UNION ALL both assume one shape for the entire
-// result — so a mixed-shape `or` is rejected explicitly rather than
-// emitted as invalid SQL or silently dropping a side's histogram.
+// result — so that mismatch is rejected explicitly rather than emitted
+// as invalid SQL or silently dropping a side's histogram. A Mixed operand
+// on EITHER side of `or` sidesteps that mismatch entirely: it has already
+// resolved its own internal float/histogram split, so it unions with a
+// Histogram-shaped, Sample-shaped, or another Mixed-shaped other arm the
+// same way [lowerMixedExpHistogramSetOp] already unions a pure Histogram
+// arm with a pure Sample one — internal/chsql's mixedVectorSetOpArmFrag
+// classifies each arm by its own [chplan.RowShapeOf] and forwards an
+// already-Mixed arm's real per-row discriminator unchanged instead of
+// resynthesising one it doesn't need.
 func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	kind, err := promVectorSetOpKind(b.Op)
 	if err != nil {
@@ -530,25 +544,63 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		return nil, err
 	}
 
-	leftHistogram := chplan.RowShapeOf(left) == chplan.HistogramRowShape
-	rightHistogram := chplan.RowShapeOf(right) == chplan.HistogramRowShape
-	if kind == chplan.VectorSetOr && leftHistogram != rightHistogram {
-		// cerberus issue #2330: unlike `and`/`unless` (which forward one
-		// side's own rows verbatim, so the mixed-shape case above just
-		// works), `or`'s output is a genuine union of both sides' rows —
-		// cerberus has no wire representation for a query result that is
-		// per-row float or histogram, only one shape for the whole query
-		// (see chplan.RowShapeOf / VectorSetOp.Histogram).
-		return nil, fmt.Errorf(
-			"promql: 'or' between a float-valued and a histogram-valued operand is not supported; " +
-				"'and'/'unless' support mixing them",
-		)
-	}
+	leftShape := chplan.RowShapeOf(left)
+	rightShape := chplan.RowShapeOf(right)
+	leftHistogram := leftShape == chplan.HistogramRowShape
+	rightHistogram := rightShape == chplan.HistogramRowShape
+	// cerberus issue #2555: either operand may itself already be a Mixed
+	// VectorSetOp, resolved as a NESTED operand of THIS set op via
+	// [lowerVectorSetOpOperand] rather than only at the query root. A
+	// Mixed operand's own internal float/histogram split is already
+	// resolved (that is what "mixed-or" means), so it is tracked here as
+	// its own third shape, distinct from a pure HistogramRowShape operand
+	// — `leftHistogram`/`rightHistogram` are both false for a Mixed
+	// operand, exactly as they would be for a plain float one.
+	leftMixed := leftShape == chplan.MixedRowShape
+	rightMixed := rightShape == chplan.MixedRowShape
 
 	match := chplan.VectorMatch{}
 	if b.VectorMatching != nil {
 		match.Labels = append([]string(nil), b.VectorMatching.MatchingLabels...)
 		match.On = b.VectorMatching.On
+	}
+
+	if kind == chplan.VectorSetOr {
+		switch {
+		case leftMixed || rightMixed:
+			// cerberus issue #2555: at least one arm is already Mixed —
+			// `or`'s union only needs the two arms to agree in SHAPE, and
+			// a Mixed arm composes with any of the other two shapes (see
+			// this function's own doc comment above). Left/Right stay in
+			// source order; internal/chsql's emitter classifies each arm
+			// independently by its own chplan.RowShapeOf, so no
+			// "which side is which" flag is needed the way the
+			// construct-from-two-pure-shapes case
+			// ([lowerMixedExpHistogramSetOp]) needs MixedHistogramOnLeft.
+			return &chplan.VectorSetOp{
+				Left:             left,
+				Right:            right,
+				Op:               kind,
+				Match:            match,
+				StepAligned:      ctx.step > 0,
+				Mixed:            true,
+				MetricNameColumn: s.MetricNameColumn,
+				AttributesColumn: s.AttributesColumn,
+				TimestampColumn:  s.TimestampColumn,
+				ValueColumn:      s.ValueColumn,
+			}, nil
+		case leftHistogram != rightHistogram:
+			// cerberus issue #2330: neither side is Mixed, so this is a
+			// genuine unconstructed shape mismatch between the two PURE
+			// shapes — cerberus has no wire representation for a query
+			// result that is per-row float or histogram outside the
+			// Mixed contract, only one shape for the whole query (see
+			// chplan.RowShapeOf / VectorSetOp.Histogram).
+			return nil, fmt.Errorf(
+				"promql: 'or' between a float-valued and a histogram-valued operand is not supported; " +
+					"'and'/'unless' support mixing them",
+			)
+		}
 	}
 
 	// Range mode (ctx.step > 0): both arms materialise per-step rows
@@ -564,8 +616,13 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 		StepAligned: ctx.step > 0,
 		// `and`/`unless` always forward the LEFT side's own rows; a
 		// homogeneous `or` has leftHistogram == rightHistogram (asserted
-		// above), so either reads the same answer.
+		// above — the Mixed case already returned), so either reads the
+		// same answer. Mixed mirrors Left's own shape (cerberus issue
+		// #2555): when the FORWARDED side is itself Mixed-shaped, the
+		// output is that same fourteen-column contract, carried through
+		// the semi-/anti-join unchanged.
 		Histogram:        leftHistogram,
+		Mixed:            leftMixed,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
