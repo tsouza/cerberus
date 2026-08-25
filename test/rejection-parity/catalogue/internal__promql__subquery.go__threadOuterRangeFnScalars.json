@@ -1,0 +1,61 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#2b0de462",
+      "message": "promql: predict_linear expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: predict_linear is pinned at two arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"predict_linear\" of switch outer.Func.Name",
+          "if len(outer.Args) != 2"
+        ],
+        "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#682124f4",
+      "message": "promql: quantile_over_time expects 2 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: quantile_over_time is pinned at two arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"quantile_over_time\" of switch outer.Func.Name",
+          "if len(outer.Args) != 2"
+        ],
+        "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/subquery.go:threadOuterRangeFnScalars#ceef5c3b",
+      "message": "promql: holt_winters expects 3 arguments, got %d",
+      "class": "internal",
+      "rationale": "parser-enforced arity: double_exponential_smoothing is pinned at three arguments, so every one of this site's callers — each gated on the identical arity check before reaching it — can never observe a call with a different count",
+      "evidence": {
+        "guard": [
+          "case \"holt_winters\", \"double_exponential_smoothing\" of switch outer.Func.Name",
+          "if len(outer.Args) != 3"
+        ],
+        "callers": [
+          "dropFamilyRangeVectorCallOverExpHistogramSubqueryInner",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSubqueryOverCall",
+          "lowerSubqueryOverCallSubquery"
+        ]
+      }
+    }
+  ]
+}
