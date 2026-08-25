@@ -169,6 +169,14 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if _, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
 		return true
 	}
+	// last_over_time / first_over_time over a subquery whose inner
+	// resolves histogram-native (cerberus issue #2569) — see
+	// [selectFnHistogramPreservingSubquery]'s own doc for why only these
+	// two of [selectFnOverExpHistogramSubquery]'s eight names belong in
+	// this predicate.
+	if _, ok := selectFnHistogramPreservingSubquery(expr, s, ctx); ok {
+		return true
+	}
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		return isExpHistogramValuedShape(agg.Expr, s, ctx)
 	}
