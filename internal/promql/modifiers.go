@@ -151,6 +151,23 @@ type lowerCtx struct {
 	// caller did not ask for guards — see [LowerOpts.Guards].
 	guards *[]ScalarGuard
 
+	// infoMetricSelector marks a lowering of info()'s second-argument
+	// synthetic selector (internal/promql's lowerInfoMetric) — the
+	// info-metric side of an `info(v, {label matchers})` join. Reference
+	// Prometheus's info() (promql/info.go) reads only the info series'
+	// LABELS for the identity-label join; it never requires the info side
+	// to carry a meaningful float value. When set, expHistogramSelectorRouting
+	// exempts a selector naming (or matching) an exponential-histogram
+	// metric from its usual hard rejection: the selector routes to
+	// ExpHistogramTable with a placeholder numeric column standing in for
+	// Value (see wrapHistogramCompanionProject), the same shape the
+	// `_count`/`_sum` companion routing already produces, so
+	// lowerVectorSelector's ordinary LWR / per-series-latest machinery
+	// still applies and the info-metric side's real Attributes/Timestamp
+	// reach the join. Every other lowering path leaves this false and
+	// keeps the hard rejection (cerberus issue #2574).
+	infoMetricSelector bool
+
 	// wantsTemporalityColumn asks augmentSelectorAttributes to widen its
 	// canonical 4-column selector Project (MetricName, Attributes,
 	// TimeUnix, Value) with a 5th passthrough column,
@@ -209,6 +226,17 @@ func (c lowerCtx) scalarsBindPerStep() bool {
 func (c lowerCtx) withAttributesPreMerged() lowerCtx {
 	out := c
 	out.attributesPreMerged = true
+	return out
+}
+
+// withInfoMetricSelector returns a copy of c with infoMetricSelector set,
+// used by lowerInfoMetric to mark the synthetic selector it builds for
+// info()'s info-metric (second-argument) side — see infoMetricSelector's
+// doc comment for why that role exempts an exp-histogram-named selector
+// from expHistogramSelectorRouting's hard rejection.
+func (c lowerCtx) withInfoMetricSelector() lowerCtx {
+	out := c
+	out.infoMetricSelector = true
 	return out
 }
 
