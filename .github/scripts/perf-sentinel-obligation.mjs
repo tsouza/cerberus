@@ -60,6 +60,7 @@ import {
   parseDiff,
   resolveRange,
   resolveRefs,
+  stripFencedBlocks,
 } from './forbid-deferral.mjs';
 
 // TRIGGER_FILES — touching any of these is what obligates new sentinel
@@ -87,8 +88,15 @@ export const SENTINEL_FILES = Object.freeze([
 export const WAIVER_PATTERN = /PERF-SENTINEL-WAIVER:\s*#(\d+)\b/g;
 
 // waiverRefs — every #<n> a PERF-SENTINEL-WAIVER: label cites in `text`.
+//
+// Strips fenced code blocks first, for the exact reason
+// forbid-deferral.mjs's own scanProse does before it scans for a deferral
+// marker: a fenced block in a description or commit message is QUOTED
+// material (a paste of a revert's original message, a template, this very
+// gate's own remedy text) rather than the author's own commitment, so a
+// waiver label sitting inside one must not satisfy the gate.
 export function waiverRefs(text) {
-  const src = String(text ?? '');
+  const src = stripFencedBlocks(text);
   const numbers = new Set();
   for (const m of src.matchAll(WAIVER_PATTERN)) numbers.add(Number(m[1]));
   return [...numbers].sort((a, b) => a - b);
