@@ -581,8 +581,12 @@ func readSeededSeries(
 	if err := readSeededClassicHistograms(db, rt, allow, byKey, &nameRestorer, deltaSeries); err != nil {
 		return seededSeries{}, err
 	}
+	infoSecondArgMatchers, err := infoSecondArgHistogramMatchers(expr)
+	if err != nil {
+		return seededSeries{}, err
+	}
 	if err := readSeededNativeHistograms(
-		db, rt, allow, byKey, &nameRestorer, exactMetricNameSelectors(expr), deltaSeries,
+		db, rt, allow, byKey, &nameRestorer, exactMetricNameSelectors(expr), infoSecondArgMatchers, deltaSeries,
 	); err != nil {
 		return seededSeries{}, err
 	}
@@ -780,6 +784,46 @@ func exactMetricNameSelectors(expr string) map[string]bool {
 		return nil
 	})
 	return selectors
+}
+
+// infoSecondArgHistogramMatchers returns the __name__ matchers inside every
+// info(...) call's second-argument selector in expr.
+//
+// info() never reads that argument's VALUE — only the identity-label join
+// uses it (see info_second_arg_exp_histogram.txtar and its regex sibling,
+// info_second_arg_exp_histogram_regex.txtar) — and real Prometheus's own
+// info() implementation rejects a histogram-valued second-arg sample
+// outright ("this should be an info metric, with float samples"). A metric
+// name reached only through one of these matchers is therefore loaded by
+// [readSeededNativeHistograms] as info()'s own float companion (the row's
+// raw Count), never as a genuine Histogram value, regardless of whether the
+// matcher that names it is an exact __name__ match or a regex — mirroring
+// cerberus's own lowering, which projects `toFloat64(Count) AS Value` for
+// this selector shape either way.
+func infoSecondArgHistogramMatchers(expr string) ([]*labels.Matcher, error) {
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	e, err := p.ParseExpr(expr)
+	if err != nil {
+		return nil, err
+	}
+	var matchers []*labels.Matcher
+	parser.Inspect(e, func(node parser.Node, _ []parser.Node) error {
+		call, ok := node.(*parser.Call)
+		if !ok || call.Func.Name != "info" || len(call.Args) < 2 {
+			return nil
+		}
+		sel, ok := call.Args[1].(*parser.VectorSelector)
+		if !ok {
+			return nil
+		}
+		for _, m := range sel.LabelMatchers {
+			if m.Name == promNameLabel {
+				matchers = append(matchers, m)
+			}
+		}
+		return nil
+	})
+	return matchers, nil
 }
 
 func (r metricNameRestorer) restore(results []oracle.Result) {
