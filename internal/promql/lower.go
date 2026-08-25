@@ -473,6 +473,18 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerMathFnOverMixedExpHistogramSetOp(call, b, chFn, s, ctx)
 		return plan, true, err
 	}
+	// round()'s 2-arg to_nearest form wrapping that same mixed shape
+	// (cerberus issue #2578 — the shape the single-arg recognizer just
+	// above deliberately leaves unattempted because it takes a further
+	// bound argument of its own). Checked here for the identical reason:
+	// a mixed `or` argument never resolves as purely histogram-valued,
+	// so nothing above this line can have consumed the shape yet.
+	// histogram_native_mixed_or_math_fn.go has the composition's own doc
+	// comment for why it reuses that file's float-rows-only scaffolding.
+	if call, b, ok := roundToNearestOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerRoundToNearestOverMixedExpHistogramSetOp(call, b, s, ctx)
+		return plan, true, err
+	}
 	// Scalar `*` / histogram-left `/` wrapping that same mixed shape
 	// (cerberus issue #2449 — the sixth wrapper family, and the piece
 	// histogram_native_mixed_or_arithmetic.go's own header explicitly
