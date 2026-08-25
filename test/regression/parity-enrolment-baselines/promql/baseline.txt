@@ -134,6 +134,7 @@ exp_histogram_absent_missing.txtar
 exp_histogram_absent_present.txtar
 exp_histogram_avg.txtar
 exp_histogram_avg_by.txtar
+exp_histogram_avg_over_avg_over_time.txtar
 exp_histogram_avg_over_time.txtar
 exp_histogram_bare_selector.txtar
 exp_histogram_bare_selector_range.txtar
@@ -157,6 +158,7 @@ exp_histogram_binop_sub.txtar
 exp_histogram_changes.txtar
 exp_histogram_count.txtar
 exp_histogram_count_by.txtar
+exp_histogram_count_over_avg_over_time.txtar
 exp_histogram_delta.txtar
 exp_histogram_float_vector_scaling_div.txtar
 exp_histogram_float_vector_scaling_mul.txtar
@@ -212,8 +214,14 @@ exp_histogram_set_op_unless_mixed_histogram_lhs.txtar
 exp_histogram_sum.txtar
 exp_histogram_sum_by.txtar
 exp_histogram_sum_mixed_scale.txtar
+exp_histogram_sum_over_avg_over_time.txtar
+exp_histogram_sum_over_first_over_time.txtar
+exp_histogram_sum_over_last_over_time.txtar
 exp_histogram_sum_over_rate.txtar
+exp_histogram_sum_over_sum_over_time.txtar
 exp_histogram_sum_over_time.txtar
+exp_histogram_sum_over_ts_of_first_over_time.txtar
+exp_histogram_sum_over_ts_of_last_over_time.txtar
 exp_histogram_sum_range.txtar
 exp_metric.txtar
 first_over_time.txtar

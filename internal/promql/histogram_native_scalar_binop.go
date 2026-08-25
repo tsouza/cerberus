@@ -171,6 +171,19 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if _, ok := rangeFnOverExpHistogram(expr, s, ctx); ok {
 		return true
 	}
+	// sum_over_time / avg_over_time and last_over_time / first_over_time
+	// over a bare exp-histogram selector (cerberus issue #2619) — the same
+	// two producers just added to [lowerExpHistogramValuedShape]'s own
+	// chain. Missing here left `count(avg_over_time(m_exp_hist[5m]))` and
+	// `count(last_over_time(m_exp_hist[5m]))` unrecognised by
+	// [countOrGroupOverExpHistogramValue] even after the producer itself
+	// composed under `sum()`/`avg()`.
+	if _, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
+	if _, _, _, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
 	if _, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
 		return true
 	}
