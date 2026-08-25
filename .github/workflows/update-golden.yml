@@ -306,25 +306,12 @@ jobs:
       # safety check rather than a rubber stamp.
       - name: Apply predecessor context
         if: needs.plan.outputs.cardinality_predecessors != ''
-        working-directory: target
         env:
+          MODE: apply-predecessors
+          TARGET_ROOT: target
+          PATCH_ROOT: patches
           PREDECESSORS: ${{ needs.plan.outputs.cardinality_predecessors }}
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          applied=0
-          for shard in $PREDECESSORS; do
-            patch="../patches/golden-patch-${shard}/${shard}.patch"
-            if [ ! -s "$patch" ]; then
-              continue
-            fi
-            git apply --index "$patch"
-            applied=1
-          done
-          if [ "$applied" = "1" ]; then
-            git commit -m "predecessor context for cardinality-leg (not published)" --quiet
-          fi
+        run: node .github/scripts/manual-golden-update.mjs
 
       - name: Profile this leg's corpus slice
         working-directory: target
@@ -408,15 +395,11 @@ jobs:
       # packaging step below re-stages from scratch (`git add -A`) before
       # diffing, so there is nothing that needs to already be committed first.
       - name: Apply every leg's patch
-        working-directory: target
-        run: |
-          set -euo pipefail
-          for patch in ../patches/cardinality-leg-patch-*/*.patch; do
-            if [ ! -s "$patch" ]; then
-              continue
-            fi
-            git apply --index "$patch"
-          done
+        env:
+          MODE: apply-legs
+          TARGET_ROOT: target
+          PATCH_ROOT: patches
+        run: node .github/scripts/manual-golden-update.mjs
 
       - name: Assert the legs together covered the corpus
         working-directory: target
