@@ -1791,7 +1791,7 @@
       "description": "Regenerate every golden shard implied by the landed merge and fail on drift.",
       "owner": {
         "workflow": ".github/workflows/post-merge-drift.yml",
-        "jobs": ["drift"],
+        "jobs": ["plan", "regenerate", "cardinality-leg", "cardinality-seal", "drift"],
         "producer_jobs": [],
         "context_job": "drift"
       },

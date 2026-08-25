@@ -33,13 +33,28 @@
 //
 // # What it does
 //
-// 1. Takes the push's `before`/`after` commits and diffs them.
-// 2. Asks lib/golden-shards.mjs's `impliedShards` which shards that diff could
-//    have staled. Regenerating everything unconditionally would take long
-//    enough to get ignored, which is the same as not having the check.
-// 3. Runs each implied shard's real regeneration command.
-// 4. Fails if the tree moved — the committed artefact is not what the generator
-//    writes against this merge base.
+// post-merge-drift.yml fans the regeneration out across one CI job per implied
+// shard — the same `plan` → per-shard-matrix structure update-golden.yml uses
+// for the identical regeneration work on the manual path, including its own
+// further `cardinality-leg`/`cardinality-seal` split for the one shard whose
+// regeneration is itself CI-matrix-sharded (see that workflow's comments).
+// This script plays two roles in that structure, selected by `MODE`:
+//
+//   MODE=plan   run once, in the workflow's `plan` job. Diffs the push's
+//               `before`/`after` commits, asks lib/golden-shards.mjs's
+//               `impliedShards` which shards that diff could have staled, and
+//               emits the per-shard matrix (plus the `cardinality` fan-out
+//               flag) the rest of the workflow fans out over. Regenerating
+//               everything unconditionally would take long enough to get
+//               ignored, which is the same as not having the check.
+//   (unset)     run once per matrix job, scoped to ONE shard via
+//               POST_MERGE_SHARDS. Runs that shard's real regeneration
+//               command — skipped when POST_MERGE_SKIP_REGENERATE=1, which
+//               is how the `cardinality-seal` job reuses this same reporting
+//               path after its own `cardinality-leg` matrix has already
+//               regenerated the shard — then fails if the tree moved: the
+//               committed artefact is not what the generator writes against
+//               this merge base.
 //
 // # The failure message is the product
 //
@@ -47,17 +62,34 @@
 // artefact and not necessarily the author of either change. So a failure names
 // the artefact, the exact command that regenerates it, and BOTH commits whose
 // interleaving produced the drift: the one that just landed, and the most
-// recent commit before it that touched the same shard's inputs.
+// recent commit before it that touched the same shard's inputs. Each shard's
+// own matrix job reports this independently — with `fail-fast: false`, one
+// shard's drift does not cancel its siblings' still-running checks, so a push
+// that drifted two artefacts reports both rather than whichever job happened
+// to fail first.
+//
+// CLI: `node post-merge-golden-drift.mjs dump` prints the full `regenerate`
+// matrix row catalogue (every non-`cardinality` shard) as JSON, for
+// test/regression/release_required_checks_test.go's `generatedMatrices` to
+// expand post-merge-drift.yml#regenerate's plan-derived `strategy.matrix`.
 //
 // Environment inputs:
 //
+//   MODE                   (optional) `plan` to derive the matrix instead of
+//                          regenerating; unset for the per-shard job. See above.
 //   POST_MERGE_BEFORE      (required) the commit `main` pointed at before this
 //                          push. GitHub supplies it as `github.event.before`.
 //   POST_MERGE_AFTER       (optional) the commit that just landed. Default HEAD.
 //   POST_MERGE_SHARDS      (optional) space/comma separated shard names that
 //                          REPLACE the derived set. Lets the pin drive the
 //                          regenerate-and-diff half over a synthetic tree
-//                          without depending on the derivation's inputs.
+//                          without depending on the derivation's inputs; also
+//                          how a `regenerate`/`cardinality-seal` matrix job
+//                          scopes this script to its own single shard.
+//   POST_MERGE_SKIP_REGENERATE  (optional) `1` skips the regeneration commands
+//                          and goes straight to diffing the tree — the
+//                          `cardinality-seal` job's own leg matrix already
+//                          regenerated the shard by the time this runs.
 //   JUST_EXECUTABLE        (optional) how to invoke `just` for recipe-backed
 //                          shards. Default `just`.
 //
@@ -70,19 +102,28 @@
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 
-import { error, log, notice } from './lib/gh.mjs';
+import { error, log, notice, setOutput } from './lib/gh.mjs';
 import {
+  SHARD_NAMES,
   SHARDS,
   commandsFor,
   corpusRootsFor,
   flattenSteps,
   generatorPackageDirs,
   impliedShards,
+  needsChdb,
   orderShards,
   resolveRequested,
 } from './lib/golden-shards.mjs';
 
 const repoRoot = process.cwd();
+
+/**
+ * The one shard whose own regeneration is CI-matrix-sharded further, into
+ * `cardinality-leg` + `cardinality-seal` (post-merge-drift.yml), mirroring
+ * update-golden.yml's identical split — see that workflow's comments.
+ */
+const CARDINALITY_SHARD = 'cardinality';
 
 /**
  * How many candidate culprit commits the failure message names per shard. One
@@ -262,7 +303,96 @@ function regenerate(name) {
   }
 }
 
-function main() {
+/**
+ * MODE=plan — derive the shard-level matrix post-merge-drift.yml's own
+ * `plan` job fans the rest of the workflow out over, without regenerating
+ * anything. The derivation is identical to the one `regenerateAndDiff` uses
+ * to decide what to check (`shardsToCheck`, driven by the same `before`/
+ * `after`/`POST_MERGE_SHARDS` inputs) — this mode only stops short of
+ * running the regeneration commands themselves.
+ *
+ * `cardinality` is excluded from `matrix.include`: its own regeneration is
+ * further CI-matrix-sharded by the workflow's `cardinality-leg` +
+ * `cardinality-seal` jobs (mirroring update-golden.yml's identical split —
+ * see that workflow's comments), so it is reported separately as the
+ * `cardinality_selected` boolean rather than as a `regenerate` matrix row.
+ *
+ * Outputs (written to `$GITHUB_OUTPUT`, logged when that is unset):
+ *
+ *   nothing               `true` when there is no earlier commit to have
+ *                          drifted from, or the diff implies no shard at all
+ *                          — every downstream job should skip.
+ *   matrix                JSON `{ include: [{ shard, needs_chdb }, ...] }`
+ *                          for the `regenerate` matrix (cardinality excluded).
+ *   shards                every implied shard, space-joined, stage-ordered —
+ *                          for logging.
+ *   has_regenerate_rows   `true` when `matrix.include` is non-empty. Tells an
+ *                          EMPTY matrix (nothing beyond `cardinality` implied)
+ *                          apart from a job that never ran, the same
+ *                          ambiguity update-golden.yml's own output of the
+ *                          same name exists to remove.
+ *   cardinality_selected  `true` when `cardinality` is among the implied
+ *                          shards.
+ */
+function planMode() {
+  const before = process.env.POST_MERGE_BEFORE;
+  const after = process.env.POST_MERGE_AFTER || 'HEAD';
+  if (!before) {
+    fail([
+      'error: POST_MERGE_BEFORE is unset — there is no merge to validate without the commit',
+      '       `main` pointed at before this push (GitHub supplies it as github.event.before).',
+    ]);
+  }
+
+  // GitHub sends an all-zero `before` when the push CREATED the ref. There is
+  // no prior state to have drifted from, so there is nothing to validate — and
+  // failing on it would make the gate's first-ever run a red herring.
+  if (/^0+$/.test(before)) {
+    notice(
+      'post-merge-golden-drift: this push created the ref, so there is no earlier `main` to ' +
+        'have drifted from — nothing to validate.',
+    );
+    setOutput('nothing', 'true');
+    return;
+  }
+
+  const changed = git(['diff', '--name-only', before, after]);
+  if (changed === null) {
+    fail([
+      `error: cannot diff ${before}..${after} — one of them is not a commit in this checkout.`,
+      '       A shallow clone is the usual cause; this check needs both sides of the merge.',
+    ]);
+  }
+
+  const implied = shardsToCheck(changed);
+  if (implied.size === 0) {
+    notice(
+      `post-merge-golden-drift: ${changed.length} changed file(s) imply no generated shard — ` +
+        'nothing to regenerate.',
+    );
+    setOutput('nothing', 'true');
+    return;
+  }
+
+  const order = orderShards([...implied.keys()]);
+  log(`Planned ${order.length} implied shard(s) to check in parallel: ${order.join(' ')}`);
+  for (const name of order) log(`  ${name}: ${implied.get(name)}`);
+
+  const cardinalitySelected = order.includes(CARDINALITY_SHARD);
+  const matrix = {
+    include: order
+      .filter((name) => name !== CARDINALITY_SHARD)
+      .map((name) => ({ shard: name, needs_chdb: needsChdb([name]) })),
+  };
+
+  setOutput('nothing', 'false');
+  setOutput('matrix', JSON.stringify(matrix));
+  setOutput('shards', order.join(' '));
+  setOutput('has_regenerate_rows', String(matrix.include.length > 0));
+  setOutput('cardinality_selected', String(cardinalitySelected));
+}
+
+function regenerateAndDiff() {
   const before = process.env.POST_MERGE_BEFORE;
   const after = process.env.POST_MERGE_AFTER || 'HEAD';
   if (!before) {
@@ -304,7 +434,14 @@ function main() {
   log(`Regenerating ${order.length} implied shard(s): ${order.join(' ')}`);
   for (const name of order) log(`  ${name}: ${implied.get(name)}`);
 
-  for (const name of order) regenerate(name);
+  if (process.env.POST_MERGE_SKIP_REGENERATE === '1') {
+    log(
+      `Skipping regeneration for ${order.join(' ')} — already regenerated by the caller ` +
+        '(POST_MERGE_SKIP_REGENERATE=1, the cardinality-seal leg-merge path).',
+    );
+  } else {
+    for (const name of order) regenerate(name);
+  }
 
   const drifted = driftedPaths();
   if (drifted.length > 0) {
@@ -365,4 +502,37 @@ function main() {
   );
 }
 
-main();
+/**
+ * `node post-merge-golden-drift.mjs dump` — prints the FULL `regenerate`
+ * matrix row catalogue (every shard except `cardinality`, whichever a given
+ * push happens to imply), mirroring manual-golden-update.mjs's identical
+ * `dump` mode for `update-golden.yml#regenerate`.
+ *
+ * post-merge-drift.yml's `regenerate` job builds its `strategy.matrix` from
+ * the `plan` job's output — an expression over another job, not a literal in
+ * the workflow YAML — so a static reader of the workflow file alone cannot
+ * enumerate it. `test/regression/release_required_checks_test.go`'s
+ * `generatedMatrices` runs this instead, exactly as it already does for
+ * `update-golden.yml#regenerate`, to index every job name post-merge-drift.yml
+ * can ever post without the index going stale the moment a shard is added.
+ */
+function dumpMatrix() {
+  const rows = orderShards(SHARD_NAMES)
+    .filter((name) => name !== CARDINALITY_SHARD)
+    .map((name) => ({ shard: name, needs_chdb: needsChdb([name]) }));
+  process.stdout.write(`${JSON.stringify(rows)}\n`);
+}
+
+/** MODE=plan derives the matrix; unset MODE regenerates and diffs the shard(s)
+ * POST_MERGE_SHARDS scopes this job to — see the file header for both. */
+function main() {
+  const mode = (process.env.MODE || '').trim();
+  if (mode === 'plan') return planMode();
+  if (mode !== '') {
+    fail([`error: MODE must be "plan" or unset (got ${JSON.stringify(mode)}) — see this file's header.`]);
+  }
+  return regenerateAndDiff();
+}
+
+if (process.argv[2] === 'dump') dumpMatrix();
+else main();
