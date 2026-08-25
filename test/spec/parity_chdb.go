@@ -266,22 +266,26 @@ const exponentialHistogramMetricSuffix = "_exp_hist"
 // compareValues selects the one comparator appropriate to the expression and
 // its actual seeded storage shape. Native exponential-histogram
 // interpolation and histogram_quantile over a rate()/increase()'d classic
-// bucket selector are the only classes besides atan2 with measured
+// bucket selector are the only classes besides atan2 and pow with measured
 // cross-implementation divergence.
 func compareValues(query, seed string) (func(a, b float64) bool, error) {
 	if atan2QueryPattern.MatchString(query) {
 		return oracle.EqualAtan2Values, nil
-	}
-	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
-	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
-	if !hasExponential && !hasClassic {
-		return oracle.EqualValues, nil
 	}
 
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		return nil, fmt.Errorf("parse comparator query: %w", err)
+	}
+	if usesPowOperator(expr) {
+		return oracle.EqualPowValues, nil
+	}
+
+	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
+	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
+	if !hasExponential && !hasClassic {
+		return oracle.EqualValues, nil
 	}
 	if hasExponential && isExponentialHistogramInterpolation(expr) {
 		return oracle.EqualExponentialHistogramInterpolationValues, nil
@@ -290,6 +294,35 @@ func compareValues(query, seed string) (func(a, b float64) bool, error) {
 		return oracle.EqualClassicHistogramRateQuantileValues, nil
 	}
 	return oracle.EqualValues, nil
+}
+
+// usesPowOperator reports whether expr contains PromQL's `^` (pow) binary
+// operator anywhere in its tree — the same "anywhere, at any nesting depth"
+// reach atan2QueryPattern gets from grepping the whole query text.
+//
+// This is detected from the PARSED expression rather than from
+// atan2QueryPattern's plain regexp.MustCompile(`\b...\b`) style, because `^`
+// is not a word: unlike "atan2", which cannot appear inside a PromQL string
+// literal by coincidence in any fixture this repo has, `^` is the standard
+// PromQL/RE2 regex anchor and appears routinely inside a label matcher's
+// regex value, e.g. `up{job=~"^api$"}`. A plain `\^` text match would fire
+// on that anchor and silently relax an unrelated float comparison that has
+// nothing to do with the pow operator — exactly the "broader heuristic"
+// issue #2598's own acceptance criteria says this exception must not
+// become. Walking the already-parsed AST for a `*parser.BinaryExpr` with
+// `Op == parser.POW` finds the actual operator and nothing else, while still
+// being driven purely by the query under evaluation, never by fixture
+// metadata — the same property that makes atan2QueryPattern's detection
+// narrow in the first place (see that var's own doc comment).
+func usesPowOperator(expr parser.Expr) bool {
+	found := false
+	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
+		if bin, ok := node.(*parser.BinaryExpr); ok && bin.Op == parser.POW {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 // isExponentialHistogramInterpolation proves that a complete query result is
