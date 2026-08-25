@@ -11,8 +11,8 @@
           "case mx \u003e= aggParamMaxInt64 of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
         ]
       }
@@ -32,8 +32,8 @@
           "case mn \u003c= aggParamMinInt64 of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
         ]
       }
@@ -49,39 +49,9 @@
           "case hasAnyNaN(values) of switch"
         ],
         "callers": [
+          "buildTopKComputed",
           "lowerSubqueryOverTopK",
-          "lowerTopKComputed",
           "topKDomain"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/scalar_domain.go:holtWintersFactorDomain#fd482ce3",
-      "message": "invalid %s factor. Expected: 0 \u003c %s \u003c 1, got: %f",
-      "class": "rejection",
-      "trigger_query": "double_exponential_smoothing(up[5m], 1.5, 0.3)",
-      "evidence": {
-        "guard": [
-          "if v \u003c= 0 || v \u003e= 1"
-        ],
-        "callers": [
-          "holtWintersFactors"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/scalar_domain.go:limitRatioParamDomain#4b08e802",
-      "message": "Ratio value is NaN",
-      "class": "rejection",
-      "trigger_query": "limit_ratio(NaN, up)",
-      "evidence": {
-        "guard": [
-          "case hasAnyNaN(values) of switch"
-        ],
-        "callers": [
-          "limitRatioPredicate"
         ]
       }
     }

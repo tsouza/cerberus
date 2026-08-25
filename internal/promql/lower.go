@@ -474,6 +474,19 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerFloatOnlyAggOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		return plan, true, err
 	}
+	// `topk`/`bottomk` [by/without] wrapping that same mixed shape
+	// (cerberus issue #2600, the last of #2595's three siblings). Checked
+	// here for the identical reason: a mixed `or` aggregand never
+	// resolves as purely histogram-valued, so nothing above this line can
+	// have consumed the shape yet. histogram_native_mixed_or_aggregate_
+	// topk.go has the composition's own doc comment for why the
+	// shadow-resolved float arm alone, with no histogram branch, already
+	// answers reference's per-sample "drop every histogram row from
+	// K-selection" rule.
+	if agg, b, ok := topKOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerTopKOverMixedExpHistogramSetOp(agg, b, s, ctx)
+		return plan, true, err
+	}
 	// `count_values` wrapping that same mixed shape (cerberus issue
 	// #2595's third and last sibling family). Checked here for the
 	// identical reason: a mixed `or` aggregand never resolves as purely
@@ -4599,6 +4612,18 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 	if err != nil {
 		return nil, err
 	}
+	return buildTopKLiteral(a, s, ctx, input, k, empty), nil
+}
+
+// buildTopKLiteral builds the literal-K topk/bottomk node over an
+// ALREADY-LOWERED input, given the K domain [topKDomain] already
+// resolved for it. Split out of [lowerTopK] so cerberus issue #2600's
+// mixed-or composition (histogram_native_mixed_or_aggregate_topk.go)
+// can reuse the identical K-domain / partition / column-shape rules over
+// the mixed `or`'s shadow-resolved float arm instead of a freshly
+// lowered `a.Expr` — the only difference between the two callers is
+// which chplan.Node `input` names.
+func buildTopKLiteral(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, input chplan.Node, k int64, empty bool) chplan.Node {
 	if empty {
 		// K < 1 → empty result per reference semantics (see
 		// topKDomain). Filter the lowered input to zero rows so the
@@ -4607,7 +4632,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		return &chplan.Filter{
 			Input:     input,
 			Predicate: &chplan.LitBool{V: false},
-		}, nil
+		}
 	}
 
 	by := topKPartition(a, s, ctx)
@@ -4619,7 +4644,7 @@ func lowerTopK(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.
 		SortExpr: &chplan.ColumnRef{Name: s.ValueColumn},
 		Desc:     a.Op == parser.TOPK,
 		Columns:  topKOutputColumns(input, s),
-	}, nil
+	}
 }
 
 // lowerLimitK lowers PromQL's experimental `limitk(K, expr) [by(g) |
@@ -4814,6 +4839,39 @@ func topKOutputColumns(input chplan.Node, s schema.Metrics) []string {
 // [topKDomainExpr] applies the runtime half of the K-domain rules the
 // literal path resolves in [topKDomain].
 func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	// Only limitk ever preserves a histogram-valued input (see
+	// [lowerLimitKInput]'s doc comment) — topk/bottomk's histogram-only
+	// case is always intercepted upstream, at the top of lowerAggregate
+	// (root OR nested, cerberus issue #2562) or, when this aggregation is
+	// itself the query's root, even earlier by lowerHistogramNativeRoot,
+	// by droppingAggregationOverExpHistogram (histogram_native_drop_
+	// aggregation.go), so `input` here is never histogram-valued for
+	// them and the plain [lower] dispatch is unchanged for that path.
+	var input chplan.Node
+	var histogram bool
+	var err error
+	if a.Op == parser.LIMITK {
+		input, histogram, err = lowerLimitKInput(a.Expr, s, ctx)
+	} else {
+		input, err = lower(a.Expr, s, ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buildTopKComputed(a, s, ctx, input, histogram)
+}
+
+// buildTopKComputed builds the computed-K topk/bottomk/limitk node over
+// an ALREADY-LOWERED input. Split out of [lowerTopKComputed] so cerberus
+// issue #2600's mixed-or composition
+// (histogram_native_mixed_or_aggregate_topk.go) can reuse the identical
+// K-domain / partition / column-shape rules over the mixed `or`'s
+// shadow-resolved float arm instead of a freshly lowered `a.Expr` — the
+// only difference between the two callers is which chplan.Node `input`
+// names. `histogram` is always false for the mixed-or caller (topk/
+// bottomk never preserve a histogram-valued input — see
+// [lowerTopKComputed]'s own comment).
+func buildTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx, input chplan.Node, histogram bool) (chplan.Node, error) {
 	// The K domain is reference Prometheus's, and reference applies it to
 	// the parameter's whole per-step value series before it aggregates
 	// anything. A computed K has no value until the query runs, and the
@@ -4844,25 +4902,6 @@ func lowerTopKComputed(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) 
 		Projections: []chplan.Projection{
 			{Expr: topKDomainExpr(kValue), Alias: s.ValueColumn},
 		},
-	}
-
-	// Only limitk ever preserves a histogram-valued input (see
-	// [lowerLimitKInput]'s doc comment) — topk/bottomk's histogram-only
-	// case is always intercepted upstream, at the top of lowerAggregate
-	// (root OR nested, cerberus issue #2562) or, when this aggregation is
-	// itself the query's root, even earlier by lowerHistogramNativeRoot,
-	// by droppingAggregationOverExpHistogram (histogram_native_drop_
-	// aggregation.go), so `input` here is never histogram-valued for
-	// them and the plain [lower] dispatch is unchanged for that path.
-	var input chplan.Node
-	var histogram bool
-	if a.Op == parser.LIMITK {
-		input, histogram, err = lowerLimitKInput(a.Expr, s, ctx)
-	} else {
-		input, err = lower(a.Expr, s, ctx)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	// See lowerLimitK's matching comment: a histogram-valued input always
