@@ -23,20 +23,34 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const workflow = readFileSync(path.join(here, '..', 'workflows', 'chdb.yml'), 'utf8');
 const registry = JSON.parse(readFileSync(path.join(here, '..', 'ci-lanes.json'), 'utf8'));
 
+// promql is deliberately absent: since tsouza/cerberus#2629 it runs as its
+// own `roundtrip-promql-shard` / `roundtrip-promql` job pair rather than a
+// third leg of this matrix — see jobBody(workflow, 'roundtrip-promql-shard')
+// and the tests below.
 const EXPECTED_ROUNDTRIP_TAGS = new Map([
-  ['promql', 'chdb'],
   ['logql', 'chdb,agpl_oracle,chdb_agpl_oracle'],
   ['traceql', 'chdb,agpl_oracle,chdb_agpl_oracle'],
 ]);
 
-function roundtripJob() {
-  const start = workflow.indexOf('\n  roundtrip:');
-  assert.ok(start >= 0, 'chdb.yml: missing roundtrip job');
+/**
+ * Extracts one job's YAML body out of a workflow: from `\n  <jobID>:` to the
+ * next top-level (2-space-indent) job key, or EOF. The needle carries the
+ * trailing colon so a job ID that is a strict prefix of another (`roundtrip`
+ * / `roundtrip-promql` / `roundtrip-promql-shard`) cannot cross-match: the
+ * colon only follows the exact key, never mid-hyphenated-name.
+ */
+function jobBody(jobID) {
+  const marker = `\n  ${jobID}:`;
+  const start = workflow.indexOf(marker);
+  assert.ok(start >= 0, `chdb.yml: missing ${jobID} job`);
   const remainder = workflow.slice(start + 1);
-  const nextJob = /^  [a-zA-Z0-9_-]+:\s*$/m.exec(remainder.slice('  roundtrip:\n'.length));
-  return nextJob
-    ? remainder.slice(0, '  roundtrip:\n'.length + nextJob.index)
-    : remainder;
+  const header = `  ${jobID}:\n`;
+  const nextJob = /^  [a-zA-Z0-9_-]+:\s*$/m.exec(remainder.slice(header.length));
+  return nextJob ? remainder.slice(0, header.length + nextJob.index) : remainder;
+}
+
+function roundtripJob() {
+  return jobBody('roundtrip');
 }
 
 /** Read the exact per-head matrix from the workflow rather than restating it. */
@@ -225,9 +239,8 @@ test('workflow, registry, and runner pin the exact per-head oracle tag matrix', 
   assertRoundtripEnrollment(roundtripMatrix(), registry.lanes);
 });
 
-test('every head rejects a tag set that compiles out its live reference path', () => {
+test('every logql/traceql matrix head rejects a tag set that compiles out its live reference path', () => {
   const withoutLiveReference = new Map([
-    ['promql', 'agpl_oracle'],
     ['logql', 'chdb'],
     ['traceql', 'chdb'],
   ]);
@@ -241,4 +254,127 @@ test('every head rejects a tag set that compiles out its live reference path', (
       `${ql}: removing the reference tags must break the contract`,
     );
   }
+});
+
+// promql (tsouza/cerberus#2629): `roundtrip-promql-shard` (the matrix, one
+// runner per shard, still fanning out chdb-roundtrip.mjs's own
+// FANOUT.promql processes in-runner) + `roundtrip-promql` (the aggregator,
+// named EXACTLY `roundtrip (promql)` so release.yml's RELEASE_REQUIRED_CHECKS
+// and ci-lanes.json keep resolving it by that text without a rename).
+
+function roundtripPromqlShardJob() {
+  return jobBody('roundtrip-promql-shard');
+}
+
+function roundtripPromqlAggregatorJob() {
+  return jobBody('roundtrip-promql');
+}
+
+test('roundtrip-promql-shard runs promql with the exact chdb tag set the registry declares', () => {
+  const job = roundtripPromqlShardJob();
+  assert.match(job, /^\s+QL:\s*promql\s*$/m, 'roundtrip-promql-shard: QL must be promql');
+  const tagsMatch = /^\s+TAGS:\s*(\S+)\s*$/m.exec(job);
+  assert.ok(tagsMatch, 'roundtrip-promql-shard: no TAGS env');
+
+  const laneMatches = registry.lanes.filter(({ id }) => id === 'chdb.roundtrip-promql');
+  assert.equal(laneMatches.length, 1, 'expected exactly one promql roundtrip registry lane');
+  assert.deepEqual(
+    [...laneMatches[0].build_tags].sort(),
+    tagsMatch[1].split(',').sort(),
+    'registry tags must describe the workflow execution',
+  );
+
+  const commands = legCommands({ ql: 'promql', tags: tagsMatch[1] });
+  assert.ok(commands.length > 0, 'promql: runner emitted no command');
+  for (const command of commands) {
+    const index = command.argv.indexOf('-tags');
+    assert.equal(command.argv[index + 1], tagsMatch[1], `${command.name}: runner changed the shard tags`);
+  }
+});
+
+test('roundtrip-promql-shard wires ROUNDTRIP_SHARD_INDEX/COUNT from the matrix, never a repeated literal', () => {
+  const job = roundtripPromqlShardJob();
+  assert.match(
+    job,
+    /ROUNDTRIP_SHARD_INDEX:\s*\$\{\{\s*matrix\.shard\s*\}\}/,
+    'a literal index would not track which shard the leg actually is',
+  );
+  assert.match(
+    job,
+    /ROUNDTRIP_SHARD_COUNT:\s*\$\{\{\s*strategy\.job-total\s*\}\}/,
+    'ROUNDTRIP_SHARD_COUNT must come from strategy.job-total (the legs that actually run), never a ' +
+      'repeated literal — a count left behind after the `shard:` list changed leaves part of the ' +
+      'corpus owned by no leg, and every leg still reports green',
+  );
+});
+
+test('roundtrip-promql-shard matrix is a contiguous 1..N shard list', () => {
+  const job = roundtripPromqlShardJob();
+  const m = /^\s*shard:\s*\[([0-9,\s]*)\]\s*$/m.exec(job);
+  assert.ok(m, 'chdb.yml: roundtrip-promql-shard declares no `shard: [...]` matrix list');
+  const legs = m[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+    .map(Number);
+  assert.ok(legs.length > 1, 'a single-entry shard list is the unsharded job back under a new name');
+  assert.deepEqual(
+    legs,
+    legs.map((_, i) => i + 1),
+    'shard indices must be the contiguous 1..N ROUNDTRIP_SHARD_INDEX needs, with no gaps and no repeats',
+  );
+});
+
+function roundtripPromqlShardJobTimeoutMinutes() {
+  const job = roundtripPromqlShardJob();
+  const m = /^\s{4}timeout-minutes:\s*(\d+)/m.exec(job);
+  assert.ok(m, 'chdb.yml: the roundtrip-promql-shard job declares no timeout-minutes');
+  return Number(m[1]);
+}
+
+test('the promql shard leg per-process timeout stays strictly below its own job cap', () => {
+  const jobCap = roundtripPromqlShardJobTimeoutMinutes();
+  assert.ok(
+    GO_TEST_TIMEOUT_MINUTES < jobCap,
+    `go test -timeout=${GO_TEST_TIMEOUT_MINUTES}m must be < roundtrip-promql-shard's ` +
+      `timeout-minutes: ${jobCap}; at or above it the runner kills the job first and the goroutine dump ` +
+      'that names the wedged frame is lost',
+  );
+});
+
+test('roundtrip-promql-shard is never a required context itself, only its aggregator is', () => {
+  // Per-shard contexts (`roundtrip-promql-shard (n)`) would have to be added
+  // to RELEASE_REQUIRED_CHECKS before they can ever report, and any stale
+  // one left behind after a shard-count change blocks every PR on a check
+  // that never arrives — exactly why `perf-guards-shard` isn't required
+  // either. This just pins that the aggregator's `name:` isn't also
+  // accidentally the shard job's `name:`.
+  const shardJob = roundtripPromqlShardJob();
+  assert.match(shardJob, /^\s{4}name:\s*roundtrip-promql-shard\s*$/m);
+});
+
+test('roundtrip-promql aggregator posts exactly `roundtrip (promql)`, always runs, and depends on the shard matrix', () => {
+  const job = roundtripPromqlAggregatorJob();
+  assert.match(
+    job,
+    /^\s{4}name:\s*roundtrip \(promql\)\s*$/m,
+    'the aggregator must post the EXACT text release.yml and ci-lanes.json resolve by',
+  );
+  assert.match(
+    job,
+    /^\s{4}needs:\s*\[.*roundtrip-promql-shard.*\]\s*$/m,
+    'without this edge the aggregator reports green in seconds no matter what the shard matrix did',
+  );
+  assert.match(
+    job,
+    /^\s{4}if:\s*always\(\)\s*$/m,
+    'without always() a docs-only/non-heavy skip of the shard matrix would skip the aggregator too, and ' +
+      'a required context that never posts blocks every PR',
+  );
+  assert.match(
+    job,
+    /roundtrip-promql-aggregate\.mjs/,
+    '`needs:` alone does not gate — the aggregate must actually read the rolled-up shard result',
+  );
+  assert.doesNotMatch(job, /continue-on-error/, 'continue-on-error turns the aggregator into decoration');
 });

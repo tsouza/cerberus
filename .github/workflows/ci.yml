@@ -836,6 +836,17 @@ jobs:
       - name: Assert the chDB round-trip legs are bounded and diagnosable
         run: node --test .github/scripts/chdb-roundtrip.test.mjs
 
+      # `roundtrip (promql)` (tsouza/cerberus#2629) is a REQUIRED context
+      # posted by an aggregator job that runs no tests of its own — it exists
+      # only to roll the sharded `roundtrip-promql-shard` matrix (separate
+      # RUNNERS, not just processes on one) up under the name release.yml and
+      # ci-lanes.json resolve. Same shape as `perf-guards-aggregate.test.mjs`
+      # above: an aggregator that drifted toward "always ok" would report
+      # green over a corpus nothing walked. Pure in-process test over the
+      # module, ~100ms.
+      - name: Assert the roundtrip-promql shard roll-up cannot report a hollow green
+        run: node --test .github/scripts/roundtrip-promql-aggregate.test.mjs
+
       # The subprocess helper every script above runs its commands through.
       # capture() names the spawnSync options it forwards rather than spreading
       # `opts`, so an unsupported key used to vanish without a word — and a
