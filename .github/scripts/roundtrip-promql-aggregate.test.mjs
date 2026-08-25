@@ -1,0 +1,120 @@
+// roundtrip-promql-aggregate.test.mjs — node:test guard for the
+// roundtrip-promql shard roll-up.
+//
+// This aggregator is the ONLY thing that posts the `roundtrip (promql)`
+// status check once the promql leg is a shard matrix, and release.yml's
+// RELEASE_REQUIRED_CHECKS preflight resolves that name by exact text. An
+// aggregator that drifts toward "always ok" would report green over a corpus
+// nothing walked, while every visible signal — the job ran, the check is
+// green, the required context resolved — looks identical to a real pass.
+//
+// So these pin BOTH directions. The benign cases must pass, and every
+// not-a-pass case must actually fail; a test file that only asserted the happy
+// path would be satisfied by `() => ({ ok: true })`.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { classifyRoundtripPromql } from './roundtrip-promql-aggregate.mjs';
+
+const ran = (shardsResult) =>
+  classifyRoundtripPromql({
+    changesResult: 'success',
+    docsOnly: 'false',
+    shardsResult,
+    shardCount: '4',
+  });
+
+test('every shard green passes', () => {
+  const v = ran('success');
+  assert.equal(v.ok, true);
+  assert.match(v.message, /4 shard\(s\)/);
+});
+
+test('a rolled-up matrix that is not success fails, whatever the reason', () => {
+  // A matrix reports ONE result to its dependents. `failure` is the obvious
+  // case; `cancelled` is the one a `contains(…, 'failure')` test would let
+  // through, and it is exactly how a `timeout-minutes` kill is recorded.
+  for (const result of ['failure', 'cancelled', '']) {
+    const v = ran(result);
+    assert.equal(v.ok, false, `shardsResult=${result} must not pass`);
+    assert.match(v.message, /did not succeed/);
+  }
+});
+
+test('a docs-only change short-circuits green', () => {
+  const v = classifyRoundtripPromql({
+    changesResult: 'success',
+    docsOnly: 'true',
+    shardsResult: 'skipped',
+    shardCount: '4',
+  });
+  assert.equal(v.ok, true);
+  assert.match(v.message, /docs-only/);
+});
+
+test('an ordinary (non-release) PR short-circuits green via run_heavy=false', () => {
+  const v = classifyRoundtripPromql({
+    changesResult: 'success',
+    docsOnly: 'false',
+    runHeavy: 'false',
+    shardsResult: 'skipped',
+    shardCount: '4',
+  });
+  assert.equal(v.ok, true);
+  assert.match(v.message, /release-gate/);
+});
+
+test('a heavy event (run_heavy=true) that skips is still a failure, not a pass', () => {
+  const v = classifyRoundtripPromql({
+    changesResult: 'success',
+    docsOnly: 'false',
+    runHeavy: 'true',
+    shardsResult: 'skipped',
+    shardCount: '4',
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.message, /should have run/);
+});
+
+test('a skipped matrix is NOT green when the changes job failed to decide', () => {
+  // The hollow green this aggregate exists to prevent: a crashed `changes` job
+  // also skips the matrix, and reading the skip alone cannot tell the two
+  // apart.
+  for (const changesResult of ['failure', 'cancelled', 'skipped']) {
+    const v = classifyRoundtripPromql({
+      changesResult,
+      docsOnly: '',
+      shardsResult: 'skipped',
+      shardCount: '4',
+    });
+    assert.equal(v.ok, false, `changesResult=${changesResult} must not pass`);
+    assert.match(v.message, /never decided/);
+  }
+});
+
+test('a skipped matrix is NOT green on a code change', () => {
+  const v = classifyRoundtripPromql({
+    changesResult: 'success',
+    docsOnly: 'false',
+    shardsResult: 'skipped',
+    shardCount: '4',
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.message, /should have run/);
+});
+
+test('a successful matrix does not launder a failed changes job', () => {
+  const v = classifyRoundtripPromql({
+    changesResult: 'failure',
+    docsOnly: 'false',
+    shardsResult: 'success',
+    shardCount: '4',
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.message, /changes.*did not succeed/);
+});
+
+test('the message names the child check a reader has to open', () => {
+  assert.match(ran('failure').message, /roundtrip-promql-shard \(n\)/);
+});

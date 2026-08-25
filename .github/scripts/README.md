@@ -1747,8 +1747,9 @@ what actually runs.
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
 
-- **`chdb-roundtrip.mjs`** — `chdb.yml`, the `roundtrip (<ql>)` matrix job. Runs
-  one head's chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
+- **`chdb-roundtrip.mjs`** — `chdb.yml`'s `roundtrip (<ql>)` matrix job (logql,
+  traceql) and its `roundtrip-promql-shard` job (promql). Runs one head's
+  chDB-executing TXTAR walk: `./test/spec/<ql>/` (pre-optimizer) and
   `./internal/<ql>/` (post-optimizer plus the reference-engine parity). It
   replaces a bare `go test` line for two reasons that line could not express.
   First, an explicit per-process `-timeout`: without one every leg runs under
@@ -1757,26 +1758,57 @@ what actually runs.
   had been finishing inside 550-600s of that 600s budget for weeks and then
   crossed it, failing a PR on a walk that was still making forward progress —
   the timeout panic named a subtest one second old, at fixture 475 of 582.
-  Second, a fan-out: the promql corpus is 582 fixtures against logql's 189 and
-  traceql's 222, so its leg takes ~700s where the other two heads' whole jobs
-  finish in under 180s, and that gap widens with every fixture merged. The walk
-  cannot be parallelised in-process (chdb-go caches ONE session per process and
-  the fixtures share it — #1987, #2096), so promql is split across three
-  processes over the SAME `SPEC_SHARD_INDEX` / `SPEC_SHARD_COUNT` partition
-  `just update-golden` already fans out on (`lib/golden-shards.mjs`,
-  `test/spec/shard.go`). Unlike `perf-guards`, the split is INSIDE the job, so
-  no context is renamed and branch protection is untouched. A build-only
-  `-run=^$` pass runs first, because Go's build cache dedupes stored output
-  rather than concurrent work and three legs would otherwise compile the same
-  two binaries at once on a cold runner. `chdb-roundtrip.test.mjs` is the
+  Second, an in-runner fan-out (`FANOUT`): the promql corpus outgrew what one
+  runner's whole job can clear inside a sane timeout (582 fixtures then, 700+
+  now), where logql's and traceql's whole JOBS finish in 173-181s, so promql
+  is split across ~3 processes over the SAME `SPEC_SHARD_INDEX` /
+  `SPEC_SHARD_COUNT` partition `just update-golden` already fans out on
+  (`lib/golden-shards.mjs`, `test/spec/shard.go`). That in-runner fan-out has a
+  hard ceiling of its own — chDB threads WITHIN a single query, so
+  oversubscribing past ~3-4 processes on one 4-core runner hurts rather than
+  helps (measured on the update-golden fan-out: 8 legs on an 8-core box came
+  out WORSE than 4). tsouza/cerberus#2629 added a SECOND, outer axis for
+  promql once that ceiling was hit for real: `ROUNDTRIP_SHARD_INDEX` /
+  `ROUNDTRIP_SHARD_COUNT` (set only by `roundtrip-promql-shard`'s own matrix,
+  one runner per shard) name the cross-runner shard this process owns, and
+  `outerShardFromEnv` + `legCommands` compose that outer shard with the inner
+  `FANOUT[ql]` fan-out into one combined `SPEC_SHARD_INDEX`/`COUNT` pair, so
+  total parallelism is shard count × in-runner fan-out. logql and traceql never
+  set the outer pair, so their partition is unchanged. A build-only `-run=^$`
+  pass runs first, because Go's build cache dedupes stored output rather than
+  concurrent work and multiple legs would otherwise compile the same two
+  binaries at once on a cold runner. `chdb-roundtrip.test.mjs` is the
   `node --test` guard (run on `ci.yml`'s scripts lane); its load-bearing
-  assertion reads `chdb.yml` and requires the per-process timeout to stay
-  strictly BELOW the job's `timeout-minutes`, because only `go test`'s own alarm
-  prints the goroutine dump that names a wedged libchdb frame — a runner kill
-  prints nothing.
+  assertion reads `chdb.yml` and requires each job's per-process timeout to
+  stay strictly BELOW that job's own `timeout-minutes`, because only `go
+  test`'s own alarm prints the goroutine dump that names a wedged libchdb
+  frame — a runner kill prints nothing.
   - Env: `QL` (`promql` | `logql` | `traceql`), `TAGS` (the leg's build tags),
-    `GO` (test seam; default `go`).
-  - Exit: `0` when every leg passed, `1` on a failed leg or bad input.
+    `ROUNDTRIP_SHARD_INDEX` / `ROUNDTRIP_SHARD_COUNT` (optional outer shard,
+    both-or-neither), `GO` (test seam; default `go`).
+  - Exit: `0` when every leg passed, `1` on a failed leg, bad input, or a
+    half-declared outer shard.
+
+- **`roundtrip-promql-aggregate.mjs`** — `chdb.yml`, the `roundtrip-promql`
+  job. Rolls the sharded `roundtrip-promql-shard` matrix (tsouza/cerberus#2629)
+  up into the single `roundtrip (promql)` status check `release.yml`'s
+  `RELEASE_REQUIRED_CHECKS` and `.github/ci-lanes.json` both resolve by exact
+  text — the same shape as `perf-guards-aggregate.mjs` above, applied to the
+  promql leg of `roundtrip (<ql>)` once its own in-runner fan-out ceiling
+  forced a second, cross-runner axis of parallelism. The matrix children post
+  as `roundtrip-promql-shard (n)`, never `roundtrip (promql)`, so without this
+  aggregator the required name is never posted. The verdict is a strict
+  `!== 'success'` on the matrix roll-up (catches `failure`, `cancelled` — how
+  a `timeout-minutes` kill is recorded — and `skipped` in one comparison), and
+  a docs-only/non-heavy skip is green only when the `changes` job actually
+  decided that, never when it crashed before deciding.
+  `roundtrip-promql-aggregate.test.mjs` is the `node --test` guard (run on
+  `ci.yml`'s scripts lane) that pins both directions.
+  - Env: `CHANGES_RESULT`, `DOCS_ONLY`, `RUN_HEAVY` (the `changes` job's
+    outputs), `SHARDS_RESULT` (the matrix's rolled-up result), `SHARD_COUNT`
+    (log line only).
+  - Exit: `0` when every shard passed or the lane was correctly
+    short-circuited, `1` otherwise.
 
 - **`migration-e2e.mjs`** — `ci.yml`'s `lint` job (`MODE=verify`) and
   `migration-e2e.yml` (all four modes). The Layer-14 migration lane's

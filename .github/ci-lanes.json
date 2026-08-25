@@ -319,12 +319,12 @@
     },
     {
       "id": "chdb.roundtrip-promql",
-      "description": "PromQL TXTAR SQL executed against seeded chDB rows.",
+      "description": "PromQL TXTAR SQL executed against seeded chDB rows, sharded across dedicated runners.",
       "owner": {
         "workflow": ".github/workflows/chdb.yml",
-        "jobs": ["roundtrip"],
-        "producer_jobs": [],
-        "context_job": "roundtrip"
+        "jobs": ["roundtrip-promql-shard", "roundtrip-promql"],
+        "producer_jobs": ["roundtrip-promql-shard"],
+        "context_job": "roundtrip-promql"
       },
       "executions": ["default"],
       "context": {

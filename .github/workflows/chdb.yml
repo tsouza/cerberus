@@ -10,12 +10,16 @@ name: chdb
 #                    rows.Scan. Originally the only chDB CI lane.
 #
 #   2. `roundtrip` — TXTAR seed → SQL → expected_rows differential lane,
-#                    split into a matrix over the three QL heads
-#                    (promql / logql / traceql). Each matrix entry runs
+#                    split into a matrix over the logql/traceql heads. Each
+#                    matrix entry runs
 #                    `go test -tags chdb -count=1 ./test/spec/<ql>/...`
 #                    which executes the chdb-tagged `TestRoundTripChDB`
 #                    walker over every *.txtar fixture under that head
-#                    that declares both `seed:` and `expected_rows:`.
+#                    that declares both `seed:` and `expected_rows:`. promql
+#                    is sharded across its own `roundtrip-promql-shard` /
+#                    `roundtrip-promql` pair instead (tsouza/cerberus#2629,
+#                    below) — its corpus outgrew what one runner's in-process
+#                    fan-out can clear inside a sane job timeout.
 #
 # Why this exists: the required PR gates (`check` + `lint` + `forbid-skip`) are
 # CGO-free and never compile the chdb-go driver, so they cannot run the
@@ -31,9 +35,11 @@ name: chdb
 # the PR rollup — but short-circuit to a fast no-op there and do their real
 # chDB-heavy work only on push / schedule / dispatch and on a `release/*`
 # head-branch PR. `needs.changes.outputs.run_heavy` carries that decision;
-# `roundtrip`'s per-step (not job-level) guard exists so its three matrix
-# legs always publish their names even while short-circuited — see the
-# comment above that job.
+# `roundtrip`'s per-step (not job-level) guard exists so its logql/traceql
+# matrix legs always publish their names even while short-circuited — see the
+# comment above that job. promql's `roundtrip-promql` aggregator uses the
+# job-level equivalent instead, the same way `perf-guards` does over its own
+# shard matrix — see the comment above `roundtrip-promql-shard`.
 #
 # If you widen `probe`'s trigger scope, audit the required-checks list at
 # the same time — a context that never runs blocks every PR.
@@ -290,45 +296,50 @@ jobs:
   # still hide a matrix's per-leg names from anything that DOES read them
   # (release.yml's RELEASE_REQUIRED_CHECKS, a future re-promotion). A
   # *job-level* `if: docs_only != 'true'` would skip the job before the
-  # matrix expands, so the contexts `roundtrip (promql/logql/traceql)`
-  # are never created (a plain skipped non-matrix job reports its named
-  # context and resolves, but a skipped matrix job never publishes its
-  # per-leg names). Instead the job always runs so the matrix expands and
-  # each leg's context is published; the docs-only/run_heavy guard sits on
-  # the work steps, so on a docs-only PR — or any ordinary (non-release)
-  # PR now that this is a release-gate lane — every step is skipped and
-  # each leg concludes `success` in seconds (no chDB compile/run). Do NOT
-  # hoist this back to the job level.
+  # matrix expands, so the contexts `roundtrip (logql/traceql)` are never
+  # created (a plain skipped non-matrix job reports its named context and
+  # resolves, but a skipped matrix job never publishes its per-leg names).
+  # Instead the job always runs so the matrix expands and each leg's context
+  # is published; the docs-only/run_heavy guard sits on the work steps, so on
+  # a docs-only PR — or any ordinary (non-release) PR now that this is a
+  # release-gate lane — every step is skipped and each leg concludes
+  # `success` in seconds (no chDB compile/run). Do NOT hoist this back to the
+  # job level.
+  #
+  # promql does NOT need this per-step trick any more (tsouza/cerberus#2629):
+  # its context is `roundtrip (promql)`, posted by the `roundtrip-promql`
+  # AGGREGATOR below, which uses `if: always()` to guarantee the same
+  # every-PR visibility property a job-level guard here would have hidden.
+  # See the comment above `roundtrip-promql-shard`.
   roundtrip:
     name: roundtrip (${{ matrix.ql }})
     needs: changes
     runs-on: ubuntu-latest
-    # Bumped from 20: the promql leg's fixture corpus grew past 700 TXTAR
-    # files (the #2624 audit-fix batch alone added dozens of new
-    # histogram_native / mixed-or fixtures), and a real push-to-main run —
-    # where this release-gate lane does its actual chDB work instead of the
-    # docs-only/ordinary-PR no-op — now needs just over 20 minutes,
-    # observed timing out at ~20.5min on 2026-08-25. 35 gives real headroom
-    # for further corpus growth rather than chasing this again at 21min.
+    # Historical value carried over from when this job also ran promql
+    # (#2624's corpus growth pushed a real push-to-main run past 20 minutes).
+    # promql moved to its own `roundtrip-promql-shard` matrix (#2629), so
+    # logql and traceql — whose whole JOBS finish in 173-181s per
+    # chdb-roundtrip.mjs's own FANOUT comment — no longer need anywhere near
+    # this ceiling. Left unchanged rather than retuned speculatively: a
+    # follow-up can lower it once it has real CI timing for the
+    # logql/traceql-only job.
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        # `tags` is per-leg because the LogQL and TraceQL legs additionally
-        # run the parity check against their REAL upstream reference
-        # engines (Loki, Tempo), both AGPLv3 and therefore living behind
-        # `agpl_oracle` (invariant 14). Every `//go:build` line in this
-        # tree is a single term, so the composition `chdb && agpl_oracle`
-        # is carried by the synthetic `chdb_agpl_oracle` tag — the same
-        # three-tag set property.yml already passes. Without them the
-        # Loki/Tempo oracles compile out (test/spec/parity_tempo_absent.go
-        # for Tempo) and RunParity either fails loudly (Loki, see
+        # `tags` is per-leg because both heads additionally run the parity
+        # check against their REAL upstream reference engines (Loki, Tempo),
+        # both AGPLv3 and therefore living behind `agpl_oracle`
+        # (invariant 14). Every `//go:build` line in this tree is a single
+        # term, so the composition `chdb && agpl_oracle` is carried by the
+        # synthetic `chdb_agpl_oracle` tag — the same three-tag set
+        # property.yml already passes. Without them the Loki/Tempo oracles
+        # compile out (test/spec/parity_tempo_absent.go for Tempo) and
+        # RunParity either fails loudly (Loki, see
         # test/spec/parity_chdb.go's lokiParityEvaluator) or all
         # `parity:`-enrolled TraceQL fixtures round-trip against
         # cerberus's own output alone.
         include:
-          - ql: promql
-            tags: chdb
           - ql: logql
             tags: chdb,agpl_oracle,chdb_agpl_oracle
           - ql: traceql
@@ -375,17 +386,161 @@ jobs:
       # that has no GOLDEN_UPDATE branch at all (test/spec/parity.go).
       #
       # The `go test` invocation lives in chdb-roundtrip.mjs, not here,
-      # because it needs two things a `run:` line cannot carry: an explicit
-      # per-process `-timeout` (without one every leg silently runs under
-      # go test's own 10-minute default, which the promql leg outgrew — see
-      # the script's header) and, for promql, a fan-out over the
-      # SPEC_SHARD_* partition with a failure-propagation contract.
+      # because it needs an explicit per-process `-timeout` a `run:` line
+      # cannot carry: without one every leg silently runs under go test's own
+      # 10-minute default (the #2094/#2096 regression this script exists to
+      # fix — see its header). promql's own fan-out (in-runner AND, since
+      # #2629, cross-runner) lives in `roundtrip-promql-shard` below instead.
       - name: Run TXTAR round-trip (${{ matrix.ql }})
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         env:
           QL: ${{ matrix.ql }}
           TAGS: ${{ matrix.tags }}
         run: node .github/scripts/chdb-roundtrip.mjs
+
+  # `roundtrip-promql-shard` + `roundtrip-promql` — promql's half of the
+  # `roundtrip (<ql>)` lane, split off the `roundtrip` matrix above onto its
+  # own multi-RUNNER shard matrix (tsouza/cerberus#2629). logql and traceql
+  # stay on `roundtrip` above: their whole JOBS finish in 173-181s
+  # (chdb-roundtrip.mjs's own FANOUT comment), an order of magnitude under
+  # promql's leg, so a second runner axis would buy them nothing but repeated
+  # compilation.
+  #
+  # promql's corpus grew past 700 TXTAR fixtures and the in-runner fan-out
+  # (chdb-roundtrip.mjs's FANOUT.promql, 3 processes sharing ONE runner) has
+  # a hard ceiling: chDB threads WITHIN a single query, so oversubscribing a
+  # single 4-core runner past ~3-4 processes hurts rather than helps
+  # (FANOUT's own doc comment cites the measurement: 8 legs on an 8-core box
+  # came out WORSE than 4). Two consecutive timeout bumps this cycle
+  # (job-level 20→35min, per-process 12→25min, both on 2026-08-25) were
+  # config-value patches over that ceiling, not a fix — the corpus keeps
+  # growing and a third bump was the next certainty.
+  #
+  # Topology (mirroring `perf-guards-shard` / `perf-guards` below, and
+  # `compose-smoke-shard` / `compose-smoke` in e2e.yml):
+  #   roundtrip-promql-shard — the matrix; each leg is a DEDICATED runner
+  #                            that still fans out ~3 processes IN-runner
+  #                            (chdb-roundtrip.mjs's FANOUT.promql) over its
+  #                            own ROUNDTRIP_SHARD_INDEX / _COUNT slice. Total
+  #                            parallelism is shard count × in-runner fan-out
+  #                            instead of being capped at the in-runner ~3-4.
+  #   roundtrip-promql       — the AGGREGATOR, named EXACTLY `roundtrip
+  #                            (promql)` so release.yml's
+  #                            RELEASE_REQUIRED_CHECKS and
+  #                            .github/ci-lanes.json keep resolving it by
+  #                            that exact text (matrix children report as
+  #                            `roundtrip-promql-shard (n)`, never `roundtrip
+  #                            (promql)`). Fails unless every leg passed.
+  #
+  # The aggregator is what keeps RELEASE_REQUIRED_CHECKS and ci-lanes.json
+  # untouched — no rename, and branch protection is unaffected because it
+  # never listed `roundtrip (promql)` in the first place (moved to the
+  # release gate in #2230, same as `perf-guards`). Making the per-shard
+  # contexts required instead would mean adding each one BEFORE it can ever
+  # report (a window with the gate unenforced), and any stale
+  # `roundtrip-promql-shard (n)` left in the set after a shard-count change
+  # blocks every PR in the repo on a check that never arrives.
+  #
+  # Job-level guard (not per-step like the `roundtrip` matrix above), because
+  # the required context is posted by the `roundtrip-promql` aggregator,
+  # which always runs and reads this matrix's skip as one of three facts:
+  # docs-only, non-heavy (an ordinary PR — `roundtrip (promql)` is a
+  # release-gate lane), or a real failure. The every-PR visibility property
+  # the per-step trick bought above still holds: the aggregator itself posts
+  # `roundtrip (promql)` on every PR, exactly as the single unsharded job did.
+  #
+  # COST: N legs = N chDB installs and N compiles — billable minutes rise,
+  # while wall-clock drops from the serial shard-of-fan-out sum toward the
+  # longest shard's fan-out plus fixed setup.
+  roundtrip-promql-shard:
+    name: roundtrip-promql-shard
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
+    runs-on: ubuntu-latest
+    # Carried over unchanged from `roundtrip`'s own bumped value: a safe
+    # upper bound, not a measurement of this job. Each shard now covers
+    # roughly 1/N of the corpus that bound was sized against, so real
+    # per-shard wall-clock should land well under it — but retuning needs
+    # real CI timing data this PR does not have, and a too-tight bound fails
+    # loudly rather than saving anything. A follow-up can lower it once
+    # shards have actually run (tsouza/cerberus#2629's own acceptance notes
+    # this explicitly).
+    timeout-minutes: 35
+    strategy:
+      # MANDATORY: one shard's failure must NOT cancel its siblings, for the
+      # same reason `perf-guards-shard` sets this below — a corpus-wide
+      # regression typically trips several slices at once and the full list
+      # is the diagnosis.
+      fail-fast: false
+      matrix:
+        # The shard count. Three mirrors chdb-roundtrip.mjs's own
+        # FANOUT.promql — the same "diminishing past ~3-4" ceiling that
+        # motivates the in-runner number is a reasonable starting point for
+        # the outer axis too — so total effective parallelism is 3 runners ×
+        # 3 in-runner processes = 9, up from 3. Changing this list is the
+        # whole knob: chdb-roundtrip.mjs derives ROUNDTRIP_SHARD_COUNT from
+        # `strategy.job-total`, never a repeated literal, so the partition
+        # rebalances itself and no context name moves.
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
+      # Cache the pinned libchdb.so, same key as `chdb-build`'s and
+      # `perf-guards-shard`'s step, and for the same reason: fanning out to N
+      # runners would otherwise mean N downloads of a ~500 MB shared library
+      # per run.
+      - name: Cache libchdb.so
+        uses: actions/cache@v6
+        with:
+          path: /usr/local/lib/libchdb.so
+          key: libchdb-${{ runner.os }}-${{ runner.arch }}-v26.5.0
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      - name: Run TXTAR round-trip (promql) — runner shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        env:
+          QL: promql
+          TAGS: chdb
+          ROUNDTRIP_SHARD_INDEX: ${{ matrix.shard }}
+          ROUNDTRIP_SHARD_COUNT: ${{ strategy.job-total }}
+        run: node .github/scripts/chdb-roundtrip.mjs
+
+  # The AGGREGATOR — named EXACTLY `roundtrip (promql)`. See the topology
+  # comment above `roundtrip-promql-shard`.
+  roundtrip-promql:
+    name: roundtrip (promql)
+    needs: [changes, roundtrip-promql-shard]
+    # always() so it still runs — and still reports — when the matrix skipped
+    # on a docs-only or non-heavy (ordinary PR) change. A required context
+    # that goes missing is indistinguishable from one that is still running.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: gate on every roundtrip-promql shard
+        run: node .github/scripts/roundtrip-promql-aggregate.mjs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          RUN_HEAVY: ${{ needs.changes.outputs.run_heavy }}
+          SHARDS_RESULT: ${{ needs.roundtrip-promql-shard.result }}
+          # Deliberately NOT passed. `strategy.job-total` here would be this
+          # job's own (1), and a literal repeating the matrix length is
+          # exactly the kind of second copy that drifts. The aggregate's
+          # verdict does not depend on the number, so it says "the shard
+          # matrix" instead of a figure it cannot verify.
 
   # `perf-guards` runs the chDB-tagged deterministic perf-regression
   # ASSERTIONS under test/perf/ — the load-bearing fix for task #73.

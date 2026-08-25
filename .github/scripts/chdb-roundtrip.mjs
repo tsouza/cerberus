@@ -36,11 +36,37 @@
 // (.github/scripts/lib/golden-shards.mjs), where it was MEASURED at 629s in
 // one process against 231s at four legs.
 //
+// Two levels of fan-out (tsouza/cerberus#2629)
+// ---------------------------------------------------------------------------
+// FANOUT is the IN-RUNNER level: N processes sharing one runner's cores. It
+// has a hard ceiling — chDB threads WITHIN a single query, so a runner-level
+// fan-out past ~3-4 processes on a 4-core `ubuntu-latest` box oversubscribes
+// rather than spreads (measured on the update-golden fan-out: 8 legs on an
+// 8-core box, 252s, came out WORSE than 4 legs at 231s). Once a head's corpus
+// outgrows what that ceiling can clear inside the job timeout, the only lever
+// left is more RUNNERS, not more processes on the same one.
+//
+// ROUNDTRIP_SHARD_INDEX / ROUNDTRIP_SHARD_COUNT (optional; the promql leg's
+// own `roundtrip-promql-shard` matrix passes both via
+// `strategy.job-total`) name the OUTER, cross-runner shard this process owns.
+// The two levels compose into ONE partition of the same corpus: outer shard
+// `o` of `outerCount`, leg `i` of `fanOut`, owns global slice
+// `(o-1)*fanOut + i` out of `outerCount*fanOut` — so `spec.ShardFromEnv`'s
+// SPEC_SHARD_INDEX/COUNT never has to know two levels exist at all, and a
+// head with no outer shard (outerCount defaults to 1) reduces to exactly the
+// single-level fan-out this script always had.
+//
 // Env:
-//   QL       head name — `promql` | `logql` | `traceql`. Required.
-//   TAGS     go build tags for the leg (`chdb`, or the AGPL-oracle triple for
-//            logql/traceql). Required.
-//   GO       go executable; default `go`. Test seam.
+//   QL                    head name — `promql` | `logql` | `traceql`.
+//                         Required.
+//   TAGS                  go build tags for the leg (`chdb`, or the
+//                         AGPL-oracle triple for logql/traceql). Required.
+//   ROUNDTRIP_SHARD_INDEX the 1-based outer (cross-runner) shard this process
+//                         owns. Optional; must be set together with
+//                         ROUNDTRIP_SHARD_COUNT or not at all.
+//   ROUNDTRIP_SHARD_COUNT how many outer shards the corpus is split into.
+//                         Optional, same pairing rule as the index.
+//   GO                    go executable; default `go`. Test seam.
 //
 // Exit: 0 when every leg passed; 1 on a failed leg, a bad QL, or a missing env.
 //
@@ -109,18 +135,26 @@ export const HEADS = Object.keys(FANOUT);
 /**
  * The commands one head's leg runs, fan-out expanded.
  *
- * A fan-out of 1 declares NO shard env at all rather than `1/1`: half a
- * declared partition is an error on the Go side, and a whole-corpus leg should
- * reach spec.WalkShard through the same unset-means-everything path a
- * hand-typed `go test` does.
+ * `outerIndex`/`outerCount` name the cross-runner shard this process owns
+ * (both default to the unsharded 1/1, i.e. "this is the only runner"). The two
+ * levels compose into one partition: this process's in-runner leg `i` of
+ * `fanOut` owns global slice `(outerIndex-1)*fanOut + i` out of
+ * `outerCount*fanOut` — so a single-runner head (outerCount 1) reduces to
+ * exactly the plain in-runner fan-out this always was.
+ *
+ * A total of 1 (no outer sharding AND no in-runner fan-out) declares NO shard
+ * env at all rather than `1/1`: half a declared partition is an error on the
+ * Go side, and a whole-corpus leg should reach spec.WalkShard through the same
+ * unset-means-everything path a hand-typed `go test` does.
  *
  * `-p 1` runs the leg's two packages one after the other inside the leg instead
  * of concurrently, so N legs mean exactly N test binaries. Without it `go test`
  * would run both packages of every leg at once and the real concurrency would
  * be 2N — double what the fan-out count says, and past the core count.
  */
-export function legCommands({ ql, tags, go = 'go' }) {
+export function legCommands({ ql, tags, go = 'go', outerIndex = 1, outerCount = 1 }) {
   const fanOut = FANOUT[ql];
+  const totalLegs = fanOut * outerCount;
   const argv = [
     go,
     'test',
@@ -133,15 +167,20 @@ export function legCommands({ ql, tags, go = 'go' }) {
     `./test/spec/${ql}/...`,
     `./internal/${ql}/...`,
   ];
-  if (fanOut <= 1) return [{ name: ql, argv, env: {} }];
-  return Array.from({ length: fanOut }, (_, i) => ({
-    name: `${ql} ${i + 1}/${fanOut}`,
-    argv,
-    env: {
-      [SPEC_SHARD_INDEX_ENV]: String(i + 1),
-      [SPEC_SHARD_COUNT_ENV]: String(fanOut),
-    },
-  }));
+  if (totalLegs <= 1) return [{ name: ql, argv, env: {} }];
+  return Array.from({ length: fanOut }, (_, i) => {
+    const globalIndex = (outerIndex - 1) * fanOut + i + 1;
+    const name =
+      outerCount > 1 ? `${ql} shard ${outerIndex}/${outerCount} leg ${i + 1}/${fanOut}` : `${ql} ${i + 1}/${fanOut}`;
+    return {
+      name,
+      argv,
+      env: {
+        [SPEC_SHARD_INDEX_ENV]: String(globalIndex),
+        [SPEC_SHARD_COUNT_ENV]: String(totalLegs),
+      },
+    };
+  });
 }
 
 /**
@@ -165,6 +204,43 @@ export function warmupCommand({ ql, tags, go = 'go' }) {
   };
 }
 
+/** The env pair naming the OUTER (cross-runner) shard this process owns. */
+const ROUNDTRIP_SHARD_INDEX_ENV = 'ROUNDTRIP_SHARD_INDEX';
+const ROUNDTRIP_SHARD_COUNT_ENV = 'ROUNDTRIP_SHARD_COUNT';
+
+/**
+ * Reads the outer shard pair, defaulting to the unsharded 1/1. Both-or-neither
+ * and strictly validated, for the same reason spec.ShardFromEnvNames is: a
+ * half-declared partition either walks the whole corpus on every runner or
+ * walks none of it, and both report green.
+ */
+export function outerShardFromEnv(env) {
+  const rawIndex = env[ROUNDTRIP_SHARD_INDEX_ENV];
+  const rawCount = env[ROUNDTRIP_SHARD_COUNT_ENV];
+  const hasIndex = rawIndex !== undefined;
+  const hasCount = rawCount !== undefined;
+  if (!hasIndex && !hasCount) return { outerIndex: 1, outerCount: 1 };
+  if (hasIndex !== hasCount) {
+    throw new Error(
+      `${ROUNDTRIP_SHARD_INDEX_ENV} and ${ROUNDTRIP_SHARD_COUNT_ENV} must be set together ` +
+        `(got ${ROUNDTRIP_SHARD_INDEX_ENV}=${JSON.stringify(rawIndex)}, ` +
+        `${ROUNDTRIP_SHARD_COUNT_ENV}=${JSON.stringify(rawCount)})`,
+    );
+  }
+  const outerCount = Number(rawCount);
+  const outerIndex = Number(rawIndex);
+  if (!Number.isInteger(outerCount) || outerCount < 1) {
+    throw new Error(`${ROUNDTRIP_SHARD_COUNT_ENV}=${rawCount} must be a positive integer`);
+  }
+  if (!Number.isInteger(outerIndex) || outerIndex < 1 || outerIndex > outerCount) {
+    throw new Error(
+      `${ROUNDTRIP_SHARD_INDEX_ENV}=${rawIndex} is outside [1, ${ROUNDTRIP_SHARD_COUNT_ENV}=${outerCount}] — ` +
+        'the corpus slice it names does not exist',
+    );
+  }
+  return { outerIndex, outerCount };
+}
+
 async function main() {
   const ql = process.env.QL ?? '';
   const tags = process.env.TAGS ?? '';
@@ -177,9 +253,19 @@ async function main() {
     process.exit(1);
   }
 
+  let outerIndex;
+  let outerCount;
+  try {
+    ({ outerIndex, outerCount } = outerShardFromEnv(process.env));
+  } catch (e) {
+    error(`roundtrip ${ql}: ${e.message}`);
+    process.exit(1);
+  }
+
   const go = process.env.GO ?? 'go';
-  const legs = legCommands({ ql, tags, go });
-  notice(`roundtrip ${ql}: ${legs.length} leg(s), ${GO_TEST_TIMEOUT_MINUTES}m per-process timeout`);
+  const legs = legCommands({ ql, tags, go, outerIndex, outerCount });
+  const outerNotice = outerCount > 1 ? `, outer shard ${outerIndex}/${outerCount}` : '';
+  notice(`roundtrip ${ql}: ${legs.length} leg(s)${outerNotice}, ${GO_TEST_TIMEOUT_MINUTES}m per-process timeout`);
 
   const started = Date.now();
 
