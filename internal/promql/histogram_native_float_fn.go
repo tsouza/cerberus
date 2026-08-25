@@ -38,6 +38,48 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramRangeFn(shape, s, ctx)
 		return plan, true, err
 	}
+	// sum_over_time / avg_over_time over a BARE exp-histogram selector
+	// (cerberus issue #2619, the bare-selector sibling of
+	// [rangeFnOverExpHistogram]'s rate/increase/delta/irate/idelta match
+	// just above): [overTimeOverExpHistogram] already answered this shape
+	// at the query ROOT (cerberus issue #2480, via
+	// [lowerHistogramNativeRoot]'s own direct dispatch), but that direct
+	// dispatch is checked only against the query's own top-level `expr` —
+	// it never saw the RECURSIVE call [mergeableExpHistogramAggregate]
+	// makes into THIS function for an outer wrapping `sum()`/`avg()`, so
+	// `sum(avg_over_time(m_exp_hist[5m]))` fell through this whole switch
+	// to [expHistogramSelectorRouting]'s catch-all rejection even though
+	// the identical shape composes fine under `rate()`. Registering the
+	// producer here — rather than only at the root — gives it the same
+	// recursive reach [rangeFnOverExpHistogram] already has, so the root
+	// dispatch's own direct check is now redundant and has been folded
+	// into this single entry point (see [lowerHistogramNativeRoot]'s own
+	// doc for the consolidation). The merge `sum()`/`avg()` then applies
+	// via [lowerExpHistogramSumOrAvgOverPlan] below is the SAME
+	// across-series histogram merge `sum(rate(...))` already uses — sum_
+	// over_time/avg_over_time already fold their own window into one
+	// histogram per series, and outer sum()/avg() merges those per-series
+	// histograms exactly like it merges rate()'s, so no new merge
+	// semantics are needed here.
+	if shape, ok := overTimeOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerExpHistogramOverTime(shape, s, ctx)
+		return plan, true, err
+	}
+	// last_over_time / first_over_time over a BARE exp-histogram selector
+	// (cerberus issue #2619, the bare-selector sibling of
+	// [selectFnHistogramPreservingSubquery] just below, mirroring the
+	// sum_over_time/avg_over_time gap [overTimeOverExpHistogram] closes
+	// just above): both functions already select — never merge — a single
+	// in-window histogram per series ([lastFirstOverExpHistogram],
+	// cerberus issue #2480), so wrapping the result in `sum()`/`avg()`
+	// needs only the SAME across-series merge every other bare producer
+	// registered in this chain already gets from
+	// [lowerExpHistogramSumOrAvgOverPlan]; `count()`/`group()` reach it
+	// through [isExpHistogramValuedShape]'s matching widening.
+	if fn, ms, vs, ok := lastFirstOverExpHistogram(expr, s, ctx); ok {
+		plan, err := lowerLastFirstOverExpHistogram(fn, ms, vs, s, ctx)
+		return plan, true, err
+	}
 	if shape, ok := rangeFnOverExpHistogramSubquery(expr, s, ctx); ok {
 		plan, err := lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
 		return plan, true, err
