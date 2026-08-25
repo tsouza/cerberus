@@ -87,12 +87,17 @@ const FANOUT = {
  * strictly below chdb.yml's `timeout-minutes`, and
  * chdb-roundtrip.test.mjs asserts that ordering against the workflow file.
  *
- * Twelve minutes is ~5x the ~250s a fanned-out promql leg should take and ~2x
- * the ~700s an UNFANNED leg takes today, so it stays a hang detector rather
- * than a throughput ceiling even if the fan-out is reduced to 1, while leaving
- * the 20-minute job cap several minutes of room to publish the dump.
+ * Bumped from 12 to 25 on 2026-08-25: the promql leg's fixture corpus grew
+ * past 700 TXTAR files (the #2624 audit-fix batch alone added dozens of new
+ * histogram_native / mixed-or fixtures), pushing real per-leg runtime past
+ * the old 12-minute bound — observed as a genuine `test timed out after
+ * 12m0s` panic on a real push-to-main run, not a wedged libchdb call (the
+ * goroutine dump showed ordinary tests still progressing, not one frame
+ * stuck). 25 restores real headroom over actual leg runtime while staying
+ * well below chdb.yml's 35-minute job cap (see the assertion below), so it
+ * stays a hang detector rather than a throughput ceiling.
  */
-export const GO_TEST_TIMEOUT_MINUTES = 12;
+export const GO_TEST_TIMEOUT_MINUTES = 25;
 
 /** The env pair spec.ShardFromEnv reads. Contract with test/spec/shard.go. */
 const SPEC_SHARD_INDEX_ENV = 'SPEC_SHARD_INDEX';
