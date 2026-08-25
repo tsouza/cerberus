@@ -59,8 +59,8 @@ import process from 'node:process';
 const KNOWN_GOOD = new Set([
   // Category 1 — synthetic single-letter join alias + fixed punctuation.
   'internal/chsql/structural_join.go:556', // starExceptKeys: verbatim(side+".*")
-  'internal/chsql/vector_join.go:777',     // qualColFrag: verbatim(side+".")
-  'internal/chsql/vector_join.go:791',     // aliasedFrag: verbatim(" AS "+bareAlias)
+  'internal/chsql/vector_join.go:789',     // qualColFrag: verbatim(side+".")
+  'internal/chsql/vector_join.go:803',     // aliasedFrag: verbatim(" AS "+bareAlias)
 
   // Category 2 — tracked pre-existing debt, not yet fixed.
   // These two are already fixed by #2297 / PR #2319 (open, converts both to
