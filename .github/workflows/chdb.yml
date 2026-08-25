@@ -303,7 +303,14 @@ jobs:
     name: roundtrip (${{ matrix.ql }})
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Bumped from 20: the promql leg's fixture corpus grew past 700 TXTAR
+    # files (the #2624 audit-fix batch alone added dozens of new
+    # histogram_native / mixed-or fixtures), and a real push-to-main run —
+    # where this release-gate lane does its actual chDB work instead of the
+    # docs-only/ordinary-PR no-op — now needs just over 20 minutes,
+    # observed timing out at ~20.5min on 2026-08-25. 35 gives real headroom
+    # for further corpus growth rather than chasing this again at 21min.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
