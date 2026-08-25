@@ -11,25 +11,8 @@
           "if len(c.Args) \u003c 1 || len(c.Args) \u003e 2"
         ],
         "callers": [
-          "lowerCall"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/info_fn.go:lowerInfo#a1d855c7",
-      "message": "promql: info(...) second argument must be a label selector, got %T",
-      "class": "internal",
-      "rationale": "The reference engine's evalInfo itself type-asserts args[1] to *parser.VectorSelector; a non-selector vector second argument is not a meaningful info label-selector and the guard mirrors that upstream assumption rather than panicking on the cast.",
-      "evidence": {
-        "guard": [
-          "past returning if len(c.Args) \u003c 1 || len(c.Args) \u003e 2",
-          "past returning if err != nil",
-          "if len(c.Args) == 2",
-          "if !ok"
-        ],
-        "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerHistogramValuedProducerCall"
         ]
       }
     },
@@ -42,11 +25,13 @@
       "evidence": {
         "guard": [
           "past returning if len(c.Args) \u003c 1 || len(c.Args) \u003e 2",
+          "past returning if b, ok := infoArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok",
           "if histogramBase",
           "if err == nil \u0026\u0026 !matched"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerHistogramValuedProducerCall"
         ],
         "cited": [
           "isExpHistogramValuedShape",

@@ -2,21 +2,6 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/sort.go:lowerSort#749adc13",
-      "message": "promql: %s expects 1 argument, got %d",
-      "class": "internal",
-      "rationale": "The PromQL parser enforces sort()/sort_desc()'s single-argument arity at parse time.",
-      "evidence": {
-        "guard": [
-          "if len(c.Args) != 1"
-        ],
-        "callers": [
-          "lowerCall"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/sort.go:lowerSortByLabel#e60a47b8",
       "message": "promql: %s expects at least 1 argument (vector[, label…]), got %d",
       "class": "internal",
@@ -26,7 +11,8 @@
           "if len(c.Args) \u003c 1"
         ],
         "callers": [
-          "lowerCall"
+          "lowerCall",
+          "lowerHistogramValuedProducerCall"
         ]
       }
     }
