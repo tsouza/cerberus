@@ -18,9 +18,7 @@ import (
 // merged bucket ladder spans a huge range. A production corpus hit exactly
 // this shape 19 times with real ClickHouse MEMORY_LIMIT_EXCEEDED failures (up
 // to 6.31 GiB on a 6 GiB cap) — see the issue for the full investigation,
-// including the two contributors already ruled out (applyNativeHistogramAnalyzerFix)
-// / already fixed (the redundant per-target-bucket mergedStart re-evaluation,
-// #2267 — see expHistogramOverMergedBucketRangeExpr).
+// including the contributor already ruled out (applyNativeHistogramAnalyzerFix).
 //
 // Both factors are knowable only once ClickHouse has read the actual rows —
 // the Go-side plan-time gates (requireSubquerySampleBudget's family, in
@@ -83,23 +81,12 @@ const (
 	maxHistogramMergeBucketWidth = 16384
 )
 
-// mergedLengthExpr returns a FULLY BOUND rendering of one signed ladder's
-// merged bucket-range length, reusing expHistogramOverMergedBucketRangeExpr
-// — the SAME hqLet-bound helper the real merge site
-// (expHistogramMergeBucketsExpr) reuses — rather than calling
-// expHistogramMergeBucketsBoundsExpr directly. Calling the bounds helper
-// raw would render its own, UNBOUND copy of the `arrayMin(arrayMap(...))`
-// merged-start subtree — exactly the cerberus issue #2267 hazard
-// expHistogramOverMergedBucketRangeExpr's own doc describes, and exactly
-// what TestExpHistogramMergedStartIsBoundOncePerSite pins against: every
-// render of that subtree must be one of that helper's own hqLet bindings.
-// Going through it here keeps the guard from becoming a second, unbound
-// occurrence of the very hazard the merge site was already fixed for.
+// mergedLengthExpr returns one signed ladder's merged bucket-range length,
+// via the same expHistogramMergeBucketsBoundsExpr helper the real merge site
+// (expHistogramMergeBucketsExpr) uses to compute it.
 func mergedLengthExpr(scalesArr, offArr, bucArr, mergedScale chplan.Expr) chplan.Expr {
-	return expHistogramOverMergedBucketRangeExpr(
-		scalesArr, offArr, bucArr, mergedScale,
-		func(_, mergedLength chplan.Expr) chplan.Expr { return mergedLength },
-	)
+	_, mergedLength := expHistogramMergeBucketsBoundsExpr(scalesArr, offArr, bucArr, mergedScale)
+	return mergedLength
 }
 
 // histogramMergeBudgetGuardExpr renders the throwIf(...) = 0 predicate that
