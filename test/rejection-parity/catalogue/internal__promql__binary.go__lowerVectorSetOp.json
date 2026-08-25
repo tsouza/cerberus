@@ -5,8 +5,8 @@
       "site": "internal/promql/binary.go:lowerVectorSetOp#4924e0ba",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them",
       "class": "divergence",
-      "trigger_query": "(sum(demo_latency_exp_hist) and demo_num_cpus) or demo_http_requests_total",
-      "tracking_issue": 2571,
+      "trigger_query": "round(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)",
+      "tracking_issue": 2578,
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -20,7 +20,7 @@
           "lowerBinary"
         ]
       },
-      "since": "2026-08-24"
+      "since": "2026-08-25"
     },
     {
       "head": "promql",
