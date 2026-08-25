@@ -11,7 +11,7 @@
           "if b.ReturnBool"
         ],
         "callers": [
-          "lowerSortByLabel"
+          "lowerSortByLabelArg"
         ],
         "cited": [
           "lowerSortOverMixedExpHistogramSetOp",

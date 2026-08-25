@@ -38,7 +38,7 @@
           "lowerScalarBinopOperand",
           "lowerScalarVectorArg",
           "lowerSort",
-          "lowerSortByLabel",
+          "lowerSortByLabelArg",
           "lowerTopK",
           "lowerTopKComputed",
           "lowerUnary",
