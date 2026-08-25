@@ -29,7 +29,8 @@ func testColumns() Columns {
 var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
 
 // TestBackfillSQL pins the rendered INSERT ... SELECT shape: the target
-// column list, the DELTA-only + before-day-boundary WHERE, and the
+// column list, the DELTA-only + exact-instant-before WHERE (NOT rounded to
+// a day boundary — see the package doc comment for why), and the
 // toStartOfDay bucket GROUP BY matching internal/schema/ddl's MV exactly.
 // The cutoff must be a bound positional arg (Lit), never inlined — it is
 // operator-supplied data, not part of the statement shape.
@@ -39,7 +40,7 @@ func TestBackfillSQL(t *testing.T) {
 		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketStart`, `PartialSum`) " +
 		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfDay(`TimeUnix`) AS `BucketStart`, sum(`Value`) AS `PartialSum` " +
-		"FROM `otel`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 AND `TimeUnix` < toStartOfDay(?) " +
+		"FROM `otel`.`otel_metrics_sum` WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, toStartOfDay(`TimeUnix`)"
 	if sql != want {
 		t.Errorf("BackfillSQL sql =\n%s\nwant\n%s", sql, want)
@@ -50,15 +51,16 @@ func TestBackfillSQL(t *testing.T) {
 }
 
 // TestAggregateAndBaseTotalsSQL pins the two verify reads: both group by
-// MetricName only, both bound to the same before-day-boundary cutoff, and
-// the base read additionally filters to DELTA temporality — exactly the
-// population BackfillSQL writes.
+// MetricName only, both bound to the same exact-instant cutoff (NOT rounded
+// to a day boundary — see the package doc comment for why that used to mask
+// a real backfill/MV coverage gap), and the base read additionally filters
+// to DELTA temporality — exactly the population BackfillSQL writes.
 func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	c := testColumns()
 
 	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore)
 	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
-		"WHERE `BucketStart` < toStartOfDay(?) GROUP BY `MetricName`"
+		"WHERE `BucketStart` < ? GROUP BY `MetricName`"
 	if aggSQL != wantAgg {
 		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
 	}
@@ -68,12 +70,59 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 
 	baseSQL, baseArgs := baseTotalsSQL(c, testBefore)
 	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
-		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < toStartOfDay(?) GROUP BY `MetricName`"
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? GROUP BY `MetricName`"
 	if baseSQL != wantBase {
 		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
 	}
 	if len(baseArgs) != 1 || baseArgs[0] != testBefore {
 		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, testBefore)
+	}
+}
+
+// TestBackfillMidDayCutover_NoGap is a regression test for the mid-day
+// cutover data-loss bug: an earlier revision rounded BackfillSQL's --before
+// bound down to toStartOfDay before comparing it against row timestamps.
+// Since a real deployment's MV is almost always created mid-day (not at
+// exactly midnight), that day-truncated bound excluded every row between
+// midnight and the MV's real creation instant from BOTH sides — the
+// backfill (whose bound had already been rounded down past those rows) and
+// the live MV (which never fires for INSERTs older than its own creation
+// instant) — a permanent, silent under-count with no query error.
+//
+// This confirms BackfillSQL's rendered cutoff arg is the exact `before`
+// instant, never day-truncated, so a row lands on exactly one side of the
+// backfill/MV split: captured by the backfill (TimeUnix < cutoff) iff NOT
+// captured by the live MV (which only fires for TimeUnix >= its own
+// creation instant) — across a full day straddling a mid-day cutover,
+// including the previously-lost midnight-to-creation-instant window.
+func TestBackfillMidDayCutover_NoGap(t *testing.T) {
+	mvCreatedAt := time.Date(2026, 8, 20, 14, 32, 10, 0, time.UTC) // mid-day, not midnight
+	_, args := BackfillSQL(testColumns(), mvCreatedAt)
+	if len(args) != 1 {
+		t.Fatalf("BackfillSQL args = %v; want exactly 1", args)
+	}
+	cutoff, ok := args[0].(time.Time)
+	if !ok || !cutoff.Equal(mvCreatedAt) {
+		t.Fatalf("BackfillSQL cutoff = %v; want the exact MV creation instant %v "+
+			"(not rounded down to a day boundary)", args[0], mvCreatedAt)
+	}
+
+	dayStart := mvCreatedAt.Truncate(24 * time.Hour) // midnight of the cutover day
+	samples := []time.Time{
+		dayStart,                      // midnight: start of the previously-lost window
+		dayStart.Add(1 * time.Hour),   // squarely inside the previously-lost window
+		mvCreatedAt.Add(-time.Second), // just before the MV's creation instant
+		mvCreatedAt,                   // exactly the MV's creation instant
+		mvCreatedAt.Add(time.Second),  // just after
+		dayStart.Add(23 * time.Hour),  // late in the cutover day
+	}
+	for _, ts := range samples {
+		backfillCaptures := ts.Before(cutoff)
+		mvCaptures := !ts.Before(mvCreatedAt) // the live MV fires only for INSERTs from its own creation instant onward
+		if backfillCaptures == mvCaptures {
+			t.Errorf("row at %v: backfillCaptures=%v mvCaptures=%v — want exactly one true (no gap, no double-count)",
+				ts, backfillCaptures, mvCaptures)
+		}
 	}
 }
 

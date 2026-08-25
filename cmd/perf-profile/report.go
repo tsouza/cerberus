@@ -21,6 +21,13 @@ import (
 	"github.com/tsouza/cerberus/test/perf/profile"
 )
 
+// defaultTopN is `-top`'s default and also the markdown table's row count
+// when `-top` is explicitly disabled (0) but a markdown summary was still
+// requested via `-md` — the same "top fixtures worth a human's attention"
+// number either way, kept as one named const so the two call sites can
+// never drift apart.
+const defaultTopN = 25
+
 // cliFlags is the flag set shared verbatim by main_chdb.go and
 // main_nochdb.go, so `-h` output and flag semantics are identical whichever
 // build tag produced the binary.
@@ -40,7 +47,7 @@ func parseFlags() cliFlags {
 	flag.StringVar(&f.specDir, "spec", "test/spec", "root directory of the TXTAR corpus")
 	flag.StringVar(&f.outPath, "out", "", "path to write the JSON profile array (default stdout)")
 	flag.StringVar(&f.mdPath, "md", "", "path to append a markdown top-fan_factor table (for GITHUB_STEP_SUMMARY)")
-	flag.IntVar(&f.top, "top", 25, "print the top-N fan_factor fixtures to stderr (0 disables)")
+	flag.IntVar(&f.top, "top", defaultTopN, "print the top-N fan_factor fixtures to stderr (0 disables)")
 	flag.Float64Var(&f.failOver, "fail-over", 0, "exit non-zero if any fixture fan_factor exceeds this (0 = never)")
 	flag.StringVar(&f.mergeGlob, "merge", "",
 		"glob of shard JSON files to MERGE into one combined report, instead of profiling. "+
@@ -136,7 +143,7 @@ func emitReport(recs []profile.Record, outPath, mdPath string, top int, failOver
 	if mdPath != "" {
 		n := top
 		if n <= 0 {
-			n = 25
+			n = defaultTopN
 		}
 		if err := writeMarkdown(mdPath, recs, n, len(recs), nErr, nUnmeasured, maxFan); err != nil {
 			fmt.Fprintf(os.Stderr, "perf-profile: write markdown summary: %v\n", err)

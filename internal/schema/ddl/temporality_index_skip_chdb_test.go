@@ -149,9 +149,9 @@ func TestTemporalityIndex_DoesNotPruneAMixedGranule(t *testing.T) {
 		if i > 0 {
 			b.WriteString(",\n")
 		}
-		// Every 4096th row (well inside this one granule) flips to DELTA, so
-		// the granule's AggregationTemporality min/max mark spans [1, 2] and
-		// cannot be pruned for either predicate.
+		// Exactly one row, at the midpoint of this one granule, flips to
+		// DELTA, so the granule's AggregationTemporality min/max mark spans
+		// [1, 2] and cannot be pruned for either predicate.
 		temporality := 2
 		if i == temporalityProbeRowsPerGranule/2 {
 			temporality = 1

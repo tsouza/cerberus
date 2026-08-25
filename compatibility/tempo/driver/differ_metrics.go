@@ -408,7 +408,7 @@ func AssertMetricsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffR
 			Detail: fmt.Sprintf("%s: got %d series, want <= %d", backendLabel, len(m.Series), tc.ExpectedMaxSeries),
 		})
 	}
-	if tc.Endpoint == "metrics_range" && tc.ExpectedSamplesPerSeries > 0 {
+	if tc.Endpoint == endpointMetricsRange && tc.ExpectedSamplesPerSeries > 0 {
 		for _, s := range m.Series {
 			if len(s.Samples) < tc.ExpectedSamplesPerSeries {
 				reasons = append(reasons, DiffReason{

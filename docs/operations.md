@@ -1192,31 +1192,42 @@ configuration the server reads:
 ```sh
 # 1. Record (or look up) the MV's own creation timestamp, e.g. from
 #    system.tables.metadata_modification_time, or the wall-clock moment the
-#    CREATE MATERIALIZED VIEW statement above ran.
+#    CREATE MATERIALIZED VIEW statement above ran. A real deployment is
+#    almost always cut over mid-day, not at exactly midnight.
 
-# 2. Backfill everything strictly before that timestamp's calendar day.
-cerberus schema delta-prefix-backfill --before 2026-08-20T00:00:00Z
+# 2. Backfill everything strictly before that exact timestamp.
+cerberus schema delta-prefix-backfill --before 2026-08-20T14:32:10Z
 
 # 3. Verify per-metric completeness before flipping the read-side flag.
-cerberus schema delta-prefix-verify --before 2026-08-20T00:00:00Z
+cerberus schema delta-prefix-verify --before 2026-08-20T14:32:10Z
 ```
 
 **The `--before` bound is security-review-grade — getting it wrong corrupts
-data silently.** It MUST be the MV's own creation timestamp. Backfilling past
-it double-counts every row the live MV already captured, inflating
-`PartialSum` for every bucket the two overlap; backfilling with a bound
-*before* the true creation time under-counts the gap between the two. Both
-`delta-prefix-backfill` and `delta-prefix-verify` round the bound down to its
-calendar day internally (`toStartOfDay`), matching the aggregate table's own
-bucket resolution — so the cutover day itself is always left for the live MV
-to capture as ordinary new inserts arrive, and is never double- or
-under-counted by the one-time pass.
+data silently.** It MUST be the MV's own creation timestamp, exactly — not
+rounded to a calendar day. Backfilling past it double-counts every row the
+live MV already captured, inflating `PartialSum` for every bucket the two
+overlap; backfilling with a bound *before* the true creation time
+under-counts the gap between the two, just as silently. `delta-prefix-backfill`
+and `delta-prefix-verify` both bound strictly by this exact instant, with no
+day-rounding: an earlier revision rounded the bound down to its calendar day
+(`toStartOfDay`) on the theory that this kept the aggregate table's own
+day-granularity bucket from ever straddling "backfilled" and "MV-captured"
+contributions — but `PartialSum` is a `SimpleAggregateFunction(sum, ...)`
+column, so two partial contributions landing in the same bucket already merge
+additively regardless of which writer produced them, and day-rounding instead
+created a real gap: for a deployment cut over mid-day (the normal case), every
+row between midnight and the MV's real creation instant was excluded from
+BOTH the backfill (rounded-down bound skipped it) and the live MV (which
+never fires for INSERTs older than its own creation) — a permanent, silent
+under-count. Backfilling by the exact instant closes that gap: everything
+strictly older than it is backfilled, and the live MV captures everything
+from that instant onward, so the two windows meet exactly.
 
 `delta-prefix-backfill` runs a single `INSERT INTO ... SELECT` — the same
 `GROUP BY (MetricName, Attributes, ResourceAttributes, ServiceName,
 toStartOfDay(TimeUnix))` shape the MV itself uses — filtered to
 `AggregationTemporality = 1` (DELTA) and `TimeUnix` strictly before the
-cutover's calendar day. `--dry-run` prints the exact statement without
+exact cutover instant. `--dry-run` prints the exact statement without
 executing it, for review before a maintenance window. Cost is bounded to the
 DELTA-temporality slice of the base table's history (empirically well under 1%
 of real `otel_metrics_sum` rows — see `Config.DeltaPrefixLookback`'s doc
@@ -1227,7 +1238,7 @@ reading a wider column set.
 `delta-prefix-verify` compares the aggregate table's per-metric-name totals
 (`sum(PartialSum)`, grouped by `MetricName` only) against the base table's own
 DELTA-temporality totals (`sum(Value)` under the same `AggregationTemporality
-= 1` + before-day-boundary filter) and reports PASS/FAIL with a
+= 1` + exact-instant `--before` filter) and reports PASS/FAIL with a
 `--tolerance`-bounded per-metric mismatch table (`--json` for the
 machine-readable form). **Scope note:** this is a per-metric *completeness*
 check — did every DELTA row make it into the aggregate table — not a

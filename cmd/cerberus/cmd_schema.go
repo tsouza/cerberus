@@ -135,11 +135,12 @@ func newSchemaDeltaPrefixBackfillCmd() *cobra.Command {
 			"or an operator-recorded timestamp from the moment CREATE MATERIALIZED\n" +
 			"VIEW ran) — rows at or after it are already covered by the live MV, and\n" +
 			"backfilling past it double-counts every bucket that straddles the\n" +
-			"cutover. Both this bound and the aggregate table's own bucket boundary\n" +
-			"round to the calendar day, so the cutover day itself is left for the\n" +
-			"live MV to capture as ordinary new inserts arrive — see\n" +
+			"cutover. This bound is the MV's exact creation instant, NOT rounded to\n" +
+			"a calendar day: since an MV is almost always created mid-day, day-\n" +
+			"rounding would leave every row between midnight and the MV's real\n" +
+			"creation instant uncaptured by both this backfill and the live MV — see\n" +
 			"docs/operations.md's DELTA-prefix backfill runbook.",
-		Example:       "  cerberus schema delta-prefix-backfill --before 2026-08-20T00:00:00Z",
+		Example:       "  cerberus schema delta-prefix-backfill --before 2026-08-20T14:32:10Z",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -189,8 +190,8 @@ func runDeltaPrefixBackfill(cmd *cobra.Command, in deltaPrefixBackfillInputs) er
 	if err := deltaprefix.Backfill(context.Background(), client.Conn(), cols, before); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "backfilled %s from %s (rows before %s, %s day-bucket boundary)\n",
-		cols.DeltaPrefixTable, cols.SumTable, before.Format(time.RFC3339), "toStartOfDay")
+	fmt.Fprintf(cmd.OutOrStdout(), "backfilled %s from %s (rows strictly before %s)\n",
+		cols.DeltaPrefixTable, cols.SumTable, before.Format(time.RFC3339))
 	return nil
 }
 
@@ -231,7 +232,7 @@ func newSchemaDeltaPrefixVerifyCmd() *cobra.Command {
 			"COMPLETENESS check (did every DELTA row get backfilled), not a per-series\n" +
 			"identity-alignment check — see internal/deltaprefix's package doc for the\n" +
 			"scope boundary against cerberus issue #2389's still-open read-side task.",
-		Example:       "  cerberus schema delta-prefix-verify --before 2026-08-20T00:00:00Z",
+		Example:       "  cerberus schema delta-prefix-verify --before 2026-08-20T14:32:10Z",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,

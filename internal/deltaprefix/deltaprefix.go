@@ -109,9 +109,20 @@ func dayBucket(col string) chsql.Frag {
 }
 
 // BackfillSQL renders the one-time `INSERT INTO ... SELECT` that populates
-// c.DeltaPrefixTable for c.SumTable history strictly older than before's
-// calendar day (see the package doc comment for why the bound is rounded to
-// a day boundary and why it must be the MV's own creation time). The
+// c.DeltaPrefixTable for c.SumTable history strictly older than before — the
+// MV's own exact creation instant, NOT rounded to a calendar-day boundary
+// (see the package doc comment: a live deployment's MV is almost always
+// created mid-day, and the live MV only starts capturing INSERTs from that
+// exact instant onward, so an exact-instant cutoff here is the only bound
+// that leaves no gap between what this backfill covers and what the MV
+// covers). The stored bucket column (DeltaPrefixBucketColumn) is still
+// calendar-day granularity — that is the aggregate table's own storage
+// resolution, set by GROUP BY / dayBucket below, not by this WHERE bound —
+// so the cutover day's bucket can legitimately carry two partial
+// contributions (this backfill's pre-instant rows, the live MV's
+// post-instant rows) that merge additively via the table's
+// SimpleAggregateFunction(sum, ...) column, exactly like any other pair of
+// same-key rows the table receives from ordinary concurrent inserts. The
 // GROUP BY / column shape matches internal/schema/ddl's
 // renderDeltaPrefixView exactly, so a row this backfill writes is
 // indistinguishable from one the live MV would have written for the same
@@ -130,7 +141,7 @@ func BackfillSQL(c Columns, before time.Time) (string, []any) {
 		From(chsql.Qual(c.Database, c.SumTable)).
 		Where(
 			chsql.Eq(chsql.Col(c.AggregationTemporalityColumn), chsql.InlineLit(schema.AggregationTemporalityDelta)),
-			chsql.Lt(chsql.Col(c.TimestampColumn), dayBucketOf(before)),
+			chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)),
 		).
 		GroupBy(
 			chsql.Col(c.MetricNameColumn),
@@ -146,14 +157,6 @@ func BackfillSQL(c Columns, before time.Time) (string, []any) {
 	).Build()
 }
 
-// dayBucketOf renders `toStartOfDay(?)` binding t as a real positional
-// arg (Lit, never InlineLit — t is operator-supplied data, not part of the
-// statement shape). Pairs with dayBucket, which renders the same function
-// over a column instead of a bound value.
-func dayBucketOf(t time.Time) chsql.Frag {
-	return chsql.Call("toStartOfDay", chsql.Lit(t))
-}
-
 // Backfill executes BackfillSQL against conn.
 func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time) error {
 	sql, args := BackfillSQL(c, before)
@@ -164,29 +167,39 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time) error
 }
 
 // aggregateTotalsSQL renders the per-metric-name sum(PartialSum) read from
-// the DELTA-prefix table, bounded the same way BackfillSQL bounds its own
-// write: strictly before before's calendar day.
+// the DELTA-prefix table, bounded the same exact instant BackfillSQL bounds
+// its own write — strictly before before, not before's calendar day. Using
+// the exact instant here (rather than rounding down to the cutover day, as
+// an earlier revision did) is what makes this comparison actually capable of
+// catching a backfill/MV coverage gap confined to the cutover day itself:
+// rounding both this and baseTotalsSQL's bound to the SAME calendar day
+// excluded that day's bucket from the comparison entirely, so a gap inside
+// it was invisible to Verify no matter how badly BackfillSQL under-covered
+// it. DeltaPrefixBucketColumn is calendar-day granularity, so this compares
+// a day-truncated column against an exact instant — that is fine: a bucket
+// whose day-start is before the instant is still "< before" even when the
+// instant itself falls partway through that same day.
 func aggregateTotalsSQL(c Columns, before time.Time) (string, []any) {
 	q := chsql.NewQuery().
 		Select(chsql.Col(c.MetricNameColumn), chsql.Call("sum", chsql.Col(c.DeltaPrefixSumColumn))).
 		From(chsql.Qual(c.Database, c.DeltaPrefixTable)).
-		Where(chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), dayBucketOf(before))).
+		Where(chsql.Lt(chsql.Col(c.DeltaPrefixBucketColumn), chsql.Lit(before))).
 		GroupBy(chsql.Col(c.MetricNameColumn))
 	return q.Build()
 }
 
 // baseTotalsSQL renders the per-metric-name sum(Value) read from the base
-// sum table, restricted to DELTA-temporality rows strictly before before's
-// calendar day — the exact population BackfillSQL writes into the
-// DELTA-prefix table, so a correct backfill makes this total and
-// aggregateTotalsSQL's total agree per metric name.
+// sum table, restricted to DELTA-temporality rows strictly before before —
+// the exact population BackfillSQL writes into the DELTA-prefix table, so a
+// correct backfill makes this total and aggregateTotalsSQL's total agree per
+// metric name.
 func baseTotalsSQL(c Columns, before time.Time) (string, []any) {
 	q := chsql.NewQuery().
 		Select(chsql.Col(c.MetricNameColumn), chsql.Call("sum", chsql.Col(c.ValueColumn))).
 		From(chsql.Qual(c.Database, c.SumTable)).
 		Where(
 			chsql.Eq(chsql.Col(c.AggregationTemporalityColumn), chsql.InlineLit(schema.AggregationTemporalityDelta)),
-			chsql.Lt(chsql.Col(c.TimestampColumn), dayBucketOf(before)),
+			chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)),
 		).
 		GroupBy(chsql.Col(c.MetricNameColumn))
 	return q.Build()

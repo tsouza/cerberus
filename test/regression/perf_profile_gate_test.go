@@ -1,7 +1,6 @@
 package regression
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -185,7 +184,7 @@ func TestPerfProfileShardMatrixCoversEverySlice(t *testing.T) {
 	for i := range legs {
 		want = append(want, i+1)
 	}
-	if fmt.Sprint(legs) != fmt.Sprint(want) {
+	if intsString(legs) != intsString(want) {
 		t.Errorf("%s job %q declares shards %v, which is not the contiguous 1..%d PERF_SHARD_INDEX "+
 			"needs. The count the partition divides by is `strategy.job-total` = %d, so an index "+
 			"outside [1, %d] owns a slice that does not exist and some slice that does exist is owned "+
