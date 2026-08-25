@@ -2835,6 +2835,24 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	if shape, ok := resetsOrChangesOverExpHistogram(c, s, ctx); ok {
 		return lowerExpHistogramResetsOrChanges(shape, s, ctx)
 	}
+	// count_over_time()/present_over_time() over a NESTED exp-histogram
+	// selector (cerberus issue #2591): [lowerHistogramNativeRoot] only
+	// tries [countPresentOverExpHistogram] when the call IS the query's
+	// own root (or a subquery's own inner). The moment it is wrapped by
+	// anything else — unary minus (`-present_over_time(m[5m])`), an
+	// aggregation, an instant math function — every such wrapper's own
+	// operand lowering falls back to the generic [lower] dispatcher, which
+	// reaches THIS function (both functions carry a MatrixSelector
+	// argument) before the switch below ever sees it, and the switch has
+	// no histogram-aware opt-in for either name — it falls into the
+	// generic RangeWindow path below and hits
+	// [expHistogramSelectorRouting]'s catch-all rejection. Retrying the
+	// recognizer here, exactly like [resetsOrChangesOverExpHistogram] just
+	// above, closes the gap the same way cerberus issue #2549 closed it
+	// for count()/group().
+	if fn, ms, vs, ok := countPresentOverExpHistogram(c, s, ctx); ok {
+		return lowerCountPresentOverExpHistogram(fn, ms, vs, s, ctx)
+	}
 	switch c.Func.Name {
 	case "predict_linear":
 		return lowerPredictLinear(c, s, ctx)
