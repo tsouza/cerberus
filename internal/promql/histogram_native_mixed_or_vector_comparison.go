@@ -286,8 +286,8 @@ func mixedVVHistogramFieldsExpr(ne bool) chplan.Expr {
 func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
 	bothFloat := &chplan.Binary{
 		Op:    chplan.OpAnd,
-		Left:  mixedVVDiscEq(mixedVVJoinSideL, 0),
-		Right: mixedVVDiscEq(mixedVVJoinSideR, 0),
+		Left:  mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorFloat),
+		Right: mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorFloat),
 	}
 	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)
 	rValue := mixedJoinFieldRef(mixedVVJoinSideR, s.ValueColumn)
@@ -297,8 +297,8 @@ func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp,
 	if mixedVVEqOrNe(op) {
 		bothHist := &chplan.Binary{
 			Op:    chplan.OpAnd,
-			Left:  mixedVVDiscEq(mixedVVJoinSideL, 1),
-			Right: mixedVVDiscEq(mixedVVJoinSideR, 1),
+			Left:  mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorHistogram),
+			Right: mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorHistogram),
 		}
 		histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)
 		histKeep := &chplan.Binary{Op: chplan.OpAnd, Left: bothHist, Right: histCmp}
@@ -338,8 +338,8 @@ func lowerMixedVVCompareFilter(join *chplan.MixedVectorJoin, op chplan.BinaryOp,
 func lowerMixedVVCompareBool(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
 	bothFloat := &chplan.Binary{
 		Op:    chplan.OpAnd,
-		Left:  mixedVVDiscEq(mixedVVJoinSideL, 0),
-		Right: mixedVVDiscEq(mixedVVJoinSideR, 0),
+		Left:  mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorFloat),
+		Right: mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorFloat),
 	}
 	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)
 	rValue := mixedJoinFieldRef(mixedVVJoinSideR, s.ValueColumn)
@@ -351,8 +351,8 @@ func lowerMixedVVCompareBool(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s
 	if mixedVVEqOrNe(op) {
 		bothHist := &chplan.Binary{
 			Op:    chplan.OpAnd,
-			Left:  mixedVVDiscEq(mixedVVJoinSideL, 1),
-			Right: mixedVVDiscEq(mixedVVJoinSideR, 1),
+			Left:  mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorHistogram),
+			Right: mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorHistogram),
 		}
 		histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)
 		keep = &chplan.Binary{Op: chplan.OpOr, Left: bothFloat, Right: bothHist}

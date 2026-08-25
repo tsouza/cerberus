@@ -628,13 +628,13 @@ func lowerMixedVVScaledArithmetic(join *chplan.MixedVectorJoin, op chplan.Binary
 		// histogram-shaped R never scales a numerator (see this file's
 		// header: reference has no float,histogram or
 		// histogram,histogram DIV).
-		keep = mixedVVDiscEq(mixedVVJoinSideR, 0)
+		keep = mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorFloat)
 	} else {
 		// MUL keeps every combination except histogram,histogram.
 		bothHist := &chplan.Binary{
 			Op:    chplan.OpAnd,
-			Left:  mixedVVDiscEq(mixedVVJoinSideL, 1),
-			Right: mixedVVDiscEq(mixedVVJoinSideR, 1),
+			Left:  mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorHistogram),
+			Right: mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorHistogram),
 		}
 		keep = &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{bothHist}}
 	}
@@ -642,7 +642,7 @@ func lowerMixedVVScaledArithmetic(join *chplan.MixedVectorJoin, op chplan.Binary
 
 	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)
 	rValue := mixedJoinFieldRef(mixedVVJoinSideR, s.ValueColumn)
-	rIsHist := mixedVVDiscEq(mixedVVJoinSideR, 1)
+	rIsHist := mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorHistogram)
 
 	var discExpr chplan.Expr
 	if op == chplan.OpDiv {
@@ -650,12 +650,12 @@ func lowerMixedVVScaledArithmetic(join *chplan.MixedVectorJoin, op chplan.Binary
 		// output discriminator is always L's own, forwarded unchanged.
 		discExpr = mixedJoinFieldRef(mixedVVJoinSideL, mixedDiscriminatorColumn)
 	} else {
-		lIsHist := mixedVVDiscEq(mixedVVJoinSideL, 1)
+		lIsHist := mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorHistogram)
 		discExpr = &chplan.FuncCall{
 			Fn: chplan.FnIf,
 			Args: []chplan.Expr{
 				&chplan.Binary{Op: chplan.OpOr, Left: lIsHist, Right: rIsHist},
-				&chplan.LitInt{V: 1}, &chplan.LitInt{V: 0},
+				&chplan.LitInt{V: mixedDiscriminatorHistogram}, &chplan.LitInt{V: mixedDiscriminatorFloat},
 			},
 		}
 	}
@@ -753,7 +753,7 @@ func mixedVVFloatOnlyHistogramColumns() []string {
 //	  Filter keep=(L.disc = 0 AND R.disc = 0)
 //	    MixedVectorJoin
 func lowerMixedVVFloatOnlyArithmetic(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
-	keep := andExpr(mixedVVDiscEq(mixedVVJoinSideL, 0), mixedVVDiscEq(mixedVVJoinSideR, 0))
+	keep := andExpr(mixedVVDiscEq(mixedVVJoinSideL, mixedDiscriminatorFloat), mixedVVDiscEq(mixedVVJoinSideR, mixedDiscriminatorFloat))
 	filtered := &chplan.Filter{Input: join, Predicate: keep}
 
 	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)

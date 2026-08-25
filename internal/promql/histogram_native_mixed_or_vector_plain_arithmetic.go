@@ -91,7 +91,7 @@ func widenPlainVectorToMixedShape(node chplan.Node, s schema.Metrics) chplan.Nod
 			{Expr: emptyBuckets(), Alias: chplan.HistogramPositiveBucketCountsColumn},
 			{Expr: zeroInt(), Alias: chplan.HistogramNegativeOffsetColumn},
 			{Expr: emptyBuckets(), Alias: chplan.HistogramNegativeBucketCountsColumn},
-			{Expr: zeroInt(), Alias: mixedDiscriminatorColumn},
+			{Expr: &chplan.LitInt{V: mixedDiscriminatorFloat}, Alias: mixedDiscriminatorColumn},
 		},
 	}
 }
@@ -172,10 +172,16 @@ func vectorPlainArithmeticOverMixedExpHistogramSetOp(expr parser.Expr, s schema.
 	} else {
 		mixedSetOp, plainExpr, mixedOnLeft = rhsMixed, b.LHS, false
 	}
-	if isExpHistogramValuedShape(plainExpr, s, ctx) {
-		// The plain side is itself genuinely histogram-valued — a
+	if isExpHistogramValuedOrForwarded(plainExpr, s, ctx) {
+		// The plain side is itself genuinely histogram-valued — directly,
+		// or forwarded through an `and`/`unless` chain (cerberus issue
+		// #2571, isExpHistogramValuedOrForwarded's own doc comment) — a
 		// different, not-yet-attempted shape (see
-		// [lowerPlainOperandForMixedJoin]'s own doc), not this one.
+		// [lowerPlainOperandForMixedJoin]'s own doc), not this one. Using
+		// the narrower isExpHistogramValuedShape here let a forwarded
+		// operand (`hist_x and other_selector`) slip past this guard and
+		// only fail later, less clearly, inside
+		// [lowerPlainOperandForMixedJoin]'s RowShapeOf switch.
 		return nil, nil, false, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
 	}
 

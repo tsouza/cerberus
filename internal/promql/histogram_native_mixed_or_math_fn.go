@@ -135,14 +135,7 @@ func floatRowsOnlyOverMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metr
 	if err != nil {
 		return nil, err
 	}
-	return &chplan.Filter{
-		Input: inner,
-		Predicate: &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: mixedDiscriminatorColumn},
-			Right: &chplan.LitInt{V: 0},
-		},
-	}, nil
+	return mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat), nil
 }
 
 // projectCanonicalFloatValue re-projects a float-rows-only plan (an
