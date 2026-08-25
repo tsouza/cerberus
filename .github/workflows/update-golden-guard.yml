@@ -16,21 +16,36 @@ name: update-golden-guard
 # the dispatch (if any) against its branch has finished, whatever it
 # concludes.
 #
-# See .github/scripts/update-golden-guard.mjs for the polling mechanism and
-# why it does not read the dispatch's own conclusion.
+# See .github/scripts/update-golden-guard.mjs for the polling mechanism, why
+# it does not read the dispatch's own conclusion, and why there are two
+# triggers below (the workflow_run one closes issue #2350's race for a
+# dispatch made AFTER the PR's required check already went green, which the
+# pull_request trigger alone cannot re-poll on its own).
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: [update-golden]
+    types: [requested, completed]
 
 permissions:
   actions: read
+  # workflow_run path only: list the open PR(s) an update-golden.yml dispatch
+  # targets, and push a commit status onto their head SHA (see the mjs file
+  # header). The pull_request path relies solely on its own check-run result
+  # and needs neither.
+  pull-requests: read
+  statuses: write
 
 concurrency:
   # A poll against a superseded head SHA can never gate the CURRENT one, which
   # is all branch protection ever evaluates — so the newest push should win
-  # outright rather than share the runner with a stale poll.
-  group: update-golden-guard-${{ github.event.pull_request.number }}
+  # outright rather than share the runner with a stale poll. workflow_run
+  # events group by the triggering run's own id instead: requested/completed
+  # are two events for the SAME run, and only the later one's status snapshot
+  # is worth keeping — an in-between cancellation is fine to drop.
+  group: update-golden-guard-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
@@ -52,12 +67,27 @@ jobs:
       # here: pinning to the PR's base sha would also make this check
       # permanently unable to find its own script before its introducing PR
       # merges, since the base branch cannot contain a script this PR is
-      # still adding.
+      # still adding. The workflow_run trigger runs this same checkout from
+      # the default branch — its only source of this script — which is fine:
+      # that path never reads anything from the dispatch's own target branch.
       - uses: actions/checkout@v7
 
+      - name: update-golden-guard self-test
+        run: node --test .github/scripts/update-golden-guard.test.mjs
+
       - name: Wait for any in-flight update-golden.yml dispatch against this branch
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.head_ref }}
+        run: node .github/scripts/update-golden-guard.mjs
+
+      - name: Reflect an update-golden.yml dispatch onto its target PR's own check
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_RUN_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
+          WORKFLOW_RUN_HTML_URL: ${{ github.event.workflow_run.html_url }}
         run: node .github/scripts/update-golden-guard.mjs
