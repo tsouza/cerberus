@@ -1,5 +1,6 @@
 // Tests in this file pin behaviour that the gremlins mutation suite had
-// reported as LIVED on the phase4-promql job — each one constructs an
+// reported as LIVED on a phase4-promql-* job (mutation.yml, split into
+// sibling legs by cerberus issue #2636) — each one constructs an
 // input that observably differentiates the original code from the
 // mutated branch, so the test fails when the mutant is applied and the
 // mutant is reported KILLED.

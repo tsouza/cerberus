@@ -12,7 +12,7 @@
 // the release PR, where it blocks the release instead of the change that caused
 // it. That is a hollow green: a required check reporting on work it never did.
 //
-// The answer is neither "skip" nor "run all 18 legs on every PR" (the matrix
+// The answer is neither "skip" nor "run all 30 legs on every PR" (the matrix
 // cost the skip existed to avoid). It is to run the legs whose SCOPE the PR
 // actually changed. A PR editing internal/chplan runs phase1. A PR editing only
 // docs runs nothing and the aggregator passes through honestly, because there
