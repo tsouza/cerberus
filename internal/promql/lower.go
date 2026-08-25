@@ -2419,10 +2419,7 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 			return lowerRangeVectorCall(c, s, ctx)
 		}
 		if sq, ok := arg0.(*parser.SubqueryExpr); ok {
-			// `<range-vector-fn>(<subquery>)` — the canonical Grafana
-			// shape `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a
-			// chained RangeWindow: outer reducer over the inner matrix.
-			return lowerOuterRangeFnOverSubquery(c, sq, s, ctx)
+			return lowerCallOverSubquery(c, sq, s, ctx)
 		}
 	}
 	switch c.Func.Name {
@@ -2495,6 +2492,50 @@ func lowerCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, err
 		return lowerInstantFn(c, s, chFn, ctx)
 	}
 	return nil, fmt.Errorf("promql: function %s is not a recognized lowering target", c.Func.Name)
+}
+
+// lowerCallOverSubquery lowers `<fn>(<subquery>)` — c's single argument is
+// sq. Split out of [lowerCall] itself (cerberus issue #2569) purely to keep
+// that function's own golangci-lint `nestif` complexity score under the
+// repo's floor; the dispatch order and every recognizer's own rationale
+// below are unchanged from when this block lived inline there.
+//
+// The histogram-native SELECT/FOLD-family composition (cerberus issue
+// #2569): `<fn>((h)[5m:1m])` for the SELECT/COUNT family (count_over_time,
+// present_over_time, last_over_time, first_over_time, resets, changes,
+// ts_of_first_over_time, ts_of_last_over_time — cerberus issue #2545) and
+// the FOLD family (rate, increase, delta, irate, idelta, sum_over_time,
+// avg_over_time) already lowers correctly when that whole expression is
+// the query ROOT (or a subquery's own inner, cerberus issue #2543) —
+// [lowerHistogramNativeRoot]'s dispatch table tries
+// [selectFnOverExpHistogramSubquery] / [rangeFnOverExpHistogramSubquery]
+// ahead of `lower()`/[lowerCall], but ONLY at those two entry points. The
+// identical shape reached via a wrapper's own operand lowering —
+// `sum(count_over_time((h)[5m:1m]))`, `abs(rate((h)[5m:1m]))`,
+// `label_replace(last_over_time((h)[5m:1m]), ...)` — comes through here
+// directly, bypassing that table entirely and falling into
+// [lowerOuterRangeFnOverSubquery]'s own histogram-shape guard below.
+// Retrying both recognizers here, before that guard, closes the gap for
+// EVERY wrapper in one place rather than needing a bespoke retry per
+// wrapper site — mirroring how [lowerAggregate] / [lowerRangeVectorCall]
+// already retry [lowerExpHistogramCountFamily] /
+// [resetsOrChangesOverExpHistogram] for their own nested equivalents
+// (cerberus issue #2549). Neither recognizer depends on being called from
+// a root: both gate purely on `s.ExpHistogramTable`, the call's own
+// function name and argument shape, and the subquery's inner already
+// resolving histogram-native, so retrying them here is sound regardless of
+// what wraps this call.
+func lowerCallOverSubquery(c *parser.Call, sq *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if shape, ok := selectFnOverExpHistogramSubquery(c, s, ctx); ok {
+		return lowerSelectFnOverExpHistogramSubquery(shape, s, ctx)
+	}
+	if shape, ok := rangeFnOverExpHistogramSubquery(c, s, ctx); ok {
+		return lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
+	}
+	// `<range-vector-fn>(<subquery>)` — the canonical Grafana shape
+	// `max_over_time(rate(m[5m])[1h:5m])`. Lowers to a chained RangeWindow:
+	// outer reducer over the inner matrix.
+	return lowerOuterRangeFnOverSubquery(c, sq, s, ctx)
 }
 
 // matrixSelectorArg validates that c carries exactly one range-vector

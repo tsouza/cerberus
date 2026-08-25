@@ -32,6 +32,18 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerExpHistogramRangeFnOverSubquery(shape, s, ctx)
 		return plan, true, err
 	}
+	// last_over_time / first_over_time over a subquery whose inner
+	// resolves histogram-native (cerberus issue #2569) — the histogram-
+	// PRESERVING half of [selectFnOverExpHistogramSubquery]'s eight-
+	// function match; the other six answer a plain float and are threaded
+	// through the generic [lowerCall] composition path instead (see that
+	// recognizer's own doc for the split). Composing this here, alongside
+	// [rangeFnOverExpHistogramSubquery] just above, gives it the identical
+	// recursive reach.
+	if shape, ok := selectFnHistogramPreservingSubquery(expr, s, ctx); ok {
+		plan, err := lowerSelectFnOverExpHistogramSubquery(shape, s, ctx)
+		return plan, true, err
+	}
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		input, matched, err := lowerExpHistogramValuedShape(agg.Expr, s, ctx)
 		if err != nil {
