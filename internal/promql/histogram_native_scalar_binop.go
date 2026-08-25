@@ -180,6 +180,15 @@ func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx)
 	if agg, ok := mergeableExpHistogramAggregate(expr); ok {
 		return isExpHistogramValuedShape(agg.Expr, s, ctx)
 	}
+	// `limitk(K, <exp-hist shape>)` / `limit_ratio(R, <exp-hist shape>)`
+	// (cerberus issue #2575) — limitk/limit_ratio, unlike topk/bottomk,
+	// PRESERVE a histogram-valued operand ([lowerLimitKInput], cerberus
+	// issue #2518), so a further wrapper around either needs to see that
+	// here too. [limitKOrRatioOverExpHistogram] (lower.go) already checks
+	// the operand recursively, so no further recursion is needed.
+	if _, ok := limitKOrRatioOverExpHistogram(expr, s, ctx); ok {
+		return true
+	}
 	// `<exp-hist shape> (*|/) <float-VECTOR shape>` — the vector-scaling
 	// sibling of the compile-time-literal case just below (cerberus issue
 	// #2540), answered by [expHistogramFloatVectorScalingBinop]
