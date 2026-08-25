@@ -2,28 +2,10 @@
   "entries": [
     {
       "head": "promql",
-      "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOp#6cdf660e",
-      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
-      "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerVectorSetOp's identical check for the float case",
-      "evidence": {
-        "guard": [
-          "if b.ReturnBool"
-        ],
-        "callers": [
-          "lowerExpHistogramValuedShape"
-        ],
-        "cited": [
-          "lowerVectorSetOp"
-        ]
-      }
-    },
-    {
-      "head": "promql",
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#8deac7ac",
       "message": "promql: internal invariant violated: exp-histogram set-op operand lowering published %s row shape (%T), want %s",
       "class": "internal",
-      "rationale": "internal invariant: all three callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed histogram-valued -- lowerExpHistogramSetOp's own both-arms-histogram expHistogramSetOp recognizer, lowerMixedExpHistogramOperands's own histOnLeft selection (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering -- cerberus issue #2346 -- shares the same operand dispatch), and lowerVectorSetOpOperand's own isExpHistogramValuedShape guard, the mixed and/unless entry point (cerberus issue #2325) -- so lowerExpHistogramSetOpOperand's histogram-valued lowering can never publish a non-HistogramRowShape node here",
+      "rationale": "internal invariant: all callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed histogram-valued -- lowerExpHistogramSetOp's own both-arms-histogram expHistogramSetOp recognizer, lowerVectorSetOpOperand's own isExpHistogramValuedShape guard (the mixed and/unless entry point, cerberus issue #2325), and lowerExpHistogramValuedOrForwardedOperand's own isExpHistogramValuedShape check (cerberus issue #2571 -- this function replaces lowerMixedExpHistogramOperands's former direct call to lowerExpHistogramSetOpOperand so the mixed or's histogram side can ALSO be an and/unless chain forwarding a histogram-valued shape, isExpHistogramForwardedThroughSetOp, without weakening this narrower guard: lowerExpHistogramValuedOrForwardedOperand only forwards to lowerExpHistogramSetOpOperand when its own isExpHistogramValuedShape(expr) check already returned true, taking a separate lower()-based path for the isExpHistogramForwardedThroughSetOp case instead) -- so lowerExpHistogramSetOpOperand's histogram-valued lowering can never publish a non-HistogramRowShape node here",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -32,16 +14,18 @@
         ],
         "callers": [
           "lowerExpHistogramSetOp",
-          "lowerMixedExpHistogramOperands",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerVectorSetOpOperand"
         ],
         "cited": [
           "expHistogramSetOp",
+          "isExpHistogramForwardedThroughSetOp",
           "isExpHistogramValuedShape",
+          "lower",
           "lowerExpHistogramSetOp",
           "lowerExpHistogramSetOpOperand",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerMixedExpHistogramOperands",
-          "lowerMixedExpHistogramSetOp",
           "lowerVectorSetOpOperand"
         ]
       }
@@ -51,7 +35,7 @@
       "site": "internal/promql/histogram_native_set_op.go:lowerExpHistogramSetOpOperand#9d51e668",
       "message": "promql: internal invariant violated: exp-histogram set-op operand matched no known histogram-valued shape for %v",
       "class": "internal",
-      "rationale": "internal invariant: all three callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed match a known histogram-valued shape -- lowerExpHistogramSetOp's own expHistogramSetOp recognizer, lowerMixedExpHistogramOperands's own histOnLeft selection (cerberus issue #2330, split out of the former lowerMixedExpHistogramSetOp so histogram_native_mixed_or_aggregate.go's sum/avg-wrapped lowering -- cerberus issue #2346 -- shares the same operand dispatch), and lowerVectorSetOpOperand's own isExpHistogramValuedShape guard, the mixed and/unless entry point (cerberus issue #2325) -- so lowerExpHistogramSetOpOperand's own re-dispatch through lowerExpHistogramValuedShape can never report unmatched here",
+      "rationale": "internal invariant: all callers of lowerExpHistogramSetOpOperand only ever pass an operand isExpHistogramValuedShape already confirmed match a known histogram-valued shape -- lowerExpHistogramSetOp's own expHistogramSetOp recognizer, lowerVectorSetOpOperand's own isExpHistogramValuedShape guard (the mixed and/unless entry point, cerberus issue #2325), and lowerExpHistogramValuedOrForwardedOperand's own isExpHistogramValuedShape check (cerberus issue #2571 -- this function replaces lowerMixedExpHistogramOperands's former direct call to lowerExpHistogramSetOpOperand so the mixed or's histogram side can ALSO be an and/unless chain forwarding a histogram-valued shape, isExpHistogramForwardedThroughSetOp, without weakening this narrower guard: lowerExpHistogramValuedOrForwardedOperand only forwards to lowerExpHistogramSetOpOperand when its own isExpHistogramValuedShape(expr) check already returned true, taking a separate lower()-based path for the isExpHistogramForwardedThroughSetOp case instead) -- so lowerExpHistogramSetOpOperand's own re-dispatch through lowerExpHistogramValuedShape can never report unmatched here",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -59,17 +43,19 @@
         ],
         "callers": [
           "lowerExpHistogramSetOp",
-          "lowerMixedExpHistogramOperands",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerVectorSetOpOperand"
         ],
         "cited": [
           "expHistogramSetOp",
+          "isExpHistogramForwardedThroughSetOp",
           "isExpHistogramValuedShape",
+          "lower",
           "lowerExpHistogramSetOp",
           "lowerExpHistogramSetOpOperand",
+          "lowerExpHistogramValuedOrForwardedOperand",
           "lowerExpHistogramValuedShape",
           "lowerMixedExpHistogramOperands",
-          "lowerMixedExpHistogramSetOp",
           "lowerVectorSetOpOperand"
         ]
       }

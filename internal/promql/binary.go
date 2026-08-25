@@ -525,7 +525,15 @@ func rewriteAnchorToTimeUnix(expr chplan.Expr, s schema.Metrics) chplan.Expr {
 // arm with a pure Sample one — internal/chsql's mixedVectorSetOpArmFrag
 // classifies each arm by its own [chplan.RowShapeOf] and forwards an
 // already-Mixed arm's real per-row discriminator unchanged instead of
-// resynthesising one it doesn't need.
+// resynthesising one it doesn't need. cerberus issue #2571 widened
+// [mixedExpHistogramSetOp] itself (the recognizer this function's own
+// leftHistogram != rightHistogram mismatch guard falls back on rejecting
+// when NEITHER side already resolved as Mixed) to see an `and`/`unless`
+// chain that forwards a histogram-valued shape arbitrarily many levels
+// deep — see [isExpHistogramForwardedThroughSetOp]
+// (histogram_native_set_op.go) — so that shape is now caught upstream,
+// before this function's operands are even lowered, rather than
+// reaching this mismatch guard at all.
 func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	kind, err := promVectorSetOpKind(b.Op)
 	if err != nil {
@@ -596,6 +604,30 @@ func lowerVectorSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chp
 			// result that is per-row float or histogram outside the
 			// Mixed contract, only one shape for the whole query (see
 			// chplan.RowShapeOf / VectorSetOp.Histogram).
+			//
+			// This is reached only when NEITHER side's operand was
+			// recognised, before lowering, as histogram-valued by
+			// [mixedExpHistogramSetOp] (which would have routed the
+			// whole expression through [lowerMixedExpHistogramSetOp]
+			// instead, building Mixed deliberately) — cerberus issue
+			// #2571 extended that recognizer (and
+			// [lowerMixedExpHistogramOperands]'s matching operand
+			// lowering) to see an `and`/`unless` chain that FORWARDS a
+			// histogram-valued shape arbitrarily many levels deep
+			// ([isExpHistogramForwardedThroughSetOp],
+			// histogram_native_set_op.go), closing the gap where this
+			// function's own [chplan.RowShapeOf]-based leftHistogram /
+			// rightHistogram computation could already see the
+			// mismatch — because the operand actually WAS lowered
+			// successfully to Histogram-shaped by
+			// [lowerVectorSetOpOperand]'s generic [lower] fallback —
+			// but the static recognizer upstream could not, so this
+			// error path was reached instead of the dedicated Mixed
+			// construction. What remains unreached here is only a
+			// genuinely unrecognised composition — e.g. a mixed `or`
+			// nested as the operand of an unrelated wrapper (a math
+			// function, an aggregate) that has not itself been taught
+			// to accept a Mixed-shaped input.
 			return nil, fmt.Errorf(
 				"promql: 'or' between a float-valued and a histogram-valued operand is not supported; " +
 					"'and'/'unless' support mixing them",

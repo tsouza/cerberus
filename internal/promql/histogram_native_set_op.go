@@ -163,6 +163,104 @@ func lowerExpHistogramSetOpOperand(expr parser.Expr, s schema.Metrics, ctx lower
 	return node, nil
 }
 
+// isExpHistogramForwardedThroughSetOp reports whether expr is an
+// `and`/`unless` binary expression whose LHS is histogram-valued —
+// directly ([isExpHistogramValuedShape]) or, recursively, itself another
+// `and`/`unless` forwarding one, so an arbitrarily deep chain like
+// `((a and b) and c) and d` is recognised the same as a single-level
+// `a and b` (cerberus issue #2571).
+//
+// `and`/`unless` always forward exactly the LEFT side's rows verbatim —
+// the right side's value type never reaches the output, only its label
+// signature is used to filter (see [lowerVectorSetOp]'s own doc comment
+// and its `Histogram: leftHistogram` return) — so only the LHS matters
+// here; a histogram-valued RHS with a non-histogram LHS does NOT make
+// the `and`/`unless` itself histogram-valued, and this predicate
+// correctly answers false for that shape. `or` is deliberately excluded:
+// it unions rather than forwards one side, so a nested `or`'s own
+// histogram-valued-ness is decided by [chplan.RowShapeOf] once lowered
+// (HistogramRowShape when [expHistogramSetOp] matched both arms,
+// MixedRowShape when [mixedExpHistogramSetOp] matched — both already
+// recognised by their own existing static checks) rather than by this
+// LHS-forwarding predicate.
+//
+// This is deliberately a SEPARATE predicate from
+// [isExpHistogramValuedShape] rather than a new branch inside it:
+// [isExpHistogramValuedShape] is paired 1:1 with
+// [lowerExpHistogramValuedShape] (see that function's own doc comment on
+// why the pairing must stay exhaustive), which has no lowering branch for
+// an `and`/`unless` whose RHS is NOT itself histogram-valued — only
+// [expHistogramSetOp]'s BOTH-sides-histogram shape is wired there. The
+// shape this predicate recognises instead already lowers correctly
+// through the ORDINARY [lower] dispatcher: binary.go's [lowerVectorSetOp]
+// computes its own Histogram/Mixed output flags from each operand's
+// ACTUAL lowered [chplan.RowShapeOf], not from a static recognizer, so an
+// `and`/`unless` whose LHS operand recursively resolves to
+// HistogramRowShape (via THIS SAME recursion inside
+// [lowerVectorSetOpOperand], or directly via
+// [lowerExpHistogramSetOpOperand]) already publishes HistogramRowShape
+// itself with no extra plumbing — this predicate exists purely so
+// [mixedExpHistogramSetOp] / [lowerMixedExpHistogramOperands] can SEE
+// that fact before lowering, the same way they already see a directly
+// histogram-valued operand via [isExpHistogramValuedShape].
+func isExpHistogramForwardedThroughSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	b, isBin := unwrapBinaryExpr(expr)
+	if !isBin || (b.Op != parser.LAND && b.Op != parser.LUNLESS) {
+		return false
+	}
+	return isExpHistogramValuedShape(b.LHS, s, ctx) || isExpHistogramForwardedThroughSetOp(b.LHS, s, ctx)
+}
+
+// isExpHistogramValuedOrForwarded reports whether expr is EITHER of the
+// two shapes [lowerExpHistogramValuedOrForwardedOperand] below can lower
+// to a histogram-shaped node: directly histogram-valued
+// ([isExpHistogramValuedShape]) or an `and`/`unless` forwarding one
+// ([isExpHistogramForwardedThroughSetOp]). Shared by
+// [mixedExpHistogramSetOp] and [lowerMixedExpHistogramOperands]
+// (histogram_native_mixed_or.go) so both stay in sync on which side of a
+// mixed `or` is the histogram side — see cerberus issue #2571.
+func isExpHistogramValuedOrForwarded(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	return isExpHistogramValuedShape(expr, s, ctx) || isExpHistogramForwardedThroughSetOp(expr, s, ctx)
+}
+
+// lowerExpHistogramValuedOrForwardedOperand lowers expr as the
+// histogram-valued side of a mixed `or` construction
+// ([lowerMixedExpHistogramOperands], histogram_native_mixed_or.go),
+// accepting both shapes [isExpHistogramValuedOrForwarded] recognises:
+//
+//   - A shape [isExpHistogramValuedShape] already recognised — routed
+//     through [lowerExpHistogramSetOpOperand] unchanged, exactly as
+//     before cerberus issue #2571.
+//   - An `and`/`unless` chain forwarding a histogram-valued LHS
+//     ([isExpHistogramForwardedThroughSetOp], cerberus issue #2571) —
+//     routed through the ordinary [lower] dispatcher instead:
+//     binary.go's [lowerVectorSetOp] already resolves this shape
+//     correctly on its own (its Histogram output flag is computed from
+//     the ACTUAL lowered [chplan.RowShapeOf] of its Left operand, not a
+//     static recognizer — see that function's doc comment), so no
+//     dedicated lowering machinery is needed here, only this
+//     recognition plus the same row-shape assertion
+//     [lowerExpHistogramSetOpOperand] already applies.
+func lowerExpHistogramValuedOrForwardedOperand(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if isExpHistogramValuedShape(expr, s, ctx) {
+		return lowerExpHistogramSetOpOperand(expr, s, ctx)
+	}
+	if !isExpHistogramForwardedThroughSetOp(expr, s, ctx) {
+		return nil, fmt.Errorf("promql: internal invariant violated: mixed exp-histogram operand matched neither isExpHistogramValuedShape nor isExpHistogramForwardedThroughSetOp for %v", expr)
+	}
+	node, err := lower(expr, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if chplan.RowShapeOf(node) != chplan.HistogramRowShape {
+		return nil, fmt.Errorf(
+			"promql: internal invariant violated: exp-histogram-forwarding set-op operand lowering published %s row shape (%T), want %s",
+			chplan.RowShapeOf(node), node, chplan.HistogramRowShape,
+		)
+	}
+	return node, nil
+}
+
 // lowerVectorSetOpOperand lowers one operand of a `and`/`or`/`unless`
 // vector set op reached through the generic float-path lowering
 // (binary.go's [lowerVectorSetOp]) — the entry point for both the plain
