@@ -5,19 +5,22 @@
       "site": "internal/promql/histogram_native_mixed_or_aggregate.go:lowerSumOrAvgOverMixedExpHistogramSetOp#6cdf660e",
       "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
       "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerMixedExpHistogramSetOp's identical check for the leaf mixed-or case (histogram_native_mixed_or.go), lowerVectorSetOp's identical check for the float case, and lowerExpHistogramSetOp's identical check for the both-histogram case. Since cerberus issue #2528, lowerMixedExpHistogramFamily replaces lowerRoot as the direct caller (split out of lowerRoot's own body purely to keep that function's golangci-lint maintainability-index score over the repo's floor) — the same mixedExpHistogramSetOp-matched `or` BinaryExpr flows through unchanged, so the claim is unaffected.",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerMixedExpHistogramSetOp's identical check for the leaf mixed-or case (histogram_native_mixed_or.go), lowerVectorSetOp's identical check for the float case, and lowerExpHistogramSetOp's identical check for the both-histogram case. Since cerberus issue #2528, lowerMixedExpHistogramFamily replaces lowerRoot as the direct caller (split out of lowerRoot's own body purely to keep that function's golangci-lint maintainability-index score over the repo's floor) — the same mixedExpHistogramSetOp-matched `or` BinaryExpr flows through unchanged, so the claim is unaffected. Cerberus issue #2581 added a second caller, lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — reached only after lowerSumOrAvgMixedOrSubqueryOuterFn's own identical `if shape.b.ReturnBool` guard already rejected the same BinaryExpr earlier in the same call chain, so this guard stays unreachable via that path too.",
       "evidence": {
         "guard": [
           "if b.ReturnBool"
         ],
         "callers": [
-          "lowerMixedExpHistogramFamily"
+          "lowerMixedExpHistogramFamily",
+          "lowerSumOrAvgMixedOrSubquerySelectFn"
         ],
         "cited": [
           "lowerExpHistogramSetOp",
           "lowerMixedExpHistogramFamily",
           "lowerMixedExpHistogramSetOp",
           "lowerRoot",
+          "lowerSumOrAvgMixedOrSubqueryOuterFn",
+          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "lowerVectorSetOp",
           "mixedExpHistogramSetOp"
         ]
