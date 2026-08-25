@@ -252,14 +252,19 @@ func lowerRegexHistogramSelector(v *parser.VectorSelector, s schema.Metrics, ctx
 			inputs = append(inputs, buildRegexExpHistogramCompanionArm(s, ctx.catalog, names, scanMatchers, suffix, sourceColumn))
 		}
 
-		// info()'s second-argument selector only (ctx.infoMetricSelector —
-		// cerberus issue #2584, the regex/negated-matcher sibling of #2574):
-		// a bare exp-histogram row itself, matched by its own unsuffixed
-		// name, gets an arm too — see buildRegexExpHistogramBareArm. Every
-		// OTHER consumer of an unpinned selector still gets none: that row
-		// shape has no scalar Value column, and this exemption exists only
-		// because info()'s join never reads one.
-		if ctx.infoMetricSelector {
+		// info()'s second-argument selector (ctx.infoMetricSelector —
+		// cerberus issue #2584, the regex/negated-matcher sibling of #2574)
+		// and absent()/absent_over_time()'s presence-only selector
+		// (ctx.absencePresenceSelector — cerberus issue #2443's own
+		// regex/negated-matcher sibling) both get an arm here too: a bare
+		// exp-histogram row itself, matched by its own unsuffixed name,
+		// would otherwise contribute zero rows to the union — see
+		// buildRegexExpHistogramBareArm. Every OTHER consumer of an
+		// unpinned selector still gets none: that row shape has no scalar
+		// Value column, and both exemptions exist only because neither
+		// info()'s join nor absent()'s row-count check ever reads one for
+		// real.
+		if ctx.infoMetricSelector || ctx.absencePresenceSelector {
 			inputs = append(inputs, buildRegexExpHistogramBareArm(s, ctx.catalog, v.LabelMatchers, s.CountColumn))
 		}
 	}

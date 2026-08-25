@@ -222,13 +222,18 @@ func lowerRoot(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 // on [expHistogramSelectorRouting]'s explicit rejection, and never widens
 // the exemption by accident: a nested selector never reaches this function.
 //
-// The direct histogram-valued dispatches are ordered but not mutually
-// exclusive in principle, and the order is arbitrary:
-// [bareExpHistogramSelector], [sumOrAvgOverExpHistogram] and
-// [rangeFnOverExpHistogram] recognise disjoint root node types (a selector, an
-// aggregation, a range-vector call), so none can shadow another.
-// Histogram-preserving wrappers dispatch before them because their operand
-// is one of those payload shapes.
+// This function's OWN body directly dispatches only
+// [bareExpHistogramMatrixSelector] and [labelReplaceOverExpHistogram]
+// before delegating the bulk of direct histogram-valued recognition to a
+// single call into [lowerExpHistogramValuedShape] — that function, one
+// recursion level below this one (and recursively from inside itself),
+// is where [bareExpHistogramSelector], [sumOrAvgOverExpHistogram] and
+// [rangeFnOverExpHistogram] actually live. Those three are ordered but
+// not mutually exclusive in principle, and the order is arbitrary: they
+// recognise disjoint root node types (a selector, an aggregation, a
+// range-vector call), so none can shadow another. Histogram-preserving
+// wrappers dispatch before them (within [lowerExpHistogramValuedShape]'s
+// own table) because their operand is one of those payload shapes.
 // the direct dispatch alone does not answer `sum(rate(...))` — which needs
 // both reductions. [lowerExpHistogramValuedShape] (called just below, and
 // recursively from inside itself) is what closes that gap:

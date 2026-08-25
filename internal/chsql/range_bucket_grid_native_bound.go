@@ -427,6 +427,21 @@ const RangeBucketGridNativeDensityBudgetMessage = "classic-histogram native rate
 // over inputSource with no arrayJoin, no GROUP BY, and no native aggregate
 // at all — strictly cheaper than either axis1's probe or Level 0's own
 // unnest.
+//
+// rawRowsProbe and maxWidthProbe below are two SEPARATE
+// `NewQuery().From(inputSource)` probes rather than one combined
+// `count()` + `max(length(...))` SELECT — considered and set aside: a
+// single combined probe would need `bucketGridDensityGuardFrag` to pull
+// two scalar values out of ONE `Subquery(...)` Frag (e.g. via
+// `tupleElement(...)`), and that Frag would then itself need to be
+// referenced TWICE (once per tupleElement call) to extract both — which,
+// per this file's own splicing model (see [QueryBuilder.With]'s doc: a
+// relational reference is inlined, and re-evaluated, at every use), reads
+// inputSource just as many times as keeping the two probes separate does.
+// There is no CTE-style single-materialization primitive in this codebase
+// that would make the combined form cheaper, so the two probes stay
+// separate rather than trade this doc's accuracy for a change that would
+// not actually reduce reads.
 func bucketGridDensityBoundedSourceFrag(
 	source, groupsSource Frag, keyCols []Frag,
 	inputSource Frag, tsCol, boundsCol string, start, end time.Time, offsetNS, rangeNS int64,

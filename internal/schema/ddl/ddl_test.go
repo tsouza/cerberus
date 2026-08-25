@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestRenderSignal_Metrics checks all five metrics templates render with
@@ -740,5 +742,37 @@ func TestRenderSignal_MetricsDeltaPrefixCustomColumns(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("delta-prefix CREATE MATERIALIZED VIEW missing %q:\n%s", want, view)
 		}
+	}
+}
+
+// TestDeltaPrefixDefaultsMatchSchemaPackage is the test
+// defaultMetricsDeltaPrefixTable / defaultDeltaPrefixBucketColumn /
+// defaultDeltaPrefixSumColumn's doc comment names as keeping this package's
+// three hardcoded DELTA-prefix defaults in lockstep with
+// schema.DefaultOTelMetricsFrom's own defaults (only populated once the
+// CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED opt-in resolves truthy) — the two
+// packages independently hardcode the same three literals rather than one
+// importing the other's constants, so nothing else catches the two drifting
+// apart.
+func TestDeltaPrefixDefaultsMatchSchemaPackage(t *testing.T) {
+	enabled := func(key string) string {
+		if key == schema.EnvMetricsDeltaPrefixEnabled {
+			return "true"
+		}
+		return ""
+	}
+	m := schema.DefaultOTelMetricsFrom(enabled)
+
+	if m.DeltaPrefixTable != defaultMetricsDeltaPrefixTable {
+		t.Errorf("schema.DefaultOTelMetricsFrom DeltaPrefixTable = %q; ddl's defaultMetricsDeltaPrefixTable = %q",
+			m.DeltaPrefixTable, defaultMetricsDeltaPrefixTable)
+	}
+	if m.DeltaPrefixBucketColumn != defaultDeltaPrefixBucketColumn {
+		t.Errorf("schema.DefaultOTelMetricsFrom DeltaPrefixBucketColumn = %q; ddl's defaultDeltaPrefixBucketColumn = %q",
+			m.DeltaPrefixBucketColumn, defaultDeltaPrefixBucketColumn)
+	}
+	if m.DeltaPrefixSumColumn != defaultDeltaPrefixSumColumn {
+		t.Errorf("schema.DefaultOTelMetricsFrom DeltaPrefixSumColumn = %q; ddl's defaultDeltaPrefixSumColumn = %q",
+			m.DeltaPrefixSumColumn, defaultDeltaPrefixSumColumn)
 	}
 }

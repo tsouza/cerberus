@@ -158,20 +158,36 @@ export const ROOT_ALLOWLIST = [
   'test',
 ];
 
-// lfsPointerPreamble — the exact first line of every valid Git LFS pointer
-// file (https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md). A
-// checked-out LFS-tracked path is SMUDGED back into real binary content in
-// the working tree whenever the local git-lfs filter is active, but the git
-// OBJECT itself always holds this pointer text — so scanBinary re-checks a
-// working-tree read that looks binary against the object store before
-// calling it a violation, and only an object that is genuinely not a valid
-// pointer stays one.
-const lfsPointerPreamble = 'version https://git-lfs.github.com/spec/v1\n';
+// lfsPointerPattern — the exact three-line body of every valid Git LFS
+// pointer file, in order, and nothing else
+// (https://github.com/git-lfs/git-lfs/blob/main/docs/spec.md): the version
+// preamble, an `oid sha256:<64 lowercase hex chars>` line, and a
+// `size <digits>` line. A checked-out LFS-tracked path is SMUDGED back into
+// real binary content in the working tree whenever the local git-lfs filter
+// is active, but the git OBJECT itself always holds this pointer text — so
+// scanBinary re-checks a working-tree read that looks binary against the
+// object store before calling it a violation, and only an object that is
+// genuinely not a valid pointer stays one.
+//
+// Matching all three lines (not just the version preamble) matters: a blob
+// committed directly to the object store — bypassing the LFS filter
+// entirely — whose first line happens to equal the preamble would otherwise
+// be silently exempted from the binary-artefact gate by that first line
+// alone, with everything after it ignored. Requiring a well-formed
+// `oid`/`size` pair too, and requiring the pointer body to be the object's
+// ENTIRE content (the trailing `$` anchor, unanchored by any flag, matches
+// end-of-string only), narrows the forgeable surface to "reproduce a
+// plausible-looking real pointer file", which a real `git lfs track` always
+// does honestly anyway.
+const lfsPointerPattern =
+  /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:[0-9a-f]{64}\nsize [0-9]+\n$/;
 
-// isLfsPointer — true when `head` opens with the LFS pointer preamble.
-// Exported for the self-test.
+// isLfsPointer — true when `head` is (up to the sniff window) exactly a
+// valid LFS pointer body. A real pointer file is a little over 100 bytes,
+// far under gitBinarySniffBytes, so `head` holds its true, untruncated
+// content whenever it really is one. Exported for the self-test.
 export function isLfsPointer(head) {
-  return head.subarray(0, lfsPointerPreamble.length).toString('utf8') === lfsPointerPreamble;
+  return lfsPointerPattern.test(head.toString('utf8'));
 }
 
 // classifyBlob — decide whether a sniffed leading block is binary content.

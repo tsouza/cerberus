@@ -48,10 +48,19 @@ import (
 // recursive dispatch table the way [expHistogramSetOp] is — so it never
 // fires merely because SOME expression nested arbitrarily deep happens
 // to look like `(a or b)`; every wrapper that composes over its Mixed
-// result (the three exceptions below, the last one added by #2555) has
-// its own explicit, deliberate recognition of that composition rather
-// than inheriting it implicitly the way a histogram-valued shape
-// composes through [lowerExpHistogramValuedShape]'s recursion. That is
+// result has its own explicit, deliberate recognition of that
+// composition rather than inheriting it implicitly the way a
+// histogram-valued shape composes through
+// [lowerExpHistogramValuedShape]'s recursion. Three such wrappers are
+// walked through in detail below (sum/avg, label_replace/label_join, and
+// a further vector set operator) because each composes via a genuinely
+// different MECHANISM worth explaining once; by now (cerberus issue
+// #2449's later passes) more than a dozen further wrapper families
+// compose the same way — every `histogram_native_mixed_or_*.go` file in
+// this package besides this one is one — each following whichever of
+// those same three mechanisms fits its own shape, so this file's own
+// doc does not re-enumerate them; see each file's own header for its
+// specific recognizer. That is
 // a deliberate scope line, not an oversight: every generic forwarder
 // (projectValueOverInner, projectAttributesOverInner) that reads `Value`
 // unconditionally would silently drop the histogram on a Mixed result's

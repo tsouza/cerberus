@@ -1,6 +1,7 @@
 package chsql
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -396,6 +397,23 @@ func TestAlterTableAddIndex(t *testing.T) {
 	}
 }
 
+// TestAlterTableAddIndex_RejectsNonPositiveGranularity pins the
+// construction-time guard on GRANULARITY: 0 or negative is not a valid
+// ClickHouse skip-index clause, so AlterTableAddIndex must panic rather than
+// let a caller render DDL ClickHouse would reject at apply time.
+func TestAlterTableAddIndex_RejectsNonPositiveGranularity(t *testing.T) {
+	for _, g := range []int{0, -1} {
+		t.Run(fmt.Sprintf("granularity_%d", g), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("AlterTableAddIndex(granularity=%d) did not panic", g)
+				}
+			}()
+			AlterTableAddIndex("", "otel_metrics_sum", "idx_agg_temporality", Col("AggregationTemporality"), "minmax", g)
+		})
+	}
+}
+
 // TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
 // precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
 // what lets the metric-name enumeration route to the aggregating projection.
@@ -534,6 +552,30 @@ func TestCreateMaterializedView(t *testing.T) {
 	if gotCluster != wantCluster {
 		t.Errorf("clustered SQL() = %q; want %q", gotCluster, wantCluster)
 	}
+}
+
+// TestCreateMaterializedView_PanicsWithoutToOrAs pins the fail-fast guard:
+// calling SQL() without To(...) or without As(...) must panic naming the
+// missing call, rather than silently rendering a `TO  AS ...` statement
+// with an empty target identifier (invalid SQL ClickHouse would only
+// reject at apply time) or nil-dereferencing inside frag's writeInto call.
+func TestCreateMaterializedView_PanicsWithoutToOrAs(t *testing.T) {
+	t.Run("missing_To", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("SQL() without To(...) did not panic")
+			}
+		}()
+		CreateMaterializedView("v").As(NewQuery().Select(Col("a")).From(Col("t"))).SQL()
+	})
+	t.Run("missing_As", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("SQL() without As(...) did not panic")
+			}
+		}()
+		CreateMaterializedView("v").To("", "t").SQL()
+	})
 }
 
 // TestInsertSelect pins the INSERT INTO ... (<cols>) <SELECT ...> shape,

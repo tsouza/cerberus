@@ -291,13 +291,16 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// Density guard (issue #2523) — a SECOND, independent bound layered on
 	// top of axis1Guarded: see range_bucket_grid_native_bound.go's own doc
 	// for why `groups x anchors` alone is not a complete cost model and what
-	// the combined formula this wraps in is calibrated against. inner is
-	// rendered a THIRD time here (Level 0's own unnest already renders it
-	// once, bucketGridGroupCountBoundedSourceFrag's axis1 probe/guard pair
-	// renders rungs — and so inner transitively — twice more) — safe per
-	// this file's own "inner is pre-rendered SQL text, safe for repeat
-	// splices" precedent (subqueryFrag), at the cost of a third copy of the
-	// Input subplan's own SQL text in the emitted query.
+	// the combined formula this wraps in is calibrated against. inner ends
+	// up rendered FIVE times total across this function, not three: Level
+	// 0's own unnest renders it once, bucketGridGroupCountBoundedSourceFrag's
+	// axis1 probe/guard pair renders rungs — and so inner transitively —
+	// twice more, and bucketGridDensityBoundedSourceFrag below adds TWO
+	// separate probes of its own (rawRowsProbe and maxWidthProbe, each an
+	// independent `NewQuery().From(inputSource)`), not one. Safe per this
+	// file's own "inner is pre-rendered SQL text, safe for repeat splices"
+	// precedent (subqueryFrag), at the cost of that fifth copy of the Input
+	// subplan's own SQL text in the emitted query.
 	densityGuarded := bucketGridDensityBoundedSourceFrag(
 		axis1Guarded, rungs.Frag(), keyCols, inner, r.TimestampCol, r.ExplicitBoundsCol,
 		r.Start, r.End, offsetNS, r.Range.Nanoseconds(), r.NumAnchors(),

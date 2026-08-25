@@ -167,6 +167,29 @@ func shadowResolveMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metri
 	return histForAgg, floatForAgg, nil
 }
 
+// shadowResolveFloatArmChecked is [shadowResolveMixedExpHistogramOperands]
+// for the composer families that only ever need the shadow-resolved FLOAT
+// arm (never the histogram one) and read no other field off b themselves:
+// scalar() (histogram_native_mixed_or_scalar.go), sort()/sort_desc()
+// (histogram_native_mixed_or_sort.go), and the date-component functions
+// (histogram_native_mixed_or_datefn.go). Each of those composers calls
+// shadowResolveMixedExpHistogramOperands directly, which never checks
+// ReturnBool itself — `bool` is only valid on comparison binary ops, and
+// none of these three are — so each callsite had to repeat the identical
+// three-line "reject bool" guard ahead of the call. Centralising it here
+// removes that duplication and the risk a future 4th composer forgets the
+// guard.
+func shadowResolveFloatArmChecked(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if b.ReturnBool {
+		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
+	}
+	_, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return floatForAgg, nil
+}
+
 // mixedOrShadowUnless builds the [chplan.VectorSetOp] UNLESS that keeps
 // left's rows whose label signature (per match) is absent from right —
 // the RHS-of-`or` half of the mixed `or`'s own shadow rule. leftIsHistogram

@@ -126,6 +126,41 @@ const mixedDiscriminatorColumn = chplan.MixedDiscriminatorColumn
 // this panic still fires only when some future caller of
 // [projectAttributesOverInner] finds a way to bypass that branch, not on
 // the ordinary `label_replace`/`label_join`-over-mixed-`or` path.
+// mixedRowsFloatOnly narrows inner to its float-shaped rows
+// ([mixedDiscriminatorFilter] against [mixedDiscriminatorFloat]) when it
+// publishes [chplan.MixedRowShape], and returns it UNCHANGED for every
+// other shape.
+//
+// This is the fix for the gap [assertValueShapedInput]'s panic message
+// above describes as "teach the forwarder the Mixed shape directly": a
+// float-only wrapper composed OVER a further wrapper that itself resolves
+// Mixed — `abs(sort_by_label(<mixed-or>, label))`,
+// `scalar(sort_by_label(<mixed-or>, label))`, `timestamp(...)`, the
+// date-component functions, round()/clamp*, or a scalar⊗vector binop —
+// reaches its generic `lower()` fallback with a Mixed node the direct-
+// BinaryExpr recognizers (`mixedExpHistogramSetOp` and its per-family
+// siblings) cannot see, because the mixed `or` is nested one level
+// deeper than a single BinaryExpr check reaches. Reference Prometheus's
+// simpleFloatFunc / dateWrapper / funcScalar all share the identical
+// "skip every H-set sample" rule regardless of what produced the vector,
+// so narrowing to the float rows here is correct at any nesting depth,
+// not just the direct-BinaryExpr shape the dedicated recognizers cover.
+//
+// The returned [chplan.Filter] deliberately leaves [chplan.Filter.Histogram]
+// unset, so [chplan.RowShapeOf] reports [chplan.SampleRowShape] for it
+// (the *Filter case's default fall-through — see that function's own
+// comment) rather than MixedRowShape: [projectValueOverInner]'s
+// canonical-shape branch then treats it as an ordinary passthrough,
+// reading genuine Attributes/Timestamp/Value off the now float-only rows
+// and dropping the nine Histogram*Column outputs and the discriminator
+// column, exactly as it would for any other SampleRowShape input.
+func mixedRowsFloatOnly(inner chplan.Node) chplan.Node {
+	if chplan.RowShapeOf(inner) != chplan.MixedRowShape {
+		return inner
+	}
+	return mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
+}
+
 func assertValueShapedInput(inner chplan.Node, forwarder string) {
 	shape := chplan.RowShapeOf(inner)
 	if shape != chplan.HistogramRowShape && shape != chplan.MixedRowShape {

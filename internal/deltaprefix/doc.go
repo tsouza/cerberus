@@ -23,13 +23,35 @@
 // the moment `CREATE MATERIALIZED VIEW` ran — see docs/operations.md).
 // Backfilling past that timestamp double-counts every row the live MV
 // already captured; the resulting corruption is silent (a fabricated,
-// too-large prefix level), not a query error. Both entrypoints round the
-// bound down to `toStartOfDay` internally — the aggregate table's own
-// bucket resolution — so a backfill (or a verify comparison) never split a
-// calendar day between "backfilled" and "MV-captured": everything up to
-// but excluding the cutover's calendar day is backfilled / compared;
-// that partial last day is left for the live MV to capture as ordinary new
-// inserts arrive.
+// too-large prefix level), not a query error. Backfilling with a bound
+// BEFORE that timestamp under-counts the gap between the two — silently,
+// the same way: the rows in that gap are permanently absent from both the
+// backfill (excluded by the bound) and the live MV (which never fires for
+// INSERTs that predate its own creation).
+//
+// An earlier revision of this package rounded the `before` bound down to
+// `toStartOfDay` internally before comparing it against row timestamps, on
+// the theory that this kept the aggregate table's own day-granularity
+// bucket column from ever being split between "backfilled" and
+// "MV-captured" contributions. That reasoning does not hold: the aggregate
+// table's SimpleAggregateFunction(sum, ...) column already merges same-key
+// rows additively regardless of which writer produced them (see
+// internal/schema/ddl's renderDeltaPrefixTable), so a cutover day's bucket
+// legitimately carrying two partial contributions is exactly as correct as
+// any other pair of concurrent inserts landing in the same bucket. Rounding
+// the bound down to the day instead created the bug this comment used to
+// describe as intentional: a deployment cut over mid-day (the normal case —
+// an MV is rarely created at exactly midnight) left every row between
+// midnight and the MV's real creation instant excluded from BOTH sides —
+// backfill's day-truncated bound skipped them, and the MV had not been
+// created yet when they were inserted — a permanent, silent under-count of
+// that window, invisible to Verify because it applied the identical
+// day-truncated bound to both comparison sides. Both Backfill and Verify
+// now bound strictly by the exact `before` instant, with no day-rounding:
+// everything strictly older than the MV's own creation
+// instant is backfilled / compared, and the live MV captures everything
+// from that instant onward, so the two windows meet with no gap and no
+// overlap.
 //
 // # Scope: completeness, not series-identity alignment
 //

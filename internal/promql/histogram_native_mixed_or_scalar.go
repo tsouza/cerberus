@@ -1,8 +1,6 @@
 package promql
 
 import (
-	"fmt"
-
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -47,12 +45,5 @@ func scalarArgOverMixedExpHistogramSetOp(v parser.Expr, s schema.Metrics, ctx lo
 // into any reduction — see this file's header for why reference's
 // funcScalar never sees it.
 func lowerScalarArgOverMixedExpHistogramSetOp(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	if b.ReturnBool {
-		return nil, fmt.Errorf("promql: 'bool' modifier is only allowed on comparison binary ops")
-	}
-	_, floatForAgg, err := shadowResolveMixedExpHistogramOperands(b, s, ctx)
-	if err != nil {
-		return nil, err
-	}
-	return floatForAgg, nil
+	return shadowResolveFloatArmChecked(b, s, ctx)
 }

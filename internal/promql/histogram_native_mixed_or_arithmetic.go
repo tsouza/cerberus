@@ -115,14 +115,7 @@ func lowerArithmeticOverMixedExpHistogramSetOp(setOp *parser.BinaryExpr, op chpl
 		return nil, err
 	}
 
-	floatRowsOnly := &chplan.Filter{
-		Input: inner,
-		Predicate: &chplan.Binary{
-			Op:    chplan.OpEq,
-			Left:  &chplan.ColumnRef{Name: mixedDiscriminatorColumn},
-			Right: &chplan.LitInt{V: 0},
-		},
-	}
+	floatRowsOnly := mixedDiscriminatorFilter(inner, mixedDiscriminatorFloat)
 
 	valueRef := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
 	scalarLit := chplan.Expr(&chplan.LitFloat{V: scalar})

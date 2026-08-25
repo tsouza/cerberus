@@ -111,6 +111,113 @@ func TestLower_ExpHistogram_AbsentIsPresenceOnly(t *testing.T) {
 	}
 }
 
+// TestLower_ExpHistogram_AbsentRegexNamePresenceHasBareArm pins the
+// regex/negated-matcher sibling of #2443 (cerberus issue found in the
+// pre-release audit): `absent({__name__=~"..."})` and
+// `absent_over_time(...[5m])` over an UNPINNED `__name__` matcher must
+// still detect a live exponential-histogram metric's own bare name.
+// metricNameFromMatchers returns "" for a regex/negated matcher, so the
+// pinned-name fast path in lowerAbsencePresenceSelector never fires; the
+// lowering instead falls through to lowerVectorSelector ->
+// lowerRegexHistogramSelector, whose union of arms must carry a
+// presence-only bare exp-histogram arm (buildRegexExpHistogramBareArm,
+// gated on ctx.absencePresenceSelector) or the metric silently
+// contributes zero rows and absent() reports it ABSENT even though it has
+// live samples.
+func TestLower_ExpHistogram_AbsentRegexNamePresenceHasBareArm(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+
+	cases := []struct {
+		name  string
+		query string
+		lower func(parser.Expr) (chplan.Node, error)
+	}{
+		{
+			name:  "absent regex name",
+			query: `absent({__name__=~"latency_exp_hist"})`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "absent negated name",
+			query: `absent({__name__!="other_metric",job="api"})`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+		{
+			name:  "absent_over_time regex name",
+			query: `absent_over_time({__name__=~"latency_exp_hist"}[5m])`,
+			lower: func(e parser.Expr) (chplan.Node, error) {
+				return promql.LowerAt(context.Background(), e, s, end, end)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := tc.lower(expr)
+			if err != nil {
+				t.Fatalf("Lower(%q): %v", tc.query, err)
+			}
+
+			// The union feeding the presence check must include a BARE
+			// exp-histogram arm — a Project scanning ExpHistogramTable
+			// whose MetricName projection is the bare ColumnRef
+			// buildRegexExpHistogramBareArm emits, as opposed to the
+			// `<base>_count`/`<base>_sum` synthetic-name concat() the
+			// companion arms (buildRegexExpHistogramCompanionArm) always
+			// contribute. Without the absencePresenceSelector-gated bare
+			// arm, only the companion arms scan ExpHistogramTable, and
+			// the metric's own bare name silently contributes zero rows.
+			var sawBareExpHistogramArm bool
+			chplan.Walk(plan, func(n chplan.Node) bool {
+				proj, ok := n.(*chplan.Project)
+				if !ok {
+					return true
+				}
+				var scansExpHistogram bool
+				chplan.Walk(proj, func(inner chplan.Node) bool {
+					if scan, ok := inner.(*chplan.Scan); ok && scan.Table == s.ExpHistogramTable {
+						scansExpHistogram = true
+					}
+					return true
+				})
+				if !scansExpHistogram {
+					return true
+				}
+				for _, p := range proj.Projections {
+					if p.Alias != s.MetricNameColumn {
+						continue
+					}
+					if col, ok := p.Expr.(*chplan.ColumnRef); ok && col.Name == s.MetricNameColumn {
+						sawBareExpHistogramArm = true
+					}
+				}
+				return true
+			})
+			if !sawBareExpHistogramArm {
+				t.Fatalf("Lower(%q): no bare exp-histogram presence arm (Project scanning %q with a bare MetricName ColumnRef) in plan", tc.query, s.ExpHistogramTable)
+			}
+
+			if _, _, err := chsql.Emit(context.Background(), plan); err != nil {
+				t.Fatalf("Emit(%q): %v", tc.query, err)
+			}
+		})
+	}
+}
+
 // TestLower_ExpHistogram_AbsentLabelsMirrorMatchers pins the output label
 // rule absent() applies over a bare selector argument even when the
 // selector names a native-histogram metric: Prom's

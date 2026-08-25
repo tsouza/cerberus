@@ -231,11 +231,52 @@ func hqFloatOverflowRungExpr() chplan.Expr {
 	}}
 }
 
+// hqFloatBoundsButLastExpr / hqFloatCountsButLastExpr render the sorted
+// bound/count arrays with their trailing element dropped — the position
+// [hqFloatOverflowRungExpr] identifies as the group's own +Inf overflow
+// rung (sorting places it last: +Inf is the largest representable float,
+// so ANY reported +Inf sample sorts to the tail alongside it). Both are
+// length N-1 for a length-N sorted pair, and — critically — index i of
+// one still pairs with index i of the other, the same invariant the full
+// sorted arrays hold.
+//
+// [hqFloatFiniteBoundsExpr] and [hqFloatGuardedLadderExpr] both start
+// from these rather than the raw sorted arrays so that whichever INTERIOR
+// positions the finite filter drops, both arrays drop the SAME positions
+// — see hqFloatGuardedLadderExpr's own doc for why a real OTLP row can
+// carry more than one non-finite `le` and why filtering the bounds alone
+// desyncs the pairing (cerberus pre-release audit finding, the
+// histogram_quantile_le.go / #2495-fix sibling of this file).
+func hqFloatBoundsButLastExpr() chplan.Expr {
+	return arraySliceButLast(&chplan.ColumnRef{Name: hqFloatSortedBoundAlias})
+}
+
+func hqFloatCountsButLastExpr() chplan.Expr {
+	return arraySliceButLast(&chplan.ColumnRef{Name: hqFloatSortedCountAlias})
+}
+
+// arraySliceButLast renders `arraySlice(arr, 1, -1)` — every element of
+// arr except the last. ClickHouse's arraySlice treats a negative length
+// as "trim that many elements off the end" and answers an empty array
+// for an already-empty or single-element input, so this needs no
+// separate zero-length guard.
+func arraySliceButLast(arr chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+		arr, &chplan.LitInt{V: 1}, &chplan.LitInt{V: -1},
+	}}
+}
+
 // hqFloatFiniteBoundsExpr renders the group's ExplicitBounds: every
-// reported bound that is not the +Inf overflow. The overflow rung has no
-// entry in ExplicitBounds by the schema's own invariant — BucketCounts
-// runs one longer — so filtering it out is what restores that invariant
-// from a wire ladder where it is just another `le`.
+// reported bound OTHER than the trailing +Inf overflow rung
+// ([hqFloatBoundsButLastExpr]) that is not itself a non-finite value.
+// The overflow rung has no entry in ExplicitBounds by the schema's own
+// invariant — BucketCounts runs one longer — so dropping it is what
+// restores that invariant from a wire ladder where it is just another
+// `le`; the additional isInfinite filter over the REMAINING interior
+// positions guards a malformed row that reports more than one
+// non-finite `le` (a duplicate "+Inf", or a nonsensical "-Inf") — see
+// [hqFloatGuardedLadderExpr]'s doc for why the paired count must be
+// dropped in lockstep rather than left for BucketCounts to carry alone.
 func hqFloatFiniteBoundsExpr() chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 		&chplan.Lambda{
@@ -247,7 +288,7 @@ func hqFloatFiniteBoundsExpr() chplan.Expr {
 				},
 			}},
 		},
-		&chplan.ColumnRef{Name: hqFloatSortedBoundAlias},
+		hqFloatBoundsButLastExpr(),
 	}}
 }
 
@@ -268,23 +309,66 @@ func hqFloatFiniteBoundsExpr() chplan.Expr {
 // a smaller count than a lower one, and the interpolation would read a
 // negative-width interval.
 func hqFloatGuardedLadderExpr() chplan.Expr {
-	ladder := chplan.Expr(&chplan.ColumnRef{Name: hqFloatSortedCountAlias})
+	// Called once per use site rather than bound to a shared local: the
+	// chplan IR stays a tree, never a DAG (see lowerCtx.scalarAnchorColumn's
+	// doc comment for the same discipline elsewhere), so each reference
+	// below builds its OWN independent expression tree of identical shape
+	// rather than three branches of the plan pointing at one shared node.
 	interpolable := andExpr(
 		hqFloatOverflowRungExpr(),
 		&chplan.Binary{
 			Op:    chplan.OpGe,
-			Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{ladder}},
+			Left:  &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{hqFloatPairedLadderExpr()}},
 			Right: &chplan.LitInt{V: hqFloatMinRungs},
 		},
 	)
 	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
 		interpolable,
-		classicBucketMonotonicExpr(ladder),
+		classicBucketMonotonicExpr(hqFloatPairedLadderExpr()),
 		// arraySlice(_, 1, 0) empties the array while keeping its element
 		// type, so the branches need no type reconciliation — the same
 		// device classicBucketLeRestriction uses for the same guards.
 		&chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
-			ladder, &chplan.LitInt{V: 1}, &chplan.LitInt{V: 0},
+			hqFloatPairedLadderExpr(), &chplan.LitInt{V: 1}, &chplan.LitInt{V: 0},
 		}},
 	}}
+}
+
+// hqFloatPairedLadderExpr renders the group's cumulative BucketCounts
+// ladder, paired index-for-index with [hqFloatFiniteBoundsExpr]'s
+// ExplicitBounds output: the same interior non-finite positions
+// [hqFloatFiniteBoundsExpr] drops from the bounds are dropped here from
+// the counts too, so the two arrays stay paired — a real OTLP row can
+// report more than one non-finite `le` (a duplicate "+Inf", or a
+// nonsensical "-Inf"), and dropping only the bounds side would desync
+// BucketCounts from ExplicitBounds by more than the schema's one-longer
+// invariant expects, silently misaligning every downstream interpolated
+// rung against the wrong bound (cerberus pre-release audit finding, the
+// float-domain sibling of #2495's array-domain fix in histogram_quantile.go's
+// classicBucketRowCumulativeExpr/classicBucketUnionBoundsExpr).
+//
+// The trailing +Inf overflow's OWN count is carried through
+// UNCONDITIONALLY via `arraySlice(sorted, -1)` — CH's negative-offset
+// slice reads the last element as a one-item array without ever
+// subscripting (and so never throwing on an empty group) — rather than
+// through the interior filter, matching ExplicitBounds running exactly
+// one shorter than BucketCounts by construction.
+func hqFloatPairedLadderExpr() chplan.Expr {
+	pairedInterior := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramBucketCount, paramBucketBound},
+			Body: &chplan.FuncCall{Fn: chplan.FnNot, Args: []chplan.Expr{
+				&chplan.FuncCall{
+					Fn:   chplan.FnIsInfinite,
+					Args: []chplan.Expr{&chplan.BareIdent{Name: paramBucketBound}},
+				},
+			}},
+		},
+		hqFloatCountsButLastExpr(),
+		hqFloatBoundsButLastExpr(),
+	}}
+	trailingCount := &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+		&chplan.ColumnRef{Name: hqFloatSortedCountAlias}, &chplan.LitInt{V: -1},
+	}}
+	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedInterior, trailingCount}}
 }

@@ -145,10 +145,23 @@ func (r *RangeBucketFanout) Children() []Node { return []Node{r.Input} }
 // histogram-quantile-as-subquery-inner query with a divergent [range:step]
 // escaped the same protection its scalar sibling already had.
 func (r *RangeBucketFanout) NumAnchors() int64 {
-	if r.Start.IsZero() || r.End.IsZero() || r.Step <= 0 {
+	return numAnchorsFromGrid(r.Start, r.End, r.Step)
+}
+
+// numAnchorsFromGrid is the shared end-inclusive anchor-count formula every
+// (Start, End, Step) grid node's own NumAnchors delegates to:
+// (End-Start)/Step + 1, or 0 when either bound is unset or Step <= 0 (no
+// materialised grid to charge). [RangeBucketFanout.NumAnchors],
+// [RangeBucketGridNative.NumAnchors], and [RangeLWR.NumAnchors] all shared
+// this identical body verbatim before this extraction — see
+// RangeBucketFanout.NumAnchors' own doc for why this axis needs its own
+// charge in [requireSubquerySampleBudget] rather than relying on an
+// ancestor [RangeWindow].
+func numAnchorsFromGrid(start, end time.Time, step time.Duration) int64 {
+	if start.IsZero() || end.IsZero() || step <= 0 {
 		return 0
 	}
-	return r.End.Sub(r.Start).Nanoseconds()/r.Step.Nanoseconds() + 1
+	return end.Sub(start).Nanoseconds()/step.Nanoseconds() + 1
 }
 
 func (r *RangeBucketFanout) Equal(other Node) bool {

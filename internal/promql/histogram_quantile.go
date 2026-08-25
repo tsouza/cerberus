@@ -441,6 +441,16 @@ func lowerHistogramQuantileClassicBare(
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	input = classicBucketLeRestriction(input, leMatchers, s)
+	// classicBucketLeRestriction narrows by `le` MATCHER (and is a no-op
+	// entirely when leMatchers is empty — the common, no-`le`-matcher
+	// case this function primarily serves); neither branch filters a
+	// literal non-finite value out of the row's own storage
+	// ExplicitBounds. classicBucketFiniteBoundsRestriction closes that
+	// gap unconditionally — see its own doc comment for why the
+	// aggregated/merge path (classicBucketUnionBoundsExpr,
+	// classicBucketRowCumulativeExpr, #2495) already had this and the
+	// bare-selector path here did not.
+	input = classicBucketFiniteBoundsRestriction(input, s)
 
 	hq := &chplan.HistogramQuantile{
 		Input:                latestSampleAgg(input, classicBucketLatestAggs(s), s),
@@ -1370,6 +1380,99 @@ func classicBucketFiniteExpr(v chplan.Expr) chplan.Expr {
 			Right: &chplan.FuncCall{Fn: chplan.FnIsInfinite, Args: []chplan.Expr{v}},
 		},
 	}}
+}
+
+// classicBucketFiniteBoundsRestriction narrows a classic-histogram row's
+// BucketCounts x ExplicitBounds arrays to drop any INTERIOR non-finite
+// bound (and its paired per-bucket count) — the bare-selector sibling of
+// #2495's fix (classicBucketUnionBoundsExpr / classicBucketRowCumulativeExpr
+// above), a pre-release audit finding: `histogram_quantile(0.9, m_bucket)`
+// (no `le` matcher, routed through lowerHistogramQuantileClassicBare) had
+// no finite-filtering at all, while `histogram_quantile(0.9, sum by(le)
+// (rate(m_bucket[5m])))` (the aggregated/merge path) already did — a real
+// OTLP row can carry a malformed non-finite `le` boundary inside its
+// storage ExplicitBounds, and forwarding it unfiltered leaks it into the
+// node's own output ExplicitBounds where emitHistogramQuantile's
+// overflow-bucket clamp can return it directly as the answered quantile.
+//
+// Unlike the merge path (which folds MANY rows' layouts into one union),
+// this operates on ONE row's own arrays. The canonical OTel wire shape has
+// BucketCounts one longer than ExplicitBounds (the trailing, unpaired
+// overflow bucket — "observations above every explicit bound"), but this
+// repo's own tests, tooling and the rest of this file do NOT treat that as
+// the only legal shape: readSeededClassicHistograms (test/spec/parity_chdb.go)
+// documents and reconstructs an EQUAL-length row as "no overflow bucket",
+// classicBucketRowCumulativeExpr's `arraySlice(cs, 1, length(bs))` already
+// tolerates it (an equal-length `cs` yields every element, same as an N+1
+// one clipped to N), and classicBucketLeStringExpr's `idx > length(bounds)`
+// mapping only ever synthesises "+Inf" when a genuine overflow position
+// exists. An index-based restriction — instead of the pairwise arrayFilter
+// this function used before — matches that existing convention: index
+// positions 1..length(ExplicitBounds) are always the "paired" bucket range
+// regardless of which shape BucketCounts has, and whatever sits AFTER that
+// range (nothing, for the equal-length shape; exactly one entry, for the
+// canonical N+1 shape) is the unpaired overflow count, forwarded
+// unconditionally. arraySlice's offset-only form answers `[]` rather than
+// erroring when the offset lands past the array's end, so the equal-length
+// shape falls out with no separate branch.
+//
+// Dropping interior position i from ExplicitBounds drops BucketCounts[i]
+// too, in lockstep, so the two stay paired; subscripting rather than
+// slicing means an all-non-finite or empty row still answers cleanly
+// through HistogramQuantile's own existing NaN guards instead of throwing.
+// Mirrors hqFloatPairedLadderExpr's identical "drop interior pairs, keep
+// the trailing rung" shape for the float-domain path
+// (histogram_quantile_float.go), and classicBucketLeRestriction's identical
+// index-position idiom (histogram_quantile_le.go) for the `le`-matcher
+// case just above this one in the lowering.
+func classicBucketFiniteBoundsRestriction(input chplan.Node, s schema.Metrics) chplan.Node {
+	eb := chplan.Expr(&chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
+	bc := chplan.Expr(&chplan.ColumnRef{Name: s.BucketCountsColumn})
+
+	n := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{eb}}
+
+	// keptIdx = the 1-based positions in [1, length(ExplicitBounds)] whose
+	// bound is finite, in ascending order (arrayFilter preserves source
+	// order).
+	keptIdx := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{"i"},
+			Body: classicBucketFiniteExpr(&chplan.Subscript{
+				Container: eb, Key: &chplan.BareIdent{Name: "i"},
+			}),
+		},
+		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{&chplan.LitInt{V: 1}, addExpr(n, &chplan.LitInt{V: 1})}},
+	}}
+
+	finiteBounds := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{"i"},
+			Body:   &chplan.Subscript{Container: eb, Key: &chplan.BareIdent{Name: "i"}},
+		},
+		keptIdx,
+	}}
+	pairedCounts := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{"i"},
+			Body:   &chplan.Subscript{Container: bc, Key: &chplan.BareIdent{Name: "i"}},
+		},
+		keptIdx,
+	}}
+	// overflowCounts = whatever of BucketCounts sits past the paired
+	// range: empty for the equal-length "no overflow" shape, the single
+	// trailing +Inf overflow count for the canonical N+1 shape.
+	overflowCounts := &chplan.FuncCall{Fn: chplan.FnArraySlice, Args: []chplan.Expr{
+		bc, addExpr(n, &chplan.LitInt{V: 1}),
+	}}
+	newBucketCounts := &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{pairedCounts, overflowCounts}}
+
+	return &chplan.Project{
+		Input: input,
+		Replacements: []chplan.Projection{
+			{Expr: newBucketCounts, Alias: s.BucketCountsColumn},
+			{Expr: finiteBounds, Alias: s.ExplicitBoundsColumn},
+		},
+	}
 }
 
 // classicBucketShaping bundles a classic-histogram group's bucket

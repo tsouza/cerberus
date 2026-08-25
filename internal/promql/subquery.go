@@ -2874,6 +2874,25 @@ func lowerSubqueryOverCallSubquery(
 		return nil, err
 	}
 
+	// A nested subquery whose OWN inner expression resolved
+	// histogram-native reaches the RangeWindow below, which folds over
+	// TimestampColumn "anchor_ts" / ValueColumn s.ValueColumn — columns a
+	// histogram-shaped row publishes neither meaningfully. Building that
+	// RangeWindow over one is a ClickHouse "Unknown identifier" 502
+	// instead of the clean rejection/empty-drop the one-level-shallower
+	// composition (lowerOuterRangeFnOverSubquery, whose identical guard
+	// this mirrors) already gets for
+	// `<outer-fn>(<bare-histogram-selector>[range:step])`.
+	if shape := chplan.RowShapeOf(wideInner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
+			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", call.Func.Name)
+		}
+		if _, _, err := threadOuterRangeFnScalars(call, &chplan.RangeWindow{}, s, ctx); err != nil {
+			return nil, err
+		}
+		return dropExpHistogramSamples(wideInner, s), nil
+	}
+
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err

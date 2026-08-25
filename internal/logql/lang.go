@@ -307,8 +307,8 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	}
 	projections := []chplan.Projection{
 		{Expr: lineExpr, Alias: LogLineColumn},
-		{Expr: attrsExpr, Alias: "Attributes"},
-		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: "TimeUnix"},
+		{Expr: attrsExpr, Alias: sampleAttributesCol},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: sampleTimeUnixCol},
 	}
 	// Surface the OTel-CH LogAttributes map as Loki structured metadata —
 	// the third element of each `[ts, line, {metadata}]` value tuple. The

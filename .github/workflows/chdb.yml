@@ -122,6 +122,12 @@ jobs:
       - name: Test chdb run_heavy gate
         run: node --test .github/scripts/chdb-run-heavy.test.mjs
 
+      # lib/run-heavy.mjs is the shared scaffold this lane's own decide()
+      # is built on, alongside coverage.yml/property.yml/perf-profile.yml's —
+      # tested once here rather than redundantly in all four workflows.
+      - name: Test the shared run_heavy decider scaffold
+        run: node --test .github/scripts/lib/run-heavy.test.mjs
+
       - id: filter
         if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4

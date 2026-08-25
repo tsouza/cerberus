@@ -168,6 +168,23 @@ type lowerCtx struct {
 	// keeps the hard rejection (cerberus issue #2574).
 	infoMetricSelector bool
 
+	// absencePresenceSelector marks a lowering of absent()'s or
+	// absent_over_time()'s inner selector for an UNPINNED (regex,
+	// negated, or absent) `__name__` matcher — set by
+	// lowerAbsencePresenceSelector (absent.go) before delegating to
+	// lowerVectorSelector. Reference Prometheus's absent()/
+	// absent_over_time() only ask whether ANY sample matched; neither
+	// ever reads a Value, the identical property that already exempts
+	// info()'s info-metric selector (infoMetricSelector, above) from
+	// expHistogramSelectorRouting's hard rejection. lowerRegexHistogramSelector
+	// checks both flags together so a regex/negated `__name__` matcher
+	// that happens to match an exponential-histogram metric's own bare
+	// name gets a presence-only arm too, instead of silently
+	// contributing zero rows to the union and making absent() report a
+	// live metric as ABSENT (cerberus issue #2443's regex/negated
+	// sibling). Every other lowering path leaves this false.
+	absencePresenceSelector bool
+
 	// wantsTemporalityColumn asks augmentSelectorAttributes to widen its
 	// canonical 4-column selector Project (MetricName, Attributes,
 	// TimeUnix, Value) with a 5th passthrough column,
@@ -237,6 +254,19 @@ func (c lowerCtx) withAttributesPreMerged() lowerCtx {
 func (c lowerCtx) withInfoMetricSelector() lowerCtx {
 	out := c
 	out.infoMetricSelector = true
+	return out
+}
+
+// withAbsencePresenceSelector returns a copy of c with
+// absencePresenceSelector set, used by lowerAbsencePresenceSelector
+// (absent.go) to mark the selector it builds for absent()'s/
+// absent_over_time()'s UNPINNED `__name__` matcher case — see
+// absencePresenceSelector's doc comment for why that role exempts an
+// exp-histogram-matching selector from the regex-histogram union's
+// missing bare arm.
+func (c lowerCtx) withAbsencePresenceSelector() lowerCtx {
+	out := c
+	out.absencePresenceSelector = true
 	return out
 }
 

@@ -546,9 +546,9 @@ func valuesClose(a, b float64, opts DiffOptions) bool {
 // means all expectations passed.
 func AssertCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
 	switch tc.Endpoint {
-	case "tags_v1", "tags_v2":
+	case endpointTagsV1, endpointTagsV2:
 		return assertTagsCase(tc, body, backendLabel)
-	case "tag_values_v1", "tag_values_v2":
+	case endpointTagValuesV1, endpointTagValuesV2:
 		return assertTagValuesCase(tc, body, backendLabel)
 	default:
 		return assertTraceSearchCase(tc, body, backendLabel)
@@ -610,7 +610,7 @@ func assertTraceSearchCase(tc CorpusCase, body []byte, backendLabel string) ([]D
 // (nothing in tc.ExpectedAbsentValues may appear — the strict-subset
 // half of a `q`-scoped case), and (for tags_v2) expected-scopes subset.
 func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
-	v2 := tc.Endpoint == "tags_v2"
+	v2 := tc.Endpoint == endpointTagsV2
 	tagNames, scopeNames, err := decodeTagNames(body, v2)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", backendLabel, err)
@@ -678,7 +678,7 @@ func assertTagsCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReas
 // the only assertion that can tell a honoured `q` from an ignored one
 // (#1932).
 func assertTagValuesCase(tc CorpusCase, body []byte, backendLabel string) ([]DiffReason, error) {
-	v2 := tc.Endpoint == "tag_values_v2"
+	v2 := tc.Endpoint == endpointTagValuesV2
 	values, _, err := decodeTagValues(body, v2)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", backendLabel, err)

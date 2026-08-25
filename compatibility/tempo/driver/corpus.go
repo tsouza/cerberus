@@ -185,7 +185,7 @@ type CorpusCase struct {
 	// (service, traceIdx); see TraceIDTemplate below for the format.
 	Endpoint string
 
-	// TraceIDTemplate is only consulted when Endpoint == "traces" or
+	// TraceIDTemplate is only consulted when Endpoint is endpointTraces or
 	// endpointTracesV2.
 	// Format: "<svc>/<idx>" — the differ derives the byte-identical
 	// 16-byte trace ID via the same hash the seeder uses, hex-encodes

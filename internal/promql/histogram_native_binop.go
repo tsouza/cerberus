@@ -341,7 +341,7 @@ func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 	return &chplan.Binary{
 		Op:    chplan.OpEq,
 		Left:  &chplan.FuncCall{Fn: chplan.FnCount},
-		Right: &chplan.LitInt{V: 2},
+		Right: &chplan.LitInt{V: histogramBinopOperandCount},
 	}
 }
 
@@ -447,6 +447,15 @@ func histogramBinopMergeProjections(s schema.Metrics) []chplan.Projection {
 		{Expr: &chplan.ColumnRef{Name: hqAggMergedScaleAlias}, Alias: s.ScaleColumn},
 		{Expr: plainArraySum(&chplan.ColumnRef{Name: hqMergeZeroCountsArrayAlias}), Alias: s.ZeroCountColumn},
 	}
+	// s.ZeroThresholdColumn is never "" in practice: every real call site
+	// passes histSchema := histogramProjectionSchema(s), which
+	// unconditionally overwrites it to a non-empty canonical alias — so
+	// this guard is dead today (histogram_native_binop_card.go's
+	// equivalent merge-card path skips the check entirely and relies on
+	// the identical invariant). Left in rather than removed: it costs
+	// nothing and keeps this function's own precondition honest for a
+	// hypothetical caller passing a schema override that DOES clear the
+	// column.
 	if s.ZeroThresholdColumn != "" {
 		projs = append(projs, chplan.Projection{
 			Expr:  &chplan.ColumnRef{Name: s.ZeroThresholdColumn},

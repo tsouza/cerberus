@@ -32,6 +32,16 @@ const (
 	setOpMixedIsHistogramCol = chplan.MixedDiscriminatorColumn
 )
 
+// setOpMixedIsHistogramTrue / setOpMixedIsHistogramFalse are the two
+// literal values [setOpMixedIsHistogramCol] ever carries — see that
+// constant's own doc for what each means. Named so
+// [mixedVectorSetOpArmFrag]'s InlineLit calls read as the discriminator
+// they are, not a bare 1 / 0.
+const (
+	setOpMixedIsHistogramTrue  = 1
+	setOpMixedIsHistogramFalse = 0
+)
+
 // emitVectorSetOp renders a PromQL vector set operator (`and`, `or`,
 // `unless`) over the two child plans. The shape depends on the kind:
 //
@@ -343,14 +353,14 @@ func mixedVectorSetOpArmFrag(s *chplan.VectorSetOp, arm chplan.Node, armFrag Fra
 		return inner.Frag()
 	case chplan.HistogramRowShape:
 		cols := append(vectorSetOpCanonicalQuartetFrags(s, arm), vectorSetOpHistogramCols()...)
-		cols = append(cols, As(InlineLit(1), setOpMixedIsHistogramCol))
+		cols = append(cols, As(InlineLit(setOpMixedIsHistogramTrue), setOpMixedIsHistogramCol))
 		inner := NewQuery().
 			Select(cols...).
 			From(armFrag)
 		return inner.Frag()
 	default:
 		cols := append(vectorSetOpCanonicalQuartetFrags(s, arm), mixedVectorSetOpHistogramPlaceholderCols()...)
-		cols = append(cols, As(InlineLit(0), setOpMixedIsHistogramCol))
+		cols = append(cols, As(InlineLit(setOpMixedIsHistogramFalse), setOpMixedIsHistogramCol))
 		inner := NewQuery().
 			Select(cols...).
 			From(armFrag)

@@ -2,6 +2,27 @@
   "entries": [
     {
       "head": "promql",
+      "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#087c3810",
+      "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
+      "class": "divergence",
+      "trigger_query": "last_over_time((sum by (series) ((demo_latency_exp_hist) or (demo_num_cpus)))[5m:1m])[10m:1m]",
+      "tracking_issue": 2615,
+      "evidence": {
+        "guard": [
+          "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",
+          "past returning if err := requirePositiveInnerRange(innerSub); err != nil",
+          "past returning if err != nil",
+          "if shape := chplan.RowShapeOf(wideInner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape",
+          "if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name)"
+        ],
+        "callers": [
+          "lowerSubqueryOverCall"
+        ]
+      },
+      "since": "2026-08-25"
+    },
+    {
+      "head": "promql",
       "site": "internal/promql/subquery.go:lowerSubqueryOverCallSubquery#b8fba661",
       "message": "promql: %s does not accept a subquery argument",
       "class": "internal",

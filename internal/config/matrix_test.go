@@ -160,6 +160,52 @@ func TestFromEnv_SchemaTTL_RejectsNegative(t *testing.T) {
 	}
 }
 
+// TestFromEnv_SchemaTTL_RejectsSubSecondTruncation pins the fix for a
+// silent-data-loss footgun: internal/chsql's ttlInterval only ever renders
+// down to toIntervalSecond, so a TTL or storage-tiering age below one
+// second (e.g. "500ms") used to pass the `d > 0` / non-negative guards and
+// then silently truncate to toIntervalSecond(0) — a TTL clause that reads
+// as configured but expires every part at insert time, with no error
+// anywhere. getNonNegativeTTLDuration must reject it at config-validation
+// time instead.
+func TestFromEnv_SchemaTTL_RejectsSubSecondTruncation(t *testing.T) {
+	for _, key := range []string{
+		"CERBERUS_SCHEMA_TTL", "CERBERUS_SCHEMA_TTL_METRICS",
+		"CERBERUS_SCHEMA_TTL_LOGS", "CERBERUS_SCHEMA_TTL_TRACES",
+		"CERBERUS_SCHEMA_TIER_AFTER", "CERBERUS_SCHEMA_TIER_AFTER_METRICS",
+		"CERBERUS_SCHEMA_TIER_AFTER_LOGS", "CERBERUS_SCHEMA_TIER_AFTER_TRACES",
+	} {
+		t.Run(key, func(t *testing.T) {
+			const subSecond = "500ms"
+			// The guard can only be what rejects this if the parser accepts it
+			// and it is genuinely positive (not the `d > 0` no-op zero case).
+			d, err := parseDuration(subSecond)
+			if err != nil || d <= 0 {
+				t.Fatalf("parseDuration(%q) = (%v, %v); the truncation guard is unreachable", subSecond, d, err)
+			}
+			t.Setenv(key, subSecond)
+			_, err = FromEnv()
+			if err == nil {
+				t.Fatalf("FromEnv accepted %s=%s; want a sub-second-truncation error", key, subSecond)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error %q does not name %s", err, key)
+			}
+		})
+	}
+
+	// A value AT the one-second floor must still be accepted — the guard
+	// rejects only what actually truncates to zero, not the floor itself.
+	t.Setenv("CERBERUS_SCHEMA_TTL", "1s")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv rejected the 1s floor: %v", err)
+	}
+	if cfg.SchemaProvisioning.TTL != time.Second {
+		t.Errorf("TTL = %v; want 1s", cfg.SchemaProvisioning.TTL)
+	}
+}
+
 // TestFromEnv_CHOptCorpusInterval_PositiveWhenEnabled pins the second half of
 // the corpus interval's range: non-negative always, strictly positive once the
 // reconciler is switched on. Reconciler.Run treats a non-positive interval as

@@ -178,8 +178,9 @@ const infoSignatureTieQuery = `info(up)`
 // pinned by test/spec/promql/info_signature_collapse_keeps_newest.txtar's
 // chDB roundtrip); at the EXACT SAME timestamp there is no newer sample to
 // prefer, so the query must abort rather than pick one of the two
-// arbitrarily — the same 422/execution/IsInfoConflictingLabelError
-// contract TestInfo_ConflictingLabel_ChDB pins for the other guard.
+// arbitrarily — the same 422/execution contract (handler.go's
+// throwIfMessageMatches(err, chplan.InfoConflictingLabelMessage))
+// TestInfo_ConflictingLabel_ChDB pins for the other guard.
 func TestInfo_SignatureTie_ChDB(t *testing.T) {
 	ts := infoConflictSeedTime.Format("2006-01-02 15:04:05.000000000")
 	seed := gaugeDDL + fmt.Sprintf(`

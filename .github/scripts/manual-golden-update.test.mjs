@@ -249,3 +249,187 @@ test('two independently generated shard patches publish as one commit', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// MODE=apply-predecessors / MODE=apply-legs — cardinality-leg's own
+// "Apply predecessor context" step and cardinality-seal's own "Apply every
+// leg's patch" step, extracted out of update-golden.yml's inline `run: |`
+// blocks (finding #10).
+
+function initTargetRepo(root, baseline) {
+  const target = path.join(root, 'target');
+  git(root, ['init', '-q', '-b', 'main', target]);
+  for (const [relative, body] of Object.entries(baseline)) write(target, relative, body);
+  git(target, ['add', '-A']);
+  git(target, ['commit', '-qm', 'test: seed']);
+  return target;
+}
+
+function packageShardPatch({ root, target, shard, change, outputPath, label = shard }) {
+  const checkout = path.join(root, `generate-${label}`);
+  command('git', ['clone', '-q', target, checkout]);
+  for (const [relative, body] of Object.entries(change)) write(checkout, relative, body);
+  mkdirSync(path.dirname(outputPath), { recursive: true });
+  command('node', [SCRIPT], {
+    env: {
+      ...process.env,
+      MODE: 'package',
+      TARGET_ROOT: checkout,
+      SHARD: shard,
+      ALLOWED_SHARDS: shard,
+      OUTPUT_PATH: outputPath,
+    },
+  });
+  return outputPath;
+}
+
+test('apply-predecessors applies and commits each selected predecessor patch that has real content', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-'));
+  try {
+    const target = initTargetRepo(root, { 'test/spec/promql/a.txtar': 'promql old\n' });
+    const headBefore = git(target, ['rev-parse', 'HEAD']);
+
+    const patches = path.join(root, 'patches');
+    packageShardPatch({
+      root,
+      target,
+      shard: 'promql',
+      change: { 'test/spec/promql/a.txtar': 'promql new\n' },
+      outputPath: path.join(patches, 'golden-patch-promql', 'promql.patch'),
+    });
+
+    command('node', [SCRIPT], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODE: 'apply-predecessors',
+        TARGET_ROOT: 'target',
+        PATCH_ROOT: 'patches',
+        PREDECESSORS: 'promql',
+      },
+    });
+
+    assert.equal(readFileSync(path.join(target, 'test/spec/promql/a.txtar'), 'utf8'), 'promql new\n');
+    const headAfter = git(target, ['rev-parse', 'HEAD']);
+    assert.notEqual(headAfter, headBefore, 'a predecessor commit must exist so assertOwnedChanges sees only this leg\'s own diff');
+    assert.equal(git(target, ['status', '--porcelain']), '', 'the predecessor content must be COMMITTED, not left staged');
+    assert.match(git(target, ['log', '-1', '--format=%s']), /predecessor context for cardinality-leg/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('apply-predecessors skips a missing or empty predecessor patch and commits nothing at all', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-'));
+  try {
+    const target = initTargetRepo(root, { 'test/spec/promql/a.txtar': 'promql old\n' });
+    const headBefore = git(target, ['rev-parse', 'HEAD']);
+    mkdirSync(path.join(root, 'patches'), { recursive: true });
+
+    command('node', [SCRIPT], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODE: 'apply-predecessors',
+        TARGET_ROOT: 'target',
+        PATCH_ROOT: 'patches',
+        // Neither shard has a patch directory at all — the predecessor's own
+        // regeneration produced no change, matching the original
+        // `[ ! -s "$patch" ]` shell test for a missing OR empty file.
+        PREDECESSORS: 'promql logql',
+      },
+    });
+
+    assert.equal(git(target, ['rev-parse', 'HEAD']), headBefore, 'nothing to apply means nothing to commit');
+    assert.equal(git(target, ['status', '--porcelain']), '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('apply-predecessors applies only the predecessors that actually have content, still as one commit', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-'));
+  try {
+    const target = initTargetRepo(root, {
+      'test/spec/promql/a.txtar': 'promql old\n',
+      'test/spec/logql/a.txtar': 'logql old\n',
+    });
+    const patches = path.join(root, 'patches');
+    packageShardPatch({
+      root,
+      target,
+      shard: 'promql',
+      change: { 'test/spec/promql/a.txtar': 'promql new\n' },
+      outputPath: path.join(patches, 'golden-patch-promql', 'promql.patch'),
+    });
+    // logql has no patch directory at all (its own regeneration produced no
+    // change) — must not be treated as an error.
+
+    command('node', [SCRIPT], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODE: 'apply-predecessors',
+        TARGET_ROOT: 'target',
+        PATCH_ROOT: 'patches',
+        PREDECESSORS: 'promql logql',
+      },
+    });
+
+    assert.equal(readFileSync(path.join(target, 'test/spec/promql/a.txtar'), 'utf8'), 'promql new\n');
+    assert.equal(readFileSync(path.join(target, 'test/spec/logql/a.txtar'), 'utf8'), 'logql old\n');
+    assert.equal(git(target, ['log', '--oneline']).split('\n').length, 2, 'exactly one predecessor-context commit on top of the seed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('apply-legs applies every non-empty leg patch, uncommitted, ignoring empty ones', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'manual-golden-update-'));
+  try {
+    const target = initTargetRepo(root, {
+      'test/perf/cardinality-baseline/a.json': 'old-a\n',
+      'test/perf/cardinality-baseline/b.json': 'old-b\n',
+    });
+    const patches = path.join(root, 'patches');
+    packageShardPatch({
+      root,
+      target,
+      shard: 'cardinality',
+      label: 'cardinality-0',
+      change: { 'test/perf/cardinality-baseline/a.json': 'new-a\n' },
+      outputPath: path.join(patches, 'cardinality-leg-patch-0', 'cardinality-leg-0.patch'),
+    });
+    packageShardPatch({
+      root,
+      target,
+      shard: 'cardinality',
+      label: 'cardinality-1',
+      change: { 'test/perf/cardinality-baseline/b.json': 'new-b\n' },
+      outputPath: path.join(patches, 'cardinality-leg-patch-1', 'cardinality-leg-1.patch'),
+    });
+    // An empty leg (its slice of the corpus produced no change) must not
+    // error `git apply` out.
+    mkdirSync(path.join(patches, 'cardinality-leg-patch-2'), { recursive: true });
+    writeFileSync(path.join(patches, 'cardinality-leg-patch-2', 'cardinality-leg-2.patch'), '');
+
+    const headBefore = git(target, ['rev-parse', 'HEAD']);
+    command('node', [SCRIPT], {
+      cwd: root,
+      env: {
+        ...process.env,
+        MODE: 'apply-legs',
+        TARGET_ROOT: 'target',
+        PATCH_ROOT: 'patches',
+      },
+    });
+
+    assert.equal(readFileSync(path.join(target, 'test/perf/cardinality-baseline/a.json'), 'utf8'), 'new-a\n');
+    assert.equal(readFileSync(path.join(target, 'test/perf/cardinality-baseline/b.json'), 'utf8'), 'new-b\n');
+    // Both legs' content lands, but uncommitted — the seal's packaging step
+    // re-stages from scratch and needs nothing pre-committed.
+    assert.equal(git(target, ['rev-parse', 'HEAD']), headBefore);
+    assert.notEqual(git(target, ['status', '--porcelain']), '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

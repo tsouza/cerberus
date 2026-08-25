@@ -87,6 +87,12 @@ func TestExitCodeForError(t *testing.T) {
 	if c := exitCodeForError(gateFailedError{}); c != gateExitFail {
 		t.Errorf("gateFailedError exit = %d, want %d", c, gateExitFail)
 	}
+	// delta-prefix-verify reports the same "the gate did its job, not a tool
+	// malfunction" class of failure as `migrate verify`, so it must share
+	// verifyExitFail rather than falling through to the generic code.
+	if c := exitCodeForError(deltaPrefixVerifyFailedError{mismatches: 1}); c != verifyExitFail {
+		t.Errorf("deltaPrefixVerifyFailedError exit = %d, want %d", c, verifyExitFail)
+	}
 	if c := exitCodeForError(errors.New("some tool error")); c != 1 {
 		t.Errorf("generic error exit = %d, want 1", c)
 	}
