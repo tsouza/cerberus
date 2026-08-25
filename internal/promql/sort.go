@@ -164,6 +164,19 @@ func lowerSortByLabel(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.No
 			return nil, err
 		}
 		inner = hist
+	} else if b, ok := sortByLabelArgOverMixedExpHistogramSetOp(c.Args[0], s, ctx); ok {
+		// A mixed float/histogram `or` argument (cerberus issue #2330),
+		// reached from ANY nesting depth since [lowerCall] is the single
+		// generic dispatch point for sort_by_label/sort_by_label_desc
+		// regardless of nesting (cerberus issue #2611). See
+		// histogram_native_mixed_or_sort_by_label.go's own doc comment for
+		// why every row from BOTH arms survives unchanged, the opposite
+		// composition from sort()/sort_desc()'s own filterFloats rule.
+		mixed, err := lowerSortByLabelArgOverMixedExpHistogramSetOp(b, s, ctx)
+		if err != nil {
+			return nil, err
+		}
+		inner = mixed
 	} else if dropped, ok, err := lowerExpHistogramDroppingShape(c.Args[0], s, ctx); ok {
 		// A nested drop-family argument (cerberus issue #2528) — e.g.
 		// `sort_by_label(demo_latency_exp_hist + 0, "job")`. Unlike

@@ -63,6 +63,18 @@ func lowerTimestampOverExpHistogram(arg parser.Expr, s schema.Metrics, ctx lower
 		node, err := lowerTimestampOverExpHistogramBareSelector(vs, s, ctx)
 		return node, true, err
 	}
+	// A mixed float/histogram `or` argument (cerberus issue #2330),
+	// reached from ANY nesting depth since `timestamp` always routes
+	// through [lowerDateFn] regardless of whether it sits at the query
+	// root or nested under another wrapper (cerberus issue #2611). See
+	// histogram_native_mixed_or_timestamp.go's own doc comment for why
+	// this is never the bare-selector case above (a mixed `or` is a
+	// BinaryExpr, never a VectorSelector) and always reports the
+	// evaluation instant for every row.
+	if b, ok := timestampOverMixedExpHistogramSetOp(arg, s, ctx); ok {
+		node, err := lowerTimestampOverMixedExpHistogramSetOp(b, s, ctx)
+		return node, true, err
+	}
 	if hist, ok, err := lowerExpHistogramValuedShape(arg, s, ctx); ok {
 		if err != nil {
 			return nil, true, err
