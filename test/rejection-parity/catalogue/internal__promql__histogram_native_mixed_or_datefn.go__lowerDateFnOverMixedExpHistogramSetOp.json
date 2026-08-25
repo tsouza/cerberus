@@ -5,10 +5,9 @@
       "site": "internal/promql/histogram_native_mixed_or_datefn.go:lowerDateFnOverMixedExpHistogramSetOp#2f3ea020",
       "message": "promql: unknown date function %s",
       "class": "internal",
-      "rationale": "dateFnOverMixedExpHistogramSetOp only matches when c.Func.Name is one of the eight known date-component names lowerCall already filtered to reach lowerDateFn, minus \"timestamp\" (excluded by its own guard) — dateFnExpr always recognises the remainder, same reasoning as lowerDateFn's own identical dead branch (date_fns.go, cerberus issue #2498)",
+      "rationale": "dateFnOverMixedExpHistogramSetOp only matches when c.Func.Name is one of the eight known date-component names lowerCall already filtered to reach lowerDateFn, minus \"timestamp\" (excluded by its own guard) — dateFnExpr always recognises the remainder, same reasoning as lowerDateFn's own identical dead branch (date_fns.go, cerberus issue #2498). The preceding `if b.ReturnBool` guard this branch used to sit behind moved into the shared shadowResolveFloatArmChecked helper (histogram_native_mixed_or_aggregate.go, cerberus PR #2624's finding-10 ReturnBool-guard dedup) — it no longer appears in this function's own guard chain, but it played no part in this claim: the claim is purely about dateFnExpr's name coverage, unaffected by where the bool-modifier check lives.",
       "evidence": {
         "guard": [
-          "past returning if b.ReturnBool",
           "past returning if err != nil",
           "if newValue == nil"
         ],
@@ -19,27 +18,8 @@
           "dateFnExpr",
           "dateFnOverMixedExpHistogramSetOp",
           "lowerCall",
-          "lowerDateFn"
-        ]
-      }
-    },
-    {
-      "head": "promql",
-      "site": "internal/promql/histogram_native_mixed_or_datefn.go:lowerDateFnOverMixedExpHistogramSetOp#6cdf660e",
-      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
-      "class": "internal",
-      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerSortOverMixedExpHistogramSetOp's identical check (histogram_native_mixed_or_sort.go, cerberus issue #2605) and its sibling compositions (cerberus issues #2346/#2595/#2600). dateFnOverMixedExpHistogramSetOp only ever matches b via mixedExpHistogramSetOp, which requires b.Op == parser.LOR — `or` is a set operator, never a comparison, so the parser can never have set ReturnBool on it.",
-      "evidence": {
-        "guard": [
-          "if b.ReturnBool"
-        ],
-        "callers": [
-          "lowerDateFn"
-        ],
-        "cited": [
-          "dateFnOverMixedExpHistogramSetOp",
-          "lowerSortOverMixedExpHistogramSetOp",
-          "mixedExpHistogramSetOp"
+          "lowerDateFn",
+          "shadowResolveFloatArmChecked"
         ]
       }
     }
