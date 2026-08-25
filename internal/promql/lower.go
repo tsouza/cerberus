@@ -480,6 +480,42 @@ func lowerMixedExpHistogramFamily(expr parser.Expr, s schema.Metrics, ctx lowerC
 		plan, err := lowerSumOrAvgOverMixedExpHistogramSetOp(agg, b, s, ctx)
 		return plan, true, err
 	}
+	// `count`/`group` [by/without] wrapping that same mixed shape
+	// (cerberus issue #2595 — the sum/avg composition's own sibling this
+	// function's earlier doc comment named as deliberately unattempted).
+	// Checked right after sum/avg for the same reason: a mixed `or`
+	// aggregand never resolves as purely histogram-valued, so nothing
+	// before this function can have consumed the shape yet.
+	// histogram_native_mixed_or_aggregate_presence.go has the
+	// composition's own doc comment for why these two ops need no
+	// histogram-side branch at all, unlike sum/avg.
+	if agg, b, ok := countOrGroupOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerCountOrGroupOverMixedExpHistogramSetOp(agg, b, s, ctx)
+		return plan, true, err
+	}
+	// `min`/`max`/`stddev`/`stdvar` [by/without] wrapping that same mixed
+	// shape (cerberus issue #2595's second sibling family). Checked here
+	// for the identical reason: a mixed `or` aggregand never resolves as
+	// purely histogram-valued, so nothing above this line can have
+	// consumed the shape yet. histogram_native_mixed_or_aggregate_float_
+	// only.go has the composition's own doc comment for why these four
+	// ops reduce over the float arm alone, with no histogram branch or
+	// recombine.
+	if agg, b, ok := floatOnlyAggOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerFloatOnlyAggOverMixedExpHistogramSetOp(agg, b, s, ctx)
+		return plan, true, err
+	}
+	// `count_values` wrapping that same mixed shape (cerberus issue
+	// #2595's third and last sibling family). Checked here for the
+	// identical reason: a mixed `or` aggregand never resolves as purely
+	// histogram-valued, so nothing above this line can have consumed the
+	// shape yet. histogram_native_mixed_or_aggregate_count_values.go has
+	// the composition's own doc comment for why the two arms' stringified
+	// values can never collide, so a plain union suffices.
+	if agg, b, ok := countValuesOverMixedExpHistogramSetOp(expr, s, ctx); ok {
+		plan, err := lowerCountValuesOverMixedExpHistogramSetOp(agg, b, s, ctx)
+		return plan, true, err
+	}
 	// `label_replace`/`label_join` wrapping that same mixed shape (cerberus
 	// issue #2449 — the generic-forwarder follow-on to #2346's sum/avg
 	// composition just above). Checked here for the identical reason: a

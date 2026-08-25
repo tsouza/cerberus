@@ -1,0 +1,24 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/histogram_native_mixed_or_aggregate_float_only.go:lowerFloatOnlyAggOverMixedExpHistogramSetOp#6cdf660e",
+      "message": "promql: 'bool' modifier is only allowed on comparison binary ops",
+      "class": "internal",
+      "rationale": "the parser rejects `bool` on non-comparison operators (\"bool modifier can only be used on comparison operators\"), same as lowerSumOrAvgOverMixedExpHistogramSetOp's identical check (histogram_native_mixed_or_aggregate.go, cerberus issue #2346) and its histogram_native_mixed_or_aggregate_presence.go / histogram_native_mixed_or_aggregate_count_values.go siblings (cerberus issue #2595). floatOnlyAggOverMixedExpHistogramSetOp only ever matches b via mixedExpHistogramSetOp, which requires b.Op == parser.LOR — `or` is a set operator, never a comparison, so the parser can never have set ReturnBool on it.",
+      "evidence": {
+        "guard": [
+          "if b.ReturnBool"
+        ],
+        "callers": [
+          "lowerMixedExpHistogramFamily"
+        ],
+        "cited": [
+          "floatOnlyAggOverMixedExpHistogramSetOp",
+          "lowerSumOrAvgOverMixedExpHistogramSetOp",
+          "mixedExpHistogramSetOp"
+        ]
+      }
+    }
+  ]
+}
