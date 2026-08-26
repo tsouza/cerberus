@@ -1615,48 +1615,6 @@ jobs:
       - name: Apply chaos overlay (resilience knobs)
         run: just e2e-chaos-overlay
 
-      # TEMPORARY DIAGNOSTIC — the real verification run (32951277790) showed
-      # route-memo-activation's fault injection working (a genuine 422
-      # memory-limit rejection on route A, repeatedly), but
-      # cerberus_route_ab_success_total{route_choice="b"} never climbed: the
-      # A->B rescue never completed. Two competing explanations: (a) route B
-      # (a sharded fanout, decision.Slices in internal/engine/
-      # route_memo_wiring.go) never got DISPATCHED AT ALL (a real bug in
-      # routememo's corroboration/pressure/admission gates), or (b) route B
-      # WAS dispatched but its own per-shard queries ALSO tripped the 4Mi cap
-      # (a mechanical consequence of a blanket memory cap, not a routememo
-      # bug). This step fires the EXACT pinned 24h/15s query_range shape
-      # chaos-run.mjs's routeMemoQueryPath uses, repeatedly, for the same
-      # ~2 minutes the real scenario polls, then dumps EVERY ClickHouse query
-      # system.query_log recorded in that window (not just the last 3) so the
-      # shard fanout is visible if it happened. Removed once the real
-      # mechanism is understood; not part of the shipped fix.
-      - name: DIAGNOSTIC route-memo full query_log during fault injection
-        run: |
-          set -eu
-          window_start=$(date -u +"%Y-%m-%d %H:%M:%S")
-          end_ts=0
-          for i in $(seq 1 24); do
-            now=$(date +%s)
-            end_ts=$((now - 30))
-            start_ts=$((end_ts - 86400))
-            encoded="sum%20by%20(cerberus_ql)%20(rate(cerberus_queries_total%5B5m%5D))"
-            url="http://localhost:8080/api/v1/query_range?query=${encoded}&start=${start_ts}&end=${end_ts}&step=15"
-            code=$(curl -s -o /tmp/route-memo-fire.json -w "%{http_code}" "$url" || echo "000")
-            echo "== attempt $i http_code=$code"
-            sleep 5
-          done
-          echo "== dumping full system.query_log for the fault-injection window =="
-          kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
-            SELECT event_time, type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code,
-                   left(query, 120) AS query_snippet
-            FROM system.query_log
-            WHERE event_time >= '${window_start}' AND type != 'QueryStart'
-              AND positionCaseInsensitive(query, 'cerberus_queries_total') > 0
-            ORDER BY event_time_microseconds ASC
-            FORMAT PrettySpace
-          " || true
-
       # Phase-1 scenarios sequentially with heal-between-each, ordered
       # non-destructive-first / destructive-last (see orderScenarios in
       # chaos-run.mjs): route-memo-activation (failure-driven route memo,
