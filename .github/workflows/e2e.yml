@@ -1615,6 +1615,44 @@ jobs:
       - name: Apply chaos overlay (resilience knobs)
         run: just e2e-chaos-overlay
 
+      # TEMPORARY DIAGNOSTIC — measures the real ClickHouse memory_usage the
+      # route-memo-activation pinned 24h/15s query costs at chaos-lane-realistic
+      # process-uptime timing (t0/t60/t180 after the overlay lands), via
+      # system.query_log. Removed once the real number is captured; not part
+      # of the shipped fix.
+      - name: DIAGNOSTIC route-memo query memory cost over time
+        run: |
+          set -eu
+          fire_and_measure() {
+            label="$1"
+            now=$(date +%s)
+            step=15
+            margin=$((2*step))
+            end=$((now - margin))
+            start=$((end - 86400))
+            encoded="sum%20by%20(cerberus_ql)%20(rate(cerberus_queries_total%5B5m%5D))"
+            url="http://localhost:8080/api/v1/query_range?query=${encoded}&start=${start}&end=${end}&step=${step}"
+            echo "== [$label] firing $url"
+            t0=$(date -u +"%Y-%m-%d %H:%M:%S")
+            http_code=$(curl -s -o "/tmp/resp-$label.json" -w "%{http_code}" "$url" || echo "ERR")
+            echo "== [$label] http_code=$http_code"
+            head -c 300 "/tmp/resp-$label.json"; echo
+            sleep 10
+            kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
+              SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, read_rows, exception_code, substring(exception,1,200) AS exc
+              FROM system.query_log
+              WHERE event_time >= '${t0}' AND positionCaseInsensitive(query, 'cerberus_queries_total') > 0 AND type != 'QueryStart'
+              ORDER BY event_time_microseconds DESC
+              LIMIT 5
+              FORMAT PrettySpace
+            " || true
+          }
+          fire_and_measure t0
+          sleep 60
+          fire_and_measure t60
+          sleep 120
+          fire_and_measure t180
+
       # Phase-1 scenarios sequentially with heal-between-each, ordered
       # non-destructive-first / destructive-last (see orderScenarios in
       # chaos-run.mjs): route-memo-activation (failure-driven route memo,
