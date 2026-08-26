@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tsouza/cerberus/internal/deltaprefix"
 )
 
 // TestSchema_BareInvocationIsError pins that `cerberus schema` with no verb
@@ -177,5 +181,137 @@ func TestDeltaPrefixBackfill_NotOptedInIsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DeltaPrefixTable") {
 		t.Errorf("error should name the missing DeltaPrefixTable, got: %v", err)
+	}
+}
+
+// testVerifyReport builds a deltaprefix.Report with an outside-retention
+// day, so writeDeltaPrefixVerifyReport's tests below can drive both the
+// PASS and FAIL branches with the SAME excluded-day shape.
+func testVerifyReport(mismatches []deltaprefix.Mismatch, aggregate, base map[string]float64) deltaprefix.Report {
+	return deltaprefix.Report{
+		Before:               time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
+		Tolerance:            0.01,
+		AggregateTotals:      aggregate,
+		BaseTotals:           base,
+		Mismatches:           mismatches,
+		Retention:            24 * time.Hour,
+		RetentionBoundary:    time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC),
+		OutsideRetentionDays: []time.Time{time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)},
+	}
+}
+
+// TestWriteDeltaPrefixVerifyReport_PassWithOutsideRetentionNote confirms
+// cerberus issue #2652's core CLI requirement: a PASS report that excluded
+// an outside-retention day prints a clearly LABELED, separate NOTE — never
+// folded into an unexplained FAIL, and never silently dropped either.
+func TestWriteDeltaPrefixVerifyReport_PassWithOutsideRetentionNote(t *testing.T) {
+	rep := testVerifyReport(nil, map[string]float64{"m": 10}, map[string]float64{"m": 10})
+	var buf bytes.Buffer
+	if err := writeDeltaPrefixVerifyReport(&buf, rep, false); err != nil {
+		t.Fatalf("writeDeltaPrefixVerifyReport: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "PASS:") {
+		t.Errorf("expected a PASS line, got: %q", got)
+	}
+	if strings.Contains(got, "FAIL") {
+		t.Errorf("an outside-retention day must never fold into an unexplained FAIL, got: %q", got)
+	}
+	if !strings.Contains(got, "NOTE:") || !strings.Contains(got, "outside the aggregate table's retention window") {
+		t.Errorf("expected a separate outside-retention NOTE, got: %q", got)
+	}
+	if !strings.Contains(got, "cannot be backfilled") || !strings.Contains(got, "docs/operations.md") {
+		t.Errorf("NOTE should point the operator at the runbook, got: %q", got)
+	}
+	if !strings.Contains(got, "2026-08-20") {
+		t.Errorf("NOTE should list the excluded day, got: %q", got)
+	}
+}
+
+// TestWriteDeltaPrefixVerifyReport_FailKeepsOutsideRetentionNoteSeparate
+// confirms a GENUINE mismatch still prints the ordinary FAIL table, with
+// the outside-retention NOTE appended afterward as a visibly distinct
+// section rather than mixed into the mismatch rows.
+func TestWriteDeltaPrefixVerifyReport_FailKeepsOutsideRetentionNoteSeparate(t *testing.T) {
+	rep := testVerifyReport(
+		[]deltaprefix.Mismatch{{MetricName: "missed_metric", Aggregate: 0, Base: 5}},
+		map[string]float64{"m": 10},
+		map[string]float64{"m": 10, "missed_metric": 5},
+	)
+	var buf bytes.Buffer
+	if err := writeDeltaPrefixVerifyReport(&buf, rep, false); err != nil {
+		t.Fatalf("writeDeltaPrefixVerifyReport: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "FAIL: 1 of") {
+		t.Errorf("expected the ordinary FAIL summary line, got: %q", got)
+	}
+	if !strings.Contains(got, "missed_metric") {
+		t.Errorf("expected the mismatch table to list missed_metric, got: %q", got)
+	}
+	if !strings.Contains(got, "NOTE:") {
+		t.Errorf("expected the outside-retention NOTE to still appear alongside a real FAIL, got: %q", got)
+	}
+}
+
+// TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded confirms an
+// ordinary PASS/FAIL report — no outside-retention days at all — prints no
+// NOTE section, so the common case's output is unchanged from before this
+// fix.
+func TestWriteDeltaPrefixVerifyReport_NoNoteWhenNothingExcluded(t *testing.T) {
+	rep := deltaprefix.Diff(map[string]float64{"m": 10}, map[string]float64{"m": 10}, time.Now(), 0.01)
+	var buf bytes.Buffer
+	if err := writeDeltaPrefixVerifyReport(&buf, rep, false); err != nil {
+		t.Fatalf("writeDeltaPrefixVerifyReport: %v", err)
+	}
+	if got := buf.String(); strings.Contains(got, "NOTE:") {
+		t.Errorf("expected no NOTE section with zero excluded days, got: %q", got)
+	}
+}
+
+// TestWriteDeltaPrefixVerifyReport_JSONIncludesRetentionFields confirms the
+// machine-readable --json form carries the new Retention /
+// RetentionBoundary / OutsideRetentionDays fields, not just the text
+// renderer.
+func TestWriteDeltaPrefixVerifyReport_JSONIncludesRetentionFields(t *testing.T) {
+	rep := testVerifyReport(nil, map[string]float64{"m": 10}, map[string]float64{"m": 10})
+	var buf bytes.Buffer
+	if err := writeDeltaPrefixVerifyReport(&buf, rep, true); err != nil {
+		t.Fatalf("writeDeltaPrefixVerifyReport: %v", err)
+	}
+	var decoded deltaprefix.Report
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v (output: %s)", err, buf.String())
+	}
+	if decoded.Retention != rep.Retention {
+		t.Errorf("decoded Retention = %v; want %v", decoded.Retention, rep.Retention)
+	}
+	if len(decoded.OutsideRetentionDays) != 1 {
+		t.Errorf("decoded OutsideRetentionDays = %v; want exactly 1 entry", decoded.OutsideRetentionDays)
+	}
+}
+
+// TestWriteOutsideRetentionWarning_BackfillCLI pins
+// delta-prefix-backfill's own post-Backfill warning text (cerberus issue
+// #2652): loud, names the table, explains WHY re-running cannot fix it,
+// and lists every affected day.
+func TestWriteOutsideRetentionWarning_BackfillCLI(t *testing.T) {
+	var buf bytes.Buffer
+	days := []time.Time{time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)}
+	writeOutsideRetentionWarning(&buf, "otel_metrics_sum_delta_prefix", days)
+	got := buf.String()
+	if !strings.Contains(got, "WARNING") {
+		t.Errorf("expected a WARNING marker, got: %q", got)
+	}
+	if !strings.Contains(got, "otel_metrics_sum_delta_prefix") {
+		t.Errorf("expected the warning to name the target table, got: %q", got)
+	}
+	if !strings.Contains(got, "NOT fixable by re-running") {
+		t.Errorf("expected the warning to explain re-running cannot fix this, got: %q", got)
+	}
+	for _, d := range days {
+		if !strings.Contains(got, d.Format(time.DateOnly)) {
+			t.Errorf("expected the warning to list day %s, got: %q", d.Format(time.DateOnly), got)
+		}
 	}
 }

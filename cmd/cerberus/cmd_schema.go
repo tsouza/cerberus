@@ -15,6 +15,7 @@ import (
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/deltaprefix"
 	"github.com/tsouza/cerberus/internal/migrateverify"
+	"github.com/tsouza/cerberus/internal/schemaboot"
 )
 
 // errNoSchemaSubcommand is returned when `cerberus schema` is invoked bare.
@@ -139,7 +140,13 @@ func newSchemaDeltaPrefixBackfillCmd() *cobra.Command {
 			"a calendar day: since an MV is almost always created mid-day, day-\n" +
 			"rounding would leave every row between midnight and the MV's real\n" +
 			"creation instant uncaptured by both this backfill and the live MV — see\n" +
-			"docs/operations.md's DELTA-prefix backfill runbook.",
+			"docs/operations.md's DELTA-prefix backfill runbook. Run this AS SOON AS\n" +
+			"POSSIBLE after creating the table/MV: a day already past the target\n" +
+			"table's own TTL (CERBERUS_SCHEMA_TTL_METRICS) as of the moment this runs\n" +
+			"is written, then reaped by ClickHouse's own background merge almost\n" +
+			"immediately — permanently unrecoverable by any re-run. This command\n" +
+			"detects that case and prints a WARNING (not an error) listing the\n" +
+			"affected day(s) rather than succeeding silently.",
 		Example:       "  cerberus schema delta-prefix-backfill --before 2026-08-20T14:32:10Z",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
@@ -181,18 +188,45 @@ func runDeltaPrefixBackfill(cmd *cobra.Command, in deltaPrefixBackfillInputs) er
 		return nil
 	}
 
+	retention := schemaboot.MetricsRetention(cfg)
+
 	client, err := chclient.New(cfg.ClickHouse)
 	if err != nil {
 		return fmt.Errorf("connect ClickHouse: %w", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	if err := deltaprefix.Backfill(context.Background(), client.Conn(), cols, before); err != nil {
+	result, err := deltaprefix.Backfill(context.Background(), client.Conn(), cols, before, retention)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "backfilled %s from %s (rows strictly before %s)\n",
 		cols.DeltaPrefixTable, cols.SumTable, before.Format(time.RFC3339))
+	if len(result.OutsideRetentionDays) > 0 {
+		writeOutsideRetentionWarning(cmd.OutOrStdout(), cols.DeltaPrefixTable, result.OutsideRetentionDays)
+	}
 	return nil
+}
+
+// writeOutsideRetentionWarning prints a loud, explicit warning (cerberus
+// issue #2652) when Backfill detects it wrote — or is about to have
+// written — rows for a day already outside the target table's own TTL:
+// ClickHouse's background merge reaps rows like these almost immediately,
+// often before delta-prefix-verify even runs, and no re-run of the
+// backfill can ever recover them. This is deliberately NOT surfaced as an
+// error (runDeltaPrefixBackfill still returns nil): the operator may have
+// already accepted the loss for these days, or be intentionally
+// re-running to pick up the still-recoverable ones — but silent success
+// with zero signal, the behavior before this fix, is never acceptable.
+func writeOutsideRetentionWarning(w io.Writer, table string, days []time.Time) {
+	fmt.Fprintf(w, "\nWARNING: %d day(s) backfilled into %s are ALREADY outside its own retention TTL "+
+		"as of now — ClickHouse's background merge will reap these rows almost immediately, likely before "+
+		"delta-prefix-verify runs. This is NOT fixable by re-running the backfill: the constraint is the "+
+		"row's own age, not the write path. See docs/operations.md's DELTA-prefix backfill runbook.\n",
+		len(days), table)
+	for _, d := range days {
+		fmt.Fprintf(w, "  - %s\n", d.Format(time.DateOnly))
+	}
 }
 
 // deltaPrefixVerifyInputs carries newSchemaDeltaPrefixVerifyCmd's resolved
@@ -231,7 +265,12 @@ func newSchemaDeltaPrefixVerifyCmd() *cobra.Command {
 			"CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED=true. This is a per-metric\n" +
 			"COMPLETENESS check (did every DELTA row get backfilled), not a per-series\n" +
 			"identity-alignment check — see internal/deltaprefix's package doc for the\n" +
-			"scope boundary against cerberus issue #2389's still-open read-side task.",
+			"scope boundary against cerberus issue #2389's still-open read-side task.\n" +
+			"Any day already past the target table's own TTL\n" +
+			"(CERBERUS_SCHEMA_TTL_METRICS) as of this run is EXCLUDED from the\n" +
+			"comparison and reported separately as a labeled NOTE, never as an\n" +
+			"unexplained FAIL: that day's data cannot be backfilled by any means —\n" +
+			"see docs/operations.md's DELTA-prefix backfill runbook.",
 		Example:       "  cerberus schema delta-prefix-verify --before 2026-08-20T14:32:10Z",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
@@ -281,7 +320,8 @@ func runDeltaPrefixVerify(cmd *cobra.Command, in deltaPrefixVerifyInputs) error 
 		return err
 	}
 
-	rep, err := deltaprefix.Verify(context.Background(), client.Conn(), cols, before, in.tolerance)
+	retention := schemaboot.MetricsRetention(cfg)
+	rep, err := deltaprefix.Verify(context.Background(), client.Conn(), cols, before, in.tolerance, retention)
 	if err != nil {
 		return err
 	}
@@ -303,16 +343,42 @@ func writeDeltaPrefixVerifyReport(w io.Writer, rep deltaprefix.Report, asJSON bo
 	if rep.Pass() {
 		fmt.Fprintf(w, "PASS: %d metric(s) matched within tolerance %g (before %s)\n",
 			len(rep.AggregateTotals), rep.Tolerance, rep.Before.Format(time.RFC3339))
-		return nil
+	} else {
+		fmt.Fprintf(w, "FAIL: %d of %d metric(s) mismatched (tolerance %g, before %s)\n\n",
+			len(rep.Mismatches), len(unionMetricNames(rep)), rep.Tolerance, rep.Before.Format(time.RFC3339))
+		tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "METRIC\tAGGREGATE\tBASE\tDIFF")
+		for _, m := range rep.Mismatches {
+			fmt.Fprintf(tw, "%s\t%g\t%g\t%g\n", m.MetricName, m.Aggregate, m.Base, m.Diff())
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(w, "FAIL: %d of %d metric(s) mismatched (tolerance %g, before %s)\n\n",
-		len(rep.Mismatches), len(unionMetricNames(rep)), rep.Tolerance, rep.Before.Format(time.RFC3339))
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "METRIC\tAGGREGATE\tBASE\tDIFF")
-	for _, m := range rep.Mismatches {
-		fmt.Fprintf(tw, "%s\t%g\t%g\t%g\n", m.MetricName, m.Aggregate, m.Base, m.Diff())
+	writeOutsideRetentionNote(w, rep)
+	return nil
+}
+
+// writeOutsideRetentionNote appends a clearly LABELED, separate notice —
+// never folded into the PASS/FAIL line or the mismatch table above — when
+// Verify excluded one or more days from the comparison because they are
+// already outside the DeltaPrefixTable's own retention window as of the
+// check's run time (cerberus issue #2652). An "outside retention, cannot
+// be backfilled" day is categorically different from a genuine
+// completeness gap: it can never be turned into a PASS by any backfill
+// re-run, so reporting it as an unexplained mismatch would be actively
+// misleading. See docs/operations.md's DELTA-prefix backfill runbook.
+func writeOutsideRetentionNote(w io.Writer, rep deltaprefix.Report) {
+	if len(rep.OutsideRetentionDays) == 0 {
+		return
 	}
-	return tw.Flush()
+	fmt.Fprintf(w, "\nNOTE: %d day(s) already outside the aggregate table's retention window "+
+		"(retention %s, boundary %s), cannot be backfilled — see docs/operations.md's DELTA-prefix "+
+		"backfill runbook. EXCLUDED from the comparison above (not counted as a mismatch):\n",
+		len(rep.OutsideRetentionDays), rep.Retention, rep.RetentionBoundary.Format(time.RFC3339))
+	for _, d := range rep.OutsideRetentionDays {
+		fmt.Fprintf(w, "  - %s\n", d.Format(time.DateOnly))
+	}
 }
 
 // unionMetricNames is the total distinct metric-name population Verify
