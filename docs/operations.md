@@ -1223,6 +1223,29 @@ under-count. Backfilling by the exact instant closes that gap: everything
 strictly older than it is backfilled, and the live MV captures everything
 from that instant onward, so the two windows meet exactly.
 
+**Run this backfill AS SOON AS POSSIBLE after creating the table/MV — this
+warning is as load-bearing as the `--before` bound above.** The DELTA-prefix
+table shares its `TTL toDateTime(BucketStart) + <retention>` shape
+(`CERBERUS_SCHEMA_TTL_METRICS`) with the base metrics tables — correct for
+STEADY STATE, where both tables age out their oldest day together because
+both are populated continuously, but not correct for this one-time backfill.
+If an operator runs `delta-prefix-backfill` any time *after* the earliest
+available historical day has already crossed its own `BucketStart +
+<retention>` instant, the resulting `INSERT ... SELECT` writes rows for that
+day that are **already past their own TTL the moment they land**. Because
+this table is small and merges frequently, ClickHouse's routine background
+TTL cleanup reaps those rows almost immediately — often within seconds to
+minutes, well before an operator gets a chance to run `delta-prefix-verify`
+and see a clean state. **This is unrecoverable**: no sequence of backfill
+re-runs, with or without narrowing to just the affected day, with or without
+dropping and recreating the table/MV, can bring that day back — the
+constraint is the row's own age relative to "now", not anything about the
+write path. Run the backfill (and `delta-prefix-verify` right after it)
+*before* the earliest day in your history reaches that boundary; once it has
+passed, that day's completeness is permanently gone, and both CLI verbs below
+detect and report this case explicitly rather than leaving the operator to
+diagnose an unexplained failure.
+
 `delta-prefix-backfill` runs a single `INSERT INTO ... SELECT` — the same
 `GROUP BY (MetricName, Attributes, ResourceAttributes, ServiceName,
 toStartOfDay(TimeUnix))` shape the MV itself uses — filtered to
@@ -1233,7 +1256,15 @@ DELTA-temporality slice of the base table's history (empirically well under 1%
 of real `otel_metrics_sum` rows — see `Config.DeltaPrefixLookback`'s doc
 comment) plus one aggregate write per distinct `(MetricName, raw attribute
 tuple, day)` — materially cheaper than the projection back-fill above despite
-reading a wider column set.
+reading a wider column set. Before issuing that INSERT, it also checks — against
+the base table, using the resolved `CERBERUS_SCHEMA_TTL_METRICS` retention —
+whether any day within `--before`'s scope is already outside the target
+table's own TTL as of right now (the unrecoverable case described above); if
+so it prints a loud `WARNING` naming the affected day(s) after a successful
+run rather than succeeding with zero signal. This is a warning, not an
+error — the command still exits `0`, since the operator may already have
+accepted the loss for those days or be intentionally re-running to pick up
+the still-recoverable ones.
 
 `delta-prefix-verify` compares the aggregate table's per-metric-name totals
 (`sum(PartialSum)`, grouped by `MetricName` only) against the base table's own
@@ -1254,6 +1285,21 @@ backfills is not broken — it simply keeps running today's bounded
 `CERBERUS_DELTA_PREFIX_LOOKBACK` approximation indefinitely, a legitimate
 permanent choice for an operator who doesn't need exact boundary-correction
 precision.
+
+**A day already outside the target table's own retention is never reported
+as a bare, unexplained mismatch.** `delta-prefix-verify` resolves the same
+`CERBERUS_SCHEMA_TTL_METRICS` retention `delta-prefix-backfill` checks and,
+for each day in its comparison window, detects whether that day's
+`BucketStart + <retention>` has already elapsed as of the check's own run
+time (the unrecoverable case described above). Any such day is EXCLUDED from
+`AggregateTotals` / `BaseTotals` / the mismatch table — it can never be
+turned into a PASS by any backfill re-run, so folding it into the same FAIL
+as a genuine completeness gap would be indistinguishable from a real bug —
+and instead surfaced as a separate, clearly labeled `NOTE` naming the
+excluded day(s), auto-detected with no flag required (a real completeness
+gap must never be silently hidden, so this is safe-by-default: it always
+runs, and it is always visually distinct from the PASS/FAIL verdict above
+it, in both the text and `--json` report forms).
 
 #### Read-side mechanism and its measured PK-pruning cost
 

@@ -53,6 +53,63 @@
 // from that instant onward, so the two windows meet with no gap and no
 // overlap.
 //
+// # One-time backfill vs. the aggregate table's own steady-state TTL
+//
+// The DELTA-prefix table is provisioned with the SAME
+// `TTL toDateTime(BucketStart) + <retention>` shape the base metrics
+// tables use (internal/schema/ddl's renderDeltaPrefixTable), deliberately
+// kept in lockstep with the base table's own retention. That is correct
+// for STEADY STATE — once past the initial backfill, both tables age out
+// their oldest day together because both are populated continuously by
+// live traffic.
+//
+// It is NOT correct for the one-time backfill this package runs. If an
+// operator invokes Backfill with a `before` bound any time after the
+// earliest historical day has already crossed its own `BucketStart +
+// <retention>` instant, the resulting `INSERT ... SELECT` writes rows for
+// that day that are already past their own TTL the moment they land.
+// Because this table is small and merges frequently, ClickHouse's routine
+// background TTL cleanup reaps those rows almost immediately — often
+// within seconds to minutes, well before an operator gets a chance to run
+// Verify and see a clean state (cerberus issue #2652).
+//
+// This is NOT fixable by re-running Backfill, with or without narrowing to
+// just the affected day, with or without dropping and recreating the
+// table/MV: the constraint is the ROW'S OWN AGE relative to "now", not
+// anything about the write path. Any row for that day, however it is
+// inserted, is born already-expired.
+//
+// Both Backfill and Verify take an explicit `retention` duration (the
+// resolved CERBERUS_SCHEMA_TTL_METRICS value — see
+// internal/schemaboot.MetricsRetention, the same inherit-or-override rule
+// internal/schema/ddl's DDL rendering applies) precisely to detect this
+// case rather than mishandling it silently:
+//
+//   - Verify computes a retention boundary (now - retention, see
+//     retentionBoundary) and EXCLUDES any day whose BucketStart falls
+//     before it from AggregateTotals / BaseTotals / Mismatches — folding
+//     an unrecoverable day into the same FAIL as a genuine completeness
+//     gap would be indistinguishable from a real bug. Excluded days are
+//     reported separately, on Report.OutsideRetentionDays, with a clear
+//     notice rather than a bare unexplained FAIL.
+//   - Backfill runs the identical day-boundary check against the BASE
+//     table BEFORE its own INSERT — so the check cannot race the
+//     aggregate table's own TTL reaping the very rows it is about to
+//     write — and returns any doomed days on
+//     BackfillResult.OutsideRetentionDays: a clear warning, not
+//     necessarily an error, since the operator may already have accepted
+//     the loss or be intentionally re-running for the still-recoverable
+//     days.
+//
+// A retention of 0 (no TTL clause emitted at all — internal/schema/ddl's
+// ttlExpr) disables this check entirely: nothing can ever be reaped by
+// age, so no day is ever "outside retention". See docs/operations.md's
+// DELTA-prefix backfill runbook for the operator-facing warning: run the
+// backfill as soon as possible after creating the table/MV, and
+// definitely before the earliest available historical day crosses the
+// target table's own TTL boundary — after that point, that day can never
+// be recovered.
+//
 // # Scope: completeness, not series-identity alignment
 //
 // Verify compares aggregate totals GROUPED BY MetricName ONLY — a coarse,
