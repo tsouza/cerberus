@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.15.5
+version: 0.15.6
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.16.0"
+appVersion: "1.16.1"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,27 +45,21 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.16.0
+      image: ghcr.io/tsouza/cerberus:v1.16.1
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
-    - kind: added
-      description: "test: shard the rejection-parity catalogue by function, not file (#2564)"
-    - kind: added
-      description: "promql: group_left()/group_right() over two mixed-or operands (#2542)"
-    - kind: added
-      description: "promql: compose vector-vector comparisons over a mixed or's both operands (#2533)"
-    - kind: added
-      description: "chsql: extend the exact DELTA-prefix aggregate mechanism to query_range (#2530)"
-    - kind: added
-      description: "promql: compose vector-vector arithmetic over two mixed or operands (#2521)"
-    - kind: added
-      description: "promql,chsql,chplan: window-slide anchor-injection classic-histogram fast path (#2493)"
-    - kind: added
-      description: "perf: add a derived native-histogram sentinel to the nightly lane (#2491)"
-    - kind: added
-      description: "schema: DELTA-prefix aggregate table schema, DDL, and backfill CLI (#2485)"
-    - kind: added
-      description: "perf: render a clear pass/regression verdict in perf-nightly's step summary (#2455)"
-    - kind: added
-      description: "promql: widen exp-histogram float-vector scaling to on()/ignoring()/group_left/right (#2450)"
+    - kind: fixed
+      description: "chaos: widen route-memo-activation's detection deadline to 180s (#2660)"
+    - kind: fixed
+      description: "chaos: fix route-memo probe metric description and gate the decline dump (#2659)"
+    - kind: fixed
+      description: "routememo: give the chaos lane's route-memo-activation scenario real historical depth (#2658)"
+    - kind: fixed
+      description: "routememo: keep the chaos lane's pinned query off route B's ordinary auto-route (#2656)"
+    - kind: fixed
+      description: "deltaprefix: detect and warn on backfill days already past the aggregate table's TTL (#2657)"
+    - kind: fixed
+      description: "chsql: give RangeBucketGridNative's resource bound real production headroom (#2653)"
+    - kind: fixed
+      description: "e2e: narrow the chaos lane's CH memory cap so route-memo-activation fires (#2649)"

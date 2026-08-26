@@ -4,6 +4,22 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.16.1] — 2026-08-26
+
+### Fixed
+
+- **chaos:** widen route-memo-activation's detection deadline to 180s (#2660)
+- **chaos:** fix route-memo probe metric description and gate the decline dump (#2659)
+- **routememo:** give the chaos lane's route-memo-activation scenario real historical depth (#2658)
+- **routememo:** keep the chaos lane's pinned query off route B's ordinary auto-route (#2656)
+- **deltaprefix:** detect and warn on backfill days already past the aggregate table's TTL (#2657)
+- **chsql:** give RangeBucketGridNative's resource bound real production headroom (#2653)
+- **e2e:** narrow the chaos lane's CH memory cap so route-memo-activation fires (#2649)
+
+### Documentation
+
+- **test-strategy:** document chdb regression-pin/untagged-companion pairing (#2655)
+
 ## [v1.16.0] — 2026-08-26
 
 ### Added
