@@ -203,9 +203,14 @@ jobs:
     if: needs.coverage-plan.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     # Same reasoning as coverage-default's timeout: `just coverage-chdb`'s
-    # `go test` is capped at `-timeout 40m`, plus the ratchet fan-out
+    # `go test` is capped at `-timeout 60m`, plus the ratchet fan-out
     # (perf-coverage-fanout.mjs) it also runs.
-    timeout-minutes: 50
+    #
+    # Bumped from 50 to 75 on 2026-08-26 alongside the Justfile recipe's own
+    # 40m->60m bump: the first real push-to-main run after this job existed
+    # hit the old 50m wrapper exactly, the same corpus growth already
+    # documented on the recipe itself.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
 
