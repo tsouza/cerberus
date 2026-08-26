@@ -713,6 +713,46 @@ func seedRouteMemoProbeBackfill(ctx context.Context, conn driver.Conn) error {
 	return nil
 }
 
+// insertRouteMemoProbeFreshnessSQL keeps route_memo_probe_requests_total
+// queryable via a SHORT recent window, alongside the one-time deep 24h
+// backfill above. Found necessary the hard way: iterate-metrics-explorer.
+// spec.ts's generic "every catalog-published metric must resolve to a
+// non-empty /api/v1/series and /api/v1/query_range" sweep queries a fixed
+// QUERY_WINDOW_SECONDS = 5*60 lookback ending at wall-clock "now" — and the
+// deep backfill's most recent sample is pinned to whatever "now" was AT
+// SEED TIME, which is stale by more than 5 minutes for any Playwright shard
+// that runs later in a long suite. Mirrors insertSumSQL's own ±5 min /
+// 1 s-cadence rolling shape exactly (same reason: the rolling re-seeder
+// re-runs this every 30 s, keeping a query at any wall-clock time inside a
+// fresh window) so this metric behaves like every other seeded counter for
+// short-range/instant panels, while the deep backfill above still answers
+// the route-memo scenario's own wide 24h window.
+//
+// Deliberately NOT added to deleteStaleMetricsSumSQL's cleanup allowlist:
+// that DELETE computes `max(TimeUnix) - margin` PER METRIC NAME, and this
+// metric shares its name with the one-time deep backfill — enrolling it
+// would delete every backfilled row older than a few minutes, wiping out
+// the very 24h depth insertRouteMemoProbeBackfillSQL exists to provide,
+// on the very first rolling tick. The rolling companion below accumulates
+// unbounded across a test run instead — bounded and harmless for a
+// suite that runs tens of minutes, not the alternative.
+const insertRouteMemoProbeFreshnessSQL = `INSERT INTO otel_metrics_sum
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
+SELECT
+    map('service.name', 'route-memo-probe'),
+    'route-memo-probe',
+    'route_memo_probe_requests_total',
+    'Synthetic counter backfilled with real 24h-scale historical depth for the route-memo-activation chaos scenario (issue #2650) — see insertRouteMemoProbeBackfillSQL''s doc comment',
+    '1',
+    map('probe_shard', '0'),
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    toFloat64(1000 + number * 5),
+    toUInt32(0),
+    toInt32(2),
+    true
+FROM numbers(600)`
+
 // insertMetrics inserts the two `up` gauge series + 600 counter samples for
 // rate(). Both seeds span a 10-minute window centred on the (current) seed
 // timestamp — the gauge with 40 samples × 15 s and the counter / histogram
@@ -728,6 +768,9 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	}
 	if err := conn.Exec(ctx, insertSumSQL); err != nil {
 		return fmt.Errorf("sum: %w", err)
+	}
+	if err := conn.Exec(ctx, insertRouteMemoProbeFreshnessSQL); err != nil {
+		return fmt.Errorf("route-memo probe freshness: %w", err)
 	}
 	if err := conn.Exec(ctx, insertHistogramSQL); err != nil {
 		return fmt.Errorf("histogram: %w", err)
