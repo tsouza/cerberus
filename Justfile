@@ -585,11 +585,20 @@ coverage-chdb:
     @if [ -e "{{CHDB_INSTALL_PATH}}" ]; then \
         echo "==> chdb-tagged coverage"; \
         COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
-        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 40m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
+        PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 60m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
         TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
     else \
         echo "==> libchdb.so not found, skipping chdb lane"; \
     fi
+    # Bumped from 40m to 60m on 2026-08-26: the first real push-to-main run
+    # after coverage.yml split into parallel coverage-default/coverage-chdb
+    # jobs (#2639) hit coverage-chdb's job-level 50-minute wrapper exactly
+    # ("The job has exceeded the maximum execution time of 50m0s") — the same
+    # fixture/corpus growth already documented below, regrown past the
+    # PERF_SHARD_COUNT=3 split's own headroom. The job-level timeout in
+    # coverage.yml moved with it (50m -> 75m) so the wrapper still has real
+    # margin over this internal hang detector, not just a matching ceiling.
+    #
     # This lane's `go test` used to sweep ./... with no shard env, timed out
     # at 40m, the same shape as the default-tag lane above. It stopped
     # fitting that budget once TestCardinalityRatchet's corpus walk
