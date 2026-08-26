@@ -1234,7 +1234,20 @@ const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
 // CERBERUS_CH_QUERY_MAX_MEMORY comment for the exact measured numbers this
 // value was sized against.
 const ROUTE_MEMO_EXPR = 'sum by (probe_shard) (rate(route_memo_probe_requests_total[5m]))';
-const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 120_000; // generous: needs >= minCorroboratingFailures(2) consecutive route-A resource failures on the same key before a probe is even admitted
+// 180s, not the original 120s: a real run (2026-08-26, main push
+// 1b71d06c5's own chaos job) exhausted a 120s budget at ~123s with
+// no-preferb=17 / probe-not-admitted=1 on the decline-reason dump, then the
+// SEPARATE post-loop client corroboration below (its own independent
+// pollUntil) got a clean 200 within 0.4s of the deadline firing — proving
+// the underlying route-B rescue mechanism was already working and this
+// scenario's own primary-detection budget was simply too tight against the
+// real wall-clock variance of accumulating minCorroboratingFailures(2)
+// CONSECUTIVE route-A failures under CERBERUS_CH_QUERY_MAX_MEMORY's
+// deliberately narrow ~4.5% margin (chaos-overlay.env) — an occasional
+// under-cap route-A success resets that streak and costs a full retry
+// cycle. 180s gives real headroom over the observed ~123s instead of
+// guessing at a wider number.
+const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 180_000;
 const ROUTE_MEMO_POLL_INTERVAL_MS = 5_000;
 const ROUTE_MEMO_FINAL_OK_DEADLINE_MS = 60_000; // post-activation: the same query must now cleanly 200 for a real client
 
