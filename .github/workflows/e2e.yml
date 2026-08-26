@@ -1622,17 +1622,40 @@ jobs:
       # HEAD_PROBES shapes chaos-run.mjs preflight uses, records their HTTP
       # status, and reads system.query_log for the real memory_usage/
       # exception each one costs under the 2Mi cap — so the real fix can be
-      # sized against the ACTUAL floor instead of guessed. Removed once the
-      # real number is captured; not part of the shipped fix.
+      # sized against the ACTUAL floor instead of guessed.
+      #
+      # POLLS rather than firing once: a first attempt immediately after
+      # `kubectl rollout status` reports success got curl's own http_code=000
+      # (connection refused — never reached cerberus at all) in an earlier
+      # version of this step, because the localhost:8080 path needs a beat
+      # to catch up with the rollout. Mirrors chaos-run.mjs's own pollUntil
+      # budget EXACTLY (POLL_INTERVAL_MS=2000, PREFLIGHT_DEADLINE_MS=60000 —
+      # .github/scripts/chaos-run.mjs:96,1386) so a probe that only succeeds
+      # because it waited LONGER than the real preflight would allow is
+      # itself a finding, not a false pass. Removed once the real number is
+      # captured; not part of the shipped fix.
       - name: DIAGNOSTIC head-probe query cost under the 2Mi cap
         run: |
           set -eu
+          POLL_INTERVAL_S=2
+          DEADLINE_S=60
           probe() {
             label="$1"; path="$2"
             now_before=$(date -u +"%Y-%m-%d %H:%M:%S")
-            code=$(curl -s -o "/tmp/headprobe-$label.json" -w "%{http_code}" "http://localhost:8080$path" || echo "ERR")
-            echo "== [$label] path=$path http_code=$code"
-            head -c 300 "/tmp/headprobe-$label.json"; echo
+            start=$(date +%s)
+            code="000"
+            attempts=0
+            while :; do
+              attempts=$((attempts + 1))
+              code=$(curl -s -o "/tmp/headprobe-$label.json" -w "%{http_code}" "http://localhost:8080$path" || echo "000")
+              elapsed=$(( $(date +%s) - start ))
+              if [ "$code" = "200" ] || [ "$elapsed" -ge "$DEADLINE_S" ]; then
+                break
+              fi
+              sleep "$POLL_INTERVAL_S"
+            done
+            echo "== [$label] path=$path http_code=$code attempts=$attempts elapsed=${elapsed}s"
+            head -c 300 "/tmp/headprobe-$label.json" 2>/dev/null || echo "(no response body captured)"; echo
             sleep 3
             kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
               SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code, substring(exception,1,200) AS exc
