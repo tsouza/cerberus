@@ -97,3 +97,12 @@ test/e2e/playwright/playwright-report/
 /bench-report
 /cerberus
 /perf-profile
+
+# CI-only artifact staging directories: update-golden.yml downloads each
+# shard's uploaded patch here before applying it (and cardinality-seal's own
+# leg patches under the same name), and post-merge-drift.yml's
+# cardinality-seal job does the identical download-and-apply. Left untracked
+# and unignored, these showed up as spurious "no shard declares this path"
+# drift in post-merge-golden-drift.mjs's own untracked-file scan.
+/patches/
+/patches-out/
