@@ -451,12 +451,34 @@ func expHistogramWindowStage(input chplan.Node, shape histogramAggShape, rangeSt
 		DropEmptyOnNoGroup: true,
 	}
 	resets := expHistogramResetMaskFor(shape.windowFn)
+	// perSecond carries `rate`'s division by the window range into the
+	// SAME extrapolation factor histogramWindowFold multiplies the whole
+	// distribution by (see histogramWindowInputs.perSecond's doc) —
+	// mirroring classicBucketWindowStage and expHistogramValuedWindowFold,
+	// this quantile-path window stage's two siblings for the classic and
+	// the histogram-VALUED exponential shapes. Omitting it here made this
+	// stage answer `rate()` as if it were `increase()`: histogram_quantile
+	// only reads the RATIOS between buckets, and a single uniform scalar
+	// factor cancels out of every ratio in EXACT arithmetic, so the two are
+	// indistinguishable there — but reference Prometheus's own pipeline
+	// divides by the range BEFORE the one multiplication that scales
+	// Count/Sum/every bucket, which perturbs the floating-point rounding
+	// that division introduces. At an EXACT rank tie that perturbation is
+	// what decides which bucket the walk stops on — cerberus's own
+	// undivided (and so exactly-representable) factor kept a tie reference
+	// itself breaks, landing this stage on the wrong bucket — caught by
+	// TestPromQL_Property_NativeHistogram.
+	var perSecond chplan.Expr
+	if shape.windowFn == rateWindowFn {
+		perSecond = &chplan.LitFloat{V: shape.windowRange.Seconds()}
+	}
 	winIn := histogramWindowInputs{
 		rangeStart:  rangeStart,
 		rangeEnd:    rangeEnd,
 		countValues: expHistogramWindowCountValuesExpr(),
 		temporality: expHistogramWindowTemporalityExpr(s, shape.windowFn),
 		resets:      resets,
+		perSecond:   perSecond,
 	}
 	fold := histogramWindowFold(shape.windowFn, winIn)
 	return expHistogramWindowReshape(
