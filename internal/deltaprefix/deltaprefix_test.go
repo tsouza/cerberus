@@ -58,7 +58,7 @@ func TestBackfillSQL(t *testing.T) {
 func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	c := testColumns()
 
-	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore)
+	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore, time.Time{}, false)
 	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
 		"WHERE `BucketStart` < ? GROUP BY `MetricName`"
 	if aggSQL != wantAgg {
@@ -68,7 +68,7 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 		t.Errorf("aggregateTotalsSQL args = %v; want [%v]", aggArgs, testBefore)
 	}
 
-	baseSQL, baseArgs := baseTotalsSQL(c, testBefore)
+	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, time.Time{}, false)
 	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
 		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? GROUP BY `MetricName`"
 	if baseSQL != wantBase {
@@ -76,6 +76,89 @@ func TestAggregateAndBaseTotalsSQL(t *testing.T) {
 	}
 	if len(baseArgs) != 1 || baseArgs[0] != testBefore {
 		t.Errorf("baseTotalsSQL args = %v; want [%v]", baseArgs, testBefore)
+	}
+}
+
+// TestAggregateAndBaseTotalsSQL_RetentionActive pins the additional lower
+// bound both totals reads gain when a retention boundary is active
+// (cerberus issue #2652): aggregateTotalsSQL bounds
+// DeltaPrefixBucketColumn >= boundary directly (it is already
+// day-granularity storage), baseTotalsSQL bounds
+// toStartOfDay(TimestampColumn) >= boundary (day-truncated, so it excludes
+// exactly the same set of days aggregateTotalsSQL excludes, even though
+// its OTHER bound — TimestampColumn < before — stays exact-instant).
+func TestAggregateAndBaseTotalsSQL_RetentionActive(t *testing.T) {
+	c := testColumns()
+	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+	aggSQL, aggArgs := aggregateTotalsSQL(c, testBefore, boundary, true)
+	wantAgg := "SELECT `MetricName`, sum(`PartialSum`) FROM `otel`.`otel_metrics_sum_delta_prefix` " +
+		"WHERE `BucketStart` < ? AND `BucketStart` >= ? GROUP BY `MetricName`"
+	if aggSQL != wantAgg {
+		t.Errorf("aggregateTotalsSQL sql =\n%s\nwant\n%s", aggSQL, wantAgg)
+	}
+	if len(aggArgs) != 2 || aggArgs[0] != testBefore || aggArgs[1] != boundary {
+		t.Errorf("aggregateTotalsSQL args = %v; want [%v %v]", aggArgs, testBefore, boundary)
+	}
+
+	baseSQL, baseArgs := baseTotalsSQL(c, testBefore, boundary, true)
+	wantBase := "SELECT `MetricName`, sum(`Value`) FROM `otel`.`otel_metrics_sum` " +
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? AND toStartOfDay(`TimeUnix`) >= ? GROUP BY `MetricName`"
+	if baseSQL != wantBase {
+		t.Errorf("baseTotalsSQL sql =\n%s\nwant\n%s", baseSQL, wantBase)
+	}
+	if len(baseArgs) != 2 || baseArgs[0] != testBefore || baseArgs[1] != boundary {
+		t.Errorf("baseTotalsSQL args = %v; want [%v %v]", baseArgs, testBefore, boundary)
+	}
+}
+
+// TestOutsideRetentionDaysSQL pins the DISTINCT-day read used both by
+// Backfill (pre-INSERT check against the base table) and Verify (to
+// populate Report.OutsideRetentionDays): DELTA-only, bounded by the same
+// exact-instant `before` BackfillSQL uses, plus the day-bucket `<
+// boundary` cut that defines "already outside retention" (cerberus issue
+// #2652), grouped (i.e. deduplicated) and ordered by day ascending.
+func TestOutsideRetentionDaysSQL(t *testing.T) {
+	c := testColumns()
+	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	sql, args := outsideRetentionDaysSQL(c, testBefore, boundary)
+	want := "SELECT toStartOfDay(`TimeUnix`) FROM `otel`.`otel_metrics_sum` " +
+		"WHERE `AggregationTemporality` = 1 AND `TimeUnix` < ? AND toStartOfDay(`TimeUnix`) < ? " +
+		"GROUP BY toStartOfDay(`TimeUnix`) ORDER BY toStartOfDay(`TimeUnix`)"
+	if sql != want {
+		t.Errorf("outsideRetentionDaysSQL sql =\n%s\nwant\n%s", sql, want)
+	}
+	if len(args) != 2 || args[0] != testBefore || args[1] != boundary {
+		t.Errorf("outsideRetentionDaysSQL args = %v; want [%v %v]", args, testBefore, boundary)
+	}
+}
+
+// TestRetentionBoundary pins retentionBoundary's pure day-math: a
+// non-positive retention (no TTL clause emitted at all — see
+// internal/schema/ddl's ttlExpr) always reports inactive with a zero
+// boundary regardless of now; a positive retention reports active with
+// boundary = now - retention, exactly.
+func TestRetentionBoundary(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+
+	for _, retention := range []time.Duration{0, -time.Hour} {
+		boundary, active := retentionBoundary(now, retention)
+		if active {
+			t.Errorf("retentionBoundary(%v, %v) active = true; want false (no TTL)", now, retention)
+		}
+		if !boundary.IsZero() {
+			t.Errorf("retentionBoundary(%v, %v) boundary = %v; want zero time", now, retention, boundary)
+		}
+	}
+
+	retention := 90 * 24 * time.Hour
+	boundary, active := retentionBoundary(now, retention)
+	if !active {
+		t.Fatalf("retentionBoundary(%v, %v) active = false; want true", now, retention)
+	}
+	wantBoundary := now.Add(-retention)
+	if !boundary.Equal(wantBoundary) {
+		t.Errorf("retentionBoundary(%v, %v) boundary = %v; want %v", now, retention, boundary, wantBoundary)
 	}
 }
 
@@ -332,12 +415,19 @@ func (c *twoCallConn) Query(context.Context, string, ...any) (driver.Rows, error
 
 // TestBackfill_ExecutesRenderedSQL confirms Backfill hands conn EXACTLY the
 // statement + args BackfillSQL renders, and wraps a real Exec failure with
-// enough context to identify which table failed.
+// enough context to identify which table failed. retention=0 (no TTL)
+// keeps the new outside-retention pre-check inactive, so it issues no
+// extra query — TestBackfill_DetectsOutsideRetentionDays below covers the
+// active path.
 func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{}
-	if err := Backfill(context.Background(), conn, c, testBefore); err != nil {
+	result, err := Backfill(context.Background(), conn, c, testBefore, 0)
+	if err != nil {
 		t.Fatalf("Backfill: %v", err)
+	}
+	if len(result.OutsideRetentionDays) != 0 {
+		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", result.OutsideRetentionDays)
 	}
 	wantSQL, wantArgs := BackfillSQL(c, testBefore)
 	if len(conn.execSQL) != 1 || conn.execSQL[0] != wantSQL {
@@ -348,7 +438,7 @@ func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 	}
 
 	failing := &fakeConn{execErr: errors.New("boom")}
-	err := Backfill(context.Background(), failing, c, testBefore)
+	_, err = Backfill(context.Background(), failing, c, testBefore, 0)
 	if err == nil {
 		t.Fatal("expected error from a failing Exec")
 	}
@@ -356,6 +446,119 @@ func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 		t.Errorf("Backfill error %q does not name the target table %q", got, c.DeltaPrefixTable)
 	}
 }
+
+// withFrozenNow pins nowFunc to now for the duration of the test, restoring
+// the real clock via t.Cleanup — the mechanism deltaprefix_test.go uses to
+// exercise the retention-boundary logic (cerberus issue #2652)
+// deterministically, per the package's "unit testable without a live
+// ClickHouse connection" doc-comment promise.
+func withFrozenNow(t *testing.T, now time.Time) {
+	t.Helper()
+	prev := nowFunc
+	nowFunc = func() time.Time { return now }
+	t.Cleanup(func() { nowFunc = prev })
+}
+
+// TestBackfill_DetectsOutsideRetentionDays confirms Backfill queries the
+// base table for outside-retention days BEFORE issuing its own INSERT
+// (order matters: the base table is not subject to this TTL and so cannot
+// race with it), still executes the INSERT regardless (a doomed day is a
+// warning, not a reason to abort — see BackfillResult's doc comment), and
+// surfaces the detected days on the returned BackfillResult.
+func TestBackfill_DetectsOutsideRetentionDays(t *testing.T) {
+	c := testColumns()
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	withFrozenNow(t, now)
+	retention := 24 * time.Hour // boundary = 2026-08-25T12:00:00Z
+	doomedDay := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+
+	// outsideRetentionDaysSQL scans a single time.Time column, not
+	// (string, float64) like scanTotals — fakeConn/fakeRows above are
+	// wired for totals reads, so this test drives queryOutsideRetentionDays
+	// through a dedicated day-scanning fake rather than reusing fakeConn.
+	dconn := &dayFakeConn{days: []time.Time{doomedDay}}
+	result, err := Backfill(context.Background(), dconn, c, testBefore, retention)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if len(dconn.execSQL) != 1 {
+		t.Fatalf("expected exactly 1 Exec (the INSERT), got %d: %v", len(dconn.execSQL), dconn.execSQL)
+	}
+	if len(dconn.queries) != 1 {
+		t.Fatalf("expected exactly 1 Query (the outside-retention-days check), got %d: %v", len(dconn.queries), dconn.queries)
+	}
+	if len(result.OutsideRetentionDays) != 1 || !result.OutsideRetentionDays[0].Equal(doomedDay) {
+		t.Errorf("OutsideRetentionDays = %v; want [%v]", result.OutsideRetentionDays, doomedDay)
+	}
+}
+
+// TestBackfill_NoRetentionCheckWhenRetentionZero confirms Backfill issues
+// NO retention-boundary query at all when retention is 0 (no TTL clause is
+// ever emitted, so nothing can ever be "outside retention" — see
+// retentionBoundary) — a deployment without CERBERUS_SCHEMA_TTL_METRICS
+// set should not pay for a check that can never find anything.
+func TestBackfill_NoRetentionCheckWhenRetentionZero(t *testing.T) {
+	c := testColumns()
+	dconn := &dayFakeConn{days: []time.Time{time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)}}
+	result, err := Backfill(context.Background(), dconn, c, testBefore, 0)
+	if err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	if len(dconn.queries) != 0 {
+		t.Errorf("expected no retention-boundary Query with retention=0, got %d: %v", len(dconn.queries), dconn.queries)
+	}
+	if len(result.OutsideRetentionDays) != 0 {
+		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", result.OutsideRetentionDays)
+	}
+}
+
+// dayFakeConn is a scripted Conn whose Query always returns the configured
+// days as single-column time.Time rows (queryOutsideRetentionDays' scan
+// shape) and whose Exec always succeeds, recording every statement.
+type dayFakeConn struct {
+	days    []time.Time
+	queries []string
+	execSQL []string
+}
+
+func (c *dayFakeConn) Exec(_ context.Context, query string, _ ...any) error {
+	c.execSQL = append(c.execSQL, query)
+	return nil
+}
+
+func (c *dayFakeConn) Query(_ context.Context, query string, _ ...any) (driver.Rows, error) {
+	c.queries = append(c.queries, query)
+	return &dayFakeRows{days: c.days}, nil
+}
+
+// dayFakeRows is a canned driver.Rows over a single time.Time column,
+// mirroring fakeRows' shape but for outsideRetentionDaysSQL's one-column
+// result instead of scanTotals' (name, total) pair.
+type dayFakeRows struct {
+	driver.Rows
+	days []time.Time
+	pos  int
+}
+
+func (r *dayFakeRows) Next() bool {
+	if r.pos >= len(r.days) {
+		return false
+	}
+	r.pos++
+	return true
+}
+
+func (r *dayFakeRows) Scan(dest ...any) error {
+	tp, ok := dest[0].(*time.Time)
+	if !ok {
+		return fmt.Errorf("dayFakeRows: dest[0] is %T, want *time.Time", dest[0])
+	}
+	*tp = r.days[r.pos-1]
+	return nil
+}
+
+func (r *dayFakeRows) Err() error   { return nil }
+func (r *dayFakeRows) Close() error { return nil }
 
 // TestVerify_ReadsBothTotalsAndDiffs runs Verify end to end against a
 // scripted Conn returning canned per-metric totals for each of the two
@@ -372,9 +575,12 @@ func TestVerify_ReadsBothTotalsAndDiffs(t *testing.T) {
 			"`" + c.SumTable + "`":         {{"http_requests_total", 100.0}, {"missed_metric", 5.0}},
 		},
 	}
-	rep, err := Verify(context.Background(), conn, c, testBefore, 0.01)
+	rep, err := Verify(context.Background(), conn, c, testBefore, 0.01, 0)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+	if len(rep.OutsideRetentionDays) != 0 {
+		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", rep.OutsideRetentionDays)
 	}
 	if len(conn.queries) != 2 {
 		t.Fatalf("expected 2 queries (aggregate + base), got %d: %v", len(conn.queries), conn.queries)
@@ -392,7 +598,7 @@ func TestVerify_ReadsBothTotalsAndDiffs(t *testing.T) {
 func TestVerify_PropagatesQueryError(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{rowsErr: errors.New("connection reset")}
-	if _, err := Verify(context.Background(), conn, c, testBefore, 0.01); err == nil {
+	if _, err := Verify(context.Background(), conn, c, testBefore, 0.01, 0); err == nil {
 		t.Fatal("expected an error from a failing Query")
 	}
 }
@@ -404,12 +610,142 @@ func TestVerify_PropagatesQueryError(t *testing.T) {
 func TestVerify_PropagatesBaseTableQueryError(t *testing.T) {
 	c := testColumns()
 	conn := &twoCallConn{err: errors.New("connection reset")}
-	_, err := Verify(context.Background(), conn, c, testBefore, 0.01)
+	_, err := Verify(context.Background(), conn, c, testBefore, 0.01, 0)
 	if err == nil {
 		t.Fatal("expected an error from the base-table read failing")
 	}
 	if !contains(err.Error(), c.SumTable) {
 		t.Errorf("Verify error %q does not name the base table %q", err.Error(), c.SumTable)
+	}
+}
+
+// TestVerify_PropagatesRetentionCheckQueryError confirms a Query failure on
+// the retention pre-check (the FIRST query Verify issues when retention is
+// active) surfaces as an error naming the base table, mirroring
+// TestVerify_PropagatesQueryError / TestVerify_PropagatesBaseTableQueryError's
+// per-read error-wrap coverage.
+func TestVerify_PropagatesRetentionCheckQueryError(t *testing.T) {
+	c := testColumns()
+	withFrozenNow(t, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	conn := &fakeConn{rowsErr: errors.New("connection reset")}
+	_, err := Verify(context.Background(), conn, c, testBefore, 0.01, 24*time.Hour)
+	if err == nil {
+		t.Fatal("expected an error from the retention-check Query failing")
+	}
+	if !contains(err.Error(), c.SumTable) {
+		t.Errorf("Verify error %q does not name the base table %q", err.Error(), c.SumTable)
+	}
+}
+
+// mixedFakeConn extends fakeConn's (MetricName, total) totals-response
+// mechanism with a separate day-response for outsideRetentionDaysSQL's
+// distinct single-column shape, letting one Conn drive Verify's full
+// three-query path (day-scan + both totals reads) end to end.
+type mixedFakeConn struct {
+	fakeConn
+	days []time.Time
+}
+
+func (c *mixedFakeConn) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	if contains(query, "ORDER BY toStartOfDay") {
+		c.queries = append(c.queries, query)
+		return &dayFakeRows{days: c.days}, nil
+	}
+	return c.fakeConn.Query(ctx, query, args...)
+}
+
+// TestVerify_ExcludesOutsideRetentionDaysFromMismatches is the core
+// cerberus issue #2652 regression: a day already past the aggregate
+// table's own retention is EXCLUDED from AggregateTotals / BaseTotals /
+// Mismatches (both totals responses agree once that day's rows are
+// dropped from both sides), and reported separately — with the resolved
+// Retention + RetentionBoundary — on Report.OutsideRetentionDays, never as
+// an unexplained FAIL.
+func TestVerify_ExcludesOutsideRetentionDaysFromMismatches(t *testing.T) {
+	c := testColumns()
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	withFrozenNow(t, now)
+	retention := 24 * time.Hour // boundary = 2026-08-25T12:00:00Z
+	doomedDay := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+
+	conn := &mixedFakeConn{days: []time.Time{doomedDay}}
+	conn.respond = map[string][][2]any{
+		"`" + c.DeltaPrefixTable + "`": {{"http_requests_total", 100.0}},
+		"`" + c.SumTable + "`":         {{"http_requests_total", 100.0}},
+	}
+
+	rep, err := Verify(context.Background(), conn, c, testBefore, 0.01, retention)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !rep.Pass() {
+		t.Fatalf("expected Pass()=true (doomed day excluded, remaining totals match), got Mismatches=%+v", rep.Mismatches)
+	}
+	if rep.Retention != retention {
+		t.Errorf("Retention = %v; want %v", rep.Retention, retention)
+	}
+	wantBoundary := now.Add(-retention)
+	if !rep.RetentionBoundary.Equal(wantBoundary) {
+		t.Errorf("RetentionBoundary = %v; want %v", rep.RetentionBoundary, wantBoundary)
+	}
+	if len(rep.OutsideRetentionDays) != 1 || !rep.OutsideRetentionDays[0].Equal(doomedDay) {
+		t.Errorf("OutsideRetentionDays = %v; want [%v]", rep.OutsideRetentionDays, doomedDay)
+	}
+	if len(conn.queries) != 3 {
+		t.Fatalf("expected 3 queries (day-scan + aggregate + base), got %d: %v", len(conn.queries), conn.queries)
+	}
+}
+
+// TestVerify_RealMismatchSurvivesRetentionExclusion confirms a GENUINE
+// completeness gap (missed_metric, unrelated to the excluded day) is still
+// reported as a Mismatch even while an unrelated day is excluded for
+// being outside retention — the two mechanisms are independent, so
+// exclusion never masks a real bug.
+func TestVerify_RealMismatchSurvivesRetentionExclusion(t *testing.T) {
+	c := testColumns()
+	withFrozenNow(t, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	retention := 24 * time.Hour
+	doomedDay := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+
+	conn := &mixedFakeConn{days: []time.Time{doomedDay}}
+	conn.respond = map[string][][2]any{
+		"`" + c.DeltaPrefixTable + "`": {{"http_requests_total", 100.0}},
+		"`" + c.SumTable + "`":         {{"http_requests_total", 100.0}, {"missed_metric", 5.0}},
+	}
+
+	rep, err := Verify(context.Background(), conn, c, testBefore, 0.01, retention)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if rep.Pass() {
+		t.Fatal("expected a real mismatch (missed_metric) even with retention exclusion active")
+	}
+	if len(rep.Mismatches) != 1 || rep.Mismatches[0].MetricName != "missed_metric" {
+		t.Errorf("Mismatches = %+v; want exactly missed_metric", rep.Mismatches)
+	}
+	if len(rep.OutsideRetentionDays) != 1 {
+		t.Errorf("OutsideRetentionDays = %v; want exactly 1 excluded day", rep.OutsideRetentionDays)
+	}
+}
+
+// TestBackfill_PropagatesRetentionCheckQueryError confirms a Query failure
+// on Backfill's own pre-INSERT retention check surfaces as an error naming
+// the base table, and — critically — that Backfill does NOT proceed to
+// INSERT when the pre-check itself fails (an unknown retention state must
+// never be treated as "safe to write").
+func TestBackfill_PropagatesRetentionCheckQueryError(t *testing.T) {
+	c := testColumns()
+	withFrozenNow(t, time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
+	conn := &fakeConn{rowsErr: errors.New("connection reset")}
+	_, err := Backfill(context.Background(), conn, c, testBefore, 24*time.Hour)
+	if err == nil {
+		t.Fatal("expected an error from the retention-check Query failing")
+	}
+	if !contains(err.Error(), c.SumTable) {
+		t.Errorf("Backfill error %q does not name the base table %q", err.Error(), c.SumTable)
+	}
+	if len(conn.execSQL) != 0 {
+		t.Errorf("Backfill must not INSERT when the retention pre-check fails, got Exec calls: %v", conn.execSQL)
 	}
 }
 

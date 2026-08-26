@@ -32,6 +32,22 @@ func resolveSignalDuration(global, override time.Duration) time.Duration {
 // deterministic regardless of any further Settings entries.
 const storagePolicySetting = "storage_policy"
 
+// MetricsRetention resolves the effective metrics-table retention TTL from
+// cfg's SchemaProvisioning knobs — CERBERUS_SCHEMA_TTL_METRICS overrides
+// CERBERUS_SCHEMA_TTL, the same inherit-or-override rule DDLConfig applies
+// to every per-signal TTL/tiering knob via resolveSignalDuration. Exported
+// so an operational tool that needs ONLY the effective metrics retention —
+// not the full auto-create DDL shape DDLConfig builds (which also demands
+// Validate() pass for tiering knobs unrelated to the caller's concern) —
+// doesn't have to duplicate the inherit rule: cmd/cerberus's
+// delta-prefix-backfill / delta-prefix-verify verbs use this to detect
+// when a backfilled day is already outside the DeltaPrefixTable's own TTL
+// as of the check's run time, a structurally unrecoverable state distinct
+// from a real completeness gap (cerberus issue #2652).
+func MetricsRetention(cfg config.Config) time.Duration {
+	return resolveSignalDuration(cfg.SchemaProvisioning.TTL, cfg.SchemaProvisioning.TTLMetrics)
+}
+
 // DDLConfig maps the runtime config into the typed internal/schema/ddl Config
 // the auto-create hook applies. The database name comes from the ClickHouse
 // connection config; the cluster / table-engine / TTL / Replicated
@@ -57,7 +73,7 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		Cluster:  p.Cluster,
 		Engine:   p.TableEngine,
 		TTL: ddl.TTL{
-			Metrics: signalTTL(p.TTLMetrics),
+			Metrics: MetricsRetention(cfg),
 			Logs:    signalTTL(p.TTLLogs),
 			Traces:  signalTTL(p.TTLTraces),
 		},
