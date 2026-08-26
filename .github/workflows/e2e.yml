@@ -1615,6 +1615,38 @@ jobs:
       - name: Apply chaos overlay (resilience knobs)
         run: just e2e-chaos-overlay
 
+      # TEMPORARY DIAGNOSTIC — bisecting the two consecutive preflight
+      # failures under CERBERUS_CH_QUERY_MAX_MEMORY=2Mi (both runs: /readyz
+      # green fast, but assertHeadsHealthy's 3 head-probe queries never
+      # returned 200 within the 60s preflight budget). Fires the EXACT 3
+      # HEAD_PROBES shapes chaos-run.mjs preflight uses, records their HTTP
+      # status, and reads system.query_log for the real memory_usage/
+      # exception each one costs under the 2Mi cap — so the real fix can be
+      # sized against the ACTUAL floor instead of guessed. Removed once the
+      # real number is captured; not part of the shipped fix.
+      - name: DIAGNOSTIC head-probe query cost under the 2Mi cap
+        run: |
+          set -eu
+          probe() {
+            label="$1"; path="$2"
+            now_before=$(date -u +"%Y-%m-%d %H:%M:%S")
+            code=$(curl -s -o "/tmp/headprobe-$label.json" -w "%{http_code}" "http://localhost:8080$path" || echo "ERR")
+            echo "== [$label] path=$path http_code=$code"
+            head -c 300 "/tmp/headprobe-$label.json"; echo
+            sleep 3
+            kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
+              SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code, substring(exception,1,200) AS exc
+              FROM system.query_log
+              WHERE event_time >= '${now_before}' AND type != 'QueryStart'
+              ORDER BY event_time_microseconds DESC
+              LIMIT 3
+              FORMAT PrettySpace
+            " || true
+          }
+          probe prom '/api/v1/query?query=up'
+          probe loki '/loki/api/v1/query?query=%7Bservice_name%3D~%22.%2B%22%7D&limit=1'
+          probe tempo '/api/search?limit=1'
+
       # Phase-1 scenarios sequentially with heal-between-each, ordered
       # non-destructive-first / destructive-last (see orderScenarios in
       # chaos-run.mjs): route-memo-activation (failure-driven route memo,
