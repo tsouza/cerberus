@@ -1309,17 +1309,19 @@ async function scenarioRouteMemoActivation() {
     { deadlineMs: ROUTE_MEMO_ACTIVATION_DEADLINE_MS, intervalMs: ROUTE_MEMO_POLL_INTERVAL_MS, label: 'route-memo-activation' },
   );
 
-  await dumpRouteMemoDeclineCounters();
-
   if (activated) {
     log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');
-  } else if (!sawMemoryLimit422) {
-    notice(
-      `${notApplicableMarker('route-memo-activation', 'memory-cap-not-crossed')} the pinned 24h/15s query never crossed CERBERUS_CH_QUERY_MAX_MEMORY this run (data-volume-dependent, same dual contract iterate-time-ranges.spec.ts documents) — the memo had no resource failure to rescue.`,
-      { title: NOT_APPLICABLE_TITLE },
-    );
-    return failures;
   } else {
+    await dumpRouteMemoDeclineCounters();
+
+    if (!sawMemoryLimit422) {
+      notice(
+        `${notApplicableMarker('route-memo-activation', 'memory-cap-not-crossed')} the pinned 24h/15s query never crossed CERBERUS_CH_QUERY_MAX_MEMORY this run (data-volume-dependent, same dual contract iterate-time-ranges.spec.ts documents) — the memo had no resource failure to rescue.`,
+        { title: NOT_APPLICABLE_TITLE },
+      );
+      return failures;
+    }
+
     failures.push(
       `route-memo did not activate: last query status=${lastStatus}, a 422 memory-limit rejection WAS observed, but cerberus_route_ab_success_total{cerberus_route_choice="b"} never climbed within budget — the memo was enabled and had a genuine resource failure to rescue and did not`,
     );
