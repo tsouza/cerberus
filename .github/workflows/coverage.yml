@@ -34,10 +34,12 @@ name: coverage
 # parallel jobs and keep ONE aggregator job named exactly `coverage` — the
 # name branch protection's required-contexts set and release.yml's
 # RELEASE_REQUIRED_CHECKS both resolve by exact text, so neither ever sees a
-# stale or missing context. Unlike those two lanes there is no fixture corpus
-# to partition (yet — see the issue for the finer per-package-group follow-up
-# if splitting the two lanes alone is not enough headroom); the two existing
-# lanes ARE the shards:
+# stale or missing context. This originally split into two lane jobs with no
+# further fixture-corpus partitioning; tsouza/cerberus#2645 later gave
+# `coverage-chdb`'s own `TestCardinalityRatchet` corpus walk its own 2-leg
+# matrix (`coverage-chdb-ratchet`, below) once that walk alone caused two
+# consecutive real timeouts running serially inside `coverage-chdb`. The
+# lane jobs:
 #
 #   coverage-plan     computes RUN_HEAVY once (coverage-run-heavy.mjs) ahead
 #                      of both lane jobs, and runs the always-on structural
@@ -47,17 +49,28 @@ name: coverage
 #   coverage-default   the default-tag `go test -coverpkg` lane
 #                      (`just coverage-default`), uploads cover.out.
 #   coverage-chdb       the chdb-tagged lane (`just coverage-chdb`), uploads
-#                      cover-chdb.out.
-#   coverage           the AGGREGATOR. Verifies the two lane jobs rolled up
+#                      cover-chdb.out. Runs only 1/3 of TestCardinalityRatchet's
+#                      corpus itself (PERF_SHARD_INDEX=1) — the other two
+#                      shards run on their OWN runners, below.
+#   coverage-chdb-ratchet  tsouza/cerberus#2645: a 2-leg matrix, one runner
+#                      per leg, each running exactly ONE of
+#                      TestCardinalityRatchet's remaining shards
+#                      (perf-coverage-fanout.mjs's LEG_INDEX mode). This used
+#                      to run INSIDE coverage-chdb, serially AFTER its main
+#                      sweep, sharing that job's one runner — see the job's
+#                      own comment for why that stopped fitting the budget.
+#   coverage           the AGGREGATOR. Verifies the three lane jobs rolled up
 #                      the way this run's RUN_HEAVY says they should
 #                      (coverage-aggregate.mjs), then — on a heavy run —
-#                      downloads both lane profiles and runs
-#                      `just coverage-merge`, which folds them into
-#                      cover-merged.out and hands that FULL merged profile to
-#                      coverage-summary.mjs's floor gate. A shard boundary
-#                      must never let a package's coverage go unmeasured, so
-#                      the floor check always runs against the merge of both
-#                      lanes, never a partial profile.
+#                      downloads every lane profile (including each
+#                      coverage-chdb-ratchet leg's) and runs
+#                      `just coverage-merge`, which folds the ratchet shard
+#                      profiles into cover-chdb.out, folds that into
+#                      cover.out as cover-merged.out, and hands that FULL
+#                      merged profile to coverage-summary.mjs's floor gate. A
+#                      shard boundary must never let a package's coverage go
+#                      unmeasured, so the floor check always runs against the
+#                      merge of every lane, never a partial profile.
 #
 # Informational on push/nightly, but ALSO a parity lane on the
 # publish-on-merge release flow: it runs on EVERY pull_request so it can be a
@@ -135,6 +148,7 @@ jobs:
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs
           node --test .github/scripts/coverage-aggregate.test.mjs
+          node --test .github/scripts/perf-coverage-fanout.test.mjs
 
       - name: Verify package floor enrollment
         run: node .github/scripts/coverage-package-floor.mjs
@@ -202,12 +216,18 @@ jobs:
     needs: coverage-plan
     if: needs.coverage-plan.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
-    # Same reasoning as coverage-default's timeout: `just coverage-chdb`'s
-    # `go test` is capped at `-timeout 60m`, plus the ratchet fan-out
-    # (perf-coverage-fanout.mjs) it also runs.
+    # `just coverage-chdb`'s own main-sweep `go test` is capped at
+    # `-timeout 60m`. This job no longer also carries the ratchet fan-out
+    # tail (SKIP_RATCHET_FANOUT below moved that to its own
+    # coverage-chdb-ratchet matrix, tsouza/cerberus#2645), so the 75-minute
+    # wrapper below now has real slack over that 60-minute internal cap —
+    # left unchanged rather than retuned speculatively: the only real
+    # measurement so far (main tip 4c16821f2) is the main sweep ALONE taking
+    # 45m34s, comfortably inside 75m, and a future PR can tighten this once
+    # a run without the fanout tail has actually reported its own timing.
     #
-    # Bumped from 50 to 75 on 2026-08-26 alongside the Justfile recipe's own
-    # 40m->60m bump: the first real push-to-main run after this job existed
+    # Bumped from 50 to 75 on 2026-08-26 (before this job stopped running the
+    # fanout inline): the first real push-to-main run after this job existed
     # hit the old 50m wrapper exactly, the same corpus growth already
     # documented on the recipe itself.
     timeout-minutes: 75
@@ -230,9 +250,18 @@ jobs:
       # rather than silently narrowing: a `just chdb-install` that failed
       # soft would otherwise leave cover-chdb.out missing and this job green
       # having gated nothing. See the recipe's own comment in the Justfile.
+      #
+      # SKIP_RATCHET_FANOUT=1 (tsouza/cerberus#2645): TestCardinalityRatchet's
+      # shards 2..RATCHET_FANOUT now run on their own runners in the
+      # coverage-chdb-ratchet matrix below instead of serially, in-process,
+      # after this job's own main sweep — the source of the two consecutive
+      # timeouts this lane hit. A bare local `just coverage-chdb` leaves this
+      # unset and keeps running every shard itself, since it has no separate
+      # CI job to fall back on.
       - name: Run chdb-tagged coverage lane
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
+          SKIP_RATCHET_FANOUT: '1'
         run: just coverage-chdb
 
       - name: Upload chdb-tagged coverage profile
@@ -244,6 +273,88 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
 
+  # coverage-chdb-ratchet — tsouza/cerberus#2645: TestCardinalityRatchet's
+  # remaining shards (2..RATCHET_FANOUT, perf-coverage-fanout.mjs's
+  # RATCHET_FANOUT=3) as their own 2-leg CI matrix, ONE runner per leg,
+  # mirroring chdb.yml's `roundtrip-promql-shard`/`roundtrip-promql` and
+  # post-merge-drift.yml's `cardinality-leg`/`cardinality-seal` — "N parallel
+  # shards, one aggregator downloads and merges". This used to run inside
+  # coverage-chdb, serially AFTER its main sweep, on the SAME runner
+  # (perf-coverage-fanout.mjs's old header comment): that was necessary only
+  # while `just coverage` was one job and could not spin up separate CI
+  # jobs; coverage-chdb became its own job in #2639 and can grow its own
+  # matrix like every other multi-shard lane in this repo.
+  #
+  # Each leg now runs ALONE on its own runner — no sibling shard competing
+  # for the same 4 cores, the oversubscription risk the old in-runner
+  # fan-out's own RATCHET_FANOUT comment worried about — so per-leg timing
+  # should improve on the ~16.3-minute isolated measurement
+  # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES cites, not regress
+  # past it.
+  coverage-chdb-ratchet:
+    name: coverage-chdb-ratchet (${{ matrix.leg }})
+    needs: coverage-plan
+    if: needs.coverage-plan.outputs.run_heavy == 'true'
+    runs-on: ubuntu-latest
+    # perf-coverage-fanout.mjs's RATCHET_TIMEOUT_MINUTES=30 is this leg's own
+    # internal `go test -timeout`. 45 leaves 15 minutes for checkout, Go
+    # module/build caching, `just chdb-install` and the compile itself on top
+    # of that — a 1.5x internal-to-wrapper ratio, close to the ~1.4x
+    # chdb.yml's `roundtrip-promql-shard` uses (25m internal / 35m wrapper)
+    # for an analogous single-shard-per-runner leg, rather than the tighter
+    # 3-minute abort-reporting margin a job that does nothing BUT run one
+    # `go test` can get away with. perf-coverage-fanout.test.mjs pins
+    # RATCHET_TIMEOUT_MINUTES against this number.
+    timeout-minutes: 45
+    strategy:
+      # MANDATORY, matching every other multi-leg matrix in this repo: one
+      # leg's failure (a real corpus-wide regression usually trips several
+      # shards at once) must not cancel its sibling mid-profile.
+      fail-fast: false
+      matrix:
+        # Shards 2..RATCHET_FANOUT — shard 1 is coverage-chdb's own main
+        # sweep, above. RATCHET_FANOUT is perf-coverage-fanout.mjs's own
+        # constant restated here because a GitHub Actions matrix cannot
+        # import a JS constant; perf-coverage-fanout.test.mjs pins the two
+        # back together the same way the Justfile's PERF_SHARD_COUNT=3
+        # literal already is.
+        leg: [2, 3]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+        with:
+          tool: just
+
+      - name: Install libchdb.so
+        run: just chdb-install
+
+      # COVERPKG computed the identical way the Justfile's `coverage-chdb`
+      # recipe does — see that recipe for the source of truth; deliberately
+      # NOT its own named constant or shared script helper, so the two never
+      # look like they could silently diverge without a diff touching both.
+      - name: Run TestCardinalityRatchet shard ${{ matrix.leg }}/3
+        env:
+          TAGS: chdb,agpl_oracle,chdb_agpl_oracle
+          LEG_INDEX: ${{ matrix.leg }}
+        run: |
+          COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"
+          COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs
+
+      - name: Upload ratchet shard coverage profile
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-profile-chdb-ratchet-${{ matrix.leg }}
+          path: cover-chdb-ratchet-${{ matrix.leg }}.out
+          if-no-files-found: warn
+          retention-days: 1
+
   # coverage — the AGGREGATOR, named EXACTLY `coverage` so the required
   # status check still appears and gates (the lane jobs report as
   # `coverage-default` / `coverage-chdb`, never `coverage`). `always()` so it
@@ -252,7 +363,7 @@ jobs:
   # indistinguishable from one that is still running.
   coverage:
     name: coverage
-    needs: [coverage-plan, coverage-default, coverage-chdb]
+    needs: [coverage-plan, coverage-default, coverage-chdb, coverage-chdb-ratchet]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -266,12 +377,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Fails the job — before anything else runs — unless the two lane jobs
-      # rolled up exactly the way this run's RUN_HEAVY says they should:
-      # both skipped on an ordinary PR, both success on a heavy run. See the
-      # script for the full decision table (a skipped-but-heavy or
-      # ran-but-not-heavy result means the job-level gates drifted apart;
-      # `failure`/`cancelled` means a lane genuinely broke or hung).
+      # Fails the job — before anything else runs — unless every lane job
+      # rolled up exactly the way this run's RUN_HEAVY says it should: all
+      # skipped on an ordinary PR, all success on a heavy run. See the script
+      # for the full decision table (a skipped-but-heavy or ran-but-not-heavy
+      # result means the job-level gates drifted apart; `failure`/`cancelled`
+      # means a lane genuinely broke or hung — for coverage-chdb-ratchet,
+      # GitHub Actions reports that the moment ANY one of its two matrix legs
+      # does, even with the others' fail-fast: false letting siblings finish).
       - name: Verify the coverage lane jobs rolled up cleanly
         run: node .github/scripts/coverage-aggregate.mjs
         env:
@@ -279,6 +392,7 @@ jobs:
           RUN_HEAVY: ${{ needs.coverage-plan.outputs.run_heavy }}
           DEFAULT_RESULT: ${{ needs.coverage-default.result }}
           CHDB_RESULT: ${{ needs.coverage-chdb.result }}
+          CHDB_RATCHET_RESULT: ${{ needs.coverage-chdb-ratchet.result }}
 
       - if: env.RUN_HEAVY == 'true'
         uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
@@ -286,10 +400,14 @@ jobs:
           tool: just
 
       # No `pattern:`-per-name repetition and no explicit `path:` needed:
-      # `merge-multiple: true` drops each artifact's file directly into the
-      # checkout root instead of a per-artifact subdirectory, so cover.out
-      # and cover-chdb.out land exactly where `just coverage-merge` (and a
-      # local run of the same recipe) already expects them.
+      # `coverage-profile-*` already matches coverage-profile-default,
+      # coverage-profile-chdb AND both coverage-profile-chdb-ratchet-{2,3}
+      # legs (tsouza/cerberus#2645) without widening, and `merge-multiple:
+      # true` drops each artifact's file directly into the checkout root
+      # instead of a per-artifact subdirectory, so cover.out,
+      # cover-chdb.out and cover-chdb-ratchet-{2,3}.out all land exactly
+      # where `just coverage-merge` (and a local run of the same recipe)
+      # already expects them.
       - name: Download coverage lane profiles
         if: env.RUN_HEAVY == 'true'
         uses: actions/download-artifact@v8

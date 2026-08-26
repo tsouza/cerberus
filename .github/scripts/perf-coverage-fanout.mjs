@@ -1,9 +1,8 @@
 // perf-coverage-fanout.mjs — runs the EXTRA shards of `just coverage`'s
-// chDB-tagged TestCardinalityRatchet corpus walk as concurrent go test
-// PROCESSES, so the lane's main `./...` sweep (still one ordinary,
-// Justfile-visible `go test` invocation — see that recipe's own comment)
-// only has to carry 1/RATCHET_FANOUT of the corpus itself instead of all of
-// it.
+// chDB-tagged TestCardinalityRatchet corpus walk as go test PROCESSES, so
+// the lane's main `./...` sweep (still one ordinary, Justfile-visible
+// `go test` invocation — see that recipe's own comment) only has to carry
+// 1/RATCHET_FANOUT of the corpus itself instead of all of it.
 //
 // Why this is a script rather than more `go test` lines in the Justfile
 // ---------------------------------------------------------------------------
@@ -30,10 +29,34 @@
 // then past 1020s ... in a single day" (#2002). `perf-guards-shard` answered
 // that by sharding the corpus across 8 CI matrix legs (test/perf/profile/
 // shard.go's PERF_SHARD_INDEX / PERF_SHARD_COUNT), each a separate runner.
-// This lane cannot spin up separate CI jobs — `just coverage` is one job —
-// so it shards across concurrent OS PROCESSES on the SAME runner instead,
-// the same technique property-fanout.mjs already established for the
-// identical problem shape in test/property.
+//
+// Two modes
+// ---------
+// Local (no LEG_INDEX — `just coverage` / `just coverage-chdb` outside CI):
+// runs every remaining shard (2..RATCHET_FANOUT) CONCURRENTLY as sibling
+// PROCESSES on whichever single machine is available, the same technique
+// property-fanout.mjs already established for the identical problem shape
+// in test/property. A bare local run has no separate-job substrate to hand
+// shards to, so this stays the only option there.
+//
+// CI matrix (LEG_INDEX=2|3 — tsouza/cerberus#2645's `coverage-chdb-ratchet`
+// job in coverage.yml): runs exactly the ONE shard LEG_INDEX names and exits
+// with its code, nothing concurrent. Each matrix leg is its own runner, so
+// two shards never contend for one runner's cores — the oversubscription
+// this file used to avoid by running the legs AFTER the main sweep finished,
+// serially with respect to it, on the SAME runner. That serial-tail shape is
+// what #2645 removes: `coverage-chdb`'s main sweep alone measured 45m34s on
+// a real push (main tip 4c16821f2), leaving too little of the job's
+// wrapper for a fanout tail that itself needed ~30 more minutes, and this
+// was the second consecutive real timeout on the lane. This file's own
+// RATCHET_FANOUT export used to be qualified by a claim that "this lane
+// cannot spin up separate CI jobs" — true only while `just coverage` was one
+// job; `coverage-chdb` became its own job in #2639 and can grow its own
+// matrix, the same way chdb.yml's `roundtrip-promql-shard`/`roundtrip-promql`
+// and post-merge-drift.yml's `cardinality-leg`/`cardinality-seal` already do.
+// `just coverage-chdb`'s own SKIP_RATCHET_FANOUT=1 (set by the coverage-chdb
+// CI job, unset for a local run) is what keeps that job from ALSO running
+// the shards the matrix now carries.
 //
 // The Justfile's main `./...` sweep is left completely intact — same flags,
 // same package list, no `-skip` — deliberately: `-skip` on that sweep would
@@ -45,21 +68,20 @@
 // Instead, the main sweep is handed PERF_SHARD_INDEX=1 / PERF_SHARD_COUNT
 // (below) so its own TestCardinalityRatchet run — still selected, still
 // asserting, still real evidence — only walks 1/RATCHET_FANOUT of the
-// corpus. This script runs the REMAINING RATCHET_FANOUT-1 shards
-// concurrently, AFTER the main sweep finishes (so the two phases never
-// compete for the runner's cores at once): TestCardinalityRatchet already
+// corpus. This script runs the REMAINING RATCHET_FANOUT-1 shards, in
+// whichever of the two modes above applies: TestCardinalityRatchet already
 // has independent enrollment evidence via `perf-chdb`/`perf-guards-shard` in
 // chdb.yml, so this script's own invocations do not need to be
 // Justfile-visible.
 //
-// t.Parallel() inside one process is not a fix here either, for the same
-// reason property-fanout.mjs's header documents: chdb-go v1.12.0's
-// chdb/session.go keeps a single package-level `globalSession` shared by
-// every sql.Open("chdb", "") call in a process, so racing ratchet shards
-// inside one binary would silently alias the same chDB session. Separate
-// PROCESSES each get their own address space and their own globalSession,
-// which is what makes running the extra shards concurrently with EACH OTHER
-// safe.
+// t.Parallel() inside one process is not a fix for the local mode's
+// concurrency either, for the same reason property-fanout.mjs's header
+// documents: chdb-go v1.12.0's chdb/session.go keeps a single package-level
+// `globalSession` shared by every sql.Open("chdb", "") call in a process, so
+// racing ratchet shards inside one binary would silently alias the same
+// chDB session. Separate PROCESSES each get their own address space and
+// their own globalSession, which is what makes running the extra shards
+// concurrently with EACH OTHER safe.
 //
 // Env:
 //   TAGS       go build tags for every leg (chdb,agpl_oracle,chdb_agpl_oracle
@@ -68,9 +90,13 @@
 //              the main sweep uses, so every leg's profile instruments
 //              exactly the packages a single unsharded run would have.
 //              Required.
+//   LEG_INDEX  CI matrix mode: an integer in [2, RATCHET_FANOUT] selecting
+//              the ONE shard to run on this runner. Unset (the default):
+//              local mode, every remaining shard concurrently. Optional.
 //   GO         go executable; default `go`. Test seam.
 //
-// Exit: 0 when every extra shard passes; 1 on a failed shard or missing env.
+// Exit: 0 when every shard this invocation is responsible for passes; 1 on
+// a failed shard, an out-of-range LEG_INDEX, or missing env.
 //
 // node: builtins only — no npm deps, no setup-node needed.
 
@@ -110,19 +136,26 @@ export const RATCHET_FANOUT = 3;
  * own perf-guards-shard job independently confirms an 8-way shard of the
  * SAME test completes in low single-digit minutes of actual test time on
  * real CI hardware, so a 3-way shard landing well inside 30 minutes is the
- * conservative case, not the risky one. It stays under coverage.yml's job
- * `timeout-minutes: 60` with the same 3-minute abort-reporting margin
- * test/regression/go_test_timeout_budget_test.go holds every OTHER `just
- * coverage` invocation to, so Go's own alarm — which dumps every
- * goroutine's stack — always fires before the runner takes the container
- * away. perf-coverage-fanout.test.mjs asserts that ordering against
- * coverage.yml.
+ * conservative case, not the risky one. In CI matrix mode (LEG_INDEX set)
+ * this is the ONLY per-process timeout coverage.yml's `coverage-chdb-ratchet`
+ * job's own `timeout-minutes` has to leave room for — go_test_timeout_budget_
+ * test.go's static scanner cannot see inside this script's own spawned `go
+ * test` (it only walks Justfile recipes a workflow's `run:` invokes via
+ * `just`, and this job calls the node script directly), so
+ * perf-coverage-fanout.test.mjs is what pins this number against that job's
+ * `timeout-minutes` with the same 3-minute abort-reporting margin
+ * go_test_timeout_budget_test.go holds every OTHER `go test` in this repo
+ * to, so Go's own alarm — which dumps every goroutine's stack — always
+ * fires before the runner takes the container away.
  */
 export const RATCHET_TIMEOUT_MINUTES = 30;
 
 /** The env pair test/perf/profile/shard.go's ShardFromEnv reads. */
 const PERF_SHARD_INDEX_ENV = 'PERF_SHARD_INDEX';
 const PERF_SHARD_COUNT_ENV = 'PERF_SHARD_COUNT';
+
+/** CI matrix mode: selects the ONE shard to run on this runner. */
+const LEG_INDEX_ENV = 'LEG_INDEX';
 
 /**
  * The leg commands: shards 2..RATCHET_FANOUT (shard 1 is the Justfile's
@@ -155,6 +188,17 @@ export function legCommands({ tags, coverpkg, go = 'go' }) {
   });
 }
 
+/**
+ * Selects the one leg CI matrix mode (LEG_INDEX set) runs, out of the legs
+ * `legCommands` returns. Returns `undefined` for an index outside
+ * [2, RATCHET_FANOUT] — shard 1 is the Justfile's own main sweep, never a
+ * leg this script runs in either mode — so the caller can tell an
+ * out-of-range LEG_INDEX apart from a real leg.
+ */
+export function selectLeg(legs, legIndex) {
+  return legs.find((leg) => leg.env[PERF_SHARD_INDEX_ENV] === String(legIndex));
+}
+
 async function main() {
   const tags = process.env.TAGS ?? '';
   if (tags === '') {
@@ -170,6 +214,33 @@ async function main() {
 
   const go = process.env.GO ?? 'go';
   const legs = legCommands({ tags, coverpkg, go });
+
+  const legIndexRaw = process.env[LEG_INDEX_ENV];
+  if (legIndexRaw !== undefined && legIndexRaw !== '') {
+    const legIndex = Number(legIndexRaw);
+    const leg = Number.isInteger(legIndex) ? selectLeg(legs, legIndex) : undefined;
+    if (!leg) {
+      error(
+        `${LEG_INDEX_ENV}="${legIndexRaw}" is not one of this script's shards (2..${RATCHET_FANOUT}) — ` +
+          "coverage.yml's coverage-chdb-ratchet matrix and this script's own RATCHET_FANOUT have drifted apart",
+      );
+      process.exit(1);
+    }
+
+    notice(`perf-coverage: CI matrix mode — running only ${leg.name} on this runner (${LEG_INDEX_ENV}=${legIndex})`);
+    const started = Date.now();
+    const result = await runLegBuffered(leg);
+    const elapsedSeconds = Math.round((Date.now() - started) / 1000);
+    group(`${result.leg.name} (exit ${result.code})`, () => log(result.out.trimEnd()));
+
+    if (result.code !== 0) {
+      error(`perf-coverage: ${leg.name} failed after ${elapsedSeconds}s`);
+      process.exit(result.code);
+    }
+    notice(`perf-coverage: ${leg.name} passed in ${elapsedSeconds}s`);
+    return;
+  }
+
   notice(
     `perf-coverage: ${legs.length} extra ${RATCHET_TEST} shard(s) (2..${RATCHET_FANOUT} of ${RATCHET_FANOUT}), ` +
       'shard 1 already carried by the main sweep',

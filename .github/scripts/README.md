@@ -776,24 +776,43 @@ what actually runs.
   grew (tsouza/cerberus#2634) — `-coverpkg` instrumentation makes the job's
   cost scale with the WHOLE package graph, not just the packages under active
   test. The fix splits the two lanes into parallel `coverage-default` /
-  `coverage-chdb` jobs and keeps ONE aggregator named exactly `coverage` — the
-  name branch protection and release.yml's RELEASE_REQUIRED_CHECKS both
+  `coverage-chdb` jobs (later joined by a third, `coverage-chdb-ratchet`, a
+  2-leg matrix carrying `TestCardinalityRatchet`'s extra shards —
+  tsouza/cerberus#2645) and keeps ONE aggregator named exactly `coverage` —
+  the name branch protection and release.yml's RELEASE_REQUIRED_CHECKS both
   resolve by exact text — mirroring `perf-guards-shard`/`perf-guards` in
-  chdb.yml and `profile-shard`/`profile` in perf-profile.yml, one level
-  simpler: two named `needs` results to reconcile instead of one matrix
-  roll-up. Tells a legitimate skip (ordinary PR, neither lane ran, nothing to
-  merge) apart from an illegitimate one (a heavy run where a lane never ran,
-  or failed, or was cancelled by its own timeout), and treats `coverage-plan`
-  (the leading job computing RUN_HEAVY) not succeeding as its own hard
-  failure regardless of the other facts — otherwise an unset RUN_HEAVY output
-  would read identically to an ordinary PR's legitimate no-op.
-  `coverage-aggregate.test.mjs` is the `node --test` guard.
+  chdb.yml and `profile-shard`/`profile` in perf-profile.yml. Tells a
+  legitimate skip (ordinary PR, no lane ran, nothing to merge) apart from an
+  illegitimate one (a heavy run where a lane never ran, or failed, or was
+  cancelled by its own timeout — for `coverage-chdb-ratchet`, GitHub Actions
+  reports that the moment ANY one of its two matrix legs does), and treats
+  `coverage-plan` (the leading job computing RUN_HEAVY) not succeeding as its
+  own hard failure regardless of the other facts — otherwise an unset
+  RUN_HEAVY output would read identically to an ordinary PR's legitimate
+  no-op. `coverage-aggregate.test.mjs` is the `node --test` guard.
   - Env: `PLAN_RESULT` (`needs.coverage-plan.result`), `RUN_HEAVY`
     (`needs.coverage-plan.outputs.run_heavy`), `DEFAULT_RESULT`
     (`needs.coverage-default.result`), `CHDB_RESULT`
-    (`needs.coverage-chdb.result`).
+    (`needs.coverage-chdb.result`), `CHDB_RATCHET_RESULT`
+    (`needs.coverage-chdb-ratchet.result`).
   - Exit: `0` when it is safe to proceed (merge on a heavy run, or report the
     no-op on a non-heavy one), `1` otherwise.
+- **`perf-coverage-fanout.mjs`** — `just coverage-chdb`'s
+  `TestCardinalityRatchet` fan-out (shards 2..`RATCHET_FANOUT` of the corpus
+  walk; shard 1 is the Justfile's own main sweep). Two modes: local (no
+  `LEG_INDEX`) runs every remaining shard CONCURRENTLY as sibling processes
+  on one machine, the same technique `property-fanout.mjs` established for
+  the identical timeout shape in `test/property`; CI matrix mode
+  (`LEG_INDEX=2|3`, `coverage.yml`'s `coverage-chdb-ratchet` job,
+  tsouza/cerberus#2645) runs exactly the one named shard on its OWN runner
+  and exits with its code — replacing an earlier design that ran those same
+  shards serially, in-process, AFTER `coverage-chdb`'s own main sweep on the
+  same runner, which caused two consecutive real job timeouts as the corpus
+  grew. `perf-coverage-fanout.test.mjs` is the `node --test` guard.
+  - Env: `TAGS`, `COVERPKG` (required both modes), `LEG_INDEX` (CI matrix
+    mode only), `GO` (default `go`, test seam).
+  - Exit: `0` when every shard this invocation is responsible for passes,
+    `1` on a failed shard, an out-of-range `LEG_INDEX`, or missing env.
 - **`coverage-summary.mjs`** — `coverage.yml`, invoked at the end of the `just
   coverage` recipe rather than as its own workflow step (so a local run gets the
   same verdict CI does). Renders the per-package coverage table into the step

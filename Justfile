@@ -586,7 +586,11 @@ coverage-chdb:
         echo "==> chdb-tagged coverage"; \
         COVERPKG="$(go list -tags chdb,agpl_oracle,chdb_agpl_oracle ./... | paste -sd, -)"; \
         PERF_SHARD_INDEX=1 PERF_SHARD_COUNT=3 go test -timeout 60m -tags chdb,agpl_oracle,chdb_agpl_oracle -coverpkg="$COVERPKG" -coverprofile=cover-chdb.out ./... | awk '{ sub(/of statements in github\.com\/.*/, "of statements"); print; fflush() }'; \
-        TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
+        if [ "${SKIP_RATCHET_FANOUT:-}" != "1" ]; then \
+            TAGS=chdb,agpl_oracle,chdb_agpl_oracle COVERPKG="$COVERPKG" node .github/scripts/perf-coverage-fanout.mjs; \
+        else \
+            echo "==> SKIP_RATCHET_FANOUT=1: shards 2..PERF_SHARD_COUNT run on their own coverage-chdb-ratchet CI matrix legs, not here"; \
+        fi; \
     else \
         echo "==> libchdb.so not found, skipping chdb lane"; \
     fi
@@ -608,7 +612,7 @@ coverage-chdb:
     # t.Parallel() TestBaselineShards* sibling in the SAME test/perf binary
     # sat blocked for the whole 40 minutes too, never reaching its own body.
     # Unlike perf-guards-shard in chdb.yml (which shards the same test across
-    # 8 separate CI matrix legs), this is one job. The sweep below is
+    # 8 separate CI matrix legs), this WAS one job. The sweep below is
     # otherwise UNCHANGED — same flags, same ./... package list, no `-skip`.
     # `-skip` is deliberately avoided: test/regression/tagged_test_enrollment_
     # test.go's static evidence scanner (parseTaggedGoTestArgs) discards a go
@@ -618,23 +622,26 @@ coverage-chdb:
     # silently drop their enrollment evidence too. Instead the sweep only
     # gains PERF_SHARD_INDEX=1 / PERF_SHARD_COUNT: TestCardinalityRatchet
     # still runs here, still asserting, just over 1/PERF_SHARD_COUNT of the
-    # corpus. The other PERF_SHARD_COUNT-1 shards run afterward, concurrently
-    # with each other, in perf-coverage-fanout.mjs — the same process
-    # fan-out technique property-fanout.mjs already established for the
-    # identical failure shape in test/property (see that script's own header
-    # for why t.Parallel() inside one process is not a safe alternative:
-    # chdb-go's shared globalSession). Those extra shards do not need to be
-    # Justfile-visible themselves: TestCardinalityRatchet already has
-    # independent enrollment evidence via the perf-chdb recipe. The shard
-    # count (3) is perf-coverage-fanout.mjs's own RATCHET_FANOUT constant,
-    # restated here because Just recipes cannot import a JS constant;
-    # perf-coverage-fanout.test.mjs pins the two back together.
-    @if [ -e cover-chdb.out ]; then \
-        { echo "mode: set"; \
-          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out cover-chdb-ratchet-*.out | sort; \
-        } > cover-chdb.out.folded && mv cover-chdb.out.folded cover-chdb.out; \
-    fi
-    # Unconditional (outside both `if` blocks above, so it runs whether or not
+    # corpus.
+    #
+    # The other PERF_SHARD_COUNT-1 shards (tsouza/cerberus#2645): locally,
+    # perf-coverage-fanout.mjs still runs them itself, concurrently with each
+    # other on this same machine — the process fan-out technique
+    # property-fanout.mjs already established for the identical failure
+    # shape in test/property (see that script's own header for why
+    # t.Parallel() inside one process is not a safe alternative: chdb-go's
+    # shared globalSession). In CI, coverage.yml's `coverage-chdb` job sets
+    # SKIP_RATCHET_FANOUT=1 and those shards instead run on their OWN
+    # runners in the `coverage-chdb-ratchet` matrix — this used to be a
+    # serial tail on THIS job's own runner, and was the direct cause of two
+    # consecutive real timeouts on this lane. Either way, those extra shards
+    # do not need to be Justfile-visible themselves: TestCardinalityRatchet
+    # already has independent enrollment evidence via the perf-chdb recipe.
+    # The shard count (3) is perf-coverage-fanout.mjs's own RATCHET_FANOUT
+    # constant, restated here because Just recipes cannot import a JS
+    # constant; perf-coverage-fanout.test.mjs pins the two back together.
+    #
+    # Unconditional (outside the `if` block above, so it runs whether or not
     # libchdb.so was found): a bare local `just coverage-chdb` stays a graceful
     # skip, but a caller that opts in via COVERAGE_REQUIRE_LANES=default+chdb
     # is asserting the chdb lane MUST have produced real evidence — CI sets
@@ -651,9 +658,31 @@ coverage-chdb:
 # equally after running `coverage-default` + `coverage-chdb` locally in the
 # same tree, or after a CI job downloads each lane's profile artifact into
 # one directory (tsouza/cerberus#2634) — either way the merge is a fact about
-# the two files, not about how they got there.
+# the files, not about how they got there.
 coverage-merge:
     @test -s cover.out || { echo "error: cover.out not found — run 'just coverage-default' first" >&2; exit 1; }
+    # Fold TestCardinalityRatchet's extra shard profiles (cover-chdb-ratchet-
+    # *.out) into cover-chdb.out first, BEFORE the cover.out+cover-chdb.out
+    # merge below. tsouza/cerberus#2645 moved these files' origin out of
+    # `coverage-chdb` itself (where this fold used to run immediately after
+    # writing them) into their own `coverage-chdb-ratchet` CI matrix job, so
+    # they no longer always share a directory with cover-chdb.out at the
+    # moment it is produced — a local `just coverage` still leaves them
+    # sitting right here, but in CI they only converge here, in the
+    # `coverage` aggregator job, after it downloads every lane's artifact
+    # into one directory. `shopt -s nullglob` (rather than a bare `-e` test)
+    # is what makes an unmatched `cover-chdb-ratchet-*.out` glob expand to
+    # NOTHING instead of the literal pattern string, which would otherwise
+    # hand awk a "file" it can never open.
+    @shopt -s nullglob; \
+    RATCHET_FILES=(cover-chdb-ratchet-*.out); \
+    if [ ${#RATCHET_FILES[@]} -gt 0 ]; then \
+        test -s cover-chdb.out || { echo "error: found ratchet shard profile(s) (${RATCHET_FILES[*]}) but no cover-chdb.out to fold them into" >&2; exit 1; }; \
+        echo "==> folding cover-chdb.out with the ratchet shard profile(s): ${RATCHET_FILES[*]}"; \
+        { echo "mode: set"; \
+          awk 'FNR==1{next} { k=$1" "$2; if (!(k in m) || $3>m[k]) m[k]=$3 } END { for (k in m) print k, m[k] }' cover-chdb.out "${RATCHET_FILES[@]}" | sort; \
+        } > cover-chdb.out.folded && mv cover-chdb.out.folded cover-chdb.out; \
+    fi
     @if [ -s cover-chdb.out ]; then \
         echo "==> merging profiles"; \
         { echo "mode: set"; \
