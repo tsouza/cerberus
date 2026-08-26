@@ -272,7 +272,14 @@ jobs:
           # block a release. `mutation` is a test-QUALITY ratchet rather than a
           # correctness gate on the artifact being shipped; requiring it here
           # would put its ~11-leg matrix on the critical path of every publish,
-          # including maintenance hotfixes. `drought` (chaos-not-applicable-rate.yml)
+          # including maintenance hotfixes. `gremlins` covers that same matrix's
+          # own per-leg check-runs (e.g. `gremlins phase4-promql-a`) — they do
+          # NOT share the `mutation` aggregate's name, so the `mutation` prefix
+          # above never matched them: v1.16.0's release commit had 6 red
+          # phase4-promql legs (a known, pre-existing, already-tracked coverage
+          # gap in that package) and preflight blocked on them even though the
+          # aggregate they roll into is explicitly de-gated for the identical
+          # reason one line up. `drought` (chaos-not-applicable-rate.yml)
           # is a Wednesday-cron historical drift detector over chaos-lane run
           # history, not a property of any specific commit — its own header
           # comment already excludes it from PR gating for the same reason.
@@ -300,6 +307,7 @@ jobs:
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
+            gremlins
             drought
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
