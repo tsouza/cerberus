@@ -426,6 +426,46 @@ does round-trip, so the marker cannot decay into a blanket exemption. No
 fixture currently needs it — the pinned chDB substrate clears every floor
 the corpus exercises.
 
+#### Pairing a chdb-only regression pin with an untagged companion
+
+A `chdb`-tagged test runs only on the release gate — the `roundtrip` /
+`probe` lanes on push-to-main, nightly, manual dispatch, or a
+`release/*`-headed PR (see "CI gates" above) — never on an ordinary PR's
+own required `check` lane. So when a real production incident is
+root-caused to a bug that only a real ClickHouse execution can reproduce,
+the direct regression pin for that incident is necessarily `chdb`-tagged
+too, and a future PR that reintroduces the SAME regression is not blocked
+at review time — it only surfaces after merge, on the next push to main
+or the next release PR's full matrix (#2654).
+
+Where the underlying invariant is expressible without a real ClickHouse,
+pair the `chdb`-tagged direct reproduction with a second, plain-`go test`
+companion that pins the same invariant in pure Go — no `chdb` build tag,
+so it runs in every `go test -race ./...` invocation and blocks the
+required `check` gate at PR time. #2651's fix (PR #2653) is the worked
+example: `range_bucket_grid_native_bound_test.go`'s
+`TestRangeBucketGridNativeBound_PassesNearProductionReferenceCardinalityOrdinaryWindow`
+is the `chdb`-tagged direct reproduction — a real ClickHouse execution at
+the exact production shape that tripped the resource bound. Its companion,
+`range_bucket_grid_native_bound_headroom_test.go`'s
+`TestRangeBucketGridNativeBound_AxisOneHasSentinelHeadroom`, asserts the
+same underlying invariant — the calibrated constant
+(`maxRangeBucketGridNativeRows`) keeps a minimum multiple of headroom
+above a reference cardinality — as pure integer division, with no chDB
+dependency at all.
+
+This pairing is not universal. Most chDB-only tests — TXTAR roundtrip
+fixtures, live reference parity, the compat corpora — assert row-level or
+wire-level correctness that genuinely needs a real ClickHouse execution
+and has no untagged equivalent. The pattern applies narrowly, to a
+resource-bound or calibration-constant regression whose invariant is
+itself pure arithmetic (a constant's ratio to a reference value, a
+threshold's distance from a measured cliff) — #2651's class, not the
+general case. It is a convention enforced by reviewer discipline, not a
+CI gate: #2654 evaluated a structural check in the spirit of
+`forbid-skip.mjs` and concluded the signal is not precise enough to be
+worth one — see that issue's closing PR for the reasoning.
+
 #### The chdb lane and the race detector
 
 Every chdb-tagged test binary loads libchdb.so — an embedded ClickHouse —
