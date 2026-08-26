@@ -1691,8 +1691,8 @@
       "description": "Merged default-tag and chDB profiles held to per-package floors; absent on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage-default", "coverage-chdb", "coverage"],
-        "producer_jobs": ["coverage-default", "coverage-chdb"],
+        "jobs": ["coverage-default", "coverage-chdb", "coverage-chdb-ratchet", "coverage"],
+        "producer_jobs": ["coverage-default", "coverage-chdb", "coverage-chdb-ratchet"],
         "context_job": "coverage"
       },
       "executions": ["default"],

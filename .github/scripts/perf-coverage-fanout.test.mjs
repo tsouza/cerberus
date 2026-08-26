@@ -1,11 +1,13 @@
 // perf-coverage-fanout.test.mjs — node:test guard for `just coverage`'s
 // chDB-tagged TestCardinalityRatchet fan-out: an explicit per-process go
-// test -timeout that stays below the coverage job's cap, the extra shards
-// (2..RATCHET_FANOUT) sharded without dropping or duplicating a corpus
-// slice, the Justfile's own PERF_SHARD_COUNT literal pinned to the same
-// RATCHET_FANOUT this script uses, and the coverage recipe still carrying
-// the main sweep WITHOUT `-skip` (so test/regression/tagged_test_enrollment_
-// test.go's static evidence scanner keeps crediting it).
+// test -timeout that stays below the coverage-chdb-ratchet job's cap
+// (tsouza/cerberus#2645), the extra shards (2..RATCHET_FANOUT) sharded
+// without dropping or duplicating a corpus slice, the Justfile's own
+// PERF_SHARD_COUNT literal pinned to the same RATCHET_FANOUT this script
+// uses, the coverage recipe still carrying the main sweep WITHOUT `-skip`
+// (so test/regression/tagged_test_enrollment_test.go's static evidence
+// scanner keeps crediting it), and LEG_INDEX mode (the CI matrix leg path)
+// selecting exactly one leg's command.
 //
 // Runs on the cheap `check` lane (`node --test`), so a regression here fails
 // in milliseconds rather than 40+ minutes into a coverage job.
@@ -16,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, legCommands } from './perf-coverage-fanout.mjs';
+import { RATCHET_TEST, RATCHET_RUN_PATTERN, RATCHET_FANOUT, RATCHET_TIMEOUT_MINUTES, legCommands, selectLeg } from './perf-coverage-fanout.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const justfile = readFileSync(path.join(here, '..', '..', 'Justfile'), 'utf8');
@@ -24,21 +26,29 @@ const coverageWorkflow = readFileSync(path.join(here, '..', 'workflows', 'covera
 const TAGS = 'chdb,agpl_oracle,chdb_agpl_oracle';
 const COVERPKG = 'github.com/tsouza/cerberus/internal/promql,github.com/tsouza/cerberus/test/perf';
 
-/** The coverage recipe body, isolated the same way coverage_recipe_fail_closed_test.go does. */
-function coverageRecipeBody() {
-  const start = justfile.indexOf('\ncoverage:\n');
-  const end = justfile.indexOf('\nupdate-coverage-floor:');
-  assert.ok(start >= 0 && end >= 0 && end > start, 'Justfile: cannot isolate the coverage recipe');
+/** The coverage-chdb recipe body — the main sweep and its SKIP_RATCHET_FANOUT gate. */
+function coverageChdbRecipeBody() {
+  const start = justfile.indexOf('\ncoverage-chdb:\n');
+  const end = justfile.indexOf('\ncoverage-merge:');
+  assert.ok(start >= 0 && end >= 0 && end > start, 'Justfile: cannot isolate the coverage-chdb recipe');
   return justfile.slice(start, end);
 }
 
-/** The `timeout-minutes:` of the coverage job, read out of coverage.yml. */
-function coverageJobTimeoutMinutes() {
-  const start = coverageWorkflow.indexOf('\n  coverage:');
-  assert.ok(start >= 0, 'coverage.yml: missing coverage job');
+/** The coverage-merge recipe body — where the ratchet shard fold now lives (tsouza/cerberus#2645). */
+function coverageMergeRecipeBody() {
+  const start = justfile.indexOf('\ncoverage-merge:\n');
+  const end = justfile.indexOf('\ncoverage:', start + 1);
+  assert.ok(start >= 0 && end >= 0 && end > start, 'Justfile: cannot isolate the coverage-merge recipe');
+  return justfile.slice(start, end);
+}
+
+/** The `timeout-minutes:` of a named coverage.yml job. */
+function jobTimeoutMinutes(jobName) {
+  const start = coverageWorkflow.indexOf(`\n  ${jobName}:`);
+  assert.ok(start >= 0, `coverage.yml: missing ${jobName} job`);
   const job = coverageWorkflow.slice(start + 1);
   const m = /^\s{4}timeout-minutes:\s*(\d+)/m.exec(job);
-  assert.ok(m, 'coverage.yml: the coverage job declares no timeout-minutes');
+  assert.ok(m, `coverage.yml: the ${jobName} job declares no timeout-minutes`);
   return Number(m[1]);
 }
 
@@ -62,14 +72,21 @@ test('every leg declares an explicit go test -timeout', () => {
   }
 });
 
-test('the ratchet-shard timeout, plus the main sweep timeout it runs sequentially after, stays under the coverage job cap with the 3-minute abort-reporting margin', () => {
-  const jobCap = coverageJobTimeoutMinutes();
+test('the ratchet-shard leg timeout stays under the coverage-chdb-ratchet job cap with the 3-minute abort-reporting margin', () => {
+  // tsouza/cerberus#2645: each leg now runs ALONE on its own
+  // coverage-chdb-ratchet matrix runner (LEG_INDEX mode), not serially after
+  // coverage-chdb's own main sweep on a shared runner — so this pins
+  // RATCHET_TIMEOUT_MINUTES against THAT job's timeout-minutes.
+  // go_test_timeout_budget_test.go's static scanner cannot do this itself:
+  // it only walks `just <recipe>` invocations in a workflow's `run:` step,
+  // and coverage-chdb-ratchet calls the node script directly.
+  const jobCap = jobTimeoutMinutes('coverage-chdb-ratchet');
   const abortReportingMarginMinutes = 3;
   assert.ok(
     RATCHET_TIMEOUT_MINUTES + abortReportingMarginMinutes <= jobCap,
     `ratchet-shard leg -timeout=${RATCHET_TIMEOUT_MINUTES}m must leave at least ${abortReportingMarginMinutes}m under ` +
-      `the coverage job's timeout-minutes: ${jobCap}, so go test's own alarm — which dumps every goroutine stack — ` +
-      'always fires before the runner takes the container away',
+      `the coverage-chdb-ratchet job's timeout-minutes: ${jobCap}, so go test's own alarm — which dumps every ` +
+      'goroutine stack — always fires before the runner takes the container away',
   );
 });
 
@@ -109,14 +126,20 @@ test('the build tags reach every go command verbatim', () => {
   }
 });
 
-test('the coverage recipe still invokes the fan-out script with the composite tag set', () => {
-  const body = coverageRecipeBody();
+test('the coverage-chdb recipe still invokes the fan-out script locally, gated behind SKIP_RATCHET_FANOUT', () => {
+  const body = coverageChdbRecipeBody();
   assert.match(body, /node \.github\/scripts\/perf-coverage-fanout\.mjs/);
   assert.match(body, /TAGS=chdb,agpl_oracle,chdb_agpl_oracle/);
+  assert.match(
+    body,
+    /SKIP_RATCHET_FANOUT/,
+    'coverage-chdb must gate its own (local-mode) fan-out call behind SKIP_RATCHET_FANOUT, or CI (which sets it) ' +
+      'would double-run the extra shards: once via coverage-chdb-ratchet, once inline here',
+  );
 });
 
-test('the coverage recipe main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD_COUNT matching RATCHET_FANOUT — the two constants must not drift apart', () => {
-  const body = coverageRecipeBody();
+test('the coverage-chdb recipe main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD_COUNT matching RATCHET_FANOUT — the two constants must not drift apart', () => {
+  const body = coverageChdbRecipeBody();
   const sweepLine = body.split('\n').find((l) => l.includes('PERF_SHARD_INDEX=1') && l.includes('go test'));
   assert.ok(sweepLine, 'Justfile: could not find the main sweep line');
   assert.ok(sweepLine.includes('-tags chdb,agpl_oracle,chdb_agpl_oracle'), 'main sweep: missing composite tag set');
@@ -131,8 +154,8 @@ test('the coverage recipe main sweep carries PERF_SHARD_INDEX=1 and a PERF_SHARD
   );
 });
 
-test('the coverage recipe main sweep never carries -skip — it is the sole CI evidence for other chdb-tagged packages', () => {
-  const body = coverageRecipeBody();
+test('the coverage-chdb recipe main sweep never carries -skip — it is the sole CI evidence for other chdb-tagged packages', () => {
+  const body = coverageChdbRecipeBody();
   const sweepLine = body
     .split('\n')
     .find((l) => l.includes('PERF_SHARD_INDEX=1') && l.includes('go test'));
@@ -145,7 +168,42 @@ test('the coverage recipe main sweep never carries -skip — it is the sole CI e
   );
 });
 
-test('the merge step folds cover-chdb.out together with every extra shard profile', () => {
-  const body = coverageRecipeBody();
-  assert.match(body, /cover-chdb\.out cover-chdb-ratchet-\*\.out/);
+test('the coverage-merge recipe folds cover-chdb.out together with every extra shard profile before merging with cover.out', () => {
+  const body = coverageMergeRecipeBody();
+  assert.match(body, /cover-chdb\.out "\$\{RATCHET_FILES\[@\]\}"/);
+  assert.match(
+    body,
+    /RATCHET_FILES=\(cover-chdb-ratchet-\*\.out\)/,
+    'coverage-merge must look for the ratchet shard profiles wherever they landed — coverage-chdb no longer ' +
+      'always shares a directory with them (tsouza/cerberus#2645)',
+  );
+});
+
+test('coverage.yml declares a coverage-chdb-ratchet matrix with one leg per RATCHET_FANOUT-1 shard', () => {
+  const start = coverageWorkflow.indexOf('\n  coverage-chdb-ratchet:');
+  assert.ok(start >= 0, 'coverage.yml: missing coverage-chdb-ratchet job');
+  const nextJob = coverageWorkflow.indexOf('\n  coverage:', start + 1);
+  assert.ok(nextJob > start, 'coverage.yml: cannot bound the coverage-chdb-ratchet job');
+  const job = coverageWorkflow.slice(start, nextJob);
+  const m = /leg:\s*\[([^\]]+)\]/.exec(job);
+  assert.ok(m, 'coverage.yml: coverage-chdb-ratchet declares no leg matrix');
+  const legs = m[1].split(',').map((s) => Number(s.trim()));
+  assert.deepEqual(
+    legs,
+    Array.from({ length: RATCHET_FANOUT - 1 }, (_, i) => i + 2),
+    'coverage-chdb-ratchet must have exactly one matrix leg per perf-coverage-fanout.mjs shard (2..RATCHET_FANOUT)',
+  );
+  assert.match(job, /LEG_INDEX:\s*\$\{\{\s*matrix\.leg\s*\}\}/, 'each leg must select its shard via LEG_INDEX');
+});
+
+test('selectLeg returns undefined outside [2, RATCHET_FANOUT] and the matching leg inside it', () => {
+  const legs = legCommands({ tags: TAGS, coverpkg: COVERPKG });
+  assert.equal(selectLeg(legs, 1), undefined, 'shard 1 is the main sweep, never a leg this script runs');
+  assert.equal(selectLeg(legs, RATCHET_FANOUT + 1), undefined, 'out of range');
+  for (let shardIndex = 2; shardIndex <= RATCHET_FANOUT; shardIndex++) {
+    const leg = selectLeg(legs, shardIndex);
+    assert.ok(leg, `no leg selected for shard ${shardIndex}`);
+    assert.equal(leg.name, `cardinality-ratchet ${shardIndex}/${RATCHET_FANOUT}`);
+    assert.equal(leg.env.PERF_SHARD_INDEX, String(shardIndex));
+  }
 });
