@@ -1609,6 +1609,37 @@ jobs:
       - name: Wait for real OTel data from the collector pipeline
         run: just e2e-wait-otel
 
+      # TEMPORARY DIAGNOSTIC — the previous diagnostic (still further below,
+      # AFTER the overlay) proved the loki HEAD_PROBES query
+      # ({service_name=~".+"}&limit=1) deterministically trips
+      # CERBERUS_CH_QUERY_MAX_MEMORY=2Mi every attempt (31/31, verbatim CH
+      # error "maximum memory usage (2097152 bytes) reached"), while the prom
+      # (`up`) and tempo (limit=1 search) probes both succeed on their FIRST
+      # attempt. This step fires that SAME loki query BEFORE the overlay
+      # lands, while the deployment still runs the 1GiB production default
+      # (functionally uncapped for this query), and reads its real
+      # memory_usage from system.query_log -- the number needed to size a
+      # cap that sits above this query's real cost and below the ~5.5 MiB
+      # measured route-memo-activation cost. Removed once the real number is
+      # captured; not part of the shipped fix.
+      - name: DIAGNOSTIC loki head-probe real cost at the 1GiB default
+        run: |
+          set -eu
+          now_before=$(date -u +"%Y-%m-%d %H:%M:%S")
+          code=$(curl -s -o /tmp/loki-uncapped.json -w "%{http_code}" \
+            'http://localhost:8080/loki/api/v1/query?query=%7Bservice_name%3D~%22.%2B%22%7D&limit=1' || echo "000")
+          echo "== [loki-uncapped] http_code=$code"
+          head -c 300 /tmp/loki-uncapped.json 2>/dev/null || echo "(no response body captured)"; echo
+          sleep 3
+          kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
+            SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code, substring(exception,1,200) AS exc
+            FROM system.query_log
+            WHERE event_time >= '${now_before}' AND type != 'QueryStart'
+            ORDER BY event_time_microseconds DESC
+            LIMIT 3
+            FORMAT PrettySpace
+          " || true
+
       # Apply the chaos overlay (low breaker threshold + small
       # CERBERUS_QUERY_TIMEOUT + small admit/pool caps) so faults trip
       # FAST + DETERMINISTICALLY within the per-scenario budget.
