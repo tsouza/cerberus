@@ -1231,6 +1231,32 @@ function routeMemoQueryPath() {
   );
 }
 
+// ROUTE_MEMO_DECLINE_REASONS mirrors internal/telemetry/metrics.go's
+// RouteMemoDecline* constants (the `reason` label on
+// cerberus_route_memo_hit_skipped_total). Issue #2650 diagnostic: dumping
+// each reason's counter right after the scenario's poll loop settles is a
+// direct, in-process signal of WHICH gate the memo's retry declined on,
+// without racing later scenarios' log volume out of a `kubectl logs` tail.
+const ROUTE_MEMO_DECLINE_REASONS = [
+  'not-eligible',
+  'not-fresh',
+  'no-preferb',
+  'stale',
+  'breaker-open',
+  'no-dispatch-token',
+  'under-pressure',
+  'probe-not-admitted',
+];
+
+async function dumpRouteMemoDeclineCounters() {
+  for (const reason of ROUTE_MEMO_DECLINE_REASONS) {
+    const v = await queryBreakerMetric(
+      `cerberus_route_memo_hit_skipped_total{reason="${reason}"}`,
+    );
+    log(`    [diag #2650] cerberus_route_memo_hit_skipped_total{reason="${reason}"} = ${v}`);
+  }
+}
+
 async function scenarioRouteMemoActivation() {
   const failures = [];
 
@@ -1260,6 +1286,8 @@ async function scenarioRouteMemoActivation() {
     },
     { deadlineMs: ROUTE_MEMO_ACTIVATION_DEADLINE_MS, intervalMs: ROUTE_MEMO_POLL_INTERVAL_MS, label: 'route-memo-activation' },
   );
+
+  await dumpRouteMemoDeclineCounters();
 
   if (activated) {
     log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');
