@@ -742,7 +742,7 @@ SELECT
     map('service.name', 'route-memo-probe'),
     'route-memo-probe',
     'route_memo_probe_requests_total',
-    'Synthetic counter backfilled with real 24h-scale historical depth for the route-memo-activation chaos scenario (issue #2650) — see insertRouteMemoProbeBackfillSQL''s doc comment',
+    'Rolling short-window companion for the route-memo-activation chaos scenario''s deep 24h backfill — see insertRouteMemoProbeFreshnessSQL''s doc comment',
     '1',
     map('probe_shard', '0'),
     now64(9) + INTERVAL (number - 300) SECOND,
