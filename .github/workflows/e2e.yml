@@ -1609,97 +1609,11 @@ jobs:
       - name: Wait for real OTel data from the collector pipeline
         run: just e2e-wait-otel
 
-      # TEMPORARY DIAGNOSTIC — the previous diagnostic (still further below,
-      # AFTER the overlay) proved the loki HEAD_PROBES query
-      # ({service_name=~".+"}&limit=1) deterministically trips
-      # CERBERUS_CH_QUERY_MAX_MEMORY=2Mi every attempt (31/31, verbatim CH
-      # error "maximum memory usage (2097152 bytes) reached"), while the prom
-      # (`up`) and tempo (limit=1 search) probes both succeed on their FIRST
-      # attempt. This step fires that SAME loki query BEFORE the overlay
-      # lands, while the deployment still runs the 1GiB production default
-      # (functionally uncapped for this query), and reads its real
-      # memory_usage from system.query_log -- the number needed to size a
-      # cap that sits above this query's real cost and below the ~5.5 MiB
-      # measured route-memo-activation cost. Removed once the real number is
-      # captured; not part of the shipped fix.
-      - name: DIAGNOSTIC loki head-probe real cost at the 1GiB default
-        run: |
-          set -eu
-          now_before=$(date -u +"%Y-%m-%d %H:%M:%S")
-          code=$(curl -s -o /tmp/loki-uncapped.json -w "%{http_code}" \
-            'http://localhost:8080/loki/api/v1/query?query=%7Bservice_name%3D~%22.%2B%22%7D&limit=1' || echo "000")
-          echo "== [loki-uncapped] http_code=$code"
-          head -c 300 /tmp/loki-uncapped.json 2>/dev/null || echo "(no response body captured)"; echo
-          sleep 3
-          kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
-            SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code, substring(exception,1,200) AS exc
-            FROM system.query_log
-            WHERE event_time >= '${now_before}' AND type != 'QueryStart'
-            ORDER BY event_time_microseconds DESC
-            LIMIT 3
-            FORMAT PrettySpace
-          " || true
-
       # Apply the chaos overlay (low breaker threshold + small
       # CERBERUS_QUERY_TIMEOUT + small admit/pool caps) so faults trip
       # FAST + DETERMINISTICALLY within the per-scenario budget.
       - name: Apply chaos overlay (resilience knobs)
         run: just e2e-chaos-overlay
-
-      # TEMPORARY DIAGNOSTIC — bisecting the two consecutive preflight
-      # failures under CERBERUS_CH_QUERY_MAX_MEMORY=2Mi (both runs: /readyz
-      # green fast, but assertHeadsHealthy's 3 head-probe queries never
-      # returned 200 within the 60s preflight budget). Fires the EXACT 3
-      # HEAD_PROBES shapes chaos-run.mjs preflight uses, records their HTTP
-      # status, and reads system.query_log for the real memory_usage/
-      # exception each one costs under the 2Mi cap — so the real fix can be
-      # sized against the ACTUAL floor instead of guessed.
-      #
-      # POLLS rather than firing once: a first attempt immediately after
-      # `kubectl rollout status` reports success got curl's own http_code=000
-      # (connection refused — never reached cerberus at all) in an earlier
-      # version of this step, because the localhost:8080 path needs a beat
-      # to catch up with the rollout. Mirrors chaos-run.mjs's own pollUntil
-      # budget EXACTLY (POLL_INTERVAL_MS=2000, PREFLIGHT_DEADLINE_MS=60000 —
-      # .github/scripts/chaos-run.mjs:96,1386) so a probe that only succeeds
-      # because it waited LONGER than the real preflight would allow is
-      # itself a finding, not a false pass. Removed once the real number is
-      # captured; not part of the shipped fix.
-      - name: DIAGNOSTIC head-probe query cost under the 2Mi cap
-        run: |
-          set -eu
-          POLL_INTERVAL_S=2
-          DEADLINE_S=60
-          probe() {
-            label="$1"; path="$2"
-            now_before=$(date -u +"%Y-%m-%d %H:%M:%S")
-            start=$(date +%s)
-            code="000"
-            attempts=0
-            while :; do
-              attempts=$((attempts + 1))
-              code=$(curl -s -o "/tmp/headprobe-$label.json" -w "%{http_code}" "http://localhost:8080$path" || echo "000")
-              elapsed=$(( $(date +%s) - start ))
-              if [ "$code" = "200" ] || [ "$elapsed" -ge "$DEADLINE_S" ]; then
-                break
-              fi
-              sleep "$POLL_INTERVAL_S"
-            done
-            echo "== [$label] path=$path http_code=$code attempts=$attempts elapsed=${elapsed}s"
-            head -c 300 "/tmp/headprobe-$label.json" 2>/dev/null || echo "(no response body captured)"; echo
-            sleep 3
-            kubectl -n cerberus exec deploy/clickhouse -- clickhouse-client --user cerberus --password cerberus --database otel --query "
-              SELECT type, memory_usage, formatReadableSize(memory_usage) AS mem, exception_code, substring(exception,1,200) AS exc
-              FROM system.query_log
-              WHERE event_time >= '${now_before}' AND type != 'QueryStart'
-              ORDER BY event_time_microseconds DESC
-              LIMIT 3
-              FORMAT PrettySpace
-            " || true
-          }
-          probe prom '/api/v1/query?query=up'
-          probe loki '/loki/api/v1/query?query=%7Bservice_name%3D~%22.%2B%22%7D&limit=1'
-          probe tempo '/api/search?limit=1'
 
       # Phase-1 scenarios sequentially with heal-between-each, ordered
       # non-destructive-first / destructive-last (see orderScenarios in
