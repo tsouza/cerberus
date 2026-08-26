@@ -122,9 +122,9 @@ func seedGridNativeSeries(t *testing.T, exec func(string) error, seriesCount int
 // has never actually been triggered is exactly as untested as no bound at
 // all).
 //
-// 60 series x 51 rungs/series x 6,600 anchors = 20,196,000 groups x
-// anchors, comfortably past maxRangeBucketGridNativeRows (20,000,000 —
-// recalibrated by issue #2522, see range_bucket_grid_native_bound.go's own
+// 60 series x 51 rungs/series x 8,500 anchors = 26,010,000 groups x
+// anchors, comfortably past maxRangeBucketGridNativeRows (25,000,000 —
+// recalibrated by issue #2651, see range_bucket_grid_native_bound.go's own
 // doc for the real-ClickHouse measurement this threshold is grounded in).
 // Only 120 real rows need seeding (two per series — see
 // seedGridNativeSeries) — the anchor grid width is free (an
@@ -141,7 +141,7 @@ func TestRangeBucketGridNativeBound_ThrowsWhenOversized(t *testing.T) {
 	}
 
 	const seriesCount = 60
-	const numAnchors = 6_600 // 60 * 51 * 6,600 = 20,196,000 > maxRangeBucketGridNativeRows (20,000,000)
+	const numAnchors = 8_500 // 60 * 51 * 8,500 = 26,010,000 > maxRangeBucketGridNativeRows (25,000,000)
 	seedGridNativeSeries(t, func(s string) error { _, err := db.Exec(s); return err }, seriesCount)
 
 	sqlStr, args := buildGridNativePlan(t, numAnchors)
@@ -199,13 +199,15 @@ func TestRangeBucketGridNativeBound_PassesWhenUnderBudget(t *testing.T) {
 // cerberus_queries_duration_seconds_bucket[5m])))` at a 24h/15s window
 // (5,760 anchors) produces — must NOT trip the guard, even though
 // `groups x anchors` here (60 series x 51 rungs x 5,760 anchors =
-// 17,625,600) comfortably exceeds the OLD maxRangeBucketGridNativeRows
+// 17,625,600) comfortably exceeds the ORIGINAL maxRangeBucketGridNativeRows
 // (4,000,000) that wrongly rejected run 32688649627's real nightly
 // dashboard query. See range_bucket_grid_native_bound.go's own doc for the
 // real-ClickHouse measurement (8-42% of the 1 GiB cap across this exact
-// shape family) grounding the new 20,000,000 threshold. Before that
-// recalibration, this exact test would have failed with the old bound's
-// throwIf firing.
+// shape family) grounding the 20,000,000 threshold #2522 recalibrated to,
+// and issue #2651's own further recalibration to 25,000,000 (this shape has
+// even more headroom under that value — ~1.42x instead of ~1.14x below the
+// threshold). Before the #2522 recalibration, this exact test would have
+// failed with the old bound's throwIf firing.
 func TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
@@ -234,6 +236,123 @@ func TestRangeBucketGridNativeBound_PassesLowCardinalityWideAnchorShape(t *testi
 	}
 	if n == 0 {
 		t.Fatal("expected at least one row from the low-cardinality/wide-anchor query")
+	}
+}
+
+// seedGridNativeFloorDensityBulk seeds seriesCount series with EXACTLY two
+// rows each, one minute apart (the same bucketGridSeenFn two-sample floor
+// seedGridNativeSeries' own doc explains), via two vectorized
+// `INSERT ... SELECT ... FROM numbers(...)` statements (one per timestamp)
+// rather than seedGridNativeSeries' own one-literal-tuple-per-row string
+// build — at the thousands-of-series scale
+// TestRangeBucketGridNativeBound_PassesNearProductionReferenceCardinalityOrdinaryWindow
+// needs, building one giant VALUES literal would be needlessly slow to
+// construct and send, the same reasoning seedGridNativeDensity's own doc
+// gives for its bulk insert.
+func seedGridNativeFloorDensityBulk(t *testing.T, exec func(string) error, seriesCount, boundsCount int, seedStart time.Time) {
+	t.Helper()
+	bounds := make([]string, boundsCount)
+	for i := range bounds {
+		bounds[i] = fmt.Sprintf("%d.0", i+1)
+	}
+	boundsLit := "[" + strings.Join(bounds, ",") + "]"
+	counts := make([]string, boundsCount+1)
+	for i := range counts {
+		counts[i] = "1"
+	}
+	countsLit := "[" + strings.Join(counts, ",") + "]"
+
+	for _, offset := range []time.Duration{0, time.Minute} {
+		ts := seedStart.Add(offset)
+		seedSQL := fmt.Sprintf(`INSERT INTO otel_metrics_histogram (MetricName, SeriesID, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT 'http_server_request_duration', concat('svc-', toString(number)), toDateTime64('%s', 9), %s, %s
+FROM numbers(%d)`,
+			seedTS(ts), countsLit, boundsLit, seriesCount)
+		if err := exec(seedSQL); err != nil {
+			t.Fatalf("seed floor-density insert at offset %s: %v", offset, err)
+		}
+	}
+}
+
+// seedTS formats a time.Time the way this file's bulk-insert seed helpers
+// pass a literal timestamp to ClickHouse's toDateTime64(...) — factored out
+// since seedGridNativeFloorDensityBulk needs it twice (once per seeded
+// timestamp) and seedGridNativeDensity already inlines the same format
+// string once.
+func seedTS(ts time.Time) string {
+	return ts.Format("2006-01-02 15:04:05.000000000")
+}
+
+// TestRangeBucketGridNativeBound_PassesNearProductionReferenceCardinalityOrdinaryWindow
+// is issue #2651's own regression pin: a real production deployment
+// reported classic-histogram cardinality of 3,962 series x 16 rungs (15
+// finite ExplicitBounds + the Inf overflow rung) = 63,392 groups — close to,
+// not far above, the 44,892-group calibration reference axis1 was
+// originally tuned against — getting hard-rejected by axis1 at a completely
+// ordinary ~6h/1-minute Grafana dashboard window.
+//
+// 3,962 series x 16 rungs x 360 anchors (a plain 6h/1m window) = 22,821,120
+// groups x anchors: OVER the pre-#2651 maxRangeBucketGridNativeRows
+// (20,000,000 — this exact window would have been wrongly rejected before
+// this fix) but comfortably UNDER the recalibrated 25,000,000 — see
+// range_bucket_grid_native_bound.go's own "Issue #2651 recalibration" doc
+// for the real-ClickHouse measurement grounding the new threshold at this
+// exact production-reported shape.
+func TestRangeBucketGridNativeBound_PassesNearProductionReferenceCardinalityOrdinaryWindow(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 3_962
+	const boundsCount = 15 // 15 finite bounds + Inf = 16 rungs, matching the #2651 report
+	const numAnchors = 360 // an ordinary 6h/1m dashboard window
+	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedGridNativeFloorDensityBulk(t, func(s string) error { _, err := db.Exec(s); return err },
+		seriesCount, boundsCount, seedStart)
+
+	start := seedStart
+	step := time.Minute
+	end := start.Add(time.Duration(numAnchors-1) * step)
+	node := &chplan.RangeBucketGridNative{
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_histogram",
+			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+		},
+		Start:             start,
+		End:               end,
+		Step:              step,
+		Range:             5 * time.Minute,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "SeriesID"}},
+		GroupByAliases:    []string{"SeriesID"},
+		AnchorAlias:       "anchor_ts",
+		TimestampCol:      "TimeUnix",
+		BucketCountsCol:   "BucketCounts",
+		ExplicitBoundsCol: "ExplicitBounds",
+	}
+	sqlStr, args, err := chsql.Emit(context.Background(), node)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	rows, err := db.Query(sqlStr, args...)
+	if err != nil {
+		t.Fatalf("near-production-reference-cardinality/ordinary-window query unexpectedly failed "+
+			"(issue #2651 regression): %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected at least one row from the near-production-reference-cardinality/ordinary-window query")
 	}
 }
 
