@@ -1151,6 +1151,19 @@ async function scenarioLoadAdmitSaturation() {
 // chaos overlay (test/e2e/chaos/manifests/chaos-overlay.env) applied
 // before any scenario runs, so this is on for the whole lane.
 //
+// CERBERUS_SHARD_MIN_FANOUT is ALSO raised impossibly high by that same
+// overlay (issue #2650). Without it, the pinned query below clears the
+// solver's ORDINARY ModeAuto cost thresholds on its own (its fanout =
+// Range/Step = 5m/15s = 20 >= the default MinFanout of 16), so the
+// top-level classify() at the start of engine.Engine.QueryPlanCursor
+// routes it straight to route B and returns before route A is EVER
+// dispatched — the failure-driven route memo this scenario exists to
+// exercise is reachable only from the route-A dispatch path, so a query
+// that auto-routes can never reach it, no matter how reliably it breaches
+// CERBERUS_CH_QUERY_MAX_MEMORY below. See the overlay file's own comment
+// and internal/api/prom/handler_route_memo_chaos_fixture_test.go for the
+// full evidence trail.
+//
 // The fault: drive the SAME (24h range, 15s step) aggregating query_range
 // shape that iterate-time-ranges.spec.ts (Layer-9 dashboard sweep) already
 // pins as the documented CERBERUS_CH_QUERY_MAX_MEMORY-crossing tuple (run
