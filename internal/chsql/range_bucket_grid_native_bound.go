@@ -176,6 +176,93 @@ import "time"
 // #2486 production incident's own density profile at realistic scale; it
 // only ever exercised the axis this file bounds, never the density axis.
 //
+// # Issue #2651 recalibration: the 20,000,000 plateau's own margin was
+// thinner than #2522 assumed
+//
+// A real deployment upgrading to 1.16.0 reported classic-histogram
+// cardinality of 3,962 series x 16 rungs (15 finite ExplicitBounds + the
+// Inf overflow rung) = 63,392 groups — close to, not far above, #2522's own
+// 44,892-group calibration reference — getting hard-rejected by axis1 at a
+// completely ordinary ~5-6h/1m Grafana dashboard window (~315-360 anchors:
+// 63,392 x 315 = 19,968,480, right at the old threshold). #2522's own
+// plateau table above never measured a point between its last confirmed-safe
+// sample (30,044,160) and its first confirmed-OOM one (59,996,160) — a wide
+// enough gap that "20,000,000 sits below the plateau" was true but did not
+// establish how MUCH real margin the plateau actually had at THIS
+// production shape.
+//
+// Direct real-ClickHouse 25.9-alpine measurement (fresh `docker run`, 1 GiB
+// cap) at the exact reported shape (3,962 series x 16 rungs, floor density —
+// axis1's own adversarial case per the plateau finding above) found the
+// genuine cliff sits far closer to the old threshold than #2522's own two
+// far-apart data points suggested:
+//
+//	anchors   groups x anchors   peak memory, floor density   result
+//	    315       19,968,480       75.5% of cap                 safe (the
+//	                                                              #2651
+//	                                                              report's
+//	                                                              own point)
+//	    529       33,534,368       75.5% of cap                 safe (last
+//	                                                              confirmed
+//	                                                              point)
+//	    530       33,597,760       60.1% reported before abort   REJECTED:
+//	                                                              real
+//	                                                              ClickHouse
+//	                                                              code-241
+//	                                                              MEMORY_LIMIT_EXCEEDED
+//
+// The cliff is a single allocation doubling inside
+// ConvertingAggregatedToChunksTransform (a ~511 MiB chunk on top of the
+// ~810 MB plateau), not a gradual climb — matching the abruptness #2522's
+// own 30M-safe/60M-OOM gap already hinted at, just not where precisely
+// inside that gap it sits. Cross-checked from the opposite series/anchor
+// corner (368 series x 16 rungs, wide anchors instead of many series): safe
+// at 32,972,800 (5,600 anchors), OOM at 33,561,600 (5,700 anchors) — the
+// SAME ~33.3M cliff, confirming it is a property of the `groups x anchors`
+// product itself (Level 1 holds one triplet of NumAnchors-length arrays per
+// GROUP regardless of how the group count was composed — see this file's
+// header's own cost-axis paragraph), not of this specific series/rung
+// split.
+//
+// maxRangeBucketGridNativeRows moves from 20,000,000 to 25,000,000 —
+// 25.6% below the confirmed OOM point (33,597,760), comfortably inside the
+// confirmed-safe range on both this sweep and #2522's own plateau, and
+// genuinely below maxRangeBucketGridNativeDensityUnits (85,000,000, see the
+// "Density guard" section below for why THAT constant does NOT move in
+// tandem). This gives the exact #2651 production shape headroom up to
+// ~394 anchors (63,392 x 394 = 24,976,448, vs 315 before) — roughly an 8h
+// window at 1-minute resolution instead of ~5h15m — and every
+// lower-cardinality deployment correspondingly more.
+//
+// What this recalibration does NOT fix, and cannot: a genuinely wide
+// dashboard window (e.g. 24h at 1-minute resolution, 1,440 anchors) at this
+// same production cardinality is a REAL OOM regardless of threshold —
+// measured directly at floor density, 63,392 x 1,440 = 91,284,480 groups x
+// anchors genuinely aborts real ClickHouse with code 241. No axis1 value
+// can make that window safe on this execution path; the guard rejecting it
+// is correct, not a miscalibration. Issue #2651's own "suggested
+// directions" section floats a fallback-to-the-pre-1.16.0-execution-path
+// idea for exactly this residual case — not attempted here, since it is a
+// materially larger change (an execution-strategy switch, not a threshold)
+// deserving its own investigation.
+//
+// Separately, raising axis1 only helps deployments whose real raw-row
+// density is low enough that the density guard (below) does not already
+// reject them first: at the SAME reported production shape but a realistic
+// ~30-second scrape cadence over the query's full scan span, even the
+// original 315-anchor point genuinely OOMs real ClickHouse at 99.8% of cap
+// (rawRows 2,531,718, rawRows x width^2 = 569,636,550 — see the "Density
+// guard" section's own costUnits formula) — the density guard, not axis1,
+// is the correct rejection for that density profile, and this recalibration
+// does not and should not change that. A supplementary sweep at the same
+// 315-anchor point found the density guard's own real threshold for this
+// shape sits between roughly 73 rows/series (85,044,330 cost units, 71.8%
+// of cap, safe) and 110 rows/series (118,027,980 cost units, 99.0% of cap,
+// OOM) — i.e. axis1's own new headroom is only realized by a deployment
+// whose actual scrape/retention profile keeps it under that density, which
+// this investigation cannot determine from the aggregate series/rung counts
+// #2651 itself reported.
+//
 // Recalibrate by binary search against a real ClickHouse if this drifts —
 // see lwr_fanout_bound.go's own harness-pitfall note (unique query_id per
 // run) and design rationale to preserve when doing so. The calibration
@@ -184,7 +271,7 @@ import "time"
 // already deleted before #2504 merged) was deleted before this fix merged
 // too, per lwr_fanout_bound.go's own established precedent — this doc
 // comment is the retained record.
-const maxRangeBucketGridNativeRows = 20_000_000
+const maxRangeBucketGridNativeRows = 25_000_000
 
 // RangeBucketGridNativeBudgetMessage is the throwIf message
 // bucketGridGroupCountGuardFrag raises when this node's own bound fires.
@@ -376,6 +463,43 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 // past maxRangeBucketGridNativeRows regardless of density, so this second
 // guard's only NEW effect is catching density-driven danger axis1 alone
 // passes through — exactly this issue's own gap.
+//
+// # Issue #2651: deliberately left unchanged, and checked against axis1's
+// own recalibration
+//
+// Investigating #2651 (axis1's own recalibration above, 20,000,000 to
+// 25,000,000) required checking whether this guard's ceiling needed to move
+// in tandem — the formula sums `groups x anchors` UNCLAMPED into the same
+// budget, so raising axis1 could in principle push a floor-density query
+// straight into THIS guard's own ceiling instead, undermining the point of
+// raising axis1. Two real-ClickHouse findings from that investigation rule
+// both directions out:
+//
+//   - maxRangeBucketGridNativeDensityUnits (85,000,000) is not undermined by
+//     the new axis1 value: at floor density the density term is negligible
+//     (a 3,962-series/16-rung seed carries only 7,924 raw rows, contributing
+//     7,924 x 15^2 = 1,782,900), so a query at the new axis1 ceiling costs
+//     roughly 25,000,000 + 1,782,900 = 26,782,900 — far under 85,000,000.
+//     axis1's own ceiling would need to approach roughly 83,000,000 before
+//     this guard's unclamped groups-x-anchors term became the binding
+//     constraint, well past the real OOM cliff axis1's own calibration
+//     found (~33.5M).
+//   - 85,000,000 itself has NO real headroom to raise, independent of
+//     axis1: real measurement at the #2651 production shape (3,962 series x
+//     16 rungs, ~30s realistic scrape cadence) found this guard's own
+//     confirmed-safe/OOM boundary sits almost exactly where it already is —
+//     85,044,330 cost units (73 rows/series) passed at 71.8% of cap, while
+//     118,027,980 cost units (110 rows/series) genuinely OOM'd real
+//     ClickHouse at 99.0% of cap. Raising this constant to buy axis1 more
+//     apparent room would not be grounded in any confirmed-safe measurement
+//     at this shape.
+//   - The new axis1 value does not weaken this guard's own original
+//     protection: reproducing the #2486/#2408 reference density
+//     (3,741 series x 12 rungs x 60 anchors, ~350 samples/series) with
+//     axis1 folded in gives 2,693,520 (groups x anchors, now well under the
+//     new 25,000,000 axis1 ceiling on its own) + 158,431,350 (rawRows x
+//     width^2) = 161,124,870 total cost units, still comfortably past
+//     85,000,000 — the query this guard exists to catch is still caught.
 //
 // Recalibrate by binary search against a real ClickHouse (not chDB) if
 // this drifts — same harness-pitfall caveat (unique query_id per run) as
