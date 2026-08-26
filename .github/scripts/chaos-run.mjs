@@ -1207,11 +1207,33 @@ const ROUTE_MEMO_STEP_SECONDS = 15; // => 5760 anchors, under the 11000-point re
 // and the cluster can never make a legitimately-old request look
 // live-edge-fresh and get declined with reason=not-fresh.
 const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
-// The exact aggregating panel expr already provisioned in
-// test/e2e/k3s/grafana-dashboards.yaml and already exercised at this
-// exact (24h, 15s) tuple by iterate-time-ranges.spec.ts — reusing a
-// proven production shape rather than inventing a new untested one.
-const ROUTE_MEMO_EXPR = 'sum by (cerberus_ql) (rate(cerberus_queries_total[5m]))';
+// Originally the same aggregating panel expr provisioned in
+// test/e2e/k3s/grafana-dashboards.yaml and exercised at this exact (24h, 15s)
+// tuple by iterate-time-ranges.spec.ts (`sum by (cerberus_ql)
+// (rate(cerberus_queries_total[5m]))`). Issue #2650's investigation found
+// that shape structurally cannot exercise a real rescue in THIS lane:
+// cerberus_queries_total is self-emitted by the cerberus process itself, so
+// in a freshly-bootstrapped chaos lane it only ever has a few minutes of
+// real history — a 24h read and an 8h (kEff=3) shard read the identical row
+// count, because there is nothing further back to read either way, so
+// slicing never reduces cost and route B can never succeed where route A
+// failed. Two other rolling-reseeded counters
+// (http_server_request_duration_count, the `up` gauge) were measured and
+// showed the same flat-cost pattern for the same reason — their real row
+// density is dominated by the SAME 10-minute rolling reseed window every
+// other Playwright spec needs, not real 24h spread.
+//
+// route_memo_probe_requests_total (test/e2e/seed/cmd/seed/main.go's
+// insertRouteMemoProbeBackfillSQL) is a dedicated synthetic counter seeded
+// exactly once with real historical depth spread genuinely across a full 24h
+// window — not rolling-reseeded freshness. Measured directly: an 8h shard of
+// it (the real kEff=3 granularity, not the 3h an earlier round of this
+// investigation assumed) costs ~30% of the full 24h window's real ClickHouse
+// memory_usage, giving real, non-flat cost separation for the shard this
+// scenario needs to actually rescue. See chaos-overlay.env's own
+// CERBERUS_CH_QUERY_MAX_MEMORY comment for the exact measured numbers this
+// value was sized against.
+const ROUTE_MEMO_EXPR = 'sum by (probe_shard) (rate(route_memo_probe_requests_total[5m]))';
 const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 120_000; // generous: needs >= minCorroboratingFailures(2) consecutive route-A resource failures on the same key before a probe is even admitted
 const ROUTE_MEMO_POLL_INTERVAL_MS = 5_000;
 const ROUTE_MEMO_FINAL_OK_DEADLINE_MS = 60_000; // post-activation: the same query must now cleanly 200 for a real client
@@ -1229,6 +1251,32 @@ function routeMemoQueryPath() {
     encodeURIComponent(ROUTE_MEMO_EXPR) +
     `&start=${start}&end=${end}&step=${ROUTE_MEMO_STEP_SECONDS}`
   );
+}
+
+// ROUTE_MEMO_DECLINE_REASONS mirrors internal/telemetry/metrics.go's
+// RouteMemoDecline* constants (the `reason` label on
+// cerberus_route_memo_hit_skipped_total). Issue #2650 diagnostic: dumping
+// each reason's counter right after the scenario's poll loop settles is a
+// direct, in-process signal of WHICH gate the memo's retry declined on,
+// without racing later scenarios' log volume out of a `kubectl logs` tail.
+const ROUTE_MEMO_DECLINE_REASONS = [
+  'not-eligible',
+  'not-fresh',
+  'no-preferb',
+  'stale',
+  'breaker-open',
+  'no-dispatch-token',
+  'under-pressure',
+  'probe-not-admitted',
+];
+
+async function dumpRouteMemoDeclineCounters() {
+  for (const reason of ROUTE_MEMO_DECLINE_REASONS) {
+    const v = await queryBreakerMetric(
+      `cerberus_route_memo_hit_skipped_total{reason="${reason}"}`,
+    );
+    log(`    [diag #2650] cerberus_route_memo_hit_skipped_total{reason="${reason}"} = ${v}`);
+  }
 }
 
 async function scenarioRouteMemoActivation() {
@@ -1260,6 +1308,8 @@ async function scenarioRouteMemoActivation() {
     },
     { deadlineMs: ROUTE_MEMO_ACTIVATION_DEADLINE_MS, intervalMs: ROUTE_MEMO_POLL_INTERVAL_MS, label: 'route-memo-activation' },
   );
+
+  await dumpRouteMemoDeclineCounters();
 
   if (activated) {
     log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');

@@ -147,6 +147,12 @@ func run(ctx context.Context, reSeedInterval time.Duration) error {
 		return err
 	}
 
+	// One-time only — see seedRouteMemoProbeBackfill's own doc comment for
+	// why this must never join the rolling re-seed loop below.
+	if err := seedRouteMemoProbeBackfill(ctx, conn); err != nil {
+		return err
+	}
+
 	if err := verifyRowcounts(ctx, conn); err != nil {
 		return fmt.Errorf("verify rowcounts: %w", err)
 	}
@@ -624,6 +630,129 @@ SELECT
 FROM numbers(40)`
 )
 
+// insertRouteMemoProbeBackfillSQL is a ONE-TIME (not rolling-reseeded)
+// backfill of a synthetic counter spread genuinely across a full 24h window,
+// for the chaos lane's `route-memo-activation` scenario (issue #2650).
+//
+// Every other seeded counter in this file (insertSumSQL et al.) is deliberately
+// narrow and recent — a 10-minute window re-anchored every 30s — because it
+// exists to keep ordinary Playwright specs' `rate()`/subquery windows non-empty
+// regardless of suite runtime, not to model real historical depth. That shape
+// is exactly wrong for route-memo-activation: cerberus's own solver shards a
+// wide `query_range` window by TIME SUB-RANGE (see internal/solver's K-way
+// split — kEff defaults to 3, CERBERUS_SHARD_PARALLEL, so each real shard
+// covers ~1/3 of the window, ~8h of this scenario's 24h pin, NOT the 3h an
+// earlier round of this investigation assumed), so proving the failure-driven
+// route memo's rescue actually works needs a query whose cost genuinely
+// scales with window width — an ~8h shard of the 24h window must read
+// meaningfully fewer rows than the unsliced 24h query, or there is nothing
+// for slicing to rescue.
+//
+// Measured directly (issue #2650's investigation) that neither a self-emitted
+// metric (cerberus_queries_total, which only has as much history as the
+// process has been up — minutes, not hours) nor the other rolling-reseeded
+// counters (their real row density is dominated by the SAME 10-minute
+// reseed window, not real 24h spread) show any real cost difference between
+// a 24h read and a 3h read: both land on an almost-identical row count,
+// because there is no real data further back than a few minutes in either
+// case. This backfill fixes that at the source: 480 series x 288 samples
+// (5-minute cadence) spread from now-24h to now, inserted exactly ONCE
+// (unlike every other seed in this file) — the timestamps are real historical
+// instants, not a rolling window that needs re-anchoring, so a second
+// insertion would only duplicate rows, not add coverage. The series count
+// is sized so the query's real per-row cost dominates its fixed per-shard
+// materialization overhead — at 48 series a 3h slice already cost 55% of the
+// full 24h read (measured); at 240 series an 8h slice (the real kEff=3
+// granularity) cost 37% of the full 24h read (13.53 of 36.66 MiB, measured)
+// — close to, but not quite at, the ideal 1/3 a fixed-overhead-free split
+// would give, and NOT YET separable at any CERBERUS_CH_QUERY_MAX_MEMORY value
+// (cap/3 > 13.53 MiB needs cap > 40.6 MiB, which is already above the full
+// query's own 36.66 MiB cost). 480 series is the next step in that same
+// direction. Re-verify the actual full-vs-8h-shard cost split empirically
+// before relying on any of these numbers — this comment states the DESIGN
+// INTENT and its measurement history, not a promise the exact ratio holds;
+// chaos-overlay.env's CERBERUS_CH_QUERY_MAX_MEMORY value is the thing that
+// must be sized from a real measurement on whatever series count lands here.
+//
+// AggregationTemporality=2 (CUMULATIVE, matching insertSumSQL's own
+// convention) — DELTA would route this metric through the DELTA-prefix
+// aggregate table's own machinery (issue #2652), an unrelated and
+// unnecessary interaction for a scenario that only needs rate() over a
+// counter. deleteStaleMetricsSumSQL's MetricName allowlist does not include
+// this metric, so the rolling re-seeder's stale-row cleanup never touches it
+// — verified by reading that allowlist before adding this backfill.
+const insertRouteMemoProbeBackfillSQL = `INSERT INTO otel_metrics_sum
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
+SELECT
+    map('service.name', 'route-memo-probe'),
+    'route-memo-probe',
+    'route_memo_probe_requests_total',
+    'Synthetic counter backfilled with real 24h-scale historical depth for the route-memo-activation chaos scenario (issue #2650) — see insertRouteMemoProbeBackfillSQL''s doc comment',
+    '1',
+    map('probe_shard', toString(shard)),
+    now64(9) - INTERVAL (86400 - sample * 300) SECOND,
+    now64(9) - INTERVAL (86400 - sample * 300) SECOND,
+    toFloat64(1000 + sample * 5),
+    toUInt32(0),
+    toInt32(2),
+    true
+FROM
+(
+    SELECT s.number AS shard, t.number AS sample
+    FROM numbers(480) AS s
+    CROSS JOIN numbers(288) AS t
+)`
+
+// seedRouteMemoProbeBackfill runs insertRouteMemoProbeBackfillSQL. Called
+// exactly once from run(), never from the rolling re-seed loop — see the SQL
+// constant's own doc comment for why a second run would only duplicate rows.
+func seedRouteMemoProbeBackfill(ctx context.Context, conn driver.Conn) error {
+	if err := conn.Exec(ctx, insertRouteMemoProbeBackfillSQL); err != nil {
+		return fmt.Errorf("route-memo probe backfill: %w", err)
+	}
+	return nil
+}
+
+// insertRouteMemoProbeFreshnessSQL keeps route_memo_probe_requests_total
+// queryable via a SHORT recent window, alongside the one-time deep 24h
+// backfill above. Found necessary the hard way: iterate-metrics-explorer.
+// spec.ts's generic "every catalog-published metric must resolve to a
+// non-empty /api/v1/series and /api/v1/query_range" sweep queries a fixed
+// QUERY_WINDOW_SECONDS = 5*60 lookback ending at wall-clock "now" — and the
+// deep backfill's most recent sample is pinned to whatever "now" was AT
+// SEED TIME, which is stale by more than 5 minutes for any Playwright shard
+// that runs later in a long suite. Mirrors insertSumSQL's own ±5 min /
+// 1 s-cadence rolling shape exactly (same reason: the rolling re-seeder
+// re-runs this every 30 s, keeping a query at any wall-clock time inside a
+// fresh window) so this metric behaves like every other seeded counter for
+// short-range/instant panels, while the deep backfill above still answers
+// the route-memo scenario's own wide 24h window.
+//
+// Deliberately NOT added to deleteStaleMetricsSumSQL's cleanup allowlist:
+// that DELETE computes `max(TimeUnix) - margin` PER METRIC NAME, and this
+// metric shares its name with the one-time deep backfill — enrolling it
+// would delete every backfilled row older than a few minutes, wiping out
+// the very 24h depth insertRouteMemoProbeBackfillSQL exists to provide,
+// on the very first rolling tick. The rolling companion below accumulates
+// unbounded across a test run instead — bounded and harmless for a
+// suite that runs tens of minutes, not the alternative.
+const insertRouteMemoProbeFreshnessSQL = `INSERT INTO otel_metrics_sum
+  (ResourceAttributes, ServiceName, MetricName, MetricDescription, MetricUnit, Attributes, StartTimeUnix, TimeUnix, Value, Flags, AggregationTemporality, IsMonotonic)
+SELECT
+    map('service.name', 'route-memo-probe'),
+    'route-memo-probe',
+    'route_memo_probe_requests_total',
+    'Synthetic counter backfilled with real 24h-scale historical depth for the route-memo-activation chaos scenario (issue #2650) — see insertRouteMemoProbeBackfillSQL''s doc comment',
+    '1',
+    map('probe_shard', '0'),
+    now64(9) + INTERVAL (number - 300) SECOND,
+    now64(9) + INTERVAL (number - 300) SECOND,
+    toFloat64(1000 + number * 5),
+    toUInt32(0),
+    toInt32(2),
+    true
+FROM numbers(600)`
+
 // insertMetrics inserts the two `up` gauge series + 600 counter samples for
 // rate(). Both seeds span a 10-minute window centred on the (current) seed
 // timestamp — the gauge with 40 samples × 15 s and the counter / histogram
@@ -639,6 +768,9 @@ func insertMetrics(ctx context.Context, conn driver.Conn) error {
 	}
 	if err := conn.Exec(ctx, insertSumSQL); err != nil {
 		return fmt.Errorf("sum: %w", err)
+	}
+	if err := conn.Exec(ctx, insertRouteMemoProbeFreshnessSQL); err != nil {
+		return fmt.Errorf("route-memo probe freshness: %w", err)
 	}
 	if err := conn.Exec(ctx, insertHistogramSQL); err != nil {
 		return fmt.Errorf("histogram: %w", err)
