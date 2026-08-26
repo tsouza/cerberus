@@ -46,124 +46,102 @@ export const PHASES = [
   { phase: 'phase1', scope: './internal/chplan', efficacy: EFFICACY, workers: DEFAULT_WORKERS },
 
   // ---------------------------------------------------------------------------
-  // phase2 — three sibling legs over ./internal/chsql.
+  // phase2 — four sibling legs over ./internal/chsql (rebalanced from three by
+  // cerberus issue #2636).
   //
-  // Unsharded, phase2 was the mutation lane's sole critical path: 936 executed
-  // mutants at ~2.4s each put it at 38 minutes while the next-slowest leg
-  // (phase4-promql) finished in 13. Every other leg idled for 25 minutes waiting
-  // on it, so the lane's wall time was phase2's wall time and nothing else.
+  // Unsharded, phase2 was originally the mutation lane's sole critical path:
+  // 936 executed mutants at ~2.4s each put it at 38 minutes while the
+  // next-slowest leg (phase4-promql) finished in 13. The three-way split below
+  // this comment used to balance to ~313/310/313 — roughly 12.5 minutes each.
   //
-  // Unlike the phase4-logql split, this one is NOT a memory-ceiling workaround —
-  // chsql's test binary links no heavy parser graph and the leg never OOM'd. It
-  // is a pure wall-clock split, so the legs keep gremlins' default fan-out.
+  // internal/chsql grew past that rebalance point: a real push-to-main (run
+  // 32900297867, cited in issue #2636) measured all three legs individually at
+  // 20-29 minutes (phase2-builder 20m28s, phase2-compare 22m11s, phase2-other
+  // 29m09s) — each back near or past the original 38-minute unsplit figure,
+  // just spread across more legs instead of one.
   //
-  // The partition is by MEASURED executed-mutant count (KILLED + LIVED per file,
-  // read off a full phase2 report), greedily balanced to ~313/310/313 — roughly
-  // 12.5 minutes each. It is deliberately not thematic: range_window.go alone
-  // carries 186 mutants, so any split that kept "the range-window emitters"
-  // together would rebuild the critical path it exists to remove.
+  // Re-measured via `gremlins unleash --dry-run ./internal/chsql`: dry-run
+  // finds every mutant and its coverage status without running a single test,
+  // so its RUNNABLE (covered) count per file is the exact set a real run would
+  // execute — cross-validated against internal/promql below, where the
+  // dry-run total matched a real CI failure's executed-mutant count (backed
+  // out of its reported efficacy) to within two mutants. internal/chsql now
+  // carries 1266 executed mutants (was 936); applying the OLD three-way
+  // split's file assignment to today's counts reproduces the CI-measured
+  // imbalance almost exactly (381 / 404 / 481), confirming growth landed
+  // unevenly across files rather than uniformly.
+  //
+  // Unlike the phase4-logql split, this one is NOT a memory-ceiling workaround
+  // — chsql's test binary links no heavy parser graph and no leg has ever
+  // OOM'd. It is a pure wall-clock split, so the legs keep gremlins' default
+  // fan-out.
+  //
+  // Four legs, greedily balanced the same way as the original three (largest
+  // file first, assigned to the smallest running total), land at
+  // 316/317/318/315 — almost exactly the original ~315-mutant band, because
+  // 1266 / 4 lands where 936 / 3 did. Deliberately not thematic: range_window.go
+  // alone now carries 228 mutants (was 186), so any split that kept "the
+  // range-window emitters" together would rebuild the critical path it exists
+  // to remove.
   //
   // Rebalance by re-measuring, never by moving a file to keep a shard above the
   // bar. Shard boundaries chosen to hide a weak file are the same evasion as
   // relaxing `efficacy` — both leave the tests that failed to kill a mutant
   // exactly as weak, and only change which number reports it.
   {
-    phase: 'phase2-compare',
+    phase: 'phase2-range',
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // metrics_compare + prewhere + exemplars + structural_join + late_mat +
-    // range_window_grid_native + range_bucket_fanout + range_bucket_grid_native +
-    // emit + vector_set_op + set_op.
-    // range_bucket_grid_native.go belongs here with range_bucket_fanout.go:
-    // same per-(series, anchor) histogram-ladder contract, built out of the
-    // same UNION ALL anchor-injection shape both siblings emit — and both
-    // are only ever claimed by this leg. aggregate_range_lwr_fusion.go
-    // (cerberus issue #2442) falls to the phase2-other catch-all: it is a
-    // standalone RangeLWR/Aggregate fusion fast path with no declared
-    // sibling in either leg above — the same reasoning
-    // rate_window_fanout_bound.go and scan_resource_bound.go already
-    // document below. lwr_fanout_bound.go (cerberus issue #2447) falls
-    // there too, for the identical reason: a standalone
-    // RangeBucketFanout/RangeLWR sample-count guard, excluded from both
-    // legs above rather than enumerated in either.
-    // range_bucket_grid_native_bound.go (issues #2486/#2492) falls there
-    // too, for the identical reason: a standalone RangeBucketGridNative
-    // sample-count guard, excluded from both legs above rather than
-    // enumerated in either. mixed_vector_join.go (issue #2449's
-    // vector-vector piece) is excluded here for the same reason as
-    // histogram_float_vector_join.go just above: it belongs to
-    // phase2-builder, as vector_join.go's declared sibling.
+    // range_window(228) + aggregate_range_lwr_fusion(29) +
+    // late_mat(25) + range_bucket_fanout(17) +
+    // range_window_stale_resample(11) + fnresolution(4) +
+    // lwr_fanout_bound(2). range_window.go alone is the package's single
+    // largest file; the rest of this leg is greedy-balance filler, not theme.
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_node|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|lwr_fanout_bound|metrics_second_stage|mixed_vector_join|nary_vector_set_op|nested_set_annotate|query_exemplars|range_bucket_grid_native_bound|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|tableshape|vector_join)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_compare|metrics_second_stage|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-builder',
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // builder + emit_node + histogram_over_time + vector_join + range_lwr +
-    // histogram_quantile_native + histogram_projection + range_window_stale_resample +
-    // query_exemplars. histogram_vector_join.go, histogram_float_vector_join.go,
-    // and mixed_vector_join.go are left unexcluded here (rather than falling
-    // to the phase2-other catch-all) because they belong here: all three are
-    // vector_join.go's declared siblings — the same broadcast + Include-overlay
-    // join shape generalized to carry a histogram payload per side
-    // (histogram_vector_join.go), a per-row float scale factor
-    // (histogram_float_vector_join.go), or a full fourteen-column mixed
-    // float/histogram payload per side (mixed_vector_join.go, issue #2449's
-    // vector-vector piece) — and vector_join.go is itself only ever claimed
-    // by this leg.
-    // aggregate_range_lwr_fusion.go also falls to phase2-other's
-    // catch-all — see that leg's own exclude list. lwr_fanout_bound.go
-    // falls there too, for the same reason.
-    // range_bucket_grid_native_bound.go (issues #2486/#2492) is excluded
-    // here for the same reason: it falls to phase2-other's catch-all.
+    // builder(184) + nested_set_annotate(33) +
+    // range_window_variants(31) + vector_join(27) +
+    // range_lwr(24) + vector_set_op(10) +
+    // nary_vector_set_op(6) + rate_window_fanout_bound(2).
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|exemplars|fnresolution|histogram_quantile|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|prewhere|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_set_op)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|exemplars|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|mixed_vector_join|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_fused|range_window_grid_native|range_window_stale_resample|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape)\\.go$',
+  },
+  {
+    phase: 'phase2-compare',
+    scope: './internal/chsql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // metrics_compare(84) + emit_node(54) +
+    // exemplars(42) + histogram_quantile_native(41) +
+    // range_window_fused(29) + histogram_over_time(25) +
+    // histogram_projection(21) + emit(12) +
+    // metrics_second_stage(10).
+    exclude_files:
+      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|fnresolution|histogram_float_vector_join|histogram_quantile|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window|range_window_grid_native|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',
     scope: './internal/chsql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
-    // catch-all leg: range_window + nested_set_annotate + scan_resource_bound +
-    // ddl + range_window_fused + metrics_second_stage + nary_vector_set_op +
-    // tableshape, plus every file no other leg claims. A file newly added to
+    // catch-all leg: prewhere + ddl + structural_join + set_op +
+    // range_window_grid_native + scan_resource_bound + query_exemplars +
+    // histogram_quantile + tableshape, plus every file no other leg claims (the
+    // zero-mutant/uncovered files: absent_over_time, chaos_sleep,
+    // chaos_sleep_stub, doc, histogram_float_vector_join, histogram_vector_join,
+    // info_join, mixed_vector_join, range_bucket_grid_native,
+    // range_bucket_grid_native_bound, search_trace_limit). A file newly added to
     // internal/chsql needs no edit here — it is picked up automatically, which
-    // is why this leg keeps no positive file list to fall out of sync. The two
-    // legs above DO enumerate it, so a new file is briefly mutated three times
-    // over; TestMutationLegsPartitionEveryScopedFile fails on exactly that.
-    // histogram_projection.go, histogram_vector_join.go,
-    // histogram_float_vector_join.go, and mixed_vector_join.go are
-    // explicitly enumerated (rather than left to this catch-all) because
-    // each belongs to phase2-builder: histogram_projection.go is
-    // histogram_quantile_native.go's declared sibling (same single-plan-node
-    // emitter shape, same zeroBandOrigin() constant it shares from that
-    // file), and histogram_vector_join.go / histogram_float_vector_join.go /
-    // mixed_vector_join.go (issue #2449's vector-vector piece) are
-    // vector_join.go's declared siblings (same broadcast + Include-overlay
-    // join shape) — all four siblings are themselves only ever claimed by
-    // phase2-builder.
-    // range_bucket_grid_native.go is enumerated for the same reason on the
-    // phase2-compare side: it belongs with range_bucket_fanout.go and
-    // range_window_grid_native.go, all claimed only by that leg.
-    // range_bucket_grid_native_bound.go (RangeBucketGridNative's own
-    // resource-bound guard, issues #2486/#2492) is deliberately NOT
-    // enumerated here either, for the identical reason: it falls to THIS
-    // catch-all.
-    // rate_window_fanout_bound.go (cerberus issue #2429) falls to this
-    // catch-all the same way scan_resource_bound.go does: it is a
-    // standalone resource-bound guard with no declared sibling in either
-    // leg above, so it is excluded from both rather than enumerated in
-    // either. aggregate_range_lwr_fusion.go (issue #2442) falls here for
-    // the identical reason: a standalone RangeLWR/Aggregate fusion fast
-    // path, excluded from both legs above rather than enumerated in
-    // either. lwr_fanout_bound.go (issue #2447) falls here for the same
-    // reason: a standalone RangeBucketFanout/RangeLWR sample-count guard,
-    // excluded from both legs above rather than enumerated in either.
+    // is why this leg keeps no positive file list to fall out of sync.
     exclude_files:
-      '^(builder|emit|emit_node|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile_native|histogram_vector_join|late_mat|metrics_compare|mixed_vector_join|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_lwr|range_window_grid_native|range_window_stale_resample|set_op|structural_join|vector_join|vector_set_op)\\.go$',
+      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',
@@ -171,11 +149,189 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
   },
+
+  // ---------------------------------------------------------------------------
+  // phase4-promql — twelve sibling legs over ./internal/promql (split from one
+  // by cerberus issue #2636).
+  //
+  // Unsplit, phase4-promql was the FAST leg when phase2 was first split ("the
+  // next-slowest leg... finished in 13" minutes — see phase2's own history
+  // above). internal/promql has since grown far past that: the same real
+  // push-to-main (run 32900297867) showed it still `in_progress` past 40
+  // minutes while every phase4-logql-* and phase4-traceql-* leg (already split
+  // multiple ways each) finished under 15. A later push failed the phase
+  // outright at 94.26% efficacy (216 lived mutants) — a real test-quality gap
+  // tracked separately from this split; splitting only stops phase4-promql
+  // from being the lane's sole critical path and lets the 216 lived mutants be
+  // worked leg by leg instead of as one 40+-minute monolith.
+  //
+  // Re-measured via `gremlins unleash --dry-run ./internal/promql`: 3765
+  // executed (RUNNABLE) mutants, roughly 3x internal/chsql's 1266. This total
+  // is independently confirmed by the real CI failure above: 216 lived at
+  // 94.26% efficacy backs out to 216 / (1 - 0.9426) ≈ 3763 total executed
+  // mutants — a two-mutant difference from the dry-run count, well inside
+  // normal noise between two separate `go test` runs.
+  //
+  // Two files are individually larger than the ~315-mutant per-leg band phase2
+  // above rebalanced to, and neither can be subdivided further (gremlins
+  // partitions by whole file, not by line): lower.go (485 mutants) and
+  // histogram_quantile.go (359). Each gets its own dedicated leg, the same way
+  // phase4-traceql-lower and phase4-logql-lower each get a dedicated leg for
+  // their own oversized file. The remaining 3765 - 485 - 359 = 2921 mutants
+  // across the other 84 files greedily balance across ten legs at 291-293
+  // mutants each — the same ~315-mutant target band phase2 above rebalanced
+  // to, kept consistent across this whole file rather than re-derived per
+  // package.
+  //
+  // Deliberately not thematic, same as phase2: the histogram_native_mixed_or_*
+  // family (added in the #2624 audit-fix batch) is scattered across almost
+  // every leg below rather than kept together, because keeping ~30
+  // similarly-named files in one leg would just rebuild a new single dominant
+  // leg out of a family instead of out of a file.
   {
-    phase: 'phase4-promql',
+    phase: 'phase4-promql-lower',
     scope: './internal/promql',
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
+    // lower.go only (485 mutants, the package's single largest file,
+    // same reason phase4-traceql-lower and phase4-logql-lower each get a
+    // dedicated leg for their own oversized file).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-quantile',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_quantile.go only (359 mutants, the second largest — also
+    // too big to fold into a balanced filler leg without recreating the
+    // imbalance this split exists to fix).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-a',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // subquery(268) + histogram_native_mixed_or_arithmetic(12) +
+    // histogram_native_drop_aggregation(9) + histogram_native_mixed_or_datefn(3).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_comparison|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-b',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_quantile_window(181) + metadata_catalog(35) +
+    // histogram_native_last_first_over_time(29) + schema_lookup(19) +
+    // histogram_native_float_vector_scaling_binop(16) + histogram_synthetic_names(8) +
+    // histogram_native_mixed_or_aggregate_float_only(4).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_label_replace|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_shape_guard|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-c',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_native_range_fn(96) + histogram_value_fns(52) +
+    // histogram_native_binop_card(39) + histogram_native_reset(33) + scalar(27) +
+    // histogram_native_dropping_shape(19) + histogram_native_mixed_or_subquery_range_fn(13) +
+    // histogram_native_mixed_or_vector_plain_comparison(11) + scalar_guard(3).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_over_time|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar_args|scalar_domain|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-d',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // scalar_args(77) + resource_attributes(55) + date_fns(40) + regex_histogram_lower(37) +
+    // histogram_native_over_time(31) + histogram_native_timestamp(23) +
+    // histogram_native_mixed_or_comparison(18) + histogram_native_mixed_or_info(7) + unary(4).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_datefn|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|scalar|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-e',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_native_mixed_or_vector_arithmetic(71) + instant_fns(56) + absent(49) +
+    // duplicate_labelset_guard(36) + histogram_bucket(29) +
+    // histogram_native_mixed_or_vector_plain_arithmetic(22) + histogram_merge_bound(18) +
+    // histogram_native_mixed_or_aggregate_presence(6) + histogram_native_unary(6).
+    exclude_files:
+      '^(binary|classic_bucket_merge_bound|date_fns|doc|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-f',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_quantile_native_window(70) + histogram_native_resets(59) + label_fns(43) +
+    // synthetic(37) + modifiers(31) + histogram_native_binop_match(23) +
+    // histogram_native_mixed_or_scale(17) + scalar_domain(8) + histogram_native_avg(3) +
+    // histogram_native_mixed_or_sort(1).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|lower|lower_strategy|metadata_catalog|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_guard|schema_lookup|sort|subquery|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-g',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // binary(70) + info_fn(59) + lower_strategy(42) + histogram_native_mixed_or_math_fn(38) +
+    // histogram_native_count_present_over_time(31) + histogram_quantile_classic_native(23) +
+    // classic_bucket_merge_bound(16) + histogram_native_float_fn(10) + histogram_wire_arms(3).
+    exclude_files:
+      '^(absent|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|instant_fns|label_fns|lower|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-h',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_quantile_float(68) + histogram_native_binop(60) + range_fns(45) + sort(36) +
+    // histogram_native_mixed_or_subquery_aggregate_range_fn(30) +
+    // histogram_native_mixed_or_aggregate(27) + histogram_native_mixed_or(12) +
+    // histogram_shape_guard(12) + histogram_native_mixed_or_aggregate_count_values(2).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-i',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // histogram_native_count_values(67) + histogram_native_binop_eq(61) +
+    // histogram_native_count(43) + histogram_native_mixed_or_vector_comparison(38) +
+    // histogram_native_subquery_select(29) + histogram_native_bare(27) +
+    // histogram_native_mixed_or_value_fn(15) + histogram_native_value_producing_call(7) +
+    // histogram_native_mixed_or_label(5).
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|doc|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_match|histogram_native_count_present_over_time|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+  },
+  {
+    phase: 'phase4-promql-other',
+    scope: './internal/promql',
+    efficacy: EFFICACY,
+    workers: DEFAULT_WORKERS,
+    // catch-all leg: histogram_quantile_range(65) + histogram_quantile_le(64) +
+    // histogram_native_scalar_binop(41) + histogram_native_sum(38) +
+    // histogram_native_ts_of_first_last_over_time(32) + histogram_native_label_replace(22) +
+    // histogram_native_set_op(19) + histogram_native_float_vector_binop(6) +
+    // histogram_native_mixed_or_aggregate_topk(4),
+    // plus every file no other leg claims (the zero-mutant/uncovered files: doc,
+    // histogram_native_mixed_or_scalar, histogram_native_mixed_or_sort_by_label,
+    // histogram_native_mixed_or_timestamp, parser_shape). A file newly added to
+    // internal/promql needs no edit here — it is picked up automatically, which is
+    // why this leg keeps no positive file list to fall out of sync.
+    exclude_files:
+      '^(absent|binary|classic_bucket_merge_bound|date_fns|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_scaling_binop|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_subquery_select|histogram_native_timestamp|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_native_window|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|range_fns|regex_histogram_lower|resource_attributes|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
   },
 
   // ---------------------------------------------------------------------------

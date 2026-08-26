@@ -394,16 +394,36 @@ test('a change under one scope selects exactly that scope’s leg', () => {
 
 test('the chsql legs partition the package by exclude_files, one leg per file', () => {
   assert.deepEqual(names(select(['internal/chsql/metrics_compare.go'])), ['phase2-compare']);
-  assert.deepEqual(names(select(['internal/chsql/emit_node.go'])), ['phase2-builder']);
-  // `emit.go` and `emit_node.go` differ only by suffix, and `range_window.go` is
-  // a prefix of three siblings split across all three legs — the `$` anchor on
-  // every alternation is what keeps those from colliding.
+  assert.deepEqual(names(select(['internal/chsql/emit_node.go'])), ['phase2-compare']);
   assert.deepEqual(names(select(['internal/chsql/emit.go'])), ['phase2-compare']);
-  assert.deepEqual(names(select(['internal/chsql/range_window_grid_native.go'])), ['phase2-compare']);
-  assert.deepEqual(names(select(['internal/chsql/range_window_stale_resample.go'])), ['phase2-builder']);
-  // The catch-all leg owns range_window.go and everything no sibling names.
-  assert.deepEqual(names(select(['internal/chsql/range_window.go'])), ['phase2-other']);
+  // `histogram_quantile.go` is a prefix of `histogram_quantile_native.go`, and
+  // `range_window.go` is a prefix of `range_window_fused.go` — each pair lands
+  // in a DIFFERENT leg, so these pin that the `$` anchor on every alternation
+  // is what keeps a prefix match from swallowing its longer sibling.
+  assert.deepEqual(names(select(['internal/chsql/histogram_quantile.go'])), ['phase2-other']);
+  assert.deepEqual(names(select(['internal/chsql/histogram_quantile_native.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/range_window.go'])), ['phase2-range']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_fused.go'])), ['phase2-compare']);
+  assert.deepEqual(names(select(['internal/chsql/range_window_variants.go'])), ['phase2-builder']);
+  // The catch-all leg owns range_window_grid_native.go, tableshape.go, and
+  // everything no sibling names.
+  assert.deepEqual(names(select(['internal/chsql/range_window_grid_native.go'])), ['phase2-other']);
   assert.deepEqual(names(select(['internal/chsql/tableshape.go'])), ['phase2-other']);
+});
+
+test('the promql legs partition the package by exclude_files, one leg per file', () => {
+  // The two oversized single files each get a dedicated leg.
+  assert.deepEqual(names(select(['internal/promql/lower.go'])), ['phase4-promql-lower']);
+  assert.deepEqual(names(select(['internal/promql/histogram_quantile.go'])), ['phase4-promql-quantile']);
+  // `histogram_quantile.go` is a prefix of `histogram_quantile_window.go`, and
+  // they land in different legs — pins the `$` anchor the same way the chsql
+  // test above does.
+  assert.deepEqual(names(select(['internal/promql/histogram_quantile_window.go'])), ['phase4-promql-b']);
+  assert.deepEqual(names(select(['internal/promql/subquery.go'])), ['phase4-promql-a']);
+  // The catch-all leg owns histogram_quantile_range.go and everything no
+  // sibling names.
+  assert.deepEqual(names(select(['internal/promql/histogram_quantile_range.go'])), ['phase4-promql-other']);
+  assert.deepEqual(names(select(['internal/promql/doc.go'])), ['phase4-promql-other']);
 });
 
 test('the logql legs partition the package by exclude_files, one leg per file', () => {
