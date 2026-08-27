@@ -155,10 +155,23 @@ type rangeSeriesOrderer interface {
 // RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows / RateWindowFanoutMaxRows
 // fields directly, exactly as for deltaPrefixLookback above. See
 // applyResourceBoundOverrides for why a zero field threads nothing.
+//
+// rangeBucketGridNativeMaxRows / rangeBucketGridNativeMaxDensityUnits are
+// threaded the same unconditional way, for the same reason: they are a
+// no-op for LogQL / TraceQL (chplan.RangeBucketGridNative only ever comes
+// from PromQL's classic-histogram_quantile lowering), and every caller
+// passes its Engine's own field directly, so an Engine that never wires
+// them (e.g. Engine{} in a test, or LogQL's / TraceQL's own engines, which
+// cmd/cerberus never sets these two fields on) resolves to the Go zero
+// value 0 — which rangeBucketGridNativeMaxRowsFromCtx /
+// …MaxDensityUnitsFromCtx (internal/chsql/range_bucket_grid_native_bound.go)
+// treat as "no override", falling back to chsql's own real-evidence-
+// calibrated default exactly as if this had never been threaded at all.
 func emitForHead(
 	ctx context.Context, lang Lang, plan chplan.Node,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
+	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
 ) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
@@ -178,6 +191,8 @@ func emitForHead(
 	// default that keeps the DeltaPrefixLookback-only path.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
 	ctx = applyResourceBoundOverrides(ctx, bounds)
+	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, rangeBucketGridNativeMaxRows)
+	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, rangeBucketGridNativeMaxDensityUnits)
 	return chsql.Emit(ctx, plan)
 }
 
@@ -901,6 +916,25 @@ type Engine struct {
 	RangeLWRFanoutMaxRows    int64
 	RateWindowFanoutMaxRows  int64
 
+	// RangeBucketGridNativeMaxRows / RangeBucketGridNativeMaxDensityUnits
+	// mirror config.Config's own fields of the same name (CERBERUS_RANGE_
+	// BUCKET_GRID_NATIVE_MAX_ROWS / …MAX_DENSITY_UNITS) — an operator
+	// override for internal/chsql's RangeBucketGridNative resource bound
+	// (axis1 / axis2, see range_bucket_grid_native_bound.go's own
+	// "Operator override" doc). Threaded onto the emit context via
+	// chsql.WithRangeBucketGridNativeMaxRows / …MaxDensityUnits, the same
+	// unconditional way DeltaPrefixLookback is above (see emitForHead's own
+	// doc for why an Engine that never wires these — LogQL / TraceQL, or a
+	// bare Engine{} in a test — resolves harmlessly to chsql's own
+	// calibrated default rather than to an accidental zero-row ceiling).
+	//
+	// PromQL-only, like DeltaPrefixLookback: chplan.RangeBucketGridNative
+	// only ever comes from PromQL's classic-histogram_quantile lowering, so
+	// this is wired only onto the Prom head's Engine (cmd/cerberus) and is
+	// inert (a no-op field) on LogQL's / TraceQL's own.
+	RangeBucketGridNativeMaxRows         int64
+	RangeBucketGridNativeMaxDensityUnits int64
+
 	// RouteMemo is the OPTIONAL failure-driven route memo (internal/routememo,
 	// docs/solver.md §"Failure-driven route memo"). Nil unless wired from
 	// cmd/cerberus, so the default path is byte-unchanged. When non-nil AND
@@ -1172,7 +1206,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
+		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
@@ -1310,7 +1344,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1385,7 +1419,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1508,6 +1542,16 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // genuinely contain any of the three nodes these bounds guard, and without
 // this call a shard's ctx would silently fall back to chsql's own
 // compiled-in defaults instead of the operator's configured override.
+//
+// Deliberately does NOT thread RangeBucketGridNativeMaxRows /
+// …MaxDensityUnits the way it threads DeltaPrefixLookback: unlike DELTA-
+// prefix reconstruction, chplan.RangeBucketGridNative is provably never
+// sliceable — internal/solver/planner.go's own walkRangeBucketGridNative
+// doc confirms it is deliberately absent from chplan.IsSliceInvariant's
+// registry and reports itself non-re-anchorable
+// (TestRangeBucketGridNative_SlicingRefusedAtBothGates pins both refusals)
+// — so no route-B shard plan can ever contain this node, and threading its
+// two override values here would be dead code with nothing to read them.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
@@ -1870,7 +1914,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits)
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)

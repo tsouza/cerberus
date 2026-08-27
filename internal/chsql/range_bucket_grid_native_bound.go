@@ -1,6 +1,9 @@
 package chsql
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // range_bucket_grid_native_bound.go closes issue #2486: before this file
 // existed, RangeBucketGridNative's per-(series, `le` rung) native aggregate
@@ -501,17 +504,95 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 //     width^2) = 161,124,870 total cost units, still comfortably past
 //     85,000,000 — the query this guard exists to catch is still caught.
 //
+// # Issue #2665 recalibration: the original 16-point table never applied
+// production's own spill settings
+//
+// A real production deployment on v1.16.1 was hitting this guard's throwIf
+// repeatedly on an ordinary dashboard panel (shape `cerb:project;agg=3;rbf;rbn`,
+// `decision_reason=not-sliceable`) even though axis1 (#2651/#2653) had
+// already been recalibrated. `internal/solver/planner.go`'s own
+// `walkRangeBucketGridNative` doc confirms `RangeBucketGridNative` is
+// deliberately absent from `chplan.IsSliceInvariant`'s registry — it is
+// never sliceable, by design (`TestRangeBucketGridNative_SlicingRefusedAtBothGates`
+// pins both refusals) — so a slicing fallback for `not-sliceable` is not an
+// available fix shape here; the guard's own calibration is the only lever.
+//
+// Direct real-ClickHouse 25.9-alpine re-measurement (fresh `docker run`,
+// 1 GiB `max_memory_usage` cap) found the root cause: every point in the
+// 16-point table above — including the `#2523`/`#2651` "confirmed OOM"
+// points this file's own doc cites — was measured WITHOUT the
+// `max_bytes_before_external_group_by` / `max_bytes_before_external_sort`
+// settings `internal/engine/spill.go`'s `applySpillSettings` stamps on
+// EVERY real data-plane query, unconditionally, since before axis2 was even
+// introduced. Re-measuring the exact same reference points WITH those
+// settings (`spillThreshold(1<<30)` = 536,870,912 bytes, matching what a
+// real request actually gets):
+//
+//   - The real `#2486`/`#2408` reference density (d350, 161,124,870 cost
+//     units) — this file's own doc has called this a confirmed OOM since
+//     issue #2523 — is SAFE under real production settings: 20.2% of cap,
+//     2.6s.
+//   - The `#2651` production shape (3,962 series x 16 rungs) swept from 73
+//     to 4,000 rows/series (85,044,330 to 3,585,768,480 cost units, ~42x
+//     the old 85,000,000 ceiling) stayed safe throughout, plateauing around
+//     49-66% of cap — no OOM found in this corner at any density tested.
+//   - The width=50 isolation corner (60 series x 51 rungs x 100 anchors —
+//     this file's own established adversarial-width reference, `#2523`'s
+//     own largest-width point) DOES still genuinely OOM under real
+//     production settings, just at a much higher cost: safe through
+//     480,306,000 (66.2% of cap, 9.9s), a real ClickHouse code-241
+//     MEMORY_LIMIT_EXCEEDED at 510,306,000 (`would use 1.12 GiB, maximum
+//     1.00 GiB`, inside the SAME per-row O(width^2) `arrayMap` cumulative-sum
+//     evaluation this file's own "Density guard" doc names as the cost
+//     driver — a per-block expression evaluation upstream of Level 1's
+//     GROUP BY, which is why the spill settings — which only bound the
+//     GROUP BY / sort operators — do not protect it).
+//
+// Spill was never optional for a real data-plane query — `applySpillSettings`
+// stamps it unconditionally — so the original calibration table's numbers,
+// while real measurements at the time, described an execution profile no
+// live cerberus request has ever actually run under. That gap, not a
+// genuinely thinner safety margin the way `#2651` found for axis1, is this
+// issue's own root cause: the guard was calibrated against a strictly
+// harder (and, it turns out, unrepresentative) workload than production
+// ever sends it.
+//
+// `maxRangeBucketGridNativeDensityUnits` moves from 85,000,000 to
+// 400,000,000 — grounded in the width=50 corner's own real cliff (the
+// tightest of the three re-measured corners, and still this file's
+// established adversarial-width reference): 16.7% below the last
+// confirmed-safe point (480,306,000) and 21.6% below the confirmed OOM
+// point (510,306,000), the same "comfortably inside the confirmed-safe
+// range, clear of the cliff" margin philosophy `#2651`/`#2653` used for
+// axis1. This also gives the real `#2486`/`#2408` reference density
+// (161,124,870) 2.48x headroom below the new ceiling, and the `#2651`
+// production shape's own realistic densities (tens to low hundreds of
+// rows/series) several-fold more room than the old 85,000,000 ever did.
+//
+// What this does NOT change: a real, sufficiently wide-bucketed histogram
+// at extreme raw-row density is still a genuine ClickHouse OOM regardless
+// of threshold — the width=50 corner's own cliff is real, not an artefact
+// of missing spill settings, and this guard correctly continues to reject
+// past it.
+//
 // Recalibrate by binary search against a real ClickHouse (not chDB) if
 // this drifts — same harness-pitfall caveat (unique query_id per run) as
-// this file's own axis1 calibration above. The calibration harness itself
-// (a throwaway `docker run clickhouse/clickhouse-server` test, not
-// TestCalibrate2523) was deleted before this fix merged, per this file's
-// own established precedent — this doc comment is the retained record.
+// this file's own axis1 calibration above, AND stamp the same
+// `max_bytes_before_external_group_by` / `max_bytes_before_external_sort`
+// settings `applySpillSettings` stamps on every real query, per this
+// section's own root-cause finding — omitting them measures a materially
+// different, unrepresentative workload. The calibration harness itself (a
+// throwaway `docker run clickhouse/clickhouse-server` test, not
+// TestManualCalibrateAxis2) was deleted before this fix merged, per this
+// file's own established precedent — this doc comment is the retained
+// record.
 const (
 	// maxRangeBucketGridNativeDensityUnits bounds `(groups x anchors) +
 	// (rawRows x width^2)` — see this file's own "Density guard" doc above
-	// for the real ClickHouse calibration this was picked against.
-	maxRangeBucketGridNativeDensityUnits = 85_000_000
+	// for the real ClickHouse calibration this was picked against, and its
+	// "Issue #2665 recalibration" subsection for why this differs from the
+	// original 85,000,000.
+	maxRangeBucketGridNativeDensityUnits = 400_000_000
 
 	// maxRangeBucketGridNativeDensityClampedRows / …ClampedWidth are NOT
 	// behavioral thresholds — see this file's "Overflow safety" doc above.
@@ -522,6 +603,94 @@ const (
 	maxRangeBucketGridNativeDensityClampedRows  = 100_000_000
 	maxRangeBucketGridNativeDensityClampedWidth = 100_000
 )
+
+// # Operator override (issue #2665 follow-up)
+//
+// Both maxRangeBucketGridNativeRows and maxRangeBucketGridNativeDensityUnits
+// are real-ClickHouse-calibrated DEFAULTS, not immutable ceilings: this
+// issue is itself the SECOND time (after #2651/#2653's own axis1
+// recalibration) that a real production deployment's traffic needed a
+// value this file shipped with real evidence at the time to move — and
+// each time, unblocking that traffic required a full code change + PR +
+// release cycle. rangeBucketGridNativeMaxRowsKey /
+// rangeBucketGridNativeMaxDensityUnitsKey below let an operator override
+// either bound at runtime (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS /
+// CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS, see
+// config.Config's own doc for those fields) without waiting on a release —
+// internal/engine.emitForHead threads the operator's configured value (or
+// this file's own calibrated default, when unset) onto ctx before every
+// chsql.Emit call, mirroring WithDeltaPrefixLookback's own established
+// ctx-threading shape (internal/chsql/range_window.go) for the identical
+// "chsql may not import internal/config" layering reason
+// (.go-arch-lint.yml).
+//
+// This is deliberately NOT a license to guess: an operator raising either
+// override above this file's own shipped default is opting OUT of the real
+// ClickHouse measurement backing that default (see this file's "Recalibrate
+// by binary search..." notes above) and taking on, themselves, the same
+// verification burden — ideally the identical real-ClickHouse-WITH-spill-
+// settings methodology this file's own doc trail uses — or risks
+// reintroducing the exact ClickHouse code-241 MEMORY_LIMIT_EXCEEDED abort
+// this guard exists to convert into a clean, fast 422 instead. A value at
+// or below the shipped default carries this file's own real-evidence
+// guarantee; a value above it carries none beyond what the operator
+// verified themselves.
+//
+// rangeBucketGridNativeMaxRowsKey / rangeBucketGridNativeMaxDensityUnitsKey
+// are unexported context keys, matching every other ctx-threaded emit-time
+// value in this package (deltaPrefixLookbackKey, spansTableKey, ...).
+type (
+	rangeBucketGridNativeMaxRowsKey         struct{}
+	rangeBucketGridNativeMaxDensityUnitsKey struct{}
+)
+
+// WithRangeBucketGridNativeMaxRows returns ctx carrying n as the operator
+// override for axis1 (maxRangeBucketGridNativeRows). Only a POSITIVE n is
+// honored — see rangeBucketGridNativeMaxRowsFromCtx: unlike
+// WithDeltaPrefixLookback's own zero-is-meaningful contract, there is no
+// legitimate "disable this guard" value for a resource-safety bound (a
+// zero or negative row-count ceiling rejects every query outright), so a
+// non-positive override is treated exactly like "never threaded" rather
+// than honored literally. internal/config.Config's own env-var parsing
+// applies the identical rule before this is ever reached in production
+// (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS=0 is coerced to the default
+// with a startup warning, mirroring resolveQueryMaxSamples' own precedent)
+// — the extra check here is what keeps a direct chsql.Emit caller (a test,
+// a future non-config caller) from being able to zero out the guard by
+// constructing ctx directly.
+func WithRangeBucketGridNativeMaxRows(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketGridNativeMaxRowsKey{}, n)
+}
+
+// rangeBucketGridNativeMaxRowsFromCtx recovers the operator override
+// WithRangeBucketGridNativeMaxRows set, or maxRangeBucketGridNativeRows
+// (this file's own real-evidence-calibrated default) when the caller never
+// threaded one, or threaded a non-positive value — see
+// WithRangeBucketGridNativeMaxRows's own doc for why non-positive is
+// treated as absent rather than honored.
+func rangeBucketGridNativeMaxRowsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketGridNativeMaxRowsKey{}).(int64); ok && n > 0 {
+		return n
+	}
+	return maxRangeBucketGridNativeRows
+}
+
+// WithRangeBucketGridNativeMaxDensityUnits is
+// WithRangeBucketGridNativeMaxRows's own twin for axis2
+// (maxRangeBucketGridNativeDensityUnits) — same non-positive-is-absent
+// contract, same rationale.
+func WithRangeBucketGridNativeMaxDensityUnits(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketGridNativeMaxDensityUnitsKey{}, n)
+}
+
+// rangeBucketGridNativeMaxDensityUnitsFromCtx is
+// rangeBucketGridNativeMaxRowsFromCtx's own twin for axis2.
+func rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketGridNativeMaxDensityUnitsKey{}).(int64); ok && n > 0 {
+		return n
+	}
+	return maxRangeBucketGridNativeDensityUnits
+}
 
 // RangeBucketGridNativeDensityBudgetMessage is the throwIf message
 // bucketGridDensityGuardFrag raises when the density guard fires. Distinct

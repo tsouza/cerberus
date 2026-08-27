@@ -766,6 +766,11 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		RangeBucketFanoutMaxRows: resourceBounds.RangeBucketFanoutMaxRows,
 		RangeLWRFanoutMaxRows:    resourceBounds.RangeLWRFanoutMaxRows,
 		RateWindowFanoutMaxRows:  resourceBounds.RateWindowFanoutMaxRows,
+		// PromQL-only, same inertness reasoning: chplan.RangeBucketGridNative
+		// only ever comes from PromQL's classic-histogram_quantile lowering —
+		// see engine.Engine.RangeBucketGridNativeMaxRows's doc.
+		RangeBucketGridNativeMaxRows:         cfg.RangeBucketGridNativeMaxRows,
+		RangeBucketGridNativeMaxDensityUnits: cfg.RangeBucketGridNativeMaxDensityUnits,
 	}
 	h.Limiter = limiter
 	h.Version = Version
