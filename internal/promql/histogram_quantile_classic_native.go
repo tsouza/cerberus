@@ -66,6 +66,23 @@ type FanoutClassicHistogramWindowLowerer struct{}
 // LowerClassicHistogramWindow builds the RangeBucketFanout + two-Project
 // reshape the classic-histogram range path has always emitted.
 func (FanoutClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in classicHistogramWindowInput) chplan.Node {
+	return lowerClassicHistogramFanout(in, true)
+}
+
+// lowerClassicHistogramFanout is LowerClassicHistogramWindow with the
+// PeakIndependentOfGrid declaration made explicit rather than unconditional.
+//
+// peakIndependentOfGrid is true for the fan-out-ONLY lowering, where the
+// fan-out is the whole plan and its route-A cost was measured (see below), and
+// false for the DELTA complement the native lowerer builds, which is a
+// different construction site seeing a subset of rows and has never been
+// measured (#2688).
+//
+// Deciding it at construction rather than clearing it afterwards is not a
+// style choice: a post-hoc chplan.Walk over the returned subtree runs on every
+// classic-histogram lowering, and that cost is real enough to push the
+// internal/promql mutation phase past its per-mutant timeout.
+func lowerClassicHistogramFanout(in classicHistogramWindowInput, peakIndependentOfGrid bool) chplan.Node {
 	fanout := buildHistogramBucketFanout(
 		in.scan, in.pred, in.leMatchers, in.win,
 		[]chplan.Expr{histogramIdentityExpr(in.s)}, []string{in.s.AttributesColumn},
@@ -78,7 +95,7 @@ func (FanoutClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in classi
 	// APM-style panel), and deliberately NOT on the exponential/native
 	// siblings, whose route A is where #2385's OOMs happen.
 	if f, ok := fanout.(*chplan.RangeBucketFanout); ok {
-		f.PeakIndependentOfGrid = true
+		f.PeakIndependentOfGrid = peakIndependentOfGrid
 	}
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	rangeStart, rangeEnd := fanoutWindowBoundsExpr(anchorRef, in.win)
@@ -138,7 +155,7 @@ func (n NativeClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in clas
 	delta.pred = andPredicate(in.pred, temporalityPredicate(in.s.AggregationTemporalityColumn, chplan.OpEq))
 	return &chplan.UnionAll{Inputs: []chplan.Node{
 		cumulative,
-		clearPeakIndependentOfGrid(n.Fallback.LowerClassicHistogramWindow(delta)),
+		n.lowerDeltaComplement(delta),
 	}}
 }
 
@@ -241,15 +258,15 @@ func andPredicate(left, right chplan.Expr) chplan.Expr {
 	return &chplan.Binary{Op: chplan.OpAnd, Left: left, Right: right}
 }
 
-// clearPeakIndependentOfGrid unsets chplan.RangeBucketFanout.PeakIndependentOfGrid
-// on the DELTA-complement arm the native lowerer builds, and returns n.
+// lowerDeltaComplement builds the DELTA arm of the temporality union WITHOUT
+// chplan.RangeBucketFanout.PeakIndependentOfGrid.
 //
-// That flag is documented as a per-CONSTRUCTION-SITE declaration, not a
-// property of the node kind: "only a site that has MEASURED route A to fit
-// sets it true", and its zero value is the safe one. The measurement behind it
-// (2.84 GB on an APM-style panel, where slicing recovered 8.7% of peak for 23x
-// the ClickHouse work) was taken on the FAN-OUT-ONLY lowering, where the
-// fan-out is the whole plan and processes every row.
+// That flag is documented as a per-CONSTRUCTION-SITE declaration — "only a
+// site that has MEASURED route A to fit sets it true", with the zero value
+// documented as the safe one. The measurement behind it (2.84 GB on an
+// APM-style panel, where slicing recovered 8.7% of peak for 23x the ClickHouse
+// work) was taken on the fan-out-ONLY lowering, where the fan-out IS the whole
+// plan and processes every row.
 //
 // This site is a different one. Here the fan-out is one arm of a complementary
 // union — it sees only AggregationTemporality == DELTA rows, while the native
@@ -265,16 +282,17 @@ func andPredicate(left, right chplan.Expr) chplan.Expr {
 // the plan was being refused on the cost characteristics of an arm doing no
 // work at all (#2688).
 //
-// Clearing it does not assert that slicing the delta arm is profitable; it
-// restores the documented default of "assume slicing helps" for a site with no
-// measurement behind it, which is what lets the arm that DOES benefit be
-// considered on its own merits.
-func clearPeakIndependentOfGrid(n chplan.Node) chplan.Node {
-	chplan.Walk(n, func(node chplan.Node) bool {
-		if f, ok := node.(*chplan.RangeBucketFanout); ok {
-			f.PeakIndependentOfGrid = false
-		}
-		return true
-	})
-	return n
+// Not setting it does not assert that slicing the delta arm is profitable; it
+// restores the documented default for a site with no measurement behind it,
+// which is what lets the arm that DOES benefit be considered on its own
+// merits.
+//
+// The Fallback interface cannot express this, so a concrete
+// FanoutClassicHistogramWindowLowerer takes the direct path and any other
+// implementation keeps its own behaviour unchanged.
+func (n NativeClassicHistogramWindowLowerer) lowerDeltaComplement(delta classicHistogramWindowInput) chplan.Node {
+	if _, ok := n.Fallback.(FanoutClassicHistogramWindowLowerer); ok {
+		return lowerClassicHistogramFanout(delta, false)
+	}
+	return n.Fallback.LowerClassicHistogramWindow(delta)
 }
