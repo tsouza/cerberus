@@ -107,10 +107,10 @@
 //      older/side commit. (For a branch push GITHUB_SHA is normally already the
 //      tip; the check defends against a stale re-drive racing a newer push.)
 //      MAINTENANCE only.
-//   4. The maintenance line must be INSIDE the support window — the latest
-//      SUPPORTED_MINOR_LINES minor lines (current + the two prior). A push to a
-//      line that is end-of-life (3+ minors behind the highest released minor)
-//      is REFUSED: an EOL line gets no further hotfixes. See the "Release
+//   4. The maintenance line must be INSIDE the support window — the current
+//      minor only (SUPPORTED_MINOR_LINES). A push to a line that is
+//      end-of-life (1+ minor(s) behind the highest released minor) is
+//      REFUSED: an EOL line gets no further hotfixes. See the "Release
 //      support window / EOL policy" subsection of docs/operations.md.
 //      MAINTENANCE only.
 //
@@ -219,11 +219,11 @@ export const REUSABLE_JOB_SEPARATOR = ' / ';
 // Conclusions that count as a settled, non-blocking check-run.
 const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 
-// Cerberus supports the latest N minor release lines: the current minor plus
-// the two prior. A maintenance line that falls 3+ minors behind the highest
-// released minor is end-of-life — no further hotfixes. See the "Release support
-// window / EOL policy" subsection of docs/operations.md.
-export const SUPPORTED_MINOR_LINES = 3;
+// Cerberus supports exactly ONE minor release line: the current minor. A
+// maintenance line that falls 1+ minor(s) behind the highest released minor
+// is end-of-life — no further hotfixes. See the "Release support window /
+// EOL policy" subsection of docs/operations.md.
+export const SUPPORTED_MINOR_LINES = 1;
 
 // A released app tag, `v<major>.<minor>.<patch>` (stable only — a prerelease
 // suffix like `-rc.1` does NOT establish a new supported line).
@@ -434,7 +434,8 @@ export function supportWindowProblem({ branch, tags, windowSize = SUPPORTED_MINO
 // is the single source of truth. When a NEW minor opens (`Z == 0`), the window
 // slides forward by one and the line `SUPPORTED_MINOR_LINES` behind the new
 // minor drops off: publishing `X.Y.0` makes `X.(Y - SUPPORTED_MINOR_LINES).x`
-// end-of-life. With a 3-line window, shipping 1.6.0 retires release/1.3.x.
+// end-of-life. With a 1-line window, shipping 1.6.0 retires release/1.5.x —
+// the line it just superseded.
 //
 // Conservative by construction — retires AT MOST one line, and only when:
 //   - the version parses as a stable `X.Y.Z` (no prerelease suffix);
@@ -444,8 +445,8 @@ export function supportWindowProblem({ branch, tags, windowSize = SUPPORTED_MINO
 //     `X.0.0` is a bigger policy call, so this returns null and leaves those
 //     lines to the maintainer (the passive `supportWindowProblem` gate still
 //     refuses to PUBLISH on them). See docs/operations.md.
-//   - the computed minor index is >= 0 (early minors like 1.0/1.1/1.2 under a
-//     3-line window retire nothing — there is no line that far back yet);
+//   - the computed minor index is >= 0 (an early minor like 1.0 under a
+//     1-line window retires nothing — there is no line that far back yet);
 //   - the just-published minor is actually the (new) HIGHEST released minor.
 //     A stable BACKPORT cut after a newer minor — e.g. publishing 1.4.2 while
 //     1.6.0 is already out — must NOT slide the window or retire anything; the
@@ -834,8 +835,8 @@ function selfTest() {
   assert(r.problems.length === 1 && /GitGuardian: status failure/.test(r.problems[0]), 'legacy status red must block');
 
   // --- support-window / EOL gate -------------------------------------------
-  // Worked example from the policy: at v1.5.x current, 1.4.x and 1.3.x are
-  // supported; 1.2.x and older are EOL.
+  // Worked example from the policy: at v1.5.x current, ONLY 1.5.x is
+  // supported (window = 1); 1.4.x and everything older is EOL.
   const releasedTags = ['v1.5.0', 'v1.4.0', 'v1.4.1', 'v1.3.0', 'v1.2.0', 'v1.0.0', 'v1.5.0-rc.1'];
   assert(currentMinor(releasedTags)[0] === 1 && currentMinor(releasedTags)[1] === 5, 'current minor is 1.5');
   assert(currentMinor(['v1.5.0-rc.1', 'v1.4.0'])[1] === 4, 'prerelease does not advance the current minor');
@@ -843,8 +844,8 @@ function selfTest() {
 
   const sw = (b, tags = releasedTags) => supportWindowProblem({ branch: b, tags });
   assert(sw('release/1.5.x') === null, '1.5.x (current) is in-window');
-  assert(sw('release/1.4.x') === null, '1.4.x (current-1) is in-window');
-  assert(sw('release/1.3.x') === null, '1.3.x (current-2) is in-window');
+  assert(/end-of-life/.test(sw('release/1.4.x')), '1.4.x (current-1) is EOL under a 1-line window');
+  assert(/end-of-life/.test(sw('release/1.3.x')), '1.3.x (current-2) is EOL');
   assert(/end-of-life/.test(sw('release/1.2.x')), '1.2.x (current-3) is EOL');
   assert(/end-of-life/.test(sw('release/1.0.x')), '1.0.x (current-5) is EOL');
   assert(/end-of-life/.test(sw('release/0.9.x')), 'older major is EOL once a newer major exists');
@@ -870,7 +871,7 @@ function selfTest() {
     branchHead: 'abc',
     pushedSha: 'abc',
     selfJobs: self,
-    branchLabel: 'release/1.4.x',
+    branchLabel: 'release/1.5.x',
     tags: releasedTags,
     checkRuns: [cr('check', 'completed', 'success')],
     statuses: [],
@@ -883,22 +884,24 @@ function selfTest() {
   // so a minor open retires the line exactly SUPPORTED_MINOR_LINES behind it.
   const retire = (version, tags = []) => retireLineForPublish({ version, tags });
 
-  // Worked example from the brief: publish 1.6.0 -> retire release/1.3.x.
-  assert(retire('1.6.0', ['v1.6.0', 'v1.5.0', 'v1.4.0', 'v1.3.0']) === 'release/1.3.x', '1.6.0 retires release/1.3.x');
-  // 1.5.0 -> retire release/1.2.x (matches the docs worked example).
-  assert(retire('1.5.0', ['v1.5.0', 'v1.4.0', 'v1.3.0', 'v1.2.0']) === 'release/1.2.x', '1.5.0 retires release/1.2.x');
+  // Worked example from the brief: publish 1.6.0 -> retire release/1.5.x,
+  // the line it just superseded (window = 1: current minor only).
+  assert(retire('1.6.0', ['v1.6.0', 'v1.5.0', 'v1.4.0', 'v1.3.0']) === 'release/1.5.x', '1.6.0 retires release/1.5.x');
+  // 1.5.0 -> retire release/1.4.x (matches the docs worked example).
+  assert(retire('1.5.0', ['v1.5.0', 'v1.4.0', 'v1.3.0', 'v1.2.0']) === 'release/1.4.x', '1.5.0 retires release/1.4.x');
   // A patch release retires nothing — window unchanged.
   assert(retire('1.5.1', ['v1.5.1', 'v1.5.0', 'v1.4.0']) === null, '1.5.1 (patch) retires nothing');
-  // No prior line that far back yet (early minors under a 3-line window).
-  assert(retire('1.0.0', ['v1.0.0']) === null, '1.0.0 has no line 3 minors back -> noop');
-  assert(retire('1.2.0', ['v1.2.0', 'v1.1.0', 'v1.0.0']) === null, '1.2.0: would-be -1.x line does not exist -> noop');
+  // No prior line that far back yet (a 1-line window still needs ONE prior
+  // minor to exist before there is anything to retire).
+  assert(retire('1.0.0', ['v1.0.0']) === null, '1.0.0 has no prior line -> noop');
+  assert(retire('1.2.0', ['v1.2.0', 'v1.1.0', 'v1.0.0']) === 'release/1.1.x', '1.2.0 retires release/1.1.x');
   // A MAJOR bump is out of scope — conservative, retires nothing here.
   assert(retire('2.0.0', ['v2.0.0', 'v1.6.0', 'v1.5.0']) === null, 'major bump 2.0.0 retires nothing (scoped out)');
   // A stable BACKPORT cut after a newer minor must NOT slide the window.
   assert(retire('1.4.0', ['v1.6.0', 'v1.5.0', 'v1.4.0']) === null, 'backport 1.4.0 behind current 1.6 retires nothing');
   // The retire-line is idempotent at the helper level: same inputs, same name
   // (existence/deletion is the caller's job).
-  assert(retire('1.6.0', ['v1.6.0', 'v1.5.0']) === 'release/1.3.x', 'retire-line is deterministic regardless of branch presence');
+  assert(retire('1.6.0', ['v1.6.0', 'v1.5.0']) === 'release/1.5.x', 'retire-line is deterministic regardless of branch presence');
   // Non-stable / non-version inputs are ignored.
   assert(retire('1.6.0-rc.1', ['v1.6.0-rc.1']) === null, 'prerelease publish retires nothing');
   assert(retire('chart-v0.6.3', []) === null, 'chart version is not an app version -> noop');
@@ -909,7 +912,7 @@ function selfTest() {
     const tags = ['v1.6.0', 'v1.5.0', 'v1.4.0', 'v1.3.0'];
     const line = retireLineForPublish({ version: '1.6.0', tags });
     assert(/end-of-life/.test(supportWindowProblem({ branch: line, tags })), 'the retired line is EOL per supportWindowProblem');
-    assert(supportWindowProblem({ branch: 'release/1.4.x', tags }) === null, 'the line kept (1.4.x) is still in-window');
+    assert(supportWindowProblem({ branch: 'release/1.6.x', tags }) === null, 'the current line (1.6.x) is still in-window');
   }
 
   // --- the EXPECTED set: absence must FAIL ---------------------------------

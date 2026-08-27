@@ -1102,16 +1102,16 @@ what actually runs.
   moves while a release waits on CI. The publish jobs guard
   `needs.preflight.result == 'success'` with no `|| skipped` disjunction, since
   the preflight now fires on every publishing run. It ALSO enforces
-  the **release support-window / EOL policy** (`SUPPORTED_MINOR_LINES = 3`): the
-  pushed line must be within the latest 3 minor lines (current + the two prior);
-  a push to a line 3+ minors behind the current minor (derived from the stable
+  the **release support-window / EOL policy** (`SUPPORTED_MINOR_LINES = 1`): the
+  pushed line must be the current minor line — no prior minor is supported;
+  a push to a line 1+ minor(s) behind the current minor (derived from the stable
   `v*` tag set, listed via the API so no fetch-depth is needed) is REFUSED
   before any artifact publishes, independent of how green the commit is. See
   `docs/operations.md` "Release support window / EOL policy". The SAME module
   also drives the **active** half of the EOL policy via the `eol-retire-line`
   command (the `eol-retire` job in `release.yml`): post-publish, it computes the
   line that just fell out of the window with `retireLineForPublish` (the same
-  `SUPPORTED_MINOR_LINES` math — publishing `1.6.0` retires `release/1.3.x`) and
+  `SUPPORTED_MINOR_LINES` math — publishing `1.6.0` retires `release/1.5.x`) and
   DELETES that `release/X.W.x` branch via the Git refs API iff it exists.
   Conservative + fail-open: it retires at most one line, only on a minor open
   (`X.Y.0`, `Y>0`) — patches / major bumps / backports / prereleases retire
