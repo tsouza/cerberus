@@ -366,6 +366,24 @@ func (b *breaker) record(ctx context.Context, err error) {
 		err = nil
 	}
 
+	// A deliberate, emitter-planted throwIf guard (code 395) is the clearest
+	// case of all: cerberus PUT that rejection in the SQL itself — the
+	// resource-bound ceilings, the shape-fault assertions — so the server
+	// raising it is not merely proof CH is alive, it is proof cerberus's own
+	// pre-flight logic worked exactly as designed.
+	//
+	// This became load-bearing when the RangeBucketGridNative density bound
+	// was recalibrated to the measured OOM cliff (#2681). While that bound
+	// was several times too permissive, guard rejections were rare enough
+	// that counting them never tripped anything; an honest bound fires on
+	// every genuinely-oversized query, so a dashboard refresh with a few wide
+	// panels would open the breaker and 503 unrelated traffic — the same
+	// failure mode the code-241 carve-out above exists to prevent, reached by
+	// a different door.
+	if err != nil && isThrowIfGuard(err) {
+		err = nil
+	}
+
 	// A pool acquire-timeout (clickhouse.ErrAcquireConnTimeout) is NOT a
 	// ClickHouse-health failure: it means every connection in the local
 	// pool is busy and the acquire blocked past DialTimeout without one

@@ -309,8 +309,20 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// above before this, since it carried no real result.
 	pe.stamp(span)
 	breakerErr := runErr
-	if isBudgetErr(runErr) {
-		breakerErr = nil // budget rejection is the caller asking for too much, not an outage
+	if isBudgetErr(runErr) || isThrowIfGuard(translateCHGoErr(runErr)) {
+		// Both are the caller asking for too much, not an outage. A throwIf
+		// guard (code 395) is cerberus's OWN emitted rejection — a resource
+		// ceiling or a shape assertion this process planted in the SQL — so
+		// ClickHouse raising it is proof the backend is healthy, exactly as
+		// breaker.record's own code-241 / code-159 carve-outs argue. The
+		// error is normalised through translateCHGoErr first because this
+		// dial is ch-go: runErr carries a *proto.Exception, not the
+		// *clickhouse.Exception shape the code check reads. This
+		// became load-bearing once the RangeBucketGridNative density bound was
+		// recalibrated to the measured OOM cliff (#2681): an honest bound
+		// fires on every oversized query, so without this a dashboard refresh
+		// with a few wide panels trips the breaker and 503s unrelated traffic.
+		breakerErr = nil
 	}
 	c.br.record(ctx, breakerErr)
 	if rec != nil {

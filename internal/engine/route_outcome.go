@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/routememo"
 	"github.com/tsouza/cerberus/internal/solver"
 )
@@ -83,6 +85,9 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 	if errors.Is(err, chclient.ErrMemoryLimitExceeded) {
 		return routememo.OutcomeResourceFailure
 	}
+	if isTimeSliceableResourceBound(err) {
+		return routememo.OutcomeResourceFailure
+	}
 	// A cancellation that survived costlyCancellationFloor is evidence about
 	// THIS route's cost: the work was committed and the caller gave up waiting
 	// for it. Recorded, never retried — the caller is already gone, so a retry
@@ -101,4 +106,70 @@ func classifyRouteOutcomeAfter(route routememo.Route, err error, elapsed time.Du
 		}
 	}
 	return routememo.OutcomeNoEvidence
+}
+
+// timeSliceableResourceBoundMessages are the emitter-planted resource-bound
+// guards whose bound is RELIEVED by evaluating a narrower time range — the
+// only guards whose rejection is honest evidence that route B should be tried.
+//
+// Every one of these counts a cost that scales with the request's own anchor
+// grid or with the raw rows its scan window admits, both of which a shard
+// divides. Sharding a query that tripped one of them genuinely lowers each
+// shard's cost below the same bound, which is exactly what makes the memo's
+// A->B escalation the right response.
+//
+// Deliberately EXCLUDED, and the exclusion is the load-bearing half: the
+// histogram-merge budgets (chplan.HistogramMergeBudgetMessage and its classic
+// sibling) bound an ACROSS-SERIES merge whose cost is driven by series
+// cardinality and bucket width, not by the time range. Time-slicing splits
+// anchors, never series, so every shard would carry the same merged bucket
+// range and trip the identical bound — an escalation that cannot succeed,
+// spending a dispatch to fail again. Shape-fault guards (info() conflicting
+// label, duplicate labelset, many-to-many match) are excluded for a stronger
+// reason still: they are user errors that no execution strategy resolves.
+var timeSliceableResourceBoundMessages = []string{
+	chsql.RangeBucketGridNativeBudgetMessage,
+	chsql.RangeBucketGridNativeDensityBudgetMessage,
+	chsql.RangeBucketFanoutBudgetMessage,
+	chsql.RangeLWRFanoutBudgetMessage,
+	chsql.RateWindowFanoutBudgetMessage,
+}
+
+// isTimeSliceableResourceBound reports whether err is one of cerberus's own
+// emitted resource-bound rejections that a narrower time range would satisfy.
+//
+// Why this has to exist at all. Before #2681 these guards were calibrated so
+// loosely that a query which would exhaust memory usually sailed past them and
+// died on ClickHouse's own limit instead — which classifies
+// OutcomeResourceFailure, so the memo learned from it and escalated to route
+// B. Tightening the bounds to the measured cliff moves that same query from
+// "OOMs, then self-heals" to "rejected pre-flight", and a pre-flight rejection
+// carried NO evidence: the guard would have become terminal for exactly the
+// queries sharding can answer. Classifying it as the resource failure it
+// plainly is keeps the self-healing path intact under an honest bound.
+//
+// Matching is on the decoded guard message with a CONTAINMENT test, not a
+// prefix one. ClickHouse appends its own "while executing 'FUNCTION
+// throwIf(...)" trailer to the guard's literal, and — the part that actually
+// bites — the ch-go dial PREPENDS "Code: 395. DB::Exception: " where the
+// native dial yields the bare message. A prefix test therefore matched on one
+// dial and silently never matched on the other, which is the same
+// format-sensitivity trap ThrowIfError's own doc records for #2429. The guard
+// constants are long, specific sentences that no query result could contain by
+// accident, so containment is safe here. chclient.ThrowIfMessage is what supplies it, and it
+// deliberately accepts both the wrapped and bare exception shapes: the row
+// dial and the columnar (ch-go) dial surface the same rejection differently,
+// and a classifier that recognised only one would leave the memo blind on
+// whichever path it was not written against.
+func isTimeSliceableResourceBound(err error) bool {
+	guardMsg, ok := chclient.ThrowIfMessage(err)
+	if !ok {
+		return false
+	}
+	for _, msg := range timeSliceableResourceBoundMessages {
+		if strings.Contains(guardMsg, msg) {
+			return true
+		}
+	}
+	return false
 }
