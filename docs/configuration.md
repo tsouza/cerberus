@@ -425,6 +425,34 @@ The solver-tuning surface (`CERBERUS_EVAL_ROUTE`, `CERBERUS_SHARD_*`,
 `CERBERUS_SOLVER_TIMEOUT`) is likewise resolved by `internal/solver` and is
 documented in [`solver.md`](solver.md).
 
+Five further resource-bound safety ceilings (issue #2667) are resolved by
+`internal/chsql` and `internal/promql` rather than by the loader
+documented above - those two packages may not import `internal/config`
+(`.go-arch-lint.yml`), so each owns a small, self-contained env-parsing file
+instead (`internal/engine/resource_bound_env.go`,
+`internal/promql/resource_bounds_env.go`):
+
+- **`CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS`** (int64, default `4000000`) -
+  RangeBucketFanout's collapse GROUP BY row ceiling
+  (`internal/chsql/lwr_fanout_bound.go`, `maxRangeBucketFanoutRows`).
+- **`CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS`** (int64, default `40000000`) -
+  RangeLWR's collapse GROUP BY row ceiling (same file, `maxRangeLWRFanoutRows`).
+- **`CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS`** (int64, default `2800000`) -
+  the windowed-array-extrapolated-matrix regroup GROUP BY row ceiling
+  (`internal/chsql/rate_window_fanout_bound.go`, `maxRateWindowFanoutRows`).
+- **`CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS`** (int64, default
+  `60000000`) - the native-histogram across-series merge cost ceiling that
+  closed issue #2385 after 19 real production OOMs
+  (`internal/promql/histogram_merge_bound.go`, `maxHistogramMergeCostUnits`).
+- **`CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS`** (int64, default
+  `10000000`) - the classic-histogram across-series bucket-merge cost ceiling
+  (`internal/promql/classic_bucket_merge_bound.go`,
+  `maxClassicBucketMergeCostUnits`).
+
+All five reject a malformed or non-positive override at startup rather than
+silently falling back to the default or admitting every query; see each
+constant's own doc for the calibration its shipped default protects.
+
 ## Dependency matrix
 
 Most knobs are validated in isolation (unknown enum, out-of-range buffer,
