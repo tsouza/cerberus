@@ -138,7 +138,7 @@ func (n NativeClassicHistogramWindowLowerer) LowerClassicHistogramWindow(in clas
 	delta.pred = andPredicate(in.pred, temporalityPredicate(in.s.AggregationTemporalityColumn, chplan.OpEq))
 	return &chplan.UnionAll{Inputs: []chplan.Node{
 		cumulative,
-		n.Fallback.LowerClassicHistogramWindow(delta),
+		clearPeakIndependentOfGrid(n.Fallback.LowerClassicHistogramWindow(delta)),
 	}}
 }
 
@@ -239,4 +239,42 @@ func andPredicate(left, right chplan.Expr) chplan.Expr {
 		return right
 	}
 	return &chplan.Binary{Op: chplan.OpAnd, Left: left, Right: right}
+}
+
+// clearPeakIndependentOfGrid unsets chplan.RangeBucketFanout.PeakIndependentOfGrid
+// on the DELTA-complement arm the native lowerer builds, and returns n.
+//
+// That flag is documented as a per-CONSTRUCTION-SITE declaration, not a
+// property of the node kind: "only a site that has MEASURED route A to fit
+// sets it true", and its zero value is the safe one. The measurement behind it
+// (2.84 GB on an APM-style panel, where slicing recovered 8.7% of peak for 23x
+// the ClickHouse work) was taken on the FAN-OUT-ONLY lowering, where the
+// fan-out is the whole plan and processes every row.
+//
+// This site is a different one. Here the fan-out is one arm of a complementary
+// union — it sees only AggregationTemporality == DELTA rows, while the native
+// ladder takes the rest — so the measured profile does not transfer, and this
+// site has never been measured. It inherited the flag purely by reusing the
+// fallback constructor.
+//
+// Leaving it set is not neutral. The solver reads it as
+// AnchorGridDivides() == false, raises sawIndivisibleAnchorGrid, and refuses
+// the WHOLE plan — including the native arm, whose peak genuinely does divide
+// with the anchor grid. On an all-cumulative deployment (the common case, and
+// the one in issue #2677's production incident) this arm matches zero rows, so
+// the plan was being refused on the cost characteristics of an arm doing no
+// work at all (#2688).
+//
+// Clearing it does not assert that slicing the delta arm is profitable; it
+// restores the documented default of "assume slicing helps" for a site with no
+// measurement behind it, which is what lets the arm that DOES benefit be
+// considered on its own merits.
+func clearPeakIndependentOfGrid(n chplan.Node) chplan.Node {
+	chplan.Walk(n, func(node chplan.Node) bool {
+		if f, ok := node.(*chplan.RangeBucketFanout); ok {
+			f.PeakIndependentOfGrid = false
+		}
+		return true
+	})
+	return n
 }
