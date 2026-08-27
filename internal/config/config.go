@@ -1029,19 +1029,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	rbgnMaxRowsRaw, err := getInt64(v, envRBGNMaxRows)
-	if err != nil {
-		return Config{}, err
-	}
-	rbgnMaxRows, err := resolveRBGNMaxRows(rbgnMaxRowsRaw)
-	if err != nil {
-		return Config{}, err
-	}
-	rbgnMaxDensityUnitsRaw, err := getInt64(v, envRBGNMaxDensityUnits)
-	if err != nil {
-		return Config{}, err
-	}
-	rbgnMaxDensityUnits, err := resolveRBGNMaxDensityUnits(rbgnMaxDensityUnitsRaw)
+	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1365,13 +1353,11 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
-	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
-	// The query-path DELTA-prefix aggregate mechanism is OFF by default —
-	// see Config.DeltaPrefixReadEnabled's doc for why this must stay a
-	// separate, later, operator-verified opt-in from schema provisioning.
-	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
-	v.SetDefault(envRBGNMaxRows, defaultRBGNMaxRows)
-	v.SetDefault(envRBGNMaxDensityUnits, defaultRBGNMaxDensityUnits)
+	// Grouped into one call — see setDeltaPrefixAndRBGNDefaults's own doc —
+	// purely to keep this function under golangci-lint's funlen cap; the
+	// four defaults have no relationship to each other beyond being set at
+	// this point in newDefaults's own sequence.
+	setDeltaPrefixAndRBGNDefaults(v)
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
@@ -1406,6 +1392,23 @@ func newDefaults() *viper.Viper {
 	setAdmitDefaults(v)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 	return v
+}
+
+// setDeltaPrefixAndRBGNDefaults seeds the DELTA-prefix reconstruction
+// defaults and the RangeBucketGridNative resource-bound override defaults
+// together. Extracted from newDefaults purely to keep that function under
+// golangci-lint's funlen cap (mirrors setCHOptDefaults's / setAdmitDefaults's
+// own established precedent just below) — the four defaults are otherwise
+// unrelated, grouped only by having been added to newDefaults at
+// consecutive points in its history.
+func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
+	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
+	// The query-path DELTA-prefix aggregate mechanism is OFF by default —
+	// see Config.DeltaPrefixReadEnabled's doc for why this must stay a
+	// separate, later, operator-verified opt-in from schema provisioning.
+	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
+	v.SetDefault(envRBGNMaxRows, defaultRBGNMaxRows)
+	v.SetDefault(envRBGNMaxDensityUnits, defaultRBGNMaxDensityUnits)
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
@@ -1741,6 +1744,31 @@ func resolveRBGNMaxDensityUnits(n int64) (int64, error) {
 	default:
 		return 0, fmt.Errorf("%s: must be >= 0 (0 uses the default); got %d", envRBGNMaxDensityUnits, n)
 	}
+}
+
+// rbgnBoundsFromEnv reads + resolves both RangeBucketGridNative override
+// env vars together — factored out of FromEnv purely to keep that
+// function under golangci-lint's funlen cap; the two values have no
+// relationship to each other beyond being read at the same point in
+// FromEnv's own sequence.
+func rbgnBoundsFromEnv(v *viper.Viper) (maxRows, maxDensityUnits int64, err error) {
+	rowsRaw, err := getInt64(v, envRBGNMaxRows)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxRows, err = resolveRBGNMaxRows(rowsRaw)
+	if err != nil {
+		return 0, 0, err
+	}
+	densityRaw, err := getInt64(v, envRBGNMaxDensityUnits)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxDensityUnits, err = resolveRBGNMaxDensityUnits(densityRaw)
+	if err != nil {
+		return 0, 0, err
+	}
+	return maxRows, maxDensityUnits, nil
 }
 
 // defaultQueryTimeout is the default per-query wall-clock execution cap:
