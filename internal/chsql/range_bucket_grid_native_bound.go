@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"context"
+	"strconv"
 	"time"
 )
 
@@ -783,7 +784,41 @@ func bucketGridDensityGuardFrag(groupsProbe, rawRowsProbe, maxWidthProbe *QueryB
 	marginal := Mul(clampedRows, Mul(clampedWidth, clampedWidth))
 	cost := Add(groupsXAnchors, marginal)
 	return Eq(
-		Call("throwIf", Gt(cost, InlineLit(maxUnits)), InlineLit(message)),
+		Call("throwIf", Gt(cost, InlineLit(maxUnits)),
+			guardOverageMessageFrag(message, cost, clampedWidth, numAnchors, maxUnits)),
 		InlineLit(int64(0)),
+	)
+}
+
+// guardOverageMessageFrag builds the throwIf message a resource-bound
+// rejection carries, appending the numbers the guard has ALREADY computed to
+// decide the rejection: what the query cost, what the ceiling was, and the two
+// factors an operator can act on (issue #2678).
+//
+// Without them the guard reports only that a bound was crossed, so diagnosing
+// a rejected panel means querying `uniqExact` / `length(ExplicitBounds)`
+// against the live table by hand and re-deriving the model — which is exactly
+// what #2681's calibration had to do to establish the bound was mis-set in the
+// first place. The guard is holding those numbers at the moment it throws.
+//
+// Everything constant at emit time is folded into three string literals
+// rather than one per fragment, so the guard adds three bound parameters
+// instead of ten — the emitted SQL and its golden stay readable.
+//
+// Cost is free. ClickHouse evaluates a scalar subquery during analysis and
+// substitutes it as a literal, so naming the same probes again here does not
+// re-run them — verified against a real engine, where the entire concat folds
+// to a constant string before execution. The message stays a suffix of its
+// caller's constant so internal/engine's route-outcome classifier, which
+// matches guard messages by containment, is unaffected.
+func guardOverageMessageFrag(message string, cost, width Frag, numAnchors, maxUnits int64) Frag {
+	return Call(
+		"concat",
+		InlineLit(message+" (cost "),
+		Call("toString", cost),
+		InlineLit(" units, bound "+strconv.FormatInt(maxUnits, 10)+"; "+
+			strconv.FormatInt(numAnchors, 10)+" anchors x bucket width "),
+		Call("toString", width),
+		InlineLit(")"),
 	)
 }
