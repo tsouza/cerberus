@@ -1627,7 +1627,7 @@ ships only the compiled binary and root CA bundle.
 ### Release ritual (the ordered cycle)
 
 Publishing is machinery; deciding *what* ships — and in which order — is the
-release ritual. Every cycle runs these six steps top to bottom. The ordering
+release ritual. Every cycle runs these five steps top to bottom. The ordering
 carries as much weight as the steps themselves:
 
 1. **Drive everything merged first.** A cycle opens by draining the board: no
@@ -1635,14 +1635,14 @@ carries as much weight as the steps themselves:
    the whole delta since the previous one, never a subset.
 2. **Settle the retirement set before anything is cut.** When the cycle
    cuts a new minor — which a breaking change is by itself enough to force, see
-   below — the oldest supported line falls out of the window defined in
-   [release support window / EOL policy](#release-support-window--eol-policy).
-   Work out which line that is up front, because it takes **no backport and no
-   patch release** this cycle — spending a release on a line about to be retired
-   is wasted work. This step is a decision, not an action: the retirement itself
-   is automatic, with the `eol-retire` job deleting the out-of-window branch
-   after the new minor publishes. A patch-only cycle retires nothing and passes
-   straight through.
+   below — the line `main` is leaving falls out of the window defined in
+   [release support window / EOL policy](#release-support-window--eol-policy)
+   in that same cycle: with a one-line window, the departing line never
+   receives a backport of its own. This step is a decision, not an action: the
+   retirement itself is automatic, with the `eol-retire` job deleting the
+   out-of-window branch after the new minor publishes — a no-op if that branch
+   was never created (see step 4). A patch-only cycle retires nothing and
+   passes straight through.
 3. **Audit the delta.** One last pass over the complete diff since the previous
    release: code against comments against docs, DRY, KISS, soundness. This is
    the final gate — findings are fixed and merged onto `main` here, before any
@@ -1654,48 +1654,37 @@ carries as much weight as the steps themselves:
    `perf-nightly-selfcheck`'s weekly runs (#2437): a red run there means the
    nightly gate itself stopped catching an injected regression, which is a
    worse, quieter failure than the gate itself going red.
-4. **Backport everything to every line that stays supported.** Every fix that
-   landed on `main` since the previous release goes onto every
-   `release/<major>.<minor>.x` line that is still supported once this cycle
-   lands — step 2 settles which those are. "Everything" is the default rather
-   than a per-fix judgement call. A change is left out of a line only when the
-   backport is genuinely infeasible on that line, and a line that keeps
-   rejecting backports is a retirement candidate, not a standing exception. A
-   cycle that cuts a new minor also *adds* a line: the minor `main` is leaving
-   needs its own maintenance branch, created from the peeled tag of its last
-   release (`git push origin v<tag>^{}:refs/heads/release/<major>.<minor>.x` —
-   the ruleset carries no `creation` rule, so this needs no bypass). That branch
-   must exist before step 5 can publish a patch on it. See
-   [maintenance lines](#maintenance-lines-hotfix-backports) for the mechanics.
-5. **Publish the backport PATCH releases first.** Every still-supported older
-   line gets its patch tag before the new head release exists.
-6. **Publish the new MINOR (or patch) release last.** `main`'s release is always
-   the final publish of the cycle.
+4. **Backport within the current line only.** With a one-line support window
+   there is never more than one supported `release/<major>.<minor>.x` line at
+   once, so "backport" only ever means: a hotfix lands on `main` while `main`
+   is still on the current minor, and ships in that minor's next patch. A cycle
+   that cuts a new minor does **not** create a maintenance branch for the line
+   it is leaving — that line falls out of the window in the same cycle (step
+   2), so a branch created for it would have no window to ever receive a
+   backport. See [maintenance lines](#maintenance-lines-hotfix-backports) for
+   the branch mechanics, which exist for the general case but sit unused under
+   the current one-line policy.
+5. **Publish the new MINOR (or patch) release last.** `main`'s release is
+   always the final publish of the cycle — there is no backport-line publish
+   to sequence ahead of it, since step 4 never produces one under the current
+   one-line policy.
 
 **Breaking changes are accepted in a new minor.** On the cerberus version line
 (`appVersion` / the `v<major>.<minor>.<patch>` tags) a breaking change does
 **not** require a major bump — the minor is its vehicle. That makes "does this
 delta break anything?" a step-2 input: a breaking change is on its own
 sufficient reason for the cycle to cut a minor rather than a patch, and cutting
-a minor is what pushes the oldest line out of the support window and calls for
-a maintenance branch on the minor `main` is leaving. A cycle carrying neither a
-breaking change nor a new feature is a patch cycle: it retires nothing, creates
-no line, and passes step 2 straight through.
+a minor is what retires the line `main` is leaving in the same cycle. A cycle
+carrying neither a breaking change nor a new feature is a patch cycle: it
+retires nothing and passes step 2 straight through.
 
-Three properties follow from that order. The audit precedes the backport so
-that its findings reach every line: a fix merged onto `main` after the lines
-were cut would ship only in the head release, leaving each patch release to
-publish a defect `main` had already repaired. Auditing first also keeps the
-backport a single pass rather than one pass per round of findings. Publishing
-the older lines first means the newest tag is never the one users find while
-the older lines are still mid-flight: by the time the head release appears,
-every supported line already sits at its final version. And the audit is the
-last thing that merges — nothing lands between it and the tags it cleared, on
-any line.
+One property follows from that order: the audit is the last thing that
+merges — nothing lands between it and the tag it clears. A fix merged onto
+`main` after the audit would ship unaudited in the head release, defeating the
+point of auditing at all.
 
-Each individual publish in steps 5 and 6 runs through the machinery below — a
-backport by pushing its `release/*.x` branch, the head release by merging its
-release PR.
+The single publish in step 5 runs through the machinery below — the head
+release by merging its release PR.
 
 ### Two-tier test fence: merge gate vs. release gate
 
@@ -2046,9 +2035,9 @@ required lane that never runs on the branch would block every hotfix release.
 
 ### Release support window / EOL policy
 
-Cerberus maintains the **latest 3 minor release lines**: the current minor plus
-the two prior. When a new minor ships, the line that becomes **3 minors behind**
-the current minor reaches **end-of-life (EOL)**. An EOL line:
+Cerberus maintains **exactly one minor release line: the current minor**. When
+a new minor ships, the line it just superseded reaches **end-of-life (EOL)**
+immediately. An EOL line:
 
 - gets **no further hotfixes**;
 - has its `release/<major>.<minor>.x` maintenance branch **deleted
@@ -2060,10 +2049,10 @@ What stays: the **version tags and GitHub Releases** for EOL versions **remain
 available** — only the future-hotfix branch is removed. Already-published images,
 charts, and binaries are never unpublished.
 
-**Worked example.** At **v1.5.x** current, the supported lines are
-`release/1.5.x`, `release/1.4.x`, and `release/1.3.x`. Shipping v1.5.0 retired
-`1.2.x` and older: `release/1.2.x` was deleted, `v1.2.*` tags and Releases stay
-up. `1.4.x` and `1.3.x` remain supported and keep taking backports.
+**Worked example.** At **v1.6.x** current, the only supported line is
+`release/1.6.x`. Shipping v1.6.0 retired `1.5.x`: `release/1.5.x` was deleted,
+`v1.5.*` tags and Releases stay up. No older line was ever kept — a minor line's
+support ends the moment the next minor ships.
 
 **Enforcement.** The support window is enforced on both halves of the EOL
 policy, sharing one piece of window math
@@ -2072,7 +2061,7 @@ source of truth):
 
 - **Passive (publish refusal).** The maintenance-release `preflight`
   (`supportWindowProblem`) refuses a push to a `release/<major>.<minor>.x` line
-  that is 3+ minors behind the current minor (derived from the stable `v*` tag
+  that is 1+ minor(s) behind the current minor (derived from the stable `v*` tag
   set) — **before** any artifact publishes, independent of how green the commit
   is. An out-of-window line takes no further hotfixes.
 - **Active (branch retirement).** When a NEW minor actually ships, the
@@ -2080,8 +2069,9 @@ source of truth):
   fell out of the window **automatically** — no manual maintainer step. It runs
   only after a successful new-version publish, computes the line via
   `retireLineForPublish` (the same `SUPPORTED_MINOR_LINES` window: publishing
-  `1.6.0` retires `release/1.3.x`), and deletes that `release/X.W.x` branch iff
-  it exists. Guards: it retires **at most one** line and **only on a minor open**
+  `1.6.0` retires `release/1.5.x`, the line it just superseded), and deletes
+  that `release/X.W.x` branch iff it exists. Guards: it retires **at most one**
+  line and **only on a minor open**
   (`X.Y.0`, `Y>0`) — patches, major bumps, stable backports, and prereleases
   retire nothing; it deletes **only** a provably out-of-window branch that
   exists (idempotent — an already-absent branch is a clean no-op), with a

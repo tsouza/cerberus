@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes land on the latest tagged release. As the 1.x line grows we'll widen this to an N-1 support window; until there's more than one minor release to support, "latest release (or `main`)" is the supported surface.
+Security fixes land on the current minor release line only — see [`docs/operations.md` → Release support window / EOL policy](docs/operations.md#release-support-window--eol-policy). "Latest release (or `main`)" is the supported surface; an older minor line is end-of-life the moment a new minor ships.
 
 ## Reporting a vulnerability
 
