@@ -346,6 +346,22 @@ function kubectlOut(args) {
   return res.status === 0 ? res.stdout.trim() : '';
 }
 
+// dropClickHouseReadCaches clears the mark cache and uncompressed-block
+// cache server-side. See route-memo-activation's own use for why: a
+// repeated IDENTICAL query's real memory_usage is not stable across
+// executions — the first execution against cold caches decompresses and
+// loads marks for the full row set (counted against the query's own
+// max_memory_usage budget), while a cache HIT on a later identical
+// execution reuses already-decompressed blocks and costs measurably less.
+// Never call this outside a test-only chaos manifest.
+function dropClickHouseReadCaches() {
+  kubectl([
+    'exec', 'deploy/clickhouse', '--',
+    'clickhouse-client', '--multiquery',
+    '--query', 'SYSTEM DROP MARK CACHE; SYSTEM DROP UNCOMPRESSED CACHE;',
+  ]);
+}
+
 // firstPodName — the name of the first pod matching a label selector, or
 // '' if none. Used to scope cerberus-pod-kill to ONE replica by name.
 function firstPodName(selector) {
@@ -1308,6 +1324,7 @@ async function scenarioRouteMemoActivation() {
   let maxConsecutive422 = 0;
   const activated = await pollUntil(
     async (attempt) => {
+      dropClickHouseReadCaches();
       const reqStartMs = Date.now();
       const r = await httpGet(path, { timeoutMs: 30_000 });
       const elapsedSinceStart = ((Date.now() - scenarioStartMs) / 1000).toFixed(1);
