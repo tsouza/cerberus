@@ -501,17 +501,95 @@ func bucketGridGroupCountGuardFrag(probeCount *QueryBuilder, numAnchors, maxRows
 //     width^2) = 161,124,870 total cost units, still comfortably past
 //     85,000,000 — the query this guard exists to catch is still caught.
 //
+// # Issue #2665 recalibration: the original 16-point table never applied
+// production's own spill settings
+//
+// A real production deployment on v1.16.1 was hitting this guard's throwIf
+// repeatedly on an ordinary dashboard panel (shape `cerb:project;agg=3;rbf;rbn`,
+// `decision_reason=not-sliceable`) even though axis1 (#2651/#2653) had
+// already been recalibrated. `internal/solver/planner.go`'s own
+// `walkRangeBucketGridNative` doc confirms `RangeBucketGridNative` is
+// deliberately absent from `chplan.IsSliceInvariant`'s registry — it is
+// never sliceable, by design (`TestRangeBucketGridNative_SlicingRefusedAtBothGates`
+// pins both refusals) — so a slicing fallback for `not-sliceable` is not an
+// available fix shape here; the guard's own calibration is the only lever.
+//
+// Direct real-ClickHouse 25.9-alpine re-measurement (fresh `docker run`,
+// 1 GiB `max_memory_usage` cap) found the root cause: every point in the
+// 16-point table above — including the `#2523`/`#2651` "confirmed OOM"
+// points this file's own doc cites — was measured WITHOUT the
+// `max_bytes_before_external_group_by` / `max_bytes_before_external_sort`
+// settings `internal/engine/spill.go`'s `applySpillSettings` stamps on
+// EVERY real data-plane query, unconditionally, since before axis2 was even
+// introduced. Re-measuring the exact same reference points WITH those
+// settings (`spillThreshold(1<<30)` = 536,870,912 bytes, matching what a
+// real request actually gets):
+//
+//   - The real `#2486`/`#2408` reference density (d350, 161,124,870 cost
+//     units) — this file's own doc has called this a confirmed OOM since
+//     issue #2523 — is SAFE under real production settings: 20.2% of cap,
+//     2.6s.
+//   - The `#2651` production shape (3,962 series x 16 rungs) swept from 73
+//     to 4,000 rows/series (85,044,330 to 3,585,768,480 cost units, ~42x
+//     the old 85,000,000 ceiling) stayed safe throughout, plateauing around
+//     49-66% of cap — no OOM found in this corner at any density tested.
+//   - The width=50 isolation corner (60 series x 51 rungs x 100 anchors —
+//     this file's own established adversarial-width reference, `#2523`'s
+//     own largest-width point) DOES still genuinely OOM under real
+//     production settings, just at a much higher cost: safe through
+//     480,306,000 (66.2% of cap, 9.9s), a real ClickHouse code-241
+//     MEMORY_LIMIT_EXCEEDED at 510,306,000 (`would use 1.12 GiB, maximum
+//     1.00 GiB`, inside the SAME per-row O(width^2) `arrayMap` cumulative-sum
+//     evaluation this file's own "Density guard" doc names as the cost
+//     driver — a per-block expression evaluation upstream of Level 1's
+//     GROUP BY, which is why the spill settings — which only bound the
+//     GROUP BY / sort operators — do not protect it).
+//
+// Spill was never optional for a real data-plane query — `applySpillSettings`
+// stamps it unconditionally — so the original calibration table's numbers,
+// while real measurements at the time, described an execution profile no
+// live cerberus request has ever actually run under. That gap, not a
+// genuinely thinner safety margin the way `#2651` found for axis1, is this
+// issue's own root cause: the guard was calibrated against a strictly
+// harder (and, it turns out, unrepresentative) workload than production
+// ever sends it.
+//
+// `maxRangeBucketGridNativeDensityUnits` moves from 85,000,000 to
+// 400,000,000 — grounded in the width=50 corner's own real cliff (the
+// tightest of the three re-measured corners, and still this file's
+// established adversarial-width reference): 16.7% below the last
+// confirmed-safe point (480,306,000) and 21.6% below the confirmed OOM
+// point (510,306,000), the same "comfortably inside the confirmed-safe
+// range, clear of the cliff" margin philosophy `#2651`/`#2653` used for
+// axis1. This also gives the real `#2486`/`#2408` reference density
+// (161,124,870) 2.48x headroom below the new ceiling, and the `#2651`
+// production shape's own realistic densities (tens to low hundreds of
+// rows/series) several-fold more room than the old 85,000,000 ever did.
+//
+// What this does NOT change: a real, sufficiently wide-bucketed histogram
+// at extreme raw-row density is still a genuine ClickHouse OOM regardless
+// of threshold — the width=50 corner's own cliff is real, not an artefact
+// of missing spill settings, and this guard correctly continues to reject
+// past it.
+//
 // Recalibrate by binary search against a real ClickHouse (not chDB) if
 // this drifts — same harness-pitfall caveat (unique query_id per run) as
-// this file's own axis1 calibration above. The calibration harness itself
-// (a throwaway `docker run clickhouse/clickhouse-server` test, not
-// TestCalibrate2523) was deleted before this fix merged, per this file's
-// own established precedent — this doc comment is the retained record.
+// this file's own axis1 calibration above, AND stamp the same
+// `max_bytes_before_external_group_by` / `max_bytes_before_external_sort`
+// settings `applySpillSettings` stamps on every real query, per this
+// section's own root-cause finding — omitting them measures a materially
+// different, unrepresentative workload. The calibration harness itself (a
+// throwaway `docker run clickhouse/clickhouse-server` test, not
+// TestManualCalibrateAxis2) was deleted before this fix merged, per this
+// file's own established precedent — this doc comment is the retained
+// record.
 const (
 	// maxRangeBucketGridNativeDensityUnits bounds `(groups x anchors) +
 	// (rawRows x width^2)` — see this file's own "Density guard" doc above
-	// for the real ClickHouse calibration this was picked against.
-	maxRangeBucketGridNativeDensityUnits = 85_000_000
+	// for the real ClickHouse calibration this was picked against, and its
+	// "Issue #2665 recalibration" subsection for why this differs from the
+	// original 85,000,000.
+	maxRangeBucketGridNativeDensityUnits = 400_000_000
 
 	// maxRangeBucketGridNativeDensityClampedRows / …ClampedWidth are NOT
 	// behavioral thresholds — see this file's "Overflow safety" doc above.
