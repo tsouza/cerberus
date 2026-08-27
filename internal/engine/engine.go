@@ -1543,19 +1543,23 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // this call a shard's ctx would silently fall back to chsql's own
 // compiled-in defaults instead of the operator's configured override.
 //
-// Deliberately does NOT thread RangeBucketGridNativeMaxRows /
-// …MaxDensityUnits the way it threads DeltaPrefixLookback: unlike DELTA-
-// prefix reconstruction, chplan.RangeBucketGridNative is provably never
-// sliceable — internal/solver/planner.go's own walkRangeBucketGridNative
-// doc confirms it is deliberately absent from chplan.IsSliceInvariant's
-// registry and reports itself non-re-anchorable
-// (TestRangeBucketGridNative_SlicingRefusedAtBothGates pins both refusals)
-// — so no route-B shard plan can ever contain this node, and threading its
-// two override values here would be dead code with nothing to read them.
+// rangeBucketGridNativeMaxRows / …MaxDensityUnits ride along for exactly the
+// same reason, and became load-bearing when chplan.RangeBucketGridNative
+// entered the routable spine family (#2677). Before that this function
+// deliberately omitted them, because the node was refused at both slicing
+// gates and no shard plan could contain it; now that it is registered
+// slice-invariant and re-anchorable, a routed shard's plan genuinely does
+// carry it, and each shard's guard must measure its own sub-grid against the
+// OPERATOR's configured ceilings rather than silently falling back to chsql's
+// compiled-in defaults. Threading them is also what makes the per-shard guard
+// meaningful: the guard's cost model reads the anchors and raw rows of the
+// plan it is emitted for, so on a shard it bounds that shard's real cost —
+// which is the per-query-cap question route B exists to answer here.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
+	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
 ) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
 	if decisionHasTSGridNative(decision) {
@@ -1567,6 +1571,8 @@ func routeBExecCtx(
 	// doc and emitForHead's matching call.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
 	ctx = applyResourceBoundOverrides(ctx, bounds)
+	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, rangeBucketGridNativeMaxRows)
+	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, rangeBucketGridNativeMaxDensityUnits)
 	return ctx
 }
 
@@ -1606,7 +1612,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -2100,7 +2106,7 @@ func (e *Engine) executeRoutedCursor(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {

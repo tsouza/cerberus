@@ -232,6 +232,22 @@ func unpinSpineCOW(n chplan.Node) (chplan.Node, bool) {
 		c.End = time.Time{}
 		c.Input = input
 		return &c, true
+	case *chplan.RangeBucketGridNative:
+		// The native classic-histogram ladder (#2677). Zeroed for exactly the
+		// reason the RangeWindowGridNative arm above spells out: the lowering
+		// only builds it in range mode, so it arrives pinned at the FULL
+		// request grid, and chplan.ReanchorRange fills only a node that is
+		// unpinned or already on the target grid. Leaving it pinned makes
+		// every slice fail ErrReanchorGridMismatch, which sliceAndDecide turns
+		// into a silent fall back to route A — the plan would pass both
+		// slicing gates, look routable, and never actually route, taking the
+		// wide-window memory relief with it.
+		input, _ := unpinSpineCOW(v.Input)
+		c := *v
+		c.Start = time.Time{}
+		c.End = time.Time{}
+		c.Input = input
+		return &c, true
 	case *chplan.HistogramQuantile:
 		input, changed := unpinSpineCOW(v.Input)
 		if !changed {
@@ -303,6 +319,15 @@ func subtreeHasZeroableSpine(n chplan.Node) bool {
 			found = true
 		case *chplan.RangeBucketFanout:
 			found = true
+		case *chplan.RangeBucketGridNative:
+			// The native classic-histogram ladder (#2677). Listed for the same
+			// reason its fan-out sibling above is: the production spine wraps
+			// it in the across-series Aggregate, which is off the recognised
+			// spine, so this subtree walk is the ONLY thing that discovers it —
+			// and a subtree reported un-zeroable is shared verbatim, still
+			// pinned at the full grid, making every slice fail
+			// ErrReanchorGridMismatch.
+			found = true
 		case *chplan.RangeWindow:
 			if v.Step > 0 {
 				found = true
@@ -344,6 +369,14 @@ func zeroSpineInPlace(n chplan.Node) {
 		zeroSpineInPlace(v.Input)
 		return
 	case *chplan.RangeBucketFanout:
+		v.Start = time.Time{}
+		v.End = time.Time{}
+		zeroSpineInPlace(v.Input)
+		return
+	case *chplan.RangeBucketGridNative:
+		// #2677 — the in-place counterpart of the unpinSpineCOW arm, reached
+		// when this node sits under an off-spine wrapper (the across-series
+		// Aggregate the classic-histogram lowering always emits above it).
 		v.Start = time.Time{}
 		v.End = time.Time{}
 		zeroSpineInPlace(v.Input)
