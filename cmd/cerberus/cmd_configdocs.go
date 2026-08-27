@@ -396,9 +396,30 @@ as everything else does (` + "`schema.metrics.gaugeTable`" + `, ` + "`schema.log
   keys (dotted form, e.g. ` + "`k8s.namespace.name`" + `) projected as Prometheus labels.
   Empty / unset promotes **every** resource key.
 
-The solver-tuning surface (` + "`CERBERUS_EVAL_ROUTE`" + `, ` + "`CERBERUS_SHARD_*`" + `,
-` + "`CERBERUS_SOLVER_TIMEOUT`" + `) is likewise resolved by ` + "`internal/solver`" + ` and is
-documented in [` + "`solver.md`" + `](solver.md).
+The solver-tuning surface is likewise resolved by ` + "`internal/solver`" + ` rather
+than the loader documented above (` + "`internal/solver/config_env.go`" + `).
+` + "`CERBERUS_EVAL_ROUTE`" + ` is the master switch (default ` + "`auto`" + `; see
+[` + "`operations.md`" + `](operations.md#sharded-pushdown-solver) for its three modes)
+and ` + "`CERBERUS_SOLVER_ADAPTIVE_ENABLED`" + ` / the route-memo knobs are covered in
+[` + "`solver.md`" + `](solver.md). The remaining seven tuning knobs default to
+` + "`DefaultConfig`" + `'s conservative values and are otherwise undocumented
+elsewhere, so they are enumerated here:
+
+- **` + "`CERBERUS_SHARD_MIN_FANOUT`" + `** (int, default ` + "`16`" + `) - the minimum
+  fan-out a plan must clear before the Planner even considers routing it.
+- **` + "`CERBERUS_SHARD_MIN_ANCHOR_PAIRS`" + `** (int, default ` + "`4000`" + `) - the
+  minimum anchor-pair count a plan must clear before routing.
+- **` + "`CERBERUS_SHARD_MAX_K`" + `** (int, default ` + "`8`" + `) - the hard ceiling on
+  how many shards a single request may be split into.
+- **` + "`CERBERUS_SHARD_MIN_ANCHORS_PER_SLICE`" + `** (int, default ` + "`16`" + `) - the
+  minimum anchors a slice must carry, so K never grows past what the anchor
+  set can meaningfully divide.
+- **` + "`CERBERUS_SHARD_PARALLEL`" + `** (int, default ` + "`3`" + `) - how many shards
+  execute concurrently per request.
+- **` + "`CERBERUS_SOLVER_TIMEOUT`" + `** (duration, default ` + "`60s`" + `) - the
+  per-request deadline for the whole route-B fan-out.
+- **` + "`CERBERUS_SHARD_MAX_OUTPUT_ROWS`" + `** (int64, default ` + "`2000000`" + `) -
+  the per-request output-row ceiling across all shards combined.
 
 Five further resource-bound safety ceilings (issue #2667) are resolved by
 ` + "`internal/chsql`" + ` and ` + "`internal/promql`" + ` rather than by the loader
