@@ -1214,7 +1214,7 @@ const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
 // that shape structurally cannot exercise a real rescue in THIS lane:
 // cerberus_queries_total is self-emitted by the cerberus process itself, so
 // in a freshly-bootstrapped chaos lane it only ever has a few minutes of
-// real history — a 24h read and an 8h (kEff=3) shard read the identical row
+// real history — a 24h read and ANY K-way shard read the identical row
 // count, because there is nothing further back to read either way, so
 // slicing never reduces cost and route B can never succeed where route A
 // failed. Two other rolling-reseeded counters
@@ -1226,28 +1226,24 @@ const ROUTE_MEMO_LIVE_EDGE_MARGIN_STEPS = 2;
 // route_memo_probe_requests_total (test/e2e/seed/cmd/seed/main.go's
 // insertRouteMemoProbeBackfillSQL) is a dedicated synthetic counter seeded
 // exactly once with real historical depth spread genuinely across a full 24h
-// window — not rolling-reseeded freshness. Measured directly: an 8h shard of
-// it (the real kEff=3 granularity, not the 3h an earlier round of this
-// investigation assumed) costs ~30% of the full 24h window's real ClickHouse
-// memory_usage, giving real, non-flat cost separation for the shard this
-// scenario needs to actually rescue. See chaos-overlay.env's own
-// CERBERUS_CH_QUERY_MAX_MEMORY comment for the exact measured numbers this
-// value was sized against.
+// window — not rolling-reseeded freshness, giving real, non-flat cost
+// separation between the full query and a shard of it. See chaos-overlay.
+// env's own CERBERUS_CH_QUERY_MAX_MEMORY comment (issue #2670) for the real
+// measured numbers this scenario's cap was sized against — including why
+// the real shard granularity (k=8, from internal/solver/planner.go's own
+// N/MinAnchorsPerSlice/MaxK arithmetic) and the real per-shard memory
+// apportionment (this overlay's small CERBERUS_CH_MAX_OPEN_CONNS clamps it
+// to kEff=1, the FULL cap per shard) are both different from what
+// CERBERUS_SHARD_PARALLEL's default might suggest.
 const ROUTE_MEMO_EXPR = 'sum by (probe_shard) (rate(route_memo_probe_requests_total[5m]))';
-// 180s, not the original 120s: a real run (2026-08-26, main push
-// 1b71d06c5's own chaos job) exhausted a 120s budget at ~123s with
-// no-preferb=17 / probe-not-admitted=1 on the decline-reason dump, then the
-// SEPARATE post-loop client corroboration below (its own independent
-// pollUntil) got a clean 200 within 0.4s of the deadline firing — proving
-// the underlying route-B rescue mechanism was already working and this
-// scenario's own primary-detection budget was simply too tight against the
-// real wall-clock variance of accumulating minCorroboratingFailures(2)
-// CONSECUTIVE route-A failures under CERBERUS_CH_QUERY_MAX_MEMORY's
-// deliberately narrow ~4.5% margin (chaos-overlay.env) — an occasional
-// under-cap route-A success resets that streak and costs a full retry
-// cycle. 180s gives real headroom over the observed ~123s instead of
-// guessing at a wider number.
-const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 180_000;
+// 60s: issue #2670's real cap recalibration (chaos-overlay.env) made route A
+// fail RELIABLY instead of sporadically, so minCorroboratingFailures(2)
+// consecutive failures now lands within the first two ~5s polls — two
+// independent real dispatches activated in ~19-27s each. 60s keeps
+// generous (~2x) headroom over that observed range without carrying
+// forward the original 180s budget the OLD, mis-calibrated cap needed to
+// paper over sporadic (non-consecutive) 422s.
+const ROUTE_MEMO_ACTIVATION_DEADLINE_MS = 60_000;
 const ROUTE_MEMO_POLL_INTERVAL_MS = 5_000;
 const ROUTE_MEMO_FINAL_OK_DEADLINE_MS = 60_000; // post-activation: the same query must now cleanly 200 for a real client
 
@@ -1312,6 +1308,15 @@ async function scenarioRouteMemoActivation() {
         return false; // route A hit the cap; keep polling for the memo's A->B rescue
       }
       if (r.status !== 200) return false;
+      // Ground truth for the K (shard count) a real route-B dispatch used,
+      // straight off the response header engine.go's executeRouted /
+      // executeRoutedCursor stamp (X-Cerberus-Route-Decision: sharded-
+      // timeslice;k=<K>;reason=<via>) — cheap (no extra ClickHouse
+      // round-trip) and, per issue #2670, the fastest way to catch a future
+      // K/kEff drift (e.g. a planner or CERBERUS_SHARD_* default change)
+      // before it silently reopens this scenario's calibration.
+      const routeDecision = r.headers['x-cerberus-route-decision'];
+      if (routeDecision) log(`    [route-b] X-Cerberus-Route-Decision: ${routeDecision}`);
       const successB = await queryBreakerMetric(
         'cerberus_route_ab_success_total{cerberus_route_choice="b"}',
       );
