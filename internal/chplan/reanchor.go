@@ -108,6 +108,8 @@ func reanchor(n Node, start, end time.Time) (Node, error) {
 		return reanchorRangeLWR(v, start, end)
 	case *RangeBucketFanout:
 		return reanchorRangeBucketFanout(v, start, end)
+	case *RangeBucketGridNative:
+		return reanchorRangeBucketGridNative(v, start, end)
 	case *HistogramQuantile:
 		input, err := reanchor(v.Input, start, end)
 		if err != nil {
@@ -245,6 +247,53 @@ func reanchorRangeWindowGridNative(v *RangeWindowGridNative, start, end time.Tim
 	c.End = end
 	inStart, inEnd := v.InputWindow(start, end)
 	input, err := reanchor(v.Input, inStart, inEnd)
+	if err != nil {
+		return nil, err
+	}
+	c.Input = input
+	return &c, nil
+}
+
+// reanchorRangeBucketGridNative re-grids the ClickHouse-native classic-histogram
+// ladder — the sibling reanchorRangeBucketFanout handles for the array-fold
+// lowering of the SAME idiom. Both express
+// `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))` over the same
+// eval grid with the same per-anchor membership window
+// `(anchor - Offset - Range, anchor - Offset]`, so re-anchoring is the same two
+// moves: re-grid (Start, End), widen the input spine by Offset+Range.
+//
+// The node carries no OuterRange field — its grid span IS End-Start — so the
+// guard is the two-bound form, exactly as for RangeWindowGridNative.
+//
+// This arm is what makes a wide-window classic-histogram quantile shardable
+// (#2677): the node's memory grows with the anchor count and the in-window raw
+// rows, both of which a shard's sub-grid divides, so K shards each run under
+// their own per-query ClickHouse memory cap where the unsliced query busts one.
+// It is admitted at BOTH gates or neither — the slice-invariance registry entry
+// (internal/chplan/sliceinvariant.go) and this arm — since either alone leaves
+// the node on route A.
+func reanchorRangeBucketGridNative(v *RangeBucketGridNative, start, end time.Time) (Node, error) {
+	if v.Step <= 0 {
+		// No anchor grid to re-grid. The lowering only builds this node in
+		// range mode (emitRangeBucketGridNative validates it), so this is
+		// unreachable from a real plan; keeping the arm symmetric with every
+		// sibling means a hand-built instant shape terminates the walk rather
+		// than being re-gridded onto bounds it has no anchors for.
+		return v, nil
+	}
+	if err := checkPredictedGridBucketGridNative(v, start, end); err != nil {
+		return nil, err
+	}
+	// Clone only this spine node; GroupBy / GroupByAliases are off-grid
+	// immutable, so share the original slice headers.
+	c := *v
+	c.Start = start
+	c.End = end
+	// Each anchor's membership window looks back Offset+Range; widen the input
+	// spine by that much so every anchor in this shard's sub-grid finds the
+	// samples it needs, including the ones older than the shard's own first
+	// anchor.
+	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Range), c.End)
 	if err != nil {
 		return nil, err
 	}
@@ -484,6 +533,22 @@ func checkPredictedGridLWR(r *RangeLWR, predStart, predEnd time.Time) error {
 // [predStart, predEnd]. Either the bounds are unpinned (zero Start and End —
 // the slicer's UnpinSpine shape) or they already sit exactly on the
 // predicted grid. Anything else is rejected so the solver routes A.
+// checkPredictedGridBucketGridNative is checkPredictedGridBucketFanout for the
+// native ladder: same two-bound form, same @-pinned-divergence refusal.
+func checkPredictedGridBucketGridNative(r *RangeBucketGridNative, predStart, predEnd time.Time) error {
+	if r.Start.IsZero() && r.End.IsZero() {
+		return nil
+	}
+	if r.Start.Equal(predStart) && r.End.Equal(predEnd) {
+		return nil
+	}
+	return fmt.Errorf("%w: RangeBucketGridNative bounds (Start=%v End=%v) "+
+		"do not match predicted grid (Start=%v End=%v) — an @-pinned or non-grid anchor",
+		ErrReanchorGridMismatch,
+		r.Start, r.End,
+		predStart, predEnd)
+}
+
 func checkPredictedGridBucketFanout(r *RangeBucketFanout, predStart, predEnd time.Time) error {
 	if r.Start.IsZero() && r.End.IsZero() {
 		return nil

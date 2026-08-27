@@ -184,9 +184,13 @@ func carrierCases() []carrierCase {
 		{
 			// RangeBucketGridNative is the single-pass native sibling: one grid
 			// aggregate per (series, `le` rung), so the fan-out feature is the
-			// single-pass constant rather than the anchor-window ratio. Not
-			// re-anchorable — the kind is absent from chplan.IsSliceInvariant's
-			// registry, so a plan carrying it stays on route A.
+			// single-pass constant rather than the anchor-window ratio.
+			// Re-anchorable since #2677 — registered slice-invariant with a
+			// chplan.ReanchorRange arm, so the failure-driven route memo can
+			// time-shard a wide window that busts one query's memory cap. Note
+			// the single-pass fanout still keeps it under ModeAuto's MinFanout,
+			// so it routes via the memo's Eligible path rather than predictively
+			// (TestRangeBucketGridNative_EligibleForMemoDrivenRouting).
 			kind: "RangeBucketGridNative",
 			plan: func() chplan.Node {
 				return &chplan.RangeBucketGridNative{
@@ -205,7 +209,7 @@ func carrierCases() []carrierCase {
 			},
 			wantD:        geomBucketGridNativeRange,
 			wantFanout:   singlePassFanout,
-			reanchorable: false,
+			reanchorable: true,
 		},
 		{
 			kind: "AbsentOverTime",

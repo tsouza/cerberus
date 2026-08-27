@@ -769,19 +769,24 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// The native bucket-ladder aggregate: one single-pass grid per
 		// (series, `le` rung) rather than a per-(series, anchor) fan-out, so
 		// singlePass is set for the same reason RangeWindowGridNative sets it.
-		// NOT re-anchorable: chplan.ReanchorRange has no arm that re-grids it,
-		// so a routed shard would evaluate the FULL grid rather than its own
-		// slice. That is the SECOND of the two refusals holding this kind on
-		// route A (the first is its absence from chplan.IsSliceInvariant's
-		// registry), and it is what licences the node's own
-		// AnchorGridDivides() to answer TRUE honestly — see
-		// TestRangeBucketGridNative_SlicingRefusedAtBothGates, which fails if
-		// either refusal is removed.
+		// Re-anchorable since #2677: chplan.ReanchorRange's own
+		// *RangeBucketGridNative arm re-grids (Start, End) and widens the input
+		// spine by Offset+Range, so a routed shard evaluates ITS OWN sub-grid
+		// rather than the full one. Together with the node's entry in
+		// chplan.IsSliceInvariant's registry that admits this kind at both
+		// gates — see TestRangeBucketGridNative_SlicingAdmittedAtBothGates,
+		// which fails if either admission is withdrawn.
+		//
+		// Why it matters that BOTH moved together: the node's memory grows with
+		// the anchor count and with the in-window raw rows, so a wide window
+		// busts a single query's ClickHouse memory cap. Time-slicing divides
+		// both axes per shard, which is the only relief that removes the window
+		// width as a memory term rather than relocating the wall.
 		return carrierGeometry{
 			outerRange:   v.End.Sub(v.Start),
 			lookback:     v.Range,
 			singlePass:   true,
-			reanchorable: false,
+			reanchorable: true,
 		}, true
 
 	case *chplan.RangeWindowGridNative:
@@ -1117,13 +1122,11 @@ func (p *Planner) walkRangeBucketFanout(v *chplan.RangeBucketFanout, predStart, 
 // is recorded and its input spine widened by Offset+Range exactly as the
 // fan-out arm's is.
 //
-// It carries NO grid-prediction check, unlike checkRangeBucketFanoutGrid. That
-// check asks whether the node's own pinned bounds agree with the grid a shard
-// would predict for it, and this kind is never sharded: it is deliberately
-// absent from chplan.IsSliceInvariant's registry and carrierGeometryOf reports
-// it non-re-anchorable, the two refusals
-// TestRangeBucketGridNative_SlicingRefusedAtBothGates pins. There is therefore
-// no predicted shard grid for its bounds to agree or disagree with.
+// Since #2677 this kind IS sharded — it is registered in
+// chplan.IsSliceInvariant and carrierGeometryOf reports it re-anchorable, the
+// two admissions TestRangeBucketGridNative_SlicingAdmittedAtBothGates pins — so
+// it carries the same grid-prediction check its fan-out sibling does, in the
+// two-bound form the node's own field set (no OuterRange) calls for.
 //
 // Factored out of walkNode's switch to keep that function under funlen's
 // statement cap, mirroring walkHistogramQuantile.

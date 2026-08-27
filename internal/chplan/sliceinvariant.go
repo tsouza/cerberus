@@ -69,6 +69,33 @@ func IsSliceInvariant(n Node) bool {
 //     temporality mixes: identical cell key sets, zero missing and zero extra
 //     cells (issue #2117).
 //
+//   - RangeBucketGridNative — the ClickHouse-native classic-histogram ladder
+//     that serves `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))`.
+//     Its per-(series, anchor) output is scan-lower-bound-independent stage by
+//     stage, by the same criterion RangeWindowGridNative's entry rests on, not
+//     by resemblance to it:
+//     the Level-0 unnest is row-wise (each stored row yields its own `le` rungs
+//     from its OWN bounds/counts, reading no other row); Level 1 runs
+//     timeSeriesRateToGrid and timeSeriesResetsToGrid per (series, `le` rung),
+//     and each answers grid point i from exactly the samples inside
+//     `(anchor_i - Offset - Range, anchor_i - Offset]`; Level 2's `ifNull(rate,
+//     0)` short-window resolution and the `IS NOT NULL` presence filter both
+//     read one (rung, anchor) cell; Level 3 regroups keyed by (series, anchor)
+//     and its `HAVING max(_hqn_short) = 0` min-samples drop reads the +Inf
+//     rung's own NULL AT THAT ANCHOR (the +Inf rung is reported by every stored
+//     row, so its per-anchor sample set IS that anchor's window membership);
+//     Levels 4-5 are row-wise array reshapes of one (series, anchor) row. No
+//     stage carries a value seeded at the scan's first row — the lagInFrame
+//     hazard this registry polices — and every shard hands the aggregate a scan
+//     widened by Offset+Range past its own oldest anchor, so each grid point
+//     sees the same sample multiset it saw unsliced.
+//     Registering it is what lets the failure-driven route memo answer a
+//     wide-window classic-histogram quantile that busts a single query's memory
+//     cap by time-slicing it (#2677): before this entry the node was the one
+//     grid carrier route B could not shard, so such a query had no relief at
+//     all. See internal/chplan/reanchor.go's *RangeBucketGridNative arm and the
+//     route-A-vs-K-sharded differential fixtures in internal/solver.
+//
 //   - StepGrid — emits the anchor grid itself; a sub-grid is a subset.
 //
 //   - UnionAll — slice-invariant iff every arm is (checked structurally by
@@ -130,6 +157,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&RangeWindowGridNative{},
 		&RangeLWR{},
 		&RangeBucketFanout{},
+		&RangeBucketGridNative{},
 		&HistogramQuantile{},
 		&StepGrid{},
 		&UnionAll{},
