@@ -97,6 +97,17 @@ func histogramMergeBoundRowWide(series string, offset, width int) string {
 // column's value — it is evaluated to produce the row count).
 func runHistogramMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 	t.Helper()
+	return runHistogramMergeBoundQueryWithOpts(t, fixture, promql.LowerOpts{})
+}
+
+// runHistogramMergeBoundQueryWithOpts is runHistogramMergeBoundQuery's
+// opts-carrying variant, letting a test thread a non-default
+// promql.LowerOpts.ResourceBounds (cerberus issue #2667) through the exact
+// same lowering + emit + execute path — see
+// TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget /
+// TestHistogramMergeBudget_ChDB_EnvOverrideLowersBudget.
+func runHistogramMergeBoundQueryWithOpts(t *testing.T, fixture *chdbFixture, opts promql.LowerOpts) error {
+	t.Helper()
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{})
 	query := fmt.Sprintf("sum(%s)", histogramMergeBoundMetric)
@@ -104,9 +115,9 @@ func runHistogramMergeBoundQuery(t *testing.T, fixture *chdbFixture) error {
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
 	}
-	plan, err := promql.LowerAt(context.Background(), expr, s, histogramMergeBoundEvalTS, histogramMergeBoundEvalTS)
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s, histogramMergeBoundEvalTS, histogramMergeBoundEvalTS, 0, opts)
 	if err != nil {
-		t.Fatalf("LowerAt(%q): %v", query, err)
+		t.Fatalf("LowerAtRangeOpts(%q): %v", query, err)
 	}
 	sqlStr, args, err := chsql.Emit(context.Background(), plan)
 	if err != nil {
@@ -264,5 +275,80 @@ func TestHistogramMergeBudget_ChDB_WithinBudget(t *testing.T) {
 
 	if err := runHistogramMergeBoundQuery(t, fixture); err != nil {
 		t.Fatalf("a legitimate two-series merge must not trip the budget guard: %v", err)
+	}
+}
+
+// TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget proves the full
+// operator-override plumbing end to end (cerberus issue #2667): it seeds the
+// EXACT two-row/width-6001 shape TestHistogramMergeBudget_ChDB_BucketWidthExceeded
+// proves the compiled-in 60,000,000 default rejects (real cost ~72M), sets
+// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS above that real cost,
+// confirms promql.ResourceBoundsFromEnv actually picked up the override,
+// and asserts the SAME query now SUCCEEDS once that resolved ResourceBounds
+// is threaded through promql.LowerOpts — same query, same seed, opposite
+// outcome, purely from the operator override reaching the emitted SQL's
+// throwIf threshold.
+func TestHistogramMergeBudget_ChDB_EnvOverrideRaisesBudget(t *testing.T) {
+	const raisedBudget = 100_000_000 // > ~72M (2 rows x width(6001)^2 real cost), > the 60M default
+
+	t.Setenv(promql.EnvHistogramMergeMaxCostUnits, strconv.FormatInt(raisedBudget, 10))
+	bounds, err := promql.ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv: %v", err)
+	}
+	if bounds.HistogramMergeMaxCostUnits != raisedBudget {
+		t.Fatalf("ResourceBoundsFromEnv().HistogramMergeMaxCostUnits = %d, want %d (the %s override)",
+			bounds.HistogramMergeMaxCostUnits, raisedBudget, promql.EnvHistogramMergeMaxCostUnits)
+	}
+
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramMergeBoundRow("near", 0) + ",\n")
+	b.WriteString("    " + histogramMergeBoundRow("far", 6000) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	if err := runHistogramMergeBoundQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds}); err != nil {
+		t.Fatalf("the same merge TestHistogramMergeBudget_ChDB_BucketWidthExceeded proves the 60M "+
+			"default rejects must succeed once %s raises the budget to %d: %v",
+			promql.EnvHistogramMergeMaxCostUnits, raisedBudget, err)
+	}
+}
+
+// TestHistogramMergeBudget_ChDB_EnvOverrideLowersBudget is the mirror
+// direction: it seeds the SAME small, legitimate two-series merge
+// TestHistogramMergeBudget_ChDB_WithinBudget proves the 60,000,000 default
+// admits, narrows CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS to a value
+// below any real merge's cost, and asserts the identical query now FAILS
+// with the budget guard's own throwIf — proving the override is not merely
+// parsed but actually enforced at real ClickHouse execution, in both
+// directions.
+func TestHistogramMergeBudget_ChDB_EnvOverrideLowersBudget(t *testing.T) {
+	const loweredBudget = 1 // far below any real merge's cost
+
+	t.Setenv(promql.EnvHistogramMergeMaxCostUnits, strconv.FormatInt(loweredBudget, 10))
+	bounds, err := promql.ResourceBoundsFromEnv()
+	if err != nil {
+		t.Fatalf("ResourceBoundsFromEnv: %v", err)
+	}
+	if bounds.HistogramMergeMaxCostUnits != loweredBudget {
+		t.Fatalf("ResourceBoundsFromEnv().HistogramMergeMaxCostUnits = %d, want %d (the %s override)",
+			bounds.HistogramMergeMaxCostUnits, loweredBudget, promql.EnvHistogramMergeMaxCostUnits)
+	}
+
+	var b strings.Builder
+	b.WriteString(histogramMergeBoundSeedDDL)
+	b.WriteString("INSERT INTO otel_metrics_exponential_histogram " + histogramMergeBoundInsertColumns + " VALUES\n")
+	b.WriteString("    " + histogramMergeBoundRow("a", 0) + ",\n")
+	b.WriteString("    " + histogramMergeBoundRow("b", 1) + ";\n")
+	fixture := newChDBFixture(t, b.String())
+
+	err = runHistogramMergeBoundQueryWithOpts(t, fixture, promql.LowerOpts{ResourceBounds: bounds})
+	if err == nil {
+		t.Fatalf("the same two-series merge TestHistogramMergeBudget_ChDB_WithinBudget proves the "+
+			"default admits must fail once %s narrows the budget to %d", promql.EnvHistogramMergeMaxCostUnits, loweredBudget)
+	}
+	if !strings.Contains(err.Error(), chplan.HistogramMergeBudgetMessage) {
+		t.Fatalf("query failed, but not with the merge budget guard's throwIf: %v", err)
 	}
 }

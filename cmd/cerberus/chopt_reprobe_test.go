@@ -12,6 +12,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -181,7 +182,7 @@ func mountedConsumers(t *testing.T, enabledHeads string) chOptConsumers {
 	t.Cleanup(cancel)
 
 	heads, err := mountAPIHeads(ctx, http.NewServeMux(), lazyClient(t), cfg, chopt.EnabledSet{},
-		limiters, logger)
+		limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{})
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}

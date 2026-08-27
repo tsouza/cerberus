@@ -131,6 +131,29 @@ type apiHeads struct {
 	consumers  chOptConsumers
 }
 
+// resolveIssue2667BoundOverrides resolves the five issue #2667
+// resource-bound safety-ceiling overrides run() threads into mountAPIHeads:
+// the three chsql sample-fanout knobs (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS
+// / CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS / CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS)
+// and the two PromQL-only histogram-merge cost-unit knobs
+// (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
+// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS, wired only onto the
+// prom head's Handler.ResourceBounds — see newPromHandler's own doc for why
+// LogQL/TraceQL never see it). Both resolutions share the same fail-fast
+// contract as buildSolver's own solver.ConfigFromEnv() above: a typo'd or
+// non-positive override aborts startup rather than silently falling back.
+func resolveIssue2667BoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+	resourceBounds, err := engine.ResourceBoundsFromEnv()
+	if err != nil {
+		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
+	}
+	promResourceBounds, err := promql.ResourceBoundsFromEnv()
+	if err != nil {
+		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
+	}
+	return resourceBounds, promResourceBounds, nil
+}
+
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
 // CERBERUS_ENABLED_HEADS (default: all three) onto traceMux. A disabled head's
 // handler, per-head Client view, engine, and admit limiter are NEVER built and
@@ -153,6 +176,8 @@ func mountAPIHeads(
 	optSet chopt.EnabledSet,
 	limiters admitLimiters,
 	logger *slog.Logger,
+	resourceBounds engine.ResourceBoundOverrides,
+	promResourceBounds promql.ResourceBounds,
 ) (apiHeads, error) {
 	// engines accumulates the engines actually built so the corpus reconciler
 	// observes only live heads (a disabled head has no engine to observe), and
@@ -173,14 +198,14 @@ func mountAPIHeads(
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
 		}
-		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger)
+		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger, resourceBounds, promResourceBounds)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
 
 	if cfg.HeadEnabled(config.HeadLoki) {
 		lokiClient := client.ForHead(chclient.HeadLoki)
-		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger)
+		lokiHandler := newLokiHandler(lokiClient, cfg, optSet, limiters, logger, resourceBounds)
 		lokiHandler.Mount(traceMux)
 		engines = append(engines, lokiHandler.Engine)
 	}
@@ -534,7 +559,12 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger)
+	resourceBounds, promResourceBounds, err := resolveIssue2667BoundOverrides()
+	if err != nil {
+		return err
+	}
+
+	heads, err := mountAPIHeads(ctx, traceMux, client, cfg, optSet, limiters, logger, resourceBounds, promResourceBounds)
 	if err != nil {
 		return err
 	}
@@ -709,8 +739,18 @@ const gracefulShutdownTimeout = 10 * time.Second
 
 // newPromHandler builds the prom head's handler with its engine (per-head
 // Client view + seed optimizer + solver), limiter, and runtime knobs wired in.
-func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger) *prom.Handler {
+//
+// resourceBounds carries the resolved CERBERUS_CH_*_MAX_ROWS overrides
+// (issue #2667, engine.ResourceBoundsFromEnv) — RangeBucketFanoutMaxRows and
+// RangeLWRFanoutMaxRows are wired here because RangeBucketFanout / RangeLWR
+// are PromQL-only lowerings (see engine.Engine.RangeBucketFanoutMaxRows's
+// doc); RateWindowFanoutMaxRows is wired here too — the prom head lowers
+// chplan.RangeWindow for rate()/increase()/etc — and independently onto the
+// Loki head below, since LogQL's own range aggregations lower to the same
+// node kind.
+func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides, promResourceBounds promql.ResourceBounds) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
+	h.ResourceBounds = promResourceBounds
 	h.Engine = &engine.Engine{
 		Optimizer:       h.Optimizer,
 		Client:          client,
@@ -728,6 +768,10 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		// — see engine.Engine.DeltaPrefixReadEnabled's doc for why this is
 		// a separate, later opt-in from schema.SchemaProvisioning.DeltaPrefixEnabled.
 		DeltaPrefixReadEnabled: cfg.DeltaPrefixReadEnabled,
+		// See this function's own doc above for why all three are wired here.
+		RangeBucketFanoutMaxRows: resourceBounds.RangeBucketFanoutMaxRows,
+		RangeLWRFanoutMaxRows:    resourceBounds.RangeLWRFanoutMaxRows,
+		RateWindowFanoutMaxRows:  resourceBounds.RateWindowFanoutMaxRows,
 		// PromQL-only, same inertness reasoning: chplan.RangeBucketGridNative
 		// only ever comes from PromQL's classic-histogram_quantile lowering —
 		// see engine.Engine.RangeBucketGridNativeMaxRows's doc.
@@ -891,7 +935,7 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 // silently at the callsite, and transposing THESE two mounts /tail on the
 // request budget and every ordinary route on the tail budget — a subtler
 // #1482. Selecting the fields by name here makes that untypeable.
-func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiters admitLimiters, logger *slog.Logger) *loki.Handler {
+func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, limiters admitLimiters, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides) *loki.Handler {
 	h := loki.New(client, cfg.Logs, logger.With("api", "loki"))
 	h.Limiter = limiters.loki
 	h.TailLimiter = limiters.lokiTail
@@ -904,6 +948,11 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	// (internal/engine/anchor_budget.go) fail-opened on every LogQL
 	// subquery — issue #2055.
 	h.Engine.MaxQuerySamples = client.MaxQuerySamples()
+	// LogQL's own range aggregations lower to chplan.RangeWindow too (issue
+	// #2667), so RateWindowFanoutMaxRows is wired here alongside the prom
+	// head — see newPromHandler's own doc for why RangeBucketFanoutMaxRows /
+	// RangeLWRFanoutMaxRows stay prom-only.
+	h.Engine.RateWindowFanoutMaxRows = resourceBounds.RateWindowFanoutMaxRows
 	return h
 }
 

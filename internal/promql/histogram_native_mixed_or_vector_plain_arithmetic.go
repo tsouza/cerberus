@@ -248,7 +248,7 @@ func lowerVectorPlainArithmeticOverMixedExpHistogramSetOp(mixedSetOp *parser.Bin
 
 	switch op {
 	case chplan.OpAdd, chplan.OpSub:
-		return lowerMixedVVAdditiveArithmetic(join, op, s), nil
+		return lowerMixedVVAdditiveArithmetic(join, op, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
 	case chplan.OpMul, chplan.OpDiv:
 		return lowerMixedVVScaledArithmetic(join, op, s), nil
 	default:

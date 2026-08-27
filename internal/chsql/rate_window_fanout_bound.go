@@ -1,5 +1,7 @@
 package chsql
 
+import "context"
+
 // rate_window_fanout_bound.go closes issue #2429.
 //
 // emitWindowedArrayExtrapolatedMatrix (range_window.go) builds each series'
@@ -98,6 +100,25 @@ package chsql
 //     threshold work for both the real production shape and the smoke
 //     tier's synthetic shape at once; see maxRateWindowFanoutRows's own
 //     comment for the measured numbers.
+//
+// Issue #2667: maxRateWindowFanoutRows below is now operator-overridable —
+// CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS — rather than fixed at its
+// shipped calibration forever, for the same reason
+// maxRangeBucketFanoutRows / maxRangeLWRFanoutRows (lwr_fanout_bound.go)
+// are: a wrong hardcoded ceiling has now twice cost a full code-change-
+// plus-release cycle to correct in this exact bug class
+// (RangeBucketGridNative's own two axes, #2651/#2653/#2665), because there
+// was no operator-facing knob in between. chsql may not import
+// internal/config (.go-arch-lint.yml), so the resolved override travels in
+// as an explicit ctx value — WithRateWindowFanoutMaxRows below, mirroring
+// this file's own WithDeltaPrefixLookback precedent (range_window.go) —
+// parsed upstream in internal/engine (the same seam that already threads
+// chsql.WithDeltaPrefixLookback / chsql.WithDeltaPrefixReadEnabled through
+// both route A's emitForHead and route B's routeBExecCtx) and read once
+// per Emit call via rateWindowFanoutMaxRowsFromCtx. The named Go constant
+// below remains the shipped, calibrated DEFAULT — an operator override
+// changes what a deployment runs with, never what a fresh install or an
+// unwired test (the spec/golden lane, property tests) gets.
 const (
 	// maxRateWindowFanoutRows caps the total number of pre-GROUP-BY fanout
 	// rows (one per (sample, covered anchor)) that may enter
@@ -118,6 +139,52 @@ const (
 	// ()) to avoid when doing so.
 	maxRateWindowFanoutRows = 2_800_000
 )
+
+// rateWindowFanoutMaxRowsKey is the unexported context key carrying an
+// operator-configured override for maxRateWindowFanoutRows (issue #2667) —
+// see WithRateWindowFanoutMaxRows / rateWindowFanoutMaxRowsFromCtx below.
+type rateWindowFanoutMaxRowsKey struct{}
+
+// WithRateWindowFanoutMaxRows returns ctx carrying n as the operator
+// override for emitWindowedArrayExtrapolatedMatrix's own fanout-row bound
+// (otherwise maxRateWindowFanoutRows). The caller — internal/engine's
+// emitForHead / routeBExecCtx — only threads this when
+// CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS is actually set: unlike
+// WithDeltaPrefixLookback's zero-is-meaningful explicit opt-out, a fanout
+// row bound of zero is never a legitimate operator intent (it would reject
+// every query outright), so "never threaded" — not "threaded as zero" — is
+// what selects the compiled-in default; see rateWindowFanoutMaxRowsFromCtx.
+func WithRateWindowFanoutMaxRows(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rateWindowFanoutMaxRowsKey{}, n)
+}
+
+// rateWindowFanoutMaxRowsFromCtx recovers the bound
+// WithRateWindowFanoutMaxRows set, or maxRateWindowFanoutRows (the
+// compiled-in, calibrated default — see this file's own doc comment) when
+// the caller never threaded one.
+func rateWindowFanoutMaxRowsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rateWindowFanoutMaxRowsKey{}).(int64); ok {
+		return n
+	}
+	return maxRateWindowFanoutRows
+}
+
+// rateWindowFanoutRowBound returns e's own resolved bound —
+// e.rateWindowFanoutMaxRows, seeded once from ctx inside chsql.Emit
+// (emit.go) — falling back to maxRateWindowFanoutRows whenever the field
+// reads as its Go zero value. Mirrors
+// lwr_fanout_bound.go's rangeBucketFanoutRowBound / rangeLWRFanoutRowBound
+// exactly, and exists for the identical reason: several internal
+// round-trip tests in this package construct &emitter{} directly,
+// bypassing chsql.Emit's ctx-seeding (e.g.
+// range_window_fused_chdb_test.go, range_window_mutation_test.go), and a
+// maxRows of 0 read literally there would reject every row outright.
+func (e *emitter) rateWindowFanoutRowBound() int64 {
+	if e.rateWindowFanoutMaxRows > 0 {
+		return e.rateWindowFanoutMaxRows
+	}
+	return maxRateWindowFanoutRows
+}
 
 // RateWindowFanoutBudgetMessage is the throwIf message
 // rateWindowFanoutGuardFrag raises. Lives in chsql (not chplan) because,
@@ -140,8 +207,13 @@ const RateWindowFanoutBudgetMessage = "range window sample fanout exceeds the se
 // time regroup needs it (an earlier version of this function dropped
 // delta_prefix_pairs at a different call site the same way and broke every
 // query hitting that path with a code 47 "unknown identifier").
+//
+// maxRows is the caller's own bound — e.rateWindowFanoutMaxRows, resolved
+// once per Emit call from rateWindowFanoutMaxRowsFromCtx (issue #2667) —
+// and message is the throwIf text (RateWindowFanoutBudgetMessage).
 func rateWindowFanoutBoundedSourceFrag(
 	fanoutSource Frag, groupFrags []Frag, srcTs, valueColumn, temporalityColumn string, hasTemporality bool,
+	maxRows int64, message string,
 ) Frag {
 	selectFanoutCols := func(q *QueryBuilder) {
 		q.Select(groupFrags...)
@@ -155,10 +227,10 @@ func rateWindowFanoutBoundedSourceFrag(
 
 	// The real short-circuit. No blocking operator sits between this LIMIT
 	// and the underlying scan/arrayJoin, so ClickHouse stops pulling
-	// upstream data once maxRateWindowFanoutRows+1 rows are produced.
+	// upstream data once maxRows+1 rows are produced.
 	bounded := NewQuery().From(fanoutSource)
 	selectFanoutCols(bounded)
-	bounded.Limit(maxRateWindowFanoutRows + 1)
+	bounded.Limit(maxRows + 1)
 
 	// A second read of fanoutSource, independently bounded by the SAME
 	// LIMIT and the SAME pushed-down time-window WHERE clause as `bounded`
@@ -179,13 +251,13 @@ func rateWindowFanoutBoundedSourceFrag(
 	// merely appearing to.
 	probe := NewQuery().From(fanoutSource)
 	probe.Select(Col(srcTs))
-	probe.Limit(maxRateWindowFanoutRows + 1)
+	probe.Limit(maxRows + 1)
 	probeCount := NewQuery().From(probe.Frag())
 	probeCount.Select(As(Call("count"), "n"))
 
 	guarded := NewQuery().From(bounded.Frag())
 	selectFanoutCols(guarded)
-	guarded.Where(rateWindowFanoutGuardFrag(probeCount))
+	guarded.Where(rateWindowFanoutGuardFrag(probeCount, maxRows, message))
 
 	return guarded.Frag()
 }
@@ -193,19 +265,19 @@ func rateWindowFanoutBoundedSourceFrag(
 // rateWindowFanoutGuardFrag renders the WHERE predicate that aborts the
 // query when probeCount — a scalar subquery counting an independent
 // LIMIT-bounded copy of the same fanout — shows the LIMIT truncated the
-// input: the count landing on maxRateWindowFanoutRows+1 can only happen if
-// the true fanned-out row count was at least that large.
+// input: the count landing on maxRows+1 can only happen if the true
+// fanned-out row count was at least that large.
 //
-//	throwIf((<probeCount>) > maxRateWindowFanoutRows, RateWindowFanoutBudgetMessage) = 0
+//	throwIf((<probeCount>) > maxRows, message) = 0
 //
 // `throwIf` returns 0 when it does not fire, so `= 0` keeps every row once
 // the guard has passed.
-func rateWindowFanoutGuardFrag(probeCount *QueryBuilder) Frag {
+func rateWindowFanoutGuardFrag(probeCount *QueryBuilder, maxRows int64, message string) Frag {
 	return Eq(
 		Call(
 			"throwIf",
-			Gt(Subquery(probeCount), InlineLit(int64(maxRateWindowFanoutRows))),
-			InlineLit(RateWindowFanoutBudgetMessage),
+			Gt(Subquery(probeCount), InlineLit(maxRows)),
+			InlineLit(message),
 		),
 		InlineLit(int64(0)),
 	)

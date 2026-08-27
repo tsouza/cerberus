@@ -128,7 +128,9 @@ func (e *emitter) emitRangeBucketFanout(r *chplan.RangeBucketFanout) error {
 	// accumulate over rather than reduce to a fixed size. See
 	// lwr_fanout_bound.go's own doc comment for the full history and the
 	// real calibration numbers.
-	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, maxRangeBucketFanoutRows, RangeBucketFanoutBudgetMessage)
+	// #2667: e.rangeBucketFanoutRowBound() resolves the operator override
+	// (or maxRangeBucketFanoutRows's own default) once per Emit call.
+	fanoutSource := lwrFanoutBoundedSourceFrag(fanout.Frag(), r.TimestampCol, e.rangeBucketFanoutRowBound(), RangeBucketFanoutBudgetMessage)
 
 	// Collapse SELECT: GROUP BY (<user-keys>, anchor) with the configured
 	// AggFuncs. The user group keys are projected first (under their

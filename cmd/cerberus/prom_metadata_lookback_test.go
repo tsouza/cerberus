@@ -8,6 +8,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 )
 
 // promLookbackEnv is the retention an operator states through
@@ -49,7 +51,7 @@ func newPromHandlerForTest(t *testing.T) *promHandlerUnderTest {
 
 	logger := slog.New(slog.NewTextHandler(httptestDiscard{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	limiters := newAdmitLimiters(cfg, logger)
-	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, limiters.prom, logger)
+	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, limiters.prom, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{})
 	return &promHandlerUnderTest{cfg: cfg, lookback: h.MetadataLookback}
 }
 

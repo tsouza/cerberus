@@ -1280,7 +1280,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	// ever read it — issue #2408's own audited "Proposed next step": this
 	// stage is the shared, previously-unguarded dominant cost regardless of
 	// which per-series mechanism fed perSeries. See classic_bucket_merge_bound.go.
-	guardedAgg := wrapClassicBucketMergeBudgetGuard(agg)
+	guardedAgg := wrapClassicBucketMergeBudgetGuard(agg, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
 
 	// Inner Projects re-shape the aggregate output back into the
 	// histogram-row contract HistogramQuantile expects: an Attributes
@@ -2218,7 +2218,7 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	// the folded {Positive,Negative}{Offset,BucketCounts}. Routed through
 	// expHistogramMergeSortStage first — see its doc for why.
 	rebuilt := &chplan.Project{
-		Input: expHistogramMergeSortStage(agg),
+		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{{Expr: attrsRebuild, Alias: s.AttributesColumn}},
 			hqQuantileRankScalarMergeProjections(s)...,

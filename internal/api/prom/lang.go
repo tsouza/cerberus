@@ -55,6 +55,16 @@ type lang struct {
 	// default. The lowering dispatches through this table with NO per-query
 	// feature-flag / version read.
 	Lowerers promql.RangeLowerers
+
+	// ResourceBounds carries the operator-tunable histogram cross-series
+	// merge cost ceilings (cerberus issue #2667), threaded from
+	// Handler.ResourceBounds (built once at boot in cmd/cerberus from
+	// promql.ResourceBoundsFromEnv). The zero value resolves to
+	// promql.DefaultResourceBounds() at promql.LowerAtRangeOpts's own
+	// entry seam, so a lang built without it (NewExplainLang /
+	// NewExplainLangRange) keeps the shipped, calibrated defaults —
+	// mirroring how a zero Lowerers keeps the all-fan-out default.
+	ResourceBounds promql.ResourceBounds
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -116,7 +126,7 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	// promql.Lower leave the sink nil.
 	var guards []promql.ScalarGuard
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
-		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards})
+		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards, ResourceBounds: l.ResourceBounds})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}

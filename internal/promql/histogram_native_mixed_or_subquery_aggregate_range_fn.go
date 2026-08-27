@@ -257,7 +257,7 @@ func lowerSumOrAvgMixedOrSubqueryFoldFn(shape sumOrAvgMixedOrSubqueryShape, grid
 	if err != nil {
 		return nil, err
 	}
-	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(shape.agg, histForAgg, s)
+	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(shape.agg, histForAgg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits)
 	if err != nil {
 		return nil, err
 	}

@@ -354,7 +354,7 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 
 	switch op {
 	case chplan.OpAdd, chplan.OpSub:
-		return lowerMixedVVAdditiveArithmetic(join, op, s), nil
+		return lowerMixedVVAdditiveArithmetic(join, op, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
 	case chplan.OpMul, chplan.OpDiv:
 		return lowerMixedVVScaledArithmetic(join, op, s), nil
 	default:
@@ -397,7 +397,11 @@ func lowerVectorVectorArithmeticOverMixedExpHistogramSetOp(lhsSetOp, rhsSetOp *p
 // — see that function's doc for why running the merge fold over a
 // float,float row's own all-zero, empty-bucket placeholders is provably
 // harmless rather than merely assumed so.
-func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics) chplan.Node {
+//
+// maxCostUnits is the caller's already-resolved histogram-merge cost
+// ceiling (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue
+// #2667), passed straight through to [histogramBinopBucketWidthBudgetGuardExpr].
+func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.BinaryOp, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	mergeInputs := &chplan.Project{
 		Input:       join,
 		Projections: mixedVVHistMergeInputProjections(op, s),
@@ -410,7 +414,7 @@ func lowerMixedVVAdditiveArithmetic(join *chplan.MixedVectorJoin, op chplan.Bina
 	}
 	filtered := &chplan.Filter{
 		Input:     mergeInputs,
-		Predicate: andExpr(sameType, histogramBinopBucketWidthBudgetGuardExpr()),
+		Predicate: andExpr(sameType, histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits)),
 	}
 
 	lValue := mixedJoinFieldRef(mixedVVJoinSideL, s.ValueColumn)

@@ -226,7 +226,7 @@ func mergeTwoHistogramProjectionsCard(hpL, hpR chplan.Node, vm *parser.VectorMat
 	// cross-series merge: unlike a pruneable unread SELECT column, a
 	// Filter's predicate is always evaluated to decide row survival, so the
 	// throwIf(...) side effect cannot be optimised away.
-	guarded := chplan.Node(&chplan.Filter{Input: staged, Predicate: histogramBinopBucketWidthBudgetGuardExpr()})
+	guarded := chplan.Node(&chplan.Filter{Input: staged, Predicate: histogramBinopBucketWidthBudgetGuardExpr(ctx.resourceBounds.HistogramMergeMaxCostUnits)})
 
 	projs := []chplan.Projection{{Expr: &chplan.ColumnRef{Name: histSchema.AttributesColumn}, Alias: histSchema.AttributesColumn}}
 	projs = append(projs, histogramBinopMergeProjections(histSchema)...)

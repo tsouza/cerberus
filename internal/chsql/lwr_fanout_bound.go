@@ -1,5 +1,7 @@
 package chsql
 
+import "context"
+
 // lwr_fanout_bound.go closes issue #2447.
 //
 // RangeBucketFanout (histogram_quantile range-vector lowerings,
@@ -97,6 +99,26 @@ package chsql
 // why a LIMIT alone doesn't suffice, why the truncation probe must be an
 // INDEPENDENT unwindowed count() on a second read rather than a window
 // function annotating the bounded result directly).
+//
+// Issue #2667: both maxRangeBucketFanoutRows and maxRangeLWRFanoutRows below
+// are now operator-overridable — CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS /
+// CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS — rather than fixed at their shipped
+// calibration forever. #2429/#2470's own hardcoded ceilings each already
+// caused a real production incident (a legitimate query rejected, or a
+// dangerous one admitted) that could only be corrected with a full
+// code-change-plus-release cycle, because there was no operator-facing knob
+// to reach for in between. chsql itself may not import internal/config
+// (.go-arch-lint.yml: chsql: mayDependOn: [chplan, spansscan]), so the
+// resolved override travels in as an explicit ctx value — WithRangeBucketFanoutMaxRows
+// / WithRangeLWRFanoutMaxRows below, mirroring WithDeltaPrefixLookback's own
+// context-threading shape (range_window.go) exactly — parsed upstream in
+// internal/engine (which already owns this same seam for
+// chsql.WithDeltaPrefixLookback / chsql.WithDeltaPrefixReadEnabled, both
+// route A's emitForHead and route B's routeBExecCtx) and read once per Emit
+// call via rangeBucketFanoutMaxRowsFromCtx / rangeLWRFanoutMaxRowsFromCtx.
+// The named Go constants below remain the shipped, calibrated DEFAULTS — an
+// operator override changes what a deployment runs with, never what a fresh
+// install or an unwired test (the spec/golden lane, property tests) gets.
 const (
 	// maxRangeBucketFanoutRows caps the total number of pre-GROUP-BY fanout
 	// rows (one per (sample, covered anchor)) that may enter
@@ -167,6 +189,84 @@ const (
 	// doc comment is the retained record.
 	maxRangeLWRFanoutRows = 40_000_000
 )
+
+// rangeBucketFanoutMaxRowsKey / rangeLWRFanoutMaxRowsKey are the unexported
+// context keys carrying an operator-configured override for
+// maxRangeBucketFanoutRows / maxRangeLWRFanoutRows (issue #2667) — see
+// WithRangeBucketFanoutMaxRows / WithRangeLWRFanoutMaxRows and the
+// corresponding *FromCtx readers below.
+type rangeBucketFanoutMaxRowsKey struct{}
+
+type rangeLWRFanoutMaxRowsKey struct{}
+
+// WithRangeBucketFanoutMaxRows returns ctx carrying n as the operator
+// override for RangeBucketFanout's own fanout-row bound (otherwise
+// maxRangeBucketFanoutRows). The caller — internal/engine's emitForHead /
+// routeBExecCtx — only threads this when
+// CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS is actually set: unlike
+// WithDeltaPrefixLookback's zero-is-meaningful explicit opt-out, a fanout
+// row bound of zero is never a legitimate operator intent (it would reject
+// every query outright), so "never threaded" — not "threaded as zero" — is
+// what selects the compiled-in default; see
+// rangeBucketFanoutMaxRowsFromCtx.
+func WithRangeBucketFanoutMaxRows(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketFanoutMaxRowsKey{}, n)
+}
+
+// rangeBucketFanoutMaxRowsFromCtx recovers the bound
+// WithRangeBucketFanoutMaxRows set, or maxRangeBucketFanoutRows (the
+// compiled-in, calibrated default — see this file's own doc comment) when
+// the caller never threaded one.
+func rangeBucketFanoutMaxRowsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketFanoutMaxRowsKey{}).(int64); ok {
+		return n
+	}
+	return maxRangeBucketFanoutRows
+}
+
+// WithRangeLWRFanoutMaxRows / rangeLWRFanoutMaxRowsFromCtx mirror
+// WithRangeBucketFanoutMaxRows / rangeBucketFanoutMaxRowsFromCtx exactly,
+// for RangeLWR's own fanout-row bound (otherwise maxRangeLWRFanoutRows;
+// CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS).
+func WithRangeLWRFanoutMaxRows(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeLWRFanoutMaxRowsKey{}, n)
+}
+
+func rangeLWRFanoutMaxRowsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeLWRFanoutMaxRowsKey{}).(int64); ok {
+		return n
+	}
+	return maxRangeLWRFanoutRows
+}
+
+// rangeBucketFanoutRowBound / rangeLWRFanoutRowBound return e's own resolved
+// bound — e.rangeBucketFanoutMaxRows / e.rangeLWRFanoutMaxRows, seeded once
+// from ctx inside chsql.Emit (emit.go) — falling back to
+// maxRangeBucketFanoutRows / maxRangeLWRFanoutRows whenever the field reads
+// as its Go zero value. That fallback is not merely the "no operator
+// override" case Emit's own seeding already resolves (rangeBucketFanoutMaxRowsFromCtx
+// returns the default for an unset ctx value, never 0) — it also covers
+// every internal round-trip test in this package that constructs &emitter{}
+// directly, bypassing chsql.Emit's ctx-seeding entirely (see e.g.
+// range_window_fused_chdb_test.go's fusedDiffSQL). Unlike
+// deltaPrefixLookbackNS, whose zero Go value IS a legitimate value ("no
+// lower bound"), a maxRows of 0 read literally would reject every row of
+// every such test outright, which very nearly happened. This accessor is
+// what protects any FUTURE direct-&emitter{}-construction call site from
+// repeating that.
+func (e *emitter) rangeBucketFanoutRowBound() int64 {
+	if e.rangeBucketFanoutMaxRows > 0 {
+		return e.rangeBucketFanoutMaxRows
+	}
+	return maxRangeBucketFanoutRows
+}
+
+func (e *emitter) rangeLWRFanoutRowBound() int64 {
+	if e.rangeLWRFanoutMaxRows > 0 {
+		return e.rangeLWRFanoutMaxRows
+	}
+	return maxRangeLWRFanoutRows
+}
 
 // RangeBucketFanoutBudgetMessage is the throwIf message
 // lwrFanoutGuardFrag raises for RangeBucketFanout's collapse.

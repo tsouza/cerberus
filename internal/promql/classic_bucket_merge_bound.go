@@ -150,6 +150,22 @@ const (
 	// real max_memory_usage abort) if this drifts; preserve the `T x
 	// maxRowWidth` model unless a new measurement shows the real cost
 	// driver has moved again.
+	//
+	// # Operator override (cerberus issue #2667)
+	//
+	// This value is a compile-time DEFAULT, not the only admissible
+	// value: [ResourceBounds.ClassicBucketMergeMaxCostUnits], resolved
+	// from [EnvClassicBucketMergeMaxCostUnits]
+	// (CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS) via
+	// [ResourceBoundsFromEnv] and threaded down through
+	// [LowerOpts.ResourceBounds] / lowerCtx.resourceBounds to both
+	// budget-guard call sites, is what the guard actually checks at
+	// runtime — see resource_bounds_env.go. This constant remains the
+	// value [DefaultResourceBounds] returns and every non-opted-in caller
+	// still enforces, so a deployment that never sets the env var keeps
+	// this exact calibration; an operator override exists to correct a
+	// wrong calibration for real traffic without a code change, mirroring
+	// [maxHistogramMergeCostUnits]'s own override (histogram_merge_bound.go).
 	maxClassicBucketMergeCostUnits = 10_000_000
 
 	// maxClassicBucketMergeClampedComponent is NOT a behavioral threshold —
@@ -203,15 +219,30 @@ func widestRowBucketWidthExpr() chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArrayMax, Args: []chplan.Expr{classicBucketMergeRowWidthsExpr()}}
 }
 
-// classicBucketMergeCostOverBudgetExpr renders the `<cost> >
-// maxClassicBucketMergeCostUnits` condition this file's header doc's
-// calibration backs: `totalBucketVolume x widestRowBucketWidth`. Both
-// operands are clamped to maxClassicBucketMergeClampedComponent first —
-// see that constant's own doc and this file's Overflow safety section for
-// why clamping both components (rather than a separate business-threshold
-// disjunct, as histogram_merge_bound.go's rows x width^3 model needs) is
-// enough to keep the multiply Int64-safe here.
-func classicBucketMergeCostOverBudgetExpr() chplan.Expr {
+// classicBucketMergeCostOverBudgetExpr renders the `<cost> > maxCostUnits`
+// condition this file's header doc's calibration backs: `totalBucketVolume
+// x widestRowBucketWidth`. Both operands are clamped to
+// maxClassicBucketMergeClampedComponent first — see that constant's own
+// doc and this file's Overflow safety section for why clamping both
+// components (rather than a separate business-threshold disjunct, as
+// histogram_merge_bound.go's rows x width^3 model needs) is enough to keep
+// the multiply Int64-safe here.
+//
+// maxCostUnits is the caller-resolved ceiling — [DefaultResourceBounds]'s
+// ClassicBucketMergeMaxCostUnits (== [maxClassicBucketMergeCostUnits], the
+// shipped, calibrated default) unless an operator has overridden it via
+// [EnvClassicBucketMergeMaxCostUnits] (cerberus issue #2667). Threaded as
+// an explicit parameter rather than read from the environment here — this
+// package may not depend on internal/config (.go-arch-lint.yml) — and
+// never re-defaulted inside this function; see
+// histogram_merge_bound.go's identical note on
+// [histogramMergeCostOverBudgetExpr] for why the resolution happens once,
+// at the lowering-entry seam, rather than per call.
+// maxClassicBucketMergeClampedComponent itself stays a fixed Go constant,
+// not an operator knob — cerberus issue #2667 explicitly excludes it as
+// pure overflow-prevention arithmetic dominated by whichever maxCostUnits
+// value is in force, never an independently tuned threshold.
+func classicBucketMergeCostOverBudgetExpr(maxCostUnits int64) chplan.Expr {
 	clampedTotal := &chplan.FuncCall{Fn: chplan.FnLeast, Args: []chplan.Expr{
 		totalBucketVolumeExpr(), &chplan.LitInt{V: maxClassicBucketMergeClampedComponent},
 	}}
@@ -219,7 +250,7 @@ func classicBucketMergeCostOverBudgetExpr() chplan.Expr {
 		widestRowBucketWidthExpr(), &chplan.LitInt{V: maxClassicBucketMergeClampedComponent},
 	}}
 	cost := mulExpr(clampedTotal, clampedWidest)
-	return gtLit(cost, maxClassicBucketMergeCostUnits)
+	return gtLit(cost, maxCostUnits)
 }
 
 // classicBucketMergeBudgetGuardExpr renders the throwIf(...) = 0 predicate
@@ -227,13 +258,16 @@ func classicBucketMergeCostOverBudgetExpr() chplan.Expr {
 // SAME hqAggBoundsListAlias groupArray classicBucketMergeShaping collects,
 // so it must be attached directly above the Aggregate that produces it —
 // see wrapClassicBucketMergeBudgetGuard.
-func classicBucketMergeBudgetGuardExpr() chplan.Expr {
+//
+// maxCostUnits — see [classicBucketMergeCostOverBudgetExpr]'s doc — is the
+// caller-resolved ceiling, threaded down from [wrapClassicBucketMergeBudgetGuard].
+func classicBucketMergeBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
-				classicBucketMergeCostOverBudgetExpr(),
+				classicBucketMergeCostOverBudgetExpr(maxCostUnits),
 				&chplan.InlineString{V: chplan.ClassicBucketMergeBudgetMessage},
 			},
 		},
@@ -250,6 +284,10 @@ func classicBucketMergeBudgetGuardExpr() chplan.Expr {
 // this before handing the Aggregate to classicBucketShaping.reshape, so a
 // group this guard rejects never pays for the union/ladder Projects
 // reshape adds either.
-func wrapClassicBucketMergeBudgetGuard(agg chplan.Node) chplan.Node {
-	return &chplan.Filter{Input: agg, Predicate: classicBucketMergeBudgetGuardExpr()}
+//
+// maxCostUnits is the caller-resolved ceiling ([ResourceBounds]
+// .ClassicBucketMergeMaxCostUnits, cerberus issue #2667) — both callers
+// read it from their own ctx.resourceBounds and pass it straight through.
+func wrapClassicBucketMergeBudgetGuard(agg chplan.Node, maxCostUnits int64) chplan.Node {
+	return &chplan.Filter{Input: agg, Predicate: classicBucketMergeBudgetGuardExpr(maxCostUnits)}
 }

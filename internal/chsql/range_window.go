@@ -4427,6 +4427,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	// history of designs that guarded the wrong (downstream) stage first.
 	fanoutSource = rateWindowFanoutBoundedSourceFrag(
 		fanoutSource, groupFrags, srcTs, r.ValueColumn, r.TemporalityColumn, hasTemporality,
+		e.rateWindowFanoutRowBound(), RateWindowFanoutBudgetMessage,
 	)
 
 	// Regroup SELECT — rebuild the per-(series, anchor) window array. When
