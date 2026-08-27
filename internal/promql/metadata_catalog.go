@@ -108,6 +108,7 @@ func lowerMetadataCatalog(
 		metadataFullRange: true,
 		catalog:           cat,
 		lowerers:          RangeLowerers{}.withDefaults(),
+		resourceBounds:    DefaultResourceBounds(),
 	})
 	if err != nil {
 		span.RecordError(err)

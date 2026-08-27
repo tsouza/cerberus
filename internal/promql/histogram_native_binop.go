@@ -308,7 +308,7 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 		GroupBy:            groupBy,
 		GroupByAliases:     groupByAliases,
 		AggFuncs:           histogramBinopMergeAggs(histSchema),
-		Having:             histogramBinopMergeHavingGuard(),
+		Having:             histogramBinopMergeHavingGuard(ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		DropEmptyOnNoGroup: true,
 	}
 	projs = append(projs, chplan.Projection{Expr: attrsRebuild, Alias: histSchema.AttributesColumn})
@@ -357,8 +357,12 @@ func histogramBinopBothSidesMatchedGuard() chplan.Expr {
 // actually carry the columns the budget guard reads — see
 // [histogramBinopBothSidesMatchedGuard]'s doc for why the `==`/`!=`
 // compare path must NOT share this wider guard.
-func histogramBinopMergeHavingGuard() chplan.Expr {
-	return andExpr(histogramBinopBothSidesMatchedGuard(), histogramBinopBucketWidthBudgetGuardExpr())
+//
+// maxCostUnits — see [histogramBinopBucketWidthBudgetGuardExpr]'s doc — is
+// the caller's already-resolved histogram-merge cost ceiling
+// (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue #2667).
+func histogramBinopMergeHavingGuard(maxCostUnits int64) chplan.Expr {
+	return andExpr(histogramBinopBothSidesMatchedGuard(), histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits))
 }
 
 // histogramBinopBucketWidthBudgetGuardExpr renders the `throwIf(...) = 0`
@@ -394,13 +398,20 @@ func histogramBinopMergeHavingGuard() chplan.Expr {
 // effect here and folding straight into the existing Having carries no
 // risk of the empty-GroupBy/Having conflict [chplan.Aggregate.Having]'s
 // doc warns about.
-func histogramBinopBucketWidthBudgetGuardExpr() chplan.Expr {
+//
+// maxCostUnits is the caller-resolved ceiling — see
+// [histogramMergeCostOverBudgetExpr]'s doc — threaded down from each of
+// this function's three call sites' own ctx.resourceBounds.HistogramMergeMaxCostUnits
+// (cerberus issue #2667): [histogramBinopMergeHavingGuard] above,
+// mergeTwoHistogramProjectionsCard (histogram_native_binop_card.go), and
+// lowerMixedVVAdditiveArithmetic (histogram_native_mixed_or_vector_arithmetic.go).
+func histogramBinopBucketWidthBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
 	return &chplan.Binary{
 		Op: chplan.OpEq,
 		Left: &chplan.FuncCall{
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
-				histogramMergeCostOverBudgetExpr(&chplan.LitInt{V: histogramBinopOperandCount}),
+				histogramMergeCostOverBudgetExpr(&chplan.LitInt{V: histogramBinopOperandCount}, maxCostUnits),
 				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
 			},
 		},

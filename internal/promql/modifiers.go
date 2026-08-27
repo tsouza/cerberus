@@ -199,6 +199,20 @@ type lowerCtx struct {
 	// Every other selector lowering leaves this false, keeping their
 	// emitted SQL byte-identical to before #1628.
 	wantsTemporalityColumn bool
+
+	// resourceBounds carries the operator-tunable cost ceilings for the
+	// cross-series histogram-merge resource-bound guards
+	// (histogram_merge_bound.go, classic_bucket_merge_bound.go — cerberus
+	// issue #2667). It is resolved from [LowerOpts.ResourceBounds] via
+	// [ResourceBounds.withDefaults] at the SAME single lowering-entry seam
+	// [lowerers] is resolved at ([Lower], [LowerAt], [LowerAtRange],
+	// [LowerAtRangeOpts], [LowerMetadataRange]), so every ctx built by this
+	// package's own entry points always carries a non-zero, safe value —
+	// never the unset zero value, which would reject a merge as soon as it
+	// does any work at all (see [ResourceBounds]'s own doc). A ctx derived
+	// from an existing one via a plain struct copy (the `c := ctx; c.foo =
+	// ...` pattern this file's own with* helpers use) inherits it for free.
+	resourceBounds ResourceBounds
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector

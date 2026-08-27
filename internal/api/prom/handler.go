@@ -102,6 +102,19 @@ type Handler struct {
 	// read happens concurrently on every query_range request.
 	liveLowerers atomic.Pointer[promql.RangeLowerers]
 
+	// ResourceBounds carries the operator-tunable histogram cross-series
+	// merge cost ceilings (cerberus issue #2667:
+	// CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
+	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS). Wired at boot
+	// in cmd/cerberus from promql.ResourceBoundsFromEnv; the zero value
+	// resolves to promql.DefaultResourceBounds() at the lowering-entry
+	// seam (promql.LowerOpts.ResourceBounds -> ResourceBounds.withDefaults),
+	// so a Handler that never wires this (every test that builds one
+	// directly) keeps the shipped, calibrated defaults. Unlike Lowerers,
+	// both the instant and the range-streaming query paths consult it —
+	// the histogram-merge budget guards apply to both.
+	ResourceBounds promql.ResourceBounds
+
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
 	// `?timeout=<duration>` query param min's against per request
@@ -861,12 +874,13 @@ func (h *Handler) executeRangeStreaming(
 	step time.Duration,
 ) (engine.CursorResult, error) {
 	l := &lang{
-		Parser:   h.parser,
-		Schema:   h.Schema,
-		Start:    start,
-		End:      end,
-		Step:     step,
-		Lowerers: h.lowerers(),
+		Parser:         h.parser,
+		Schema:         h.Schema,
+		Start:          start,
+		End:            end,
+		Step:           step,
+		Lowerers:       h.lowerers(),
+		ResourceBounds: h.ResourceBounds,
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -891,7 +905,7 @@ func (h *Handler) executeRangeStreaming(
 // resolve against them. For instant queries the caller passes
 // start == end == ts.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end}
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, ResourceBounds: h.ResourceBounds}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {
 		return nil, nil, classifyEngineError(err)

@@ -173,6 +173,25 @@ const (
 	// file doc comment) if this drifts; preserve the rows x width^2
 	// model unless a new measurement shows the exponent itself has moved
 	// again.
+	//
+	// # Operator override (cerberus issue #2667)
+	//
+	// This value is a compile-time DEFAULT, not the only admissible
+	// value: [ResourceBounds.HistogramMergeMaxCostUnits], resolved from
+	// [EnvHistogramMergeMaxCostUnits] (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS)
+	// via [ResourceBoundsFromEnv] and threaded down through
+	// [LowerOpts.ResourceBounds] / lowerCtx.resourceBounds to every
+	// budget-guard call site, is what the guard actually checks at
+	// runtime — see resource_bounds_env.go. This constant remains the
+	// value [DefaultResourceBounds] returns and every non-opted-in
+	// caller (the spec harness, plan-only helpers, LowerOpts built
+	// without setting ResourceBounds) still enforces, so a deployment
+	// that never sets the env var keeps this exact, load-bearing
+	// calibration: cerberus issue #2385 recorded 19 REAL production OOMs
+	// before this guard existed at all, and an operator override exists
+	// to let a deployment correct a wrong calibration for its own real
+	// traffic WITHOUT a code change, never to invite lowering the
+	// default's own protection.
 	maxHistogramMergeCostUnits = 60_000_000
 
 	// maxHistogramMergeClampedWidth is NOT a behavioral threshold — the
@@ -277,12 +296,23 @@ func clampedLadderWidthSquaredExpr(scalesArr, offArr, bucArr, mergedScale chplan
 }
 
 // histogramMergeCostOverBudgetExpr renders the `<rowCount overflow guard> OR
-// <cost> > maxHistogramMergeCostUnits` condition the calibration in this
-// file's header doc backs: rowCount x (posWidth^2 + negWidth^2), the real
-// measured cost driver (quadratic since issue #2500's picker rewrite;
-// cubic before it), rather than the two independent axes issue #2385
-// originally checked (see that doc for why the axes themselves — not just
-// their thresholds — were wrong).
+// <cost> > maxCostUnits` condition the calibration in this file's header
+// doc backs: rowCount x (posWidth^2 + negWidth^2), the real measured cost
+// driver (quadratic since issue #2500's picker rewrite; cubic before it),
+// rather than the two independent axes issue #2385 originally checked (see
+// that doc for why the axes themselves — not just their thresholds — were
+// wrong).
+//
+// maxCostUnits is the caller-resolved ceiling — [DefaultResourceBounds]'s
+// HistogramMergeMaxCostUnits (== [maxHistogramMergeCostUnits], the shipped,
+// calibrated default) unless an operator has overridden it via
+// [EnvHistogramMergeMaxCostUnits] (cerberus issue #2667). Threaded as an
+// explicit parameter rather than read from the environment here — this
+// package may not depend on internal/config (.go-arch-lint.yml) — and never
+// defaulted inside this function: a caller that forgets to resolve
+// [ResourceBounds.withDefaults] gets a zero ceiling here, which is
+// deliberately NOT "unlimited" (see [ResourceBounds]'s own doc), so the
+// resolution happens once, at the lowering-entry seam, not per call.
 //
 // The leading `rowCount > maxHistogramMergeRowCountOverflowGuard` disjunct
 // is not a second business threshold — it exists purely so the multiply
@@ -291,6 +321,11 @@ func clampedLadderWidthSquaredExpr(scalesArr, offArr, bucArr, mergedScale chplan
 // evaluated booleans, ClickHouse computing a wrapped, meaningless `cost`
 // for a rowCount past that guard cannot flip the overall predicate to
 // false: the first disjunct alone already forces rejection at that point.
+// maxHistogramMergeRowCountOverflowGuard itself stays a fixed Go constant,
+// not an operator knob — cerberus issue #2667 explicitly excludes it (and
+// its width-clamp sibling) as pure overflow-prevention arithmetic dominated
+// by whichever maxCostUnits value is in force, never an independently
+// tuned threshold.
 //
 // rowCount is the caller's own row-count expression: `length(scalesArr)`
 // for the N-series cross-series merge
@@ -303,7 +338,7 @@ func clampedLadderWidthSquaredExpr(scalesArr, offArr, bucArr, mergedScale chplan
 // (hqAggScalesArrayAlias and the four offset/bucket array aliases) is what
 // lets both callers share this one cost model instead of each re-deriving
 // it.
-func histogramMergeCostOverBudgetExpr(rowCount chplan.Expr) chplan.Expr {
+func histogramMergeCostOverBudgetExpr(rowCount chplan.Expr, maxCostUnits int64) chplan.Expr {
 	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
 	mergedScale := &chplan.ColumnRef{Name: hqAggMergedScaleAlias}
 	posOff := &chplan.ColumnRef{Name: hqAggPosOffsetsArrayAlias}
@@ -320,7 +355,7 @@ func histogramMergeCostOverBudgetExpr(rowCount chplan.Expr) chplan.Expr {
 	)
 	return orExpr(
 		gtLit(rowCount, maxHistogramMergeRowCountOverflowGuard),
-		gtLit(cost, maxHistogramMergeCostUnits),
+		gtLit(cost, maxCostUnits),
 	)
 }
 
@@ -335,7 +370,10 @@ func histogramMergeCostOverBudgetExpr(rowCount chplan.Expr) chplan.Expr {
 // the length of a groupArray this guard already has in scope. The
 // expensive part it gates is expHistogramMergeBucketsExpr's per-target-
 // bucket work, never reached for a group this guard rejects.
-func histogramMergeBudgetGuardExpr() chplan.Expr {
+//
+// maxCostUnits — see [histogramMergeCostOverBudgetExpr]'s doc — is the
+// caller-resolved ceiling, threaded down from [wrapExpHistogramMergeBudgetGuard].
+func histogramMergeBudgetGuardExpr(maxCostUnits int64) chplan.Expr {
 	scalesArr := &chplan.ColumnRef{Name: hqAggScalesArrayAlias}
 	seriesCount := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{scalesArr}}
 
@@ -344,7 +382,7 @@ func histogramMergeBudgetGuardExpr() chplan.Expr {
 		Left: &chplan.FuncCall{
 			Fn: chplan.FnThrowIf,
 			Args: []chplan.Expr{
-				histogramMergeCostOverBudgetExpr(seriesCount),
+				histogramMergeCostOverBudgetExpr(seriesCount, maxCostUnits),
 				&chplan.InlineString{V: chplan.HistogramMergeBudgetMessage},
 			},
 		},
@@ -362,8 +400,13 @@ func histogramMergeBudgetGuardExpr() chplan.Expr {
 // and the histogram-VALUED sum() publishers) already route through it, so
 // the guard is wired into every across-series merge shape from this one
 // choke point rather than needing to be added at each call site.
-func wrapExpHistogramMergeBudgetGuard(merged chplan.Node) chplan.Node {
-	return &chplan.Filter{Input: merged, Predicate: histogramMergeBudgetGuardExpr()}
+//
+// maxCostUnits is the caller-resolved ceiling ([ResourceBounds]
+// .HistogramMergeMaxCostUnits, cerberus issue #2667) — [expHistogramMergeSortStage]
+// receives it from its own caller's lowerCtx.resourceBounds and passes it
+// straight through, so this file has no direct dependency on lowerCtx.
+func wrapExpHistogramMergeBudgetGuard(merged chplan.Node, maxCostUnits int64) chplan.Node {
+	return &chplan.Filter{Input: merged, Predicate: histogramMergeBudgetGuardExpr(maxCostUnits)}
 }
 
 // orExpr returns `a OR b`. Mirrors andExpr, this package's existing
@@ -373,6 +416,6 @@ func orExpr(a, b chplan.Expr) chplan.Expr {
 }
 
 // gtLit returns `expr > n`.
-func gtLit(expr chplan.Expr, n int) chplan.Expr {
-	return &chplan.Binary{Op: chplan.OpGt, Left: expr, Right: &chplan.LitInt{V: int64(n)}}
+func gtLit(expr chplan.Expr, n int64) chplan.Expr {
+	return &chplan.Binary{Op: chplan.OpGt, Left: expr, Right: &chplan.LitInt{V: n}}
 }

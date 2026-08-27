@@ -111,7 +111,7 @@ func lowerExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerC
 			return nil, true, err
 		}
 		if matched {
-			plan, err := lowerExpHistogramSumOrAvgOverPlan(agg, input, s)
+			plan, err := lowerExpHistogramSumOrAvgOverPlan(agg, input, s, ctx.resourceBounds.HistogramMergeMaxCostUnits)
 			return plan, true, err
 		}
 	}

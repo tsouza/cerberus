@@ -12,6 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 )
 
 // One representative route per head. A request to an ENABLED head's route is
@@ -60,7 +62,7 @@ func buildHeadsTestServer(t *testing.T, enabledHeads string) *httptest.Server {
 	// past the test.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
+	if _, err := mountAPIHeads(ctx, traceMux, client, cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

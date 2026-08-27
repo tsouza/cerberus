@@ -147,12 +147,15 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
 	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
 	e := &emitter{
-		spansTable:             spansTable,
-		ctxSpansTable:          spansTable,
-		ctxLateMatTable:        ctxLMTable,
-		ctxLateMatShape:        ctxLMShape,
-		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
-		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
+		spansTable:               spansTable,
+		ctxSpansTable:            spansTable,
+		ctxLateMatTable:          ctxLMTable,
+		ctxLateMatShape:          ctxLMShape,
+		deltaPrefixLookbackNS:    deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
+		deltaPrefixReadEnabled:   deltaPrefixReadEnabledFromCtx(ctx),
+		rangeBucketFanoutMaxRows: rangeBucketFanoutMaxRowsFromCtx(ctx),
+		rangeLWRFanoutMaxRows:    rangeLWRFanoutMaxRowsFromCtx(ctx),
+		rateWindowFanoutMaxRows:  rateWindowFanoutMaxRowsFromCtx(ctx),
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -298,6 +301,34 @@ type emitter struct {
 	// hasn't threaded the new config through internal/engine at all) sees
 	// byte-identical SQL to before this field existed.
 	deltaPrefixReadEnabled bool
+
+	// rangeBucketFanoutMaxRows / rangeLWRFanoutMaxRows / rateWindowFanoutMaxRows
+	// resolve the three sample-fanout resource bounds this package enforces
+	// upstream of a blocking GROUP BY (issue #2667):
+	// RangeBucketFanout's collapse (lwr_fanout_bound.go), RangeLWR's collapse
+	// (same file), and emitWindowedArrayExtrapolatedMatrix's regroup
+	// (rate_window_fanout_bound.go). Each is seeded here, once per Emit
+	// call, from its own *FromCtx reader — rangeBucketFanoutMaxRowsFromCtx /
+	// rangeLWRFanoutMaxRowsFromCtx / rateWindowFanoutMaxRowsFromCtx — which
+	// returns the operator's CERBERUS_CH_*_MAX_ROWS override threaded via
+	// internal/engine (WithRangeBucketFanoutMaxRows / WithRangeLWRFanoutMaxRows
+	// / WithRateWindowFanoutMaxRows) or, when none was threaded, that bound's
+	// own compiled-in, calibrated default constant. Mirrors
+	// deltaPrefixLookbackNS's "seed once here, read off e per call site"
+	// shape — with one deliberate difference: unlike deltaPrefixLookbackNS,
+	// whose Go zero value (0, "no lower bound") is itself a legitimate
+	// value, a maxRows of 0 read literally would reject every row outright,
+	// which several internal round-trip tests in this package that
+	// construct &emitter{} directly — bypassing this seeding entirely, e.g.
+	// range_window_fused_chdb_test.go — would otherwise hit. Every call
+	// site therefore reads these three fields ONLY through their own
+	// rangeBucketFanoutRowBound() / rangeLWRFanoutRowBound() /
+	// rateWindowFanoutRowBound() accessor (lwr_fanout_bound.go,
+	// rate_window_fanout_bound.go), never directly, so a zero field falls
+	// back to the compiled-in default there too.
+	rangeBucketFanoutMaxRows int64
+	rangeLWRFanoutMaxRows    int64
+	rateWindowFanoutMaxRows  int64
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the

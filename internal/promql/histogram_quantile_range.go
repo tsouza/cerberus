@@ -343,7 +343,7 @@ func lowerHistogramQuantileClassicAggRange(
 	// stage is the shared, previously-unguarded dominant cost regardless of
 	// which per-series mechanism fed perSeries (fan-out or the native rate
 	// ladder). See classic_bucket_merge_bound.go.
-	guardedCollapse := wrapClassicBucketMergeBudgetGuard(collapse)
+	guardedCollapse := wrapClassicBucketMergeBudgetGuard(collapse, ctx.resourceBounds.ClassicBucketMergeMaxCostUnits)
 
 	rebuilt, cumulative := shaping.reshape(guardedCollapse, []chplan.Projection{
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
@@ -711,7 +711,7 @@ func buildHistogramNativeRangeTreeMerge(
 	// Mirrors the inner Project in lowerHistogramQuantileNativeAgg.
 	// Routed through expHistogramMergeSortStage first — see its doc.
 	rebuilt := &chplan.Project{
-		Input: expHistogramMergeSortStage(agg),
+		Input: expHistogramMergeSortStage(agg, ctx.resourceBounds.HistogramMergeMaxCostUnits),
 		Projections: append(
 			[]chplan.Projection{
 				{Expr: anchorRef, Alias: stepGridAnchorColumn},

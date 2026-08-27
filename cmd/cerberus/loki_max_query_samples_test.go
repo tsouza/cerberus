@@ -8,6 +8,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -49,7 +51,7 @@ func TestNewLokiHandler_WiresMaxQuerySamples(t *testing.T) {
 	cfg := config.Config{Logs: schema.DefaultOTelLogs()}
 	limiters := newAdmitLimiters(cfg, quietLogger())
 
-	h := newLokiHandler(client, cfg, chopt.EnabledSet{}, limiters, quietLogger())
+	h := newLokiHandler(client, cfg, chopt.EnabledSet{}, limiters, quietLogger(), engine.ResourceBoundOverrides{})
 
 	if h.Engine == nil {
 		t.Fatal("Handler.Engine is nil")
@@ -84,7 +86,7 @@ func TestMountAPIHeads_EveryBuiltEngineCarriesMaxQuerySamples(t *testing.T) {
 	logger := quietLogger()
 	limiters := newAdmitLimiters(cfg, logger)
 
-	heads, err := mountAPIHeads(t.Context(), http.NewServeMux(), client, cfg, chopt.EnabledSet{}, limiters, logger)
+	heads, err := mountAPIHeads(t.Context(), http.NewServeMux(), client, cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{})
 	if err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}

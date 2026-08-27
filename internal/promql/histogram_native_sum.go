@@ -203,7 +203,7 @@ func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.Vector
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	perSeries := latestSampleAgg(input, nativeExpHistValuedLatestAggs(s), s)
-	return expHistogramGroupMerge(perSeries, nil, agg, s), nil
+	return expHistogramGroupMerge(perSeries, nil, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
 }
 
 // lowerExpHistogramSumOrAvgRange is the query_range shape. Stage 1 is the
@@ -226,7 +226,7 @@ func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.Vector
 		nativeExpHistValuedLatestAggs(s), s, ctx,
 	)
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
-	return aggregatedHistogramProjection(expHistogramGroupMerge(perSeries, anchor, agg, s), anchor, s)
+	return aggregatedHistogramProjection(expHistogramGroupMerge(perSeries, anchor, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), anchor, s)
 }
 
 // expHistogramGroupMerge is the across-SERIES stage: it adds the per-series
@@ -244,7 +244,11 @@ func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.Vector
 // in scope above stage 1 — the same binding [histogramAggGroupBy]'s doc
 // describes for the quantile paths, and the reason they must not be
 // re-wrapped in [canonicalGroupKeyExpr].
-func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics) chplan.Node {
+//
+// maxCostUnits is the caller's already-resolved histogram-merge cost
+// ceiling (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue
+// #2667), passed straight through to [expHistogramMergeSortStage].
+func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
 		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)
@@ -274,7 +278,7 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 	}
 	projs = append(projs, fields...)
 	// Routed through expHistogramMergeSortStage first — see its doc.
-	return &chplan.Project{Input: expHistogramMergeSortStage(merged), Projections: projs}
+	return &chplan.Project{Input: expHistogramMergeSortStage(merged, maxCostUnits), Projections: projs}
 }
 
 // lowerExpHistogramSumOrAvgOverPlan applies a cross-series SUM/AVG to an
@@ -283,7 +287,11 @@ func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg
 // public aliases instead of reaching through to a producer-specific subtree.
 // Grouping by the published timestamp keeps every query_range anchor
 // independent while remaining a single key for an instant evaluation.
-func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics) (chplan.Node, error) {
+//
+// maxCostUnits is the caller's already-resolved histogram-merge cost
+// ceiling (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue
+// #2667), passed straight through to [expHistogramMergeSortStage].
+func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, maxCostUnits int64) (chplan.Node, error) {
 	if chplan.RowShapeOf(input) != chplan.HistogramRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape", input, chplan.RowShapeOf(input))
 	}
@@ -308,7 +316,7 @@ func lowerExpHistogramSumOrAvgOverPlan(agg *parser.AggregateExpr, input chplan.N
 	}
 	reshaped := &chplan.Project{
 		// Routed through expHistogramMergeSortStage first — see its doc.
-		Input: expHistogramMergeSortStage(merged),
+		Input: expHistogramMergeSortStage(merged, maxCostUnits),
 		Projections: append([]chplan.Projection{
 			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Alias: s.TimestampColumn},
 			{Expr: attrsRebuild, Alias: s.AttributesColumn},

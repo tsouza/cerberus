@@ -149,9 +149,16 @@ type rangeSeriesOrderer interface {
 // chplan.RangeWindow with a TemporalityColumn, so chsql's DELTA-temporality
 // prefix-reconstruction emitters this bounds are simply never reached for
 // them.
+//
+// bounds is the resolved CERBERUS_CH_*_MAX_ROWS override (issue #2667,
+// resource_bound_env.go) — every caller passes its Engine's own
+// RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows / RateWindowFanoutMaxRows
+// fields directly, exactly as for deltaPrefixLookback above. See
+// applyResourceBoundOverrides for why a zero field threads nothing.
 func emitForHead(
 	ctx context.Context, lang Lang, plan chplan.Node,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
+	bounds ResourceBoundOverrides,
 ) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
@@ -170,7 +177,44 @@ func emitForHead(
 	// (e.g. Engine{} in a test) resolves to false — the fail-closed
 	// default that keeps the DeltaPrefixLookback-only path.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
+	ctx = applyResourceBoundOverrides(ctx, bounds)
 	return chsql.Emit(ctx, plan)
+}
+
+// applyResourceBoundOverrides threads onto ctx only the CERBERUS_CH_*_MAX_ROWS
+// overrides bounds actually carries (issue #2667) — a zero field means the
+// operator never set that one (see ResourceBoundOverrides' own doc: a
+// fanout row bound of zero is never a legitimate override), so it is left
+// unthreaded and chsql's own *FromCtx readers fall back to that bound's
+// compiled-in, calibrated default exactly as if this function were never
+// called. Shared by emitForHead (route A) and routeBExecCtx (route B) so
+// both dispatch the identical resolved bound for the same Engine.
+func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverrides) context.Context {
+	if bounds.RangeBucketFanoutMaxRows > 0 {
+		ctx = chsql.WithRangeBucketFanoutMaxRows(ctx, bounds.RangeBucketFanoutMaxRows)
+	}
+	if bounds.RangeLWRFanoutMaxRows > 0 {
+		ctx = chsql.WithRangeLWRFanoutMaxRows(ctx, bounds.RangeLWRFanoutMaxRows)
+	}
+	if bounds.RateWindowFanoutMaxRows > 0 {
+		ctx = chsql.WithRateWindowFanoutMaxRows(ctx, bounds.RateWindowFanoutMaxRows)
+	}
+	return ctx
+}
+
+// resourceBoundOverrides packages e's own RangeBucketFanoutMaxRows /
+// RangeLWRFanoutMaxRows / RateWindowFanoutMaxRows fields into the
+// ResourceBoundOverrides applyResourceBoundOverrides consumes — the single
+// conversion point every emitForHead / routeBExecCtx call site below uses,
+// so an Engine that never wired these three fields (Engine{} in a test, or
+// the Tempo head) passes the zero ResourceBoundOverrides that threads
+// nothing.
+func (e *Engine) resourceBoundOverrides() ResourceBoundOverrides {
+	return ResourceBoundOverrides{
+		RangeBucketFanoutMaxRows: e.RangeBucketFanoutMaxRows,
+		RangeLWRFanoutMaxRows:    e.RangeLWRFanoutMaxRows,
+		RateWindowFanoutMaxRows:  e.RateWindowFanoutMaxRows,
+	}
 }
 
 // routeDecisionValue composes the shadow-header value from a solver Decision.
@@ -826,6 +870,37 @@ type Engine struct {
 	// flag.
 	DeltaPrefixReadEnabled bool
 
+	// RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows / RateWindowFanoutMaxRows
+	// mirror the operator override for three chsql sample-fanout
+	// resource-bound safety ceilings (issue #2667, resource_bound_env.go):
+	// CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS,
+	// CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS, and
+	// CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS, wired from
+	// engine.ResourceBoundsFromEnv's own ResourceBoundOverrides in
+	// cmd/cerberus. RangeBucketFanoutMaxRows / RangeLWRFanoutMaxRows are
+	// PromQL-only (only internal/promql ever lowers a
+	// chplan.RangeBucketFanout / chplan.RangeLWR — histogram_quantile
+	// range-vector and bare-selector range-vector lowerings respectively),
+	// so they are wired only onto the Prom head's Engine; RateWindowFanoutMaxRows
+	// guards chplan.RangeWindow's own windowed-array-extrapolated matrix path,
+	// which BOTH internal/promql (rate()/increase()/etc.) and internal/logql
+	// (its own range aggregations) lower to, so it is wired onto both the
+	// Prom and the Loki heads' Engines.
+	//
+	// The zero Go value (0) for any of the three is the "operator did not
+	// override this one" sentinel — emitForHead / routeBExecCtx thread the
+	// corresponding chsql ctx value ONLY when the field is > 0, so an Engine
+	// built without this wired (e.g. Engine{} in a test, or the Tempo head,
+	// which never lowers any of these three node kinds) gets the exact
+	// chsql-compiled-in calibrated default it always got before this field
+	// existed. Unlike DeltaPrefixLookback's zero-is-meaningful explicit
+	// opt-out, a fanout row bound of zero is never a legitimate override (it
+	// would reject every query outright), so there is no honoured "disable"
+	// value here to conflict with "unset".
+	RangeBucketFanoutMaxRows int64
+	RangeLWRFanoutMaxRows    int64
+	RateWindowFanoutMaxRows  int64
+
 	// RouteMemo is the OPTIONAL failure-driven route memo (internal/routememo,
 	// docs/solver.md §"Failure-driven route memo"). Nil unless wired from
 	// cmd/cerberus, so the default path is byte-unchanged. When non-nil AND
@@ -1097,7 +1172,7 @@ func (e *Engine) runGuards(ctx context.Context, lang Lang, meta Meta) error {
 			return err
 		}
 		guardCtx, _ := e.execContext(ctx, plan, lang.Name(), nil)
-		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
+		sql, args, err := emitForHead(guardCtx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
 		if err != nil {
 			return fmt.Errorf("engine: emit: guard %s: %w", g.Name, err)
 		}
@@ -1235,7 +1310,7 @@ func (e *Engine) DryRunSQL(ctx context.Context, lang Lang, query string) (DryRun
 		return dr, err
 	}
 
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
 	if err != nil {
 		return dr, fmt.Errorf("engine: emit: %w", err)
 	}
@@ -1310,7 +1385,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 
 	// Emit.
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
 	emitT.Done(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: emit: %w", err)
@@ -1425,9 +1500,18 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // silently fall back to chsql's own defaultDeltaPrefixLookback instead of
 // the operator's configured CERBERUS_DELTA_PREFIX_LOOKBACK — still bounded,
 // but not necessarily the SAME bound route A used for the un-sliced plan.
+//
+// The identical reasoning carries bounds — the CERBERUS_CH_*_MAX_ROWS
+// overrides (issue #2667) — across to route B too: RangeWindow, RangeLWR
+// and RangeBucketFanout are ALL registered slice-invariant
+// (internal/chplan/sliceinvariant.go), so a routed shard's plan can
+// genuinely contain any of the three nodes these bounds guard, and without
+// this call a shard's ctx would silently fall back to chsql's own
+// compiled-in defaults instead of the operator's configured override.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
+	bounds ResourceBoundOverrides,
 ) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
 	if decisionHasTSGridNative(decision) {
@@ -1438,6 +1522,7 @@ func routeBExecCtx(
 	// reason DeltaPrefixLookback is above — see Engine.DeltaPrefixReadEnabled's
 	// doc and emitForHead's matching call.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
+	ctx = applyResourceBoundOverrides(ctx, bounds)
 	return ctx
 }
 
@@ -1477,7 +1562,7 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -1785,7 +1870,7 @@ func (e *Engine) dispatchRouteACursor(
 	}
 
 	emitT := telemetry.ObserveStage(telemetry.StageEmit, lang.Name())
-	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled)
+	sql, args, err := emitForHead(ctx, lang, plan, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides())
 	emitT.Done(ctx)
 	if err != nil {
 		return routeACursorAttempt{}, fmt.Errorf("engine: emit: %w", err)
@@ -1971,7 +2056,7 @@ func (e *Engine) executeRoutedCursor(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides()), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {

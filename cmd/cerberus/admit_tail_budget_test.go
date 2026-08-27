@@ -12,6 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -143,7 +145,7 @@ func TestNewLokiHandler_WiresBothBudgets(t *testing.T) {
 	})
 	limiters := newAdmitLimiters(cfg, quietLogger())
 
-	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters, quietLogger())
+	h := newLokiHandler(lazyClient(t), cfg, chopt.EnabledSet{}, limiters, quietLogger(), engine.ResourceBoundOverrides{})
 
 	if h.Limiter != limiters.loki {
 		t.Errorf("Handler.Limiter = %p, want the loki request budget %p", h.Limiter, limiters.loki)
@@ -187,7 +189,7 @@ func TestMountAPIHeads_TailAndQueryBudgetsAreWiredEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	mux := http.NewServeMux()
-	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
+	if _, err := mountAPIHeads(ctx, mux, lazyClient(t), cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 	srv := httptest.NewServer(mux)

@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "head": "promql",
+      "site": "internal/promql/resource_bounds_env.go:envInt64#1257496a",
+      "message": "promql: %s: must be \u003e 0, got %d",
+      "class": "internal",
+      "rationale": "ResourceBoundsFromEnv runs once at process startup to resolve the CERBERUS_PROMQL_*_MAX_COST_UNITS overrides (issue #2667); a non-positive override fails cerberus startup, it is never reachable from a query a client sends",
+      "evidence": {
+        "guard": [
+          "past returning if v == \"\"",
+          "past returning if err != nil",
+          "if n \u003c= 0"
+        ],
+        "callers": [
+          "ResourceBoundsFromEnv"
+        ],
+        "cited": [
+          "ResourceBoundsFromEnv"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/resource_bounds_env.go:envInt64#ae8873d1",
+      "message": "promql: %s: invalid integer %q: %w",
+      "class": "internal",
+      "rationale": "ResourceBoundsFromEnv runs once at process startup to resolve the CERBERUS_PROMQL_*_MAX_COST_UNITS overrides (issue #2667); a malformed override fails cerberus startup, it is never reachable from a query a client sends",
+      "evidence": {
+        "guard": [
+          "past returning if v == \"\"",
+          "if err != nil"
+        ],
+        "callers": [
+          "ResourceBoundsFromEnv"
+        ],
+        "cited": [
+          "ResourceBoundsFromEnv"
+        ]
+      }
+    }
+  ]
+}

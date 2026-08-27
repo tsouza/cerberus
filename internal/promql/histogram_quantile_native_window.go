@@ -593,8 +593,14 @@ func expHistogramMergeSeriesOrderKeyAgg(s schema.Metrics) chplan.AggFunc {
 // this stage's output. Every caller of this function inherits the guard for
 // free; there is nowhere left for a new across-series merge site to forget
 // it.
-func expHistogramMergeSortStage(agg chplan.Node) chplan.Node {
-	guarded := wrapExpHistogramMergeBudgetGuard(agg)
+//
+// maxCostUnits is the caller's already-resolved ceiling
+// (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue #2667) —
+// passed straight through to [wrapExpHistogramMergeBudgetGuard] rather than
+// re-resolved here, so this function stays a plain chplan.Node -> chplan.Node
+// transform with no lowerCtx dependency of its own.
+func expHistogramMergeSortStage(agg chplan.Node, maxCostUnits int64) chplan.Node {
+	guarded := wrapExpHistogramMergeBudgetGuard(agg, maxCostUnits)
 	orderKey := &chplan.ColumnRef{Name: hqAggSeriesOrderKeyAlias}
 	sorted := func(arrAlias string) chplan.Projection {
 		return chplan.Projection{

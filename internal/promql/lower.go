@@ -42,7 +42,10 @@ var tracer = otel.Tracer("github.com/tsouza/cerberus/internal/promql")
 func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lowerRoot(expr, s, lowerCtx{lowerers: RangeLowerers{}.withDefaults()})
+	plan, err := lowerRoot(expr, s, lowerCtx{
+		lowerers:       RangeLowerers{}.withDefaults(),
+		resourceBounds: DefaultResourceBounds(),
+	})
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -114,6 +117,17 @@ type LowerOpts struct {
 	// only wants the plan (the spec harness, [Lower] and friends) leaves
 	// it nil and no guard plan is built.
 	Guards *[]ScalarGuard
+
+	// ResourceBounds carries the operator-tunable cost ceilings for the
+	// cross-series histogram-merge resource-bound guards (cerberus issue
+	// #2667) — see [ResourceBounds]'s own doc. The zero value is resolved
+	// to [DefaultResourceBounds] by [ResourceBounds.withDefaults] at this
+	// options-carrying entry point, mirroring how a zero Lowerers resolves
+	// to the all-fan-out table, so a caller that does not opt in (every
+	// caller but the deployed prom handler, which threads the
+	// CERBERUS_PROMQL_*_MAX_COST_UNITS-resolved value from cmd/cerberus)
+	// keeps the shipped defaults.
+	ResourceBounds ResourceBounds
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange].
@@ -125,11 +139,12 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
 	plan, err := lowerRoot(expr, s, lowerCtx{
-		start:    start,
-		end:      end,
-		step:     step,
-		lowerers: opts.Lowerers.withDefaults(),
-		guards:   opts.Guards,
+		start:          start,
+		end:            end,
+		step:           step,
+		lowerers:       opts.Lowerers.withDefaults(),
+		guards:         opts.Guards,
+		resourceBounds: opts.ResourceBounds.withDefaults(),
 	})
 	if err != nil {
 		span.RecordError(err)
@@ -159,7 +174,13 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics, start, end time.Time) (chplan.Node, error) {
 	_, span := tracer.Start(ctx, cerbtrace.SpanLower, trace.WithAttributes(cerbtrace.AttrQL.String("promql")))
 	defer span.End()
-	plan, err := lower(expr, s, lowerCtx{start: start, end: end, metadataFullRange: true, lowerers: RangeLowerers{}.withDefaults()})
+	plan, err := lower(expr, s, lowerCtx{
+		start:             start,
+		end:               end,
+		metadataFullRange: true,
+		lowerers:          RangeLowerers{}.withDefaults(),
+		resourceBounds:    DefaultResourceBounds(),
+	})
 	if err != nil {
 		span.RecordError(err)
 		return nil, err

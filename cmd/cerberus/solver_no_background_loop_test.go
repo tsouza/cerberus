@@ -12,6 +12,8 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
+	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/solver"
 )
 
@@ -75,7 +77,7 @@ func TestMountAPIHeads_PromStartsNoBackgroundLoop(t *testing.T) {
 		goleak.IgnoreCurrent(),
 	}
 
-	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, limiters, logger); err != nil {
+	if _, err := mountAPIHeads(ctx, http.NewServeMux(), client, cfg, chopt.EnabledSet{}, limiters, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}); err != nil {
 		t.Fatalf("mountAPIHeads: %v", err)
 	}
 

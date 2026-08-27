@@ -123,7 +123,7 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 		return nil, err
 	}
 
-	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(agg, histForAgg, s)
+	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(agg, histForAgg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits)
 	if err != nil {
 		return nil, err
 	}
