@@ -2,7 +2,7 @@
   "query": "stdvar_over_time_basic/fanout",
   "lowering": "fanout",
   "routed": true,
-  "k": 8,
+  "k": 12,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,

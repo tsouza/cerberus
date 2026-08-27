@@ -14,7 +14,7 @@ func TestDefaultConfig_Valid(t *testing.T) {
 	if c.Mode != ModeSingle {
 		t.Fatalf("default Mode = %q, want %q (ship dark)", c.Mode, ModeSingle)
 	}
-	if c.MinFanout != 16 || c.MinAnchorPairs != 4000 || c.MaxK != 8 ||
+	if c.MinFanout != 16 || c.MinAnchorPairs != 4000 || c.MaxK != 32 ||
 		c.MinAnchorsPerSlice != 16 || c.Parallel != 3 || c.MaxOutputRows != 2_000_000 {
 		t.Fatalf("default tuning drifted: %+v", c)
 	}

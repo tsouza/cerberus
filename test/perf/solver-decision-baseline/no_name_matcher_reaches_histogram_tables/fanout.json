@@ -2,7 +2,7 @@
   "query": "no_name_matcher_reaches_histogram_tables/fanout",
   "lowering": "fanout",
   "routed": true,
-  "k": 8,
+  "k": 12,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
