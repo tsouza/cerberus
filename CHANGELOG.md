@@ -4,6 +4,22 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.17.0] — 2026-08-27
+
+### Added
+
+- **chsql,promql:** make five more resource-bound safety ceilings configurable (#2668)
+
+### Fixed
+
+- **chaos:** recalibrate route-memo-activation's memory cap with real margin (#2669)
+- **chsql:** recalibrate RangeBucketGridNative's density axis against real production spill settings (#2666)
+
+### Documentation
+
+- document the solver-tuning env vars, fix two stale doc refs (#2673)
+- **config:** document issue #2667's 5 resource-bound env vars (#2672)
+
 ## [v1.16.1] — 2026-08-26
 
 ### Fixed
