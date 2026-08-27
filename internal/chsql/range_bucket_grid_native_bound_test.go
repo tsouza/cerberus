@@ -390,18 +390,60 @@ FROM numbers(%d)`,
 	}
 }
 
+// seedGridNativeDensityTwoTS is seedGridNativeDensity's own twin for a
+// "Passes" (non-throwing) density test that must return real rows rather
+// than merely erroring before Level 1 ever runs: bucketGridSeenFn's own
+// two-sample floor (seedGridNativeSeries' own doc) means EVERY row landing
+// at one identical timestamp — seedGridNativeDensity's own shape — answers
+// a NULL rate at every anchor, which Level 3's HAVING then drops every row
+// for. This spreads the SAME total seriesCount x rowsPerSeries row count
+// (so the density guard's own count()-based probe sees an identical
+// rawRows value) across TWO distinct timestamps one minute apart instead of
+// one, via two vectorized INSERTs each contributing half the rows —
+// mirrors seedGridNativeFloorDensityBulk's own twin-offset shape, just with
+// rowsPerSeries/2 rows per series per timestamp instead of exactly one.
+func seedGridNativeDensityTwoTS(t *testing.T, exec func(string) error, seriesCount, rowsPerSeries, boundsCount int, seedStart time.Time) {
+	t.Helper()
+	if rowsPerSeries%2 != 0 {
+		t.Fatalf("seedGridNativeDensityTwoTS requires an even rowsPerSeries, got %d", rowsPerSeries)
+	}
+	bounds := make([]string, boundsCount)
+	for i := range bounds {
+		bounds[i] = fmt.Sprintf("%d.0", i+1)
+	}
+	boundsLit := "[" + strings.Join(bounds, ",") + "]"
+	counts := make([]string, boundsCount+1)
+	for i := range counts {
+		counts[i] = "1"
+	}
+	countsLit := "[" + strings.Join(counts, ",") + "]"
+	halfRowsPerSeries := rowsPerSeries / 2
+
+	for _, offset := range []time.Duration{0, time.Minute} {
+		ts := seedStart.Add(offset)
+		seedSQL := fmt.Sprintf(`INSERT INTO otel_metrics_histogram (MetricName, SeriesID, TimeUnix, BucketCounts, ExplicitBounds)
+SELECT 'http_server_request_duration', concat('svc-', toString(number %% %d)), toDateTime64('%s', 9), %s, %s
+FROM numbers(%d)`,
+			seriesCount, seedTS(ts), countsLit, boundsLit, seriesCount*halfRowsPerSeries)
+		if err := exec(seedSQL); err != nil {
+			t.Fatalf("seed two-timestamp density insert at offset %s: %v", offset, err)
+		}
+	}
+}
+
 // TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity is
-// issue #2523's own regression pin: at a `groups x anchors` value trivially
-// far under maxRangeBucketGridNativeRows (10 series x 51 rungs x 10 anchors
-// = 5,100, vs the 20,000,000 axis1 ceiling), a HIGH raw-row density alone
-// must still trip the density guard — proving `groups x anchors` was never
-// a complete cost model on its own (this file's header doc's own "A
-// genuinely separate finding"). 35,000 raw rows x 50-finite-bound width^2
-// (2,500) = 87,500,000 density-marginal units, comfortably past
-// maxRangeBucketGridNativeDensityUnits (85,000,000) even before adding the
-// (here trivial) groups x anchors term — see
-// range_bucket_grid_native_bound.go's own "Density guard" doc for the real
-// ClickHouse calibration this is grounded in.
+// issue #2665's own regression pin, replacing the pre-#2665 shape that used
+// to cross the old 85,000,000 ceiling: real ClickHouse 25.9-alpine
+// measurement WITH the spill settings internal/engine/spill.go's
+// applySpillSettings stamps on every real query found a genuine
+// MEMORY_LIMIT_EXCEEDED cliff for this exact shape between 480,306,000
+// (safe) and 510,306,000 (OOM) cost units — see
+// range_bucket_grid_native_bound.go's own "Issue #2665 recalibration" doc.
+// 60 series x 51 rungs x 100 anchors = 306,000 groups x anchors (trivial vs
+// the 25,000,000 axis1 ceiling) at 3,400 rows/series (204,000 raw rows) x
+// 50-finite-bound width^2 (2,500) = 510,000,000 density-marginal units,
+// totalling 510,306,000 — the exact real-OOM shape, comfortably past the
+// new maxRangeBucketGridNativeDensityUnits (400,000,000).
 func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
@@ -411,9 +453,9 @@ func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *tes
 		t.Fatalf("enable experimental: %v", err)
 	}
 
-	const seriesCount = 10
-	const numAnchors = 10 // groups x anchors = 10 * 51 * 10 = 5,100, trivial vs the 20,000,000 axis1 ceiling
-	const rowsPerSeries = 3_500
+	const seriesCount = 60
+	const numAnchors = 100 // groups x anchors = 60 * 51 * 100 = 306,000, trivial vs the 25,000,000 axis1 ceiling
+	const rowsPerSeries = 3_400
 	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
 		seriesCount, rowsPerSeries, gridNativeBoundBoundsCount, seedStart)
@@ -435,7 +477,7 @@ func TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity(t *tes
 
 // TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity is the
 // negative control for TestRangeBucketGridNativeBound_DensityGuardThrowsOnHighRawRowDensity:
-// the IDENTICAL groups x anchors shape (5,100), but floor raw-row density
+// the IDENTICAL groups x anchors shape (306,000), but floor raw-row density
 // (2 rows/series, matching seedGridNativeSeries' own floor) — must NOT trip
 // either guard, proving the density guard's rejection above is really the
 // density term firing and not some unrelated failure this emitter's SQL
@@ -449,8 +491,8 @@ func TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity(t *testin
 		t.Fatalf("enable experimental: %v", err)
 	}
 
-	const seriesCount = 10
-	const numAnchors = 10
+	const seriesCount = 60
+	const numAnchors = 100
 	const rowsPerSeries = 2
 	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
@@ -471,22 +513,34 @@ func TestRangeBucketGridNativeBound_DensityGuardPassesLowRawRowDensity(t *testin
 	}
 }
 
-// TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape
-// is a CI-speed-scaled reproduction of issue #2523's own reference
-// real-ClickHouse finding: test/perf/nightly/sentinels.go's
-// classic_histogram_quantile_by_route sentinel's real shape (3,741 series,
-// 11 finite ExplicitBounds -- 12 rungs -- 60 anchors, ~350 samples/series)
-// genuinely OOMs real ClickHouse at `groups x anchors` = 2,693,520,
-// comfortably UNDER maxRangeBucketGridNativeRows (20,000,000) — the exact
-// gap this file's density guard exists to close. This test keeps the SAME
-// 12-rung layout (boundsCount=11, matching the real sentinel's own
-// ExplicitBounds width) and a `groups x anchors` an order of magnitude
-// below the axis1 ceiling, scaled down from 3,741 series to 100 (fast to
-// seed) while keeping enough raw rows to cross the density guard's own
-// threshold at that width — see range_bucket_grid_native_bound.go's own
-// "Density guard" doc for why 11-finite-bound rows need roughly 700,000+
-// of them to independently cross maxRangeBucketGridNativeDensityUnits.
-func TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape(t *testing.T) {
+// TestRangeBucketGridNativeBound_DensityGuardPassesRealisticProductionDensity
+// is issue #2665's own regression pin, and a deliberate reversal of what
+// this test asserted before #2665: it used to be a CI-speed-scaled
+// reproduction of issue #2523's own reference real-ClickHouse finding that
+// test/perf/nightly/sentinels.go's classic_histogram_quantile_by_route
+// sentinel's real shape (3,741 series, 11 finite ExplicitBounds -- 12 rungs
+// -- 60 anchors, ~350 samples/series, 161,124,870 cost units) genuinely
+// OOMs real ClickHouse — but #2665's own real-ClickHouse re-measurement
+// WITH the spill settings internal/engine/spill.go's applySpillSettings
+// stamps on every real production query (which the original #2523
+// calibration never applied — see range_bucket_grid_native_bound.go's own
+// "Issue #2665 recalibration" doc) found that exact reference density is
+// actually SAFE under real production execution: 20.2% of the 1 GiB cap,
+// 2.6s. This test now pins that finding as a forward regression guard: if a
+// future change makes this shape start throwing again, that is itself the
+// signal to investigate, not an assumption inherited from #2523's own
+// (now-superseded) spill-less measurement.
+//
+// This test keeps the SAME 12-rung layout (boundsCount=11, matching the
+// real sentinel's own ExplicitBounds width) and a `groups x anchors` an
+// order of magnitude below the axis1 ceiling, scaled down from 3,741
+// series to 100 (fast to seed) while keeping the SAME 350-samples/series
+// density the real reference shape carries, so the emitted `costUnits`
+// exactly matches the real 161,124,870 the doc cites (100 series is a pure
+// GROUP scale-down; density units scale off the same rows/series ratio and
+// the same width, so the guard's own arithmetic sees the identical density
+// pressure regardless of absolute series count).
+func TestRangeBucketGridNativeBound_DensityGuardPassesRealisticProductionDensity(t *testing.T) {
 	db := chsqltest.OpenIsolatedChDB(t)
 	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
 		t.Fatalf("ddl: %v", err)
@@ -497,10 +551,10 @@ func TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape(t 
 
 	const seriesCount = 100
 	const boundsCount = 11 // matches classic_histogram_quantile_by_route's own 11 finite bounds (12 rungs)
-	const numAnchors = 20  // groups x anchors = 100 * 12 * 20 = 24,000, trivial vs the 20,000,000 axis1 ceiling
+	const numAnchors = 20  // groups x anchors = 100 * 12 * 20 = 24,000, trivial vs the 25,000,000 axis1 ceiling
 	const rowsPerSeries = 7_500
 	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	seedGridNativeDensity(t, func(s string) error { _, err := db.Exec(s); return err },
+	seedGridNativeDensityTwoTS(t, func(s string) error { _, err := db.Exec(s); return err },
 		seriesCount, rowsPerSeries, boundsCount, seedStart)
 
 	start := seedStart
@@ -527,12 +581,88 @@ func TestRangeBucketGridNativeBound_DensityGuardReproducesKnownDangerousShape(t 
 		t.Fatalf("emit: %v", err)
 	}
 
-	_, err = db.Query(sqlStr, args...)
-	if err == nil {
-		t.Fatal("expected the density guard's throwIf to fire for the scaled #2486/#2408 reference density, got no error")
+	rows, err := db.Query(sqlStr, args...)
+	if err != nil {
+		t.Fatalf("real #2486/#2408 reference density query unexpectedly failed (issue #2665 regression): %v", err)
 	}
-	if !strings.Contains(err.Error(), chsql.RangeBucketGridNativeDensityBudgetMessage) {
-		t.Errorf("query failed, but not with the expected DENSITY guard message %q: %v",
-			chsql.RangeBucketGridNativeDensityBudgetMessage, err)
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected at least one row from the realistic-production-density query")
+	}
+}
+
+// TestRangeBucketGridNativeBound_DensityGuardPassesReported2651ShapeAtRealisticDensity
+// is issue #2665's own direct regression pin: the exact #2651 production
+// shape (3,962 series x 16 rungs) at 110 rows/series over a 315-anchor
+// window (118,027,980 cost units) — a density the OLD 85,000,000
+// maxRangeBucketGridNativeDensityUnits would have rejected — must NOT trip
+// the density guard under the new 400,000,000 ceiling. See
+// range_bucket_grid_native_bound.go's own "Issue #2665 recalibration" doc:
+// real ClickHouse measurement of this exact point (WITH the spill settings
+// every real production query gets) found it safe at 38.5% of the 1 GiB
+// cap.
+func TestRangeBucketGridNativeBound_DensityGuardPassesReported2651ShapeAtRealisticDensity(t *testing.T) {
+	db := chsqltest.OpenIsolatedChDB(t)
+	if _, err := db.Exec(rangeBucketGridNativeBoundDDL); err != nil {
+		t.Fatalf("ddl: %v", err)
+	}
+	if _, err := db.Exec("SET allow_experimental_time_series_aggregate_functions = 1"); err != nil {
+		t.Fatalf("enable experimental: %v", err)
+	}
+
+	const seriesCount = 3_962
+	const boundsCount = 15 // 15 finite bounds + Inf = 16 rungs, matching the #2651 report
+	const numAnchors = 315 // the #2651 report's own ordinary dashboard window
+	const rowsPerSeries = 110
+	seedStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedGridNativeDensityTwoTS(t, func(s string) error { _, err := db.Exec(s); return err },
+		seriesCount, rowsPerSeries, boundsCount, seedStart)
+
+	start := seedStart
+	step := time.Minute
+	end := start.Add(time.Duration(numAnchors-1) * step)
+	node := &chplan.RangeBucketGridNative{
+		Input: &chplan.Scan{
+			Table:   "otel_metrics_histogram",
+			Columns: []string{"SeriesID", "TimeUnix", "BucketCounts", "ExplicitBounds"},
+		},
+		Start:             start,
+		End:               end,
+		Step:              step,
+		Range:             5 * time.Minute,
+		GroupBy:           []chplan.Expr{&chplan.ColumnRef{Name: "SeriesID"}},
+		GroupByAliases:    []string{"SeriesID"},
+		AnchorAlias:       "anchor_ts",
+		TimestampCol:      "TimeUnix",
+		BucketCountsCol:   "BucketCounts",
+		ExplicitBoundsCol: "ExplicitBounds",
+	}
+	sqlStr, args, err := chsql.Emit(context.Background(), node)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	rows, err := db.Query(sqlStr, args...)
+	if err != nil {
+		t.Fatalf("#2651 shape at realistic (110 rows/series) density unexpectedly failed "+
+			"(issue #2665 regression): %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected at least one row from the #2651-shape/realistic-density query")
 	}
 }

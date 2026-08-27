@@ -153,6 +153,9 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 		ctxLateMatShape:        ctxLMShape,
 		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
 		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
+
+		rangeBucketGridNativeMaxRows:         rangeBucketGridNativeMaxRowsFromCtx(ctx),
+		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -298,6 +301,15 @@ type emitter struct {
 	// hasn't threaded the new config through internal/engine at all) sees
 	// byte-identical SQL to before this field existed.
 	deltaPrefixReadEnabled bool
+
+	// rangeBucketGridNativeMaxRows / rangeBucketGridNativeMaxDensityUnits
+	// are RangeBucketGridNative's own two resource-bound ceilings (axis1 /
+	// axis2), resolved from ctx once here — see
+	// rangeBucketGridNativeMaxRowsFromCtx / …MaxDensityUnitsFromCtx and
+	// range_bucket_grid_native_bound.go's own "Operator override" doc for
+	// why these are ctx-threaded rather than plain package consts.
+	rangeBucketGridNativeMaxRows         int64
+	rangeBucketGridNativeMaxDensityUnits int64
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the

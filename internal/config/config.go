@@ -157,6 +157,42 @@ type Config struct {
 	// doc for the same reasoning).
 	DeltaPrefixReadEnabled bool
 
+	// RangeBucketGridNativeMaxRows (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS)
+	// overrides axis1 of internal/chsql's RangeBucketGridNative resource
+	// bound (maxRangeBucketGridNativeRows) — the groups-times-anchors
+	// ceiling protecting the ClickHouse-native classic-histogram rate
+	// grid. 0 (unset) leaves chsql on its own real-ClickHouse-calibrated
+	// default (see internal/chsql/range_bucket_grid_native_bound.go's own
+	// doc for the calibration this default is grounded in, and its
+	// "Operator override" section for the full tradeoff of raising this
+	// above the shipped default without equivalent real-ClickHouse
+	// evidence). Threaded onto the emit context via
+	// chsql.WithRangeBucketGridNativeMaxRows, mirroring
+	// DeltaPrefixLookback's own ctx-threading shape above for the
+	// identical ".go-arch-lint.yml: chsql may not import internal/config"
+	// reason.
+	//
+	// Exists because this exact resource bound has already needed a real
+	// production deployment's traffic to force a mid-release recalibration
+	// TWICE (issue #2651/#2653 for this axis, issue #2665 for axis2 below)
+	// — each time requiring a full code change + PR + release cycle before
+	// the affected deployment's own traffic could be unblocked. This knob
+	// lets an operator raise (or lower) the bound immediately while a
+	// proper recalibration, if warranted, follows through the normal PR
+	// process.
+	RangeBucketGridNativeMaxRows int64
+
+	// RangeBucketGridNativeMaxDensityUnits
+	// (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS) is
+	// RangeBucketGridNativeMaxRows's own twin for axis2
+	// (maxRangeBucketGridNativeDensityUnits, the density-weighted
+	// `(groups x anchors) + (rawRows x width^2)` bound) — same override
+	// mechanism, same rationale, same real-ClickHouse-evidence tradeoff
+	// documented in range_bucket_grid_native_bound.go's own "Operator
+	// override" section. Issue #2665 is the incident that motivated both
+	// this field and its sibling above.
+	RangeBucketGridNativeMaxDensityUnits int64
+
 	// Logs is the OTel logs schema (table + columns the Loki API reads).
 	// Defaults to schema.DefaultOTelLogs() with any CERBERUS_SCHEMA_LOGS_*
 	// env overrides applied.
@@ -735,6 +771,8 @@ const (
 	envPromMetadataLookback     = "CERBERUS_PROM_METADATA_LOOKBACK"
 	envDeltaPrefixLookback      = "CERBERUS_DELTA_PREFIX_LOOKBACK"
 	envDeltaPrefixReadEnabled   = "CERBERUS_DELTA_PREFIX_READ_ENABLED"
+	envRBGNMaxRows              = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS"
+	envRBGNMaxDensityUnits      = "CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS"
 	envDebugPProf               = "CERBERUS_DEBUG_PPROF"
 	envTempoStructuralTwoPhase  = "CERBERUS_TEMPO_STRUCTURAL_TWO_PHASE"
 	envAutoCreateSchema         = "CERBERUS_AUTO_CREATE_SCHEMA"
@@ -878,6 +916,14 @@ const configFileBaseName = "cerberus"
 //	    closed window that diverges from PromQL on grid-aligned data). compose /
 //	    e2e run 26.5, ABOVE this floor, so the native path is genuinely exercised
 //	    there; on servers below 25.6 the native query 500s with UNKNOWN_FUNCTION
+//	CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS default 25000000 — overrides
+//	    internal/chsql's RangeBucketGridNative axis1 resource bound (groups x
+//	    anchors). 0 coerces to the default, with a startup warning; raising
+//	    this above the default forfeits the real-ClickHouse calibration
+//	    backing it — see Config.RangeBucketGridNativeMaxRows's own doc.
+//	CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS default 400000000 —
+//	    axis2's own twin (the density-weighted `(groups x anchors) + (rawRows
+//	    x width^2)` bound); same override contract.
 //	CERBERUS_LOG_COMMENT_SHAPE     default "false" — stamp a compact, literal-
 //	    free cerberus shape id into ClickHouse log_comment so query_log rows
 //	    cluster by normalized_query_hash + log_comment. Result-neutral, safe
@@ -983,6 +1029,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v)
+	if err != nil {
+		return Config{}, err
+	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -1054,13 +1104,15 @@ func FromEnv() (Config, error) {
 		extra:           surface.ch,
 	})
 	return Config{
-		HTTPAddr:               getString(v, envHTTPAddr),
-		HTTPServer:             surface.httpServer,
-		LokiTailWriteTimeout:   surface.lokiTailWriteTimeout,
-		PromMetadataLookback:   surface.promMetadataLookback,
-		DeltaPrefixLookback:    deltaPrefixLookback,
-		DeltaPrefixReadEnabled: deltaPrefixReadEnabled,
-		ClickHouse:             chCfg,
+		HTTPAddr:                             getString(v, envHTTPAddr),
+		HTTPServer:                           surface.httpServer,
+		LokiTailWriteTimeout:                 surface.lokiTailWriteTimeout,
+		PromMetadataLookback:                 surface.promMetadataLookback,
+		DeltaPrefixLookback:                  deltaPrefixLookback,
+		DeltaPrefixReadEnabled:               deltaPrefixReadEnabled,
+		RangeBucketGridNativeMaxRows:         rbgnMaxRows,
+		RangeBucketGridNativeMaxDensityUnits: rbgnMaxDensityUnits,
+		ClickHouse:                           chCfg,
 		// Resolved through the file-aware lookup rather than os.Getenv so the
 		// read-side schema shape obeys a cerberus.yaml exactly as the rest of
 		// the surface does — internal/schema owns these defaults, so they never
@@ -1139,6 +1191,8 @@ var allEnvKeys = []string{
 	envPromMetadataLookback,
 	envDeltaPrefixLookback,
 	envDeltaPrefixReadEnabled,
+	envRBGNMaxRows,
+	envRBGNMaxDensityUnits,
 	envDebugPProf,
 	envTempoStructuralTwoPhase,
 	envAutoCreateSchema,
@@ -1299,11 +1353,11 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envHTTPMaxBodyBytes, defaultHTTPMaxBodyBytes)
 	v.SetDefault(envLokiTailWriteTO, defaultLokiTailWriteTimeout.String())
 	v.SetDefault(envPromMetadataLookback, defaultPromMetadataLookback.String())
-	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
-	// The query-path DELTA-prefix aggregate mechanism is OFF by default —
-	// see Config.DeltaPrefixReadEnabled's doc for why this must stay a
-	// separate, later, operator-verified opt-in from schema provisioning.
-	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
+	// Grouped into one call — see setDeltaPrefixAndRBGNDefaults's own doc —
+	// purely to keep this function under golangci-lint's funlen cap; the
+	// four defaults have no relationship to each other beyond being set at
+	// this point in newDefaults's own sequence.
+	setDeltaPrefixAndRBGNDefaults(v)
 	// pprof is OFF by default — the profiling surface is opt-in only.
 	v.SetDefault(envDebugPProf, false)
 	v.SetDefault(envTempoStructuralTwoPhase, true)
@@ -1338,6 +1392,23 @@ func newDefaults() *viper.Viper {
 	setAdmitDefaults(v)
 	v.SetDefault(envEnabledHeads, defaultEnabledHeads)
 	return v
+}
+
+// setDeltaPrefixAndRBGNDefaults seeds the DELTA-prefix reconstruction
+// defaults and the RangeBucketGridNative resource-bound override defaults
+// together. Extracted from newDefaults purely to keep that function under
+// golangci-lint's funlen cap (mirrors setCHOptDefaults's / setAdmitDefaults's
+// own established precedent just below) — the four defaults are otherwise
+// unrelated, grouped only by having been added to newDefaults at
+// consecutive points in its history.
+func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
+	v.SetDefault(envDeltaPrefixLookback, defaultDeltaPrefixLookback.String())
+	// The query-path DELTA-prefix aggregate mechanism is OFF by default —
+	// see Config.DeltaPrefixReadEnabled's doc for why this must stay a
+	// separate, later, operator-verified opt-in from schema provisioning.
+	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
+	v.SetDefault(envRBGNMaxRows, defaultRBGNMaxRows)
+	v.SetDefault(envRBGNMaxDensityUnits, defaultRBGNMaxDensityUnits)
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
@@ -1614,6 +1685,90 @@ func resolveQueryMaxSamples(n int64) (int64, error) {
 	default:
 		return 0, fmt.Errorf("%s: must be > 0, 0 (use default), or -1 (disable); got %d", envQueryMaxSamples, n)
 	}
+}
+
+// defaultRBGNMaxRows / defaultRBGNMaxDensityUnits mirror
+// internal/chsql's own maxRangeBucketGridNativeRows (25,000,000) /
+// maxRangeBucketGridNativeDensityUnits (400,000,000) — kept as independent
+// constants, the same duplication defaultDeltaPrefixLookback's own doc
+// already establishes the precedent for (chsql may not import
+// internal/config; see .go-arch-lint.yml), so Config.RangeBucketGridNativeMaxRows
+// / Config.RangeBucketGridNativeMaxDensityUnits resolve to the SAME
+// real-ClickHouse-calibrated values chsql itself falls back to when
+// nothing threads a ctx override at all. See
+// internal/chsql/range_bucket_grid_native_bound.go's own calibration doc
+// for the real evidence grounding both numbers, and its "Operator
+// override" section for why raising either above these defaults forfeits
+// that evidence.
+const (
+	defaultRBGNMaxRows         int64 = 25_000_000
+	defaultRBGNMaxDensityUnits int64 = 400_000_000
+)
+
+// resolveRBGNMaxRows / resolveRBGNMaxDensityUnits map the raw
+// CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS /
+// …MAX_DENSITY_UNITS values to the bound cerberus actually enforces,
+// mirroring resolveQueryMaxSamples' own "0 coerces to the default, with a
+// warning; negative is rejected" contract — unlike
+// CERBERUS_QUERY_MAX_SAMPLES there is no legitimate "disable this guard"
+// sentinel here (a resource-safety bound has no meaningful off state: see
+// range_bucket_grid_native_bound.go's own "Operator override" doc), so
+// this is the simpler two-branch form.
+func resolveRBGNMaxRows(n int64) (int64, error) {
+	switch {
+	case n > 0:
+		return n, nil
+	case n == 0:
+		slog.Default().Warn(
+			"CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS=0 does not disable the resource bound; coercing to the default.",
+			"env", envRBGNMaxRows,
+			"applied", defaultRBGNMaxRows,
+		)
+		return defaultRBGNMaxRows, nil
+	default:
+		return 0, fmt.Errorf("%s: must be >= 0 (0 uses the default); got %d", envRBGNMaxRows, n)
+	}
+}
+
+func resolveRBGNMaxDensityUnits(n int64) (int64, error) {
+	switch {
+	case n > 0:
+		return n, nil
+	case n == 0:
+		slog.Default().Warn(
+			"CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS=0 does not disable the resource bound; coercing to the default.",
+			"env", envRBGNMaxDensityUnits,
+			"applied", defaultRBGNMaxDensityUnits,
+		)
+		return defaultRBGNMaxDensityUnits, nil
+	default:
+		return 0, fmt.Errorf("%s: must be >= 0 (0 uses the default); got %d", envRBGNMaxDensityUnits, n)
+	}
+}
+
+// rbgnBoundsFromEnv reads + resolves both RangeBucketGridNative override
+// env vars together — factored out of FromEnv purely to keep that
+// function under golangci-lint's funlen cap; the two values have no
+// relationship to each other beyond being read at the same point in
+// FromEnv's own sequence.
+func rbgnBoundsFromEnv(v *viper.Viper) (maxRows, maxDensityUnits int64, err error) {
+	rowsRaw, err := getInt64(v, envRBGNMaxRows)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxRows, err = resolveRBGNMaxRows(rowsRaw)
+	if err != nil {
+		return 0, 0, err
+	}
+	densityRaw, err := getInt64(v, envRBGNMaxDensityUnits)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxDensityUnits, err = resolveRBGNMaxDensityUnits(densityRaw)
+	if err != nil {
+		return 0, 0, err
+	}
+	return maxRows, maxDensityUnits, nil
 }
 
 // defaultQueryTimeout is the default per-query wall-clock execution cap:

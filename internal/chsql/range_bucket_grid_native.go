@@ -286,7 +286,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	// aggregate, rather than downstream of it the way lwrFanoutBoundedSourceFrag's
 	// usual placement would put it.
 	axis1Guarded := bucketGridGroupCountBoundedSourceFrag(
-		rungs.Frag(), keyCols, r.NumAnchors(), maxRangeBucketGridNativeRows, RangeBucketGridNativeBudgetMessage,
+		rungs.Frag(), keyCols, r.NumAnchors(), e.rangeBucketGridNativeMaxRows, RangeBucketGridNativeBudgetMessage,
 	)
 	// Density guard (issue #2523) — a SECOND, independent bound layered on
 	// top of axis1Guarded: see range_bucket_grid_native_bound.go's own doc
@@ -304,7 +304,7 @@ func (e *emitter) emitRangeBucketGridNative(r *chplan.RangeBucketGridNative) err
 	densityGuarded := bucketGridDensityBoundedSourceFrag(
 		axis1Guarded, rungs.Frag(), keyCols, inner, r.TimestampCol, r.ExplicitBoundsCol,
 		r.Start, r.End, offsetNS, r.Range.Nanoseconds(), r.NumAnchors(),
-		maxRangeBucketGridNativeDensityUnits, RangeBucketGridNativeDensityBudgetMessage,
+		e.rangeBucketGridNativeMaxDensityUnits, RangeBucketGridNativeDensityBudgetMessage,
 	)
 	grids := NewQuery().From(densityGuarded)
 	grids.Select(keyCols...)

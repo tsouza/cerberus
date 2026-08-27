@@ -71,3 +71,72 @@ func TestRangeBucketGridNativeBound_AxisOneHasSentinelHeadroom(t *testing.T) {
 			maxRangeBucketGridNativeRows, sentinelReferenceGroups, got, minSentinelGroupHeadroomAnchors)
 	}
 }
+
+// sentinelReferenceDensityCostUnits is the real #2486/#2408 reference
+// density point range_bucket_grid_native_bound.go's own "Density guard" doc
+// has cited since issue #2523: test/perf/nightly's own
+// classic_histogram_quantile_by_route sentinel shape (3,741 series x 12
+// rungs x 60 anchors, 2,693,520 groups x anchors) at its own real
+// ~350-samples/series reference density (1,309,350 raw rows, 11-finite-bound
+// width) — `2,693,520 + 1,309,350 x 11^2 = 161,124,870`. Duplicated here as
+// a plain arithmetic constant for the same reason sentinelReferenceGroups
+// is: test/perf/nightly is an integration package this internal package
+// cannot depend on, and this test exists to catch a regression in the
+// CONSTANT below, not to exercise the sentinel itself.
+const sentinelReferenceDensityCostUnits = 161_124_870
+
+// minDensityHeadroomRatio is the minimum multiple of
+// sentinelReferenceDensityCostUnits that maxRangeBucketGridNativeDensityUnits
+// must stay above.
+//
+// Issue #2665's own real production incident is the reason this floor
+// exists: the pre-#2665 85,000,000 ceiling left this exact reference point
+// NO real headroom at all — 85,000,000 < 161,124,870, so the guard rejected
+// the file's own established reference density outright — while real
+// ClickHouse 25.9-alpine measurement WITH the spill settings every real
+// production query gets (internal/engine/spill.go's applySpillSettings)
+// found that same reference point genuinely safe at only 20.2% of the 1 GiB
+// cap (see range_bucket_grid_native_bound.go's own "Issue #2665
+// recalibration" doc). The new 400,000,000 ceiling gives this reference
+// point 2.48x headroom; 2.0 is chosen as the floor a future recalibration
+// must not silently erode below — comfortably under the real 2.48x this fix
+// establishes, but still catching a regression that would put the guard
+// back within a hair's breadth of rejecting the reference shape the way the
+// old 85,000,000 ceiling did.
+const minDensityHeadroomRatio = 2.0
+
+// TestRangeBucketGridNativeBound_DensityAxisHasSentinelHeadroom is issue
+// #2665's own forward guard, mirroring
+// TestRangeBucketGridNativeBound_AxisOneHasSentinelHeadroom's own shape for
+// axis1: a FUTURE recalibration of maxRangeBucketGridNativeDensityUnits (for
+// an unrelated reason, e.g. tightening it back down after some other
+// finding) that silently drops this guard's real capacity below what the
+// file's own established reference density needs must fail loudly here,
+// rather than only being caught the next time a real production deployment
+// hits the guard the way #2665 itself did.
+//
+// Deliberately NOT chDB/real-ClickHouse-gated — pure plan-time arithmetic,
+// same rationale as TestRangeBucketGridNativeBound_AxisOneHasSentinelHeadroom's
+// own doc.
+//
+// This does NOT replace real-ClickHouse recalibration when the constant
+// legitimately needs to move (see range_bucket_grid_native_bound.go's own
+// "Recalibrate by binary search..." doc, WITH the spill settings this
+// issue's own root-cause finding requires) — it only catches an UNREVIEWED
+// regression. A deliberate, evidence-backed lowering of
+// maxRangeBucketGridNativeDensityUnits should update minDensityHeadroomRatio
+// in the same change, with the same kind of real-ClickHouse citation this
+// file's header comment already requires.
+func TestRangeBucketGridNativeBound_DensityAxisHasSentinelHeadroom(t *testing.T) {
+	got := float64(maxRangeBucketGridNativeDensityUnits) / float64(sentinelReferenceDensityCostUnits)
+	if got < minDensityHeadroomRatio {
+		t.Fatalf("maxRangeBucketGridNativeDensityUnits (%d) / sentinelReferenceDensityCostUnits (%d) = "+
+			"%.2fx headroom, below minDensityHeadroomRatio (%.2f) — issue #2665 found this guard's real "+
+			"safety margin can leave the file's own established reference density with NO headroom at all "+
+			"(recalibrate against a real ClickHouse, WITH the production spill settings, per this file's own "+
+			"header doc before lowering maxRangeBucketGridNativeDensityUnits, and update "+
+			"minDensityHeadroomRatio deliberately alongside it if the new value is a reviewed, "+
+			"evidence-backed choice rather than an accidental regression)",
+			maxRangeBucketGridNativeDensityUnits, sentinelReferenceDensityCostUnits, got, minDensityHeadroomRatio)
+	}
+}
