@@ -1303,14 +1303,25 @@ async function scenarioRouteMemoActivation() {
   log('  fault: driving the pinned 24h/15s memory-cap query_range shape to force a route-A resource failure...');
   let lastStatus = null;
   let sawMemoryLimit422 = false;
+  const scenarioStartMs = Date.now();
+  let consecutive422 = 0;
+  let maxConsecutive422 = 0;
   const activated = await pollUntil(
-    async () => {
+    async (attempt) => {
+      const reqStartMs = Date.now();
       const r = await httpGet(path, { timeoutMs: 30_000 });
+      const elapsedSinceStart = ((Date.now() - scenarioStartMs) / 1000).toFixed(1);
+      const reqDurationMs = Date.now() - reqStartMs;
       lastStatus = r.status;
       if (r.status === 422) {
         sawMemoryLimit422 = true;
+        consecutive422 += 1;
+        maxConsecutive422 = Math.max(maxConsecutive422, consecutive422);
+        log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=422 consecutive=${consecutive422}`);
         return false; // route A hit the cap; keep polling for the memo's A->B rescue
       }
+      log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=${r.status} consecutive422-was=${consecutive422}`);
+      consecutive422 = 0;
       if (r.status !== 200) return false;
       const successB = await queryBreakerMetric(
         'cerberus_route_ab_success_total{cerberus_route_choice="b"}',
@@ -1321,6 +1332,7 @@ async function scenarioRouteMemoActivation() {
     },
     { deadlineMs: ROUTE_MEMO_ACTIVATION_DEADLINE_MS, intervalMs: ROUTE_MEMO_POLL_INTERVAL_MS, label: 'route-memo-activation' },
   );
+  log(`    [timing-diag] maxConsecutive422=${maxConsecutive422}`);
 
   if (activated) {
     log('    cerberus_route_ab_success_total{cerberus_route_choice="b"} climbed — a real route-A resource failure was rescued by a real route-B dispatch');
