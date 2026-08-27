@@ -46,6 +46,7 @@ func newRootCmd(runServer func() error) *cobra.Command {
 	root.AddCommand(newConfigDocsCmd())
 	root.AddCommand(newOptDocsCmd())
 	root.AddCommand(newRouteRulesCmd())
+	root.AddCommand(newAuditCmd())
 	return root
 }
 
@@ -105,6 +106,13 @@ func exitCodeForError(err error) int {
 	// exit code rather than inventing its own.
 	var dpgate deltaPrefixVerifyFailedError
 	if errors.As(err, &dpgate) {
+		return verifyExitFail
+	}
+	// `audit` finding an over-budget metric is the same class again: the tool
+	// worked and the answer is "no". Sharing verifyExitFail keeps "a gate said
+	// no" one code across every verb rather than one per verb.
+	var overBudget *auditOverBudgetError
+	if errors.As(err, &overBudget) {
 		return verifyExitFail
 	}
 	return 1
