@@ -640,13 +640,16 @@ FROM numbers(40)`
 // regardless of suite runtime, not to model real historical depth. That shape
 // is exactly wrong for route-memo-activation: cerberus's own solver shards a
 // wide `query_range` window by TIME SUB-RANGE (see internal/solver's K-way
-// split — kEff defaults to 3, CERBERUS_SHARD_PARALLEL, so each real shard
-// covers ~1/3 of the window, ~8h of this scenario's 24h pin, NOT the 3h an
-// earlier round of this investigation assumed), so proving the failure-driven
-// route memo's rescue actually works needs a query whose cost genuinely
-// scales with window width — an ~8h shard of the 24h window must read
-// meaningfully fewer rows than the unsliced 24h query, or there is nothing
-// for slicing to rescue.
+// split — K itself comes from planner.go's own N/MinAnchorsPerSlice/MaxK
+// arithmetic, NOT from CERBERUS_SHARD_PARALLEL, which governs dispatch
+// CONCURRENCY, a different quantity; issue #2670's real measurement found
+// K=8 for this scenario's pinned (24h, 15s) tuple, not the kEff=3 / ~8h-
+// shard figure an earlier round of this investigation assumed — see chaos-
+// overlay.env's own CERBERUS_CH_QUERY_MAX_MEMORY comment for the current
+// real numbers), so proving the failure-driven route memo's rescue
+// actually works needs a query whose cost genuinely scales with window
+// width — a shard of the 24h window must read meaningfully fewer rows than
+// the unsliced 24h query, or there is nothing for slicing to rescue.
 //
 // Measured directly (issue #2650's investigation) that neither a self-emitted
 // metric (cerberus_queries_total, which only has as much history as the
@@ -662,17 +665,18 @@ FROM numbers(40)`
 // insertion would only duplicate rows, not add coverage. The series count
 // is sized so the query's real per-row cost dominates its fixed per-shard
 // materialization overhead — at 48 series a 3h slice already cost 55% of the
-// full 24h read (measured); at 240 series an 8h slice (the real kEff=3
-// granularity) cost 37% of the full 24h read (13.53 of 36.66 MiB, measured)
-// — close to, but not quite at, the ideal 1/3 a fixed-overhead-free split
-// would give, and NOT YET separable at any CERBERUS_CH_QUERY_MAX_MEMORY value
-// (cap/3 > 13.53 MiB needs cap > 40.6 MiB, which is already above the full
-// query's own 36.66 MiB cost). 480 series is the next step in that same
-// direction. Re-verify the actual full-vs-8h-shard cost split empirically
-// before relying on any of these numbers — this comment states the DESIGN
-// INTENT and its measurement history, not a promise the exact ratio holds;
-// chaos-overlay.env's CERBERUS_CH_QUERY_MAX_MEMORY value is the thing that
-// must be sized from a real measurement on whatever series count lands here.
+// full 24h read (measured); at 240 series an 8h slice (assumed at the time
+// to be the real granularity — issue #2670 later found the real K for this
+// tuple is 8, not 3, and the memory apportionment kEff this overlay's own
+// small connection pool produces is 1, not K — see chaos-overlay.env's own
+// comment) cost 37% of the full 24h read (13.53 of 36.66 MiB, measured) —
+// close to, but not quite at, the ideal 1/3 a fixed-overhead-free split
+// would give. 480 series is the next step in that same direction. Re-verify
+// the actual full-vs-shard cost split empirically before relying on any of
+// these numbers — this comment states the DESIGN INTENT and its measurement
+// history, not a promise the exact ratio holds; chaos-overlay.env's
+// CERBERUS_CH_QUERY_MAX_MEMORY value is the thing that must be sized from a
+// real measurement on whatever series count lands here.
 //
 // AggregationTemporality=2 (CUMULATIVE, matching insertSumSQL's own
 // convention) — DELTA would route this metric through the DELTA-prefix
