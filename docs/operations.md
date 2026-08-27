@@ -227,8 +227,10 @@ did (under `auto`) without changing the wire body.
 typed error (first-error-wins, cause-threaded), never a partial body. The
 solver re-emits and re-executes per request — it never caches.
 
-The remaining `CERBERUS_SHARD_*` / `CERBERUS_SOLVER_TIMEOUT` knobs in the
-table above tune the shard count, concurrency, per-request output cap, and
+The remaining `CERBERUS_SHARD_*` / `CERBERUS_SOLVER_TIMEOUT` knobs — enumerated
+with their defaults in
+[`configuration.md`](configuration.md#schema-overrides-and-prometheus-resource-labels) —
+tune the shard count, concurrency, per-request output cap, and
 per-shard memory apportionment; their defaults are deliberately conservative
 against over-routing (Grafana's auto-step makes `rate[5m] @ 15s` hit `F=20`,
 which must NOT route at the default thresholds unless the total expansion is
@@ -1696,8 +1698,8 @@ selection between them:
   `config-docs`, `pr-body`, `link-check`, `forbid-skip` (which subsumes the
   soft-assert / escape-hatch / feature-discipline / should-skip scans),
   `forbid-deferral`, `forbid-sql-raw` and `forbid-chplan-fn-literal` (both
-  steps of `forbid-skip`), `quickstart`, `probe`, `chart-validate`,
-  `coverage`, `property`, and `strict-scan`. It is small and fast by
+  steps of `forbid-skip`), `update-golden-guard`, `quickstart`, `probe`,
+  `chart-validate`, `coverage`, `property`, and `strict-scan`. It is small and fast by
   construction: build/correctness basics and the discipline scans, with the
   substrate smoke lanes and every other cost-dominating lane deferred to the
   release gate below.
