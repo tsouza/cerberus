@@ -347,12 +347,10 @@ function kubectlOut(args) {
 }
 
 // dropClickHouseReadCaches clears the mark cache and uncompressed-block
-// cache server-side. See route-memo-activation's own use for why: a
-// repeated IDENTICAL query's real memory_usage is not stable across
-// executions — the first execution against cold caches decompresses and
-// loads marks for the full row set (counted against the query's own
-// max_memory_usage budget), while a cache HIT on a later identical
-// execution reuses already-decompressed blocks and costs measurably less.
+// cache server-side. Empirically ruled out as the route-memo-activation
+// flake's cause (dispatch 33050701126: identical fail pattern with caches
+// force-dropped before every attempt) but left in place since it is a
+// harmless no-op cost and keeps that variable eliminated going forward.
 // Never call this outside a test-only chaos manifest.
 function dropClickHouseReadCaches() {
   kubectl([
@@ -360,6 +358,26 @@ function dropClickHouseReadCaches() {
     'clickhouse-client', '--multiquery',
     '--query', 'SYSTEM DROP MARK CACHE; SYSTEM DROP UNCOMPRESSED CACHE;',
   ]);
+}
+
+// realQueryMemoryUsage looks up the most recent completed SELECT against
+// route_memo_probe_requests_total in ClickHouse's own system.query_log and
+// returns its real memory_usage in bytes (or null if none found yet — the
+// log flush is async). Diagnostic-only: settles empirically whether the
+// route-memo-activation query's real server-side cost is what changes
+// across repeated identical executions, rather than guessing from the
+// client-visible 200/422 status alone.
+function realQueryMemoryUsage() {
+  kubectl(['exec', 'deploy/clickhouse', '--', 'clickhouse-client', '--query', 'SYSTEM FLUSH LOGS']);
+  const out = kubectlOut([
+    'exec', 'deploy/clickhouse', '--',
+    'clickhouse-client', '--query',
+    "SELECT memory_usage FROM system.query_log WHERE type='QueryFinish' AND query_kind='Select' " +
+      "AND query ILIKE '%route_memo_probe_requests_total%' AND query NOT ILIKE '%system.query_log%' " +
+      'ORDER BY event_time_microseconds DESC LIMIT 1',
+  ]);
+  const n = Number(out);
+  return Number.isFinite(n) && out !== '' ? n : null;
 }
 
 // firstPodName — the name of the first pod matching a label selector, or
@@ -1330,14 +1348,16 @@ async function scenarioRouteMemoActivation() {
       const elapsedSinceStart = ((Date.now() - scenarioStartMs) / 1000).toFixed(1);
       const reqDurationMs = Date.now() - reqStartMs;
       lastStatus = r.status;
+      const memUsage = attempt <= 10 ? realQueryMemoryUsage() : null;
+      const memNote = memUsage !== null ? ` real_memory_usage=${memUsage}` : '';
       if (r.status === 422) {
         sawMemoryLimit422 = true;
         consecutive422 += 1;
         maxConsecutive422 = Math.max(maxConsecutive422, consecutive422);
-        log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=422 consecutive=${consecutive422}`);
+        log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=422 consecutive=${consecutive422}${memNote}`);
         return false; // route A hit the cap; keep polling for the memo's A->B rescue
       }
-      log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=${r.status} consecutive422-was=${consecutive422}`);
+      log(`    [timing-diag] attempt ${attempt} t=${elapsedSinceStart}s dur=${reqDurationMs}ms status=${r.status} consecutive422-was=${consecutive422}${memNote}`);
       consecutive422 = 0;
       if (r.status !== 200) return false;
       const successB = await queryBreakerMetric(
