@@ -131,6 +131,29 @@ type apiHeads struct {
 	consumers  chOptConsumers
 }
 
+// resolveIssue2667BoundOverrides resolves the five issue #2667
+// resource-bound safety-ceiling overrides run() threads into mountAPIHeads:
+// the three chsql sample-fanout knobs (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS
+// / CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS / CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS)
+// and the two PromQL-only histogram-merge cost-unit knobs
+// (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
+// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS, wired only onto the
+// prom head's Handler.ResourceBounds — see newPromHandler's own doc for why
+// LogQL/TraceQL never see it). Both resolutions share the same fail-fast
+// contract as buildSolver's own solver.ConfigFromEnv() above: a typo'd or
+// non-positive override aborts startup rather than silently falling back.
+func resolveIssue2667BoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+	resourceBounds, err := engine.ResourceBoundsFromEnv()
+	if err != nil {
+		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
+	}
+	promResourceBounds, err := promql.ResourceBoundsFromEnv()
+	if err != nil {
+		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
+	}
+	return resourceBounds, promResourceBounds, nil
+}
+
 // mountAPIHeads builds and mounts ONLY the query heads enabled by
 // CERBERUS_ENABLED_HEADS (default: all three) onto traceMux. A disabled head's
 // handler, per-head Client view, engine, and admit limiter are NEVER built and
@@ -536,24 +559,7 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	// Issue #2667: the three chsql sample-fanout resource-bound overrides
-	// (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS /
-	// CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS /
-	// CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS). Resolved once, fail-fast
-	// (a typo'd or non-positive value aborts startup), and threaded into
-	// mountAPIHeads — mirroring buildSolver's own solver.ConfigFromEnv()
-	// fail-fast pattern above.
-	resourceBounds, err := engine.ResourceBoundsFromEnv()
-	if err != nil {
-		return err
-	}
-	// Issue #2667: the PromQL-only histogram-merge cost-unit overrides
-	// (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
-	// CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS) — resolved
-	// alongside resourceBounds above with the same fail-fast contract, and
-	// wired only onto the prom head's Handler.ResourceBounds (see
-	// newPromHandler's own doc for why LogQL/TraceQL never see it).
-	promResourceBounds, err := promql.ResourceBoundsFromEnv()
+	resourceBounds, promResourceBounds, err := resolveIssue2667BoundOverrides()
 	if err != nil {
 		return err
 	}
