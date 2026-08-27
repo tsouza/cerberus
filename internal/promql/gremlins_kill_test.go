@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -584,5 +585,466 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName_FirstSlot(t *testing.
 	}
 	if strings.Contains(msg, "src_label_5") {
 		t.Fatalf("error %q contains the mutant param name %q", msg, "src_label_5")
+	}
+}
+
+// TestAbsentAttrsMap_ArgsSliceCapacityIsTight kills the ARITHMETIC_BASE
+// mutant at absent.go:473:43 inside absentAttrsMap's slice-capacity
+// hint:
+//
+//	args := make([]chplan.Expr, 0, len(pairs)*2)
+//
+// Each of the len(pairs) iterations below appends exactly 2 elements
+// (one LitString per key, one per value), so len(args) after the loop
+// is always len(pairs)*2 — matching the pre-allocated capacity exactly
+// (no growth). Flipping `*` to `/` shrinks the hint to len(pairs)/2,
+// forcing `append` to grow past it, which — per Go's amortized growth
+// schedule — lands on a capacity other than len(pairs)*2. Semantic-
+// level assertions (the emitted Map() args) pass under both branches;
+// only cap() distinguishes them, mirroring
+// TestLowerLabelJoin_SrcsSliceCapacityIsTight's own strategy for the
+// analogous label_fns.go:81:39 pair.
+func TestAbsentAttrsMap_ArgsSliceCapacityIsTight(t *testing.T) {
+	t.Parallel()
+
+	matchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchEqual, "job", "a"),
+		labels.MustNewMatcher(labels.MatchEqual, "instance", "b"),
+		labels.MustNewMatcher(labels.MatchEqual, "env", "c"),
+	}
+	got := absentAttrsMap(matchers)
+	fc, ok := got.(*chplan.FuncCall)
+	if !ok || fc.Fn != chplan.FnMap {
+		t.Fatalf("absentAttrsMap(3 equality matchers) = %#v, want a Map() FuncCall", got)
+	}
+
+	const wantPairs = 3
+	if got := len(fc.Args); got != wantPairs*2 {
+		t.Fatalf("len(Args) = %d; want %d (3 pairs * 2)", got, wantPairs*2)
+	}
+	// Original: cap == len(pairs)*2 == 6, exact fit.
+	// `/` mutant: cap starts at len(pairs)/2 == 1, then grows past it
+	// while appending 6 elements — never lands back on 6.
+	if got := cap(fc.Args); got != wantPairs*2 {
+		t.Fatalf("cap(Args) = %d; want %d (mutant `*` -> `/` at absent.go:473:43 would yield a different cap via forced regrowth)",
+			got, wantPairs*2)
+	}
+}
+
+// TestLowerSortByLabel_KeysSliceCapacityIsTight kills the two adjacent
+// mutants at sort.go:192:48 inside lowerSortByLabel's slice-capacity
+// hint:
+//
+//	keys := make([]chplan.OrderKey, 0, len(c.Args)-1)
+//
+// The `-` is ARITHMETIC_BASE (`-` -> `+`) and the literal `1` is the
+// INVERT_NEGATIVES sibling (`-1` -> `+1`) — both produce the identical
+// observable effect: cap == len(c.Args)+1 instead of len(c.Args)-1. The
+// loop appends exactly len(c.Args)-1 keys (one per label argument), so
+// the original capacity is an exact fit; both mutants over-allocate by
+// 2, and — because 0 <= len(c.Args)-1 <= len(c.Args)+1 — no growth is
+// ever triggered to mask the difference the way the absent.go case
+// above relies on regrowth to detect. cap() is checked directly.
+func TestLowerSortByLabel_KeysSliceCapacityIsTight(t *testing.T) {
+	t.Parallel()
+
+	// sort_by_label is experimental in the reference parser, unlike the
+	// double_exponential_smoothing call mustParseHoltWintersCall parses —
+	// but that helper's own EnableExperimentalFunctions parser covers it
+	// identically, so it is reused here instead of a third near-duplicate
+	// parser construction.
+	call := mustParseHoltWintersCall(t, `sort_by_label(up, "a", "b", "c")`)
+	s := schema.DefaultOTelMetrics()
+
+	plan, err := lowerSortByLabel(call, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lowerSortByLabel: %v", err)
+	}
+	ob, ok := plan.(*chplan.OrderBy)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.OrderBy", plan)
+	}
+
+	const wantKeys = 3 // "a", "b", "c"
+	if got := len(ob.Keys); got != wantKeys {
+		t.Fatalf("len(Keys) = %d; want %d", got, wantKeys)
+	}
+	// Original: cap == len(c.Args)-1 == 4-1 == 3, exact fit.
+	// Both mutants: cap == 4+1 == 5.
+	if got := cap(ob.Keys); got != wantKeys {
+		t.Fatalf("cap(Keys) = %d; want %d (mutants at sort.go:192:48 would yield cap=%d)",
+			got, wantKeys, len(call.Args)+1)
+	}
+}
+
+// TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath kills the
+// CONDITIONALS_BOUNDARY mutant at instant_fns.go:202:17, which flips
+//
+//	if len(c.Args) >= 1 {
+//
+// to `> 1`. Every VALID clamp/clamp_max/clamp_min call the parser
+// accepts always carries at least 2 arguments, so a real query can
+// never observe the boundary — the only way to reach it with exactly 1
+// argument is to hand-build the *parser.Call the way this test does,
+// bypassing the parser's own arity check (the same technique
+// TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName uses just
+// above).
+//
+// With exactly 1 histogram-valued argument: the original `>= 1` routes
+// through lowerExpHistogramArgAsCanonicalFloat and returns successfully
+// (ok=true short-circuits before the switch's own arg-count check ever
+// runs). The `> 1` mutant evaluates false for len==1, skips the
+// histogram routing entirely, and falls into the switch's
+// `len(c.Args) != 2` guard, erroring "clamp_max expects 2 arguments,
+// got 1" instead.
+func TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath(t *testing.T) {
+	t.Parallel()
+
+	histArg := mustParse(t, `demo_latency_exp_hist`)
+	call := &parser.Call{
+		Func: parser.MustGetFunction("clamp_max"),
+		Args: parser.Expressions{histArg},
+	}
+	s := schema.DefaultOTelMetrics()
+
+	plan, err := lowerClamp(call, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lowerClamp(clamp_max(<1 histogram arg>)): unexpected error %v "+
+			"(mutant `>= 1` -> `> 1` at instant_fns.go:202:17 would skip the histogram "+
+			"shortcut and fail the switch's arg-count check instead)", err)
+	}
+	if plan == nil {
+		t.Fatalf("lowerClamp returned a nil plan alongside a nil error")
+	}
+}
+
+// TestLowerClamp_EqualLiteralBoundsTakeComputedPath kills the
+// CONDITIONALS_BOUNDARY mutant at instant_fns.go:271:12, which flips
+//
+//	if maxB < minB {
+//
+// to `<= `. Prom's funcClamp only short-circuits to an empty vector
+// when max is STRICTLY less than min; `clamp(v, 5, 5)` (equal bounds)
+// is a normal, non-degenerate clamp that pins every sample to exactly
+// 5 via greatest(min, least(max, v)). The `<=` mutant would treat the
+// equal-bounds case as degenerate too, returning the zero-row
+// `Filter{Predicate: false}` shape instead of the computed
+// greatest/least projection.
+func TestLowerClamp_EqualLiteralBoundsTakeComputedPath(t *testing.T) {
+	t.Parallel()
+
+	expr := mustParse(t, `clamp(up, 5, 5)`)
+	s := schema.DefaultOTelMetrics()
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower(clamp(up, 5, 5)): %v", err)
+	}
+
+	// The degenerate-bounds shape is a *chplan.Filter with a literal
+	// `false` predicate sitting directly at the root (see the maxB <
+	// minB branch in instant_fns.go). The non-degenerate path instead
+	// returns whatever guardedValueProjection built (a *chplan.Project
+	// for a plain single-name selector like `up`), never a bare
+	// constant-false Filter.
+	if f, ok := plan.(*chplan.Filter); ok {
+		if lb, ok := f.Predicate.(*chplan.LitBool); ok && !lb.V {
+			t.Fatalf("clamp(up, 5, 5) lowered to the degenerate-bounds empty Filter %#v; "+
+				"want the computed greatest/least projection (mutant `<` -> `<=` at "+
+				"instant_fns.go:271:12 would treat equal bounds as degenerate)", f)
+		}
+	}
+	if _, ok := plan.(*chplan.Project); !ok {
+		t.Fatalf("plan = %T, want *chplan.Project (guardedValueProjection's shape for a "+
+			"plain single-name selector)", plan)
+	}
+}
+
+// TestLowerInfo_ArgCountRejectsOutOfRange kills the INVERT_LOGICAL
+// mutant at info_fn.go:83:21, which flips
+//
+//	if len(c.Args) < 1 || len(c.Args) > 2 {
+//
+// to `&&`. No integer argument count can be simultaneously < 1 AND >
+// 2, so the mutant's conjunction is always false — it would accept
+// ANY argument count, including 0, silently skipping the validation
+// that guards `c.Args[0]` from an out-of-range index a few lines
+// below. A 0-argument info() call can only be constructed by hand
+// (the parser itself enforces info()'s 1-or-2-argument signature), so
+// this test bypasses the parser the same way the other hand-built-AST
+// tests in this file do.
+func TestLowerInfo_ArgCountRejectsOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	call := &parser.Call{
+		Func: parser.MustGetFunction("info"),
+		Args: parser.Expressions{},
+	}
+	s := schema.DefaultOTelMetrics()
+
+	_, err := lowerInfo(call, s, lowerCtx{})
+	if err == nil {
+		t.Fatalf("expected info() with 0 arguments to error; got nil " +
+			"(mutant `||` -> `&&` at info_fn.go:83:21 can never be true, so " +
+			"validation never fires and c.Args[0] would index out of range)")
+	}
+	if !strings.Contains(err.Error(), "got 0") {
+		t.Fatalf("error %q does not mention the actual arg count", err.Error())
+	}
+}
+
+// TestScalarGuardPlan_LoweringErrorPropagates kills the
+// CONDITIONALS_NEGATION mutant at scalar_guard.go:92:9, which flips
+//
+//	if err != nil {
+//		return nil, err
+//	}
+//
+// to `err == nil`. When the inner lowerScalarArg call fails, the
+// original code propagates the error and returns a nil plan. The
+// mutant's flipped condition is false on a real error, so control
+// falls through to `return syntheticScalarVector(value, nil, s, ctx),
+// nil` — building a synthetic vector out of value (nil, since lowering
+// failed) and swallowing the error entirely.
+//
+// `scalar()` called with 0 arguments is a lowerScalarArg error the
+// parser itself would normally reject at parse time, so the *parser.Call
+// is hand-built the same way the other arity-bypass tests in this file
+// are.
+func TestScalarGuardPlan_LoweringErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	e := &parser.Call{
+		Func: parser.MustGetFunction("scalar"),
+		Args: parser.Expressions{},
+	}
+	s := schema.DefaultOTelMetrics()
+
+	plan, err := scalarGuardPlan(e, s, lowerCtx{})
+	if err == nil {
+		t.Fatalf("expected scalarGuardPlan to propagate lowerScalarArg's error; got nil err, "+
+			"plan=%#v (mutant `!=` -> `==` at scalar_guard.go:92:9 would swallow the error "+
+			"and build a synthetic vector from a nil value instead)", plan)
+	}
+	if plan != nil {
+		t.Fatalf("expected a nil plan alongside the propagated error; got %#v", plan)
+	}
+}
+
+// TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath kills
+// the INVERT_LOGICAL mutant at range_fns.go:246:10, which flips
+//
+//	if okSf && okTf {
+//		return sf, tf, nil, nil, nil
+//	}
+//
+// to `||`. With one literal factor and one computed factor (okSf !=
+// okTf), the original code must fall through to the computed path,
+// returning `(0, 0, sfExpr, tfExpr, nil)` — both expression slots
+// populated, both float slots zeroed, because [chplan.RangeWindow]'s
+// positional ScalarExprs pair must stay complete. The `||` mutant's
+// condition is true whenever EITHER factor is literal, so it takes the
+// early-return literal path instead, returning the literal factor's own
+// float value with both expression slots left nil — dropping the
+// computed factor's expression entirely.
+func TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath(t *testing.T) {
+	t.Parallel()
+
+	call := mustParseHoltWintersCall(t, `double_exponential_smoothing(up[5m], 0.5, time())`)
+	s := schema.DefaultOTelMetrics()
+
+	sf, tf, sfExpr, tfExpr, err := holtWintersFactors(call.Args[1], call.Args[2], s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("holtWintersFactors: %v", err)
+	}
+	if sfExpr == nil || tfExpr == nil {
+		t.Fatalf("expected both sfExpr and tfExpr populated on the computed path "+
+			"(sfExpr=%v tfExpr=%v sf=%v tf=%v); mutant `&&` -> `||` at range_fns.go:246:10 "+
+			"would take the literal-only fast path and leave them nil",
+			sfExpr, tfExpr, sf, tf)
+	}
+	if sf != 0 || tf != 0 {
+		t.Fatalf("expected sf=0 tf=0 on the computed path (the real values ride in "+
+			"sfExpr/tfExpr instead); got sf=%v tf=%v", sf, tf)
+	}
+}
+
+// TestSynthLabelsFromMatchers_NameSkipContinuesPastLaterMatchers kills
+// the INVERT_LOOPCTRL mutant at absent.go:390:4, where
+//
+//	if m.Name == model.MetricNameLabel {
+//		continue
+//	}
+//
+// flips to `break`. With only ONE matcher in the list, `continue` and
+// `break` are indistinguishable (both end the loop). The kill requires
+// a `__name__` matcher followed by further equality matchers: the
+// original `continue` skips just the `__name__` entry and keeps
+// processing the rest, while `break` would abandon the loop the moment
+// it sees `__name__`, silently dropping every matcher positioned after
+// it.
+func TestSynthLabelsFromMatchers_NameSkipContinuesPastLaterMatchers(t *testing.T) {
+	t.Parallel()
+
+	matchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchEqual, "__name__", "demo_metric"),
+		labels.MustNewMatcher(labels.MatchEqual, "job", "a"),
+		labels.MustNewMatcher(labels.MatchEqual, "instance", "b"),
+	}
+	got := synthLabelsFromMatchers(matchers)
+
+	want := map[string]string{"job": "a", "instance": "b"}
+	if len(got) != len(want) {
+		t.Fatalf("synthLabelsFromMatchers = %#v; want %d labels (mutant `continue` -> "+
+			"`break` at absent.go:390:4 would abandon the loop at __name__ and drop "+
+			"every matcher after it, yielding 0)", got, len(want))
+	}
+	for _, sl := range got {
+		if wantV, ok := want[sl.Key]; !ok || wantV != sl.Value {
+			t.Fatalf("unexpected label %+v in result %#v", sl, got)
+		}
+	}
+}
+
+// TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers kills the
+// INVERT_LOOPCTRL mutant at absent.go:440:4 — absentAttrsMap's own
+// `__name__`-skip, the mirror of synthLabelsFromMatchers' loop just
+// above (see that test's doc comment for why a single-matcher list
+// cannot distinguish `continue` from `break`).
+func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
+	t.Parallel()
+
+	matchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchEqual, "__name__", "demo_metric"),
+		labels.MustNewMatcher(labels.MatchEqual, "job", "a"),
+		labels.MustNewMatcher(labels.MatchEqual, "instance", "b"),
+	}
+	got := absentAttrsMap(matchers)
+	fc, ok := got.(*chplan.FuncCall)
+	if !ok || fc.Fn != chplan.FnMap {
+		t.Fatalf("absentAttrsMap = %#v; want a Map() FuncCall over the surviving pairs "+
+			"(mutant `continue` -> `break` at absent.go:440:4 would abandon the loop at "+
+			"__name__ and drop every matcher after it, yielding the empty-map literal)", got)
+	}
+	// 2 surviving pairs (job, instance) * 2 args each.
+	const wantArgs = 4
+	if got := len(fc.Args); got != wantArgs {
+		t.Fatalf("len(Args) = %d; want %d", got, wantArgs)
+	}
+}
+
+// mixedDiscriminatorMarkerProject is a *chplan.Project whose single
+// projection publishes chplan.MixedDiscriminatorColumn — the one shape
+// [chplan.RowShapeOf] recognises as chplan.MixedRowShape (see that
+// function's own doc comment). Used below purely to make
+// guardLabelRewriteCollision's `mixed` local report true without
+// depending on a real mixed-`or` lowering.
+func mixedDiscriminatorMarkerProject(input chplan.Node) *chplan.Project {
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: chplan.MixedDiscriminatorColumn}, Alias: chplan.MixedDiscriminatorColumn},
+		},
+	}
+}
+
+// TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop kills
+// the INVERT_LOOPCTRL mutant at duplicate_labelset_guard.go:391:5,
+// inside guardLabelRewriteCollision's per-projection switch:
+//
+//	default:
+//		if mixed && mixedPayload[name] {
+//			continue
+//		}
+//
+// flips to `break`. A single qualifying projection cannot distinguish
+// `continue` from `break` (the loop would end either way), so the
+// fixture needs a mixed-payload column FOLLOWED by another projection
+// that must still be reachable. This test forces `keyOnStep = true`
+// (via an Aggregate input whose GroupByAliases already names the
+// timestamp column, see guardKeysOnTimestamp) so the trailing
+// projection lands in the group key, then asserts its alias survived.
+func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
+	mixedMarker := mixedDiscriminatorMarkerProject(stepKeyedAgg)
+
+	const extraStepCol = "extra_step_col"
+	rewritten := &chplan.Project{
+		Input: mixedMarker,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: chplan.HistogramCountColumn}, Alias: chplan.HistogramCountColumn},
+			{Expr: &chplan.ColumnRef{Name: extraStepCol}, Alias: extraStepCol},
+		},
+	}
+
+	plan := guardLabelRewriteCollision(rewritten, s)
+	agg, ok := plan.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Aggregate (rewritten publishes none of the four "+
+			"canonical columns, so guardLabelRewriteCollision must return the raw guard)", plan)
+	}
+
+	found := false
+	for _, alias := range agg.GroupByAliases {
+		if alias == extraStepCol {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("GroupByAliases = %#v; want %q present (mutant `continue` -> `break` at "+
+			"duplicate_labelset_guard.go:391:5 would abandon the loop at the mixed-payload "+
+			"histogram column and never reach the projection after it)", agg.GroupByAliases, extraStepCol)
+	}
+}
+
+// TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop kills the
+// INVERT_LOOPCTRL mutant at duplicate_labelset_guard.go:400:5:
+//
+//	if keyOnStep {
+//		groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
+//		aliases = append(aliases, name)
+//		continue
+//	}
+//
+// flips to `break`. Two non-payload, non-canonical projections in a
+// row.Input needs `keyOnStep = true` (this test's Aggregate input
+// already names the timestamp column) so BOTH hit this branch; the
+// second is reachable only if the first's `continue` doesn't end the
+// loop.
+func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	stepKeyedAgg := &chplan.Aggregate{GroupByAliases: []string{s.TimestampColumn}}
+
+	const colA, colB = "col_a", "col_b"
+	rewritten := &chplan.Project{
+		Input: stepKeyedAgg,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: colA}, Alias: colA},
+			{Expr: &chplan.ColumnRef{Name: colB}, Alias: colB},
+		},
+	}
+
+	plan := guardLabelRewriteCollision(rewritten, s)
+	agg, ok := plan.(*chplan.Aggregate)
+	if !ok {
+		t.Fatalf("plan = %T, want *chplan.Aggregate", plan)
+	}
+
+	wantAliases := map[string]bool{colA: true, colB: true}
+	gotAliases := map[string]bool{}
+	for _, alias := range agg.GroupByAliases {
+		gotAliases[alias] = true
+	}
+	for name := range wantAliases {
+		if !gotAliases[name] {
+			t.Fatalf("GroupByAliases = %#v; want both %q and %q present (mutant `continue` "+
+				"-> `break` at duplicate_labelset_guard.go:400:5 would abandon the loop after "+
+				"the first key-on-step projection and never reach the second)",
+				agg.GroupByAliases, colA, colB)
+		}
 	}
 }

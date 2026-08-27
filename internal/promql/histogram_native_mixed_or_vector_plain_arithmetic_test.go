@@ -269,3 +269,80 @@ func assertMixedJoinSides(t *testing.T, query string, join *chplan.MixedVectorJo
 		t.Fatalf("lower(%q): widened plain side's discriminator = %#v, want a LitInt{0}", query, last.Expr)
 	}
 }
+
+// findMixedVectorJoin walks n's Input chain looking for the
+// *chplan.MixedVectorJoin every mixed `or` vs. plain-vector wrapper
+// eventually builds, failing the test if none is found. Shared by this
+// file and histogram_native_mixed_or_vector_plain_comparison_test.go (same
+// promql_test package) — the plan shape between the two differs (an extra
+// merge-input Project for `+`/`-`, none for comparisons/`*`//), so a
+// recursive search is needed rather than hardcoding a fixed Input depth.
+func findMixedVectorJoin(t *testing.T, query string, n chplan.Node) *chplan.MixedVectorJoin {
+	t.Helper()
+	var walk func(chplan.Node) *chplan.MixedVectorJoin
+	walk = func(cur chplan.Node) *chplan.MixedVectorJoin {
+		if cur == nil {
+			return nil
+		}
+		if j, ok := cur.(*chplan.MixedVectorJoin); ok {
+			return j
+		}
+		for _, c := range cur.Children() {
+			if j := walk(c); j != nil {
+				return j
+			}
+		}
+		return nil
+	}
+	join := walk(n)
+	if join == nil {
+		t.Fatalf("lower(%q): no *chplan.MixedVectorJoin found in plan rooted at %#v", query, n)
+	}
+	return join
+}
+
+// TestLower_ExpHistogram_MixedSetOpOr_VectorPlainArithmetic_StepAligned
+// pins [chplan.MixedVectorJoin].StepAligned: true for a materialised
+// range-mode grid (Step > 0), false for an instant query (Step == 0) —
+// the same `ctx.step > 0` boundary
+// [TestLower_ExpHistogram_MixedSetOpOr_VectorVectorAdditiveArithmetic] and
+// its siblings never actually assert (they only check plan SHAPE, not this
+// field), so this is the one place StepAligned's own boundary is pinned
+// for the mixed-`or`-vs-plain-vector wrapper family.
+func TestLower_ExpHistogram_MixedSetOpOr_VectorPlainArithmetic_StepAligned(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+
+	query := mixedOrExpr + " * " + mvpPlainVector
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+
+	t.Run("instant", func(t *testing.T) {
+		t.Parallel()
+		plan, err := promql.LowerAt(context.Background(), expr, s, end, end)
+		if err != nil {
+			t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+		}
+		join := findMixedVectorJoin(t, query, plan)
+		if join.StepAligned {
+			t.Fatalf("lower(%q) instant: MixedVectorJoin.StepAligned = true, want false (Step == 0)", query)
+		}
+	})
+	t.Run("range", func(t *testing.T) {
+		t.Parallel()
+		plan, err := promql.LowerAtRange(context.Background(), expr, s, start, end, 30*time.Second)
+		if err != nil {
+			t.Fatalf("LowerAtRange(%q): unexpected error: %v", query, err)
+		}
+		join := findMixedVectorJoin(t, query, plan)
+		if !join.StepAligned {
+			t.Fatalf("lower(%q) range: MixedVectorJoin.StepAligned = false, want true (Step > 0)", query)
+		}
+	})
+}

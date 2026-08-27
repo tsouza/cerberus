@@ -160,3 +160,31 @@ func TestWireArms_ResolveName(t *testing.T) {
 		})
 	}
 }
+
+// TestWireArms_FilterStopsAtFirstArmMatch pins filter's own `break`: a
+// matcher is classified into exactly ONE arm ([wireArms]'s switch is
+// mutually exclusive), so once filter finds the arm list entry matching
+// that one classification it must stop scanning the REST of the arm list
+// rather than keep comparing — otherwise a caller that (legitimately, per
+// filter's own doc: "the subset of w.Matchers classified into ANY of
+// arms") passes the SAME arm twice would see that matcher appended once
+// per duplicate entry instead of once per matcher. INVERT_LOOPCTRL
+// (break -> continue) turns the inner loop into "keep scanning the rest of
+// arms after a match", which is exactly the shape this duplicate-arms call
+// exposes: continue would re-match the second, identical arms[1] entry and
+// append the SAME matcher again.
+func TestWireArms_FilterStopsAtFirstArmMatch(t *testing.T) {
+	t.Parallel()
+
+	job := mustMatcher(t, labels.MatchEqual, "job", "api")
+	le := mustMatcher(t, labels.MatchEqual, "le", "0.5")
+	w := wireArms([]*labels.Matcher{job, le})
+
+	got := w.filter(WireArmStorage, WireArmStorage)
+	if len(got) != 1 {
+		t.Fatalf("filter(Storage, Storage) len = %d, want 1 (break must stop the inner loop at the first matching arm)", len(got))
+	}
+	if got[0] != job {
+		t.Errorf("filter(Storage, Storage)[0] = %v, want the job matcher", got[0])
+	}
+}
