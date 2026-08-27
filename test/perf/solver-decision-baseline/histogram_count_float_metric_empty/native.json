@@ -2,7 +2,7 @@
   "query": "histogram_count_float_metric_empty/native",
   "lowering": "native",
   "routed": true,
-  "k": 8,
+  "k": 12,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,

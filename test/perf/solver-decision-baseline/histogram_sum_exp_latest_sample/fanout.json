@@ -2,7 +2,7 @@
   "query": "histogram_sum_exp_latest_sample/fanout",
   "lowering": "fanout",
   "routed": true,
-  "k": 8,
+  "k": 12,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,

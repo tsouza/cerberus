@@ -69,7 +69,11 @@ type Config struct {
 	// pair count a plan must reach. The motivating spike had ~4820.
 	MinAnchorPairs int
 
-	// MaxK caps the shard count.
+	// MaxK caps the shard count. It is a BACKSTOP, not the primary sizing
+	// lever: K is already bounded above by N/MinAnchorsPerSlice (every slice
+	// owns at least that many anchors) and by the high-D clamp, so MaxK only
+	// binds on grids large enough that those two allow more. See
+	// defaultMaxK for why the default is what it is.
 	MaxK int
 
 	// MinAnchorsPerSlice is the grid quantum: each slice must own at least
@@ -137,9 +141,29 @@ type Config struct {
 
 // Default tuning constants (docs/solver.md).
 const (
-	defaultMinFanout          = 16
-	defaultMinAnchorPairs     = 4000
-	defaultMaxK               = 8
+	defaultMinFanout      = 16
+	defaultMinAnchorPairs = 4000
+	// defaultMaxK was raised from 8 to 32 for issue #2685. At 8 it was the
+	// BINDING constraint on wide-window relief rather than a backstop: a 6h
+	// dashboard panel at real production cardinality (253 series, bucket
+	// width 68, measured on ClickHouse 26.6) derives K = N/MinAnchorsPerSlice
+	// = 22 from its own grid, but was truncated to 8 — and at 8 each shard's
+	// scan, widened by the window lookback, lands at 53.8M density cost units
+	// against a 54M ceiling. Over by 0.4%, so the whole query failed while
+	// the sizing the solver had already computed for itself would have fit.
+	//
+	// 32 is chosen so the anchor-derived K governs across realistic dashboard
+	// windows instead of being clipped: at MinAnchorsPerSlice = 16 the derived
+	// K only reaches 32 at N >= 512 anchors, and the head caps a range query
+	// at format.MaxResolutionPoints (11000) regardless. The cost of the raise
+	// is bounded and predictable — K shards run CERBERUS_SHARD_PARALLEL (3) at
+	// a time, so K = 32 is ~11 sequential rounds rather than 3.
+	//
+	// It is still a real ceiling, deliberately: a window wide enough to need
+	// more than 32 shards is asking for more ClickHouse work than a single
+	// dashboard refresh should commit, and an operator who wants it raises
+	// CERBERUS_SHARD_MAX_K explicitly.
+	defaultMaxK               = 32
 	defaultMinAnchorsPerSlice = 16
 	defaultParallel           = 3
 	defaultTimeout            = 60 * time.Second

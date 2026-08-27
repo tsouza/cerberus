@@ -57,10 +57,16 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 	if p.Cfg.Mode == ModeAuto {
 		// Cost thresholds gate the auto path. Below threshold → route A.
 		minFanout, minAnchorPairs := p.Cfg.MinFanout, p.Cfg.MinAnchorPairs
-		if sig.maxFanout < int64(minFanout) {
+		// A per-rung carrier's F is unmeasurable before the scan runs (see
+		// carrierGeometry.perRungIntermediate), so both F-derived comparisons
+		// below would be reading a placeholder rather than a cost. Gate it on
+		// the anchor axis instead — the axis that IS known at plan time, and
+		// the one slicing actually divides.
+		perRung := sig.sawPerRungCarrier && sig.outerN >= minAnchorsForPerRungShard
+		if !perRung && sig.maxFanout < int64(minFanout) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
-		if int64(sig.outerN)*sig.maxFanout < int64(minAnchorPairs) {
+		if !perRung && int64(sig.outerN)*sig.maxFanout < int64(minAnchorPairs) {
 			return notRouted(ReasonBelowThreshold).withGrid(sig, meta), false
 		}
 		if k < 2 {
@@ -403,6 +409,10 @@ type signals struct {
 	// Eligible() deliberately ignores it, so a real route-A resource failure
 	// still routes through the failure-driven memo.
 	sawIndivisibleAnchorGrid bool
+	// sawPerRungCarrier records that some carrier amplifies per stored bucket
+	// rung, so maxFanout is not a usable cost proxy for this plan — see
+	// carrierGeometry.perRungIntermediate and minAnchorsForPerRungShard.
+	sawPerRungCarrier bool
 
 	// Cost grid, derived from the OUTERMOST windowed node (the spine root).
 	outerN      int           // N = OuterRange/Step + 1
@@ -721,6 +731,35 @@ type carrierGeometry struct {
 	// hold it.
 	singlePass bool
 
+	// perRungIntermediate marks a carrier whose F is NOT representable as a
+	// plan-time constant at all, because its amplification is per stored
+	// BUCKET RUNG rather than per sample or per anchor.
+	//
+	// Only [chplan.RangeBucketGridNative] sets it. Its Level-0 arrayJoin emits
+	// one intermediate row per (sample, `le` rung) and Level 1 holds one grid
+	// state per (series, rung), so by singlePass's own definition — peak
+	// intermediate rows per raw row — its F is the rung count. That count is
+	// the stored `length(ExplicitBounds)`: real data, ranging 34-136 across
+	// deployments measured for #2681, and unknowable before the scan runs.
+	//
+	// It reports singlePass too, which stays correct for what singlePass is
+	// used for elsewhere (the cumulative-D derivation): the carrier really
+	// does read each sample once. What it does NOT do is materialise one row
+	// per sample, which is the part the ModeAuto fanout gate reads — and that
+	// is the distinction this field exists to draw. Copying singlePass here
+	// from the scalar native carrier without it told the planner an
+	// arrayJoin-amplified shape costs the same as a flat-memory one, which is
+	// what kept the expensive shape under a threshold designed to catch
+	// expensive shapes (#2687).
+	//
+	// Guessing a constant F was rejected rather than left undone: real widths
+	// span 34-136 while Prometheus's own DefBuckets is 10, so any value large
+	// enough to clear MinFanout over-claims for a default-bucket histogram and
+	// would shard cheap queries — exactly the waste singlePass's doc warns
+	// about. The gate therefore switches axis instead of inventing a number;
+	// see minAnchorsForPerRungShard.
+	perRungIntermediate bool
+
 	// reanchorable reports whether [chplan.ReanchorRange] re-grids this kind.
 	// This is a CORRECTNESS bit, not a measurement one: a carrier
 	// ReanchorRange clones verbatim hands every shard the original full-grid
@@ -737,6 +776,32 @@ type carrierGeometry struct {
 // than 0 because the samples ARE read — a zero would say the carrier touches no
 // data, which is StepGrid's answer, not this family's.
 const singlePassFanout = int64(1)
+
+// minAnchorsForPerRungShard is the anchor count at or above which a per-rung
+// carrier (carrierGeometry.perRungIntermediate) is routed by ModeAuto without
+// consulting the fanout thresholds, whose input it cannot supply.
+//
+// Chosen from measurement, not from the threshold it replaces. Real-ClickHouse
+// 26.6 sweeps of the classic-histogram ladder at the bucket width production
+// actually carries (68) put the per-query memory cliff at ~94 anchors under a
+// 6 GiB cap and far lower under the 1 GiB default (issue #2681's calibration
+// table). 120 sits above the widest measured safe grid, so a panel small
+// enough to have never been observed to strain a per-query budget still runs
+// unsliced on route A — the K-scans-for-no-benefit waste singlePass's own doc
+// warns about — while the multi-hour dashboard windows that DO strain it
+// route.
+//
+// It is expressed in anchors rather than in cost units on purpose: the anchor
+// grid is the one axis of this carrier's cost that the planner can read before
+// any data is touched, and it is precisely the axis a shard divides. Rungs and
+// raw rows are the other two factors and both need the scan.
+//
+// Erring high is the safe direction. A per-rung carrier BELOW this line that
+// nevertheless exhausts memory is not stranded: it fails on route A, and the
+// failure-driven route memo escalates it to a sharded retry from real evidence
+// (internal/engine/route_outcome.go). Erring low has no such backstop — it
+// spends K scans on a query that never needed them.
+const minAnchorsForPerRungShard = 120
 
 // carrierGeometryOf derives the measurement geometry of one grid carrier,
 // enumerating every [chplan.GridCarrier] implementation.
@@ -783,10 +848,11 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// both axes per shard, which is the only relief that removes the window
 		// width as a memory term rather than relocating the wall.
 		return carrierGeometry{
-			outerRange:   v.End.Sub(v.Start),
-			lookback:     v.Range,
-			singlePass:   true,
-			reanchorable: true,
+			outerRange:          v.End.Sub(v.Start),
+			lookback:            v.Range,
+			singlePass:          true,
+			perRungIntermediate: true,
+			reanchorable:        true,
 		}, true
 
 	case *chplan.RangeWindowGridNative:
@@ -904,6 +970,9 @@ func (p *Planner) recordGridCarrier(gc chplan.GridCarrier, depth int, sig *signa
 		if fan > sig.maxFanout {
 			sig.maxFanout = fan
 		}
+	}
+	if geom.perRungIntermediate {
+		sig.sawPerRungCarrier = true
 	}
 	// D is per-slice SCAN redundancy, which is the window SPAN regardless of
 	// which emitter reads it — a single-pass carrier's shard widens its input

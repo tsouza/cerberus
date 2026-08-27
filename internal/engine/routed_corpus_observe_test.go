@@ -195,7 +195,10 @@ func wantParallelism(eng *Engine, d *solver.Decision) int {
 // slicing this plan into a single shard, the whole route-B observation family
 // would still pass while testing no fan-out at all. Pinning the number here
 // turns that degeneration into a failure at the one place it originates.
-const fixtureShardCount = 8
+// Was 8 until #2685 raised the MaxK backstop from 8 to 32: this fixture's K is
+// derived from its own grid (N/MinAnchorsPerSlice) and was previously clipped
+// by that ceiling, so the number moved without the fixture changing.
+const fixtureShardCount = 12
 
 // routedDecision classifies the eligible fixture plan into the routed decision
 // the engine's own route-B paths take.

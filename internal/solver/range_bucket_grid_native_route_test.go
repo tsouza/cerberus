@@ -150,54 +150,72 @@ func TestRangeBucketGridNative_ReanchorsOntoSubGrid(t *testing.T) {
 	}
 }
 
-// TestRangeBucketGridNative_EligibleForMemoDrivenRouting pins the relief path
-// that actually answers #2677.
+// TestRangeBucketGridNative_PredictiveRoutingOnTheAnchorAxis pins the fix for
+// #2687, and both sides of it.
 //
-// The distinction this test exists to hold is subtle and load-bearing. Under
-// ModeAuto's PREDICTIVE thresholds this plan still does not route: a
-// single-pass grid aggregate reports fanout 1 (carrierGeometry.singlePass), so
-// it falls under MinFanout and yields ReasonBelowThreshold. That is correct —
-// the predictive proxy has no way to know this particular window is heavy.
+// This carrier's F is unmeasurable before the scan (its amplification is per
+// stored `le` rung), so ModeAuto gates it on the anchor axis instead —
+// minAnchorsForPerRungShard. That is what lets a multi-hour dashboard panel
+// route at PLAN time, which matters because the predictive path carries no
+// live-edge freshness gate: the failure-driven memo, the only other escalation
+// route, declines every request whose End sits in the last step, and a Grafana
+// panel always does.
 //
-// What changed is that Planner.Eligible — the re-derivation the failure-driven
-// route memo runs after a real route-A resource failure — now ADMITS the plan
-// and returns a sliced Decision. Eligible deliberately does not apply the
-// ModeAuto cost thresholds (a measured OOM is stronger evidence than a static
-// proxy), so once the structural gates admit the node, an observed memory
-// failure is enough to shard the retry. That is the whole mechanism by which a
-// wide-window classic-histogram quantile stops being a hard 422.
-func TestRangeBucketGridNative_EligibleForMemoDrivenRouting(t *testing.T) {
+// The negative half is the load-bearing one. Routing every classic-histogram
+// range query regardless of size would spend K scans on panels that never
+// needed them — the waste carrierGeometry.singlePass's own doc warns about —
+// so a grid below the floor must still decline, and decline for the COST
+// reason rather than a structural one.
+func TestRangeBucketGridNative_PredictiveRoutingOnTheAnchorAxis(t *testing.T) {
 	t.Parallel()
 
 	p := &Planner{Cfg: autoCfg()}
 
-	// Predictive path: still below threshold, by the singlePass fanout.
+	// The canonical fixture grid (1h at 15s = 241 anchors) is above the floor.
 	d, routed := p.Plan(bucketGridNativeSpine(), oomMeta())
-	if routed {
-		t.Errorf("a RangeBucketGridNative spine routed under ModeAuto's predictive thresholds "+
-			"(K=%d, reason=%q). Slicing it is sound, but its single-pass fanout of 1 is "+
-			"genuinely below MinFanout — routing it predictively would be the threshold "+
-			"drifting, not this fix.", d.K, d.Reason)
+	if !routed {
+		t.Fatalf("a RangeBucketGridNative spine did NOT route predictively (reason=%q). Its "+
+			"anchor grid is above minAnchorsForPerRungShard, and the predictive path is the "+
+			"only escalation a live-edge dashboard query can reach — the route memo declines "+
+			"those on freshness (#2687).", d.Reason)
 	}
-	if d.Reason != ReasonBelowThreshold {
-		t.Errorf("predictive refusal reason is %q, want %q. A structural reason here "+
-			"(not-sliceable) would mean the slicing gates silently closed again and the "+
-			"memo path below cannot fire either.", d.Reason, ReasonBelowThreshold)
+	if d.K < 2 {
+		t.Errorf("predictive route produced K=%d, want >= 2", d.K)
 	}
 
-	// Memo path: admitted, sliced, and genuinely sharded.
+	// Below the floor: still declines, and on COST rather than structure.
+	narrow := bucketGridNativeCarrier()
+	narrow.End = narrow.Start.Add(time.Duration(minAnchorsForPerRungShard/2) * gridStep)
+	small := &chplan.Aggregate{
+		Input:    narrow,
+		GroupBy:  []chplan.Expr{&chplan.ColumnRef{Name: "anchor_ts"}},
+		AggFuncs: []chplan.AggFunc{{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: "BucketCounts"}}}},
+	}
+	meta := RequestMeta{Lang: LangPromQL, Start: narrow.Start, End: narrow.End, Step: narrow.Step}
+	sd, sRouted := p.Plan(small, meta)
+	if sRouted {
+		t.Errorf("a sub-floor anchor grid routed (K=%d) — sharding a panel small enough to run "+
+			"unsliced pays K scans for a memory problem it does not have", sd.K)
+	}
+	if sd.Reason != ReasonBelowThreshold {
+		t.Errorf("sub-floor refusal reason is %q, want %q — a structural reason here would mean "+
+			"the slicing gates closed rather than the cost gate declining", sd.Reason, ReasonBelowThreshold)
+	}
+}
+
+// TestRangeBucketGridNative_EligibleStillBypassesThresholds pins that the
+// failure-driven memo seam is unchanged by the predictive gate above: a real
+// route-A resource failure still escalates a plan of ANY size, including one
+// below the anchor floor, because measured evidence outranks a cost proxy.
+func TestRangeBucketGridNative_EligibleStillBypassesThresholds(t *testing.T) {
+	t.Parallel()
+
+	p := &Planner{Cfg: autoCfg()}
 	ed, eligible := p.Eligible(bucketGridNativeSpine(), oomMeta())
 	if !eligible {
-		t.Fatalf("Planner.Eligible refused a RangeBucketGridNative spine (reason=%q). This is "+
-			"the re-derivation the failure-driven route memo runs after a real route-A "+
-			"memory failure; refusing here means a wide-window classic-histogram quantile "+
-			"has no relief and stays a hard 422 (#2677).", ed.Reason)
+		t.Fatalf("Planner.Eligible refused a RangeBucketGridNative spine (reason=%q)", ed.Reason)
 	}
-	if ed.K < 2 {
-		t.Errorf("Eligible produced K=%d, want >= 2 — one shard is route A with extra "+
-			"machinery, and divides neither the anchor axis nor the raw-row axis", ed.K)
-	}
-	if ed.Reason != ReasonRouted {
-		t.Errorf("Eligible returned reason %q, want %q", ed.Reason, ReasonRouted)
+	if ed.K < 2 || ed.Reason != ReasonRouted {
+		t.Errorf("Eligible returned K=%d reason=%q, want K>=2 and %q", ed.K, ed.Reason, ReasonRouted)
 	}
 }

@@ -2,7 +2,7 @@
   "query": "scan_unions_histogram_sum_for_suffixed_metric/fanout",
   "lowering": "fanout",
   "routed": true,
-  "k": 8,
+  "k": 12,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,

@@ -1,9 +1,9 @@
 {
   "query": "histogram_quantile_classic_delta_temporality/native",
   "lowering": "native",
-  "routed": false,
-  "k": 0,
-  "reason": "below-threshold",
+  "routed": true,
+  "k": 15,
+  "reason": "routed",
   "n_anchors": 241,
   "fanout": 4,
   "cumulative_d": "2m0s",

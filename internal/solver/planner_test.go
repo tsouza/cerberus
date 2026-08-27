@@ -55,7 +55,13 @@ func autoCfg() Config {
 }
 
 // TestPlan_OOMShapeRoutes pins the worked example from the doc: the OOM shape
-// routes under Mode=auto with K=8 and Reason=routed.
+// routes under Mode=auto with Reason=routed, at the K its own grid derives.
+//
+// K is N/MinAnchorsPerSlice (12 for this fixture), no longer clipped to MaxK:
+// #2685 raised that backstop from 8 to 32 precisely so the anchor-derived
+// sizing governs instead of being truncated. Asserting the derived value
+// rather than the old ceiling is what keeps this test measuring the sizing
+// rule instead of the cap.
 func TestPlan_OOMShapeRoutes(t *testing.T) {
 	t.Parallel()
 	p := &Planner{Cfg: autoCfg()}
@@ -66,14 +72,14 @@ func TestPlan_OOMShapeRoutes(t *testing.T) {
 	if d.Reason != ReasonRouted {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
-	if d.K != 8 {
-		t.Fatalf("K = %d, want 8", d.K)
+	if d.K != 12 {
+		t.Fatalf("K = %d, want 12 (N/MinAnchorsPerSlice, not the MaxK backstop)", d.K)
 	}
 	if d.Strategy != StrategyShardedTimeslice {
 		t.Fatalf("strategy = %q, want %q", d.Strategy, StrategyShardedTimeslice)
 	}
-	if len(d.Slices) != 8 {
-		t.Fatalf("len(Slices) = %d, want 8", len(d.Slices))
+	if len(d.Slices) != 12 {
+		t.Fatalf("len(Slices) = %d, want 12", len(d.Slices))
 	}
 }
 
@@ -821,8 +827,8 @@ func TestPlan_ScalarAnchorCompatibleRoutes(t *testing.T) {
 	if d.Reason != ReasonRouted {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
-	if d.K != 8 {
-		t.Fatalf("K = %d, want 8 (same OOM shape as TestPlan_OOMShapeRoutes)", d.K)
+	if d.K != 12 {
+		t.Fatalf("K = %d, want 12 (same OOM shape as TestPlan_OOMShapeRoutes)", d.K)
 	}
 }
 
