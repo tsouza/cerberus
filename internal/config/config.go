@@ -1029,15 +1029,20 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v)
-	if err != nil {
-		return Config{}, err
-	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
 	// a negative value, so no extra >= 0 guard is needed here.
+	//
+	// Resolved BEFORE the RangeBucketGridNative bounds because the density
+	// bound's own default is derived from it (rbgnDensityUnitsForMemory): the
+	// cost units that bound counts are a proxy for bytes, so the ceiling has
+	// to move with the byte budget it defends.
 	maxMemory, err := getByteSize(v, envCHQueryMaxMemory)
+	if err != nil {
+		return Config{}, err
+	}
+	rbgnMaxRows, rbgnMaxDensityUnits, err := rbgnBoundsFromEnv(v, maxMemory)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1408,7 +1413,9 @@ func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
 	// separate, later, operator-verified opt-in from schema provisioning.
 	v.SetDefault(envDeltaPrefixReadEnabled, defaultDeltaPrefixReadEnabled)
 	v.SetDefault(envRBGNMaxRows, defaultRBGNMaxRows)
-	v.SetDefault(envRBGNMaxDensityUnits, defaultRBGNMaxDensityUnits)
+	// 0 is the SENTINEL for "derive from CERBERUS_CH_QUERY_MAX_MEMORY" — see
+	// rbgnDensityUnitsForMemory for why this bound cannot be a fixed constant.
+	v.SetDefault(envRBGNMaxDensityUnits, 0)
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
@@ -1703,6 +1710,18 @@ func resolveQueryMaxSamples(n int64) (int64, error) {
 const (
 	defaultRBGNMaxRows         int64 = 25_000_000
 	defaultRBGNMaxDensityUnits int64 = 400_000_000
+
+	// rbgnDensityUnitsPerGiB is the density bound granted per GiB of
+	// CERBERUS_CH_QUERY_MAX_MEMORY, and rbgnDensityUnitsFloor is the bound a
+	// sub-GiB cap still gets. Both are fitted to the conservative end of the
+	// real-ClickHouse sweep tabulated on rbgnDensityUnitsForMemory, which is
+	// also where the reasoning for margining downward rather than upward
+	// lives. bytesPerGiB / bytesPerGiB4 are that arithmetic's units (a GiB,
+	// and the quarter-GiB step the remainder is credited in).
+	rbgnDensityUnitsPerGiB int64 = 9_000_000
+	rbgnDensityUnitsFloor  int64 = 2_500_000
+	bytesPerGiB            int64 = 1 << 30
+	bytesPerGiB4           int64 = bytesPerGiB / 4
 )
 
 // resolveRBGNMaxRows / resolveRBGNMaxDensityUnits map the raw
@@ -1730,20 +1749,65 @@ func resolveRBGNMaxRows(n int64) (int64, error) {
 	}
 }
 
-func resolveRBGNMaxDensityUnits(n int64) (int64, error) {
+func resolveRBGNMaxDensityUnits(n, chQueryMaxMemory int64) (int64, error) {
 	switch {
 	case n > 0:
 		return n, nil
 	case n == 0:
-		slog.Default().Warn(
-			"CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS=0 does not disable the resource bound; coercing to the default.",
-			"env", envRBGNMaxDensityUnits,
-			"applied", defaultRBGNMaxDensityUnits,
-		)
-		return defaultRBGNMaxDensityUnits, nil
+		// Unset (or an explicit 0, which has never disabled the bound): derive
+		// it from the query memory cap this guard exists to defend.
+		return rbgnDensityUnitsForMemory(chQueryMaxMemory), nil
 	default:
-		return 0, fmt.Errorf("%s: must be >= 0 (0 uses the default); got %d", envRBGNMaxDensityUnits, n)
+		return 0, fmt.Errorf("%s: must be >= 0 (0 derives the bound from %s); got %d",
+			envRBGNMaxDensityUnits, envCHQueryMaxMemory, n)
 	}
+}
+
+// rbgnDensityUnitsForMemory derives the RangeBucketGridNative density bound
+// from the per-query ClickHouse memory cap it defends.
+//
+// The bound is NOT a fixed number of cost units, because the cost units it
+// counts are a proxy for BYTES and the byte ceiling is configurable. Measured
+// on real ClickHouse 26.6 (253 series, cerberus's own auto-derived spill
+// settings, sweeping the `rawRows x width^2` cost the guard computes until
+// ClickHouse answered MEMORY_LIMIT_EXCEEDED):
+//
+//	cap     width   cost units at the real cliff
+//	1 GiB      68   11,698,720
+//	1 GiB      34   14,623,400
+//	6 GiB      68  102,948,736
+//	6 GiB      34  102,071,332
+//	6 GiB     136   98,269,248
+//
+// Two things follow, and the previous fixed 400,000,000 constant got both
+// wrong. First, the cliff scales with the cap — roughly an order of magnitude
+// between 1 GiB and 6 GiB — so ONE constant cannot fit both: 400M was ~34x
+// too permissive at the 1 GiB default and ~4x too permissive at the 6 GiB
+// caps real deployments run, which is why production queries sailed past the
+// guard and died on ClickHouse's own limit instead (#2677, #2681). Second,
+// the `width^2` SHAPE the guard already used is right: at a fixed cap the
+// cliff's cost-unit value is flat across a 4x width sweep (98.3M / 102.1M /
+// 102.9M), which a linear-in-width model could not produce.
+//
+// The ratio is deliberately fitted to the CONSERVATIVE end of the measured
+// band (the 1 GiB rows, ~11.7M units/GiB) rather than the mean, and then
+// margined below it. Rejecting slightly early is the cheap direction: a
+// rejection is now evidence the failure-driven route memo acts on
+// (internal/engine/route_outcome.go), so an over-tight bound routes the query
+// to a sharded execution that succeeds, while an over-loose one hands the
+// operator a real OOM that no mechanism recovers from.
+func rbgnDensityUnitsForMemory(chQueryMaxMemory int64) int64 {
+	if chQueryMaxMemory <= 0 {
+		return rbgnDensityUnitsPerGiB
+	}
+	units := (chQueryMaxMemory / bytesPerGiB) * rbgnDensityUnitsPerGiB
+	if rem := chQueryMaxMemory % bytesPerGiB; rem > 0 {
+		units += (rem / bytesPerGiB4) * (rbgnDensityUnitsPerGiB / 4)
+	}
+	if units < rbgnDensityUnitsFloor {
+		return rbgnDensityUnitsFloor
+	}
+	return units
 }
 
 // rbgnBoundsFromEnv reads + resolves both RangeBucketGridNative override
@@ -1751,7 +1815,7 @@ func resolveRBGNMaxDensityUnits(n int64) (int64, error) {
 // function under golangci-lint's funlen cap; the two values have no
 // relationship to each other beyond being read at the same point in
 // FromEnv's own sequence.
-func rbgnBoundsFromEnv(v *viper.Viper) (maxRows, maxDensityUnits int64, err error) {
+func rbgnBoundsFromEnv(v *viper.Viper, chQueryMaxMemory int64) (maxRows, maxDensityUnits int64, err error) {
 	rowsRaw, err := getInt64(v, envRBGNMaxRows)
 	if err != nil {
 		return 0, 0, err
@@ -1764,7 +1828,7 @@ func rbgnBoundsFromEnv(v *viper.Viper) (maxRows, maxDensityUnits int64, err erro
 	if err != nil {
 		return 0, 0, err
 	}
-	maxDensityUnits, err = resolveRBGNMaxDensityUnits(densityRaw)
+	maxDensityUnits, err = resolveRBGNMaxDensityUnits(densityRaw, chQueryMaxMemory)
 	if err != nil {
 		return 0, 0, err
 	}
