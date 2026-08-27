@@ -148,9 +148,15 @@ var timeSliceableResourceBoundMessages = []string{
 // queries sharding can answer. Classifying it as the resource failure it
 // plainly is keeps the self-healing path intact under an honest bound.
 //
-// Matching is on the decoded guard message with a PREFIX test, because
-// ClickHouse appends its own "while executing 'FUNCTION throwIf(...)" trailer
-// to the guard's literal. chclient.ThrowIfMessage is what supplies it, and it
+// Matching is on the decoded guard message with a CONTAINMENT test, not a
+// prefix one. ClickHouse appends its own "while executing 'FUNCTION
+// throwIf(...)" trailer to the guard's literal, and — the part that actually
+// bites — the ch-go dial PREPENDS "Code: 395. DB::Exception: " where the
+// native dial yields the bare message. A prefix test therefore matched on one
+// dial and silently never matched on the other, which is the same
+// format-sensitivity trap ThrowIfError's own doc records for #2429. The guard
+// constants are long, specific sentences that no query result could contain by
+// accident, so containment is safe here. chclient.ThrowIfMessage is what supplies it, and it
 // deliberately accepts both the wrapped and bare exception shapes: the row
 // dial and the columnar (ch-go) dial surface the same rejection differently,
 // and a classifier that recognised only one would leave the memo blind on
@@ -161,7 +167,7 @@ func isTimeSliceableResourceBound(err error) bool {
 		return false
 	}
 	for _, msg := range timeSliceableResourceBoundMessages {
-		if strings.HasPrefix(guardMsg, msg) {
+		if strings.Contains(guardMsg, msg) {
 			return true
 		}
 	}
