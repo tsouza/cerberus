@@ -1,6 +1,9 @@
 package chsql
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // range_bucket_grid_native_bound.go closes issue #2486: before this file
 // existed, RangeBucketGridNative's per-(series, `le` rung) native aggregate
@@ -600,6 +603,94 @@ const (
 	maxRangeBucketGridNativeDensityClampedRows  = 100_000_000
 	maxRangeBucketGridNativeDensityClampedWidth = 100_000
 )
+
+// # Operator override (issue #2665 follow-up)
+//
+// Both maxRangeBucketGridNativeRows and maxRangeBucketGridNativeDensityUnits
+// are real-ClickHouse-calibrated DEFAULTS, not immutable ceilings: this
+// issue is itself the SECOND time (after #2651/#2653's own axis1
+// recalibration) that a real production deployment's traffic needed a
+// value this file shipped with real evidence at the time to move — and
+// each time, unblocking that traffic required a full code change + PR +
+// release cycle. rangeBucketGridNativeMaxRowsKey /
+// rangeBucketGridNativeMaxDensityUnitsKey below let an operator override
+// either bound at runtime (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS /
+// CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_DENSITY_UNITS, see
+// config.Config's own doc for those fields) without waiting on a release —
+// internal/engine.emitForHead threads the operator's configured value (or
+// this file's own calibrated default, when unset) onto ctx before every
+// chsql.Emit call, mirroring WithDeltaPrefixLookback's own established
+// ctx-threading shape (internal/chsql/range_window.go) for the identical
+// "chsql may not import internal/config" layering reason
+// (.go-arch-lint.yml).
+//
+// This is deliberately NOT a license to guess: an operator raising either
+// override above this file's own shipped default is opting OUT of the real
+// ClickHouse measurement backing that default (see this file's "Recalibrate
+// by binary search..." notes above) and taking on, themselves, the same
+// verification burden — ideally the identical real-ClickHouse-WITH-spill-
+// settings methodology this file's own doc trail uses — or risks
+// reintroducing the exact ClickHouse code-241 MEMORY_LIMIT_EXCEEDED abort
+// this guard exists to convert into a clean, fast 422 instead. A value at
+// or below the shipped default carries this file's own real-evidence
+// guarantee; a value above it carries none beyond what the operator
+// verified themselves.
+//
+// rangeBucketGridNativeMaxRowsKey / rangeBucketGridNativeMaxDensityUnitsKey
+// are unexported context keys, matching every other ctx-threaded emit-time
+// value in this package (deltaPrefixLookbackKey, spansTableKey, ...).
+type (
+	rangeBucketGridNativeMaxRowsKey         struct{}
+	rangeBucketGridNativeMaxDensityUnitsKey struct{}
+)
+
+// WithRangeBucketGridNativeMaxRows returns ctx carrying n as the operator
+// override for axis1 (maxRangeBucketGridNativeRows). Only a POSITIVE n is
+// honored — see rangeBucketGridNativeMaxRowsFromCtx: unlike
+// WithDeltaPrefixLookback's own zero-is-meaningful contract, there is no
+// legitimate "disable this guard" value for a resource-safety bound (a
+// zero or negative row-count ceiling rejects every query outright), so a
+// non-positive override is treated exactly like "never threaded" rather
+// than honored literally. internal/config.Config's own env-var parsing
+// applies the identical rule before this is ever reached in production
+// (CERBERUS_RANGE_BUCKET_GRID_NATIVE_MAX_ROWS=0 is coerced to the default
+// with a startup warning, mirroring resolveQueryMaxSamples' own precedent)
+// — the extra check here is what keeps a direct chsql.Emit caller (a test,
+// a future non-config caller) from being able to zero out the guard by
+// constructing ctx directly.
+func WithRangeBucketGridNativeMaxRows(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketGridNativeMaxRowsKey{}, n)
+}
+
+// rangeBucketGridNativeMaxRowsFromCtx recovers the operator override
+// WithRangeBucketGridNativeMaxRows set, or maxRangeBucketGridNativeRows
+// (this file's own real-evidence-calibrated default) when the caller never
+// threaded one, or threaded a non-positive value — see
+// WithRangeBucketGridNativeMaxRows's own doc for why non-positive is
+// treated as absent rather than honored.
+func rangeBucketGridNativeMaxRowsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketGridNativeMaxRowsKey{}).(int64); ok && n > 0 {
+		return n
+	}
+	return maxRangeBucketGridNativeRows
+}
+
+// WithRangeBucketGridNativeMaxDensityUnits is
+// WithRangeBucketGridNativeMaxRows's own twin for axis2
+// (maxRangeBucketGridNativeDensityUnits) — same non-positive-is-absent
+// contract, same rationale.
+func WithRangeBucketGridNativeMaxDensityUnits(ctx context.Context, n int64) context.Context {
+	return context.WithValue(ctx, rangeBucketGridNativeMaxDensityUnitsKey{}, n)
+}
+
+// rangeBucketGridNativeMaxDensityUnitsFromCtx is
+// rangeBucketGridNativeMaxRowsFromCtx's own twin for axis2.
+func rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx context.Context) int64 {
+	if n, ok := ctx.Value(rangeBucketGridNativeMaxDensityUnitsKey{}).(int64); ok && n > 0 {
+		return n
+	}
+	return maxRangeBucketGridNativeDensityUnits
+}
 
 // RangeBucketGridNativeDensityBudgetMessage is the throwIf message
 // bucketGridDensityGuardFrag raises when the density guard fires. Distinct

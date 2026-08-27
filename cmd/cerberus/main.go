@@ -728,6 +728,11 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		// — see engine.Engine.DeltaPrefixReadEnabled's doc for why this is
 		// a separate, later opt-in from schema.SchemaProvisioning.DeltaPrefixEnabled.
 		DeltaPrefixReadEnabled: cfg.DeltaPrefixReadEnabled,
+		// PromQL-only, same inertness reasoning: chplan.RangeBucketGridNative
+		// only ever comes from PromQL's classic-histogram_quantile lowering —
+		// see engine.Engine.RangeBucketGridNativeMaxRows's doc.
+		RangeBucketGridNativeMaxRows:         cfg.RangeBucketGridNativeMaxRows,
+		RangeBucketGridNativeMaxDensityUnits: cfg.RangeBucketGridNativeMaxDensityUnits,
 	}
 	h.Limiter = limiter
 	h.Version = Version
