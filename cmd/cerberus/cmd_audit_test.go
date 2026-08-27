@@ -81,7 +81,7 @@ func TestWriteAuditReport_EmitsTheFactorsIndividually(t *testing.T) {
 		SchemaVersion: chaudit.ReportVersion,
 		Table:         "otel_metrics_histogram",
 		Metrics: []chaudit.MetricAudit{{
-			Metric: "core_http_request_duration_seconds",
+			Metric: "http_request_duration_seconds",
 			Series: 7110, RawRows: 512, BucketWidth: 68,
 			CostUnits: 1468, Budget: 1000, HeadroomPct: -46.8,
 			AmplifyingLabel: "k8s_pod_name", AmplificationRatio: 72.5,
