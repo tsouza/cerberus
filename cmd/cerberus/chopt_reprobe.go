@@ -108,6 +108,42 @@ func (c chOptConsumers) apply(cfg config.Config, set chopt.EnabledSet) {
 // invisible next to query traffic.
 const chOptReprobeInterval = 5 * time.Minute
 
+// chOptFloorRetryInterval is the cadence used INSTEAD while the resolution in
+// force is a floor fallback — i.e. the probe that produced it could not reach
+// the server at all.
+//
+// The two states are not symmetric, and pacing them the same way was a bug.
+// The steady-state interval above is priced against a server whose answer
+// "almost never changes", which is true of a healthy deployment and false of a
+// pod that lost the startup race with its own ClickHouse: that pod is pinned to
+// the supported floor, every native path is silently unavailable, and the
+// answer is expected to change the moment the server finishes coming up. Five
+// minutes of that is not a blind window on an upgrade, it is five minutes of
+// emitting the slow shape for no reason — long enough that a deployment can
+// serve its first traffic, and a whole e2e suite can run, entirely on the
+// fallback lowerers (#2696).
+//
+// Ten seconds is chosen against the same cost model: the probe is two
+// short-lived connections and two trivial statements, and it only runs at this
+// rate while the process is in a state it wants to leave. As soon as a probe
+// answers, the loop returns to the steady cadence.
+const chOptFloorRetryInterval = 10 * time.Second
+
+// nextReprobeDelay is how long to wait before the next resolution attempt,
+// given the one currently in force.
+func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
+	if res.VersionFallback {
+		floor := chOptFloorRetryInterval
+		// Never wait LONGER than the steady cadence just because a caller
+		// configured an interval shorter than the fast-retry constant.
+		if steady < floor {
+			return steady
+		}
+		return floor
+	}
+	return steady
+}
+
 // reprobeCHOptimizations re-resolves the ClickHouse capability set on a fixed
 // cadence and swaps a changed result into the query path, so a cluster upgraded
 // under a running cerberus starts using the newly-available native paths without
@@ -140,20 +176,28 @@ func reprobeCHOptimizations(
 	consumers chOptConsumers,
 	interval time.Duration,
 ) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// A timer rather than a ticker: the delay is re-derived from the
+	// resolution in force after every attempt, so a pod pinned to the floor
+	// retries at chOptFloorRetryInterval and drops back to the steady cadence
+	// the moment a probe answers.
+	timer := time.NewTimer(nextReprobeDelay(live.get(), interval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 
 		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg)
 		if !ok {
+			// The resolution in force is unchanged, so the delay is derived
+			// from it: still on the floor means still retrying fast.
+			timer.Reset(nextReprobeDelay(live.get(), interval))
 			continue
 		}
 		prev := live.get()
+		timer.Reset(nextReprobeDelay(next, interval))
 		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion {
 			continue
 		}
