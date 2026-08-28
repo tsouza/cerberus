@@ -90,9 +90,12 @@ const wrapperRef = './.github/actions/setup-go';
 // fails this gate instead of quietly turning R2 and R4 vacuous.
 const warmScript = 'go-module-fetch.mjs';
 
-// The one `cache:` value that takes a step out of R1's subject, spelled exactly
-// as it must appear. `false` and nothing else: a quoted or templated value is
-// not something a reader or a scanner can resolve, which is the whole point.
+// The one `cache:` value that takes a step out of R1's subject. What matters is
+// that the value is STATICALLY RESOLVABLE — a reader and CodeQL's
+// cache-poisoning query must both be able to see that this step cannot write
+// the shared cache. `cache: false` and `cache: 'false'` both qualify, because
+// withEntry strips the quotes; a `${{ … }}` expression does not, and that is
+// the shape this rule exists to reject.
 const cacheDisabled = 'false';
 
 // ---------------------------------------------------------------------------
@@ -133,13 +136,43 @@ export function isUpstreamSetupGo(ref) {
 // One block per job in a workflow and one per composite action, which is
 // exactly the scope R2 asks about: "does the SAME job also warm the cache".
 // Deriving it from the `steps:` key rather than from a job-name parse means the
-// scope is the runtime one, and a workflow shape this reader cannot follow
-// yields no block rather than a wrong one.
-export function stepBlocks(text) {
+// scope is the runtime one.
+//
+// A `steps:` line this reader cannot follow is a HARD ERROR, never a skip.
+// Skipping is what made this gate hollow: `steps:` used to be matched as
+// `/^\s*steps:\s*$/`, so `steps: &dashboard_shard_steps` (e2e.yml) matched
+// nothing and BOTH dashboard-shard jobs — including their
+// `uses: ./.github/actions/setup-go` — went unscanned on a job that runs on
+// refs/heads/main. The gate reported "none able to archive an empty module
+// cache" while being structurally unable to see one of the call sites it
+// exists to police. A scanner that silently ignores what it cannot parse
+// reports clean for the wrong reason, so unparsed shapes now fail loudly.
+const stepsKey = /^\s*steps:\s*(?<tail>\S.*)?$/;
+// A YAML anchor declares the block here; the body follows and is scanned
+// normally. An alias re-uses that same body, so the anchor's own scan already
+// covers it and re-scanning would double-count every call site inside it.
+const stepsAnchor = /^&[A-Za-z0-9_-]+$/;
+const stepsAlias = /^\*[A-Za-z0-9_-]+$/;
+
+export function stepBlocks(text, file = '<text>') {
   const lines = text.split('\n');
   const blocks = [];
   for (let i = 0; i < lines.length; i++) {
-    if (isBlank(lines[i]) || !/^\s*steps:\s*$/.test(lines[i])) continue;
+    if (isBlank(lines[i])) continue;
+    const key = stepsKey.exec(lines[i]);
+    if (!key) continue;
+    const tail = (key.groups.tail || '').replace(/\s+#.*$/, '').trim();
+    if (tail) {
+      if (stepsAlias.test(tail)) continue;
+      if (!stepsAnchor.test(tail)) {
+        throw new Error(
+          `${file}:${i + 1}: cannot follow \`${lines[i].trim()}\` — this scanner understands ` +
+            '`steps:`, `steps: &anchor` and `steps: *alias` only. Teach it this shape rather ' +
+            'than letting the block go unscanned; an unreadable steps block is how a call site ' +
+            'hides from the gate.',
+        );
+      }
+    }
 
     const base = indentOf(lines[i]);
     const body = [];
@@ -294,7 +327,7 @@ export function scan({
   for (const file of yamlFilesIn(abs(workflowDir))) {
     scanned++;
     const text = readFileSync(file, 'utf8');
-    for (const block of stepBlocks(text)) {
+    for (const block of stepBlocks(text, file)) {
       const warms = block.steps.some(stepRunsWarm);
       for (const step of block.steps) {
         const ref = stepUses(step);
@@ -327,7 +360,7 @@ export function scan({
   for (const file of actionFilesIn(abs(actionsDir))) {
     scanned++;
     const text = readFileSync(file, 'utf8');
-    for (const block of stepBlocks(text)) {
+    for (const block of stepBlocks(text, file)) {
       for (const step of block.steps) {
         const ref = stepUses(step);
         if (ref === wrapperRef) wrapperCallSites++;

@@ -18,7 +18,7 @@
 // "the gate does not overreach" is asserted directly, twice.
 
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -82,8 +82,69 @@ function scanWithWrapper(edit) {
 test('the repository as it stands passes every rule', () => {
   const { violations, wrapperCallSites, directCallSites } = realScan();
   assert.deepEqual(violations, []);
-  assert.ok(wrapperCallSites >= 45, `expected the whole fleet of call sites, saw ${wrapperCallSites}`);
+  // Counted from the tree rather than asserted as a loose floor. A `>= 45`
+  // bound passed for months while the scanner could not see the call site
+  // inside e2e.yml's anchored `steps:` block — the gate reported 47 where the
+  // tree holds 48, and the slack hid exactly the discrepancy that mattered.
+  const onDisk = wrapperCallSitesInTree();
+  assert.equal(
+    wrapperCallSites,
+    onDisk,
+    `the gate sees ${wrapperCallSites} wrapper call sites but the tree holds ${onDisk}; ` +
+      'a call site the scanner cannot reach is a call site it cannot police',
+  );
   assert.equal(directCallSites, 3, 'only update-golden.yml may reach the Action directly');
+});
+
+// wrapperCallSitesInTree — grep, deliberately naive, as an independent second
+// opinion on the gate's own bookkeeping. It must not share the gate's YAML
+// reader, or a blind spot in that reader would silence both sides at once.
+function wrapperCallSitesInTree() {
+  let n = 0;
+  for (const file of readdirSync(join(repoRoot, '.github/workflows'))) {
+    if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue;
+    const text = readFileSync(join(repoRoot, '.github/workflows', file), 'utf8');
+    for (const line of text.split('\n')) {
+      if (line.trimStart().startsWith('#')) continue;
+      if (/^\s*(?:-\s+)?uses:\s*\.\/\.github\/actions\/setup-go\s*$/.test(line)) n++;
+    }
+  }
+  return n;
+}
+
+test('an anchored steps block is scanned, not skipped', () => {
+  // e2e.yml declares `steps: &dashboard_shard_steps` and re-uses it via
+  // `steps: *dashboard_shard_steps`. The anchor form carries the body, so it
+  // must be read; the alias form re-uses that same body, so reading it again
+  // would double-count every call site inside it.
+  const anchored = [
+    'jobs:',
+    '  shard:',
+    '    steps: &shared',
+    '      - uses: ./.github/actions/setup-go',
+    '  shard-info:',
+    '    steps: *shared',
+  ].join('\n');
+
+  const blocks = stepBlocks(anchored, 'anchored.yml');
+  assert.equal(blocks.length, 1, 'the anchor contributes its body exactly once');
+  assert.equal(
+    blocks[0].steps.flat().filter((l) => stepUses([l]) === './.github/actions/setup-go').length ||
+      blocks[0].steps.filter((s) => stepUses(s) === './.github/actions/setup-go').length,
+    1,
+    'the call site inside the anchored block must be visible to the scanner',
+  );
+});
+
+test('a steps: shape the scanner cannot follow fails loudly', () => {
+  // The failure mode this gate had: an unreadable `steps:` line yielded no
+  // block and the whole job went unscanned, so the gate reported clean for the
+  // wrong reason. Anything unrecognised must now stop the run instead.
+  assert.throws(
+    () => stepBlocks(['jobs:', '  a:', '    steps: !!weird', '      - run: x'].join('\n'), 'odd.yml'),
+    /cannot follow/,
+    'an unparsed steps block must fail the gate rather than silently vanish',
+  );
 });
 
 test('no Go setup in the tree can archive an empty module cache', () => {
