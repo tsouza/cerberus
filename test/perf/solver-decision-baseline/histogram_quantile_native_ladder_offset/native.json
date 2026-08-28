@@ -2,7 +2,7 @@
   "query": "histogram_quantile_native_ladder_offset/native",
   "lowering": "native",
   "routed": true,
-  "k": 15,
+  "k": 8,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 8,

@@ -2,7 +2,7 @@
   "query": "changes_nan_run/native",
   "lowering": "native",
   "routed": true,
-  "k": 12,
+  "k": 8,
   "reason": "routed",
   "n_anchors": 241,
   "fanout": 20,
