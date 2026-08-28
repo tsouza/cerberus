@@ -722,3 +722,51 @@ func TestSetEntryTTLAndSetReValidationFractionNoOpOnNonPositiveInput(t *testing.
 		}
 	}
 }
+
+// TestSingleRouteBFailureDoesNotLockOutTheKey pins the corroboration floor on
+// the BothFail transition (#2684).
+//
+// BothFail is the memo's most destructive verdict: it suppresses all further
+// probing and no route-A failure refreshes it, so it holds for the full TTL.
+// It used to be written on the FIRST route-B resource failure, while route-A
+// failures needed minCorroboratingFailures before they earned so much as probe
+// eligibility. Because the Key deliberately fuses group-by shapes, the query
+// that failed and the query that lost its verdict need not be the same one.
+func TestSingleRouteBFailureDoesNotLockOutTheKey(t *testing.T) {
+	t.Parallel()
+
+	m := New(time.Minute)
+	k := Key{RootKind: "*chplan.Aggregate", AggFuncs: "sum"}
+
+	m.Observe(k, RouteB, OutcomeResourceFailure)
+	if state, _ := m.Lookup(k); state == BothFail {
+		t.Fatal("one route-B resource failure locked the key out; BothFail must need the same\n" +
+			"corroboration a route-A failure needs, or a single transient rejection strips every\n" +
+			"shape sharing this Key of a working verdict for the whole TTL")
+	}
+
+	m.Observe(k, RouteB, OutcomeResourceFailure)
+	if state, _ := m.Lookup(k); state != BothFail {
+		t.Errorf("two consecutive route-B resource failures must reach BothFail, got %v", state)
+	}
+}
+
+// TestRouteBSuccessClearsAccumulatedFailure pins that the damping cannot strand
+// a key: a success resets the count rather than leaving it one failure from
+// lockout forever.
+func TestRouteBSuccessClearsAccumulatedFailure(t *testing.T) {
+	t.Parallel()
+
+	m := New(time.Minute)
+	k := Key{RootKind: "*chplan.Aggregate", AggFuncs: "sum"}
+
+	m.Observe(k, RouteB, OutcomeResourceFailure)
+	m.Observe(k, RouteB, OutcomeSuccess)
+	if state, _ := m.Lookup(k); state != PreferB {
+		t.Fatalf("a success must replace the accumulated failure, got %v", state)
+	}
+	m.Observe(k, RouteB, OutcomeResourceFailure)
+	if state, _ := m.Lookup(k); state == BothFail {
+		t.Error("the failure count survived a success, so the key locks out one failure early")
+	}
+}

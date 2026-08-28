@@ -95,10 +95,16 @@ const (
 // Key is comparable (usable as a Go map key): every field is a primitive,
 // a bool, or a string built only from closed query-language vocabulary
 // (function names, operator kinds) — never a metric name, label name,
-// label value, or timestamp. This is the same category of information
-// planShapeID (internal/engine/plan_shape_id.go) already exposes at a
-// coarser grain, and no coarser than ClickHouse's own normalized
-// query_log text.
+// label value, or timestamp. It carries the same CATEGORY of information
+// planShapeID (internal/engine/plan_shape_id.go) exposes, and no more than
+// ClickHouse's own normalized query_log text.
+//
+// It is NOT uniformly finer-grained than planShapeID, and on one axis it is
+// deliberately coarser: the group-by set contributes nothing. planShapeID
+// emits `agg=<arity>` and so separates `sum by(le)` from `sum by(le,uri)`;
+// this Key fuses them (see GroupBy under [keyWalker.walk]). That fusion is
+// intentional, not an oversight — the reasoning is recorded on the walker's
+// Aggregate arm, and it is the subject of #2684.
 type Key struct {
 	// RootKind is the plan root node's Go type name (e.g. "*chplan.Aggregate").
 	RootKind string
@@ -210,6 +216,33 @@ func (w *keyWalker) walk(n chplan.Node) {
 			for _, fn := range v.AggFuncs {
 				w.aggFuncs = append(w.aggFuncs, string(fn.Fn))
 			}
+			// v.GroupBy is READ DELIBERATELY NOT AT ALL, so `sum by(le)` and
+			// `sum by(le,uri)` share a Key (#2684).
+			//
+			// Route B's only decomposition is anchor-grid partitioning, and the
+			// bound it relieves is `(groups x anchors) + (rawRows x width^2)`.
+			// Slicing divides anchors and rawRows; it never divides groups. The
+			// group count is therefore a common factor that sharding relieves
+			// proportionally, so the verdict this memo actually records —
+			// "sharding relieves this bound for this cost geometry" — transfers
+			// across by() arity rather than being specific to it. Separating on
+			// grouping would add a term the routing decision does not depend on,
+			// and the cost of that is concrete: a rarely-refreshed expensive
+			// panel earns most of its benefit from a sibling shape priming the
+			// key first, which arity would cut.
+			//
+			// Arity would also be a poor proxy for the worry it answers:
+			// `by(uri)` and `by(pod)` are both arity 1 and can differ in
+			// cardinality by orders of magnitude, so they would still collide.
+			// It separates only the subset case.
+			//
+			// This is safe because the memo never decides alone.
+			// deriveRouteMemoDispatch re-derives Solver.Eligible on the ACTUAL
+			// plan at every dispatch, and the density guard is an emit-time
+			// throwIf measuring the real per-statement cost, so a memo hit
+			// cannot route a plan the solver rejects or slip a query past the
+			// bound. The blast radius of a wrong hit is a wasted route-B attempt
+			// that falls back to route A, never a wrong answer.
 		case *chplan.VectorJoin:
 			w.hasJoin = true
 		case *chplan.UnionAll:
