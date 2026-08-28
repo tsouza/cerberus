@@ -1,5 +1,5 @@
 /**
- * Phase-5 variable / time-range matrix sweep — nightly-only.
+ * Phase-5 variable / time-range matrix sweep — dashboard-lane gating.
  *
  * Iterates every provisioned dashboard, every aggregating or
  * histogram_quantile panel, and re-runs the phase-1 label-shape +
@@ -30,14 +30,22 @@
  *     surfaces as a missing-final-sample shape on a step≥panel-window
  *     run.
  *
- * Gate posture: this spec is NIGHTLY-ONLY (Q2 decision in
- * `/home/thiago/.claude/plans/e2e-enhance.md` §9) and runs from the
- * `dashboard` job in `.github/workflows/e2e.yml`, NOT from
- * `compose-smoke.yml`. The variable / time-range iteration is the
- * highest flake-risk family per §8.2 of the plan (a 24h range against
- * a freshly-started compose stack can legitimately return empty), so
- * it stays informational on push-to-main + nightly + manual dispatch
- * until the flake rate is observed < 1% over a fix cycle.
+ * Gate posture: this spec runs from the k3d `dashboard` lane in
+ * `.github/workflows/e2e.yml`, NOT from `compose-smoke.yml`, and it
+ * does not run on an ordinary pull request (that lane short-circuits
+ * there). Everywhere it DOES run — push-to-main, `release/*.x`
+ * pushes, the nightly schedule, a `release/*` PR, manual dispatch —
+ * it is GATING, not informational: `.github/scripts/
+ * dashboard-matrix.mjs` assigns it to `shard-smoke-b`, dispatched by
+ * the gating `dashboard-shard` matrix and NOT by the de-gated
+ * `dashboard-shard-info` matrix that carries the crawl coverage
+ * shard. Any non-success shard makes the `dashboard` roll-up job
+ * exit 1; `release.yml`'s preflight reads that check-run before it
+ * will publish, and on the nightly schedule `nightly-health-notify`
+ * files an issue. A red tuple here therefore costs a release gate and
+ * an issue, so every assertion below is load-bearing — and the spec
+ * must never fail on load it generated itself (see
+ * MATRIX_FAN_OUT_CONCURRENCY).
  *
  * Flake handling: empty frames are an ANNOTATION, not a failure (the
  * same gating pattern phase-1 uses for cerberus placeholder
@@ -163,6 +171,34 @@ const CH_QUERY_MAX_MEMORY_BYTES = 1_073_741_824;
 // tuple receiving this rejection is a PINNED-CONTRACT outcome, not a
 // tolerated error.
 const MEMORY_LIMIT_MESSAGE = `query processing would use too much memory in query execution (ClickHouse memory limit exceeded; per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes)`;
+
+// Ceiling on how many matrix tuples this spec has in flight at once.
+//
+// Why the CLIENT bounds itself: cerberus's Prom head admits at most
+// DefaultAdmitProm (internal/config/config.go) concurrent requests per
+// process, and the limiter is a NON-blocking TryAcquire
+// (internal/api/admit/admit.go) — request cap+1 is not queued, it is
+// shed instantly with 503 `admission control: server saturated`. The
+// matrix is (eligible targets × TIME_RANGES × STEP_SIZES), so firing
+// it through a bare `Promise.all(entries.map(...))` put 84 concurrent
+// query_range calls against a 64-slot pod, two of them came back 503,
+// and the spec failed on load it had generated itself (#2674).
+//
+// Why an ABSOLUTE number rather than a derived one: neither the matrix
+// size nor `cap - epsilon` is safe. Scaling with the matrix re-crosses
+// the cap the moment a maintainer adds a panel to a provisioned
+// dashboard, and tracking the server's cap turns every future change
+// to DefaultAdmitProm into a silent renegotiation of what this spec
+// exercises. A fixed small number cannot drift into the shed no matter
+// how the dashboards or the cap move. 8 leaves the rest of the shard's
+// traffic ample admission headroom and keeps the drained sweep far
+// inside this test's 15-minute budget.
+//
+// This bounds the ASSERTION phase only. The saturation path stays
+// covered deliberately and separately by the warmup's own burst
+// (ADMIT_BURST_CONCURRENCY in helpers/sweep.ts), which exists to make
+// the "Admission rejections" panel non-empty.
+const MATRIX_FAN_OUT_CONCURRENCY = 8;
 
 /**
  * Prometheus `/api/v1/query_range` response shape (the subset we
@@ -332,7 +368,7 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
 
   testInfo.annotations.push({
     type: 'time-ranges',
-    description: `swept ${entries.length} (panel × range × step) iteration(s) across ${dashboards.length} dashboard(s) — ${aggregatingPanels} aggregating target(s), ${histogramPanels} histogram_quantile target(s), ${TIME_RANGES.length} range(s), ${STEP_SIZES.length} step(s)`,
+    description: `swept ${entries.length} (panel × range × step) iteration(s) across ${dashboards.length} dashboard(s) — ${aggregatingPanels} aggregating target(s), ${histogramPanels} histogram_quantile target(s), ${TIME_RANGES.length} range(s), ${STEP_SIZES.length} step(s), drained at most ${MATRIX_FAN_OUT_CONCURRENCY} tuple(s) in flight (fan-out ceiling)`,
   });
 
   // Per-dashboard iteration count — surfaces in the test output so a
@@ -371,174 +407,193 @@ test('time-ranges: every aggregating / histogram panel re-asserts under (range, 
 
   const now = Math.floor(Date.now() / 1000);
 
-  await Promise.all(
-    entries.map(async (e) => {
-      const start = now - e.range.windowSeconds;
-      const end = now;
-      const surface = `${e.dashboardTitle} :: ${e.panelTitle} :: ${e.refId} :: range=${e.range.label} step=${e.step.label}`;
+  // Bounded worker-pool drain (see MATRIX_FAN_OUT_CONCURRENCY). Each
+  // worker pulls the next index off a shared cursor until `entries` is
+  // exhausted, so the sweep never has more than the ceiling's worth of
+  // query_range calls in flight and cannot provoke the Prom head's
+  // admission shed. ONLY the scheduling changes: `sweepEntry` is the
+  // same per-tuple body the previous unbounded `Promise.all(entries.
+  // map(...))` ran, tuple for tuple, so no assertion is weakened by the
+  // bound — every tuple still gets fired and still gets asserted.
+  const sweepEntry = async (e: MatrixEntry) => {
+    const start = now - e.range.windowSeconds;
+    const end = now;
+    const surface = `${e.dashboardTitle} :: ${e.panelTitle} :: ${e.refId} :: range=${e.range.label} step=${e.step.label}`;
 
-      const queryURL = `${baseURL}${e.proxyURL}/api/v1/query_range?query=${encodeURIComponent(
-        e.expr,
-      )}&start=${start}&end=${end}&step=${e.step.stepSeconds}`;
+    const queryURL = `${baseURL}${e.proxyURL}/api/v1/query_range?query=${encodeURIComponent(
+      e.expr,
+    )}&start=${start}&end=${end}&step=${e.step.stepSeconds}`;
 
-      // Tuples whose grid exceeds the Prometheus resolution cap MUST
-      // be rejected with the upstream-parity 400 — assert that shape
-      // and stop; the 2xx shape rules below don't apply to a tuple
-      // upstream Prometheus itself would refuse to evaluate.
-      const gridPoints = Math.floor(
-        e.range.windowSeconds / e.step.stepSeconds,
-      );
-      if (gridPoints > MAX_RESOLUTION_POINTS) {
-        try {
-          const resp = await request.get(queryURL);
-          const body = await resp.text().catch(() => '<unreadable>');
-          if (resp.status() !== 400) {
-            failures.push(
-              `[${surface}] grid of ${gridPoints} points exceeds the ${MAX_RESOLUTION_POINTS}-point Prometheus resolution cap but query_range returned ${resp.status()} (want 400)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
-            );
-            return;
-          }
-          if (!body.includes(RESOLUTION_CAP_MESSAGE)) {
-            failures.push(
-              `[${surface}] over-cap query_range returned 400 but without the upstream resolution-cap message ${JSON.stringify(RESOLUTION_CAP_MESSAGE)}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
-            );
-          }
-        } catch (err) {
-          failures.push(
-            `[${surface}] resolution-cap probe threw: ${(err as Error).message}\n  url: ${queryURL}`,
-          );
-        }
-        return;
-      }
-
+    // Tuples whose grid exceeds the Prometheus resolution cap MUST
+    // be rejected with the upstream-parity 400 — assert that shape
+    // and stop; the 2xx shape rules below don't apply to a tuple
+    // upstream Prometheus itself would refuse to evaluate.
+    const gridPoints = Math.floor(
+      e.range.windowSeconds / e.step.stepSeconds,
+    );
+    if (gridPoints > MAX_RESOLUTION_POINTS) {
       try {
         const resp = await request.get(queryURL);
-
-        // Memory-limit dual contract (see file header): a 422 is
-        // acceptable IFF it is exactly cerberus's pinned
-        // resource-exhausted rejection — errorType=execution with the
-        // byte-for-byte MEMORY_LIMIT_MESSAGE. That outcome is asserted
-        // precisely (a 422 with any other body remains a hard
-        // failure) and logged loudly so the nightly report shows
-        // which tuples took the rejection branch.
-        if (resp.status() === 422) {
-          const body = await resp.text().catch(() => '<unreadable>');
-          let parsed: PromErrorEnvelope | null = null;
-          try {
-            parsed = JSON.parse(body) as PromErrorEnvelope;
-          } catch {
-            parsed = null;
-          }
-          if (
-            parsed?.status === 'error' &&
-            parsed?.errorType === 'execution' &&
-            parsed?.error === MEMORY_LIMIT_MESSAGE
-          ) {
-            memoryLimitCount++;
-            testInfo.annotations.push({
-              type: 'time-ranges-memory-limit',
-              description: `[${surface}] tuple took the 422 memory-limit pinned-contract branch (ClickHouse per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes; run-27277793810 class) for expr: ${e.expr}`,
-            });
-            return;
-          }
+        const body = await resp.text().catch(() => '<unreadable>');
+        if (resp.status() !== 400) {
           failures.push(
-            `[${surface}] query_range returned 422 but NOT the pinned memory-limit contract (want errorType=execution + exact message ${JSON.stringify(MEMORY_LIMIT_MESSAGE)})\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${surface}] grid of ${gridPoints} points exceeds the ${MAX_RESOLUTION_POINTS}-point Prometheus resolution cap but query_range returned ${resp.status()} (want 400)\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
           );
           return;
         }
-
-        if (resp.status() < 200 || resp.status() > 299) {
-          const body = await resp.text().catch(() => '<unreadable>');
+        if (!body.includes(RESOLUTION_CAP_MESSAGE)) {
           failures.push(
-            `[${surface}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+            `[${surface}] over-cap query_range returned 400 but without the upstream resolution-cap message ${JSON.stringify(RESOLUTION_CAP_MESSAGE)}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
           );
-          return;
-        }
-
-        const prom = (await resp.json()) as PromQueryRangeResponse;
-        if (prom.status !== 'success') {
-          failures.push(
-            `[${surface}] cerberus query_range returned status=${prom.status ?? '<missing>'}\n  expr: ${e.expr}`,
-          );
-          return;
-        }
-
-        const frameCount = (prom.data?.result ?? []).length;
-        const envelope = promToDsEnvelope(e.refId, prom);
-
-        if (frameCount === 0) {
-          // Empty frames on this (range, step) — annotate, don't
-          // fail. The 24h range against a freshly-started compose
-          // stack legitimately returns empty (the seed only spans
-          // ~60s); the same applies to histogram panels whose
-          // underlying _bucket series haven't been emitted yet at
-          // the very-small-range end.
-          emptyFrameCount++;
-          testInfo.annotations.push({
-            type: 'time-ranges-empty',
-            description: `[${surface}] no series returned for expr: ${e.expr} — (range × step) iteration excluded from shape rules (empty-frame flake gate)`,
-          });
-          return;
-        }
-        okFrameCount++;
-
-        // Aggregating-target assertions. Mirrors phase-1
-        // (iterate-panel-shape.spec.ts) — every `by(...)` key MUST
-        // appear on at least one returned frame; every `without(...)`
-        // key MUST be absent from every frame.
-        if (e.byKeys.length > 0) {
-          try {
-            assertLabelShape(envelope, e.byKeys);
-          } catch (err) {
-            failures.push(
-              `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
-            );
-          }
-        }
-        if (e.withoutKeys.length > 0) {
-          try {
-            assertLabelAbsent(envelope, e.withoutKeys);
-          } catch (err) {
-            failures.push(
-              `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
-            );
-          }
-        }
-
-        // Histogram-target assertions. Mirrors phase-2
-        // (iterate-histogram-completeness.spec.ts) — the matrix here
-        // does NOT re-probe `/api/v1/series` for _bucket presence
-        // (phase-2 already pins that at the short range; doing it
-        // per-(range, step) would 12× the probe count for no extra
-        // signal). Instead we apply the two branches based on the
-        // expression's structure alone:
-        //   - histogram_quantile over a `_bucket`-named root → the
-        //     response MUST be non-empty (assertHistogramComplete).
-        //   - histogram_quantile over a non-bucket root → the
-        //     response MUST be empty (assertNoFabricatedValue).
-        if (e.isHistogram) {
-          if (e.histogramName === null) {
-            try {
-              assertNoFabricatedValue(envelope, e.expr);
-            } catch (err) {
-              failures.push(
-                `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
-              );
-            }
-          } else {
-            try {
-              assertHistogramComplete(envelope, e.histogramName);
-            } catch (err) {
-              failures.push(
-                `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
-              );
-            }
-          }
         }
       } catch (err) {
         failures.push(
-          `[${surface}] time-ranges probe threw: ${(err as Error).message}\n  url: ${queryURL}`,
+          `[${surface}] resolution-cap probe threw: ${(err as Error).message}\n  url: ${queryURL}`,
         );
+      }
+      return;
+    }
+
+    try {
+      const resp = await request.get(queryURL);
+
+      // Memory-limit dual contract (see file header): a 422 is
+      // acceptable IFF it is exactly cerberus's pinned
+      // resource-exhausted rejection — errorType=execution with the
+      // byte-for-byte MEMORY_LIMIT_MESSAGE. That outcome is asserted
+      // precisely (a 422 with any other body remains a hard
+      // failure) and logged loudly so the nightly report shows
+      // which tuples took the rejection branch.
+      if (resp.status() === 422) {
+        const body = await resp.text().catch(() => '<unreadable>');
+        let parsed: PromErrorEnvelope | null = null;
+        try {
+          parsed = JSON.parse(body) as PromErrorEnvelope;
+        } catch {
+          parsed = null;
+        }
+        if (
+          parsed?.status === 'error' &&
+          parsed?.errorType === 'execution' &&
+          parsed?.error === MEMORY_LIMIT_MESSAGE
+        ) {
+          memoryLimitCount++;
+          testInfo.annotations.push({
+            type: 'time-ranges-memory-limit',
+            description: `[${surface}] tuple took the 422 memory-limit pinned-contract branch (ClickHouse per-query cap ${CH_QUERY_MAX_MEMORY_BYTES} bytes; run-27277793810 class) for expr: ${e.expr}`,
+          });
+          return;
+        }
+        failures.push(
+          `[${surface}] query_range returned 422 but NOT the pinned memory-limit contract (want errorType=execution + exact message ${JSON.stringify(MEMORY_LIMIT_MESSAGE)})\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+        );
+        return;
+      }
+
+      if (resp.status() < 200 || resp.status() > 299) {
+        const body = await resp.text().catch(() => '<unreadable>');
+        failures.push(
+          `[${surface}] cerberus query_range → ${resp.status()}\n  url: ${queryURL}\n  body: ${body.slice(0, 600)}`,
+        );
+        return;
+      }
+
+      const prom = (await resp.json()) as PromQueryRangeResponse;
+      if (prom.status !== 'success') {
+        failures.push(
+          `[${surface}] cerberus query_range returned status=${prom.status ?? '<missing>'}\n  expr: ${e.expr}`,
+        );
+        return;
+      }
+
+      const frameCount = (prom.data?.result ?? []).length;
+      const envelope = promToDsEnvelope(e.refId, prom);
+
+      if (frameCount === 0) {
+        // Empty frames on this (range, step) — annotate, don't
+        // fail. The 24h range against a freshly-started compose
+        // stack legitimately returns empty (the seed only spans
+        // ~60s); the same applies to histogram panels whose
+        // underlying _bucket series haven't been emitted yet at
+        // the very-small-range end.
+        emptyFrameCount++;
+        testInfo.annotations.push({
+          type: 'time-ranges-empty',
+          description: `[${surface}] no series returned for expr: ${e.expr} — (range × step) iteration excluded from shape rules (empty-frame flake gate)`,
+        });
+        return;
+      }
+      okFrameCount++;
+
+      // Aggregating-target assertions. Mirrors phase-1
+      // (iterate-panel-shape.spec.ts) — every `by(...)` key MUST
+      // appear on at least one returned frame; every `without(...)`
+      // key MUST be absent from every frame.
+      if (e.byKeys.length > 0) {
+        try {
+          assertLabelShape(envelope, e.byKeys);
+        } catch (err) {
+          failures.push(
+            `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
+          );
+        }
+      }
+      if (e.withoutKeys.length > 0) {
+        try {
+          assertLabelAbsent(envelope, e.withoutKeys);
+        } catch (err) {
+          failures.push(
+            `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
+          );
+        }
+      }
+
+      // Histogram-target assertions. Mirrors phase-2
+      // (iterate-histogram-completeness.spec.ts) — the matrix here
+      // does NOT re-probe `/api/v1/series` for _bucket presence
+      // (phase-2 already pins that at the short range; doing it
+      // per-(range, step) would 12× the probe count for no extra
+      // signal). Instead we apply the two branches based on the
+      // expression's structure alone:
+      //   - histogram_quantile over a `_bucket`-named root → the
+      //     response MUST be non-empty (assertHistogramComplete).
+      //   - histogram_quantile over a non-bucket root → the
+      //     response MUST be empty (assertNoFabricatedValue).
+      if (e.isHistogram) {
+        if (e.histogramName === null) {
+          try {
+            assertNoFabricatedValue(envelope, e.expr);
+          } catch (err) {
+            failures.push(
+              `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
+            );
+          }
+        } else {
+          try {
+            assertHistogramComplete(envelope, e.histogramName);
+          } catch (err) {
+            failures.push(
+              `[${surface}] ${(err as Error).message}\n  expr: ${e.expr}`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      failures.push(
+        `[${surface}] time-ranges probe threw: ${(err as Error).message}\n  url: ${queryURL}`,
+      );
+    }
+  };
+
+  // Shared cursor. JavaScript's run-to-completion semantics make the
+  // post-increment atomic with respect to the other workers, so no two
+  // workers can claim the same entry and none can be skipped.
+  let nextEntryIndex = 0;
+  const workerCount = Math.min(MATRIX_FAN_OUT_CONCURRENCY, entries.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (let i = nextEntryIndex++; i < entries.length; i = nextEntryIndex++) {
+        await sweepEntry(entries[i]);
       }
     }),
   );
