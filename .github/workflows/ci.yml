@@ -145,7 +145,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The `test oracle module` step below runs `go test ./...` inside the
+      # nested test/oracle module, whose graph the root warm step never
+      # fetches — leaving that one proxy fetch cold and unretried (#2700).
       - uses: ./.github/actions/setup-go
+        with:
+          also-warm: test/oracle/go.mod
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
