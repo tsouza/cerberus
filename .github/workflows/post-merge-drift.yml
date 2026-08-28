@@ -71,10 +71,7 @@ jobs:
           # change set at all.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: Derive the shards this merge implies
         id: plan
@@ -123,10 +120,7 @@ jobs:
           # so a shallow checkout would leave a real drift unable to name it.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -206,10 +200,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -279,10 +270,7 @@ jobs:
           # baseline's inputs.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:

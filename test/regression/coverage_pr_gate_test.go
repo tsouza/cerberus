@@ -12,10 +12,14 @@ const (
 	// plus the parallel `coverage-default`/`coverage-chdb` lane jobs and a
 	// `coverage` aggregator. The structural checks this test pins moved to
 	// coverage-plan with them.
-	coverageJobName    = "coverage-plan"
-	coverageGateTest   = "node --test .github/scripts/coverage-package-floor.test.mjs"
-	coverageGateRun    = "node .github/scripts/coverage-package-floor.mjs"
-	coverageSetupGo    = "uses: actions/setup-go@v7"
+	coverageJobName  = "coverage-plan"
+	coverageGateTest = "node --test .github/scripts/coverage-package-floor.test.mjs"
+	coverageGateRun  = "node .github/scripts/coverage-package-floor.mjs"
+	// Go setup reaches the upstream Action only through the local composite
+	// (tsouza/cerberus#2676), which warms GOMODCACHE so no job can archive an
+	// empty module cache. `assert-go-setup-hardened.mjs` is what keeps every
+	// call site on that path; this constant just has to name the same one.
+	coverageSetupGo    = "uses: ./.github/actions/setup-go"
 	coverageHeavyGuard = "if: steps.run_heavy.outputs.run_heavy == 'true'"
 )
 

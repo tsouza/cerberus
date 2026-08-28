@@ -136,10 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: Test coverage gates
         run: |
@@ -188,10 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -234,10 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -322,10 +313,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:

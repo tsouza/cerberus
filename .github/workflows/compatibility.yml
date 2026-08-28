@@ -17,7 +17,9 @@ name: compatibility
 # Per ~/.claude/CI_STEPS.md, every step uses an official / well-known
 # Action — no `curl | sh` installs. Actions used here:
 #   * actions/checkout@v7           — stdlib.
-#   * actions/setup-go@v7           — `go run ./cmd/seed` + driver builds.
+#   * ./.github/actions/setup-go    — `go run ./cmd/seed` + driver builds. Wraps
+#     actions/setup-go@v7 and warms GOMODCACHE, so the cache is never saved
+#     empty and the cold module fetch is retried.
 #   * ./.github/actions/setup-buildx — buildkit-backed compose build, with
 #     the BuildKit bootstrap image acquired through a retry.
 #   * taiki-e/install-action@v2.85.5     — installs `just`.
@@ -210,10 +212,7 @@ jobs:
           # both refs reachable (mirrors ci.yml's forbid-skip checkout).
           fetch-depth: 0
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       # Every discipline scan (pure `git grep` / `perl`, no Go toolchain),
       # run first because they are the cheapest and the most common cause
@@ -270,10 +269,7 @@ jobs:
       # only ships @main; repo CI rule: pin explicitly, no HEAD).
       - uses: ./.github/actions/free-disk-space
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -449,10 +445,7 @@ jobs:
       # to a commit SHA (action only ships @main).
       - uses: ./.github/actions/free-disk-space
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -589,10 +582,7 @@ jobs:
       # Same compose stack + same DiskPressure risk as compatibility/prometheus.
       - uses: ./.github/actions/free-disk-space
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -914,10 +904,7 @@ jobs:
       # The run script does `go run ./cmd/seed` + `go test -c` of the
       # vendored bench driver, so we need a Go toolchain. setup-go
       # honours go.mod's `go` directive and pulls the matching toolchain.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: ./.github/actions/registry-login
         with:
