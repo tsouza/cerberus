@@ -426,6 +426,28 @@ func (m *Memo) observeRouteBLocked(k Key, now time.Time, outcome Outcome) {
 	case OutcomeSuccess:
 		m.entries[k] = &Verdict{state: PreferB, createdAt: now}
 	case OutcomeResourceFailure:
+		// BothFail needs the SAME corroboration route-A failures need before
+		// they earn probe eligibility. Writing it on the first failure was the
+		// memo's one un-damped transition, and it is also its most destructive:
+		// BothFail suppresses all further probing and no route-A failure
+		// refreshes it, so a single route-B rejection cost every shape sharing
+		// this Key its working PreferB verdict for the whole TTL. That
+		// asymmetry bit hardest exactly where the Key is coarsest — the
+		// group-by fusion of #2684 — because the failing shape and the
+		// demoted one need not be the same query.
+		//
+		// A first failure demotes to Unknown carrying the count, so the next
+		// dispatch re-derives eligibility and may probe again; the second
+		// consecutive one locks out. A success anywhere resets by replacing
+		// the entry outright.
+		if v, ok := m.entries[k]; ok && v.state != BothFail && v.corroboration+1 < minCorroboratingFailures {
+			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: v.corroboration + 1}
+			break
+		}
+		if _, ok := m.entries[k]; !ok && minCorroboratingFailures > 1 {
+			m.entries[k] = &Verdict{state: Unknown, createdAt: now, corroboration: 1}
+			break
+		}
 		m.entries[k] = &Verdict{state: BothFail, createdAt: now}
 	default:
 		return
