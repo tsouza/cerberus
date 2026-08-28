@@ -330,3 +330,60 @@ func serveReadyz(t *testing.T, h *Handler) *httptest.ResponseRecorder {
 	mux.ServeHTTP(rec, req)
 	return rec
 }
+
+// TestReadyz_CapabilitiesUnresolved: a process whose ClickHouse capability
+// probe never succeeded is NOT ready, even though it is reachable and its
+// schema is present.
+//
+// This is the startup race that produced 502s in the e2e dashboard sweep: a
+// cerberus that boots beside its ClickHouse can win, probe a server that is
+// not listening yet, and pin itself to the supported floor. Every native
+// lowering is then unavailable, and a wide panel served on the fan-out
+// fallback takes long enough to exceed the dashboard proxy's timeout. Holding
+// readiness costs a few seconds; admitting traffic costs a red panel.
+func TestReadyz_CapabilitiesUnresolved(t *testing.T) {
+	const reason = "clickhouse version probe has not succeeded"
+	h := New(Options{
+		Pinger:               &stubPinger{},
+		CapabilitiesResolved: func() (bool, string) { return false, reason },
+		CacheTTL:             -1,
+	})
+
+	rec := serveReadyz(t, h)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503 — a floor-pinned process serves the slow shape", rec.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if resp["clickhouse"] != "ok" {
+		t.Errorf("clickhouse = %q; want ok — the server IS reachable, that is the point", resp["clickhouse"])
+	}
+	if !strings.Contains(resp["capabilities"], reason) {
+		t.Errorf("capabilities = %q; want the probe reason embedded", resp["capabilities"])
+	}
+}
+
+// TestReadyz_CapabilitiesResolvedIsReady: the condition is "we could not ask",
+// not "the answer was small". A ClickHouse that genuinely predates a feature
+// floor answers its probe and must not hold the pod out of its Service — and a
+// ready body carries no `capabilities` key at all, so the readiness surface is
+// unchanged for every deployment that was already healthy.
+func TestReadyz_CapabilitiesResolvedIsReady(t *testing.T) {
+	h := New(Options{
+		Pinger:               &stubPinger{},
+		CapabilitiesResolved: func() (bool, string) { return true, "" },
+		CacheTTL:             -1,
+	})
+
+	rec := serveReadyz(t, h)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "capabilities") {
+		t.Errorf("a ready body must not mention capabilities, got %s", rec.Body.String())
+	}
+}

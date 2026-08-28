@@ -596,10 +596,11 @@ func run() error {
 	// deployed to serve" in every deployment mode — including the split mode
 	// where one Deployment serves a single head.
 	healthHandler := health.New(health.Options{
-		Pinger:        client.ForHead(chclient.HeadProbe),
-		SchemaReady:   schemaReady,
-		SchemaPresent: schemaPresent,
-		HeadBreakers:  enabledHeadBreakers(client, cfg),
+		Pinger:               client.ForHead(chclient.HeadProbe),
+		SchemaReady:          schemaReady,
+		SchemaPresent:        schemaPresent,
+		HeadBreakers:         enabledHeadBreakers(client, cfg),
+		CapabilitiesResolved: capabilitiesResolved(chOpts),
 	})
 
 	// /info is cerberus's own metadata/health/connection fingerprint — a

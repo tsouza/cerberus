@@ -24,7 +24,28 @@ import (
 // first query, matching every other CLI-driven ClickHouse connection in this
 // codebase.
 func OpenSQLDB(cfg Config) (*sql.DB, error) {
-	db := clickhouse.OpenDB(buildOptions(cfg))
+	opts := buildOptions(cfg)
+	// buildOptions never populates Settings — the serving path applies its caps
+	// per query in Client.querySettings, which this handle does not go through.
+	// Left as-is an offline tool would run UNCAPPED against the deployment it is
+	// inspecting: `cerberus audit`'s probes are uniqExact and arrayJoin over a
+	// whole retention window, exactly the shape that costs a production server
+	// real memory. A read-only tool has no business being the query that
+	// destabilises what it came to measure, so the same two caps the server
+	// enforces are stamped on the connection here.
+	settings := clickhouse.Settings{}
+	if cfg.MaxQueryMemoryBytes > 0 {
+		settings["max_memory_usage"] = cfg.MaxQueryMemoryBytes
+	}
+	if cfg.QueryTimeout > 0 {
+		settings[settingMaxExecutionTime] = cfg.QueryTimeout.Seconds()
+		settings[settingTimeoutOverflowMode] = timeoutOverflowModeThrow
+	}
+	if len(settings) > 0 {
+		opts.Settings = settings
+	}
+
+	db := clickhouse.OpenDB(opts)
 	if db == nil {
 		return nil, fmt.Errorf("chclient: OpenDB returned no handle for %v", cfg.Addrs)
 	}

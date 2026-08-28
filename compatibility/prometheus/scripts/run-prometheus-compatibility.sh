@@ -193,6 +193,36 @@ echo "==> bringing up compatibility stack"
 # failure still fails on the first attempt.
 node "$REPO_ROOT/.github/scripts/build-with-registry-retry.mjs" \
     docker compose up -d --build --wait clickhouse prometheus cerberus
+
+# `--wait` above only satisfies each service's own healthcheck, and cerberus's
+# is `cerberus --version` — the distroless image carries no shell, wget or
+# curl, so the compose probe can only prove the BINARY runs. It says healthy
+# before the process has resolved anything about the server it fronts.
+#
+# That gap is not cosmetic. A cerberus that reaches ClickHouse before the
+# native-protocol port accepts connections resolves its capability set against
+# the supported FLOOR, which turns off every native lowering; the fan-out
+# fallback is slow enough that `resets(...[5m])` over an exponential histogram
+# exceeds the tester's per-query deadline. The harness then records
+# `context deadline exceeded` as an `unexpectedFailure`, which the ratchet
+# reports as REGRESSED parity — a timeout wearing a divergence's clothes, on a
+# gate whose whole job is to mean what it says (tsouza/cerberus#2707).
+#
+# The host has curl, so poll the real readiness endpoint here rather than
+# teaching the container to probe itself.
+echo "==> waiting for cerberus /readyz"
+readyz_deadline=$((SECONDS + 120))
+until curl -fsS -o /dev/null "http://localhost:29091/readyz"; do
+    if (( SECONDS >= readyz_deadline )); then
+        echo "cerberus did not become ready within 120s; last /readyz body:" >&2
+        curl -sS "http://localhost:29091/readyz" >&2 || true
+        docker compose logs --tail 50 cerberus >&2 || true
+        exit 1
+    fi
+    sleep 1
+done
+echo "==> cerberus ready"
+
 echo "==> running seeder (go run ./cmd/seed)"
 (cd "$ROOT_DIR/../.." && go run ./compatibility/prometheus/cmd/seed/)
 

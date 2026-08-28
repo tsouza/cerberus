@@ -22,8 +22,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"sort"
 )
+
+// plainIdentifier is what Options.Table must match: a ClickHouse identifier,
+// optionally database-qualified. Anchored at both ends so nothing rides along
+// behind a valid-looking prefix.
+var plainIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 // Querier is the read-only subset of *sql.DB this package needs. Narrow on
 // purpose: an audit must never be able to mutate the deployment it inspects,
@@ -56,6 +62,18 @@ func (o Options) Validate() error {
 	switch {
 	case o.Table == "":
 		return fmt.Errorf("chaudit: Table is required")
+	case !plainIdentifier.MatchString(o.Table):
+		// ClickHouse has no bind form for an identifier, so Table reaches the
+		// query through string interpolation. It arrives from a command-line
+		// flag, so "the caller configured it" is not the same as "the caller
+		// meant it" — a typo becomes a confusing ClickHouse parse error and a
+		// pasted fragment becomes something worse. Restricting it to a plain
+		// (optionally database-qualified) identifier is what lets the queries
+		// interpolate it without further ceremony.
+		return fmt.Errorf(
+			"chaudit: Table %q is not a plain identifier (letters, digits, underscore, "+
+				"optionally database-qualified)", o.Table,
+		)
 	case o.WindowSeconds <= 0:
 		return fmt.Errorf("chaudit: WindowSeconds must be > 0, got %d", o.WindowSeconds)
 	case o.Anchors <= 0:
@@ -132,13 +150,28 @@ func (r Report) OverBudget() []MetricAudit {
 // report and any future gate agree by construction rather than by two authors
 // transcribing the same formula.
 //
-// It mirrors internal/chsql's bucketGridDensityGuardFrag: `(series x anchors)
-// + (rawRows x width^2)`. The duplication is deliberate and bounded — chsql
-// emits this as SQL for ClickHouse to evaluate at query time, which an audit
-// cannot reuse because there is no query to attach it to. The two are pinned
-// together by TestCostUnits_MatchesTheEmittedGuardModel.
+// It mirrors internal/chsql's bucketGridDensityGuardFrag:
+// `(groups x anchors) + (rawRows x width^2)`.
+//
+// `groups` is NOT the series count. The emitter groups by the query's key
+// columns AND the `le` rung (range_bucket_grid_native_bound.go's
+// probeGroups.GroupBy(keyCols..., Col(bucketGridLeAlias))), because Level-0
+// unnests one row per (sample, rung) and Level-1 runs a grid per (series,
+// rung). That file's own header states it: "`groups` is series cardinality
+// times the number of distinct `le` rungs a series' own layout carries".
+//
+// Reading `groups` as `series` understated the first term by the rung count —
+// 12 to 16 on the calibrated production shapes — so the audit reported
+// headroom on metrics the engine would reject. That is the one failure this
+// package must not have: a clean audit that precedes an incident is worse than
+// no audit, because it was consulted and believed.
+//
+// The duplication is deliberate and bounded: chsql emits this as SQL for
+// ClickHouse to evaluate at query time, which an audit cannot reuse because
+// there is no query to attach it to. TestCostUnits_MatchesTheEmittedGuardModel
+// pins the two together.
 func costUnits(series, anchors, rawRows, width int64) int64 {
-	return series*anchors + rawRows*width*width
+	return series*width*anchors + rawRows*width*width
 }
 
 // headroomPct is how much of the budget remains, negative once exceeded.

@@ -72,14 +72,21 @@ func TestPlan_OOMShapeRoutes(t *testing.T) {
 	if d.Reason != ReasonRouted {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
-	if d.K != 12 {
-		t.Fatalf("K = %d, want 12 (N/MinAnchorsPerSlice, not the MaxK backstop)", d.K)
+	// The OOM fixture's own grid derives K = N/MinAnchorsPerSlice = 12, but
+	// defaultMaxK returned to 8 for #2709, so the backstop CLIPS it. That
+	// clipping is the cost side of the trade recorded on defaultMaxK: it is
+	// what #2685 removed and #2709 put back, deliberately, to stop a small
+	// deployment paying ~11 sequential shard rounds for a grid with almost no
+	// data behind it. If this assertion ever reads 12 again, the ceiling moved
+	// and #2685's failure mode is the thing to re-check.
+	if d.K != 8 {
+		t.Fatalf("K = %d, want 8 (clipped by the MaxK backstop; derived K is 12)", d.K)
 	}
 	if d.Strategy != StrategyShardedTimeslice {
 		t.Fatalf("strategy = %q, want %q", d.Strategy, StrategyShardedTimeslice)
 	}
-	if len(d.Slices) != 12 {
-		t.Fatalf("len(Slices) = %d, want 12", len(d.Slices))
+	if len(d.Slices) != 8 {
+		t.Fatalf("len(Slices) = %d, want 8 (one per shard at the clipped K)", len(d.Slices))
 	}
 }
 
@@ -827,8 +834,8 @@ func TestPlan_ScalarAnchorCompatibleRoutes(t *testing.T) {
 	if d.Reason != ReasonRouted {
 		t.Fatalf("reason = %q, want %q", d.Reason, ReasonRouted)
 	}
-	if d.K != 12 {
-		t.Fatalf("K = %d, want 12 (same OOM shape as TestPlan_OOMShapeRoutes)", d.K)
+	if d.K != 8 {
+		t.Fatalf("K = %d, want 8 (same OOM shape as TestPlan_OOMShapeRoutes, clipped by MaxK)", d.K)
 	}
 }
 

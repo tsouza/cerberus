@@ -45,3 +45,26 @@ func TestNextReprobeDelay_NeverWaitsLongerThanTheSteadyCadence(t *testing.T) {
 			tiny, chOptFloorRetryInterval, got)
 	}
 }
+
+// TestCapabilitiesResolved_TracksTheLiveResolution pins that the readiness
+// condition reads the LIVE resolution, not the boot one — the whole point is
+// that it clears when a probe answers, without a restart.
+func TestCapabilitiesResolved_TracksTheLiveResolution(t *testing.T) {
+	t.Parallel()
+
+	live := newCHOptLive(chOptResolution{VersionFallback: true})
+	cond := capabilitiesResolved(live)
+
+	resolved, reason := cond()
+	if resolved {
+		t.Fatal("a floor fallback must hold readiness")
+	}
+	if reason == "" {
+		t.Error("the /readyz body needs a reason, not a bare false")
+	}
+
+	live.store(chOptResolution{VersionFallback: false})
+	if resolved, _ := cond(); !resolved {
+		t.Error("readiness must clear once a probe answers, without a restart")
+	}
+}

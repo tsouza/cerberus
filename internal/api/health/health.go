@@ -30,6 +30,12 @@ type SchemaReadyFunc func() bool
 // process crash-looping. When nil the schema is treated as present.
 type SchemaPresentFunc func() (present bool, reason string)
 
+// CapabilitiesResolvedFunc reports whether the ClickHouse capability set in
+// force came from a SUCCESSFUL probe, plus a reason for the /readyz body when
+// it did not. See Options.CapabilitiesResolved for why a floor fallback holds
+// readiness. When nil the capabilities are treated as resolved.
+type CapabilitiesResolvedFunc func() (resolved bool, reason string)
+
 // HeadBreakersFunc reports the circuit-breaker phase of every query head THIS
 // process actually serves, keyed by head name ("prom" / "loki" / "tempo") and
 // valued with the stable phase vocabulary "closed" / "open" / "half-open".
@@ -72,6 +78,29 @@ type Options struct {
 	// When nil the schema is treated as present.
 	SchemaPresent SchemaPresentFunc
 
+	// CapabilitiesResolved is consulted on every readiness check. When it
+	// reports unresolved the probe returns 503 with the reason.
+	//
+	// This models the SAME startup race SchemaPresent does, one layer up: a
+	// cerberus that boots beside its ClickHouse can win, probe a server that
+	// is not listening yet, and resolve its capability set against the
+	// supported floor. It is reachable and its schema is present, so every
+	// other condition here says ready — but every native lowering is
+	// unavailable, and a wide panel served on the fan-out fallback is slow
+	// enough to exceed a dashboard proxy's timeout. Admitting traffic in that
+	// window means answering with 502s the deployment could simply have waited
+	// out: the re-probe lifts the process off the floor within seconds.
+	//
+	// Only a FAILED probe holds readiness. A server that genuinely predates a
+	// feature floor answers its probe, resolves honestly to a lower version,
+	// and is ready — the condition is "we could not ask", not "the answer was
+	// small". And it cannot strand a pod that the ClickHouse ping above would
+	// not already have stranded, since a probe fails only when the server is
+	// unreachable.
+	//
+	// When nil the capability set is treated as resolved.
+	CapabilitiesResolved CapabilitiesResolvedFunc
+
 	// PingTimeout caps the per-probe ClickHouse ping. Defaults to 1s.
 	PingTimeout time.Duration
 
@@ -112,6 +141,7 @@ type Handler struct {
 	pinger        Pinger
 	schemaReady   SchemaReadyFunc
 	schemaPresent SchemaPresentFunc
+	capsResolved  CapabilitiesResolvedFunc
 	headBreakers  HeadBreakersFunc
 	pingTimeout   time.Duration
 	cacheTTL      time.Duration
@@ -127,6 +157,10 @@ type Handler struct {
 type readyResponse struct {
 	ClickHouse string `json:"clickhouse"`
 	Schema     string `json:"schema"`
+	// Capabilities is set only when the ClickHouse capability set could not be
+	// resolved from a live probe, so a ready body stays byte-identical to what
+	// it was before this condition existed.
+	Capabilities string `json:"capabilities,omitempty"`
 	// Heads maps each served head name to its circuit-breaker phase. Omitted
 	// when no HeadBreakersFunc is wired (the probe then reports only the
 	// aggregate ClickHouse + schema conditions).
@@ -141,6 +175,7 @@ func New(opts Options) *Handler {
 		pinger:        opts.Pinger,
 		schemaReady:   opts.SchemaReady,
 		schemaPresent: opts.SchemaPresent,
+		capsResolved:  opts.CapabilitiesResolved,
 		headBreakers:  opts.HeadBreakers,
 		pingTimeout:   opts.PingTimeout,
 		cacheTTL:      opts.CacheTTL,
@@ -259,6 +294,21 @@ func (h *Handler) runCheck(ctx context.Context) (readyResponse, int) {
 				ClickHouse: "ok",
 				Schema:     schema,
 				Heads:      heads,
+			}, http.StatusServiceUnavailable
+		}
+	}
+
+	if h.capsResolved != nil {
+		if resolved, reason := h.capsResolved(); !resolved {
+			caps := "unresolved"
+			if reason != "" {
+				caps = "unresolved: " + reason
+			}
+			return readyResponse{
+				ClickHouse:   "ok",
+				Schema:       "ok",
+				Capabilities: caps,
+				Heads:        heads,
 			}, http.StatusServiceUnavailable
 		}
 	}

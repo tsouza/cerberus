@@ -155,9 +155,12 @@ jobs:
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
       # The setup-go composite's module cache keeps subsequent runs fast.
-      # Use `--output` for structured JSON (gremlins exits 0 even
-      # when `--threshold-efficacy` is violated in v0.6.0, so we
-      # do the gating ourselves against the parsed JSON below).
+      # Use `--output` for structured JSON: the lane withholds
+      # `--threshold-efficacy` from gremlins and gates on the parsed report
+      # below. The pinned fork DOES exit non-zero on a violation — it just
+      # does so mid-run, before the report is written and uploaded, leaving an
+      # opaque `gremlins exited N` with no artifact and no measured-vs-threshold
+      # numbers.
       #
       # We consume gremlins via the tsouza/gremlins fork, which carries two
       # fixes cerberus needs:
