@@ -221,6 +221,12 @@ components:
   # ranks the top-N metrics/labels by cardinality (the offline-invisible OOM
   # risk). Leaf, stdlib-only — no internal deps. Wired from cmd/cerberus only.
   migrateinventory: { in: migrateinventory }
+  # chaudit answers the live-deployment counterpart of migrateinventory's
+  # pre-cutover question: which classic-histogram metrics are near a
+  # resource-bound ceiling NOW, and which label is inflating them. It opens no
+  # ClickHouse connection of its own — the caller injects an already-configured
+  # Querier — so it depends on nothing internal and holds no credentials.
+  chaudit:        { in: chaudit }
   # Offline cutover go/no-go aggregator: reads the JSON artifacts the other
   # migration blocks emit and folds them into one PASS/FAIL decision. Depends
   # only on the blocks whose JSON contracts it reuses. Wired from cmd/cerberus.
