@@ -600,6 +600,18 @@ func run() error {
 		SchemaReady:   schemaReady,
 		SchemaPresent: schemaPresent,
 		HeadBreakers:  enabledHeadBreakers(client, cfg),
+		// Hold readiness while the capability set is a floor fallback — the
+		// process is reachable but every native lowering is off, and a wide
+		// panel on the fan-out path outruns a dashboard proxy's timeout. The
+		// re-probe clears it within seconds; see the field's own doc.
+		CapabilitiesResolved: func() (bool, string) {
+			res := chOpts.get()
+			if !res.VersionFallback {
+				return true, ""
+			}
+			return false, "clickhouse version probe has not succeeded; " +
+				"optimizations resolved against the supported floor"
+		},
 	})
 
 	// /info is cerberus's own metadata/health/connection fingerprint — a
