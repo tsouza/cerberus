@@ -4,6 +4,33 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.18.0] — 2026-08-28
+
+### Added
+
+- **chaudit:** audit a live deployment against the histogram resource bound (#2691)
+- **chsql:** carry the guard's own numbers in its rejection message (#2693)
+
+### Fixed
+
+- **chaudit,solver,ci:** apply the v1.18.0 pre-release audit findings (#2706)
+- **routememo:** require corroboration before BothFail, and record why Key fuses group-by (#2701)
+- **chopt:** re-probe fast while pinned to the capability floor (#2702)
+- **solver,promql:** let the classic-histogram ladder route predictively (#2689)
+- **config,chclient,engine:** derive the histogram density bound from the query memory cap (#2686)
+- **solver:** let route B time-shard the native classic-histogram ladder (#2683)
+
+### Performance
+
+- **promql:** decide the DELTA arm's peak flag at construction, not by a walk (#2690)
+
+### CI
+
+- **mutation:** gate the timed-out share, which efficacy cannot see (#2703)
+- warm nested go modules, and gate that a built module is a warmed one (#2704)
+- **mutation:** pin the gremlins per-mutant budget to the declared ceiling (#2698)
+- warm the Go module cache through a shared setup-go composite with fetch retry (#2699)
+
 ## [v1.17.0] — 2026-08-27
 
 ### Added
