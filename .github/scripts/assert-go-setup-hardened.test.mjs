@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  expressionsOutsideRuns,
   hasKeyAtStepLevel,
   isUpstreamSetupGo,
   scan,
@@ -239,6 +240,31 @@ test('a warm step made conditional fails the gate', () => {
   );
   assert.equal(violations.length, 1, violations.join('\n'));
   assert.match(violations[0], /carries an `if:`/);
+});
+
+test('an expression in the wrapper metadata fails the gate', () => {
+  // Not a style rule. GitHub template-evaluates an action manifest's metadata,
+  // and `inputs` is not a valid named-value there — so a `${{ inputs.cache }}`
+  // written into an input DESCRIPTION as prose does not render, it fails the
+  // manifest to LOAD. That is not hypothetical: it took 26 jobs red on this
+  // very branch with `Unrecognized named-value: 'inputs'`, every one of them
+  // dying before its first Go command.
+  const { violations } = scanWithWrapper((t) =>
+    t.replace(
+      '      go.sum. Setting it to `false` opts a job out of the SHARED cache',
+      '      go.sum, i.e. `${{ inputs.cache }}`. Setting it to `false` opts out',
+    ),
+  );
+  assert.equal(violations.length, 1, violations.join('\n'));
+  assert.match(violations[0], /outside `runs:`/);
+
+  // And the reader itself: an expression BELOW `runs:` is the ordinary,
+  // required way to forward an input, and must never be reported.
+  assert.deepEqual(expressionsOutsideRuns(readFileSync(wrapperFile, 'utf8')), []);
+  assert.ok(
+    readFileSync(wrapperFile, 'utf8').includes('cache: ${{ inputs.cache }}'),
+    'the wrapper must still forward the input below `runs:`',
+  );
 });
 
 test('a wrapper that installs no Go toolchain fails the gate', () => {

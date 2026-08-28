@@ -229,6 +229,26 @@ function stepRunsWarm(stepLines) {
   return stepLines.some((l) => !isComment(l) && l.includes(warmScript));
 }
 
+// expressionsOutsideRuns — every `${{ … }}` an action manifest writes ABOVE its
+// `runs:` block, in a non-comment line.
+//
+// GitHub template-evaluates the manifest's metadata, and `inputs` is not a valid
+// named-value there. An expression written into an input's DESCRIPTION as prose
+// therefore does not render: the manifest fails to LOAD with `Unrecognized
+// named-value: 'inputs'`, and every job using the action dies before its first
+// command. Comments are excluded because `#` lines are not evaluated, which is
+// exactly where such an explanation belongs.
+export function expressionsOutsideRuns(text) {
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^runs:\s*$/.test(lines[i])) break;
+    if (isComment(lines[i])) continue;
+    if (lines[i].includes('${{')) out.push({ line: i + 1, text: lines[i].trim() });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // The scan.
 // ---------------------------------------------------------------------------
@@ -329,7 +349,18 @@ export function scan({
         'above would be satisfied by a setup path that sets nothing up.',
     );
   } else {
-    const steps = stepBlocks(readFileSync(wrapperFile, 'utf8')).flatMap((b) => b.steps);
+    const wrapperText = readFileSync(wrapperFile, 'utf8');
+    for (const hit of expressionsOutsideRuns(wrapperText)) {
+      violations.push(
+        `${wrapperFile}:${hit.line}: a \`\${{ … }}\` expression outside \`runs:\`. GitHub ` +
+          'template-evaluates an action manifest\'s metadata — including every input DESCRIPTION — in a ' +
+          'context where `inputs` is not a valid named-value, so the expression does not render as ' +
+          'prose: it fails the manifest to LOAD, and every job using this action dies on ' +
+          '"Unrecognized named-value: \'inputs\'" before its first Go command. 26 jobs went red that ' +
+          'way. Explain the input in a `#` comment instead.',
+      );
+    }
+    const steps = stepBlocks(wrapperText).flatMap((b) => b.steps);
     if (!steps.some((s) => isUpstreamSetupGo(stepUses(s) ?? ''))) {
       violations.push(
         `${wrapperFile}: does not delegate to \`${upstreamSetupGo}\` — the wrapper installs no Go ` +

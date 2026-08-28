@@ -59,14 +59,27 @@ inputs:
       fetched and that fetch still deserves a retry.
 
       A job whose `cache: false` is part of a TRUST BOUNDARY should not use
-      this input: routed through here the value reaches the Action as
-      `${{ inputs.cache }}`, which no static analysis can resolve, and CodeQL's
-      cache-poisoning query stops being able to see that the job cannot write
-      the cache at all. update-golden.yml's three regenerating jobs spell the
-      literal out and pair it with their own warm step instead;
-      assert-go-setup-hardened.mjs requires exactly that pairing.
+      this input at all. Routed through here the value reaches the Action as an
+      unresolved input expression, and CodeQL's cache-poisoning query stops
+      being able to see that the job cannot write the cache — see the note
+      below the inputs block.
     required: false
     default: 'true'
+
+# THE `cache: false` TRUST-BOUNDARY EXCEPTION, spelled out here rather than in
+# the input description above — a description is template-evaluated by the
+# runner, so an expression written inside one fails the action to load.
+#
+# update-golden.yml's three regenerating jobs check out TARGET-BRANCH code under
+# the default branch's privileges, and their `cache: false` is what stops that
+# code persisting bytes into later workflows. Passed through the input below,
+# that value reaches `actions/setup-go` as an unresolved `inputs.cache`
+# expression, which no static analysis can resolve to false — and CodeQL's
+# `actions/cache-poisoning/poisonable-step` query reported all three jobs as
+# poisonable the moment they were routed through here. So those three name the
+# Action directly with the literal, and run the warm step below themselves.
+# `assert-go-setup-hardened.mjs` requires exactly that pairing (R1 + R2), which
+# is what keeps it a narrower path rather than an escape hatch.
 
 runs:
   using: composite
