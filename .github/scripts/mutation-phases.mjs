@@ -15,10 +15,11 @@
 //
 // node: builtins only — no npm deps, no setup-node needed.
 
-// Every leg clears the same bar. `.gremlins.yaml`'s threshold (currently 95) is
-// the floor for the unscoped whole-repo `just mutate` invocation only; the
-// per-phase bar is set here so one weak package cannot hide behind a strong one
-// in a repo-wide average.
+// Every leg clears the same bar, and this is the only place a bar is declared.
+// `.gremlins.yaml` carries none: its former top-level `threshold-efficacy` was
+// a key gremlins never read, so the whole-repo floor it advertised for `just
+// mutate` never existed. The bar is per-leg so one weak package cannot hide
+// behind a strong one in a repo-wide average.
 const EFFICACY = 95;
 
 // gremlins' default fan-out is runtime.NumCPU(). DEFAULT_WORKERS keeps it;

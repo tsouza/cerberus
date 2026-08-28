@@ -1,9 +1,18 @@
 // gremlins-threshold.mjs — mutation-efficacy gate, extracted from the
 // "enforce efficacy threshold" step in .github/workflows/mutation.yml.
 //
-// gremlins v0.6.0 exits 0 even when --threshold-efficacy is violated, so
-// the gate is done here against the parsed report JSON. Reproduces the
-// original bash exactly:
+// The lane deliberately does NOT hand gremlins a threshold, and gates here
+// instead, against the parsed report JSON.
+//
+// Not because gremlins would ignore one: the pinned fork DOES exit non-zero on
+// a violation (report.go assess -> execution.NewExitErr(EfficacyThreshold) ->
+// main.go exitCode). That is exactly why the flag is withheld. gremlins exits
+// mid-run, before the report is read and uploaded, so the failure surfaces as an
+// opaque `gremlins exited N` from runGremlins() with no artifact to inspect and
+// no measured-vs-threshold numbers. Gating after the report is written keeps
+// both. Do not "simplify" this by passing --threshold-efficacy.
+//
+// Reproduces the original bash exactly:
 //
 //   measured=$(jq -r '.test_efficacy' gremlins.json)
 //   if awk 'BEGIN { exit (m < t) ? 1 : 0 }'; then  # m < t  -> fail

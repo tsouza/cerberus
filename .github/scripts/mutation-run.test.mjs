@@ -73,6 +73,45 @@ test('zero mutants after full fallback fail closed', (t) => {
   assert.match(`${result.stdout}\n${result.stderr}`, /executed zero mutants after full fallback/);
 });
 
+// The per-mutant budget must be a DECLARED value, not an accident of build-cache
+// warmth. gremlins computes `min(coefficient * max(coverage_elapsed, 1s),
+// timeout-max)`, so unless the coefficient alone carries the whole ceiling
+// across gremlins' own 1s floor, the hot-cache fallback invocation silently gets
+// a smaller budget than the cold-cache first one.
+test('both invocations pin the per-mutant budget to the declared ceiling', (t) => {
+  const { root, calls } = fixture(t, [0, 7]);
+  const result = run(root, { DIFF_REF: 'a'.repeat(40), MUTANT_TIMEOUT_MAX: '15s' });
+  assert.equal(result.status, 0, result.stderr);
+  const invocations = readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(invocations.length, 2);
+  for (const args of invocations) {
+    assert.deepEqual(args.slice(args.indexOf('--timeout-max'), args.indexOf('--timeout-max') + 2), [
+      '--timeout-max',
+      '15s',
+    ]);
+    const at = args.indexOf('--timeout-coefficient');
+    assert.notEqual(at, -1, `--timeout-coefficient missing from ${JSON.stringify(args)}`);
+    // gremlins clamps its measured coverage time up to a 1s floor, so
+    // `coefficient * 1s` is the smallest budget the coefficient can yield; it
+    // must already reach the ceiling for the ceiling to be the sole budget.
+    assert.ok(Number(args[at + 1]) * 1 >= 15, `coefficient ${args[at + 1]} is below the ceiling`);
+  }
+});
+
+test('the declared coefficient rounds a compound ceiling up, and rejects a bad one', (t) => {
+  const { root, calls } = fixture(t, [4]);
+  let result = run(root, { DIFF_REF: '', MUTANT_TIMEOUT_MAX: '1m30s' });
+  assert.equal(result.status, 0, result.stderr);
+  const args = readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse)[0];
+  assert.equal(args[args.indexOf('--timeout-coefficient') + 1], '90');
+
+  const bad = fixture(t, [4]);
+  result = run(bad.root, { DIFF_REF: '', MUTANT_TIMEOUT_MAX: '15 seconds' });
+  assert.equal(result.status, 1);
+  assert.equal(readFileSync(bad.calls, 'utf8'), '');
+  assert.match(`${result.stdout}\n${result.stderr}`, /MUTANT_TIMEOUT_MAX is not a Go duration/);
+});
+
 test('invalid diff refs and stale reports fail before gremlins runs', (t) => {
   const { root, calls } = fixture(t, [3]);
   let result = run(root, { DIFF_REF: 'main' });

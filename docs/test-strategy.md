@@ -960,11 +960,17 @@ new shape before the generator publishes it, never the reverse.
 
 ## Gremlins mutation
 
-`.gremlins.yaml` carries the floor for an unscoped whole-repo `just
-mutate`; the per-phase table — scope, efficacy floor, worker cap,
-exclude set, and the rationale behind each — lives in
-`.github/scripts/mutation-phases.mjs`, and `.github/workflows/mutation.yml`
-expands it into the `mutate` job's matrix. The rolled-up `mutation` context is
+`.gremlins.yaml` carries the enabled mutator set and nothing else — no floor.
+Every efficacy floor is per-leg: the phase table — scope, efficacy floor, worker
+cap, exclude set, and the rationale behind each — lives in
+`.github/scripts/mutation-phases.mjs`, `.github/workflows/mutation.yml`
+expands it into the `mutate` job's matrix, and
+`.github/scripts/gremlins-threshold.mjs` enforces it against the report JSON.
+An unscoped whole-repo `just mutate` reports rather than gates; it used to
+advertise a 95% floor through top-level `threshold-efficacy` /
+`threshold-mcover` keys that gremlins never read (it reads
+`unleash.threshold.efficacy` / `unleash.threshold.mutant-coverage`), so that
+floor never existed and the keys are gone. The rolled-up `mutation` context is
 informational — not required by either the merge gate or the release gate
 (#2230) — but keeps a real, non-blanket per-PR selection (below) rather than a
 blanket no-op, for early author-time signal.
@@ -1028,6 +1034,33 @@ rejects any that reach for lookaround or a backreference — RE2 has
 neither, and a leg that only discovers this at run time has already
 spent its checkout and toolchain setup.
 
+### Per-mutant time budget
+
+Each mutant's `go test` child runs under a deadline, because a mutant that
+inverts a loop advance never terminates and allocates per iteration; without a
+deadline the OOM killer reaps the runner and the leg reports no verdict at all.
+
+That deadline is a declared value, not a measured one. gremlins computes it as
+`min(timeout-coefficient x max(coverage_elapsed, 1s), timeout-max)`, where
+`coverage_elapsed` is the wall time of its own coverage pass — a number
+dominated by COMPILATION, not by test time, and therefore a function of how warm
+the Go build cache happened to be. `.github/scripts/mutation-run.mjs` neutralises
+that input: it derives `--timeout-coefficient` from `MUTANT_TIMEOUT_MAX` as
+`ceil(ceiling / 1s)`, so `coefficient x max(elapsed, 1s)` is at least the ceiling
+for any elapsed time and the budget is exactly `MUTANT_TIMEOUT_MAX` on every
+invocation. `.github/workflows/mutation.yml` declares that ceiling.
+
+The coefficient is passed on BOTH of `mutation-run.mjs`'s invocations, and the
+second is why this matters. When the changed-line run finds zero executable
+mutants the script reruns the phase in full, in the same job, with the build
+cache already warmed by the first run: `coverage_elapsed` collapses from ~50s to
+~0.4s, clamps up to gremlins' 1s floor, and the derived budget drops to 5s —
+under `internal/promql`'s real ~6.6s recompile+link+run cost. Every mutant then
+times out, and because gremlins counts a timed-out mutant in neither the efficacy
+ratio nor `mutants_total`, the leg reported `Timed out: 295 / Test efficacy:
+0.00%` on pull requests while the identical leg on push-to-main — one
+cold-cache invocation, the intended budget — reported 99.65% (#2692).
+
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
 `<=` on a boundary that's never hit, slice-cap arithmetic that
@@ -1042,7 +1075,8 @@ suite carry the discipline:
 
 1. **PREFERRED — prove equivalent.** Add a comment in the source
    explaining why the mutated branch is semantically identical to the
-   original, then drop the phase efficacy threshold in `.gremlins.yaml`
+   original, then drop that leg's efficacy threshold in
+   `.github/scripts/mutation-phases.mjs`
    by 1 percentage point to absorb the equivalent mutant. The mutation
    count is now defensible and the source stays clear.
 2. **ACCEPTABLE — add a distinguishing test.** Write a unit / property

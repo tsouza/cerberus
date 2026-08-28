@@ -17,10 +17,17 @@ const mutationRunnerPath = "../../.github/scripts/mutation-run.mjs"
 // mutated package's own tests are.
 const timeoutMaxFlag = "--timeout-max"
 
+// The runner must pass the flag AND source its value from the env var. Pinned
+// as two independent substrings rather than as one adjacent `'--timeout-max',
+// required('MUTANT_TIMEOUT_MAX'),` phrase: that spelling broke the moment the
+// value was hoisted into a local to be reused by --timeout-coefficient, which
+// is a refactor this pin has no business rejecting. What it must still catch is
+// the flag disappearing, or its value coming from somewhere other than the
+// declared ceiling.
 const (
 	mutationRunnerInvocation = "run: node .github/scripts/mutation-run.mjs"
 	timeoutMaxArg            = "'--timeout-max',"
-	timeoutMaxValue          = "required('MUTANT_TIMEOUT_MAX'),"
+	timeoutMaxValue          = "required('MUTANT_TIMEOUT_MAX')"
 )
 
 // gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag.
