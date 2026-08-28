@@ -596,22 +596,11 @@ func run() error {
 	// deployed to serve" in every deployment mode — including the split mode
 	// where one Deployment serves a single head.
 	healthHandler := health.New(health.Options{
-		Pinger:        client.ForHead(chclient.HeadProbe),
-		SchemaReady:   schemaReady,
-		SchemaPresent: schemaPresent,
-		HeadBreakers:  enabledHeadBreakers(client, cfg),
-		// Hold readiness while the capability set is a floor fallback — the
-		// process is reachable but every native lowering is off, and a wide
-		// panel on the fan-out path outruns a dashboard proxy's timeout. The
-		// re-probe clears it within seconds; see the field's own doc.
-		CapabilitiesResolved: func() (bool, string) {
-			res := chOpts.get()
-			if !res.VersionFallback {
-				return true, ""
-			}
-			return false, "clickhouse version probe has not succeeded; " +
-				"optimizations resolved against the supported floor"
-		},
+		Pinger:               client.ForHead(chclient.HeadProbe),
+		SchemaReady:          schemaReady,
+		SchemaPresent:        schemaPresent,
+		HeadBreakers:         enabledHeadBreakers(client, cfg),
+		CapabilitiesResolved: capabilitiesResolved(chOpts),
 	})
 
 	// /info is cerberus's own metadata/health/connection fingerprint — a

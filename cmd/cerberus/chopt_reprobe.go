@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/info"
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chopt"
@@ -252,4 +253,26 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 		ResolvedVersion: resolvedVersion,
 		VersionFallback: versionFallback,
 	}, true
+}
+
+// capabilitiesResolved is the /readyz condition that holds a pod out of its
+// Service while the capability set in force is a floor fallback.
+//
+// The process is reachable and its schema is present — every other readiness
+// condition says ready — but a failed probe means every native lowering is
+// off, and a wide panel served on the fan-out fallback runs long enough to
+// exceed a dashboard proxy's timeout. Waiting costs seconds, because the
+// re-probe runs at chOptFloorRetryInterval while on the floor; admitting
+// traffic costs a red panel.
+//
+// Reads the LIVE resolution, not the boot one, so the condition clears the
+// moment a probe answers rather than on the next restart.
+func capabilitiesResolved(live *chOptLive) health.CapabilitiesResolvedFunc {
+	return func() (bool, string) {
+		if !live.get().VersionFallback {
+			return true, ""
+		}
+		return false, "clickhouse version probe has not succeeded; " +
+			"optimizations resolved against the supported floor"
+	}
 }
