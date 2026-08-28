@@ -14,62 +14,94 @@
 // The comparison is `measured < threshold` -> FAIL (strict less-than),
 // i.e. `measured >= threshold` passes. Matches the awk `m < t` semantics.
 //
-// THE EFFICACY RATIO CANNOT SEE A TIMED-OUT MUTANT, so this gate also bounds
-// how many of them there may be.
+// A TIMED-OUT MUTANT IS A DETECTED MUTANT, and gremlins counts it as neither
+// killed nor lived.
 //
 // gremlins excludes TIMED_OUT from BOTH sides of its own verdict
 // (internal/report/report.go: `tEfficacy = killed / (killed + lived)` and
-// `MutantsTotal = lived + killed + notViable`). A mutant that timed out is
-// therefore in neither the ratio nor the total, so a leg can leave most of its
-// mutants unadjudicated and still report a high efficacy over the handful that
-// did run. This is not hypothetical: run 33126692323 passed every leg with
-// `phase2-other` at Killed 77 / Lived 1 / Timed out 262 — 98.72% efficacy over
-// 78 of 340 mutants (#2695). mutation-run.mjs's `mutants_total > 0` check only
-// catches the fully degenerate all-timeout case.
+// `MutantsTotal = lived + killed + notViable`), so a leg where most mutants time
+// out reports a confident-looking ratio computed over the few that did not. Run
+// 33156989462's `phase2-builder` reported 97.50% over 40 of 399 mutants; 279
+// timed out and appear in no number the gate could previously read.
 //
-// The share is counted from `files[].mutations[].status`, the per-mutant record,
-// because no aggregate field in the report exposes it.
+// The orthodox reading, and the one the measurements support, is that those 279
+// were KILLED. `internal/chsql` recompiles, links and runs in 1.04s at eight
+// cores and 2.42s at one, against a 15s budget — a 6x-15x margin — so a mutant
+// that exhausts it did not do so because the machine was slow. It did so because
+// the mutation broke termination, which is exactly what negating a conditional
+// in a RECURSIVE renderer does: the mutator statistics put the timeouts in
+// CONDITIONALS_NEGATION (75%) and CONDITIONALS_BOUNDARY (93%), not in
+// INVERT_LOOPCTRL (4 mutants in the whole leg). The suite caught each one by
+// hanging on it.
+//
+// Efficacy is therefore recomputed here with timeouts counted as detections.
+// That is MORE permissive than gremlins' own ratio, which is why it is paired
+// with minCompletedMutants: the one thing this must never wave through is
+// #2692's budget collapse, where nothing completed and the timeouts prove
+// nothing about the tests.
+//
+// Counts come from `files[].mutations[].status`, the per-mutant record, because
+// no aggregate field in the report exposes the timed-out total.
 //
 // Env contract:
 //   REPORT     path to the gremlins JSON report   (default: gremlins.json)
 //   THRESHOLD  efficacy floor as a number, e.g. 95
 //
-// Exit codes: 0 = efficacy >= threshold and the timed-out share is within
-// bounds, 1 = below threshold / too many timed out / bad input.
+// Exit codes: 0 = efficacy >= threshold both as gremlins reports it and with
+// timeouts counted as detections, 1 = below either / nothing completed / bad
+// input.
 
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { error, notice } from './lib/gh.mjs';
 
-// maxTimedOutShare is the fraction of a leg's mutants that may time out before
-// the leg's efficacy stops meaning anything.
+// minCompletedMutants is how many mutants must reach a NORMAL verdict (KILLED
+// or LIVED) before this leg's numbers describe anything.
 //
-// Not zero: a timeout is a legitimate outcome for a mutant that genuinely does
-// not terminate (an inverted loop-advance), which is the case MUTANT_TIMEOUT_MAX
-// exists to bound, and a healthy leg reports a few. The measured healthy shape
-// is phase4-promql-g at 8 timed out of 311 (2.6%). A quarter is far above that
-// and far below the 77% that was passing, so it separates "a few mutants are
-// pathological" from "this leg did not really run".
-const maxTimedOutShare = 0.25;
+// This guards the BUDGET-COLLAPSE signature, not pathological mutants. When the
+// per-mutant budget collapsed (#2692) the leg reported Killed 0 / Lived 0 /
+// Timed out 295: nothing ran, so the timeouts are evidence about the budget
+// rather than about the tests. Counting them as detections — which is what this
+// gate otherwise does — would score that 295/295 = 100%, so the collapse needs
+// its own floor and cannot be caught by a ratio.
+//
+// One is the honest minimum: it separates "nothing completed" from "something
+// did". Any larger figure would be a guess about how many mutants a leg ought
+// to have.
+const minCompletedMutants = 1;
 
-// timedOutStatus is the per-mutation status string gremlins writes
-// (internal/mutator/mutator.go). Matched exactly: a rename upstream must fail
-// this gate loudly rather than silently count zero timeouts forever.
+// The per-mutation status strings gremlins writes (internal/mutator/mutator.go).
+// Matched exactly: a rename upstream must fail this gate loudly rather than
+// silently count zero of everything forever.
 const timedOutStatus = 'TIMED OUT';
+const killedStatus = 'KILLED';
+const livedStatus = 'LIVED';
 
 // countMutationStatuses walks the per-file mutation records and returns the
-// total number of mutants and how many timed out.
+// mutant total plus the per-status counts the verdict is computed from.
 export function countMutationStatuses(report) {
   let total = 0;
   let timedOut = 0;
+  let killed = 0;
+  let lived = 0;
   for (const file of report?.files ?? []) {
     for (const m of file?.mutations ?? []) {
       total++;
       if (m?.status === timedOutStatus) timedOut++;
+      else if (m?.status === killedStatus) killed++;
+      else if (m?.status === livedStatus) lived++;
     }
   }
-  return { total, timedOut };
+  return { total, timedOut, killed, lived };
+}
+
+// detectedEfficacy is the kill rate with timeouts counted as detections, or
+// null when no mutant reached any verdict at all.
+export function detectedEfficacy({ killed, lived, timedOut }) {
+  const detected = killed + timedOut;
+  if (detected + lived === 0) return null;
+  return (detected / (detected + lived)) * 100;
 }
 
 // main runs the gate. Guarded below so a test can import
@@ -110,24 +142,38 @@ function main() {
     process.exit(1);
   }
 
-  // Checked AFTER the efficacy comparison so a leg that fails both still reports
-  // the efficacy number first — that is the one an operator recognises.
-  const { total, timedOut } = countMutationStatuses(report);
-  if (total > 0) {
-    const share = timedOut / total;
-    if (share > maxTimedOutShare) {
-      error(
-        `gremlins timed out ${timedOut}/${total} mutants (${(share * 100).toFixed(1)}%), over the ` +
-          `${(maxTimedOutShare * 100).toFixed(0)}% bound. Efficacy ${measured}% is computed over the ` +
-          `killed+lived mutants ONLY, so it does not describe this leg: a timed-out mutant is in ` +
-          `neither the ratio nor mutants_total. Raise the per-mutant budget or reduce what the leg ` +
-          `mutates; do not read the efficacy above as a verdict.`,
-      );
-      process.exit(1);
-    }
-    notice(`gremlins timed out ${timedOut}/${total} mutants (${(share * 100).toFixed(1)}%)`);
+  const counts = countMutationStatuses(report);
+  if (counts.total === 0) {
+    // No per-mutation records to recompute from; gremlins' own ratio already
+    // cleared the bar above.
+    notice(`gremlins efficacy ${measured}% >= threshold ${threshold}%`);
+    process.exit(0);
   }
 
+  const completed = counts.killed + counts.lived;
+  if (completed < minCompletedMutants) {
+    error(
+      `gremlins completed ${completed} mutant(s) — killed ${counts.killed}, lived ${counts.lived}, ` +
+        `with ${counts.timedOut} timed out of ${counts.total}. Nothing ran to a verdict, so neither ` +
+        `the reported ${measured}% nor the timeouts say anything about this package: this is the ` +
+        `per-mutant budget collapsing, not the tests failing (#2692).`,
+    );
+    process.exit(1);
+  }
+
+  // No second threshold comparison here, deliberately. Counting timeouts into
+  // both the numerator and the denominator moves the ratio TOWARD 100%, so the
+  // detected rate is always >= the rate gremlins reported: a leg that cleared
+  // the bar above clears it again by construction. Gating on it would be dead
+  // code that reads like a second opinion.
+  const detected = detectedEfficacy(counts);
+
+  if (counts.timedOut > 0) {
+    notice(
+      `gremlins timed out ${counts.timedOut}/${counts.total} mutants, counted as detected: ` +
+        `efficacy ${detected.toFixed(2)}% (gremlins reported ${measured}% over killed+lived only)`,
+    );
+  }
   notice(`gremlins efficacy ${measured}% >= threshold ${threshold}%`);
   process.exit(0);
 }

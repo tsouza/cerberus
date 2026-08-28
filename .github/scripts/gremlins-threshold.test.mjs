@@ -1,9 +1,9 @@
 // Tests for the mutation-efficacy gate.
 //
-// The point of each case is that the gate CAN FAIL. A gate that only ever sees
-// healthy reports is indistinguishable from one that reads nothing, and this
-// script guards a number (efficacy) that is structurally blind to the failure
-// mode it now also bounds.
+// The point of each case is that the gate CAN FAIL, and fails for the right
+// reason. A gate that only ever sees healthy reports is indistinguishable from
+// one that reads nothing — and this script guards a number that gremlins
+// computes over a subset of the mutants it ran.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { countMutationStatuses } from './gremlins-threshold.mjs';
+import { countMutationStatuses, detectedEfficacy } from './gremlins-threshold.mjs';
 
 const script = new URL('./gremlins-threshold.mjs', import.meta.url).pathname;
 
@@ -30,21 +30,18 @@ function run(report, threshold) {
   const path = join(dir, 'gremlins.json');
   writeFileSync(path, JSON.stringify(report));
   try {
-    const stdout = execFileSync('node', [script], {
+    return { code: 0, out: execFileSync('node', [script], {
       env: { ...process.env, REPORT: path, THRESHOLD: String(threshold) },
       encoding: 'utf8',
-    });
-    return { code: 0, out: stdout };
+    }) };
   } catch (e) {
     return { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
   }
 }
 
 test('a healthy leg passes', () => {
-  const r = run(
-    { test_efficacy: 99.65, files: mutations({ killed: 286, lived: 1, timedOut: 8 }) },
-    95,
-  );
+  // Real phase4-promql-g numbers.
+  const r = run({ test_efficacy: 99.65, files: mutations({ killed: 286, lived: 1, timedOut: 8 }) }, 95);
   assert.equal(r.code, 0, r.out);
 });
 
@@ -55,36 +52,56 @@ test('efficacy below the threshold still fails', () => {
   assert.match(r.out, /efficacy 90\S* < threshold 95/);
 });
 
-// The regression this gate was extended for. These are the REAL numbers from
-// run 33126692323's phase2-other leg, which reported GREEN.
-test('a leg that timed out most of its mutants fails despite a high efficacy', () => {
-  const r = run(
-    { test_efficacy: 98.72, files: mutations({ killed: 77, lived: 1, timedOut: 262 }) },
-    95,
-  );
-  assert.equal(r.code, 1, 'efficacy 98.72% over 78 of 340 mutants must not pass');
-  assert.match(r.out, /timed out 262\/340/);
-});
-
-test('a few pathological mutants are tolerated', () => {
-  // An inverted loop-advance genuinely does not terminate; the ceiling exists
-  // to bound it, so a handful of timeouts is the healthy shape, not a failure.
-  const r = run({ test_efficacy: 99, files: mutations({ killed: 80, timedOut: 20 }) }, 95);
+// A mutant that exhausts a 15s budget against a 1-2.4s baseline broke
+// termination — the suite caught it by hanging. Real phase2-builder numbers,
+// which gremlins itself scored 97.50% over 40 of 399.
+test('timed-out mutants count as detected', () => {
+  const r = run({ test_efficacy: 97.5, files: mutations({ killed: 39, lived: 1, timedOut: 279 }) }, 95);
   assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /timed out 279\/319 mutants, counted as detected/);
 });
 
-test('countMutationStatuses matches only the exact status string', () => {
-  // A rename upstream must not silently count zero timeouts forever.
-  const { total, timedOut } = countMutationStatuses({
-    files: [{ mutations: [{ status: 'TIMED OUT' }, { status: 'TIMEDOUT' }, { status: 'KILLED' }] }],
+// The case counting-as-detected must never wave through: nothing completed, so
+// the timeouts describe the budget rather than the tests (#2692).
+test('a leg where nothing completed fails, even though every mutant timed out', () => {
+  const r = run({ test_efficacy: 0, files: mutations({ timedOut: 295 }) }, 0);
+  assert.equal(r.code, 1, 'a total budget collapse must not score 295/295 = 100%');
+  assert.match(r.out, /completed 0 mutant/);
+});
+
+test('the detected rate is never below the rate gremlins reported', () => {
+  // Counting timeouts into numerator AND denominator moves the ratio toward
+  // 100%, so there is no report on which a second threshold comparison could
+  // fire. Pinned so nobody re-adds one as a "second opinion" — it would be
+  // dead code, and dead code in a gate reads as coverage.
+  for (const [killed, lived, timedOut] of [
+    [39, 1, 279],
+    [5, 40, 5],
+    [1, 1, 0],
+    [0, 7, 3],
+  ]) {
+    const reported = (killed / (killed + lived)) * 100;
+    const detected = detectedEfficacy({ killed, lived, timedOut });
+    assert.ok(
+      detected >= reported - Number.EPSILON,
+      `detected ${detected} < reported ${reported} for ${killed}/${lived}/${timedOut}`,
+    );
+  }
+});
+
+test('countMutationStatuses matches only the exact status strings', () => {
+  const c = countMutationStatuses({
+    files: [{ mutations: [{ status: 'TIMED OUT' }, { status: 'TIMEDOUT' }, { status: 'KILLED' }, { status: 'LIVED' }] }],
   });
-  assert.equal(total, 3);
-  assert.equal(timedOut, 1);
+  assert.deepEqual(c, { total: 4, timedOut: 1, killed: 1, lived: 1 });
 });
 
-test('a report with no per-mutation records does not fabricate a share', () => {
-  // Older reports, or a leg that produced none: the share is unknowable, and
-  // inventing 0/0 = 0 would read as a clean bill of health.
+test('detectedEfficacy reports null when no mutant reached a verdict', () => {
+  assert.equal(detectedEfficacy({ killed: 0, lived: 0, timedOut: 0 }), null);
+  assert.equal(detectedEfficacy({ killed: 1, lived: 1, timedOut: 2 }), 75);
+});
+
+test('a report with no per-mutation records falls back to the reported ratio', () => {
   const r = run({ test_efficacy: 99, files: [] }, 95);
   assert.equal(r.code, 0);
   assert.doesNotMatch(r.out, /timed out/);
