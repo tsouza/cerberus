@@ -1259,7 +1259,7 @@ func (p *Planner) checkRangeBucketGridNativeGrid(v *chplan.RangeBucketGridNative
 		if startZero || endZero {
 			sig.sawUnpinnedBound = true
 		}
-		if !startZero && !endZero && !(v.Start.Equal(predStart) && v.End.Equal(predEnd)) {
+		if !startZero && !endZero && !rangeBucketGridNativeGridMatches(v, predStart, predEnd) {
 			sig.sawGridMismatch = true
 		}
 	} else if startZero != endZero {
@@ -1274,6 +1274,12 @@ func (p *Planner) checkRangeBucketGridNativeGrid(v *chplan.RangeBucketGridNative
 	if depth > 0 && v.Step > 0 {
 		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
 	}
+}
+
+// rangeBucketGridNativeGridMatches mirrors rangeBucketFanoutGridMatches: both
+// bounds are exactly the ones the caller predicted.
+func rangeBucketGridNativeGridMatches(v *chplan.RangeBucketGridNative, predStart, predEnd time.Time) bool {
+	return v.Start.Equal(predStart) && v.End.Equal(predEnd)
 }
 
 func rangeBucketFanoutGridMatches(v *chplan.RangeBucketFanout, predStart, predEnd time.Time) bool {
