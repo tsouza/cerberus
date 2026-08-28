@@ -1201,6 +1201,7 @@ func (p *Planner) walkRangeBucketFanout(v *chplan.RangeBucketFanout, predStart, 
 // statement cap, mirroring walkHistogramQuantile.
 func (p *Planner) walkRangeBucketGridNative(v *chplan.RangeBucketGridNative, predStart, predEnd time.Time, depth int, sig *signals) {
 	p.recordGridCarrier(v, depth, sig)
+	p.checkRangeBucketGridNativeGrid(v, predStart, predEnd, depth, sig)
 	for _, e := range v.GroupBy {
 		p.walkExpr(e, predStart, predEnd, v.Step, sig)
 	}
@@ -1230,6 +1231,46 @@ func (p *Planner) checkRangeBucketFanoutGrid(v *chplan.RangeBucketFanout, predSt
 	// A RangeBucketFanout's anchors are generated backward from End with no
 	// epoch snap (mirrors the plain RangeLWR case checkRangeLWRGrid handles),
 	// so a nested one always constrains the slice quantum.
+	if depth > 0 && v.Step > 0 {
+		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
+	}
+}
+
+// checkRangeBucketGridNativeGrid is the two-bound grid-prediction check for the
+// native ladder, mirroring checkRangeBucketFanoutGrid.
+//
+// It was DOCUMENTED as present from #2677 and was not: the doc paragraph above
+// walkRangeBucketGridNative was rewritten to claim the check while the body was
+// left byte-identical, in the same change that made this kind shardable. That
+// left slicer.go's UnpinSpine resting on "the lowering cannot produce that
+// shape" — which checkRangeWindowGridNativeGrid's own doc states is not a
+// property the slicer may rest correctness on. UnpinSpine zeroes Start/End on
+// this node unconditionally, and chplan's checkPredictedGridBucketGridNative
+// returns early once both bounds are zero, so nothing downstream re-derives
+// what the planner declined to reject.
+//
+// Two bounds rather than three: unlike RangeWindowGridNative this kind carries
+// no OuterRange, so its whole grid is (Start, End, Step) and a mismatch is
+// exactly "these bounds are not the ones the caller predicted".
+func (p *Planner) checkRangeBucketGridNativeGrid(v *chplan.RangeBucketGridNative, predStart, predEnd time.Time, depth int, sig *signals) {
+	startZero := v.Start.IsZero()
+	endZero := v.End.IsZero()
+	if depth == 0 {
+		if startZero || endZero {
+			sig.sawUnpinnedBound = true
+		}
+		if !startZero && !endZero && !(v.Start.Equal(predStart) && v.End.Equal(predEnd)) {
+			sig.sawGridMismatch = true
+		}
+	} else if startZero != endZero {
+		// A half-pinned nested grid is the shape recordGridCarrier's
+		// outerRange arithmetic cannot see: End.Sub(zero Start) saturates
+		// positive, so sawInstantWindow does not fire and the plan would be
+		// admitted on a bound nobody proved.
+		sig.sawUnpinnedBound = true
+	}
+	// Anchors are generated backward from End with no epoch snap, exactly as
+	// the fan-out sibling's are, so a nested one constrains the slice quantum.
 	if depth > 0 && v.Step > 0 {
 		sig.endPhasedResolutions = append(sig.endPhasedResolutions, v.Step)
 	}

@@ -475,6 +475,25 @@ jobs:
       - name: release-preflight self-test (required-set guard)
         run: node --test .github/scripts/release-preflight.test.mjs
 
+      # Three gate suites that existed but ran nowhere. A .test.mjs no workflow
+      # invokes is the same failure as a gate that cannot fail: the file reads
+      # as coverage, the logic it guards is unverified, and nothing says so.
+      # `gate suites are wired` below keeps the list from drifting again — it is
+      # the ratchet, these three lines are the backfill.
+      - name: unwired gate self-tests
+        run: |
+          node --test .github/scripts/gremlins-threshold.test.mjs
+          node --test .github/scripts/merge-crawl-slices.test.mjs
+          node --test .github/scripts/property-fanout.test.mjs
+
+      # Every .github/scripts/**/*.test.mjs must be invoked by some workflow.
+      # Adding a suite and forgetting to wire it is silent — and was, three
+      # times over, including for a gate added in this same release cycle.
+      - name: gate suites are wired
+        run: |
+          node --test .github/scripts/assert-gate-suites-wired.test.mjs
+          node .github/scripts/assert-gate-suites-wired.mjs
+
       # The source-PR resolver release-preflight.mjs now consults
       # (tsouza/cerberus#2394) — same "pure logic only ever exercised during
       # a real release" rationale as the suite above. Its exact-match

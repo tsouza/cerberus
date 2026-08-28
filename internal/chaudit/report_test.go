@@ -72,3 +72,34 @@ func TestRankByHeadroom_WorstFirst(t *testing.T) {
 		}
 	}
 }
+
+// TestOptions_Validate_RejectsANonIdentifierTable pins the check that makes the
+// table safe to interpolate. ClickHouse has no bind form for an identifier, so
+// the queries build it with Sprintf; the doc used to claim the caller had
+// validated it against the configured schema, and nothing had.
+func TestOptions_Validate_RejectsANonIdentifierTable(t *testing.T) {
+	t.Parallel()
+
+	base := Options{WindowSeconds: 60, Anchors: 10, DensityUnitBudget: 1000, Top: 5}
+	for _, ok := range []string{"otel_metrics_histogram", "otel.otel_metrics_histogram", "_t1"} {
+		o := base
+		o.Table = ok
+		if err := o.Validate(); err != nil {
+			t.Errorf("Table %q is a plain identifier and must validate: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"otel_metrics_histogram; DROP TABLE x",
+		"a b",
+		"`quoted`",
+		"db.schema.table",
+		"1_starts_with_digit",
+		"tbl WHERE 1=1 --",
+	} {
+		o := base
+		o.Table = bad
+		if err := o.Validate(); err == nil {
+			t.Errorf("Table %q must be rejected before it reaches a query", bad)
+		}
+	}
+}
