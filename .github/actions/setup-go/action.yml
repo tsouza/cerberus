@@ -51,6 +51,17 @@ inputs:
       of the checkout under `target/`.
     required: false
     default: go.mod
+  also-warm:
+    description: >
+      Additional go.mod paths to warm, whitespace-separated. A NESTED module
+      (its own go.mod under the checkout) is a separate module graph: the root
+      warm step never fetches it, and the root `go test ./...` stops at its
+      go.mod, so a job that builds one reaches the proxy for it cold and
+      unretried — the exact fetch this action exists to wrap. `go-version-file`
+      cannot cover both, because it also selects the toolchain and a job has
+      one. Name the nested module here instead.
+    required: false
+    default: ''
   cache:
     description: >
       Restore and save setup-go's shared module cache, keyed on that module's
@@ -95,6 +106,12 @@ runs:
       shell: bash
       env:
         GO_VERSION_FILE: ${{ inputs.go-version-file }}
+        ALSO_WARM: ${{ inputs.also-warm }}
       run: |
-        cd "$(dirname "$GO_VERSION_FILE")"
-        node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
+        set -euo pipefail
+        for mod in "$GO_VERSION_FILE" ${ALSO_WARM:-}; do
+          (
+            cd "$(dirname "$mod")"
+            node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
+          )
+        done

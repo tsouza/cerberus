@@ -42,6 +42,14 @@
 //   R5  At least one workflow step actually uses the wrapper. A gate that
 //       passes because nothing sets Go up at all reports the same green as a
 //       gate that is satisfied.
+//   R6  A job that BUILDS a nested module must also WARM it, via the wrapper's
+//       `also-warm` input or its own warm step in that directory. A nested
+//       go.mod is a separate module graph: the root warm step does not fetch
+//       it and the root `go test ./...` stops at it, so the job reaches the
+//       proxy for it cold and unretried — the one fetch this action exists to
+//       wrap, left uncovered. Keyed on `working-directory:` naming a directory
+//       that actually contains a go.mod, so a Node directory or a scratch
+//       checkout is outside the rule rather than exempted from it.
 //
 // WHY R1 IS A LITERAL AND NOT AN INPUT. `update-golden.yml`'s three
 // regenerating jobs check out TARGET-BRANCH code under the default branch's
@@ -262,6 +270,48 @@ function stepRunsWarm(stepLines) {
   return stepLines.some((l) => !isComment(l) && l.includes(warmScript));
 }
 
+// nestedBuildDirs — the nested-module directories a step block builds in, read
+// from `working-directory:`. Returns a Set of directories, deduped, excluding
+// the repository root (which the ordinary warm step already covers).
+//
+// A directory only counts when it actually CONTAINS a go.mod in this checkout.
+// `working-directory:` is how a workflow says "run over there" for Node dirs
+// and scratch checkouts too, and neither has a module graph to warm — keying on
+// the declaration alone reported six false violations on this repository.
+//
+// Deliberately keyed on the workflow's own declaration rather than on a list of
+// known nested modules: a nested module added later is caught by the same rule,
+// and one that is never built needs no warming and is correctly silent.
+export function nestedBuildDirs(block, root) {
+  const dirs = new Set();
+  for (const step of block.steps) {
+    for (const line of step) {
+      if (isComment(line)) continue;
+      const m = /^\s*working-directory:\s*(\S.*?)\s*$/.exec(line);
+      if (m === null) continue;
+      const dir = unquote(m[1].replace(/\s+#.*$/, '')).replace(/\/+$/, '');
+      if (dir === '' || dir === '.' || dir.includes('${{')) continue;
+      if (!existsSync(join(root, dir, 'go.mod'))) continue;
+      dirs.add(dir);
+    }
+  }
+  return dirs;
+}
+
+// stepWarmsModule — whether this step warms the module rooted at dir, either by
+// passing it to the composite's `also-warm` or by running the warm script with
+// that directory as its own working-directory.
+export function stepWarmsModule(stepLines, dir) {
+  const also = withEntry(stepLines, 'also-warm');
+  if (also !== null && also.split(/\s+/).includes(`${dir}/go.mod`)) return true;
+  if (!stepRunsWarm(stepLines)) return false;
+  return stepLines.some((l) => {
+    if (isComment(l)) return false;
+    const m = /^\s*working-directory:\s*(\S.*?)\s*$/.exec(l);
+    return m !== null && unquote(m[1]).replace(/\/+$/, '') === dir;
+  });
+}
+
 // expressionsOutsideRuns — every `${{ … }}` an action manifest writes ABOVE its
 // `runs:` block, in a non-comment line.
 //
@@ -329,6 +379,26 @@ export function scan({
     const text = readFileSync(file, 'utf8');
     for (const block of stepBlocks(text, file)) {
       const warms = block.steps.some(stepRunsWarm);
+
+      // R6 — a job that BUILDS a nested module must also WARM it. A nested
+      // go.mod is its own module graph: the root warm step does not fetch it
+      // and the root `go test ./...` stops at it, so the job reaches the proxy
+      // for it cold and unretried — the one fetch this whole action exists to
+      // wrap, left uncovered (#2700). Keyed on `working-directory:`, which is
+      // how a workflow says "build over there".
+      for (const dir of nestedBuildDirs(block, abs('.'))) {
+        const warmed = block.steps.some((s) => stepWarmsModule(s, dir));
+        if (!warmed) {
+          violations.push(
+            `${file}: job "${block.label}" builds the nested module in ${dir}/ ` +
+              `(working-directory) but never warms it. Pass ` +
+              `\`also-warm: ${dir}/go.mod\` to ./.github/actions/setup-go in this job — ` +
+              `the root warm step covers the root module only, so this module's proxy ` +
+              `fetch runs cold and unretried.`,
+          );
+        }
+      }
+
       for (const step of block.steps) {
         const ref = stepUses(step);
         if (ref === wrapperRef) wrapperCallSites++;

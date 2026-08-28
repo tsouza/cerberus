@@ -27,9 +27,11 @@ import {
   expressionsOutsideRuns,
   hasKeyAtStepLevel,
   isUpstreamSetupGo,
+  nestedBuildDirs,
   scan,
   stepBlocks,
   stepUses,
+  stepWarmsModule,
   usesValue,
   withEntry,
 } from './assert-go-setup-hardened.mjs';
@@ -387,5 +389,56 @@ test('a step block is scoped to its own job', () => {
   assert.equal(
     plan.steps.filter((s) => isUpstreamSetupGo(stepUses(s) ?? '')).length,
     0,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// R6 — a job that builds a nested module must warm it.
+// ---------------------------------------------------------------------------
+
+test('a job building a nested module without warming it is a violation', () => {
+  // The real shape: ci.yml's agpl-oracle job runs `go test ./...` with
+  // working-directory: test/oracle, a module the root warm step never fetches.
+  const { violations } = scanWithWorkflow('ci.yml', (text) =>
+    text.replace(
+      '      - uses: ./.github/actions/setup-go\n        with:\n          also-warm: test/oracle/go.mod',
+      '      - uses: ./.github/actions/setup-go',
+    ),
+  );
+  assert.equal(violations.length, 1, `expected exactly one R6 violation, got ${JSON.stringify(violations)}`);
+  assert.match(violations[0], /builds the nested module in test\/oracle\//);
+});
+
+test('R6 ignores a working-directory with no go.mod in it', () => {
+  // `working-directory:` is also how a workflow runs in a Node directory or a
+  // scratch checkout. Keying on the declaration alone reported six false
+  // violations on this repository (test/e2e/playwright, target/).
+  const blocks = stepBlocks(
+    ['jobs:', '  a:', '    steps:', '      - run: npm ci', '        working-directory: test/e2e/playwright'].join('\n'),
+    'x.yml',
+  );
+  assert.equal(nestedBuildDirs(blocks[0], repoRoot).size, 0);
+});
+
+test('R6 accepts a warm step run directly in the nested directory', () => {
+  // also-warm is the ergonomic route, not the only one: a job that runs the
+  // warm script itself with that working-directory has covered the module.
+  const block = stepBlocks(
+    [
+      'jobs:',
+      '  a:',
+      '    steps:',
+      '      - run: node .github/scripts/go-module-fetch.mjs',
+      '        working-directory: test/oracle',
+      '      - run: go test ./...',
+      '        working-directory: test/oracle',
+    ].join('\n'),
+    'x.yml',
+  );
+  const dirs = [...nestedBuildDirs(block[0], repoRoot)];
+  assert.deepEqual(dirs, ['test/oracle']);
+  assert.equal(
+    block[0].steps.some((s) => stepWarmsModule(s, 'test/oracle')),
+    true,
   );
 });
