@@ -193,6 +193,18 @@ jobs:
       # recompile+link+run, and the leg reported 0.00% efficacy (#2692). With
       # the coefficient pinned, both invocations get this declared value.
       #
+      # This is deliberately NOT budget-neutral on the single-invocation path
+      # that was already green. Any leg whose COLD coverage pass ran under
+      # 3s was silently below this ceiling on every event too, and now gets the
+      # full declared value: phase6-spansscan 1.19s -> 5.97s becomes 15s,
+      # phase5-qlcommon 2.82s -> 14.1s becomes 15s. That is the point — the
+      # budget is now the number written here rather than an artefact of
+      # compile time — but it does lengthen the OOM leash the paragraph below
+      # governs, by up to 2.5x on the fastest-compiling legs. 15s is the
+      # analysed value and those legs report `Timed out: 0`, so the exposure is
+      # bounded; deriving the ceiling from measurement behind a memory cap is
+      # tracked in #2694.
+      #
       # The budget bounds the whole `go test` child, and a bound is needed at
       # all because a mutant that inverts a scanner's loop-advance
       # (i++ -> i--) never terminates and allocates per iteration, so an
@@ -216,9 +228,11 @@ jobs:
           DIFF_REF: ${{ matrix.diff_ref }}
           REPORT: gremlins.json
         run: node .github/scripts/mutation-run.mjs
-      # gremlins v0.6.0 exits 0 even when --threshold-efficacy is
-      # violated, so the gate is done in gremlins-threshold.mjs against
-      # the parsed report JSON (measured < threshold -> fail).
+      # The lane withholds --threshold-efficacy from gremlins on purpose and
+      # gates in gremlins-threshold.mjs against the parsed report JSON
+      # (measured < threshold -> fail). The pinned fork DOES exit non-zero on a
+      # violation; it just does so mid-run, before the report is written and
+      # uploaded, leaving an opaque `gremlins exited N` and no artifact.
       - name: enforce efficacy threshold
         run: node .github/scripts/gremlins-threshold.mjs
         env:
