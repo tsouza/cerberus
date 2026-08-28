@@ -57,6 +57,14 @@ inputs:
       go.sum. Setting it to `false` opts a job out of the SHARED cache — it
       does not opt out of the warm step, because the modules still have to be
       fetched and that fetch still deserves a retry.
+
+      A job whose `cache: false` is part of a TRUST BOUNDARY should not use
+      this input: routed through here the value reaches the Action as
+      `${{ inputs.cache }}`, which no static analysis can resolve, and CodeQL's
+      cache-poisoning query stops being able to see that the job cannot write
+      the cache at all. update-golden.yml's three regenerating jobs spell the
+      literal out and pair it with their own warm step instead;
+      assert-go-setup-hardened.mjs requires exactly that pairing.
     required: false
     default: 'true'
 

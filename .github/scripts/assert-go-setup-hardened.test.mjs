@@ -4,24 +4,34 @@
 // right reason. "The tree is clean" is not evidence on its own: it is equally
 // consistent with a scanner that never read the workflows. So each rule is
 // proved against the REAL text of this repository with exactly one thing broken
-// in it — a call site reverted to `actions/setup-go@v7`, the warm step deleted,
-// the warm step made conditional — rather than against a hand-written fixture
-// that merely resembles a workflow.
+// in it — a call site reverted to `actions/setup-go@v7`, a `cache: false` step
+// stripped of its warm step, the wrapper's warm step deleted or made
+// conditional — rather than against a hand-written fixture that merely
+// resembles a workflow.
 //
-// The one case that runs the other way is `cache: false`. update-golden.yml's
-// three jobs run target-branch code and must not persist bytes into later
-// workflows, so the value is load-bearing; a gate that forced `cache: true`
-// would break that isolation. That it stays green is asserted directly, because
-// "the gate does not overreach" is as easy to lose in an edit as "the gate
-// fires".
+// The cases that run the other way matter just as much. `update-golden.yml`'s
+// three jobs reach the Action directly, on purpose: they check out
+// target-branch code under the default branch's privileges, and a literal
+// `cache: false` is what keeps that code from persisting bytes into later
+// workflows — legibly enough for CodeQL's cache-poisoning query to agree. A
+// gate that forced them through the composite would break that boundary, so
+// "the gate does not overreach" is asserted directly, twice.
 
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { compositeSteps, directSetupGoUses, scan, usesValue, wrapperUses } from './assert-go-setup-hardened.mjs';
+import {
+  hasKeyAtStepLevel,
+  isUpstreamSetupGo,
+  scan,
+  stepBlocks,
+  stepUses,
+  usesValue,
+  withEntry,
+} from './assert-go-setup-hardened.mjs';
 
 const repoRoot = process.cwd();
 const workflows = join(repoRoot, '.github/workflows');
@@ -31,6 +41,9 @@ const wrapperFile = join(actions, 'setup-go/action.yml');
 // A workflow whose Go setup is unconditional and whose `with:` block was
 // dropped as default — the ordinary shape, and so the honest specimen.
 const specimenWorkflow = 'ci.yml';
+
+// The one workflow that reaches the Action directly, under R1's conditions.
+const directWorkflow = 'update-golden.yml';
 
 function realScan() {
   return scan({ root: repoRoot, workflowDir: workflows, actionsDir: actions, wrapperPath: join(actions, 'setup-go') });
@@ -66,66 +79,120 @@ function scanWithWrapper(edit) {
 // ---------------------------------------------------------------------------
 
 test('the repository as it stands passes every rule', () => {
-  const { violations, wrapperCallSites } = realScan();
+  const { violations, wrapperCallSites, directCallSites } = realScan();
   assert.deepEqual(violations, []);
-  assert.ok(wrapperCallSites > 0, 'no call site was found — the gate is not reading the workflows');
+  assert.ok(wrapperCallSites >= 45, `expected the whole fleet of call sites, saw ${wrapperCallSites}`);
+  assert.equal(directCallSites, 3, 'only update-golden.yml may reach the Action directly');
 });
 
-test('every Go setup in the tree goes through the wrapper', () => {
+test('no Go setup in the tree can archive an empty module cache', () => {
   // Counted independently of the gate's own bookkeeping, so a scanner that
   // silently stopped reading files would fail here rather than report a
   // satisfied-looking zero.
+  let cacheWriters = 0;
   let direct = 0;
-  let wrapped = 0;
-  for (const file of readdirSync(workflows).filter((f) => /\.ya?ml$/.test(f))) {
-    const text = readFileSync(join(workflows, file), 'utf8');
-    direct += directSetupGoUses(text).length;
-    wrapped += wrapperUses(text);
+  for (const file of ['ci.yml', 'chdb.yml', 'coverage.yml', 'e2e.yml', directWorkflow]) {
+    for (const block of stepBlocks(readFileSync(join(workflows, file), 'utf8'))) {
+      for (const step of block.steps) {
+        if (!isUpstreamSetupGo(stepUses(step) ?? '')) continue;
+        direct++;
+        if (withEntry(step, 'cache') !== 'false') cacheWriters++;
+      }
+    }
   }
-  assert.equal(direct, 0);
-  assert.ok(wrapped >= 50, `expected the whole fleet of call sites, saw ${wrapped}`);
-});
-
-test('`cache: false` is permitted — the gate never inspects the input', () => {
-  // update-golden.yml keeps `cache: false` on all three of its jobs. If the
-  // gate ever started demanding `true`, this is the assertion that says so
-  // before the isolation those jobs depend on is broken.
-  const text = readFileSync(join(workflows, 'update-golden.yml'), 'utf8');
-  assert.ok(/cache: false/.test(text), 'the specimen no longer carries the value under test');
-  assert.ok(wrapperUses(text) >= 3, 'update-golden should reach Go setup through the wrapper');
-
-  const { violations } = scanWithWorkflow('update-golden.yml', (t) => `${t}\n# doctored: no change of substance\n`);
-  assert.deepEqual(violations, []);
+  assert.equal(cacheWriters, 0);
+  assert.equal(direct, 3);
 });
 
 // ---------------------------------------------------------------------------
-// R1 — the direct call site.
+// R1 — a step that can SAVE the cache must go through the composite.
 // ---------------------------------------------------------------------------
 
-test('a call site reverted to actions/setup-go fails the gate', () => {
+test('a call site reverted to actions/setup-go with caching fails the gate', () => {
   const { violations } = scanWithWorkflow(specimenWorkflow, (t) =>
-    t.replace('uses: ./.github/actions/setup-go', 'uses: actions/setup-go@v7'),
+    t.replace(
+      '      - uses: ./.github/actions/setup-go\n',
+      "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: 'go.mod'\n          cache: true\n",
+    ),
   );
   assert.equal(violations.length, 1, violations.join('\n'));
-  assert.match(violations[0], /uses `actions\/setup-go@v7` directly/);
+  assert.match(violations[0], /uses `actions\/setup-go@v7` with `cache: true`/);
 });
 
-test('an unversioned actions/setup-go is caught too', () => {
+test('a bare actions/setup-go with no `with:` at all fails the gate', () => {
   const { violations } = scanWithWorkflow(specimenWorkflow, (t) =>
-    t.replace('uses: ./.github/actions/setup-go', 'uses: actions/setup-go'),
+    t.replace('      - uses: ./.github/actions/setup-go\n', '      - uses: actions/setup-go@v7\n'),
   );
   assert.equal(violations.length, 1, violations.join('\n'));
+  assert.match(violations[0], /`cache: \(unset\)`/);
 });
+
+test('a templated cache value does not satisfy the literal rule', () => {
+  // The exact shape that made CodeQL report update-golden as poisonable: a
+  // value no static reader can resolve to false.
+  const { violations } = scanWithWorkflow(directWorkflow, (t) =>
+    t.replace('          cache: false\n', '          cache: ${{ inputs.cache }}\n'),
+  );
+  assert.ok(violations.length >= 1, 'a non-literal cache value must not pass');
+  assert.match(violations[0], /cache-poisoning|must go through/);
+});
+
+// ---------------------------------------------------------------------------
+// R2 — opting out of the cache is not opting out of the fetch.
+// ---------------------------------------------------------------------------
+
+test('a direct, cache-less setup with no warm step in its job fails the gate', () => {
+  const { violations } = scanWithWorkflow(directWorkflow, (t) =>
+    t.replaceAll('        run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"\n', '        run: true\n'),
+  );
+  // Three jobs, three violations. (The scan also reports R5, because this
+  // single-file scan contains no wrapper call site at all — that is the
+  // vacuity rule doing its job, and it is asserted on its own below.)
+  const unwarmed = violations.filter((v) => /never runs `go-module-fetch\.mjs`/.test(v));
+  assert.equal(unwarmed.length, 3, violations.join('\n'));
+  for (const label of ['regenerate', 'cardinality-leg', 'cardinality-seal']) {
+    assert.ok(
+      unwarmed.some((v) => v.includes(`:${label}:`)),
+      `${label} was not reported: ${unwarmed.join('\n')}`,
+    );
+  }
+});
+
+test('update-golden pairs every direct setup with a warm step in the same job', () => {
+  // The over-reach control, asserted on the real text: three direct call
+  // sites, each in a job that also warms. A gate that forced these through the
+  // composite would take the literal `cache: false` away from the repository's
+  // most privileged workflow.
+  const text = readFileSync(join(workflows, directWorkflow), 'utf8');
+  let paired = 0;
+  for (const block of stepBlocks(text)) {
+    const direct = block.steps.filter((s) => isUpstreamSetupGo(stepUses(s) ?? ''));
+    if (direct.length === 0) continue;
+    assert.equal(withEntry(direct[0], 'cache'), 'false', `${block.label} must opt out of the shared cache`);
+    assert.ok(
+      block.steps.some((s) => s.some((l) => l.includes('go-module-fetch.mjs'))),
+      `${block.label} must warm the module cache itself`,
+    );
+    paired++;
+  }
+  assert.equal(paired, 3);
+  assert.deepEqual(realScan().violations, []);
+});
+
+// ---------------------------------------------------------------------------
+// R3 — composite actions have no job scope, so they get no escape.
+// ---------------------------------------------------------------------------
 
 test('a composite action that reaches for setup-go directly fails the gate', () => {
   // The wrapper is exempt by IDENTITY, not by name: any OTHER action.yml under
   // .github/actions/ naming the upstream Action reopens the hole, so the gate
-  // has to read that tree as well as the workflows.
+  // has to read that tree as well as the workflows. Even `cache: false` does
+  // not save it — there is no job here in which R2 could be satisfied.
   const dir = mkdtempSync(join(tmpdir(), 'go-setup-gate-sibling-'));
   cpSync(actions, dir, { recursive: true });
   const sibling = join(dir, 'free-disk-space/action.yml');
   const text = readFileSync(sibling, 'utf8');
-  writeFileSync(sibling, `${text}\n    - uses: actions/setup-go@v7\n`);
+  writeFileSync(sibling, `${text}\n    - uses: actions/setup-go@v7\n      with:\n        cache: false\n`);
 
   const { violations } = scan({
     root: repoRoot,
@@ -138,24 +205,26 @@ test('a composite action that reaches for setup-go directly fails the gate', () 
 });
 
 test('a prose mention of the Action is not a call site', () => {
-  // compatibility.yml's header lists the Actions it runs. A grep would read
-  // that inventory as a violation, and a gate that fired on a comment is a gate
-  // somebody writes an exemption for.
+  // compatibility.yml's header lists the Actions it runs, and update-golden's
+  // own comment explains why it names the Action. A grep would read both as
+  // violations, and a gate that fired on a comment is a gate somebody writes an
+  // exemption for.
   assert.equal(usesValue('#   * actions/setup-go@v7           — driver builds.'), null);
-  assert.equal(directSetupGoUses('# uses: actions/setup-go@v7\n').length, 0);
-  assert.equal(directSetupGoUses('      - name: replace actions/setup-go@v7\n').length, 0);
-  assert.equal(directSetupGoUses('      - uses: actions/setup-go@v7\n').length, 1);
+  assert.equal(usesValue('      - name: replace actions/setup-go@v7'), null);
+  assert.equal(usesValue('      - uses: actions/setup-go@v7'), 'actions/setup-go@v7');
+  assert.equal(isUpstreamSetupGo('actions/setup-go'), true);
+  assert.equal(isUpstreamSetupGo('./.github/actions/setup-go'), false);
 });
 
 // ---------------------------------------------------------------------------
-// R2 / R3 — the wrapper is real, and its warm step is unconditional.
+// R4 — the wrapper is real, and its warm step is unconditional.
 // ---------------------------------------------------------------------------
 
 test('a wrapper that no longer warms the module cache fails the gate', () => {
   // Only the RUN line, not the header prose that also names the module: the
   // rule is about what the step executes.
   const { violations } = scanWithWrapper((t) =>
-    t.replace('node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"', 'echo skipped'),
+    t.replace('node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"', 'echo nothing'),
   );
   assert.equal(violations.length, 1, violations.join('\n'));
   assert.match(violations[0], /runs no `go-module-fetch\.mjs` step/);
@@ -163,7 +232,10 @@ test('a wrapper that no longer warms the module cache fails the gate', () => {
 
 test('a warm step made conditional fails the gate', () => {
   const { violations } = scanWithWrapper((t) =>
-    t.replace('    - name: Warm the Go module cache', "    - if: inputs.cache == 'true'\n      name: Warm the Go module cache"),
+    t.replace(
+      '    - name: Warm the Go module cache',
+      "    - if: inputs.cache == 'true'\n      name: Warm the Go module cache",
+    ),
   );
   assert.equal(violations.length, 1, violations.join('\n'));
   assert.match(violations[0], /carries an `if:`/);
@@ -188,7 +260,7 @@ test('a missing wrapper fails the gate rather than passing vacuously', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R4 — vacuity.
+// R5 — vacuity.
 // ---------------------------------------------------------------------------
 
 test('a tree where nothing sets Go up fails rather than reporting clean', () => {
@@ -205,12 +277,28 @@ test('a tree where nothing sets Go up fails rather than reporting clean', () => 
 });
 
 // ---------------------------------------------------------------------------
-// The step reader, pinned directly.
+// The readers, pinned directly.
 // ---------------------------------------------------------------------------
 
 test('the wrapper parses into its two steps, in order', () => {
-  const steps = compositeSteps(readFileSync(wrapperFile, 'utf8'));
+  const steps = stepBlocks(readFileSync(wrapperFile, 'utf8')).flatMap((b) => b.steps);
   assert.equal(steps.length, 2);
-  assert.ok(steps[0].some((l) => l.includes('actions/setup-go@v7')));
+  assert.equal(stepUses(steps[0]), 'actions/setup-go@v7');
   assert.ok(steps[1].some((l) => l.includes('go-module-fetch.mjs')));
+  assert.equal(hasKeyAtStepLevel(steps[1], 'if'), false);
+});
+
+test('a step block is scoped to its own job', () => {
+  // R2 asks "does the SAME job warm", so a reader that merged two jobs into one
+  // block would let a warm step in job A satisfy a direct setup in job B.
+  const blocks = stepBlocks(readFileSync(join(workflows, directWorkflow), 'utf8'));
+  assert.ok(blocks.length >= 5, `expected one block per job, saw ${blocks.length}`);
+  assert.ok(blocks.some((b) => b.label === 'regenerate'));
+  assert.ok(blocks.some((b) => b.label === 'plan'));
+  // `plan` sets Go up not at all, so it must contribute no direct call site.
+  const plan = blocks.find((b) => b.label === 'plan');
+  assert.equal(
+    plan.steps.filter((s) => isUpstreamSetupGo(stepUses(s) ?? '')).length,
+    0,
+  );
 });

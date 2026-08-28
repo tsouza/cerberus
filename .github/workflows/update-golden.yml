@@ -137,13 +137,35 @@ jobs:
           persist-credentials: false
           path: target
 
-      - uses: ./.github/actions/setup-go
+      # Deliberately NOT ./.github/actions/setup-go, and the only three jobs in
+      # the repository that reach the Action directly. Target-branch code runs
+      # below under the default branch's privileges, so this job is a trust
+      # boundary and every step after that checkout has to be legible as one.
+      #
+      # `cache: false` is the load-bearing half: a shared dependency cache would
+      # let target-branch code persist bytes into later workflows, crossing the
+      # read-only boundary this job exists to provide. Written as a LITERAL, and
+      # that is what the composite cannot offer — routed through it the value
+      # arrives at the Action as `${{ inputs.cache }}`, which no static analysis
+      # can resolve to false, and CodeQL's cache-poisoning query then reports
+      # this repository's most privileged workflow as poisonable in all three of
+      # its regenerating jobs. A job that cannot write the cache cannot poison
+      # it, and saying so in a way a reader and a scanner both see is worth more
+      # here than the indirection.
+      #
+      # The composite's OTHER half is kept, explicitly: the warm step below runs
+      # the same retry-hardened fetch, in the target checkout whose go.mod
+      # selected the toolchain. `assert-go-setup-hardened.mjs` requires exactly
+      # this pairing of a direct, cache-less setup with a warm step in the same
+      # job.
+      - uses: actions/setup-go@v7
         with:
           go-version-file: target/go.mod
-          # Target-branch code runs below. A shared dependency cache would let
-          # that code persist bytes into later workflows, crossing the exact
-          # read-only boundary this job is meant to provide.
           cache: false
+
+      - name: Warm the Go module cache
+        working-directory: target
+        run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -266,10 +288,17 @@ jobs:
           persist-credentials: false
           path: target
 
-      - uses: ./.github/actions/setup-go
+      # Direct, cache-less, warmed — see the `regenerate` job above for why
+      # this trust boundary spells the value out instead of routing it through
+      # ./.github/actions/setup-go.
+      - uses: actions/setup-go@v7
         with:
           go-version-file: target/go.mod
           cache: false
+
+      - name: Warm the Go module cache
+        working-directory: target
+        run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -370,10 +399,17 @@ jobs:
           persist-credentials: false
           path: target
 
-      - uses: ./.github/actions/setup-go
+      # Direct, cache-less, warmed — see the `regenerate` job above for why
+      # this trust boundary spells the value out instead of routing it through
+      # ./.github/actions/setup-go.
+      - uses: actions/setup-go@v7
         with:
           go-version-file: target/go.mod
           cache: false
+
+      - name: Warm the Go module cache
+        working-directory: target
+        run: node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:

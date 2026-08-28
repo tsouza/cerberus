@@ -2212,32 +2212,44 @@ what actually runs.
     fetch-only.
   - Gated by `go-module-fetch.test.mjs`, whose positive fixtures are the
     verbatim stderr of the runs above.
-- **`assert-go-setup-hardened.mjs`** — the required `check` lane. Fails when any
-  workflow step, or any composite action other than the wrapper itself, `uses:`
-  `actions/setup-go` directly. `actions/setup-go` saves its module cache keyed on
-  go.sum, only on a primary-key MISS, and without checking that there is anything
-  to save — so a Go-less job with `cache: true` can archive an EMPTY GOMODCACHE
-  on `refs/heads/main`, after which every job (and every PR ref falling back to
+- **`assert-go-setup-hardened.mjs`** — the required `check` lane. No job may
+  reach the point where setup-go's post-job step archives the module cache with
+  an EMPTY GOMODCACHE. `actions/setup-go` saves that cache keyed on go.sum, only
+  on a primary-key MISS, and without checking that there is anything to save —
+  so a Go-less job with `cache: true` can archive an empty one on
+  `refs/heads/main`, after which every job (and every PR ref falling back to
   main's scope) restores nothing, declines to save, and re-downloads the whole
   graph until the next go.sum bump. Run 32705099037 did exactly that, in 35
   seconds, with a 7,616-byte archive.
-  - The fix is `./.github/actions/setup-go`, which warms GOMODCACHE
-    unconditionally so the post-job save can never see it empty. This gate is the
-    ratchet: it also asserts the wrapper still delegates to `actions/setup-go`,
-    still runs `go-module-fetch.mjs`, and that the warm step carries no `if:` —
-    a conditional warm leaves the hole open.
-  - It says nothing about `cache:`. `false` is load-bearing on
-    `update-golden.yml`'s three jobs, which run target-branch code and must not
-    persist bytes into later workflows; the warm step runs either way.
-  - There is no allow-list. The one file permitted to name `actions/setup-go` is
-    permitted by identity — it is the wrapper's own `action.yml`, the definition
-    site, which cannot be a call site of itself.
+  - **R1** A step reaching `actions/setup-go` directly must set `cache: false`
+    as a LITERAL. The rule is keyed on the mechanism: a step that never saves
+    the shared cache cannot poison it, so it is outside the rule's subject
+    rather than exempted from it. Everything that CAN write that cache goes
+    through `./.github/actions/setup-go`, where the warm step is unconditional.
+  - **R2** A job holding such a step must also run `go-module-fetch.mjs`.
+    Opting out of the cache is not opting out of the fetch.
+  - **R3** No composite action other than the wrapper may use the Action at all
+    — there is no job scope there in which R2 could be satisfied.
+  - **R4** The wrapper exists, delegates, warms, and its warm step carries no
+    `if:`. A conditional warm leaves the hole open.
+  - **R5** At least one step actually uses the wrapper.
+  - Why R1 takes a literal rather than an input: `update-golden.yml`'s three
+    regenerating jobs check out target-branch code under the default branch's
+    privileges, and `cache: false` is what stops that code persisting bytes into
+    later workflows. Routed through the composite the value reaches the Action
+    as `${{ inputs.cache }}`, which no static analysis can resolve, and CodeQL's
+    `actions/cache-poisoning/poisonable-step` query then reports all three jobs
+    as poisonable. A trust boundary has to be legible to a reader and to a
+    scanner. The gate never demands `cache: true`.
+  - There is no allow-list. The one file permitted to name `actions/setup-go`
+    unconditionally is permitted by identity — it is the wrapper's own
+    `action.yml`, the definition site, which cannot be a call site of itself.
   - Env: `WORKFLOW_DIR` / `ACTIONS_DIR` / `REPO_ROOT` (all optional).
   - Exit: `0` when every rule holds, `1` on a violation or when NO call site
     uses the wrapper at all.
-  - Gated by `assert-go-setup-hardened.test.mjs`, which reverts one call site in
-    the real workflow text, deletes the warm step, and makes it conditional, and
-    asserts each goes red.
+  - Gated by `assert-go-setup-hardened.test.mjs`, which reverts a call site in
+    the real workflow text, templates a `cache:` value, strips a warm step, and
+    makes the wrapper's warm step conditional, and asserts each goes red.
 - **`mirror-images.mjs`** — `mirror-images.yml` (daily cron, `workflow_dispatch`,
   and pushes to the mirror's own files). Copies every ref in `lib/mirror.mjs`'s
   inventory into cerberus's GHCR namespace with `docker buildx imagetools

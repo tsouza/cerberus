@@ -1,10 +1,10 @@
-// assert-go-setup-hardened — every job that sets up Go must do it through
-// `./.github/actions/setup-go`, never through `actions/setup-go` directly.
+// assert-go-setup-hardened — no job may reach the point where setup-go's
+// post-job step archives the module cache with an EMPTY GOMODCACHE.
 //
 // WHY THIS EXISTS. `actions/setup-go` saves its module cache keyed on go.sum,
 // only on a primary-key MISS, and without ever checking that there is anything
 // to save. A job that sets it up with `cache: true` and runs no Go command
-// therefore archives an EMPTY GOMODCACHE, and if it wins that race on
+// therefore archives an empty GOMODCACHE, and if it wins that race on
 // `refs/heads/main` after a go.sum bump, every later job — on main and on every
 // PR ref falling back to main's cache scope — restores nothing and then
 // declines to save, because from then on the key hits. Run 32705099037 did
@@ -12,9 +12,9 @@
 // followed by `Cache saved with the key: setup-go-…-29abba13…`, a 7,616-byte
 // archive that made 51 call sites run cold until the next go.sum change.
 //
-// The composite action fixes that by construction — it always warms GOMODCACHE
-// before the post-job save can look at it. This gate is what keeps the fix from
-// decaying: the cheapest way to add a new Go job is to copy an
+// `./.github/actions/setup-go` fixes it by construction — it always warms
+// GOMODCACHE before the post-job save can look at it. This gate is what keeps
+// the fix from decaying: the cheapest way to add a new Go job is to copy an
 // `actions/setup-go@v7` block out of some other repo, and that one step
 // silently re-arms the whole failure. "Does this workflow set Go up through the
 // hardened path" is a question about the shape of a workflow, so a gate can
@@ -23,31 +23,48 @@
 //
 // WHAT IT ASSERTS.
 //
-//   R1  No workflow step, and no composite action other than the wrapper
-//       itself, `uses:` `actions/setup-go` directly.
-//   R2  The wrapper exists and does delegate to `actions/setup-go` — otherwise
-//       R1 is satisfiable by an action that sets up nothing.
-//   R3  The wrapper's warm step runs `go-module-fetch.mjs` and carries no
-//       `if:`. An `if:` on that step is precisely the hole this closes: a
-//       conditional warm is a job that can still reach the post-save with an
-//       empty GOMODCACHE.
-//   R4  At least one workflow step actually uses the wrapper. A gate that
+//   R1  A workflow step reaching `actions/setup-go` directly must set
+//       `cache: false` as a LITERAL in its own `with:`. The rule is keyed on
+//       the MECHANISM, not on the Action's name: a step that never saves the
+//       shared cache cannot poison it, so it is outside this rule's subject
+//       rather than exempted from it. Everything that CAN write that cache
+//       goes through the composite, where the warm step is unconditional.
+//   R2  A job holding such a step must also run `go-module-fetch.mjs`. Opting
+//       out of the shared cache is not opting out of fetching modules, and
+//       that fetch is the one the Go resolver will not retry.
+//   R3  No composite action other than the wrapper uses `actions/setup-go` at
+//       all. R1's escape has no meaning there: a composite has no job scope in
+//       which R2 could be satisfied, and it is reached from arbitrary callers.
+//   R4  The wrapper exists, delegates to `actions/setup-go`, runs
+//       `go-module-fetch.mjs`, and that warm step carries no `if:`. A
+//       conditional warm leaves a path on which a job reaches the post-job save
+//       with an empty GOMODCACHE, which is the hole the composite closes.
+//   R5  At least one workflow step actually uses the wrapper. A gate that
 //       passes because nothing sets Go up at all reports the same green as a
 //       gate that is satisfied.
 //
+// WHY R1 IS A LITERAL AND NOT AN INPUT. `update-golden.yml`'s three
+// regenerating jobs check out TARGET-BRANCH code under the default branch's
+// privileges, and `cache: false` is what keeps that code from persisting bytes
+// into later workflows. Routed through the composite the value reaches the
+// Action as `${{ inputs.cache }}`, which no static analysis can resolve — and
+// CodeQL's `actions/cache-poisoning/poisonable-step` query then reports this
+// repository's most privileged workflow as poisonable in all three jobs. A
+// trust boundary has to be legible to a reader and to a scanner, so those three
+// spell the value out and pair it with their own warm step, which is exactly
+// what R1 and R2 together require.
+//
 // THERE IS NO ALLOW-LIST. The single file permitted to name `actions/setup-go`
-// is permitted by IDENTITY, not by name: it is the wrapper's own action.yml —
-// the definition site of the thing the rule is about, which cannot be a call
-// site of itself. That is the same structural distinction
+// unconditionally is permitted by IDENTITY, not by name: it is the wrapper's
+// own action.yml — the definition site of the thing the rule is about, which
+// cannot be a call site of itself. That is the same structural distinction
 // `assert-image-jobs-authenticate.mjs` draws between declaring
 // `pullImageWithRetry` and calling it. Anything else that ever has to be
 // excluded must be excluded by a fact of that kind and not by a list of names.
 //
-// The gate deliberately says NOTHING about the `cache:` input. `false` is a
-// legitimate, load-bearing choice — update-golden.yml's three jobs run
-// target-branch code and must not persist bytes into later workflows — and the
-// warm step runs either way, so the poisoning this prevents is unrelated to the
-// value. Forcing `cache: true` would break that isolation for no gain.
+// The gate never demands `cache: true`. Forcing it would break update-golden's
+// read-only isolation for no gain, because the warm step — not the cache — is
+// what makes an empty archive impossible.
 //
 // ENV CONTRACT
 //   REPO_ROOT     — repository root. Default `process.cwd()`.
@@ -57,21 +74,26 @@
 // Exit: 0 when every rule holds, 1 on any violation.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import { error, log, notice } from './lib/gh.mjs';
 
-// The Action this repo must never name directly, and the local wrapper that is
-// the one sanctioned way to reach it.
+// The Action this repo may only reach under R1's conditions, and the local
+// wrapper that is the sanctioned way to reach it otherwise.
 const upstreamSetupGo = 'actions/setup-go';
 const wrapperDir = '.github/actions/setup-go';
 const wrapperRef = './.github/actions/setup-go';
 
 // The module the warm step has to run. Named rather than described, so a rename
-// fails this gate instead of quietly turning R3 vacuous.
+// fails this gate instead of quietly turning R2 and R4 vacuous.
 const warmScript = 'go-module-fetch.mjs';
+
+// The one `cache:` value that takes a step out of R1's subject, spelled exactly
+// as it must appear. `false` and nothing else: a quoted or templated value is
+// not something a reader or a scanner can resolve, which is the whole point.
+const cacheDisabled = 'false';
 
 // ---------------------------------------------------------------------------
 // The narrow slice of YAML these files use. Only `node:` builtins are available
@@ -102,53 +124,58 @@ export function usesValue(line) {
   return unquote(m[1].replace(/\s+#.*$/, ''));
 }
 
-// directSetupGoUses — every line in `text` that references the upstream Action.
-// Matched on the reference itself rather than anywhere in the line, so a
-// workflow that MENTIONS the name in a step title stays clean.
-export function directSetupGoUses(text) {
-  const out = [];
-  text.split('\n').forEach((line, i) => {
-    const ref = usesValue(line);
-    if (ref === null) return;
-    if (ref === upstreamSetupGo || ref.startsWith(`${upstreamSetupGo}@`)) {
-      out.push({ line: i + 1, ref });
-    }
-  });
-  return out;
+export function isUpstreamSetupGo(ref) {
+  return ref === upstreamSetupGo || String(ref).startsWith(`${upstreamSetupGo}@`);
 }
 
-export function wrapperUses(text) {
-  return text.split('\n').filter((line) => usesValue(line) === wrapperRef).length;
-}
-
-// compositeSteps — the `runs.steps:` items of a composite action, each as a
-// line array with the leading `- ` blanked so its keys form a plain mapping.
-export function compositeSteps(text) {
+// stepBlocks — every `steps:` sequence in a file, split into its steps.
+//
+// One block per job in a workflow and one per composite action, which is
+// exactly the scope R2 asks about: "does the SAME job also warm the cache".
+// Deriving it from the `steps:` key rather than from a job-name parse means the
+// scope is the runtime one, and a workflow shape this reader cannot follow
+// yields no block rather than a wrong one.
+export function stepBlocks(text) {
   const lines = text.split('\n');
-  let stepsAt = -1;
+  const blocks = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!isBlank(lines[i]) && /^\s*steps:\s*$/.test(lines[i])) {
-      stepsAt = i;
-      break;
-    }
-  }
-  if (stepsAt === -1) return [];
+    if (isBlank(lines[i]) || !/^\s*steps:\s*$/.test(lines[i])) continue;
 
-  const base = indentOf(lines[stepsAt]);
-  const block = [];
-  for (let i = stepsAt + 1; i < lines.length; i++) {
-    if (isBlank(lines[i])) {
-      block.push(lines[i]);
-      continue;
+    const base = indentOf(lines[i]);
+    const body = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (isBlank(lines[j])) {
+        body.push(lines[j]);
+        continue;
+      }
+      if (indentOf(lines[j]) <= base) break;
+      body.push(lines[j]);
     }
-    if (indentOf(lines[i]) <= base) break;
-    block.push(lines[i]);
+    blocks.push({ label: enclosingKey(lines, i, base), steps: splitSteps(body) });
   }
+  return blocks;
+}
 
-  const itemIndent = Math.min(...block.filter((l) => !isBlank(l)).map(indentOf));
+// enclosingKey — the nearest preceding mapping key at a shallower indent, used
+// only to name the job in an error message.
+function enclosingKey(lines, at, indent) {
+  for (let i = at - 1; i >= 0; i--) {
+    if (isBlank(lines[i]) || indentOf(lines[i]) >= indent) continue;
+    const m = /^\s*([A-Za-z0-9_-]+):\s*$/.exec(lines[i]);
+    if (m) return m[1];
+  }
+  return 'steps';
+}
+
+// splitSteps — a `steps:` body into one line-array per step, with the leading
+// `- ` blanked so each step's keys form a plain mapping.
+function splitSteps(body) {
+  const present = body.filter((l) => !isBlank(l));
+  if (present.length === 0) return [];
+  const itemIndent = Math.min(...present.map(indentOf));
   const steps = [];
   let current = null;
-  for (const line of block) {
+  for (const line of body) {
     if (!isBlank(line) && indentOf(line) === itemIndent && /^\s*-\s/.test(line)) {
       if (current) steps.push(current);
       current = [line.replace(/^(\s*)-(\s)/, '$1 $2')];
@@ -160,11 +187,46 @@ export function compositeSteps(text) {
   return steps;
 }
 
-// hasKeyAtStepLevel — does this step declare `key:` as one of its own keys?
-// Used for `if:`, which must be absent from the warm step.
-function hasKeyAtStepLevel(stepLines, key) {
-  const keyIndent = Math.min(...stepLines.filter((l) => !isBlank(l)).map(indentOf));
-  return stepLines.some((l) => !isBlank(l) && indentOf(l) === keyIndent && new RegExp(`^\\s*${key}:(\\s|$)`).test(l));
+function stepIndent(stepLines) {
+  const present = stepLines.filter((l) => !isBlank(l));
+  return present.length === 0 ? 0 : Math.min(...present.map(indentOf));
+}
+
+// hasKeyAtStepLevel — does this step declare `key:` as one of its OWN keys?
+export function hasKeyAtStepLevel(stepLines, key) {
+  const indent = stepIndent(stepLines);
+  const re = new RegExp(`^\\s*${key}:(\\s|$)`);
+  return stepLines.some((l) => !isBlank(l) && indentOf(l) === indent && re.test(l));
+}
+
+// withEntry — the literal value a step passes for one `with:` input, or null
+// when the step does not set it or sets it to something non-literal.
+export function withEntry(stepLines, name) {
+  const indent = stepIndent(stepLines);
+  let inWith = false;
+  for (const line of stepLines) {
+    if (isBlank(line)) continue;
+    if (indentOf(line) === indent) {
+      inWith = /^\s*with:\s*$/.test(line);
+      continue;
+    }
+    if (!inWith) continue;
+    const m = new RegExp(`^\\s*${name}:\\s*(.*)$`).exec(line);
+    if (m) return unquote(m[1].replace(/\s+#.*$/, ''));
+  }
+  return null;
+}
+
+export function stepUses(stepLines) {
+  for (const line of stepLines) {
+    const ref = usesValue(line);
+    if (ref !== null && indentOf(line) === stepIndent(stepLines)) return ref;
+  }
+  return null;
+}
+
+function stepRunsWarm(stepLines) {
+  return stepLines.some((l) => !isComment(l) && l.includes(warmScript));
 }
 
 // ---------------------------------------------------------------------------
@@ -201,44 +263,80 @@ export function scan({
   const abs = (p) => (isAbsolute(p) ? p : join(root, p));
   const violations = [];
   let wrapperCallSites = 0;
+  let directCallSites = 0;
   let scanned = 0;
 
   const wrapperFile = ['action.yml', 'action.yaml']
     .map((n) => join(abs(wrapperPath), n))
     .find((p) => existsSync(p));
 
-  // R1 — nothing but the wrapper names the upstream Action.
-  for (const file of [...yamlFilesIn(abs(workflowDir)), ...actionFilesIn(abs(actionsDir))]) {
+  // R1 / R2 — the workflows.
+  for (const file of yamlFilesIn(abs(workflowDir))) {
     scanned++;
     const text = readFileSync(file, 'utf8');
-    wrapperCallSites += wrapperUses(text);
-    // The definition site cannot be a call site of itself.
-    if (wrapperFile !== undefined && file === wrapperFile) continue;
-    for (const hit of directSetupGoUses(text)) {
-      violations.push(
-        `${file}:${hit.line}: uses \`${hit.ref}\` directly. Go setup must go through ` +
-          `\`${wrapperRef}\`, which warms GOMODCACHE before setup-go's post-job step can archive an ` +
-          'empty one — the failure that made every Go job in the repo run cold until the next go.sum ' +
-          'bump. Pass `cache: false` to the wrapper if this job must stay off the shared cache.',
-      );
+    for (const block of stepBlocks(text)) {
+      const warms = block.steps.some(stepRunsWarm);
+      for (const step of block.steps) {
+        const ref = stepUses(step);
+        if (ref === wrapperRef) wrapperCallSites++;
+        if (ref === null || !isUpstreamSetupGo(ref)) continue;
+        directCallSites++;
+
+        const cache = withEntry(step, 'cache');
+        if (cache !== cacheDisabled) {
+          violations.push(
+            `${basename(file)}:${block.label}: uses \`${ref}\` with \`cache: ${cache ?? '(unset)'}\`. A ` +
+              `step that can SAVE the shared module cache must go through \`${wrapperRef}\`, which warms ` +
+              'GOMODCACHE before the post-job step can archive an empty one — the failure that made every ' +
+              'Go job in the repo run cold until the next go.sum bump. Only a literal `cache: false`, which ' +
+              'saves nothing and so cannot poison anything, may reach the Action directly.',
+          );
+        } else if (!warms) {
+          violations.push(
+            `${basename(file)}:${block.label}: opts out of the shared cache but never runs ` +
+              `\`${warmScript}\`. Skipping the cache is not skipping the FETCH, and that fetch is the one ` +
+              'the Go module resolver will not retry past a dropped HTTP/2 frame. Add the warm step to ' +
+              'this job.',
+          );
+        }
+      }
     }
   }
 
-  // R2 / R3 — the wrapper is the real thing, and its warm step is unconditional.
+  // R3 — no other composite action may reach the Action at all.
+  for (const file of actionFilesIn(abs(actionsDir))) {
+    scanned++;
+    const text = readFileSync(file, 'utf8');
+    for (const block of stepBlocks(text)) {
+      for (const step of block.steps) {
+        const ref = stepUses(step);
+        if (ref === wrapperRef) wrapperCallSites++;
+        if (ref === null || !isUpstreamSetupGo(ref)) continue;
+        // The definition site cannot be a call site of itself.
+        if (wrapperFile !== undefined && file === wrapperFile) continue;
+        violations.push(
+          `${file}: uses \`${ref}\`. A composite action has no job scope in which the warm step could be ` +
+            `required, and it is reached from arbitrary callers, so it must use \`${wrapperRef}\` instead.`,
+        );
+      }
+    }
+  }
+
+  // R4 — the wrapper is the real thing, and its warm step is unconditional.
   if (wrapperFile === undefined) {
     violations.push(
-      `${wrapperPath}/action.yml does not exist — every call site would resolve to nothing, so R1 ` +
-        'would be satisfied by a setup path that sets nothing up.',
+      `${wrapperPath}/action.yml does not exist — every call site would resolve to nothing, so the rules ` +
+        'above would be satisfied by a setup path that sets nothing up.',
     );
   } else {
-    const text = readFileSync(wrapperFile, 'utf8');
-    if (directSetupGoUses(text).length === 0) {
+    const steps = stepBlocks(readFileSync(wrapperFile, 'utf8')).flatMap((b) => b.steps);
+    if (!steps.some((s) => isUpstreamSetupGo(stepUses(s) ?? ''))) {
       violations.push(
         `${wrapperFile}: does not delegate to \`${upstreamSetupGo}\` — the wrapper installs no Go ` +
           'toolchain, so every caller would be silently Go-less.',
       );
     }
-    const warmSteps = compositeSteps(text).filter((step) => step.some((l) => !isComment(l) && l.includes(warmScript)));
+    const warmSteps = steps.filter(stepRunsWarm);
     if (warmSteps.length === 0) {
       violations.push(
         `${wrapperFile}: runs no \`${warmScript}\` step. Without it GOMODCACHE can still be empty when ` +
@@ -256,27 +354,30 @@ export function scan({
     }
   }
 
-  // R4 — non-vacuity.
+  // R5 — non-vacuity.
   if (wrapperCallSites === 0) {
     violations.push(
       `no workflow or action uses \`${wrapperRef}\` at all — this gate is passing because nothing sets ` +
-        'Go up, which is the same green a satisfied gate reports.',
+        'Go up through it, which is the same green a satisfied gate reports.',
     );
   }
 
-  return { violations, wrapperCallSites, scanned };
+  return { violations, wrapperCallSites, directCallSites, scanned };
 }
 
 function main() {
   const root = process.env.REPO_ROOT || process.cwd();
   const workflowDir = process.env.WORKFLOW_DIR || '.github/workflows';
   const actionsDir = process.env.ACTIONS_DIR || '.github/actions';
-  const { violations, wrapperCallSites, scanned } = scan({ root, workflowDir, actionsDir });
+  const { violations, wrapperCallSites, directCallSites, scanned } = scan({ root, workflowDir, actionsDir });
 
-  log(`scanned ${scanned} workflow/action files; ${wrapperCallSites} steps set Go up through ${wrapperRef}`);
+  log(
+    `scanned ${scanned} workflow/action files; ${wrapperCallSites} steps set Go up through ${wrapperRef}, ` +
+      `${directCallSites} reach ${upstreamSetupGo} directly under a literal \`cache: ${cacheDisabled}\``,
+  );
   for (const v of violations) error(v);
   if (violations.length > 0) process.exit(1);
-  notice(`${wrapperCallSites} Go setup call sites, all on the warming ${wrapperRef} path`);
+  notice(`${wrapperCallSites + directCallSites} Go setup call sites, none able to archive an empty module cache`);
   process.exit(0);
 }
 
