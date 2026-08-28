@@ -195,10 +195,17 @@ func wantParallelism(eng *Engine, d *solver.Decision) int {
 // slicing this plan into a single shard, the whole route-B observation family
 // would still pass while testing no fan-out at all. Pinning the number here
 // turns that degeneration into a failure at the one place it originates.
-// Was 8 until #2685 raised the MaxK backstop from 8 to 32: this fixture's K is
-// derived from its own grid (N/MinAnchorsPerSlice) and was previously clipped
-// by that ceiling, so the number moved without the fixture changing.
-const fixtureShardCount = 12
+// Was 8 until #2685 raised the MaxK backstop from 8 to 32, then 12 until #2709
+// returned it to 8: this fixture's K is derived from its own grid
+// (N/MinAnchorsPerSlice = 12) and is clipped by that ceiling whenever the
+// ceiling sits below it, so the number moves with the backstop without the
+// fixture changing. It is back at the clipped value now.
+//
+// The number is what makes the guard bite, but the PROPERTY it protects is
+// "this fixture really fans out" — if a future change makes K derive below the
+// ceiling, update this constant rather than removing the check, or the whole
+// route-B observation family goes green while exercising a single shard.
+const fixtureShardCount = 8
 
 // routedDecision classifies the eligible fixture plan into the routed decision
 // the engine's own route-B paths take.

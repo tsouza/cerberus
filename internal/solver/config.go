@@ -143,27 +143,38 @@ type Config struct {
 const (
 	defaultMinFanout      = 16
 	defaultMinAnchorPairs = 4000
-	// defaultMaxK was raised from 8 to 32 for issue #2685. At 8 it was the
-	// BINDING constraint on wide-window relief rather than a backstop: a 6h
-	// dashboard panel at real production cardinality (253 series, bucket
-	// width 68, measured on ClickHouse 26.6) derives K = N/MinAnchorsPerSlice
-	// = 22 from its own grid, but was truncated to 8 — and at 8 each shard's
-	// scan, widened by the window lookback, lands at 53.8M density cost units
-	// against a 54M ceiling. Over by 0.4%, so the whole query failed while
-	// the sizing the solver had already computed for itself would have fit.
+	// defaultMaxK was raised 8 -> 32 for #2685 and returned to 8 for #2709.
+	// Both moves were right about the case in front of them, and the two cases
+	// pull in opposite directions — so this constant is a TRADE, not a tuning,
+	// and the next person to move it should know what they are giving up.
 	//
-	// 32 is chosen so the anchor-derived K governs across realistic dashboard
-	// windows instead of being clipped: at MinAnchorsPerSlice = 16 the derived
-	// K only reaches 32 at N >= 512 anchors, and the head caps a range query
-	// at format.MaxResolutionPoints (11000) regardless. The cost of the raise
-	// is bounded and predictable — K shards run CERBERUS_SHARD_PARALLEL (3) at
-	// a time, so K = 32 is ~11 sequential rounds rather than 3.
+	// WHY 32 (issue #2685). At 8 the ceiling was the BINDING constraint on
+	// wide-window relief rather than a backstop: a 6h dashboard panel at real
+	// production cardinality (253 series, bucket width 68, measured on
+	// ClickHouse 26.6) derives K = N/MinAnchorsPerSlice = 22 from its own grid,
+	// was truncated to 8, and at 8 each shard's scan — widened by the window
+	// lookback — lands at 53.8M density cost units against a 54M ceiling. Over
+	// by 0.4%, so the whole query failed while the sizing the solver had
+	// already computed for itself would have fit.
 	//
-	// It is still a real ceiling, deliberately: a window wide enough to need
-	// more than 32 shards is asking for more ClickHouse work than a single
-	// dashboard refresh should commit, and an operator who wants it raises
-	// CERBERUS_SHARD_MAX_K explicitly.
-	defaultMaxK               = 32
+	// WHY BACK TO 8 (issue #2709). K derives from grid geometry alone, and
+	// nothing in the decision looks at how much DATA sits behind the grid. A
+	// 24h/1m panel is 1441 anchors and takes the full ceiling whether the table
+	// holds a billion rows or almost none. Shards run CERBERUS_SHARD_PARALLEL
+	// (3) at a time, so K=32 is ~11 sequential rounds against ~3 at K=8 — and
+	// on a small or newly-provisioned deployment those eight extra rounds are
+	// pure round-trip overhead for a table with nothing to divide. The e2e
+	// dashboard sweep measured that panel at 19s and Grafana's proxy cut it,
+	// on exactly the wide-window shape #2677 set out to make usable.
+	//
+	// So #2685's failure mode returns at production cardinality: a panel whose
+	// own grid asks for K>8 is clipped again, and one of those was measured
+	// 0.4% over the density ceiling. An operator hitting it raises
+	// CERBERUS_SHARD_MAX_K, which is the knob that exists for exactly this.
+	// The durable fix is to bound K by the work available rather than by the
+	// grid quantum, so neither deployment size has to be traded for the other —
+	// tracked in #2709.
+	defaultMaxK               = 8
 	defaultMinAnchorsPerSlice = 16
 	defaultParallel           = 3
 	defaultTimeout            = 60 * time.Second
