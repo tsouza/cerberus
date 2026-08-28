@@ -995,7 +995,7 @@ jobs:
     outputs: { tiers: ${{ steps.emit.outputs.tiers }} }
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
       - run: go run ./test/e2e/migration/cmd/scenarios --out build/migration-scenarios.json
       - run: node .github/scripts/migration-e2e.mjs   # story <-> scenario cover
         env: { MODE: verify, SCENARIOS_JSON: build/migration-scenarios.json }
@@ -1010,7 +1010,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
       - run: node .github/scripts/migration-artifact.mjs   # resolve the CLI under test
       - run: node .github/scripts/migration-e2e.mjs
         env: { MODE: run, SCENARIOS_JSON: build/migration-scenarios.json, TIER: tier0, STORY: ${{ inputs.story }} }

@@ -104,10 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: enumerate migration scenarios
         run: |
@@ -159,10 +156,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: download migration scenarios enumeration
         uses: actions/download-artifact@v8
@@ -254,10 +248,7 @@ jobs:
       # reclaim, pinned to a commit SHA (the action only ships @main).
       - uses: ./.github/actions/free-disk-space
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -412,10 +403,7 @@ jobs:
       # superset of that one, so the disk pressure is strictly worse.
       - uses: ./.github/actions/free-disk-space
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:

@@ -1,0 +1,79 @@
+name: Setup Go
+description: >
+  Install the Go toolchain, restore setup-go's module cache, and then WARM
+  GOMODCACHE through the retrying module fetch — so no job can ever save an
+  empty cache, and a transient module-proxy fault never fails a job on an
+  unretried first attempt.
+
+# WHY A COMPOSITE ACTION, and why the warm step is UNCONDITIONAL.
+#
+# `actions/setup-go` saves its module cache in a post-job step, keyed on the
+# module's go.sum, and it saves only when the primary key MISSED. It does not
+# check that there is anything to save. So a job that runs setup-go with
+# `cache: true` and then runs no Go command at all archives an EMPTY
+# GOMODCACHE — and if it wins the race to finish first after a go.sum bump on
+# `refs/heads/main`, that empty archive becomes the entry every later job, and
+# every PR branch falling back to main's cache scope, restores. Nothing saves
+# over it, because from then on the primary key HITS. The poison is permanent
+# until go.sum changes again.
+#
+# That is not hypothetical: run 32705099037's `post-merge-drift` planning job —
+# a Go-less job whose only work step is `node …/post-merge-golden-drift.mjs` —
+# logged `Cache folder path is retrieved but doesn't exist on disk:
+# /home/runner/go/pkg/mod` immediately followed by `Cache saved with the key:
+# setup-go-Linux-x64-ubuntu24-go-1.26.2-29abba13…`, writing a 7,616-byte archive
+# on main. Every Go job in the repo then re-downloaded ~340 modules on every
+# run, and the ambient flakiness of a multi-minute proxy.golang.org stream
+# turned into seven job failures in one afternoon.
+#
+# The per-leg fix is `cache: false` on that one job. This is the root fix
+# instead: the warm step runs `go mod download` on EVERY path through this
+# action, so by the time setup-go's post step looks at GOMODCACHE it is never
+# empty — including for a job that runs no Go command of its own. Poisoning
+# stops being something a workflow author has to remember not to do and becomes
+# something the setup path cannot express. `assert-go-setup-hardened.mjs` is the
+# ratchet that keeps every call site on this path.
+#
+# The warm step is also the one place a cold fetch is retry-hardened. The Go
+# module resolver does not retry past a dropped HTTP/2 frame, so a single
+# `INTERNAL_ERROR; received from peer` in a ~340-module download stream kills a
+# job outright. Routing the bulk fetch through go-module-fetch.mjs means the
+# rest of the job — `go test`, `go list`, `go build`, `just`, `gremlins` — finds
+# its modules already on disk and is left free to fail on its FIRST attempt,
+# which is exactly where a real failure must fail. See that module's header for
+# the three layers that keep the retry from masking anything.
+
+inputs:
+  go-version-file:
+    description: >
+      The go.mod whose `go` directive selects the toolchain. Its DIRECTORY is
+      also where the warm step runs, so `target/go.mod` warms the module graph
+      of the checkout under `target/`.
+    required: false
+    default: go.mod
+  cache:
+    description: >
+      Restore and save setup-go's shared module cache, keyed on that module's
+      go.sum. Setting it to `false` opts a job out of the SHARED cache — it
+      does not opt out of the warm step, because the modules still have to be
+      fetched and that fetch still deserves a retry.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v7
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: ${{ inputs.cache }}
+
+    # Unconditional by design — see the header. A condition here is exactly the
+    # hole this action exists to close.
+    - name: Warm the Go module cache
+      shell: bash
+      env:
+        GO_VERSION_FILE: ${{ inputs.go-version-file }}
+      run: |
+        cd "$(dirname "$GO_VERSION_FILE")"
+        node "$GITHUB_WORKSPACE/.github/scripts/go-module-fetch.mjs"

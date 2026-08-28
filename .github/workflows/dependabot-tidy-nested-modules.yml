@@ -54,11 +54,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.RELEASE_PAT || github.token }}
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
         if: steps.meta.outputs.package-ecosystem == 'go_modules'
-        with:
-          go-version-file: 'go.mod'
-          cache: true
 
       - name: go mod tidy nested modules + push fixup if needed
         if: steps.meta.outputs.package-ecosystem == 'go_modules'

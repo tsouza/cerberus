@@ -83,10 +83,7 @@ jobs:
           fetch-depth: 0
 
       - if: env.RUN_HEAVY == 'true'
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+        uses: ./.github/actions/setup-go
 
       - name: install benchstat
         if: env.RUN_HEAVY == 'true'

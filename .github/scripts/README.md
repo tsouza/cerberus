@@ -62,6 +62,19 @@ and `chart-kubeconform.mjs`'s image probe apply the same classification to
 commands rather than to a single ref. Everything hits the same quota bucket and
 fails the same way, so nothing re-derives the policy.
 
+`go-module-fetch.mjs` applies the same three-class classification one registry
+over, to the **Go module proxy**. `lib/registry.mjs`'s transport list already
+carried the Go-proxy signatures (`http2: stream error`, `INTERNAL_ERROR;
+received from peer`, a `proxy.golang.org`-scoped 403), because a `go mod
+download` inside a build stage fails exactly like a manifest fetch — so the Go
+path imports that policy rather than growing a second one. What it adds is the
+class registry.mjs has no analogue for: a **never-retryable** module answer —
+`SECURITY ERROR` / checksum mismatch, `404` / `410` / `unknown revision` /
+`invalid version` / `no matching versions`, `missing go.sum entry` — asked
+FIRST and winning outright, on the same reasoning that makes a rate limit win
+there. Retrying a checksum refusal is how a poisoned module eventually gets
+accepted.
+
 The pre-pull fetches with `docker pull`, never `docker compose pull`: the two
 paths do not share a credential source. Measured four seconds apart in one job,
 the CLI pull carried the runner's Docker Hub login while compose's was refused
@@ -2175,6 +2188,56 @@ what actually runs.
   - Gated by `assert-image-jobs-authenticate.test.mjs`, which strips a login
     step out of the real workflow text and asserts each rule goes red. A gate
     that cannot fail is a gap, not coverage.
+- **`go-module-fetch.mjs`** — the warm step inside `./.github/actions/setup-go`,
+  and `mutation.yml`'s `go install` of the gremlins fork. Runs ONE fetch-only Go
+  command under `lib/registry.mjs`'s retry policy, because the Go module
+  resolver does not retry past a dropped HTTP/2 frame: a single `INTERNAL_ERROR;
+  received from peer` in a ~340-module download stream kills the job (runs
+  33080257221 / 33084966918 / 33093118010).
+  - A bare invocation runs `go mod download` in the working directory. For a
+    `go 1.17`-or-later module that is exactly go.mod's explicit requirements,
+    `// indirect` entries included — verified to cover the three modules whose
+    fetch actually failed — so `all`, which adds the test dependencies OF
+    dependencies, buys nothing.
+  - It cannot mask a real failure, and each layer is asserted on the ATTEMPT
+    COUNT rather than the exit code. (a) `isFetchOnly()` refuses anything but
+    `go mod download` / `go install`, so `go test`, `go list`, `go build`,
+    `just` and `gremlins unleash` are unwrappable by construction and still fail
+    on attempt 1. (b) A retry requires an `isTransientRegistryFailure()` match,
+    which a Go compile error never gets. (c) The never-retry set above is asked
+    first and wins even when the output also names a transport fault.
+  - Args: nothing, or `-- <command>` to wrap an explicit fetch.
+  - Env: `GO_FETCH_BACKOFF_STEP_SECONDS` (optional; default `3`).
+  - Exit: the wrapped command's status; `1` when handed a command that is not
+    fetch-only.
+  - Gated by `go-module-fetch.test.mjs`, whose positive fixtures are the
+    verbatim stderr of the runs above.
+- **`assert-go-setup-hardened.mjs`** — the required `check` lane. Fails when any
+  workflow step, or any composite action other than the wrapper itself, `uses:`
+  `actions/setup-go` directly. `actions/setup-go` saves its module cache keyed on
+  go.sum, only on a primary-key MISS, and without checking that there is anything
+  to save — so a Go-less job with `cache: true` can archive an EMPTY GOMODCACHE
+  on `refs/heads/main`, after which every job (and every PR ref falling back to
+  main's scope) restores nothing, declines to save, and re-downloads the whole
+  graph until the next go.sum bump. Run 32705099037 did exactly that, in 35
+  seconds, with a 7,616-byte archive.
+  - The fix is `./.github/actions/setup-go`, which warms GOMODCACHE
+    unconditionally so the post-job save can never see it empty. This gate is the
+    ratchet: it also asserts the wrapper still delegates to `actions/setup-go`,
+    still runs `go-module-fetch.mjs`, and that the warm step carries no `if:` —
+    a conditional warm leaves the hole open.
+  - It says nothing about `cache:`. `false` is load-bearing on
+    `update-golden.yml`'s three jobs, which run target-branch code and must not
+    persist bytes into later workflows; the warm step runs either way.
+  - There is no allow-list. The one file permitted to name `actions/setup-go` is
+    permitted by identity — it is the wrapper's own `action.yml`, the definition
+    site, which cannot be a call site of itself.
+  - Env: `WORKFLOW_DIR` / `ACTIONS_DIR` / `REPO_ROOT` (all optional).
+  - Exit: `0` when every rule holds, `1` on a violation or when NO call site
+    uses the wrapper at all.
+  - Gated by `assert-go-setup-hardened.test.mjs`, which reverts one call site in
+    the real workflow text, deletes the warm step, and makes it conditional, and
+    asserts each goes red.
 - **`mirror-images.mjs`** — `mirror-images.yml` (daily cron, `workflow_dispatch`,
   and pushes to the mirror's own files). Copies every ref in `lib/mirror.mjs`'s
   inventory into cerberus's GHCR namespace with `docker buildx imagetools

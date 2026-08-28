@@ -35,10 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       # The coverage test fails first (and with a clearer message) if a new
       # CERBERUS_* env var was added with no EnvDoc metadata: the doc gate

@@ -150,13 +150,10 @@ jobs:
           # #2286+ passed only because later phases happened not to need the
           # diff path, not because the checkout was sufficient).
           fetch-depth: 0
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
       # We install gremlins directly via `go install` so we don't
       # depend on a third-party Action's release-download path.
-      # setup-go's module cache keeps subsequent runs fast.
+      # The setup-go composite's module cache keeps subsequent runs fast.
       # Use `--output` for structured JSON (gremlins exits 0 even
       # when `--threshold-efficacy` is violated in v0.6.0, so we
       # do the gating ourselves against the parsed JSON below).
@@ -171,8 +168,19 @@ jobs:
       #
       #   --timeout-max                  an absolute ceiling on a single
       #     mutant's test run. See the `gremlins unleash` step below.
+      # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
+      # the warm step in ./.github/actions/setup-go — which runs
+      # `go mod download` over the main module's own requirements — does not
+      # cover it. This is the one `go install` in the tree, and it fetches from
+      # sum.golang.org and proxy.golang.org exactly like any other module fetch:
+      # run 33084966918 died on `reading https://sum.golang.org/tile/8/0/x227/070:
+      # stream error: stream ID 3; INTERNAL_ERROR; received from peer` before a
+      # single mutant ran. The wrapper's never-retry set is what keeps a bad
+      # version pin, or gremlins failing to COMPILE, from being retried.
       - name: install gremlins
-        run: go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume
+        run: >
+          node .github/scripts/go-module-fetch.mjs --
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.

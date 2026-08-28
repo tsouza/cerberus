@@ -142,10 +142,7 @@ jobs:
         run: node .github/scripts/property-run-heavy.mjs
 
       - if: steps.run_heavy.outputs.run_heavy == 'true'
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+        uses: ./.github/actions/setup-go
 
       - if: steps.run_heavy.outputs.run_heavy == 'true'
         uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5

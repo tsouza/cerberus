@@ -149,11 +149,8 @@ jobs:
       - uses: actions/checkout@v7
         if: needs.changes.outputs.docs_only != 'true'
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
         if: needs.changes.outputs.docs_only != 'true'
-        with:
-          go-version-file: 'go.mod'
-          cache: true
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         if: needs.changes.outputs.docs_only != 'true'

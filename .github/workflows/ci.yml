@@ -122,10 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -148,10 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
         with:
@@ -251,10 +245,7 @@ jobs:
         with:
           fetch-depth: 0  # commitlint needs full history
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: golangci-lint (tagged build configuration)
         # v7+ is required for golangci-lint v2; v6 caps at v1.
@@ -955,6 +946,23 @@ jobs:
           node --test .github/scripts/assert-image-jobs-authenticate.test.mjs
           node .github/scripts/assert-image-jobs-authenticate.mjs
 
+      # The same shape one registry over. `actions/setup-go` saves its module
+      # cache without checking that there is anything to save, so a Go-less job
+      # with `cache: true` can archive an EMPTY GOMODCACHE under the go.sum key
+      # on main — after which every job restores nothing, declines to save, and
+      # re-downloads ~340 modules until the next go.sum bump (run 32705099037).
+      # ./.github/actions/setup-go makes that impossible by warming the cache
+      # unconditionally; this gate is what stops a new job from copying an
+      # `actions/setup-go@v7` block back in and silently re-arming it. The tests
+      # run first: they prove the gate still FAILS on the real workflow text
+      # with one call site reverted and with the warm step deleted or made
+      # conditional.
+      - name: Assert every Go setup goes through the warming composite
+        run: |
+          node --test .github/scripts/go-module-fetch.test.mjs
+          node --test .github/scripts/assert-go-setup-hardened.test.mjs
+          node .github/scripts/assert-go-setup-hardened.mjs
+
       # The two auto-labelers, same discipline: neither is a required check,
       # so a broken mapping never turns anything red — it just quietly stops
       # labeling, which is exactly how 62 issues ended up bare. The issue
@@ -1232,10 +1240,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: AGPL clean-build gate
         run: node .github/scripts/agpl-clean.mjs
