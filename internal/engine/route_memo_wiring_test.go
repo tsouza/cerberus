@@ -824,9 +824,25 @@ func TestTryRouteMemoHit_MidDrainResourceFailure_ObserveViaClassify(t *testing.T
 	// failure: classify the real error and Observe it.
 	memo.Observe(gotKey, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, drainErr))
 
+	// One drained route-B resource failure must NOT reach BothFail: that
+	// verdict suppresses all further probing for the whole TTL and no route-A
+	// failure refreshes it, so it needs the same corroboration a route-A
+	// failure needs before it earns probe eligibility (#2684). The first
+	// failure demotes the seeded PreferB to Unknown carrying the count, which
+	// already stops the memo preferring route B — so this is not a licence to
+	// spend a second K-shard dispatch on the memo's say-so.
+	if state, _ := memo.Lookup(gotKey); state == routememo.BothFail {
+		t.Errorf("one drained route-B resource failure locked the key out (%v)", state)
+	}
+
+	// The classify-then-Observe wiring this test exists to exercise must still
+	// carry a resource failure all the way to the terminal verdict, so drive
+	// the second one and assert it lands.
+	memo.Observe(gotKey, routememo.RouteB, classifyRouteOutcome(routememo.RouteB, drainErr))
+
 	state, _ := memo.Lookup(gotKey)
 	if state != routememo.BothFail {
-		t.Errorf("verdict after the drained route-B resource failure = %v, want BothFail", state)
+		t.Errorf("verdict after two drained route-B resource failures = %v, want BothFail", state)
 	}
 }
 
