@@ -22,8 +22,6 @@ mutants:
     enabled: true
   remove-self-assignments:
     enabled: true
-test:
-  timeout-coefficient: 4
 # NOTE: there is deliberately no `excluded-files` key here. gremlins reads
 # exclusions from `unleash.exclude-files` (a single RE2 regex), so a
 # top-level `excluded-files:` list of globs is never read at all — this file
@@ -31,6 +29,26 @@ test:
 # exclusions live in `.github/workflows/mutation.yml` as the
 # `--exclude-files` CLI flag, which is bound correctly and is the only
 # mechanism that actually partitions files across legs.
+#
+# NOTE: there is deliberately no `timeout-coefficient` key here either, and
+# for the same dead-key reason: gremlins reads it as
+# `unleash.timeout-coefficient`, so the `test: timeout-coefficient: 4` this
+# file carried was never read and the effective coefficient was the built-in
+# default 5 throughout. It is not re-nested, it is gone: the per-mutant budget
+# is a DECLARED value, derived from the run's own ceiling by
+# `.github/scripts/mutation-run.mjs`, not a multiple of however long the Go
+# build cache made gremlins' coverage pass take. A file-level coefficient
+# would silently reinstate that compile-time-derived budget for every
+# invocation that does not pass the flag.
+#
+# NOTE: there are deliberately no `threshold-efficacy` / `threshold-mcover`
+# keys here — same dead-key class a third time (the real keys are
+# `unleash.threshold.efficacy` / `unleash.threshold.mutant-coverage`), so the
+# whole-repo floor this file advertised for `just mutate` never existed. The
+# floors that DO exist are per-leg, declared in
+# `.github/scripts/mutation-phases.mjs` and enforced against the report JSON
+# by `.github/scripts/gremlins-threshold.mjs`. `just mutate` is an unscoped,
+# informational local sweep and reports rather than gates.
 
 # Phased mutation-testing rollout. Each phase scopes gremlins to one
 # package with its own `--threshold-efficacy` bar enforced in
@@ -61,14 +79,8 @@ test:
 # Promotion to a required CI gate happens after all phases stay
 # stable for a week.
 #
-# The thresholds below are GLOBAL (gremlins v0.6.0 does not support
-# per-package thresholds — see `gremlins unleash --help`). The
-# per-phase bar is enforced in `.github/workflows/mutation.yml` via a
-# matrix that runs `gremlins unleash --threshold-efficacy <bar>
-# ./internal/<pkg>/...` once per phase, scoped to a single package
-# at a time so the slower packages don't drag the bar down. The
-# values below are the floor for the unscoped whole-repo
-# `just mutate` invocation; the per-phase matrix entries are
-# informational until all phases stay green for a week.
-threshold-efficacy: 95
-threshold-mcover: 50
+# A file-level threshold would in any case be GLOBAL (gremlins v0.6.0 has no
+# per-package threshold — see `gremlins unleash --help`), which is why the bar
+# is per-leg and lives outside this file: the matrix in
+# `.github/workflows/mutation.yml` runs one leg per package so the slower
+# packages do not drag a shared bar down.

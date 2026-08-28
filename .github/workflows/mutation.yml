@@ -114,10 +114,11 @@ jobs:
   mutate:
     # Per-phase mutation kill-zone. gremlins v0.6.0 has no per-package
     # threshold, so each phase runs as its own matrix entry scoped to a
-    # single package with its own --threshold-efficacy bar. The bar in
-    # `.gremlins.yaml` (currently 95) is the floor for the unscoped
-    # whole-repo `just mutate` invocation only — the phase table in
-    # .github/scripts/mutation-phases.mjs mirrors it per phase, and carries
+    # single package with its own --threshold-efficacy bar. `.gremlins.yaml`
+    # declares no bar at all (its former top-level `threshold-efficacy` /
+    # `threshold-mcover` keys were never read by gremlins, so the whole-repo
+    # floor they advertised for `just mutate` never existed) — the phase table
+    # in .github/scripts/mutation-phases.mjs is the only bar, and carries
     # the per-leg rationale (the logql/traceql OOM splits, the equivalent-mutant
     # analysis behind each bar) that used to live in this block.
     name: gremlins ${{ matrix.phase }} (${{ matrix.scope }} @ ${{ matrix.efficacy }}%)
@@ -177,16 +178,27 @@ jobs:
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
       #
-      # MUTANT_TIMEOUT_MAX is the absolute ceiling on a single mutant's test
-      # run. gremlins otherwise derives that timeout as `timeout-coefficient x
-      # the package's baseline test duration`, which scales the leash by how
-      # SLOW a package's tests are — a quantity unrelated to how much damage a
-      # runaway mutant does in that time. A mutant that inverts a scanner's
-      # loop-advance (i++ -> i--) never terminates and allocates per iteration,
-      # so on a slow-baseline package it gets minutes to exhaust the runner's
-      # memory. The OOM killer then reaps the runner agent and the job dies
-      # with no verdict at all, which reads as flake rather than as a missing
-      # bound.
+      # MUTANT_TIMEOUT_MAX is the per-mutant budget, and — because
+      # mutation-run.mjs pins --timeout-coefficient to match it — it is the
+      # WHOLE budget, not merely a ceiling over some smaller derived value.
+      # That distinction is load-bearing. gremlins derives the timeout as
+      # `min(timeout-coefficient x the coverage run's wall time, timeout-max)`,
+      # which scales the leash by how long the package took to COMPILE for
+      # coverage — a quantity unrelated to how much damage a runaway mutant
+      # does in that time, and one that collapses to gremlins' 1s floor
+      # whenever the Go build cache is already warm (as it is for
+      # mutation-run.mjs's second, full-fallback invocation). Left alone, the
+      # ceiling therefore silently lowered itself to 5s on exactly the path a
+      # pull request takes, under internal/promql's real ~6.6s per-mutant
+      # recompile+link+run, and the leg reported 0.00% efficacy (#2692). With
+      # the coefficient pinned, both invocations get this declared value.
+      #
+      # The budget bounds the whole `go test` child, and a bound is needed at
+      # all because a mutant that inverts a scanner's loop-advance
+      # (i++ -> i--) never terminates and allocates per iteration, so an
+      # unbounded leash lets it exhaust the runner's memory. The OOM killer
+      # then reaps the runner agent and the job dies with no verdict at all,
+      # which reads as flake rather than as a missing bound.
       #
       # Do NOT "fix" a recurrence by excluding whichever file the log names:
       # that relocates the file's runaway mutants into whichever leg still owns
