@@ -2,7 +2,6 @@ package promql_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,11 +19,11 @@ func sumOrAvgMixedOrSubqueryQuery(fn, aggOp string) string {
 }
 
 // sumOrAvgMixedOrSelectFnNames / sumOrAvgMixedOrFoldFnNames /
-// sumOrAvgMixedOrResetsChangesNames partition [selectFoldFamilyNames]
-// into the thirteen names this file's own production code
-// (histogram_native_mixed_or_subquery_aggregate_range_fn.go and its
-// resets/changes sibling) now composes and the two that deliberately
-// still reject — see that file's own "Scope" doc.
+// sumOrAvgMixedOrResetsChangesNames / sumOrAvgMixedOrLastFirstNames
+// partition [selectFoldFamilyNames] into the four composer groups this
+// package's mixed-or-subquery lowerings answer — see
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go's own "Scope"
+// doc. All fifteen names now compose, across all three grid modes.
 var (
 	sumOrAvgMixedOrSelectFnNames = []string{
 		"count_over_time", "present_over_time", "ts_of_first_over_time", "ts_of_last_over_time",
@@ -35,25 +34,32 @@ var (
 	sumOrAvgMixedOrResetsChangesNames = []string{
 		"resets", "changes",
 	}
-	sumOrAvgMixedOrStillRejectedNames = []string{
+	sumOrAvgMixedOrLastFirstNames = []string{
 		"last_over_time", "first_over_time",
 	}
 )
 
+// sumOrAvgMixedOrAllNames is every one of the fifteen SELECT/FOLD-family
+// names this package's mixed-or-subquery composers answer.
+func sumOrAvgMixedOrAllNames() []string {
+	names := append([]string{}, sumOrAvgMixedOrSelectFnNames...)
+	names = append(names, sumOrAvgMixedOrFoldFnNames...)
+	names = append(names, sumOrAvgMixedOrResetsChangesNames...)
+	return append(names, sumOrAvgMixedOrLastFirstNames...)
+}
+
 // TestSumOrAvgMixedOrSubquery_Composes proves `<fn>((sum by (series)
 // ((h) or (f)))[5m:1m])` lowers successfully — no error — for every one
-// of the thirteen names this file's own production code now composes,
-// for both `sum` and `avg`.
+// of the fifteen names this file's own production code composes, for both
+// `sum` and `avg`, at instant eval.
 func TestSumOrAvgMixedOrSubquery_Composes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
-	names := append(append([]string{}, sumOrAvgMixedOrSelectFnNames...), sumOrAvgMixedOrFoldFnNames...)
-	names = append(names, sumOrAvgMixedOrResetsChangesNames...)
 	for _, aggOp := range []string{"sum", "avg"} {
-		for _, fn := range names {
+		for _, fn := range sumOrAvgMixedOrAllNames() {
 			t.Run(aggOp+"/"+fn, func(t *testing.T) {
 				t.Parallel()
 				query := sumOrAvgMixedOrSubqueryQuery(fn, aggOp)
@@ -70,64 +76,33 @@ func TestSumOrAvgMixedOrSubquery_Composes(t *testing.T) {
 	}
 }
 
-// TestSumOrAvgMixedOrSubquery_StillRejects pins that the two names this
-// file's own production code deliberately does not compose
-// (last_over_time / first_over_time — see
-// histogram_native_mixed_or_subquery_aggregate_range_fn.go's own "Scope"
-// doc) still reject with the SAME pre-existing message, unchanged by this
-// composition.
-func TestSumOrAvgMixedOrSubquery_StillRejects(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
-	const wantErrSubstr = "wrapping a native-histogram-valued shape is unsupported"
-
-	for _, aggOp := range []string{"sum", "avg"} {
-		for _, fn := range sumOrAvgMixedOrStillRejectedNames {
-			t.Run(aggOp+"/"+fn, func(t *testing.T) {
-				t.Parallel()
-				query := sumOrAvgMixedOrSubqueryQuery(fn, aggOp)
-				expr := parseExprExp(t, query)
-				_, err := promql.LowerAt(context.Background(), expr, s, end, end)
-				if err == nil {
-					t.Fatalf("lower(%q): want a clean rejection, got none", query)
-				}
-				if !strings.Contains(err.Error(), wantErrSubstr) {
-					t.Errorf("lower(%q) error = %v, want it to contain %q", query, err, wantErrSubstr)
-				}
-			})
-		}
-	}
-}
-
-// TestSumOrAvgMixedOrSubquery_RangeFanoutStillRejects pins the FOLD
-// family's own residual scope gap: a true query_range fan-out (no `@`
-// pin on the subquery) still rejects for the seven window-purity-filtered
-// names, because the collision-drop test is not yet scoped per outer
-// anchor — see histogram_native_mixed_or_subquery_aggregate_range_fn.go's
-// own "Scope" doc for exactly why.
-func TestSumOrAvgMixedOrSubquery_RangeFanoutStillRejects(t *testing.T) {
+// TestSumOrAvgMixedOrSubquery_RangeFanoutComposes proves EVERY one of the
+// fifteen names — the FOLD family included, cerberus issue #2715's own
+// fix ([lowerSumOrAvgMixedOrSubqueryFoldFnRange]) — composes under a TRUE
+// query_range fan-out (no `@` pin on the subquery), for both `sum` and
+// `avg`.
+func TestSumOrAvgMixedOrSubquery_RangeFanoutComposes(t *testing.T) {
 	t.Parallel()
 
 	s := schema.DefaultOTelMetrics()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
-	const wantErrSubstr = "wrapping a native-histogram-valued shape is unsupported"
 
-	for _, fn := range sumOrAvgMixedOrFoldFnNames {
-		t.Run(fn, func(t *testing.T) {
-			t.Parallel()
-			query := sumOrAvgMixedOrSubqueryQuery(fn, "sum")
-			expr := parseExprExp(t, query)
-			_, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
-			if err == nil {
-				t.Fatalf("lower(%q) over query_range: want a clean rejection, got none", query)
-			}
-			if !strings.Contains(err.Error(), wantErrSubstr) {
-				t.Errorf("lower(%q) over query_range error = %v, want it to contain %q", query, err, wantErrSubstr)
-			}
-		})
+	for _, aggOp := range []string{"sum", "avg"} {
+		for _, fn := range sumOrAvgMixedOrAllNames() {
+			t.Run(aggOp+"/"+fn, func(t *testing.T) {
+				t.Parallel()
+				query := sumOrAvgMixedOrSubqueryQuery(fn, aggOp)
+				expr := parseExprExp(t, query)
+				node, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
+				if err != nil {
+					t.Fatalf("lower(%q) over query_range: want success, got error: %v", query, err)
+				}
+				if node == nil {
+					t.Fatalf("lower(%q) over query_range: want a non-nil plan", query)
+				}
+			})
+		}
 	}
 }
 
@@ -156,38 +131,5 @@ func TestSumOrAvgMixedOrSubquery_PinnedRangeComposes(t *testing.T) {
 				t.Fatalf("lower(%q): want a non-nil plan", query)
 			}
 		})
-	}
-}
-
-// TestSumOrAvgMixedOrSubquery_ResetsChangesRangeFanoutComposes proves
-// resets/changes compose under a TRUE query_range fan-out (no `@` pin) —
-// unlike this file's own FOLD family
-// (TestSumOrAvgMixedOrSubquery_RangeFanoutStillRejects), which still
-// rejects that shape. See
-// histogram_native_mixed_or_subquery_resets_changes.go's own top-level
-// doc for why resets/changes reach all three grid modes where the FOLD
-// family only reaches two.
-func TestSumOrAvgMixedOrSubquery_ResetsChangesRangeFanoutComposes(t *testing.T) {
-	t.Parallel()
-
-	s := schema.DefaultOTelMetrics()
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
-
-	for _, aggOp := range []string{"sum", "avg"} {
-		for _, fn := range sumOrAvgMixedOrResetsChangesNames {
-			t.Run(aggOp+"/"+fn, func(t *testing.T) {
-				t.Parallel()
-				query := sumOrAvgMixedOrSubqueryQuery(fn, aggOp)
-				expr := parseExprExp(t, query)
-				node, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
-				if err != nil {
-					t.Fatalf("lower(%q) over query_range: want success, got error: %v", query, err)
-				}
-				if node == nil {
-					t.Fatalf("lower(%q) over query_range: want a non-nil plan", query)
-				}
-			})
-		}
 	}
 }

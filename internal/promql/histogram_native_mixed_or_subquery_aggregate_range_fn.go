@@ -2,6 +2,7 @@ package promql
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -79,41 +80,41 @@ import (
 //
 // # Scope
 //
-// Composes for thirteen of the fifteen SELECT/FOLD-family names:
-// count_over_time, present_over_time, ts_of_first_over_time,
-// ts_of_last_over_time (type-blind, [lowerSumOrAvgMixedOrSubquerySelectFn]),
-// rate, increase, delta, irate, idelta, sum_over_time, avg_over_time
-// (window-purity-filtered, [lowerSumOrAvgMixedOrSubqueryFoldFn]), and
-// resets, changes (type-aware sequential merge, cerberus issue #2615 —
-// see histogram_native_mixed_or_subquery_resets_changes.go's own doc for
-// why that pair needs its own machinery rather than either of the two
-// composers above, and why it reaches all three grid modes where the
-// seven-name FOLD family only reaches two).
+// Composes for all fifteen SELECT/FOLD-family names, across all three grid
+// modes (instant, `@`-pinned subquery broadcast, and true query_range
+// fan-out):
 //
-// Two names deliberately stay on the pre-existing rejection:
+//   - count_over_time, present_over_time, ts_of_first_over_time,
+//     ts_of_last_over_time (type-blind, [lowerSumOrAvgMixedOrSubquerySelectFn]).
+//   - rate, increase, delta, irate, idelta, sum_over_time, avg_over_time
+//     (window-purity-filtered, [lowerSumOrAvgMixedOrSubqueryFoldFn] for the
+//     two single-window modes, [lowerSumOrAvgMixedOrSubqueryFoldFnRange] for
+//     true fan-out — cerberus issue #2715, see that function's own doc for
+//     how the purity test is rescoped per outer anchor).
+//   - resets, changes (type-aware sequential merge, cerberus issue #2615 —
+//     see histogram_native_mixed_or_subquery_resets_changes.go's own doc for
+//     why that pair needs its own machinery rather than either composer
+//     above).
+//   - last_over_time, first_over_time (type-preserving "pick the newest/
+//     oldest row" reduction, cerberus issue #2714 —
+//     histogram_native_mixed_or_subquery_last_first.go).
 //
-//   - last_over_time / first_over_time select ONE raw sample verbatim
-//     (whichever type it happens to be) rather than folding a window, so
-//     they need a MIXED-shaped (not Histogram-shaped) "pick the newest/
-//     oldest row" reduction that also carries the discriminator and Value
-//     columns through the same argMax/argMin selection
-//     ([nativeExpHistBareAggsDirectional] only carries the nine histogram
-//     columns today) — real new machinery, not a two-line extension.
-//     Tracked as cerberus issue #2714.
-//
-// The FOLD family's window-purity test ([windowPurityUnless]) is sound
-// today only for a SINGLE window per output series — an instant query, or
-// an `@`-pinned subquery broadcast across a query_range grid
-// ([sumOrAvgMixedOrSubqueryOuterFn]'s own gate excludes true query_range
-// fan-out for these seven names): a genuine fan-out evaluates each output
-// step's own [range] window independently, and the purity test would need
-// to be scoped PER OUTER ANCHOR rather than once across the whole subquery
-// grid — real new machinery ([chplan.RangeBucketFanout] has no primitive
-// for a cross-relation per-window EXISTS test today), not a limitation of
-// the approach itself. Tracked as cerberus issue #2715 — note this file's
-// own resets/changes sibling reaches true fan-out just fine, precisely
-// because it needs no window-purity test at all (see that file's own
-// top-level doc).
+// The FOLD family's single-window purity test ([windowPurityUnless]) only
+// ever matches ONE window per output series — sound for an instant query or
+// an `@`-pinned subquery broadcast, where every output step reports the
+// SAME evaluated window, but not for a genuine fan-out, which evaluates
+// each output step's own [range] window independently.
+// [lowerSumOrAvgMixedOrSubqueryFoldFnRange] answers that mode with a
+// DIFFERENT lowering strategy rather than a wider [windowPurityUnless]: it
+// reuses the exact per-anchor fan-out reducers each branch already has
+// ([lowerExpHistogramSubqueryRangeFnRange] for the histogram side,
+// [applyStepGridFanout]'s [chplan.RangeWindow.OuterRange] matrix mode for
+// the float side — the SAME helper lowerRangeVectorCall uses for an
+// ORDINARY range-vector function under query_range) and adds a per-anchor
+// raw-sample-EXISTENCE fan-out for the OPPOSITE branch,
+// then anti-joins the two on (Attributes, per-step anchor) via the existing
+// [mixedOrShadowUnless] StepAligned idiom — no new chplan or chsql surface,
+// exactly like this package's other mixed-or composers.
 func sumOrAvgMixedOrSubqueryOuterFnRecognized(c *parser.Call, s schema.Metrics, ctx lowerCtx) (sumOrAvgMixedOrSubqueryShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return sumOrAvgMixedOrSubqueryShape{}, false
@@ -139,15 +140,16 @@ func sumOrAvgMixedOrSubqueryOuterFnRecognized(c *parser.Call, s schema.Metrics, 
 		// broadcast, and true query_range fan-out — compose here with no
 		// restriction.
 		return sumOrAvgMixedOrSubqueryShape{sub: sub, agg: agg, b: b, windowFn: c.Func.Name}, true
+	case lastOverTimeWindowFn, firstOverTimeWindowFn:
+		// Cerberus issue #2714 — histogram_native_mixed_or_subquery_last_first.go.
+		// Like resets/changes above, this pair picks a single row rather
+		// than folding a window, so it needs no window-wide purity test
+		// either and reaches all three grid modes.
+		return sumOrAvgMixedOrSubqueryShape{sub: sub, agg: agg, b: b, windowFn: c.Func.Name}, true
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:
-		// See this file's own top-level doc, "Scope": the window-purity
-		// drop test is not yet sound for a true query_range fan-out (a
-		// non-pinned subquery under query_range), so that specific
-		// sub-shape stays unmatched here and falls through to the
-		// pre-existing rejection unchanged.
-		if ctx.rangeMode() && !subqueryPinned(sub) {
-			return sumOrAvgMixedOrSubqueryShape{}, false
-		}
+		// True query_range fan-out (a non-pinned subquery under query_range)
+		// composes via [lowerSumOrAvgMixedOrSubqueryFoldFnRange] — cerberus
+		// issue #2715, see this file's own top-level "Scope" doc.
 		return sumOrAvgMixedOrSubqueryShape{sub: sub, agg: agg, b: b, windowFn: c.Func.Name}, true
 	default:
 		return sumOrAvgMixedOrSubqueryShape{}, false
@@ -195,7 +197,12 @@ func lowerSumOrAvgMixedOrSubqueryOuterFn(shape sumOrAvgMixedOrSubqueryShape, s s
 		return lowerSumOrAvgMixedOrSubquerySelectFn(shape, gridCtx, s, ctx)
 	case resetsWindowFn, changesWindowFn:
 		return lowerMixedOrSubqueryResetsOrChanges(shape, gridCtx, s, ctx)
+	case lastOverTimeWindowFn, firstOverTimeWindowFn:
+		return lowerMixedOrSubqueryLastFirst(shape, gridCtx, s, ctx)
 	default:
+		if ctx.rangeMode() && !subqueryPinned(sub) {
+			return lowerSumOrAvgMixedOrSubqueryFoldFnRange(shape, gridCtx, s, ctx)
+		}
 		return lowerSumOrAvgMixedOrSubqueryFoldFn(shape, gridCtx, s, ctx)
 	}
 }
@@ -299,6 +306,155 @@ func lowerSumOrAvgMixedOrSubqueryFoldFn(shape sumOrAvgMixedOrSubqueryShape, grid
 	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx), nil
 }
 
+// lowerSumOrAvgMixedOrSubqueryFoldFnRange is [lowerSumOrAvgMixedOrSubqueryFoldFn]'s
+// true query_range fan-out sibling (cerberus issue #2715): each output step
+// evaluates its OWN [sub.Range] window independently, so the window-purity
+// drop test — reference's "a window holding both a histogram and a float
+// sample drops the whole group" rule — must be scoped PER (group, output
+// anchor) rather than once across the whole subquery grid the way
+// [windowPurityUnless] does for the single-window modes.
+//
+// The key realisation: [windowPurityUnless]'s own drop test cannot simply
+// be reapplied per anchor to the two branches' FOLDED results
+// ([lowerExpHistogramSubqueryRangeFnRange] / [chplan.RangeWindow]'s own
+// fan-out), because reference's rule keys on raw sample EXISTENCE within
+// the window, not on whether that side's own fold could produce a value —
+// a single float sample cannot feed rate's own two-point floor, so it never
+// reaches floatFoldedFanout, but it still condemns a colliding histogram
+// window under reference regardless. So this builds a SEPARATE, MinSamples-1
+// existence fan-out per branch ([mixedOrSubqueryHistExistsFanout] /
+// the inline count_over_time [chplan.RangeWindow] for the float side) and
+// anti-joins each branch's FOLDED fan-out against the OPPOSITE branch's
+// existence fan-out — on (Attributes, per-step anchor), via
+// [mixedOrShadowUnless]'s existing StepAligned idiom, the SAME (Attributes,
+// Timestamp) match key [combineMixedAggregateBranches] already uses to
+// recombine two per-step branches. Both existence fan-outs and both folded
+// fan-outs publish their per-step anchor under s.TimestampColumn — the
+// histogram side via [aggregatedHistogramProjection]'s own tsExpr
+// projection, the float side via chsql's projectAnchorAsTimestampColumn
+// (internal/chsql/range_window.go), which surfaces a matrix RangeWindow's
+// anchor under its own TimestampColumn field rather than the generic
+// "anchor_ts" name — so no extra renaming Project is needed anywhere here.
+//
+// No new chplan or chsql surface: every node built here is a
+// [chplan.RangeBucketFanout], a [chplan.RangeWindow], a [chplan.Project],
+// or a [chplan.VectorSetOp], composed the same way this package's other
+// mixed-or composers already do.
+func lowerSumOrAvgMixedOrSubqueryFoldFnRange(shape sumOrAvgMixedOrSubqueryShape, gridCtx lowerCtx, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	sub := shape.sub
+	histForAgg, floatForAgg, err := shadowResolveMixedExpHistogramOperands(shape.b, s, gridCtx)
+	if err != nil {
+		return nil, err
+	}
+	histBranch, err := lowerExpHistogramSumOrAvgOverPlan(shape.agg, histForAgg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits)
+	if err != nil {
+		return nil, err
+	}
+	floatBranch, err := lowerPlainAggOverMixedFloatArm(shape.agg, floatForAgg, s, gridCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	histSchema := histogramProjectionSchema(s)
+	histSchema.AggregationTemporalityColumn = ""
+
+	histFoldedFanout := lowerExpHistogramSubqueryRangeFnRange(
+		histBranch, histogramAggShape{windowRange: sub.Range, windowFn: shape.windowFn}, anchor.Offset, histSchema, ctx,
+	)
+	floatFoldedFanout := mixedOrSubqueryFloatRangeWindow(floatBranch, shape.windowFn, sub.Range, anchor.Offset, s, ctx)
+
+	histExists := mixedOrSubqueryHistExistsFanout(histBranch, sub.Range, anchor.Offset, s, ctx)
+	floatExists := mixedOrSubqueryFloatRangeWindow(floatBranch, countOverTimeWindowFn, sub.Range, anchor.Offset, s, ctx)
+
+	histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx)
+	floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx)
+
+	// histPure/floatPure are already disjoint by group-and-anchor
+	// construction (the two anti-joins above exclude any (group, anchor)
+	// with a raw sample of BOTH types from BOTH branches), so this
+	// recombine is the identical "structural no-op" reuse
+	// [lowerSumOrAvgMixedOrSubqueryFoldFn] already documents for its own
+	// single-window sibling.
+	return combineMixedAggregateBranches(histPure, floatPure, s, ctx), nil
+}
+
+// mixedOrSubqueryFloatRangeWindow builds the plain-float per-anchor fan-out
+// [chplan.RangeWindow] fn over branch — reused for both the FOLD family's
+// own float fold (windowFn = shape.windowFn) and the float side's raw
+// existence test (windowFn = count_over_time, which [chplan.RangeWindow]
+// emits nothing for an anchor whose window holds zero samples, exactly the
+// "exists" answer needs). [applyStepGridFanout] (unlike
+// [lowerFloatFoldOverPureSubqueryBranch]'s single-window sibling, which
+// leaves Start/End/Step/OuterRange all zero) is what switches the emitter
+// from one REDUCED row per series ([chplan.ReducedWindowRowShape] — a
+// single-anchor instant fold, [chplan.RowShapeOf]'s own doc) to one row per
+// (series, output anchor): [chplan.RangeWindow.OuterRange] is what actually
+// selects the matrix emission path, not Start/End/Step alone — the SAME
+// helper lowerRangeVectorCall (lower.go) uses to fan an ORDINARY,
+// non-histogram range-vector function across a query_range grid.
+func mixedOrSubqueryFloatRangeWindow(branch chplan.Node, windowFn string, windowRange, offset time.Duration, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	rw := &chplan.RangeWindow{
+		Input:           branch,
+		Func:            windowFn,
+		Range:           windowRange,
+		Offset:          offset,
+		TimestampColumn: s.TimestampColumn,
+		ValueColumn:     s.ValueColumn,
+		GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+	}
+	applyStepGridFanout(rw, ctx)
+	return rw
+}
+
+// mixedOrSubqueryHistExistsFanout is the histogram side's raw-sample
+// existence fan-out: one [chplan.RangeBucketFanout] row per (group, output
+// anchor) whose window holds at least one RAW histBranch row — MinSamples 1,
+// deliberately independent of shape.windowFn's own (often stricter, e.g.
+// rate's two-point floor) MinSamples requirement, because reference's
+// mixed-type collision rule keys on raw sample existence, not on whether
+// the histogram side's own fold succeeds. AnchorAlias stays
+// [stepGridAnchorColumn] — the fixed name every other [chplan.RangeBucketFanout]
+// call site in this package uses — rather than s.TimestampColumn directly:
+// histBranch's own raw per-row timestamp is ALREADY published under
+// s.TimestampColumn (TimestampCol reads it for bucket membership), so
+// naming the synthesized anchor the SAME thing would collide the fan-out's
+// own GROUP BY between the two. The wrapping [chplan.Project] renames it
+// to s.TimestampColumn afterward, once it is safely a distinct column. The
+// result is widened to the ordinary four-column canonical contract (an
+// empty `__name__`, matching every other derived-sample projection in this
+// package) purely so [mixedOrShadowUnless]'s generic canonical-arm emission
+// can reference it — its own count value is never read by any consumer.
+func mixedOrSubqueryHistExistsFanout(histBranch chplan.Node, windowRange, offset time.Duration, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	fanout := &chplan.RangeBucketFanout{
+		Input:          histBranch,
+		Start:          ctx.start.UTC(),
+		End:            ctx.end.UTC(),
+		Step:           ctx.step,
+		Lookback:       windowRange,
+		Offset:         offset,
+		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
+		GroupByAliases: []string{s.AttributesColumn},
+		AggFuncs:       []chplan.AggFunc{windowSampleCountAgg(s)},
+		MinSamples:     1,
+		AnchorAlias:    stepGridAnchorColumn,
+		TimestampCol:   s.TimestampColumn,
+	}
+	return &chplan.Project{
+		Input: fanout,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.LitString{V: ""}, Alias: s.MetricNameColumn},
+			{Expr: &chplan.ColumnRef{Name: s.AttributesColumn}, Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: stepGridAnchorColumn}, Alias: s.TimestampColumn},
+			{Expr: &chplan.ColumnRef{Name: hqWindowSampleCountAlias}, Alias: s.ValueColumn},
+		},
+	}
+}
+
 // windowPurityUnless keeps left's rows whose Attributes signature never
 // appears ANYWHERE in right — StepAligned forced false so the match
 // spans every subquery anchor in the window, unlike
@@ -333,9 +489,11 @@ func windowPurityUnless(left, right chplan.Node, leftIsHistogram bool, s schema.
 // subquery inner, since histPure already carries the identical
 // (Attributes, Timestamp, thirteen-column HistogramProjection) contract
 // that function's own `input` does. Only the two single-window grid modes
-// [sumOrAvgMixedOrSubqueryOuterFnRecognized] admits (instant, `@`-pinned
-// broadcast) are built here — see this file's own "Scope" doc for the
-// true fan-out exclusion.
+// (instant, `@`-pinned broadcast) are built here — the true fan-out mode
+// is [lowerSumOrAvgMixedOrSubqueryFoldFnRange]'s own sibling reduction, not
+// this function widened, because the fan-out purity test needs a
+// per-anchor-scoped existence check this function's window-wide
+// histPure/floatPure inputs cannot express — see that function's own doc.
 func lowerHistFoldOverPureSubqueryBranch(shape sumOrAvgMixedOrSubqueryShape, input chplan.Node, anchor evalAnchor, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	sub := shape.sub
 	histSchema := histogramProjectionSchema(s)
