@@ -5,8 +5,8 @@
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
       "class": "divergence",
-      "trigger_query": "last_over_time((sum by (series) ((demo_latency_exp_hist) or (demo_num_cpus)))[5m:1m])",
-      "tracking_issue": 2615,
+      "trigger_query": "last_over_time((((demo_latency_exp_hist) or (demo_num_cpus)) and (demo_http_requests_total))[5m:1m])",
+      "tracking_issue": 2724,
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
@@ -20,7 +20,7 @@
           "lowerCallOverSubquery"
         ]
       },
-      "since": "2026-08-25"
+      "since": "2026-08-29"
     },
     {
       "head": "promql",
