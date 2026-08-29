@@ -12,22 +12,26 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestOuterRangeFnOverAndUnlessMixedSubquery_CleanRejection proves that
-// cerberus issue #2589's fix, once lowerSubqueryOverBinary stops
-// discarding a histogram/mixed-shaped `and`/`or`/`unless` subquery inner,
-// makes the PRE-EXISTING histogram-shape guard in
-// lowerOuterRangeFnOverSubquery newly REACHABLE for this shape — turning
-// what used to be a silent wrong answer (rate() folding over a meaningless
-// placeholder Value column with no error at all) into a clean, honest
-// rejection instead, for every outer range-vector function reference
-// itself defines no real histogram semantics for.
+// TestOuterRangeFnOverAndUnlessMixedSubquery_Composes proves that cerberus
+// issue #2589's fix, once lowerSubqueryOverBinary stops discarding a
+// histogram/mixed-shaped `and`/`or`/`unless` subquery inner, makes the
+// PRE-EXISTING histogram-shape guard in lowerOuterRangeFnOverSubquery
+// newly REACHABLE for this shape — and cerberus issue #2724's
+// [lowerHistogramOrMixedSubqueryOuterFnInput], dispatching on the row
+// shape that guard already computes rather than re-deriving a per-AST-shape
+// recognizer, now answers it correctly instead of rejecting: `rate` folds
+// the and/unless-forwarded histogram subquery inner the same way it folds
+// a DIRECT one (histogram_native_range_fn.go's own
+// [lowerExpHistogramRangeFnOverSubqueryInput]), turning what used to be
+// (before #2589) a silent wrong answer, then (after #2589, before #2724) a
+// clean rejection, into a real, correctly-composed one.
 //
-// Before this fix, lowerSubqueryOverBinary's unconditional
-// subqueryAnchorShape wrap meant this guard could never see a
-// Histogram/MixedRowShape node for this AST shape in the first place —
-// chplan.RowShapeOf(inner) always answered SampleRowShape (the corrupted
+// Before #2589's fix, lowerSubqueryOverBinary's unconditional
+// subqueryAnchorShape wrap meant the guard this test exercises could never
+// see a Histogram/MixedRowShape node for this AST shape in the first place
+// — chplan.RowShapeOf(inner) always answered SampleRowShape (the corrupted
 // four-column reprojection), so the guard fell through silently.
-func TestOuterRangeFnOverAndUnlessMixedSubquery_CleanRejection(t *testing.T) {
+func TestOuterRangeFnOverAndUnlessMixedSubquery_Composes(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 	evalTS := time.Date(2026, 1, 1, 0, 2, 0, 0, time.UTC)
@@ -49,13 +53,12 @@ func TestOuterRangeFnOverAndUnlessMixedSubquery_CleanRejection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
 			}
-			_, err = promql.LowerAt(context.Background(), expr, s, evalTS, evalTS)
-			if err == nil {
-				t.Fatalf("%s: LowerAt succeeded, want a clean rejection (rate has no real histogram semantics per reference Prometheus's own promql/functions.go)", tc.query)
+			plan, err := promql.LowerAt(context.Background(), expr, s, evalTS, evalTS)
+			if err != nil {
+				t.Fatalf("%s: LowerAt failed, want success: %v", tc.query, err)
 			}
-			const want = "rate over a subquery wrapping a native-histogram-valued shape is unsupported"
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%s: error = %q, want it to contain %q", tc.query, err.Error(), want)
+			if plan == nil {
+				t.Fatalf("%s: LowerAt returned a nil plan with nil error", tc.query)
 			}
 		})
 	}

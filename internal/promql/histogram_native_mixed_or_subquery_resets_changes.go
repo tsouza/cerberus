@@ -3,6 +3,8 @@ package promql
 import (
 	"fmt"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -272,7 +274,6 @@ func mixedFloatPairVerdictExpr(windowFn string, prev, curr chplan.Expr) chplan.E
 // [lowerSumOrAvgMixedOrSubquerySelectFn] folds over for its own four
 // type-blind names.
 func lowerMixedOrSubqueryResetsOrChanges(shape sumOrAvgMixedOrSubqueryShape, gridCtx lowerCtx, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	sub := shape.sub
 	mixedRel, err := lowerSumOrAvgOverMixedExpHistogramSetOp(shape.agg, shape.b, s, gridCtx)
 	if err != nil {
 		return nil, err
@@ -280,7 +281,16 @@ func lowerMixedOrSubqueryResetsOrChanges(shape sumOrAvgMixedOrSubqueryShape, gri
 	if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s row shape", mixedRel, chplan.RowShapeOf(mixedRel))
 	}
+	return lowerMixedOrSubqueryResetsOrChangesInput(mixedRel, shape.sub, shape.windowFn, s, ctx)
+}
 
+// lowerMixedOrSubqueryResetsOrChangesInput is
+// [lowerMixedOrSubqueryResetsOrChanges] split at the one point that
+// actually varies by caller — see
+// [lowerSelectFnOverExpHistogramSubqueryInput]'s identical doc for why.
+// Cerberus issue #2724 reuses this continuation for a further
+// `and`/`unless`/`or` wrapping a mixed-or subquery inner.
+func lowerMixedOrSubqueryResetsOrChangesInput(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -289,17 +299,17 @@ func lowerMixedOrSubqueryResetsOrChanges(shape sumOrAvgMixedOrSubqueryShape, gri
 	histSchema.AggregationTemporalityColumn = ""
 
 	if ctx.rangeMode() && !subqueryPinned(sub) {
-		return lowerMixedOrSubqueryResetsRange(shape, mixedRel, anchor, histSchema, s, ctx), nil
+		return lowerMixedOrSubqueryResetsRange(mixedRel, sub, windowFn, anchor, histSchema, s, ctx), nil
 	}
 
 	group := &chplan.Aggregate{
 		Input:              mixedRel,
 		GroupBy:            []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases:     []string{s.AttributesColumn},
-		AggFuncs:           append(mixedPairCountAggs(shape.windowFn, histSchema), windowSampleCountAgg(s)),
+		AggFuncs:           append(mixedPairCountAggs(windowFn, histSchema), windowSampleCountAgg(s)),
 		DropEmptyOnNoGroup: true,
 	}
-	windowed := mixedPairCountStage(minSamplesFilter(group, stalenessMinSamples), shape.windowFn, []string{s.AttributesColumn}, histSchema)
+	windowed := mixedPairCountStage(minSamplesFilter(group, stalenessMinSamples), windowFn, []string{s.AttributesColumn}, histSchema)
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
@@ -325,22 +335,22 @@ func lowerMixedOrSubqueryResetsOrChanges(shape sumOrAvgMixedOrSubqueryShape, gri
 // for the AggFuncs set: [mixedPairCountAggs] in place of
 // [expHistogramPairCountAggs], so the per-anchor collapse also carries
 // the Value / discriminator arrays [mixedPairVerdictExpr] needs.
-func lowerMixedOrSubqueryResetsRange(shape sumOrAvgMixedOrSubqueryShape, mixedRel chplan.Node, anchor evalAnchor, histSchema, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func lowerMixedOrSubqueryResetsRange(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, anchor evalAnchor, histSchema, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	fanout := &chplan.RangeBucketFanout{
 		Input:          mixedRel,
 		Start:          ctx.start.UTC(),
 		End:            ctx.end.UTC(),
 		Step:           ctx.step,
-		Lookback:       shape.sub.Range,
+		Lookback:       sub.Range,
 		Offset:         anchor.Offset,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},
-		AggFuncs:       mixedPairCountAggs(shape.windowFn, histSchema),
+		AggFuncs:       mixedPairCountAggs(windowFn, histSchema),
 		MinSamples:     stalenessMinSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
 	}
-	perSeries := mixedPairCountStage(fanout, shape.windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, histSchema)
+	perSeries := mixedPairCountStage(fanout, windowFn, []string{stepGridAnchorColumn, s.AttributesColumn}, histSchema)
 	return expHistogramPairCountProjection(perSeries, anchorRef, s)
 }

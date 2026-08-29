@@ -221,7 +221,6 @@ func lowerSumOrAvgMixedOrSubqueryOuterFn(shape sumOrAvgMixedOrSubqueryShape, s s
 // (never the nine Histogram*Column payload fields), so a Mixed-shaped
 // input reduces identically to a Histogram-shaped one.
 func lowerSumOrAvgMixedOrSubquerySelectFn(shape sumOrAvgMixedOrSubqueryShape, gridCtx lowerCtx, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	sub := shape.sub
 	mixedRel, err := lowerSumOrAvgOverMixedExpHistogramSetOp(shape.agg, shape.b, s, gridCtx)
 	if err != nil {
 		return nil, err
@@ -229,33 +228,11 @@ func lowerSumOrAvgMixedOrSubquerySelectFn(shape sumOrAvgMixedOrSubqueryShape, gr
 	if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s row shape", mixedRel, chplan.RowShapeOf(mixedRel))
 	}
-
-	anchor, err := subqueryAnchor(sub, ctx)
-	if err != nil {
-		return nil, err
-	}
-	histSchema := histogramProjectionSchema(s)
-	histSchema.AggregationTemporalityColumn = ""
-
-	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := selectFnOverSubqueryWindowed(shape.windowFn, mixedRel, histSchema)
-		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
-		return capSelectFnOverSubquery(
-			shape.windowFn,
-			&chplan.CrossJoin{Left: grid, Right: windowed},
-			&chplan.ColumnRef{Name: stepGridAnchorColumn},
-			histSchema,
-		), nil
-	}
-	if ctx.rangeMode() {
-		return lowerSelectFnOverSubqueryRange(shape.windowFn, mixedRel, sub.Range, anchor.Offset, histSchema, ctx), nil
-	}
-	windowed := selectFnOverSubqueryWindowed(shape.windowFn, mixedRel, histSchema)
-	tsExpr := chplan.NowNano()
-	if !anchor.End.IsZero() {
-		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
-	}
-	return capSelectFnOverSubquery(shape.windowFn, windowed, tsExpr, histSchema), nil
+	// [lowerSelectFnOverExpHistogramSubqueryInput]'s own doc: this
+	// continuation only ever reads the Attributes/Timestamp/Value columns
+	// for this four-name subset, so a Mixed-shaped input reduces identically
+	// to a Histogram-shaped one — no dedicated Mixed-only body needed.
+	return lowerSelectFnOverExpHistogramSubqueryInput(mixedRel, shape.sub, shape.windowFn, s, ctx)
 }
 
 // lowerSumOrAvgMixedOrSubqueryFoldFn answers the seven type-preserving

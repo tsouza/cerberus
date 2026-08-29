@@ -5,7 +5,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#1306ccfc",
       "message": "promql: subquery `@ start()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go) — reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst (histogram_native_mixed_or_subquery_last_first.go), and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected.",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go) — reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst, and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2724 replaced lowerSumOrAvgMixedOrSubquerySelectFn / lowerMixedOrSubqueryResetsOrChanges / lowerMixedOrSubqueryLastFirst with their own *Input continuations (lowerSelectFnOverExpHistogramSubqueryInput / lowerMixedOrSubqueryResetsOrChangesInput / lowerMixedOrSubqueryLastFirstInput) and added lowerExpHistogramRangeFnOverSubqueryInput and lowerFurtherWrapMixedOrSubqueryFoldFn as two more — every one of these new callers is reached only through lowerOuterRangeFnOverSubquery (already in this list) or the same query-endpoint entry points as every sibling, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "case parser.START of switch e.StartOrEnd",
@@ -14,11 +14,12 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
-          "lowerExpHistogramRangeFnOverSubquery",
-          "lowerMixedOrSubqueryLastFirst",
-          "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
+          "lowerMixedOrSubqueryLastFirstInput",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
           "lowerOuterRangeFnOverSubquery",
-          "lowerSelectFnOverExpHistogramSubquery",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery",
@@ -26,14 +27,19 @@
           "lowerSubqueryOverVectorSelector",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
-          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
         "cited": [
           "LowerAtRange",
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
           "lowerMixedOrSubqueryLastFirst",
+          "lowerMixedOrSubqueryLastFirstInput",
           "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgMixedOrSubquerySelectFn"
@@ -45,7 +51,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#92800419",
       "message": "promql: subquery `@ end()` modifier requires query range context (use LowerAt)",
       "class": "internal",
-      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go) — reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst (histogram_native_mixed_or_subquery_last_first.go), and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected.",
+      "rationale": "the query endpoints always lower through LowerAtRange with the request window, so range context is present. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go) — reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst, and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange — both reached only from the same query-endpoint entry points as every other caller in this list, so the claim is unaffected. Cerberus issue #2724 replaced lowerSumOrAvgMixedOrSubquerySelectFn / lowerMixedOrSubqueryResetsOrChanges / lowerMixedOrSubqueryLastFirst with their own *Input continuations (lowerSelectFnOverExpHistogramSubqueryInput / lowerMixedOrSubqueryResetsOrChangesInput / lowerMixedOrSubqueryLastFirstInput) and added lowerExpHistogramRangeFnOverSubqueryInput and lowerFurtherWrapMixedOrSubqueryFoldFn as two more — every one of these new callers is reached only through lowerOuterRangeFnOverSubquery (already in this list) or the same query-endpoint entry points as every sibling, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "case parser.END of switch e.StartOrEnd",
@@ -54,11 +60,12 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
-          "lowerExpHistogramRangeFnOverSubquery",
-          "lowerMixedOrSubqueryLastFirst",
-          "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
+          "lowerMixedOrSubqueryLastFirstInput",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
           "lowerOuterRangeFnOverSubquery",
-          "lowerSelectFnOverExpHistogramSubquery",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery",
@@ -66,14 +73,19 @@
           "lowerSubqueryOverVectorSelector",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
-          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
         "cited": [
           "LowerAtRange",
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
           "lowerMixedOrSubqueryLastFirst",
+          "lowerMixedOrSubqueryLastFirstInput",
           "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
+          "lowerOuterRangeFnOverSubquery",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgMixedOrSubquerySelectFn"
@@ -85,7 +97,7 @@
       "site": "internal/promql/subquery.go:subqueryAnchor#a34bee25",
       "message": "promql: unexpected subquery StartOrEnd token %v",
       "class": "internal",
-      "rationale": "the PromQL parser yields only START, END, or zero in StartOrEnd. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go), both threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go), also threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst (histogram_native_mixed_or_subquery_last_first.go), and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange (histogram_native_mixed_or_subquery_aggregate_range_fn.go) — both also threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected.",
+      "rationale": "the PromQL parser yields only START, END, or zero in StartOrEnd. Cerberus issue #2581 added two new callers, lowerSumOrAvgMixedOrSubqueryFoldFn and lowerSumOrAvgMixedOrSubquerySelectFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go), both threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected. Cerberus issue #2615 added a third caller, lowerMixedOrSubqueryResetsOrChanges (histogram_native_mixed_or_subquery_resets_changes.go), also threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected. Cerberus issue #2714 added a fourth caller, lowerMixedOrSubqueryLastFirst, and cerberus issue #2715 added a fifth, lowerSumOrAvgMixedOrSubqueryFoldFnRange — both also threading the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected. Cerberus issue #2724 replaced lowerSumOrAvgMixedOrSubquerySelectFn / lowerMixedOrSubqueryResetsOrChanges / lowerMixedOrSubqueryLastFirst with their own *Input continuations (lowerSelectFnOverExpHistogramSubqueryInput / lowerMixedOrSubqueryResetsOrChangesInput / lowerMixedOrSubqueryLastFirstInput) and added lowerExpHistogramRangeFnOverSubqueryInput and lowerFurtherWrapMixedOrSubqueryFoldFn as two more — every one of these new callers also threads the same parser-produced SubqueryExpr through unchanged, so the claim is unaffected.",
       "evidence": {
         "guard": [
           "default of switch e.StartOrEnd over [case parser.START; case parser.END; case 0; default]"
@@ -93,11 +105,12 @@
         "callers": [
           "lower",
           "lowerAbsentOverTimeOverSubquery",
-          "lowerExpHistogramRangeFnOverSubquery",
-          "lowerMixedOrSubqueryLastFirst",
-          "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
+          "lowerMixedOrSubqueryLastFirstInput",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
           "lowerOuterRangeFnOverSubquery",
-          "lowerSelectFnOverExpHistogramSubquery",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSubqueryOverAbsent",
           "lowerSubqueryOverCall",
           "lowerSubqueryOverCallSubquery",
@@ -105,13 +118,17 @@
           "lowerSubqueryOverVectorSelector",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
-          "lowerSumOrAvgMixedOrSubquerySelectFn",
           "subqueryGridCtx",
           "wrapSubqueryIdentity"
         ],
         "cited": [
+          "lowerExpHistogramRangeFnOverSubqueryInput",
+          "lowerFurtherWrapMixedOrSubqueryFoldFn",
           "lowerMixedOrSubqueryLastFirst",
+          "lowerMixedOrSubqueryLastFirstInput",
           "lowerMixedOrSubqueryResetsOrChanges",
+          "lowerMixedOrSubqueryResetsOrChangesInput",
+          "lowerSelectFnOverExpHistogramSubqueryInput",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
           "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgMixedOrSubquerySelectFn"

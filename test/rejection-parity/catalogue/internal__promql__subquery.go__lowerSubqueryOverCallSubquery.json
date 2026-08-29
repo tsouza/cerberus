@@ -6,7 +6,7 @@
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
       "class": "divergence",
       "trigger_query": "last_over_time((sum by (series) ((demo_latency_exp_hist) or (demo_num_cpus)))[5m:1m])[10m:1m]",
-      "tracking_issue": 2615,
+      "tracking_issue": 2726,
       "evidence": {
         "guard": [
           "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(call.Func.Name))",

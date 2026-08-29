@@ -4,23 +4,27 @@
       "head": "promql",
       "site": "internal/promql/subquery.go:lowerOuterRangeFnOverSubquery#087c3810",
       "message": "promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported",
-      "class": "divergence",
-      "trigger_query": "last_over_time((((demo_latency_exp_hist) or (demo_num_cpus)) and (demo_http_requests_total))[5m:1m])",
-      "tracking_issue": 2724,
+      "class": "internal",
+      "rationale": "unreachable since cerberus issue #2724: outer.Func.Name reaching this point already passed the chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(...)) guard above, so it is one of that vocabulary's 26 names. lowerHistogramOrMixedSubqueryOuterFnInput (histogram_native_mixed_or_subquery_further_setop_range_fn.go) matches every one of the fifteen SELECT/FOLD-family names unconditionally (its own switch has no default-false case for any of them, only for names outside that set) and returns before this line whenever it matches. The other eleven names IsPromQLRangeWindowFunc admits are exactly histogramSubqueryFloatOnlyDropFunc's own set, which the very next branch below already handles instead of falling through here. Every name in the 26-name vocabulary is therefore claimed by one of those two branches, and this return can never execute. Before #2724, only histogramSubqueryFloatOnlyDropFunc's eleven names and a narrow, AST-recognizer-gated slice of the fifteen SELECT/FOLD names composed here, leaving this a real, reachable divergence (tracking issues #2581, then #2615, then #2724 as each closed leaf narrowed what remained) — #2724's own shape-dispatch, not AST recognition, is what makes the fifteen-name coverage total rather than partial.",
       "evidence": {
         "guard": [
           "past returning if outer.Func.Name == \"absent_over_time\"",
           "past returning if !chplan.IsPromQLRangeWindowFunc(canonicalRangeWindowFunc(outer.Func.Name))",
           "past returning if err != nil",
           "if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape",
+          "past returning if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched",
           "if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name)"
         ],
         "callers": [
           "lowerCall",
           "lowerCallOverSubquery"
+        ],
+        "cited": [
+          "canonicalRangeWindowFunc",
+          "histogramSubqueryFloatOnlyDropFunc",
+          "lowerHistogramOrMixedSubqueryOuterFnInput"
         ]
-      },
-      "since": "2026-08-29"
+      }
     },
     {
       "head": "promql",

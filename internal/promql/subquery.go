@@ -952,6 +952,20 @@ func lowerOuterRangeFnOverSubquery(
 	// still, by [rangeFnOverExpHistogramSubquery] /
 	// [lowerExpHistogramRangeFnOverSubquery] (histogram_native_range_fn.go).
 	if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+		// Cerberus issue #2724: inner may have reached this Histogram/Mixed
+		// shape via a further and/unless/or wrapping a mixed `or` (or a
+		// bare and/unless-forwarded histogram selector) — any shape
+		// [lowerSubquery]'s ordinary dispatch resolves this way, not only
+		// the ones histogram_native_mixed_or_subquery_range_fn.go's own
+		// distribute-then-recombine mechanism recognises from the AST.
+		// [lowerHistogramOrMixedSubqueryOuterFnInput] answers every one of
+		// the fifteen SELECT/FOLD-family names for it; anything else
+		// (deriv, predict_linear, ...) falls through unmatched to this
+		// function's own existing float-only-drop / rejection handling
+		// below, unchanged.
+		if node, matched, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, shape, outer.Func.Name, sub, s, ctx); matched {
+			return node, err
+		}
 		if !histogramSubqueryFloatOnlyDropFunc(outer.Func.Name) {
 			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", outer.Func.Name)
 		}
