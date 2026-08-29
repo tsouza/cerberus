@@ -234,8 +234,8 @@ type perRungObservingCursor struct {
 func (c *perRungObservingCursor) Close() error {
 	err := c.Cursor.Close()
 	c.once.Do(func() {
-		if c.Cursor.Err() == nil {
-			c.learner.Observe(c.key, c.Cursor.Inspected(), c.nAnchors)
+		if c.Err() == nil {
+			c.learner.Observe(c.key, c.Inspected(), c.nAnchors)
 		}
 	})
 	return err
