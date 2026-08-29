@@ -1555,6 +1555,37 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 // meaningful: the guard's cost model reads the anchors and raw rows of the
 // plan it is emitted for, so on a shard it bounds that shard's real cost —
 // which is the per-query-cap question route B exists to answer here.
+//
+// APPORTIONED BY decision.K (issue #2705), not threaded verbatim. Every
+// shard used to receive the WHOLE-QUERY ceiling unchanged while running
+// against only 1/kEff of the memory (executor.go's perShardMemoryBytes
+// divides that cap by kEff before stamping it per-shard) — so a shard's
+// density guard could be up to K times too permissive relative to what the
+// shard is actually allowed to use, and a shard could pass its own
+// pre-flight guard and still be aborted by ClickHouse's real memory limit:
+// the exact "sailed past the guard and died on ClickHouse's own limit" mode
+// #2677/#2681 closed for route A, reopened here for route B.
+//
+// decision.K rather than the executor's exact kEff: kEff is computed inside
+// solver.Executor strictly AFTER the emit loop that needs the apportioned
+// ceiling (internal/solver cannot import internal/chsql to cross that
+// boundary earlier), while decision.K is already materialized on the
+// Decision this function receives — and K is always >= kEff (kEff =
+// min(K, pEff, gate/2)), so dividing by K is a SAFE, never-looser-than-
+// correct apportionment: it can only make the guard MORE conservative than
+// the shard's real allowance, never less. The residual cost is a possible
+// over-rejection when admission throttles pEff/gate below K, which falls
+// back through the failure-driven route memo exactly as a real resource
+// rejection does — acceptable for a guard whose whole purpose is refusing
+// early rather than dying mid-scan.
+//
+// Resolved via chsql.ResolveRangeBucketGridNativeMaxRows/
+// …MaxDensityUnits BEFORE dividing, not divided raw: a caller's 0 means
+// "no override, use chsql's compiled-in default" (see those constants' own
+// doc), not "unlimited" — unlike the memory cap's genuine unlimited-at-0
+// sentinel (executor.go's own comment), so dividing 0 by K here would
+// silently ask WithRangeBucketGridNativeMax{Rows,DensityUnits} to fall
+// back to the FULL, un-apportioned default instead of an apportioned one.
 func routeBExecCtx(
 	ctx context.Context, langName, responseShape string, decision *solver.Decision,
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
@@ -1571,9 +1602,42 @@ func routeBExecCtx(
 	// doc and emitForHead's matching call.
 	ctx = chsql.WithDeltaPrefixReadEnabled(ctx, deltaPrefixReadEnabled)
 	ctx = applyResourceBoundOverrides(ctx, bounds)
-	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, rangeBucketGridNativeMaxRows)
-	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, rangeBucketGridNativeMaxDensityUnits)
+	apportionedRows, apportionedDensityUnits := apportionRangeBucketGridNativeBounds(
+		rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits, decisionK(decision),
+	)
+	ctx = chsql.WithRangeBucketGridNativeMaxRows(ctx, apportionedRows)
+	ctx = chsql.WithRangeBucketGridNativeMaxDensityUnits(ctx, apportionedDensityUnits)
 	return ctx
+}
+
+// decisionK is decision.K, defensively floored to 1 — routeBExecCtx is only
+// ever reached on an already-routed Decision (K >= 2 by construction, see
+// solver.Planner.classify), but a nil-or-zero-K Decision must not become a
+// division by zero here.
+func decisionK(decision *solver.Decision) int64 {
+	if decision == nil || decision.K < 1 {
+		return 1
+	}
+	return int64(decision.K)
+}
+
+// apportionRangeBucketGridNativeBounds divides the resolved (override-or-
+// default, see chsql.ResolveRangeBucketGridNativeMaxRows's own doc)
+// whole-query RangeBucketGridNative ceilings by k, flooring each at 1 so a
+// pathological k > ceiling configuration stamps a real (if tiny) bound
+// rather than 0 — which chsql's own ctx lookup would read back as "absent,
+// use the un-apportioned default" (see WithRangeBucketGridNativeMaxRows's
+// doc), the opposite of what apportioning means.
+func apportionRangeBucketGridNativeBounds(rows, densityUnits, k int64) (int64, int64) {
+	apportion := func(resolved int64) int64 {
+		v := resolved / k
+		if v < 1 {
+			v = 1
+		}
+		return v
+	}
+	return apportion(chsql.ResolveRangeBucketGridNativeMaxRows(rows)),
+		apportion(chsql.ResolveRangeBucketGridNativeMaxDensityUnits(densityUnits))
 }
 
 // decisionHasTSGridNative reports whether ANY shard plan of decision carries a

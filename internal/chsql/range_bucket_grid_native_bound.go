@@ -673,6 +673,22 @@ func rangeBucketGridNativeMaxRowsFromCtx(ctx context.Context) int64 {
 	if n, ok := ctx.Value(rangeBucketGridNativeMaxRowsKey{}).(int64); ok && n > 0 {
 		return n
 	}
+	return ResolveRangeBucketGridNativeMaxRows(0)
+}
+
+// ResolveRangeBucketGridNativeMaxRows answers the SAME "override-or-default"
+// question rangeBucketGridNativeMaxRowsFromCtx answers off a context, without
+// needing one — for a caller (internal/engine's routeBExecCtx, issue #2705)
+// that must resolve the effective whole-query bound BEFORE apportioning it by
+// a shard count, which a ctx-keyed lookup cannot do: stamping override/K
+// through WithRangeBucketGridNativeMaxRows when override is 0 would divide
+// down to 0, and 0 means "absent, use the default" here — the OPPOSITE of an
+// apportioned bound. override <= 0 answers the real-evidence-calibrated
+// default; override > 0 is returned unchanged.
+func ResolveRangeBucketGridNativeMaxRows(override int64) int64 {
+	if override > 0 {
+		return override
+	}
 	return maxRangeBucketGridNativeRows
 }
 
@@ -689,6 +705,17 @@ func WithRangeBucketGridNativeMaxDensityUnits(ctx context.Context, n int64) cont
 func rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx context.Context) int64 {
 	if n, ok := ctx.Value(rangeBucketGridNativeMaxDensityUnitsKey{}).(int64); ok && n > 0 {
 		return n
+	}
+	return ResolveRangeBucketGridNativeMaxDensityUnits(0)
+}
+
+// ResolveRangeBucketGridNativeMaxDensityUnits is
+// ResolveRangeBucketGridNativeMaxRows's own twin for axis2 — see that
+// function's doc for why a caller apportioning the bound by a shard count
+// needs this rather than the ctx-keyed lookup.
+func ResolveRangeBucketGridNativeMaxDensityUnits(override int64) int64 {
+	if override > 0 {
+		return override
 	}
 	return maxRangeBucketGridNativeDensityUnits
 }
