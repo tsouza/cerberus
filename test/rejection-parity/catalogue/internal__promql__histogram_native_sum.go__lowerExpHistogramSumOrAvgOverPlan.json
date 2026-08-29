@@ -5,7 +5,7 @@
       "site": "internal/promql/histogram_native_sum.go:lowerExpHistogramSumOrAvgOverPlan#7a3163a0",
       "message": "promql: internal invariant violated: nested native-histogram aggregation input is %T with %s row shape",
       "class": "internal",
-      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits lowerExpHistogramValuedShape's call only over the HistogramRowShape it itself returned. lowerSumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller: it passes either histNode directly — lowerExpHistogramSetOpOperand's own postcondition already guarantees HistogramRowShape — or mixedOrShadowUnless's chplan.VectorSetOp{Histogram: true} wrapping it, which chplan.RowShapeOf also reports as HistogramRowShape, so this guard stays unreachable via that path too. Cerberus issue #2581 added a third caller, lowerSumOrAvgMixedOrSubqueryFoldFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go): it calls shadowResolveMixedExpHistogramOperands directly — the SAME helper lowerSumOrAvgOverMixedExpHistogramSetOp calls internally — and passes its histForAgg return value straight through, so the identical HistogramRowShape postcondition holds for this caller too.",
+      "rationale": "mergeableExpHistogramAggregate plus recursive histogram recognition admits lowerExpHistogramValuedShape's call only over the HistogramRowShape it itself returned. lowerSumOrAvgOverMixedExpHistogramSetOp (cerberus issue #2346, histogram_native_mixed_or_aggregate.go) is the second caller: it passes either histNode directly — lowerExpHistogramSetOpOperand's own postcondition already guarantees HistogramRowShape — or mixedOrShadowUnless's chplan.VectorSetOp{Histogram: true} wrapping it, which chplan.RowShapeOf also reports as HistogramRowShape, so this guard stays unreachable via that path too. Cerberus issue #2581 added a third caller, lowerSumOrAvgMixedOrSubqueryFoldFn (histogram_native_mixed_or_subquery_aggregate_range_fn.go): it calls shadowResolveMixedExpHistogramOperands directly — the SAME helper lowerSumOrAvgOverMixedExpHistogramSetOp calls internally — and passes its histForAgg return value straight through, so the identical HistogramRowShape postcondition holds for this caller too. Cerberus issue #2715 added a fourth caller, lowerSumOrAvgMixedOrSubqueryFoldFnRange (same file) — the true query_range fan-out sibling of lowerSumOrAvgMixedOrSubqueryFoldFn, calling shadowResolveMixedExpHistogramOperands the identical way and passing histForAgg straight through, so the same postcondition holds for it too.",
       "evidence": {
         "guard": [
           "if chplan.RowShapeOf(input) != chplan.HistogramRowShape"
@@ -13,12 +13,14 @@
         "callers": [
           "lowerExpHistogramValuedShape",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgOverMixedExpHistogramSetOp"
         ],
         "cited": [
           "lowerExpHistogramSetOpOperand",
           "lowerExpHistogramValuedShape",
           "lowerSumOrAvgMixedOrSubqueryFoldFn",
+          "lowerSumOrAvgMixedOrSubqueryFoldFnRange",
           "lowerSumOrAvgOverMixedExpHistogramSetOp",
           "mergeableExpHistogramAggregate",
           "mixedOrShadowUnless",
