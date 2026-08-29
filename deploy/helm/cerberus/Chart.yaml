@@ -8,11 +8,11 @@ type: application
 # upgrade?" and is the publish trigger: a chart-only fix bumps this without an
 # app re-tag; an app-only release bumps appVersion + a PATCH here for the new
 # default image. Starts 0.x because the values contract is not yet frozen.
-version: 0.15.8
+version: 0.15.9
 
 # appVersion tracks the GA cerberus binary. Quoted so SemVer-shaped values
 # aren't coerced to floats. image.tag defaults from this when left empty.
-appVersion: "1.18.0"
+appVersion: "1.18.1"
 
 # autoscaling/v2 + policy/v1 (PDB) + networking/v1 (Ingress) are all GA from
 # 1.21+; 1.23 is the conservative floor matching the manifests this chart
@@ -45,25 +45,17 @@ annotations:
       url: https://github.com/tsouza/cerberus/blob/main/docs/operations.md
   artifacthub.io/images: |
     - name: cerberus
-      image: ghcr.io/tsouza/cerberus:v1.18.0
+      image: ghcr.io/tsouza/cerberus:v1.18.1
   # Bump the `1.0.0` floor here when the chart raises its minimum supported
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
-    - kind: added
-      description: "chaudit: audit a live deployment against the histogram resource bound (#2691)"
-    - kind: added
-      description: "chsql: carry the guard's own numbers in its rejection message (#2693)"
     - kind: fixed
-      description: "chaudit,solver,ci: apply the v1.18.0 pre-release audit findings (#2706)"
+      description: "promql: compose resets/changes over sum/avg-wrapped mixed-or subquery (#2718)"
     - kind: fixed
-      description: "routememo: require corroboration before BothFail, and record why Key fuses group-by (#2701)"
+      description: "solver,engine: gate the per-rung predictive bypass on observed evidence (#2717)"
     - kind: fixed
-      description: "chopt: re-probe fast while pinned to the capability floor (#2702)"
+      description: "ci: widen the compat comparer's per-query deadline for the floor lane (#2713)"
     - kind: fixed
-      description: "solver,promql: let the classic-histogram ladder route predictively (#2689)"
+      description: "promql: wire the mixed-or recognizer into absent()/limitk/limit_ratio/unary (#2711)"
     - kind: fixed
-      description: "config,chclient,engine: derive the histogram density bound from the query memory cap (#2686)"
-    - kind: fixed
-      description: "solver: let route B time-shard the native classic-histogram ladder (#2683)"
-    - kind: changed
-      description: "promql: decide the DELTA arm's peak flag at construction, not by a walk (#2690)"
+      description: "engine: apportion route-B's RangeBucketGridNative bounds by shard count (#2712)"
