@@ -1840,10 +1840,21 @@ func deltaPrefixAggregateBucketAnchorArrayFrag(end, bucketStart Frag, stepNS, ra
 // When StepAlign is false the inputs pass through unchanged (byte-stable
 // goldens for the outer query_range grid and the Tempo metrics path).
 func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (Frag, int64) {
-	if !r.StepAlign {
+	return stepAlignGridFor(r.StepAlign, end, r.End, r.Offset, r.OuterRange, stepNS, numAnchors)
+}
+
+// stepAlignGridFor is [stepAlignGrid] generalized to raw values rather than
+// a *chplan.RangeWindow, so [emitRangeBucketFanout]'s own OuterRange mode
+// (cerberus issue #2726) can share the identical epoch-alignment arithmetic
+// instead of re-deriving it — chplan.RangeBucketFanout carries the same
+// (End, Offset, OuterRange, StepAlign) quartet RangeWindow does, just on a
+// different Go type this package cannot switch stepAlignGrid's own
+// parameter on without duplicating its body.
+func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outerRange time.Duration, stepNS, numAnchors int64) (Frag, int64) {
+	if !stepAlign {
 		return end, numAnchors
 	}
-	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCount(r, stepNS, numAnchors)
+	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCountFor(endTime, offset, outerRange, stepNS, numAnchors)
 }
 
 // stepAlignedAnchorCount returns how many phase-0 anchors an epoch-aligned
@@ -1867,12 +1878,18 @@ func stepAlignGrid(r *chplan.RangeWindow, end Frag, stepNS, numAnchors int64) (F
 // time, so δ is unknowable at emit time: fall back to the caller's
 // inclusive count, which is a superset and preserves those goldens.
 func stepAlignedAnchorCount(r *chplan.RangeWindow, stepNS, inclusive int64) int64 {
-	if r.End.IsZero() || r.OuterRange <= 0 || stepNS <= 0 {
+	return stepAlignedAnchorCountFor(r.End, r.Offset, r.OuterRange, stepNS, inclusive)
+}
+
+// stepAlignedAnchorCountFor is [stepAlignedAnchorCount] generalized to raw
+// (end, offset, outerRange) values — see [stepAlignGridFor]'s doc for why.
+func stepAlignedAnchorCountFor(end time.Time, offset, outerRange time.Duration, stepNS, inclusive int64) int64 {
+	if end.IsZero() || outerRange <= 0 || stepNS <= 0 {
 		return inclusive
 	}
-	base := r.End.Add(-r.Offset).UnixNano()
+	base := end.Add(-offset).UnixNano()
 	delta := ((base % stepNS) + stepNS) % stepNS
-	span := r.OuterRange.Nanoseconds() - delta
+	span := outerRange.Nanoseconds() - delta
 	if span <= 0 {
 		// Sub-step window: reference clamps start to end and evaluates
 		// the single anchor at the snapped base.

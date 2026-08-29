@@ -56,6 +56,20 @@ import (
 //     arms separate the whole way through, precisely so its window-purity
 //     test can filter each one before folding).
 func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.RowShape, windowFn string, sub *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (node chplan.Node, matched bool, err error) {
+	if nestedCallSubqueryShape(sub.Expr) {
+		// A THIRD level of nesting — `<outer-fn2>(<fn>(<inner-sub>)[<outer
+		// -range>:<step>])`, sub itself being the doubly-nested shape
+		// cerberus issue #2726's lowerSubqueryOverCallSubquery answers.
+		// That composition's own output is already a per-(series,
+		// OUTER-subquery-anchor) REDUCED relation, not a raw per-sample
+		// one — every continuation this switch dispatches to assumes the
+		// latter, so routing here would silently re-fold an
+		// already-folded value. #2726 scopes fixing its own doubly-nested
+		// shape only; a triple nesting stays unmatched here and falls
+		// through to the caller's pre-#2726 float-only-drop/reject
+		// fallback, exactly as it did before this fix.
+		return nil, false, nil
+	}
 	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
 		node, err = lowerSelectFnOverExpHistogramSubqueryInput(inner, sub, windowFn, s, ctx)
@@ -122,7 +136,7 @@ func lowerFurtherWrapMixedOrSubqueryFoldFn(mixedRel chplan.Node, sub *parser.Sub
 	}
 	floatFolded := lowerFloatFoldOverSubqueryInput(floatBranch, sub, windowFn, anchor, s, ctx)
 
-	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx), nil
+	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil
 }
 
 // splitMixedRelByDiscriminator partitions mixedRel — the fourteen-column
