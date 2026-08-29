@@ -18,6 +18,7 @@ package promql
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,32 @@ func TestGremlinsKill_CallSubqueryResetsChanges_HistVsMixedRouting(t *testing.T)
 				t.Errorf("%s over mixed_or inner: fanout AggFuncs missing %q (mixed-only aggregate)", fn, mixedPairValueArrayAlias)
 			}
 		})
+	}
+}
+
+// TestGremlinsKill_CallSubqueryFold_AnchorErrorPropagates kills
+// histogram_native_subquery_call_subquery.go:236:9 (CONDITIONALS_NEGATION
+// on `if err != nil` inside [lowerExpHistogramFoldOverCallSubqueryInput]'s
+// own subqueryAnchor(grid.outerSub, ctx) call — the FOLD-family sibling of
+// the identical guard in [lowerSelectFnOverCallSubqueryInput] /
+// [lowerMixedLastFirstOverCallSubqueryInput] /
+// [lowerMixedResetsOrChangesOverCallSubqueryInput]. An outer subquery
+// bracket carrying `@ start()`, lowered through the range-context-free
+// [Lower]/[LowerAt] entrypoint (zero Start), makes [subqueryAnchor] itself
+// return a real error here — negating the check would swallow it and
+// return a nil error with a nil node instead.
+func TestGremlinsKill_CallSubqueryFold_AnchorErrorPropagates(t *testing.T) {
+	t.Parallel()
+	query := "rate((" + gremlinsCallSubqueryHistInner + ")[2m:1m])[10m:1m] @ start()"
+	expr, err := parser.NewParser(parser.Options{EnableExperimentalFunctions: true}).ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	_, err = LowerAt(context.Background(), expr, schema.DefaultOTelMetrics(), time.Time{}, gremlinsCallSubqueryEnd)
+	if err == nil {
+		t.Fatalf("lower(%q): want error, got nil", query)
+	}
+	if !strings.Contains(err.Error(), "`@ start()` modifier requires query range context") {
+		t.Errorf("lower(%q): got error %q, want it to mention the `@ start()` range-context requirement", query, err)
 	}
 }

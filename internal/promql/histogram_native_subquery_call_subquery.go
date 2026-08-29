@@ -167,23 +167,39 @@ func lowerSelectFnOverCallSubqueryInput(wideInner chplan.Node, grid histogramCal
 	if err != nil {
 		return nil, err
 	}
+	// wideInner is a Histogram/Mixed-shaped relation, so it publishes its
+	// nine histogram payload fields under their fixed chplan.Histogram*Column
+	// aliases — NOT under the physical exp-histogram table's own
+	// Count/Sum/Scale/… names, which nothing at this level of the plan still
+	// exposes. Reading them through histogramProjectionSchema is what every
+	// other continuation in this file already does, and what the single-level
+	// sibling [lowerSelectFnOverExpHistogramSubqueryInput] does for the
+	// identical eight names; passing the ambient `s` instead emitted
+	// `argMax(Count, TimeUnix)` over a relation publishing `HistogramCount`,
+	// a ClickHouse "Unknown expression or function identifier" error for
+	// last_over_time / first_over_time / resets / changes (the four names
+	// here that read the payload at all). AggregationTemporalityColumn is
+	// cleared for that sibling's own stated reason: a HistogramProjection is
+	// a Prometheus-native value boundary, not a physical OTel row.
+	histSchema := histogramProjectionSchema(s)
+	histSchema.AggregationTemporalityColumn = ""
 	anchorRef := &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}
 	fanout := func(aggs []chplan.AggFunc) *chplan.RangeBucketFanout {
 		return buildOuterRangeSubqueryFanout(wideInner, grid, anchor, aggs, stalenessMinSamples, s)
 	}
 	switch windowFn {
 	case lastOverTimeWindowFn, firstOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistBareAggsDirectional(windowFn, s)), anchorRef, s), nil
+		return capSelectFnOverSubquery(windowFn, fanout(nativeExpHistBareAggsDirectional(windowFn, histSchema)), anchorRef, histSchema), nil
 	case countOverTimeWindowFn, presentOverTimeWindowFn:
-		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, s)}), anchorRef, s), nil
+		return capSelectFnOverSubquery(windowFn, fanout([]chplan.AggFunc{expHistogramCountPresentValueAgg(windowFn, histSchema)}), anchorRef, histSchema), nil
 	case resetsWindowFn, changesWindowFn:
 		perSeries := expHistogramPairCountStage(
-			fanout(expHistogramPairCountAggs(windowFn, s)),
-			windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, s,
+			fanout(expHistogramPairCountAggs(windowFn, histSchema)),
+			windowFn, []string{chplan.RangeWindowAnchorColumn, s.AttributesColumn}, histSchema,
 		)
-		return expHistogramPairCountProjection(perSeries, anchorRef, s), nil
+		return expHistogramPairCountProjection(perSeries, anchorRef, histSchema), nil
 	default: // tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn
-		return capSelectFnOverSubquery(windowFn, fanout(tsOfSampleTimestampAgg(windowFn, s)), anchorRef, s), nil
+		return capSelectFnOverSubquery(windowFn, fanout(tsOfSampleTimestampAgg(windowFn, histSchema)), anchorRef, histSchema), nil
 	}
 }
 

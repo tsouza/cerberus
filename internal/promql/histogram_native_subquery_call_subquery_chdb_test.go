@@ -628,3 +628,142 @@ func TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB(t *testing.T) {
 		}
 	}
 }
+
+// TestSubqueryCallSubquery_HistAnd_LastOverTime_OverMixedOrOperand_ChDB
+// pins the one inner shape that actually reaches
+// [lowerSelectFnOverCallSubqueryInput] — the HistogramRowShape arm of
+// [lowerHistogramOrMixedCallSubqueryInput] — rather than being intercepted
+// one level up.
+//
+// `(<hist>) and (<hist>)` is STATICALLY histogram-valued
+// ([isExpHistogramValuedShape] resolves an and/unless-forwarded pair since
+// cerberus issue #2589), so [lowerSubquery]'s own
+// [lowerHistogramNativeSubqueryInner] dispatch answers it through the
+// PRE-EXISTING #2545/#2569 ambient-grid continuation before
+// [lowerSubqueryOverCallSubquery] is ever consulted — this file's other
+// `HistAnd` cases all take that route. Putting a MIXED `or` on the `and`'s
+// right operand keeps the composition's own result histogram-shaped (an
+// `and` publishes its LEFT operand's samples, and the left operand here is
+// a bare histogram selector) while making the inner expression no longer
+// statically recognisable, which is exactly what routes it into
+// [lowerSubqueryOverCallSubquery]'s OuterRange-mode
+// [chplan.RangeBucketFanout].
+//
+// The reduction over that fan-out must read wideInner's published
+// chplan.Histogram*Column aliases, not the physical exp-histogram table's
+// own Count/Sum/Scale/… names: reading the latter is a ClickHouse
+// "Unknown expression or function identifier `Count`" error, which is what
+// this case caught. Values are `last_over_time`'s own: every 2m/1m window
+// at outer anchor T holds wideInner's samples at (T-1m) and T, so the
+// newest is T's — Count = minute(T)+1 in callSubqMixedOrSeed's pattern.
+func TestSubqueryCallSubquery_HistAnd_LastOverTime_OverMixedOrOperand_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+
+	query := "last_over_time(((" + callSubqMixedHistMetric + ") and ((" + callSubqMixedHistMetric + ") or (" + callSubqMixedGaugeMetric + ")))[2m:1m])[10m:1m]"
+	sqlStr, args := lowerAndEmit(t, query, s, evalTS)
+
+	rows := subqHistQueryRows(t, fixture, sqlStr, args)
+	anchors := callSubqOuterAnchors()
+	if got, want := len(rows), len(anchors); got != want {
+		t.Fatalf("last_over_time(hist and (hist or gauge)): got %d rows, want %d: %+v", got, want, rows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, rows, "h", anchor)
+		wantCount := float64(anchor.Sub(callSubqSeedBaseTS)/time.Minute) + 1
+		if row.cnt != wantCount || row.sum != wantCount || row.bucket1 != wantCount*2 {
+			t.Errorf("anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (the `and`'s left operand's own newest in-window sample)",
+				anchor, row.cnt, row.sum, row.bucket1, wantCount, wantCount, wantCount*2)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_FirstOverTime_OverMixedOrOperand_ChDB is
+// [TestSubqueryCallSubquery_HistAnd_LastOverTime_OverMixedOrOperand_ChDB]'s
+// opposite-direction twin: [nativeExpHistBareAggsDirectional] builds an
+// argMin set rather than an argMax one for first_over_time, and both sets
+// name the same payload columns, so both directions have to be pinned to
+// prove the column resolution rather than one selection direction. Every
+// 2m/1m window at outer anchor T holds wideInner's samples at (T-1m) and
+// T, so the EARLIEST is (T-1m)'s — Count = minute(T).
+func TestSubqueryCallSubquery_HistAnd_FirstOverTime_OverMixedOrOperand_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+
+	query := "first_over_time(((" + callSubqMixedHistMetric + ") and ((" + callSubqMixedHistMetric + ") or (" + callSubqMixedGaugeMetric + ")))[2m:1m])[10m:1m]"
+	sqlStr, args := lowerAndEmit(t, query, s, evalTS)
+
+	rows := subqHistQueryRows(t, fixture, sqlStr, args)
+	anchors := callSubqOuterAnchors()
+	if got, want := len(rows), len(anchors); got != want {
+		t.Fatalf("first_over_time(hist and (hist or gauge)): got %d rows, want %d: %+v", got, want, rows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, rows, "h", anchor)
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		if row.cnt != j || row.sum != j || row.bucket1 != j*2 {
+			t.Errorf("anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (the earliest sample in the 2m window, one minute before this anchor)",
+				anchor, row.cnt, row.sum, row.bucket1, j, j, j*2)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_SelectFamily_OverMixedOrOperand_ChDB
+// widens the two cases above to the remaining six SELECT-family names
+// [lowerSelectFnOverCallSubqueryInput] answers, over the same inner shape.
+//
+// resets/changes read the histogram payload through
+// [expHistogramPairCountAggs], so they carried the SAME column-resolution
+// defect last_over_time/first_over_time did. count_over_time /
+// present_over_time / ts_of_first_over_time / ts_of_last_over_time read
+// only the sample quartet and so were never affected — they are pinned
+// here so the whole dispatch arm executes, not merely the half that once
+// erred.
+func TestSubqueryCallSubquery_HistAnd_SelectFamily_OverMixedOrOperand_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	inner := "((" + callSubqMixedHistMetric + ") and ((" + callSubqMixedHistMetric + ") or (" + callSubqMixedGaugeMetric + ")))[2m:1m]"
+	cases := []struct {
+		fn string
+		// want reports the value expected at outer anchor T; anchorMinute
+		// is T's own minute index into callSubqSeedBaseTS.
+		want func(anchorMinute float64) float64
+	}{
+		// Every 2m/1m window holds exactly wideInner's two samples at
+		// (T-1m) and T.
+		{fn: "count_over_time", want: func(float64) float64 { return 2 }},
+		{fn: "present_over_time", want: func(float64) float64 { return 1 }},
+		// A monotonically increasing Count never resets, and its two
+		// in-window samples always differ — one condemned pair each.
+		{fn: "resets", want: func(float64) float64 { return 0 }},
+		{fn: "changes", want: func(float64) float64 { return 1 }},
+		// The two ts_of_* names report a timestamp in epoch seconds: the
+		// window's oldest sample is (T-1m), its newest is T.
+		{fn: "ts_of_first_over_time", want: func(m float64) float64 {
+			return float64(callSubqSeedBaseTS.Add(time.Duration(m-1) * time.Minute).Unix())
+		}},
+		{fn: "ts_of_last_over_time", want: func(m float64) float64 {
+			return float64(callSubqSeedBaseTS.Add(time.Duration(m) * time.Minute).Unix())
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fn, func(t *testing.T) {
+			sqlStr, args := lowerAndEmit(t, tc.fn+"("+inner+")[10m:1m]", s, evalTS)
+			rows := rangeSampleValueRows(t, fixture, sqlStr, args)
+			for _, anchor := range anchors {
+				got, ok := rows["h"][anchor.Unix()]
+				if !ok {
+					t.Fatalf("%s: no row for anchor %v: %+v", tc.fn, anchor, rows)
+				}
+				if want := tc.want(float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)); got != want {
+					t.Errorf("%s anchor %v: got %v, want %v", tc.fn, anchor, got, want)
+				}
+			}
+		})
+	}
+}
