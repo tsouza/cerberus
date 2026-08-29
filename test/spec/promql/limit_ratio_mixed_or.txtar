@@ -4,6 +4,26 @@ limit_ratio(1, demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp
 oracle: prometheus
 endpoint: /api/v1/query
 scope: full
+-- seed --
+CREATE TABLE otel_metrics_exponential_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Count UInt64,
+    Sum Float64,
+    Scale Int32,
+    ZeroCount UInt64,
+    PositiveOffset Int32,
+    PositiveBucketCounts Array(UInt64),
+    NegativeOffset Int32,
+    NegativeBucketCounts Array(UInt64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_exponential_histogram VALUES
+    ('demo_latency_exp_hist', map('service', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 6, 42.5, 0, 0, 0, [1, 2, 3], 0, []);
+-- expected_rows --
+[
+  ["demo_latency_exp_hist", {"service": "api"}, "2026-01-01T00:00:01Z", 0, 6, 42.5, 0, 0, 0, 0, [1,2,3], 0, [], 1]
+]
 -- args --
 [0] int64 = 9
 [1] float64 = 0
