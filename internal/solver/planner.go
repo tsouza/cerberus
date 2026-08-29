@@ -79,11 +79,12 @@ func (p *Planner) Plan(plan chplan.Node, meta RequestMeta) (*Decision, bool) {
 		if sig.sawIndivisibleAnchorGrid {
 			return notRouted(ReasonAnchorGridIndivisible).withGrid(sig, meta), false
 		}
+		return p.sliceAndDecide(plan, meta, sig, k, perRung)
 	}
 	// "sharded": thresholds drop to the floor — every eligible plan routes
 	// at K_min = 2 (k is already clamped to >= 2 by classify when upper >= 2).
 
-	return p.sliceAndDecide(plan, meta, sig, k)
+	return p.sliceAndDecide(plan, meta, sig, k, false)
 }
 
 // Eligible reports whether plan is STRUCTURALLY eligible to route B —
@@ -126,14 +127,21 @@ func (p *Planner) Eligible(plan chplan.Node, meta RequestMeta) (*Decision, bool)
 	if p.Cfg.Mode == ModeSingle {
 		return notRouted(ReasonRoutingDisabled).withGrid(sig, meta), false
 	}
-	return p.sliceAndDecide(plan, meta, sig, k)
+	// Eligible bypasses ModeAuto's cost thresholds entirely (its own doc),
+	// so a per-rung carrier reaching here did not pass through the anchor-axis
+	// bypass at all — real evidence (a route-A resource failure) is what
+	// admitted it, which outranks the geometry-only proxy PerRungPredictive
+	// exists to flag. false here, always.
+	return p.sliceAndDecide(plan, meta, sig, k, false)
 }
 
 // sliceAndDecide is the shared tail of Plan and Eligible once a mode-specific
 // gate (or none, for Eligible) has cleared k >= 2: slice the plan at k shards
 // and build the routed Decision, or fall back to a non-route Decision if
-// slicing fails or collapses to a single produced slice.
-func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals, k int64) (*Decision, bool) {
+// slicing fails or collapses to a single produced slice. perRungPredictive is
+// threaded straight onto the routed Decision's own field of that name — see
+// its doc for why only Plan's ModeAuto per-rung branch ever passes true.
+func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals, k int64, perRungPredictive bool) (*Decision, bool) {
 	slices, err := p.slice(plan, meta, int(k))
 	if err != nil {
 		// A slicing failure on a plan the Planner judged eligible is a
@@ -152,10 +160,11 @@ func (p *Planner) sliceAndDecide(plan chplan.Node, meta RequestMeta, sig signals
 	}
 
 	return (&Decision{
-		Strategy: StrategyShardedTimeslice,
-		K:        len(slices),
-		Reason:   ReasonRouted,
-		Slices:   slices,
+		Strategy:          StrategyShardedTimeslice,
+		K:                 len(slices),
+		Reason:            ReasonRouted,
+		Slices:            slices,
+		PerRungPredictive: perRungPredictive,
 	}).withGrid(sig, meta), true
 }
 

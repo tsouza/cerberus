@@ -943,6 +943,19 @@ type Engine struct {
 	// symmetrically, when a route-A dispatch fails with a resource-exhaustion
 	// error (a retry on route B, at most once, see route_memo_wiring.go).
 	RouteMemo *routememo.Memo
+
+	// PerRungAdmission is the OPTIONAL evidence-based refinement of the
+	// per-rung predictive bypass (solver.Decision.PerRungPredictive,
+	// per_rung_admission.go, issue #2709). Nil unless wired from
+	// cmd/cerberus (buildPerRungAdmission, gated the same way RouteMemo is —
+	// evalSolver.Cfg.AdaptiveEnabled), so the default path is byte-unchanged.
+	// When non-nil, a Decision that routed ONLY because ModeAuto's per-rung
+	// anchor-axis bypass fired is re-checked against what past dispatches of
+	// the SAME plan shape actually drained, and downgraded to route A once
+	// that evidence says the shape does not need K-way sharding — see
+	// per_rung_admission.go's own package doc for the full mechanism and
+	// why anchor count alone cannot express this.
+	PerRungAdmission *PerRungAdmissionLearner
 }
 
 // SetSettings installs rules as the per-query settings the engine evaluates
@@ -1413,6 +1426,9 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// test-only force) drains the Executor's composed cursor instead — it is
 	// wired but dormant at the default config.
 	decision, routed := e.classify(plan, lang)
+	// See QueryPlanCursor's own call site for what this does (DARK when
+	// PerRungAdmission is nil).
+	decision, routed = e.refinePerRungAdmission(plan, decision, routed)
 	if routed {
 		return e.executeRouted(ctx, lang, meta, plan, decision)
 	}
@@ -1699,6 +1715,12 @@ func (e *Engine) executeRouted(
 		e.logQueryFailure(lang.Name(), plan, decision, time.Since(start), routedQueryID(info), cerr)
 		return Result{}, fmt.Errorf("engine: solver drain: %w", cerr)
 	}
+	// Eager path drains synchronously above, so — unlike the cursor path,
+	// which needs perRungObservingCursor — the clean-drain row count is
+	// already in hand here. See per_rung_admission.go.
+	if e.PerRungAdmission != nil && decision.PerRungPredictive {
+		e.PerRungAdmission.Observe(perRungAdmissionKey(plan, decision), int64(len(samples)), int64(decision.NAnchors))
+	}
 	chMillis := time.Since(start).Milliseconds()
 	execT.Done(ctx)
 
@@ -1867,6 +1889,11 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// header. The routed branch returns the Executor's composed cursor
 	// instead — wired but dormant at the default config.
 	decision, routed := e.classify(plan, lang)
+	// Evidence-based refinement of the per-rung predictive bypass (DARK —
+	// nil PerRungAdmission is a no-op, byte-unchanged below). Only ever
+	// downgrades a PerRungPredictive route to route A; every other route or
+	// non-route passes through untouched. See per_rung_admission.go.
+	decision, routed = e.refinePerRungAdmission(plan, decision, routed)
 	if routed {
 		return e.executeRoutedCursor(ctx, lang, meta, plan, decision)
 	}
@@ -2178,8 +2205,11 @@ func (e *Engine) executeRoutedCursor(
 		return CursorResult{}, fmt.Errorf("engine: solver execute: %w", err)
 	}
 	// Dispatch seam for the streaming route-B path (the caller owns the drain,
-	// so there is no later engine-side site to record from).
+	// so there is no later engine-side site to record from) — except for the
+	// evidence-based per-rung refinement, which supplies its OWN drain-time
+	// site by wrapping the cursor below.
 	e.observeRoutedQuery(info, plan, lang.Name(), decision)
+	cursor = wrapPerRungObserver(cursor, e.PerRungAdmission, plan, decision)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)

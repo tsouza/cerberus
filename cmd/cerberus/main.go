@@ -753,12 +753,13 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	h.ResourceBounds = promResourceBounds
 	h.Engine = &engine.Engine{
-		Optimizer:       h.Optimizer,
-		Client:          client,
-		Solver:          evalSolver,
-		Settings:        settingsRules(cfg, optSet),
-		MaxQuerySamples: client.MaxQuerySamples(),
-		RouteMemo:       buildRouteMemo(evalSolver, logger),
+		Optimizer:        h.Optimizer,
+		Client:           client,
+		Solver:           evalSolver,
+		Settings:         settingsRules(cfg, optSet),
+		MaxQuerySamples:  client.MaxQuerySamples(),
+		RouteMemo:        buildRouteMemo(evalSolver, logger),
+		PerRungAdmission: buildPerRungAdmission(evalSolver),
 		// PromQL-only: TraceQL / LogQL plans never carry a
 		// chplan.RangeWindow.TemporalityColumn (the OTel Sum
 		// AggregationTemporality concept), so this is inert for the other
@@ -825,6 +826,22 @@ func buildRouteMemo(evalSolver *solver.Solver, logger *slog.Logger) *routememo.M
 		"revalidation_fraction", evalSolver.Cfg.RouteMemoReValidationFraction,
 	)
 	return memo
+}
+
+// buildPerRungAdmission wires the evidence-based per-rung admission
+// refinement (internal/engine/per_rung_admission.go, issue #2709). Gated
+// identically to buildRouteMemo — CERBERUS_SOLVER_ADAPTIVE_ENABLED, default
+// TRUE — because it is the same family of mechanism (routing informed by
+// what actually happened, not just by plan-time geometry), so the SAME knob
+// that turns adaptive routing off turns this off too rather than adding a
+// second, independently-configured flag for a narrower slice of the same
+// idea. Returns nil (the engine's byte-unchanged, feature-off default) under
+// the same conditions buildRouteMemo does.
+func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLearner {
+	if evalSolver == nil || !evalSolver.Cfg.AdaptiveEnabled {
+		return nil
+	}
+	return engine.NewPerRungAdmissionLearner()
 }
 
 // nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table

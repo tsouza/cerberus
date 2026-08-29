@@ -1,0 +1,257 @@
+package engine
+
+import (
+	"sync"
+	"time"
+
+	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/routememo"
+	"github.com/tsouza/cerberus/internal/solver"
+)
+
+// per_rung_admission.go closes issue #2709: internal/solver/planner.go's
+// ModeAuto per-rung bypass (minAnchorsForPerRungShard) admits a
+// RangeBucketGridNative-carrying plan onto route B on the ANCHOR AXIS alone,
+// because that carrier's F is unmeasurable at plan time (see that constant's
+// own doc). Anchor count is pure grid GEOMETRY — it says nothing about how
+// much DATA backs the grid — and #2709 found a real case where geometry alone
+// gets it wrong: a 24h/1m classic-histogram dashboard panel over a
+// low-cardinality metric (a few dozen to a couple hundred series) clears the
+// anchor floor by more than 10x, so it predictively routes B, but K
+// concurrent ClickHouse queries contending over a table with almost nothing
+// in it is pure overhead — one unsharded query would have finished first.
+//
+// #2709 itself establishes (see the issue and this package's own tests) that
+// no purely GEOMETRIC signal can fix this: a genuine production incident this
+// bypass exists to catch (issue #2677) has FEWER anchors (as few as ~90) than
+// this false-positive panel (1,441), so any anchor-only threshold that admits
+// the real incident also admits the false positive, and any threshold that
+// excludes the false positive also excludes the real incident. The two
+// populations are only separable by how much data the grid actually divides
+// — which requires evidence, not geometry.
+//
+// This file supplies that evidence the ONLY way it can be had without a new
+// live round-trip on every per-rung request: it watches what a per-rung
+// PREDICTIVE dispatch (solver.Decision.PerRungPredictive) ACTUALLY drained,
+// and once a plan SHAPE has repeatedly, cleanly produced a small composed
+// result despite clearing the anchor floor, it declines the bypass for
+// FUTURE requests of that same shape — falling back to the anchor-only
+// default (today's behavior, unchanged) until that evidence exists. This is
+// the "track observed per-shard cost, learn when a shape is worth splitting,
+// fall back to the conservative default with no evidence" escalation #2709
+// itself names as the correct one once geometry alone is shown insufficient.
+//
+// Deliberately narrow: it never REFUSES a plan the Planner judged eligible,
+// never promotes route A to route B, and never touches ModeSharded or
+// Eligible()'s failure-driven memo seam — Plan's own per-rung bypass, and
+// the geometry-only threshold it clears at, are completely unchanged. This
+// only ever downgrades an already-PerRungPredictive route B to route A, and
+// only once evidence says the shape does not need it.
+
+// perRungEvidenceMinObservations mirrors routememo's own
+// minCorroboratingFailures: a single clean-and-cheap drain cannot, by
+// itself, teach the learner anything — a low-traffic blip or an
+// unrepresentative first sample must not flip a shape's verdict alone.
+const perRungEvidenceMinObservations = 2
+
+// perRungCheapRowsPerAnchor bounds "cheap" RELATIVE to the anchor count
+// rather than as an absolute row count, because N is already part of the
+// routing Key (AnchorLg) and the false-positive class #2709 describes is a
+// WIDE grid over FEW underlying series — a fixed absolute floor would wrongly
+// call a genuinely wide, genuinely high-cardinality panel "cheap" just because
+// its anchor count inflates the total. A composed route-B result averaging
+// fewer than this many output rows per anchor is producing, at every anchor,
+// a small enough set of distinct series/label groups that no realistic
+// backing-table size behind it would have justified K-way contention to
+// answer it — sharding divides the anchor axis, not label cardinality, so a
+// query this narrow per anchor has few underlying series to scan regardless
+// of window width.
+const perRungCheapRowsPerAnchor = 20
+
+// perRungEvidenceTTL bounds how long a learned verdict is trusted, mirroring
+// routememo's own memoEntryTTL (30m): a metric's real cardinality can grow
+// (a new label value, a service scaling out), and a verdict computed against
+// yesterday's shape must not silently suppress predictive routing forever
+// once that has happened. An observation older than this resets the state as
+// if nothing had been learned yet, which is the ordinary "no evidence exists"
+// default, not a fresh strike against the shape.
+const perRungEvidenceTTL = 30 * time.Minute
+
+// perRungLearnerCapacity mirrors routememo's own memoMaxEntries: a bound
+// resident size so unbounded key cardinality cannot grow this cache without
+// limit. Eviction here is coarser than routememo's true LRU (any single
+// entry may be evicted once at capacity, not necessarily the oldest) because
+// the cost of evicting the wrong entry is trivial — it only resets that one
+// shape back to "no evidence yet", the always-safe default.
+const perRungLearnerCapacity = 4096
+
+// perRungAdmissionState is one plan-shape's rolling evidence.
+type perRungAdmissionState struct {
+	consecutiveCheap int
+	lastObserved     time.Time
+}
+
+// PerRungAdmissionLearner is the OPTIONAL, per-Engine-instance cache backing
+// this file's own doc. A nil *PerRungAdmissionLearner behaves exactly like a
+// nil Engine.RouteMemo: every method on it is written to be called only
+// through Engine.PerRungAdmission's own nil guard at the call sites in
+// engine.go, so the zero (unwired) Engine stays byte-unchanged — see
+// NewPerRungAdmissionLearner's caller, buildPerRungAdmission
+// (cmd/cerberus/main.go).
+type PerRungAdmissionLearner struct {
+	mu     sync.Mutex
+	states map[routememo.Key]*perRungAdmissionState
+}
+
+// NewPerRungAdmissionLearner constructs an empty learner.
+func NewPerRungAdmissionLearner() *PerRungAdmissionLearner {
+	return &PerRungAdmissionLearner{states: make(map[routememo.Key]*perRungAdmissionState)}
+}
+
+// Observe records one COMPLETED, CLEANLY-DRAINED per-rung predictive route-B
+// dispatch's total composed output row count for key's shape. The caller is
+// responsible for only calling this on a clean drain (Cursor.Err() == nil) —
+// see perRungObservingCursor and executeRouted's own eager-path call site —
+// because a CANCELLED or partially-drained dispatch (exactly #2709's own
+// reported symptom: a client cancel after 19s) reports a truncated row count
+// that looks artificially cheap. Recording that would teach the learner the
+// opposite of the truth: the dispatch was too slow to finish, not too small
+// to matter.
+func (l *PerRungAdmissionLearner) Observe(key routememo.Key, outputRows, nAnchors int64) {
+	if nAnchors <= 0 {
+		return
+	}
+	cheap := outputRows < nAnchors*perRungCheapRowsPerAnchor
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.states[key]
+	if !ok {
+		if len(l.states) >= perRungLearnerCapacity {
+			for k := range l.states {
+				delete(l.states, k)
+				break
+			}
+		}
+		st = &perRungAdmissionState{}
+		l.states[key] = st
+	}
+	if cheap {
+		st.consecutiveCheap++
+	} else {
+		st.consecutiveCheap = 0
+	}
+	st.lastObserved = time.Now()
+}
+
+// ShouldDeclineBypass reports whether key's shape has accumulated enough
+// FRESH, consecutive cheap observations to decline the anchor-only per-rung
+// bypass on its next request. Returns false (the always-safe default: keep
+// today's geometry-only admission) when there is no entry, or the entry has
+// aged past perRungEvidenceTTL.
+func (l *PerRungAdmissionLearner) ShouldDeclineBypass(key routememo.Key) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.states[key]
+	if !ok {
+		return false
+	}
+	if time.Since(st.lastObserved) > perRungEvidenceTTL {
+		return false
+	}
+	return st.consecutiveCheap >= perRungEvidenceMinObservations
+}
+
+// perRungAdmissionKey computes the routememo.Key for decision's own grid
+// readout, reused for both the pre-dispatch admission lookup and the
+// post-drain observation that feeds it — the SAME shape must hash to the
+// SAME key on both sides or the learner never converges.
+func perRungAdmissionKey(plan chplan.Node, decision *solver.Decision) routememo.Key {
+	return routememo.KeyFor(plan, decision.NAnchors, decision.Fanout, decision.Step)
+}
+
+// declinePerRungBypass demotes decision to the non-route Plan's ModeAuto
+// branch would have produced had the per-rung bypass not fired on cost
+// grounds — Strategy/K/Slices/PerRungPredictive clear, Reason becomes
+// solver.ReasonBelowThreshold (the SAME token an anchor-only-insufficient
+// per-rung carrier already reports; this is that same cost gate, now
+// additionally informed by real evidence). The cost-grid fields
+// (NAnchors/Fanout/CumulativeD/OuterRange/Step) are left untouched: they are
+// a pure readout of the same plan and stay accurate on a declined route.
+func declinePerRungBypass(decision *solver.Decision) *solver.Decision {
+	declined := *decision
+	declined.Strategy = ""
+	declined.K = 0
+	declined.Slices = nil
+	declined.Reason = solver.ReasonBelowThreshold
+	declined.PerRungPredictive = false
+	return &declined
+}
+
+// refinePerRungAdmission re-checks a routed, PerRungPredictive Decision
+// against e.PerRungAdmission's own learned evidence before dispatch. Decision
+// and routed pass through byte-unchanged when PerRungAdmission is nil (the
+// default — see Engine.PerRungAdmission's own doc), when decision is nil, when
+// routed is already false, or when the route did not come from the per-rung
+// bypass (PerRungPredictive false) — every other route (an ordinary
+// MinFanout/MinAnchorPairs clearance, ModeSharded, or Eligible()'s
+// failure-driven memo escalation) is a real cost/evidence-based decision
+// already and is never second-guessed here.
+func (e *Engine) refinePerRungAdmission(plan chplan.Node, decision *solver.Decision, routed bool) (*solver.Decision, bool) {
+	if e.PerRungAdmission == nil || decision == nil || !routed || !decision.PerRungPredictive {
+		return decision, routed
+	}
+	key := perRungAdmissionKey(plan, decision)
+	if !e.PerRungAdmission.ShouldDeclineBypass(key) {
+		return decision, routed
+	}
+	return declinePerRungBypass(decision), false
+}
+
+// perRungObservingCursor wraps a route-B cursor for a per-rung PREDICTIVE
+// dispatch so its own Close() feeds the learner exactly what the CALLER
+// actually drained. QueryPlanCursor's caller owns the drain (executeRoutedCursor's
+// own doc: "there is no later engine-side site to record from"), so this
+// wrapper IS that site — it changes no behavior the caller observes (every
+// method but Close delegates straight through the embedded Cursor) and only
+// ever reads Err()/Inspected() after Close(), never influencing either.
+type perRungObservingCursor struct {
+	chclient.Cursor
+	learner  *PerRungAdmissionLearner
+	key      routememo.Key
+	nAnchors int64
+	once     sync.Once
+}
+
+// Close delegates to the wrapped cursor first (this must never change teardown
+// timing or behavior), then records the observation exactly once — guarded by
+// sync.Once because a cursor may be Closed more than once by a defensive
+// caller, and a second observation must not double-count. Only a CLEAN drain
+// (Err() == nil) is trusted evidence — see PerRungAdmissionLearner.Observe's
+// own doc for why a cancelled/truncated drain must never be recorded as
+// "cheap".
+func (c *perRungObservingCursor) Close() error {
+	err := c.Cursor.Close()
+	c.once.Do(func() {
+		if c.Err() == nil {
+			c.learner.Observe(c.key, c.Inspected(), c.nAnchors)
+		}
+	})
+	return err
+}
+
+// wrapPerRungObserver returns cursor unchanged when learner is nil or the
+// dispatch was not a per-rung predictive route — every other route-B cursor
+// stays exactly what Executor.Execute returned.
+func wrapPerRungObserver(cursor chclient.Cursor, learner *PerRungAdmissionLearner, plan chplan.Node, decision *solver.Decision) chclient.Cursor {
+	if learner == nil || decision == nil || !decision.PerRungPredictive {
+		return cursor
+	}
+	return &perRungObservingCursor{
+		Cursor:   cursor,
+		learner:  learner,
+		key:      perRungAdmissionKey(plan, decision),
+		nAnchors: int64(decision.NAnchors),
+	}
+}

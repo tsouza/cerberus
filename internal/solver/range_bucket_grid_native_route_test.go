@@ -182,6 +182,12 @@ func TestRangeBucketGridNative_PredictiveRoutingOnTheAnchorAxis(t *testing.T) {
 	if d.K < 2 {
 		t.Errorf("predictive route produced K=%d, want >= 2", d.K)
 	}
+	if !d.PerRungPredictive {
+		t.Errorf("predictive route did not set PerRungPredictive — issue #2709's evidence-based " +
+			"admission refinement (internal/engine's PerRungAdmissionLearner) keys off this field " +
+			"to tell a real MinFanout/MinAnchorPairs clearance apart from an anchor-only geometry " +
+			"bypass; leaving it false here would make that refinement silently inert")
+	}
 
 	// Below the floor: still declines, and on COST rather than structure.
 	narrow := bucketGridNativeCarrier()
@@ -217,5 +223,10 @@ func TestRangeBucketGridNative_EligibleStillBypassesThresholds(t *testing.T) {
 	}
 	if ed.K < 2 || ed.Reason != ReasonRouted {
 		t.Errorf("Eligible returned K=%d reason=%q, want K>=2 and %q", ed.K, ed.Reason, ReasonRouted)
+	}
+	if ed.PerRungPredictive {
+		t.Errorf("Eligible's route set PerRungPredictive — this route was admitted by REAL evidence " +
+			"(a route-A resource failure), not by the anchor-only geometry bypass, so it must not be " +
+			"flagged as the population issue #2709's evidence-based refinement should ever second-guess")
 	}
 }
