@@ -325,3 +325,114 @@ func TestSubqueryCallSubquery_MixedOr_ResetsChanges_ChDB(t *testing.T) {
 		t.Fatalf("changes: missing rows for one or both series: %+v", got)
 	}
 }
+
+// TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB proves the
+// SELECT-family dispatch for first_over_time — the EARLIEST, not latest,
+// in-window sample — over a HistogramRowShape wideInner. Every 2m/1m
+// window at outer anchor T holds exactly wideInner's two samples at
+// (T-1m) and T, so first_over_time must read the (T-1m) one.
+func TestSubqueryCallSubquery_HistAnd_FirstOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+
+	query := "first_over_time(((" + callSubqHistAndAMetric + ") and (" + callSubqHistAndBMetric + "))[2m:1m])[10m:1m]"
+	sqlStr, args := lowerAndEmit(t, query, s, evalTS)
+
+	rows := subqHistQueryRows(t, fixture, sqlStr, args)
+	anchors := callSubqOuterAnchors()
+	if got, want := len(rows), len(anchors); got != want {
+		t.Fatalf("first_over_time(doubly-nested and): got %d rows, want %d: %+v", got, want, rows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, rows, "a", anchor)
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		if row.cnt != j || row.sum != j || row.bucket1 != j*2 {
+			t.Errorf("anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (the earliest sample in the 2m window, one minute before this anchor — last_over_time's own sibling test pins the OTHER endpoint)",
+				anchor, row.cnt, row.sum, row.bucket1, j, j, j*2)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_CountPresentOverTime_ChDB proves the
+// SELECT-family dispatch for count_over_time / present_over_time over a
+// HistogramRowShape wideInner: every one of this file's 2m/1m windows
+// contains exactly two of wideInner's own per-inner-anchor rows (spaced
+// one minute apart, epoch-aligned), so count_over_time must read exactly
+// 2 and present_over_time exactly 1 at every one of the ten outer
+// anchors — not the empty/dropped answer this composition produced
+// before cerberus issue #2726.
+func TestSubqueryCallSubquery_HistAnd_CountPresentOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	countSQL, countArgs := lowerAndEmit(t, "count_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	countRows := rangeSampleValueRows(t, fixture, countSQL, countArgs)
+	for _, anchor := range anchors {
+		got, ok := countRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("count_over_time: no row for anchor %v: %+v", anchor, countRows)
+		}
+		if got != 2 {
+			t.Errorf("count_over_time anchor %v: got %v, want 2 (exactly two 1-minute-spaced samples in every 2m window)", anchor, got)
+		}
+	}
+
+	presentSQL, presentArgs := lowerAndEmit(t, "present_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	presentRows := rangeSampleValueRows(t, fixture, presentSQL, presentArgs)
+	for _, anchor := range anchors {
+		got, ok := presentRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("present_over_time: no row for anchor %v: %+v", anchor, presentRows)
+		}
+		if got != 1 {
+			t.Errorf("present_over_time anchor %v: got %v, want 1", anchor, got)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB proves the
+// FOLD-family dispatch for sum_over_time / avg_over_time — pure additive
+// folds with no boundary/reset correction, unlike rate's — over a
+// HistogramRowShape wideInner. Every 2m/1m window at outer anchor T
+// holds exactly wideInner's two samples at (T-1m) and T (Count = T and
+// T+1 respectively, in the seed's own minute-index-plus-one pattern), so
+// both functions' results are exact arithmetic, not merely non-empty.
+func TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	sumSQL, sumArgs := lowerAndEmit(t, "sum_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	sumRows := subqHistQueryRows(t, fixture, sumSQL, sumArgs)
+	if got, want := len(sumRows), len(anchors); got != want {
+		t.Fatalf("sum_over_time(doubly-nested and): got %d rows, want %d: %+v", got, want, sumRows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, sumRows, "a", anchor)
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		want := 2*j + 1
+		if row.cnt != want || row.sum != want || row.bucket1 != want*2 {
+			t.Errorf("sum_over_time anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (sum of the window's two samples)",
+				anchor, row.cnt, row.sum, row.bucket1, want, want, want*2)
+		}
+	}
+
+	avgSQL, avgArgs := lowerAndEmit(t, "avg_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	avgRows := subqHistQueryRows(t, fixture, avgSQL, avgArgs)
+	if got, want := len(avgRows), len(anchors); got != want {
+		t.Fatalf("avg_over_time(doubly-nested and): got %d rows, want %d: %+v", got, want, avgRows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, avgRows, "a", anchor)
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		want := (2*j + 1) / 2
+		if row.cnt != want || row.sum != want || row.bucket1 != want*2 {
+			t.Errorf("avg_over_time anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (average of the window's two samples)",
+				anchor, row.cnt, row.sum, row.bucket1, want, want, want*2)
+		}
+	}
+}

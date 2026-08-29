@@ -168,6 +168,8 @@ func TestRangeBucketFanout_Equal_Negative_Fields(t *testing.T) {
 		{"step", func(r *chplan.RangeBucketFanout) { r.Step = time.Minute }},
 		{"lookback", func(r *chplan.RangeBucketFanout) { r.Lookback = time.Hour }},
 		{"offset", func(r *chplan.RangeBucketFanout) { r.Offset = 2 * time.Minute }},
+		{"outerRange", func(r *chplan.RangeBucketFanout) { r.OuterRange = time.Hour }},
+		{"stepAlign", func(r *chplan.RangeBucketFanout) { r.StepAlign = !r.StepAlign }},
 		{"anchorAlias", func(r *chplan.RangeBucketFanout) { r.AnchorAlias = "other_anchor" }},
 		{"timestampCol", func(r *chplan.RangeBucketFanout) { r.TimestampCol = "Other" }},
 		{"groupByLen", func(r *chplan.RangeBucketFanout) {

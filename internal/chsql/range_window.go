@@ -1857,8 +1857,11 @@ func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outer
 	return epochAlignedEndFrag(end, stepNS), stepAlignedAnchorCountFor(endTime, offset, outerRange, stepNS, numAnchors)
 }
 
-// stepAlignedAnchorCount returns how many phase-0 anchors an epoch-aligned
-// subquery grid actually holds.
+// stepAlignedAnchorCountFor returns how many phase-0 anchors an
+// epoch-aligned subquery grid actually holds — generalized to raw (end,
+// offset, outerRange) values, rather than a *chplan.RangeWindow, so
+// [emitRangeBucketFanout]'s own OuterRange mode (cerberus issue #2726) can
+// share the identical arithmetic; see [stepAlignGridFor]'s doc for why.
 //
 // The caller derives its count from the end-INCLUSIVE formula
 // `OuterRange/step + 1`, which is right for a grid anchored ON `End`.
@@ -1877,12 +1880,6 @@ func stepAlignGridFor(stepAlign bool, end Frag, endTime time.Time, offset, outer
 // A zero End means the grid base is `now64(9)`, resolved at execution
 // time, so δ is unknowable at emit time: fall back to the caller's
 // inclusive count, which is a superset and preserves those goldens.
-func stepAlignedAnchorCount(r *chplan.RangeWindow, stepNS, inclusive int64) int64 {
-	return stepAlignedAnchorCountFor(r.End, r.Offset, r.OuterRange, stepNS, inclusive)
-}
-
-// stepAlignedAnchorCountFor is [stepAlignedAnchorCount] generalized to raw
-// (end, offset, outerRange) values — see [stepAlignGridFor]'s doc for why.
 func stepAlignedAnchorCountFor(end time.Time, offset, outerRange time.Duration, stepNS, inclusive int64) int64 {
 	if end.IsZero() || outerRange <= 0 || stepNS <= 0 {
 		return inclusive
