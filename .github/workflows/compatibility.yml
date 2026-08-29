@@ -602,20 +602,33 @@ jobs:
         # TESTER_QUERY_PARALLELISM=2: below the ts_grid_* / native-rate
         # floor (25.9, #1500) the fallback SQL does real per-row
         # rate/quantile/reset aggregation, which is genuinely slower than
-        # the native-function path every other lane exercises. The
-        # upstream tester hardcodes a 10s deadline per comparison
-        # (upstream/promql/comparer/comparer.go) with no flag to raise
-        # it, so at its default -query-parallelism=20 enough
-        # genuinely-slower floor queries queue behind each other that
-        # some miss that shared deadline on pure contention, not a real
-        # divergence (report.json shows empty diffs, just "context
-        # deadline exceeded"). Measured directly against this same image
-        # under a 2-vCPU cap (this runner class): every affected query
-        # answers in under 3s alone; concurrency 20 reproduces >10s
-        # response times, concurrency 2 stays under ~4s with comfortable
-        # margin. Lowering parallelism is the honest fix — it changes
-        # only how much load the floor lane offers at once, not which
-        # SQL cerberus emits or what the ratchet compares.
+        # the native-function path every other lane exercises. That is
+        # queueing contention, not correctness, so lowering parallelism
+        # keeps the floor lane from offering more concurrent load than a
+        # 2-vCPU runner can serve — the corpus this was originally
+        # measured against (#1699) answered every affected query in
+        # under 3s alone with comfortable margin under concurrency 2.
+        #
+        # #2112 later added resets()/changes() over an exponential
+        # histogram to that same fallback family, and it does NOT have
+        # that margin: measured alone, with zero contention, it costs
+        # 9-13s — already at or past the upstream tester's hardcoded
+        # per-comparison deadline (upstream/promql/comparer/comparer.go,
+        # `context.WithTimeout(..., 10*time.Second)`, no flag to raise
+        # it) before parallelism enters into it at all. That is why
+        # resets(demo_latency_exp_hist[5m]) and
+        # resets(demo_shifting_latency_exp_hist[5m]) flipped between
+        # REGRESSED and passing on an unchanged tree — every captured
+        # report carried an empty diff, just "context deadline
+        # exceeded" — and no amount of lowering -query-parallelism can
+        # fix it, because that knob bounds queueing, not the per-call
+        # budget a single unqueued call has already spent
+        # (tsouza/cerberus#2707). The actual fix widens that deadline:
+        # run-prometheus-compatibility.sh build-time patches
+        # comparer.go's timeout past every measured floor-lane cost,
+        # the same way it already patches the comparer's matrix-sort
+        # bug. Parallelism stays low here regardless, since it is still
+        # the right lever for genuine queueing contention.
         env:
           TESTER_END_TIME: "2026-05-11T01:00:00Z"
           TESTER_RANGE: "3600"

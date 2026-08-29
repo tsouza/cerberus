@@ -103,7 +103,13 @@
 #                      window fold, 14% across-series bucket merge, 22%
 #                      quantile value expression. Cerberus issue #2267
 #                      owns making that arithmetic cheaper; this knob is
-#                      not the lever.
+#                      not the lever. `resets()`/`changes()` over an
+#                      exponential histogram (#2112) joined this family
+#                      after these numbers were taken, at 9-13s alone —
+#                      see the comparer-timeout patch below
+#                      (tsouza/cerberus#2707) for the fix that actually
+#                      keeps a legitimately-slow floor-lane answer from
+#                      being reported as a divergence.
 #
 # Upstream tester invocation (post-PR #298 / #300 audit):
 #   The upstream `promql-compliance-tester` only accepts `-config-file`
@@ -255,6 +261,43 @@ if ! grep -q 'sort.Sort(refResult.(model.Matrix))' "$COMPARER"; then
     perl -0pi -e 's/(\tsort\.Sort\(testResult\.\(model\.Matrix\)\)\n)/$1\tsort.Sort(refResult.(model.Matrix))\n/' "$COMPARER"
     if ! grep -q 'sort.Sort(refResult.(model.Matrix))' "$COMPARER"; then
         echo "ERROR: failed to patch comparer.go symmetric sort (upstream layout changed?)" >&2
+        exit 2
+    fi
+fi
+
+# Patch a second upstream limitation: Compare() wraps the ref+test
+# QueryRange pair — run SEQUENTIALLY against the SAME ctx, so the two
+# calls share one budget rather than getting 10s each — in one hardcoded
+# `context.WithTimeout(..., 10*time.Second)`, with no flag to raise it.
+#
+# tsouza/cerberus#2707: `resets(demo_latency_exp_hist[5m])` and
+# `resets(demo_shifting_latency_exp_hist[5m])` flipped between REGRESSED
+# and passing on an UNCHANGED tree. The uploaded report's diff was empty
+# every time; the failure was always `context deadline exceeded`. Below
+# 25.9 (#1500) every ts_grid_* native-rate feature resolves OFF, so the
+# floor lane deliberately measures cerberus's un-optimized per-row
+# fallback SQL — genuinely slower than the native path every other lane
+# exercises, not incorrect. Timed one query at a time against this
+# lane's own CH_IMAGE with this script's own seed fixture, on an
+# otherwise idle host: resets()/changes() over an exponential histogram
+# already sits at 9-13s alone (see the TESTER_QUERY_PARALLELISM doc
+# above for the sibling histogram_quantile / count_values numbers), so a
+# shared 10s ref+test budget was always going to flip on nothing but
+# runner-speed noise — the pair the flag was set low to protect against
+# in the first place. Lowering -query-parallelism controls how many
+# comparisons QUEUE, not how long any single one is given, so it cannot
+# buy back a budget one unqueued call has already spent; only widening
+# the deadline itself can. Widening it doesn't weaken what the gate
+# proves: Compare() still returns the moment both calls do, so a genuine
+# semantic divergence is caught exactly as fast as before — this only
+# changes how long a legitimately slow floor-lane answer is given before
+# being mistaken for one.
+echo "==> patching promql-compliance-tester comparer (widen the per-comparison deadline)"
+COMPAT_COMPARE_TIMEOUT_SECONDS=45
+if ! grep -q "${COMPAT_COMPARE_TIMEOUT_SECONDS}\*time\.Second" "$COMPARER"; then
+    perl -pi -e "s/\Q10*time.Second\E/${COMPAT_COMPARE_TIMEOUT_SECONDS}*time.Second/" "$COMPARER"
+    if ! grep -q "${COMPAT_COMPARE_TIMEOUT_SECONDS}\*time\.Second" "$COMPARER"; then
+        echo "ERROR: failed to patch comparer.go compare timeout (upstream layout changed?)" >&2
         exit 2
     fi
 fi
