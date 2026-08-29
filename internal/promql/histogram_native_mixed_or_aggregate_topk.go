@@ -96,7 +96,7 @@ func lowerTopKOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parser.Bi
 
 	kF, ok := tryScalarLiteral(agg.Param)
 	if !ok {
-		return buildTopKComputed(agg, s, ctx, floatForAgg, false)
+		return buildTopKComputed(agg, s, ctx, floatForAgg, false, false)
 	}
 	k, empty, err := topKDomain(kF)
 	if err != nil {

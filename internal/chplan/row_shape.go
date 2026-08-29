@@ -241,6 +241,11 @@ func RowShapeOf(n Node) RowShape {
 		if v.Histogram {
 			return HistogramRowShape
 		}
+		// limitk/limit_ratio over a MIXED float/histogram input (cerberus
+		// issue #2613) — same passthrough reasoning, fourteen columns.
+		if v.Mixed {
+			return MixedRowShape
+		}
 	case *Filter:
 		// limit_ratio over a histogram-valued input (cerberus issue
 		// #2518): Filter's own SELECT is always a passthrough of every
@@ -248,6 +253,11 @@ func RowShapeOf(n Node) RowShape {
 		// publishing the full thirteen-column shape through the WHERE.
 		if v.Histogram {
 			return HistogramRowShape
+		}
+		// limit_ratio over a MIXED float/histogram input (cerberus issue
+		// #2613) — same passthrough, fourteen columns.
+		if v.Mixed {
+			return MixedRowShape
 		}
 	case *HistogramVectorJoin:
 		// Its own SELECT exposes `_hq_L_*`/`_hq_R_*` aliases, not the

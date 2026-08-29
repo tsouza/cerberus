@@ -1,0 +1,2 @@
+-- query.promql --
+limit_ratio(1, demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))
