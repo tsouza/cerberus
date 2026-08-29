@@ -132,3 +132,45 @@ func TestRangeBucketGridNativeBound_MaxDensityUnitsOverride_NonPositiveIsIgnored
 		t.Errorf("a negative override should fall back to the real default (400000000), got: %s", sqlStr)
 	}
 }
+
+// TestResolveRangeBucketGridNativeMaxRows pins the "override-or-default"
+// contract ResolveRangeBucketGridNativeMaxRows answers WITHOUT a context —
+// added for issue #2705's route-B apportionment, which must resolve the
+// whole-query bound BEFORE dividing it by a shard count, and a ctx-keyed
+// lookup cannot do that (see the function's own doc for why).
+func TestResolveRangeBucketGridNativeMaxRows(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override int64
+		want     int64
+	}{
+		{"positive override wins", 10, 10},
+		{"zero falls back to the real default", 0, 25_000_000},
+		{"negative falls back to the real default", -1, 25_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chsql.ResolveRangeBucketGridNativeMaxRows(tc.override); got != tc.want {
+				t.Errorf("ResolveRangeBucketGridNativeMaxRows(%d) = %d, want %d", tc.override, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveRangeBucketGridNativeMaxDensityUnits is the axis2 twin.
+func TestResolveRangeBucketGridNativeMaxDensityUnits(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override int64
+		want     int64
+	}{
+		{"positive override wins", 10, 10},
+		{"zero falls back to the real default", 0, 400_000_000},
+		{"negative falls back to the real default", -1, 400_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chsql.ResolveRangeBucketGridNativeMaxDensityUnits(tc.override); got != tc.want {
+				t.Errorf("ResolveRangeBucketGridNativeMaxDensityUnits(%d) = %d, want %d", tc.override, got, tc.want)
+			}
+		})
+	}
+}
