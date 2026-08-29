@@ -33,9 +33,39 @@ import (
 // [lowerHistogramNativeRoot] resolves it upstream through
 // [lowerExpHistogramValuedShape]'s own `*parser.UnaryExpr` producer
 // (histogram_native_unary.go), which composes under every wrapper that
-// already threads its argument through that same recogniser. This
-// lowerer keeps handling only the ordinary float-Value case below.
+// already threads its argument through that same recogniser.
+//
+// A MIXED float/histogram `or` operand (cerberus issue #2613, e.g.
+// `-(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))`)
+// IS checked here, first, before anything else: unlike the histogram-only
+// case, a mixed-or is not itself a recognised histogram-VALUED shape (its
+// row carries a live Value on some rows and live histogram fields on
+// others), so [lowerHistogramNativeRoot] never intercepts it, and this
+// function's own [guardedValueProjection] path below would silently drop
+// every histogram-shaped row via [mixedRowsFloatOnly] — the drop-family
+// treatment, wrong for unary minus's actual reference semantics (Prom's
+// UnaryExpr evaluator scales EVERY sample, float or histogram, in place;
+// see histogram_native_unary.go's doc comment for the vendored-fork
+// citation). Unary `-` over a mixed operand therefore reuses the SAME
+// scale fold the scalar `<mixed> * -1` shape already applies
+// (histogram_native_mixed_or_scale.go), which scales the Value column on
+// float-shaped rows and the five count-bearing histogram fields on
+// histogram-shaped rows identically, in one Project, with no
+// discriminator-keyed conditional needed (see that file's own doc
+// comment for why the two column sets are already disjoint in which row
+// shape reads them for real). Unary `+` is the identity, so it defers to
+// the mixed-or's own lowering unchanged, matching the pure-histogram
+// ADD case just above.
 func lowerUnary(u *parser.UnaryExpr, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
+	if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok {
+		switch u.Op {
+		case parser.ADD:
+			return lowerMixedExpHistogramSetOp(b, s, ctx)
+		case parser.SUB:
+			return lowerMulOrDivScaleOverMixedExpHistogramSetOp(b, chplan.OpMul, -1, true, s, ctx)
+		}
+		return nil, fmt.Errorf("promql: unsupported unary op %v", u.Op)
+	}
 	switch u.Op {
 	case parser.ADD:
 		// Unary `+` is the identity — lower the operand directly.

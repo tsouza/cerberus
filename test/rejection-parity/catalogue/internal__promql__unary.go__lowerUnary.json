@@ -8,6 +8,7 @@
       "rationale": "error-propagation wrapper (%w): the wrapped rejection is catalogued at its origin",
       "evidence": {
         "guard": [
+          "past returning if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok",
           "case parser.SUB of switch u.Op",
           "if err != nil"
         ],
@@ -25,11 +26,33 @@
       "rationale": "the parser yields only +/- unary operators",
       "evidence": {
         "guard": [
+          "if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok",
           "past exhaustive switch u.Op over [case parser.ADD; case parser.SUB]"
         ],
         "callers": [
           "lower",
           "lowerSubqueryOverUnary"
+        ]
+      }
+    },
+    {
+      "head": "promql",
+      "site": "internal/promql/unary.go:lowerUnary#fe35064b-2",
+      "message": "promql: unsupported unary op %v",
+      "class": "internal",
+      "rationale": "the parser yields only +/- unary operators, the same fact lowerUnary#fe35064b already rests on for the pre-existing exhaustive switch — this is the identical dead fallthrough restated for the mixed-`or` branch mixedExpHistogramSetOp's match adds (cerberus issue #2613): the inner `switch u.Op` here handles ADD and SUB explicitly and every other u.Op value is as unreachable here as it is in the pre-existing switch, since both switches dispatch the same parser-produced UnaryExpr.Op field.",
+      "evidence": {
+        "guard": [
+          "past returning if b, ok := mixedExpHistogramSetOp(u.Expr, s, ctx); ok",
+          "past exhaustive switch u.Op over [case parser.ADD; case parser.SUB]"
+        ],
+        "callers": [
+          "lower",
+          "lowerSubqueryOverUnary"
+        ],
+        "cited": [
+          "lowerUnary",
+          "mixedExpHistogramSetOp"
         ]
       }
     }

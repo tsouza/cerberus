@@ -1,0 +1,76 @@
+-- query.promql --
++(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query
+scope: full
+-- args --
+[0] int64 = 9
+[1] float64 = 0
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "demo_latency_exp_hist"
+[10] string = "demo.latency.exp.hist"
+[11] string = "demo.latency.exp/hist"
+[12] string = "demo.latency.exp_hist"
+[13] string = "demo.latency/exp/hist"
+[14] string = "demo.latency/exp_hist"
+[15] string = "demo.latency_exp.hist"
+[16] string = "demo.latency_exp_hist"
+[17] string = "demo/latency/exp/hist"
+[18] string = "demo/latency/exp_hist"
+[19] string = "demo/latency_exp_hist"
+[20] string = "demo_latency.exp.hist"
+[21] string = "demo_latency.exp_hist"
+[22] string = "demo_latency_exp.hist"
+[23] string = "2026-01-01 00:00:01.000000000"
+[24] int64 = 9
+[25] string = "2026-01-01 00:00:01.000000000"
+[26] int64 = 9
+[27] int64 = 300000000000
+[28] string = ""
+[29] int64 = 9
+[30] string = "service_name"
+[31] string = "service.name"
+[32] string = "service_name"
+[33] string = "service.name"
+[34] string = "service_name"
+[35] string = ""
+[36] string = "service_name"
+[37] string = "demo_latency_exp_hist"
+[38] string = "demo.latency.exp.hist"
+[39] string = "demo.latency.exp/hist"
+[40] string = "demo.latency.exp_hist"
+[41] string = "demo.latency/exp/hist"
+[42] string = "demo.latency/exp_hist"
+[43] string = "demo.latency_exp.hist"
+[44] string = "demo.latency_exp_hist"
+[45] string = "demo/latency/exp/hist"
+[46] string = "demo/latency/exp_hist"
+[47] string = "demo/latency_exp_hist"
+[48] string = "demo_latency.exp.hist"
+[49] string = "demo_latency.exp_hist"
+[50] string = "demo_latency_exp.hist"
+[51] string = "2026-01-01 00:00:01.000000000"
+[52] int64 = 9
+[53] string = "2026-01-01 00:00:01.000000000"
+[54] int64 = 9
+[55] int64 = 300000000000
+-- chplan --
+VectorSetOp op=or match=default
+  HistogramProjection project=[MetricName AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, 0 AS Value]
+    Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(MetricName, TimeUnix) AS MetricName, FnArgMax(Count, TimeUnix) AS Count, FnArgMax(Sum, TimeUnix) AS Sum, FnArgMax(Scale, TimeUnix) AS Scale, FnArgMax(ZeroCount, TimeUnix) AS ZeroCount, FnArgMax(PositiveOffset, TimeUnix) AS PositiveOffset, FnArgMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, FnArgMax(NegativeOffset, TimeUnix) AS NegativeOffset, FnArgMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+      Filter predicate=(((MetricName IN ("demo_latency_exp_hist", "demo.latency.exp.hist", "demo.latency.exp/hist", "demo.latency.exp_hist", "demo.latency/exp/hist", "demo.latency/exp_hist", "demo.latency_exp.hist", "demo.latency_exp_hist", "demo/latency/exp/hist", "demo/latency/exp_hist", "demo/latency_exp_hist", "demo_latency.exp.hist", "demo_latency.exp_hist", "demo_latency_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+        Scan(otel_metrics_exponential_histogram)
+  Project ["" AS MetricName, Attributes AS Attributes, FnNow64(9) AS TimeUnix, Value AS Value]
+    HistogramQuantileNative phi=0.5 groupBy=[Attributes AS Attributes]
+      Aggregate groupBy=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] funcs=[FnArgMax(Count, TimeUnix) AS Count, FnArgMax(Sum, TimeUnix) AS Sum, FnArgMax(Scale, TimeUnix) AS Scale, FnArgMax(ZeroCount, TimeUnix) AS ZeroCount, FnArgMax(PositiveOffset, TimeUnix) AS PositiveOffset, FnArgMax(PositiveBucketCounts, TimeUnix) AS PositiveBucketCounts, FnArgMax(NegativeOffset, TimeUnix) AS NegativeOffset, FnArgMax(NegativeBucketCounts, TimeUnix) AS NegativeBucketCounts]
+        Filter predicate=(((MetricName IN ("demo_latency_exp_hist", "demo.latency.exp.hist", "demo.latency.exp/hist", "demo.latency.exp_hist", "demo.latency/exp/hist", "demo.latency/exp_hist", "demo.latency_exp.hist", "demo.latency_exp_hist", "demo/latency/exp/hist", "demo/latency/exp_hist", "demo/latency_exp_hist", "demo_latency.exp.hist", "demo_latency.exp_hist", "demo_latency_exp.hist")) AND (TimeUnix <= FnToDateTime64("2026-01-01 00:00:01.000000000", 9))) AND (TimeUnix > (FnToDateTime64("2026-01-01 00:00:01.000000000", 9) - FnToIntervalNanosecond(300000000000))))
+          Scan(otel_metrics_exponential_histogram)
+-- sql --
+SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, `_setop_side`, max(`_setop_side` = 0) OVER (PARTITION BY mapSort(`Attributes`)) AS `_setop_has_left` FROM (((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 0 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, 1 AS `_setop_is_histogram` FROM (SELECT `MetricName` AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, toFloat64(?) AS `Value`, toFloat64(`Count`) AS `HistogramCount`, toFloat64(`Sum`) AS `HistogramSum`, toInt32(`Scale`) AS `HistogramScale`, toFloat64(0.) AS `HistogramZeroThreshold`, toFloat64(`ZeroCount`) AS `HistogramZeroCount`, toInt32(`PositiveOffset`) AS `HistogramPositiveOffset`, arrayMap(x -> toFloat64(x), `PositiveBucketCounts`) AS `HistogramPositiveBucketCounts`, toInt32(`NegativeOffset`) AS `HistogramNegativeOffset`, arrayMap(x -> toFloat64(x), `NegativeBucketCounts`) AS `HistogramNegativeBucketCounts` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`MetricName`, `TimeUnix`) AS `MetricName`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`))))) UNION ALL ((SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, `HistogramCount`, `HistogramSum`, `HistogramScale`, `HistogramZeroThreshold`, `HistogramZeroCount`, `HistogramPositiveOffset`, `HistogramPositiveBucketCounts`, `HistogramNegativeOffset`, `HistogramNegativeBucketCounts`, `_setop_is_histogram`, 1 AS `_setop_side` FROM (SELECT `MetricName`, `Attributes`, `TimeUnix`, `Value`, toFloat64(0) AS `HistogramCount`, toFloat64(0) AS `HistogramSum`, toInt32(0) AS `HistogramScale`, toFloat64(0) AS `HistogramZeroThreshold`, toFloat64(0) AS `HistogramZeroCount`, toInt32(0) AS `HistogramPositiveOffset`, emptyArrayFloat64() AS `HistogramPositiveBucketCounts`, toInt32(0) AS `HistogramNegativeOffset`, emptyArrayFloat64() AS `HistogramNegativeBucketCounts`, 0 AS `_setop_is_histogram` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, now64(?) AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes` AS `Attributes`, if(0.5 < 0, -inf, if(0.5 > 1, inf, if(`Count` = 0, nan, if(0.5 = 0, if(`_cerb_hq_first_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_first_populated`) + 1), if(`_cerb_hq_first_populated` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_first_populated` - length(`NegativeBucketCounts`) - 2)))), if(0.5 = 1, if(`_cerb_hq_last_populated` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_last_populated`)), if(`_cerb_hq_last_populated` = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_last_populated` - length(`NegativeBucketCounts`) - 1)))), if(`_cerb_hq_idx` = 0, if(isNaN(`Sum`), nan, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) = 0 AND `ZeroCount` = 0, 0., if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2))), if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) = length(`NegativeBucketCounts`) + 1, if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.), pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (if(length(`NegativeBucketCounts`) > 0 OR `ZeroCount` > 0, 1, 2) - length(`NegativeBucketCounts`) - 1)))))), if(`_cerb_hq_value_idx` <= length(`NegativeBucketCounts`), -pow(pow(2, pow(2, -`Scale`)), `NegativeOffset` + (length(`NegativeBucketCounts`) - `_cerb_hq_value_idx`) + 1 - (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]), if(`_cerb_hq_value_idx` = length(`NegativeBucketCounts`) + 1, if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.) + (if(length(`PositiveBucketCounts`) = 0 AND length(`NegativeBucketCounts`) > 0, 0., 0.) - if(length(`NegativeBucketCounts`) = 0 AND length(`PositiveBucketCounts`) > 0, 0., -0.)) * (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`], pow(pow(2, pow(2, -`Scale`)), `PositiveOffset` + (`_cerb_hq_value_idx` - length(`NegativeBucketCounts`) - 2) + (if(isNaN(`Sum`), (0.5 * `Count`) - (`_cerb_hq_count` - `_cerb_hq_buckets`[`_cerb_hq_idx`]), `_cerb_hq_count` - ((1 - 0.5) * `Count`))) / `_cerb_hq_buckets`[`_cerb_hq_value_idx`]))))))))) AS `Value` FROM (SELECT *, arrayFirstIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_first_populated`, arrayLastIndex(c -> c > 0, `_cerb_hq_buckets`) AS `_cerb_hq_last_populated` FROM (SELECT *, if(isNaN(`Sum`), if(length(`PositiveBucketCounts`) > 0, length(`NegativeBucketCounts`) + 1 + length(`PositiveBucketCounts`), if(`ZeroCount` > 0, length(`NegativeBucketCounts`) + 1, length(`NegativeBucketCounts`))), `_cerb_hq_idx`) AS `_cerb_hq_value_idx` FROM (SELECT *, toFloat64(least(if(isNaN(`Sum`), `_cerb_hq_cum`[`_cerb_hq_idx`], `_cerb_hq_revcum`[`_cerb_hq_idx`]), `Count`)) AS `_cerb_hq_count` FROM (SELECT *, if(isNaN(`Sum`), arrayFirstIndex(c -> c >= (0.5 * `Count`), `_cerb_hq_cum`), arrayLastIndex(c -> c >= ((1 - 0.5) * `Count`), `_cerb_hq_revcum`)) AS `_cerb_hq_idx` FROM (SELECT *, arrayCumSum(`_cerb_hq_buckets`) AS `_cerb_hq_cum`, arrayReverse(arrayCumSum(arrayReverse(`_cerb_hq_buckets`))) AS `_cerb_hq_revcum` FROM (SELECT *, arrayConcat(arrayReverse(`NegativeBucketCounts`), [`ZeroCount`], `PositiveBucketCounts`) AS `_cerb_hq_buckets` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, argMax(`Count`, `TimeUnix`) AS `Count`, argMax(`Sum`, `TimeUnix`) AS `Sum`, argMax(`Scale`, `TimeUnix`) AS `Scale`, argMax(`ZeroCount`, `TimeUnix`) AS `ZeroCount`, argMax(`PositiveOffset`, `TimeUnix`) AS `PositiveOffset`, argMax(`PositiveBucketCounts`, `TimeUnix`) AS `PositiveBucketCounts`, argMax(`NegativeOffset`, `TimeUnix`) AS `NegativeOffset`, argMax(`NegativeBucketCounts`, `TimeUnix`) AS `NegativeBucketCounts` FROM (SELECT * FROM `otel_metrics_exponential_histogram` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) WHERE (`TimeUnix` <= toDateTime64(?, ?)) AND (`TimeUnix` > (toDateTime64(?, ?) - toIntervalNanosecond(?)))) GROUP BY `Attributes`)))))))))))))) WHERE `_setop_side` = 0 OR `_setop_has_left` = 0

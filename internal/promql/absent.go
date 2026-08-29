@@ -104,9 +104,19 @@ func lowerAbsent(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 		// expression produce anything" posture the selector path uses;
 		// the range-mode StepGrid CrossJoin below fans the single
 		// verdict across the request's steps.
+		//
+		// lowerVectorSetOpOperand rather than a bare lower(): absent()
+		// only counts rows, never reads a Value/Histogram column, so any
+		// row shape the operand dispatcher produces is a valid input to
+		// the count() below — including the histogram-valued, mixed
+		// float/histogram `or` (cerberus #2613), and dropping-shape
+		// branches a bare lower() cannot reach on its own. Strictly
+		// additive over the previous plain lower() call: the dispatcher's
+		// own final fallback IS lower(), so every expr it used to handle
+		// still resolves identically.
 		innerCtx := ctx
 		innerCtx.step = 0
-		inner, err = lower(arg, s, innerCtx)
+		inner, err = lowerVectorSetOpOperand(arg, s, innerCtx)
 		if err != nil {
 			return nil, err
 		}
