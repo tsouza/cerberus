@@ -590,6 +590,52 @@ func TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB(t *testing.T) {
 	}
 }
 
+// TestSubqueryCallSubquery_MixedOr_LastOverTime_Pinned_ChDB is
+// TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB's MixedRowShape
+// sibling — the shape TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB
+// itself does NOT cover, because a bare-histogram `and` is intercepted by an
+// OLDER single-level recognizer before lowerSubqueryOverCallSubquery is ever
+// reached, while a MixedRowShape wideInner genuinely exercises this
+// function's own pin-cascade into wideCtx. Lowered at a deliberately WRONG
+// ambient anchor (evalTS+999h) with the correct evalTS pinned via `@` in the
+// query text — the results must be byte-identical to
+// TestSubqueryCallSubquery_MixedOr_LastOverTime_ChDB's unpinned ones,
+// proving the ambient time was never consulted for wideInner's own grid
+// either.
+func TestSubqueryCallSubquery_MixedOr_LastOverTime_Pinned_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	wrongAmbientTS := evalTS.Add(999 * time.Hour)
+
+	query := "last_over_time(((" + callSubqMixedHistMetric + ") or (" + callSubqMixedGaugeMetric + "))[2m:1m])[10m:1m] @ " + strconv.FormatInt(evalTS.Unix(), 10)
+	sqlStr, args := lowerAndEmit(t, query, s, wrongAmbientTS)
+
+	histRows := subqHistQueryRows(t, fixture, sqlStr, args)
+	anchors := callSubqOuterAnchors()
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, histRows, "h", anchor)
+		wantCount := float64(anchor.Sub(callSubqSeedBaseTS)/time.Minute) + 1
+		if row.cnt != wantCount || row.sum != wantCount || row.bucket1 != wantCount*2 {
+			t.Errorf("pinned series h anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (identical to the unpinned case — the wrong ambient anchor must never be consulted)",
+				anchor, row.cnt, row.sum, row.bucket1, wantCount, wantCount, wantCount*2)
+		}
+	}
+
+	floatRows := rangeSampleValueRows(t, fixture, sqlStr, args)
+	for _, anchor := range anchors {
+		want := float64(anchor.Sub(callSubqSeedBaseTS)/time.Minute) + 1
+		got, ok := floatRows["g"][anchor.Unix()]
+		if !ok {
+			t.Errorf("pinned series g anchor %v: no float row found", anchor)
+			continue
+		}
+		if got != want {
+			t.Errorf("pinned series g anchor %v: got %v, want %v (identical to the unpinned case)", anchor, got, want)
+		}
+	}
+}
+
 // TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB proves the
 // SELECT-family dispatch for resets / changes over a HistogramRowShape
 // wideInner (the `shape == chplan.HistogramRowShape` arm of

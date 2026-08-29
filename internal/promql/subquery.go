@@ -2929,7 +2929,44 @@ func lowerSubqueryOverCallSubquery(
 	// its full window on the inner spine.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
-	wideInner, err := lowerSubquery(&widened, s, ctx)
+
+	// A pinned `sub` (`@ <ts>`) fixes ITS OWN evaluation window regardless
+	// of the ambient ctx or query_range grid — cascade that fixed window
+	// into the ctx used to grid wideInner too, mirroring
+	// [subqueryGridCtx]'s own priority (a pin wins over both range mode
+	// and the ambient instant fill). Forcing wideCtx to look instant
+	// (step=0) is what makes that priority apply: [subqueryGridCtx] checks
+	// `subqueryPinned` against innerSub's OWN modifiers, which are almost
+	// never pinned themselves, so its `ctx.rangeMode()` branch would
+	// otherwise fire first and grid off the ambient request window instead.
+	//
+	// Left unshifted, an UNPINNED innerSub reaching the classic ambient-grid
+	// histogram-native continuation ([lowerHistogramNativeSubqueryInner])
+	// resolves its own window against ctx.start/ctx.end directly — wrong
+	// whenever `sub` overrides them — and [widenSubquerySpine]'s
+	// RangeBucketFanout arm deliberately never re-anchors a classic
+	// ambient-mode fanout (OuterRange == 0) once built, so nothing
+	// downstream ever corrects it. This is a safe no-op for a
+	// SampleRowShape wideInner (a plain RangeWindow): the caller's own
+	// widenSubquerySpine pass unconditionally overwrites a RangeWindow's
+	// Start/End/OuterRange regardless of what ctx built it with. Cerberus
+	// issue #2728's own investigation surfaced this via a MixedRowShape
+	// wideInner; the identical gap already existed in this composition's
+	// own bare HistogramRowShape case — it just never had Pinned+Mixed
+	// coverage (TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB
+	// only pins a pure-histogram `and`, which an OLDER single-level
+	// recognizer intercepts before this function is ever reached).
+	wideCtx := ctx
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if subqueryPinned(sub) && !anchor.End.IsZero() {
+		wideCtx.step = 0
+		wideCtx.end = anchor.End
+	}
+
+	wideInner, err := lowerSubquery(&widened, s, wideCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -2962,11 +2999,6 @@ func lowerSubqueryOverCallSubquery(
 			return nil, err
 		}
 		return dropExpHistogramSamples(wideInner, s), nil
-	}
-
-	anchor, err := subqueryAnchor(sub, ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	rw := &chplan.RangeWindow{
