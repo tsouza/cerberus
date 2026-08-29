@@ -13,7 +13,6 @@
         "callers": [
           "LowerMetadataRange",
           "lower",
-          "lowerAbsent",
           "lowerAggregate",
           "lowerClamp",
           "lowerCountValues",

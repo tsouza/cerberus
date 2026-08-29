@@ -4,9 +4,8 @@
       "head": "promql",
       "site": "internal/promql/binary.go:lowerVectorSetOp#4924e0ba",
       "message": "promql: 'or' between a float-valued and a histogram-valued operand is not supported; 'and'/'unless' support mixing them",
-      "class": "divergence",
-      "trigger_query": "absent(demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))",
-      "tracking_issue": 2613,
+      "class": "internal",
+      "rationale": "lowerVectorSetOp reaches this branch only when NEITHER of its own LHS/RHS operands was recognised as a Mixed shape by lowerVectorSetOpOperand (leftMixed/rightMixed both false) AND the OUTER BinaryExpr b itself was handed to lowerBinary/lowerVectorSetOp by a caller that never checked mixedExpHistogramSetOp(b, s, ctx) on b first — because mixedExpHistogramSetOp recognises exactly this shape (an `or` BinaryExpr whose two sides disagree on histogram-valuedness) regardless of where in the tree b sits, so any caller that pre-checks it before falling back to a bare lower() call would already have routed b through lowerMixedExpHistogramSetOp instead of ever reaching lowerBinary with it. Before cerberus issue #2613, absent()'s general argument branch, limitk()/limit_ratio()'s aggregate-argument branch (lowerLimitKInput), and unary `+`/`-` (lowerUnary) were the last three remaining callers that could hand lowerBinary a raw, unrecognised top-level `or` BinaryExpr this way — each called bare lower() (or, for limitk/limit_ratio, the histogram-only lowerExpHistogramValuedShape check alone) on their vector argument without first checking mixedExpHistogramSetOp on it. #2613 rewired all three through lowerVectorSetOpOperand (absent()) or an equivalent mixedExpHistogramSetOp check (lowerLimitKInput, lowerUnary), closing the last gaps: every remaining path that can reach lower() with a vector-typed expression either already excluded a mixed `or` shape upstream (see lower.go:lower#d33d0084's own rationale) or is now one of those three rewired callers. lowerRoot's own top-level dispatch (lowerHistogramNativeRoot) already covered every wrapper function reachable as the query root or a bare top-level subquery's inner expression (cerberus issue #2543) before #2613, so between that existing coverage and #2613's three closures, no wire-level PromQL query reaches this branch through this promql package's own current lowering surface any more.",
       "evidence": {
         "guard": [
           "past returning if err != nil",
@@ -18,9 +17,21 @@
         ],
         "callers": [
           "lowerBinary"
+        ],
+        "cited": [
+          "lower",
+          "lowerBinary",
+          "lowerExpHistogramValuedShape",
+          "lowerHistogramNativeRoot",
+          "lowerLimitKInput",
+          "lowerMixedExpHistogramSetOp",
+          "lowerRoot",
+          "lowerUnary",
+          "lowerVectorSetOp",
+          "lowerVectorSetOpOperand",
+          "mixedExpHistogramSetOp"
         ]
-      },
-      "since": "2026-08-25"
+      }
     },
     {
       "head": "promql",
