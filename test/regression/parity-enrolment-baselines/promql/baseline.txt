@@ -1,5 +1,6 @@
 abs_metric.txtar
 absent_aggregate_with_series.txtar
+absent_mixed_or.txtar
 absent_no_matchers.txtar
 absent_no_series.txtar
 absent_over_time_empty_window.txtar
@@ -397,6 +398,7 @@ last_over_time_regex_name.txtar
 limit_ratio_complement.txtar
 limit_ratio_exp_histogram_bare.txtar
 limit_ratio_half.txtar
+limit_ratio_mixed_or.txtar
 limitk_below_one_empty.txtar
 limitk_by_job_all_survive.txtar
 limitk_exp_histogram_bare.txtar
@@ -674,8 +676,10 @@ ts_of_max_over_time.txtar
 ts_of_min_over_time.txtar
 unary_minus_binary_lhs.txtar
 unary_minus_in_function.txtar
+unary_minus_mixed_or.txtar
 unary_minus_rate.txtar
 unary_minus_vector.txtar
+unary_plus_mixed_or.txtar
 unary_plus_vector.txtar
 up.txtar
 up_at_offset_combined.txtar

@@ -1,5 +1,8 @@
 -- query.promql --
 limitk(2, demo_latency_exp_hist or histogram_quantile(0.5, demo_latency_exp_hist))
+-- parity_exempt --
+reason: nondeterministic-selection
+detail: Same arbitrary-survivor contract as limitk_by_job_truncates.txtar — limitk(2, ...) keeps whichever series arrive first in the reference engine's own unspecified input iteration order (prometheus/promql/engine.go, LIMITK case), and cerberus's `row_number() OVER ()` has no ORDER BY either, so there is no shared contract for two independent implementations to agree on, mixed-or operand or not.
 -- args --
 [0] int64 = 9
 [1] float64 = 0
