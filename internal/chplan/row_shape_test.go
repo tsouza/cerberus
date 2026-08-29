@@ -168,6 +168,31 @@ func TestRowShapeOf_VectorSetOpFlags(t *testing.T) {
 	}
 }
 
+// TestRowShapeOf_FilterAndTopKMixedFlag pins the same Mixed flag on
+// *Filter and *TopK (cerberus issue #2613): limitk/limit_ratio (TopK) and
+// limit_ratio's own Filter wrapper both preserve a mixed float/histogram
+// input's row shape unchanged, since their own SELECT is always a bare
+// passthrough of whatever Input publishes — see each case's own doc
+// comment in row_shape.go. allNodeKinds() only exercises the zero-value
+// instance of each (both flags false), so this is these two nodes' only
+// coverage of the Mixed branch, mirroring
+// TestRowShapeOf_VectorSetOpFlags's identical role for *VectorSetOp.
+func TestRowShapeOf_FilterAndTopKMixedFlag(t *testing.T) {
+	t.Parallel()
+
+	stubInput := &chplan.Scan{Table: "otel_metrics_sum"}
+
+	filter := &chplan.Filter{Input: stubInput, Mixed: true}
+	if got := chplan.RowShapeOf(filter); got != chplan.MixedRowShape {
+		t.Errorf("RowShapeOf(Filter{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
+	}
+
+	topK := &chplan.TopK{Input: stubInput, K: 1, Mixed: true}
+	if got := chplan.RowShapeOf(topK); got != chplan.MixedRowShape {
+		t.Errorf("RowShapeOf(TopK{Mixed: true}) = %s, want %s", got, chplan.MixedRowShape)
+	}
+}
+
 // TestRowShapeString pins the names the failure messages above are written
 // against, including the answer for a value outside the declared set — a
 // forwarder reading a corrupt shape should say so rather than print an
