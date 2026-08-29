@@ -185,7 +185,24 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
 	}
+	return lowerSelectFnOverExpHistogramSubqueryInput(input, sub, shape.windowFn, s, ctx)
+}
 
+// lowerSelectFnOverExpHistogramSubqueryInput is
+// [lowerSelectFnOverExpHistogramSubquery] split at the one point that
+// actually varies by caller: everything from here on operates on input —
+// already gridCtx-lowered and already confirmed HistogramRowShape — with no
+// further dependence on HOW input was derived. cerberus issue #2724 reuses
+// this continuation directly for a further `and`/`unless`/`or` wrapping a
+// histogram-native (or mixed-or) subquery inner
+// (histogram_native_mixed_or_subquery_further_setop_range_fn.go): that
+// shape's own input comes from [lowerSubquery]'s ordinary dispatch
+// ([lowerSubqueryOverBinary], cerberus issue #2589) rather than
+// [lowerExpHistogramValuedShape], but once lowered it is byte-for-byte the
+// same thirteen-column HistogramRowShape contract this function's own
+// caller already produces, so the window fold itself needs no
+// caller-specific branch at all.
+func lowerSelectFnOverExpHistogramSubqueryInput(input chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -198,24 +215,24 @@ func lowerSelectFnOverExpHistogramSubquery(shape histogramSubquerySelectShape, s
 	histSchema.AggregationTemporalityColumn = ""
 
 	if ctx.rangeMode() && subqueryPinned(sub) {
-		windowed := selectFnOverSubqueryWindowed(shape.windowFn, input, histSchema)
+		windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return capSelectFnOverSubquery(
-			shape.windowFn,
+			windowFn,
 			&chplan.CrossJoin{Left: grid, Right: windowed},
 			&chplan.ColumnRef{Name: stepGridAnchorColumn},
 			histSchema,
 		), nil
 	}
 	if ctx.rangeMode() {
-		return lowerSelectFnOverSubqueryRange(shape.windowFn, input, sub.Range, anchor.Offset, histSchema, ctx), nil
+		return lowerSelectFnOverSubqueryRange(windowFn, input, sub.Range, anchor.Offset, histSchema, ctx), nil
 	}
-	windowed := selectFnOverSubqueryWindowed(shape.windowFn, input, histSchema)
+	windowed := selectFnOverSubqueryWindowed(windowFn, input, histSchema)
 	tsExpr := chplan.NowNano()
 	if !anchor.End.IsZero() {
 		tsExpr = windowRightBoundExpr(evalAnchor{End: anchor.End})
 	}
-	return capSelectFnOverSubquery(shape.windowFn, windowed, tsExpr, histSchema), nil
+	return capSelectFnOverSubquery(windowFn, windowed, tsExpr, histSchema), nil
 }
 
 // selectFnOverSubqueryWindowed builds the instant-mode (and pinned-broadcast,

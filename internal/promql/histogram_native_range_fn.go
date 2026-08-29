@@ -284,7 +284,18 @@ func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s s
 	if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: histogram subquery input is %T with %s row shape", input, chplan.RowShapeOf(input))
 	}
+	return lowerExpHistogramRangeFnOverSubqueryInput(input, sub, shape.windowFn, s, ctx)
+}
 
+// lowerExpHistogramRangeFnOverSubqueryInput is
+// [lowerExpHistogramRangeFnOverSubquery] split at the one point that
+// actually varies by caller — see
+// [lowerSelectFnOverExpHistogramSubqueryInput]'s identical doc for why: the
+// window fold below depends only on input already being a gridCtx-lowered,
+// HistogramRowShape thirteen-column relation, never on how it got that way.
+// Cerberus issue #2724 reuses this continuation for a further
+// `and`/`unless`/`or` wrapping a histogram-native subquery inner.
+func lowerExpHistogramRangeFnOverSubqueryInput(input chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -294,7 +305,7 @@ func lowerExpHistogramRangeFnOverSubquery(shape histogramSubqueryRangeShape, s s
 	// physical OTel row. The OTel temporality column is intentionally absent;
 	// the outer PromQL kernel operates on the published cumulative values.
 	histSchema.AggregationTemporalityColumn = ""
-	windowShape := histogramAggShape{windowRange: sub.Range, windowFn: shape.windowFn}
+	windowShape := histogramAggShape{windowRange: sub.Range, windowFn: windowFn}
 
 	// An @-pinned subquery is evaluated once even on query_range, then the
 	// same histogram is broadcast across the request grid.

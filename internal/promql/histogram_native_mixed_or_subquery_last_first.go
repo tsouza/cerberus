@@ -3,6 +3,8 @@ package promql
 import (
 	"fmt"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -78,7 +80,6 @@ import (
 // [lowerSumOrAvgMixedOrSubquerySelectFn] folds over for its own four
 // type-blind names.
 func lowerMixedOrSubqueryLastFirst(shape sumOrAvgMixedOrSubqueryShape, gridCtx lowerCtx, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
-	sub := shape.sub
 	mixedRel, err := lowerSumOrAvgOverMixedExpHistogramSetOp(shape.agg, shape.b, s, gridCtx)
 	if err != nil {
 		return nil, err
@@ -86,7 +87,15 @@ func lowerMixedOrSubqueryLastFirst(shape sumOrAvgMixedOrSubqueryShape, gridCtx l
 	if chplan.RowShapeOf(mixedRel) != chplan.MixedRowShape {
 		return nil, fmt.Errorf("promql: internal invariant violated: sum/avg-mixed-or subquery input is %T with %s row shape", mixedRel, chplan.RowShapeOf(mixedRel))
 	}
+	return lowerMixedOrSubqueryLastFirstInput(mixedRel, shape.sub, shape.windowFn, s, ctx)
+}
 
+// lowerMixedOrSubqueryLastFirstInput is [lowerMixedOrSubqueryLastFirst]
+// split at the one point that actually varies by caller — see
+// [lowerSelectFnOverExpHistogramSubqueryInput]'s identical doc for why.
+// Cerberus issue #2724 reuses this continuation for a further
+// `and`/`unless`/`or` wrapping a mixed-or subquery inner.
+func lowerMixedOrSubqueryLastFirstInput(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	anchor, err := subqueryAnchor(sub, ctx)
 	if err != nil {
 		return nil, err
@@ -95,10 +104,10 @@ func lowerMixedOrSubqueryLastFirst(shape sumOrAvgMixedOrSubqueryShape, gridCtx l
 	histSchema.AggregationTemporalityColumn = ""
 
 	if ctx.rangeMode() && !subqueryPinned(sub) {
-		return lowerMixedOrSubqueryLastFirstRange(shape, mixedRel, anchor, histSchema, s, ctx), nil
+		return lowerMixedOrSubqueryLastFirstRange(mixedRel, sub, windowFn, anchor, histSchema, s, ctx), nil
 	}
 
-	windowed := mixedLastFirstWindowed(shape.windowFn, mixedRel, histSchema, s)
+	windowed := mixedLastFirstWindowed(windowFn, mixedRel, histSchema, s)
 	if ctx.rangeMode() {
 		grid := &chplan.StepGrid{Start: ctx.start.UTC(), End: ctx.end.UTC(), Step: ctx.step}
 		return mixedLastFirstProjection(
@@ -121,17 +130,17 @@ func lowerMixedOrSubqueryLastFirst(shape sumOrAvgMixedOrSubqueryShape, gridCtx l
 // floor, same AnchorAlias / TimestampCol wiring), fed [mixedLastFirstAggs]
 // instead of [mixedPairCountAggs] so each bucket collapses to the single
 // argMax/argMin-selected row instead of a groupArray pair-verdict.
-func lowerMixedOrSubqueryLastFirstRange(shape sumOrAvgMixedOrSubqueryShape, mixedRel chplan.Node, anchor evalAnchor, histSchema, s schema.Metrics, ctx lowerCtx) chplan.Node {
+func lowerMixedOrSubqueryLastFirstRange(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, anchor evalAnchor, histSchema, s schema.Metrics, ctx lowerCtx) chplan.Node {
 	fanout := &chplan.RangeBucketFanout{
 		Input:          mixedRel,
 		Start:          ctx.start.UTC(),
 		End:            ctx.end.UTC(),
 		Step:           ctx.step,
-		Lookback:       shape.sub.Range,
+		Lookback:       sub.Range,
 		Offset:         anchor.Offset,
 		GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}},
 		GroupByAliases: []string{s.AttributesColumn},
-		AggFuncs:       mixedLastFirstAggs(shape.windowFn, histSchema),
+		AggFuncs:       mixedLastFirstAggs(windowFn, histSchema),
 		MinSamples:     stalenessMinSamples,
 		AnchorAlias:    stepGridAnchorColumn,
 		TimestampCol:   s.TimestampColumn,
