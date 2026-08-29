@@ -44,6 +44,7 @@
 package promql_test
 
 import (
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -433,6 +434,197 @@ func TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB(t *testing.T) {
 		if row.cnt != want || row.sum != want || row.bucket1 != want*2 {
 			t.Errorf("avg_over_time anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (average of the window's two samples)",
 				anchor, row.cnt, row.sum, row.bucket1, want, want, want*2)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_IrateIdelta_ChDB proves the FOLD-family
+// dispatch for irate / idelta over a HistogramRowShape wideInner: both
+// read only the window's LAST TWO samples with no boundary
+// extrapolation (histogramWindowSelectionFor's histogramWindowLastTwo),
+// so — like sum_over_time/avg_over_time, unlike rate/increase/delta —
+// their result is exact arithmetic: idelta = Count(T) - Count(T-1) = 1
+// at every anchor, irate = idelta / 60s.
+func TestSubqueryCallSubquery_HistAnd_IrateIdelta_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	ideltaSQL, ideltaArgs := lowerAndEmit(t, "idelta((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	ideltaRows := subqHistQueryRows(t, fixture, ideltaSQL, ideltaArgs)
+	if got, want := len(ideltaRows), len(anchors); got != want {
+		t.Fatalf("idelta(doubly-nested and): got %d rows, want %d: %+v", got, want, ideltaRows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, ideltaRows, "a", anchor)
+		if row.cnt != 1 || row.sum != 1 || row.bucket1 != 2 {
+			t.Errorf("idelta anchor %v: got Count=%v Sum=%v Bucket1=%v, want 1/1/2 (Count(T)-Count(T-1m), one minute apart)",
+				anchor, row.cnt, row.sum, row.bucket1)
+		}
+	}
+
+	irateSQL, irateArgs := lowerAndEmit(t, "irate((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	irateRows := subqHistQueryRows(t, fixture, irateSQL, irateArgs)
+	if got, want := len(irateRows), len(anchors); got != want {
+		t.Fatalf("irate(doubly-nested and): got %d rows, want %d: %+v", got, want, irateRows)
+	}
+	const wantIrate = 1.0 / 60.0
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, irateRows, "a", anchor)
+		if math.Abs(row.cnt-wantIrate) > 1e-9 || math.Abs(row.sum-wantIrate) > 1e-9 || math.Abs(row.bucket1-2*wantIrate) > 1e-9 {
+			t.Errorf("irate anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (idelta / 60s)",
+				anchor, row.cnt, row.sum, row.bucket1, wantIrate, wantIrate, 2*wantIrate)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_IncreaseDelta_ChDB proves the
+// FOLD-family dispatch for increase / delta over a HistogramRowShape
+// wideInner. Both apply reference's boundary-extrapolation factor (the
+// same machinery rate's own sibling test declines to hand-derive
+// exactly), so the check here is genuine-execution plus a
+// fold-consistency invariant a broken dispatch (or a broken per-field
+// scaling) would violate even without knowing the exact extrapolation
+// constant: the seed sets Sum and Bucket1 as an EXACT linear function of
+// Count at every raw sample (Sum=Count, Bucket1=2*Count), and every fold
+// this composition can apply — sum, average, subtraction, a scalar
+// extrapolation factor — is linear, so the SAME two relations must still
+// hold in the output regardless of the fold's magnitude.
+func TestSubqueryCallSubquery_HistAnd_IncreaseDelta_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	for _, fn := range []string{"increase", "delta"} {
+		sqlStr, args := lowerAndEmit(t, fn+"((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+		rows := subqHistQueryRows(t, fixture, sqlStr, args)
+		if got, want := len(rows), len(anchors); got != want {
+			t.Fatalf("%s(doubly-nested and): got %d rows, want %d: %+v", fn, got, want, rows)
+		}
+		for _, anchor := range anchors {
+			row := subqHistRowAt(t, rows, "a", anchor)
+			if row.cnt <= 0 {
+				t.Errorf("%s anchor %v: Count = %v, want > 0 (Count is monotonically increasing over the window)", fn, anchor, row.cnt)
+			}
+			if math.Abs(row.sum-row.cnt) > 1e-9 {
+				t.Errorf("%s anchor %v: Sum=%v, Count=%v — want equal (linear-fold invariant from the seed's Sum=Count)", fn, anchor, row.sum, row.cnt)
+			}
+			if math.Abs(row.bucket1-2*row.cnt) > 1e-9 {
+				t.Errorf("%s anchor %v: Bucket1=%v, want 2*Count=%v (linear-fold invariant from the seed's Bucket1=2*Count)", fn, anchor, row.bucket1, 2*row.cnt)
+			}
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_TsOfFirstLastOverTime_ChDB proves the
+// SELECT-family dispatch for ts_of_first_over_time / ts_of_last_over_time
+// over a HistogramRowShape wideInner: each reports the UNIX-second
+// timestamp of the earliest/latest wideInner sample in the outer anchor's
+// window, which — same window shape as first_over_time/last_over_time —
+// is exactly (T-1m) / T.
+func TestSubqueryCallSubquery_HistAnd_TsOfFirstLastOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	firstSQL, firstArgs := lowerAndEmit(t, "ts_of_first_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	firstRows := rangeSampleValueRows(t, fixture, firstSQL, firstArgs)
+	for _, anchor := range anchors {
+		want := float64(anchor.Add(-time.Minute).Unix())
+		got, ok := firstRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("ts_of_first_over_time: no row for anchor %v: %+v", anchor, firstRows)
+		}
+		if got != want {
+			t.Errorf("ts_of_first_over_time anchor %v: got %v, want %v (the earliest in-window sample, one minute before)", anchor, got, want)
+		}
+	}
+
+	lastSQL, lastArgs := lowerAndEmit(t, "ts_of_last_over_time((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	lastRows := rangeSampleValueRows(t, fixture, lastSQL, lastArgs)
+	for _, anchor := range anchors {
+		want := float64(anchor.Unix())
+		got, ok := lastRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("ts_of_last_over_time: no row for anchor %v: %+v", anchor, lastRows)
+		}
+		if got != want {
+			t.Errorf("ts_of_last_over_time anchor %v: got %v, want %v (the latest in-window sample, the anchor itself)", anchor, got, want)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB proves the
+// `@`-pinned code path: buildOuterRangeSubqueryFanout's End comes from
+// subqueryAnchor(grid.outerSub, ctx), which for a LITERAL `@ <ts>` on the
+// outer subquery bracket must resolve from the AST's own pinned
+// timestamp, never from the ambient LowerAt eval time. Lowered here at a
+// deliberately WRONG ambient anchor (evalTS+999h) with the correct
+// evalTS pinned via `@` in the query text — the results must be
+// byte-identical to TestSubqueryCallSubquery_HistAnd_LastOverTime_ChDB's
+// unpinned ones, proving the ambient time was never consulted.
+func TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	wrongAmbientTS := evalTS.Add(999 * time.Hour)
+
+	query := "last_over_time(((" + callSubqHistAndAMetric + ") and (" + callSubqHistAndBMetric + "))[2m:1m])[10m:1m] @ " + strconv.FormatInt(evalTS.Unix(), 10)
+	sqlStr, args := lowerAndEmit(t, query, s, wrongAmbientTS)
+
+	rows := subqHistQueryRows(t, fixture, sqlStr, args)
+	anchors := callSubqOuterAnchors()
+	if got, want := len(rows), len(anchors); got != want {
+		t.Fatalf("last_over_time(doubly-nested and) @ pinned: got %d rows, want %d: %+v", got, want, rows)
+	}
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, rows, "a", anchor)
+		wantCount := float64(anchor.Sub(callSubqSeedBaseTS)/time.Minute) + 1
+		if row.cnt != wantCount || row.sum != wantCount || row.bucket1 != wantCount*2 {
+			t.Errorf("pinned anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (identical to the unpinned case — the wrong ambient anchor must never be consulted)",
+				anchor, row.cnt, row.sum, row.bucket1, wantCount, wantCount, wantCount*2)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB proves the
+// SELECT-family dispatch for resets / changes over a HistogramRowShape
+// wideInner (the `shape == chplan.HistogramRowShape` arm of
+// [lowerHistogramOrMixedCallSubqueryInput] — a DIFFERENT dispatch line
+// than TestSubqueryCallSubquery_MixedOr_ResetsChanges_ChDB's MixedRowShape
+// case). Every window holds exactly the two consecutive samples
+// (T-1m, T), both from a monotonically increasing counter, so resets must
+// read exactly 0 and changes exactly 1 at every anchor.
+func TestSubqueryCallSubquery_HistAnd_ResetsChanges_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqHistAndSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	resetsSQL, resetsArgs := lowerAndEmit(t, "resets((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	resetsRows := rangeSampleValueRows(t, fixture, resetsSQL, resetsArgs)
+	for _, anchor := range anchors {
+		got, ok := resetsRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("resets: no row for anchor %v: %+v", anchor, resetsRows)
+		}
+		if got != 0 {
+			t.Errorf("resets anchor %v: got %v, want 0 (monotonically increasing Count, no counter reset)", anchor, got)
+		}
+	}
+
+	changesSQL, changesArgs := lowerAndEmit(t, "changes((("+callSubqHistAndAMetric+") and ("+callSubqHistAndBMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	changesRows := rangeSampleValueRows(t, fixture, changesSQL, changesArgs)
+	for _, anchor := range anchors {
+		got, ok := changesRows["a"][anchor.Unix()]
+		if !ok {
+			t.Fatalf("changes: no row for anchor %v: %+v", anchor, changesRows)
+		}
+		if got != 1 {
+			t.Errorf("changes anchor %v: got %v, want 1 (exactly one consecutive pair in a two-sample window, and it differs)", anchor, got)
 		}
 	}
 }
