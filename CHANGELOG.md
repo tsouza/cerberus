@@ -4,6 +4,16 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.18.1] — 2026-08-29
+
+### Fixed
+
+- **promql:** compose resets/changes over sum/avg-wrapped mixed-or subquery (#2718)
+- **solver,engine:** gate the per-rung predictive bypass on observed evidence (#2717)
+- **ci:** widen the compat comparer's per-query deadline for the floor lane (#2713)
+- **promql:** wire the mixed-or recognizer into absent()/limitk/limit_ratio/unary (#2711)
+- **engine:** apportion route-B's RangeBucketGridNative bounds by shard count (#2712)
+
 ## [v1.18.0] — 2026-08-28
 
 ### Added
