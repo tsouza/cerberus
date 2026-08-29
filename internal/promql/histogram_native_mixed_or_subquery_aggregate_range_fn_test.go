@@ -19,11 +19,12 @@ func sumOrAvgMixedOrSubqueryQuery(fn, aggOp string) string {
 	return fn + "((" + aggOp + " by (series) ((latency_exp_hist) or (num_cpus)))[5m:1m])"
 }
 
-// sumOrAvgMixedOrSelectFnNames / sumOrAvgMixedOrFoldFnNames partition
-// [selectFoldFamilyNames] into the eleven names this file's own
-// production code (histogram_native_mixed_or_subquery_aggregate_range_fn.go)
-// now composes and the four that deliberately still reject — see that
-// file's own "Scope" doc.
+// sumOrAvgMixedOrSelectFnNames / sumOrAvgMixedOrFoldFnNames /
+// sumOrAvgMixedOrResetsChangesNames partition [selectFoldFamilyNames]
+// into the thirteen names this file's own production code
+// (histogram_native_mixed_or_subquery_aggregate_range_fn.go and its
+// resets/changes sibling) now composes and the two that deliberately
+// still reject — see that file's own "Scope" doc.
 var (
 	sumOrAvgMixedOrSelectFnNames = []string{
 		"count_over_time", "present_over_time", "ts_of_first_over_time", "ts_of_last_over_time",
@@ -31,15 +32,18 @@ var (
 	sumOrAvgMixedOrFoldFnNames = []string{
 		"rate", "increase", "delta", "irate", "idelta", "sum_over_time", "avg_over_time",
 	}
+	sumOrAvgMixedOrResetsChangesNames = []string{
+		"resets", "changes",
+	}
 	sumOrAvgMixedOrStillRejectedNames = []string{
-		"last_over_time", "first_over_time", "resets", "changes",
+		"last_over_time", "first_over_time",
 	}
 )
 
 // TestSumOrAvgMixedOrSubquery_Composes proves `<fn>((sum by (series)
 // ((h) or (f)))[5m:1m])` lowers successfully — no error — for every one
-// of the eleven names this file's own production code now composes, for
-// both `sum` and `avg`.
+// of the thirteen names this file's own production code now composes,
+// for both `sum` and `avg`.
 func TestSumOrAvgMixedOrSubquery_Composes(t *testing.T) {
 	t.Parallel()
 
@@ -47,6 +51,7 @@ func TestSumOrAvgMixedOrSubquery_Composes(t *testing.T) {
 	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 
 	names := append(append([]string{}, sumOrAvgMixedOrSelectFnNames...), sumOrAvgMixedOrFoldFnNames...)
+	names = append(names, sumOrAvgMixedOrResetsChangesNames...)
 	for _, aggOp := range []string{"sum", "avg"} {
 		for _, fn := range names {
 			t.Run(aggOp+"/"+fn, func(t *testing.T) {
@@ -65,9 +70,9 @@ func TestSumOrAvgMixedOrSubquery_Composes(t *testing.T) {
 	}
 }
 
-// TestSumOrAvgMixedOrSubquery_StillRejects pins that the four names this
+// TestSumOrAvgMixedOrSubquery_StillRejects pins that the two names this
 // file's own production code deliberately does not compose
-// (last_over_time / first_over_time / resets / changes — see
+// (last_over_time / first_over_time — see
 // histogram_native_mixed_or_subquery_aggregate_range_fn.go's own "Scope"
 // doc) still reject with the SAME pre-existing message, unchanged by this
 // composition.
@@ -151,5 +156,38 @@ func TestSumOrAvgMixedOrSubquery_PinnedRangeComposes(t *testing.T) {
 				t.Fatalf("lower(%q): want a non-nil plan", query)
 			}
 		})
+	}
+}
+
+// TestSumOrAvgMixedOrSubquery_ResetsChangesRangeFanoutComposes proves
+// resets/changes compose under a TRUE query_range fan-out (no `@` pin) —
+// unlike this file's own FOLD family
+// (TestSumOrAvgMixedOrSubquery_RangeFanoutStillRejects), which still
+// rejects that shape. See
+// histogram_native_mixed_or_subquery_resets_changes.go's own top-level
+// doc for why resets/changes reach all three grid modes where the FOLD
+// family only reaches two.
+func TestSumOrAvgMixedOrSubquery_ResetsChangesRangeFanoutComposes(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
+
+	for _, aggOp := range []string{"sum", "avg"} {
+		for _, fn := range sumOrAvgMixedOrResetsChangesNames {
+			t.Run(aggOp+"/"+fn, func(t *testing.T) {
+				t.Parallel()
+				query := sumOrAvgMixedOrSubqueryQuery(fn, aggOp)
+				expr := parseExprExp(t, query)
+				node, err := promql.LowerAtRange(context.Background(), expr, s, start, end, time.Minute)
+				if err != nil {
+					t.Fatalf("lower(%q) over query_range: want success, got error: %v", query, err)
+				}
+				if node == nil {
+					t.Fatalf("lower(%q) over query_range: want a non-nil plan", query)
+				}
+			})
+		}
 	}
 }
