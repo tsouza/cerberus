@@ -79,14 +79,18 @@ import (
 //
 // # Scope
 //
-// Composes for eleven of the fifteen SELECT/FOLD-family names:
+// Composes for thirteen of the fifteen SELECT/FOLD-family names:
 // count_over_time, present_over_time, ts_of_first_over_time,
-// ts_of_last_over_time (type-blind, [lowerSumOrAvgMixedOrSubquerySelectFn])
-// and rate, increase, delta, irate, idelta, sum_over_time, avg_over_time
-// (window-purity-filtered, [lowerSumOrAvgMixedOrSubqueryFoldFn]).
+// ts_of_last_over_time (type-blind, [lowerSumOrAvgMixedOrSubquerySelectFn]),
+// rate, increase, delta, irate, idelta, sum_over_time, avg_over_time
+// (window-purity-filtered, [lowerSumOrAvgMixedOrSubqueryFoldFn]), and
+// resets, changes (type-aware sequential merge, cerberus issue #2615 —
+// see histogram_native_mixed_or_subquery_resets_changes.go's own doc for
+// why that pair needs its own machinery rather than either of the two
+// composers above, and why it reaches all three grid modes where the
+// seven-name FOLD family only reaches two).
 //
-// Four names deliberately stay on the pre-existing rejection, for two
-// distinct reasons documented at their own exclusion points:
+// Two names deliberately stay on the pre-existing rejection:
 //
 //   - last_over_time / first_over_time select ONE raw sample verbatim
 //     (whichever type it happens to be) rather than folding a window, so
@@ -95,13 +99,7 @@ import (
 //     columns through the same argMax/argMin selection
 //     ([nativeExpHistBareAggsDirectional] only carries the nine histogram
 //     columns today) — real new machinery, not a two-line extension.
-//   - resets / changes genuinely interleave-merge the window's float and
-//     histogram samples by timestamp in reference (funcResets/funcChanges),
-//     counting a type FLIP between consecutive samples as an automatic
-//     reset — they do not drop on window mix at all. That needs a
-//     type-aware sequential comparison this file's existing
-//     [expHistogramPairCountAggs] machinery (built for an all-histogram
-//     window only) does not have.
+//     Tracked as cerberus issue #2714.
 //
 // The FOLD family's window-purity test ([windowPurityUnless]) is sound
 // today only for a SINGLE window per output series — an instant query, or
@@ -112,7 +110,10 @@ import (
 // to be scoped PER OUTER ANCHOR rather than once across the whole subquery
 // grid — real new machinery ([chplan.RangeBucketFanout] has no primitive
 // for a cross-relation per-window EXISTS test today), not a limitation of
-// the approach itself.
+// the approach itself. Tracked as cerberus issue #2715 — note this file's
+// own resets/changes sibling reaches true fan-out just fine, precisely
+// because it needs no window-purity test at all (see that file's own
+// top-level doc).
 func sumOrAvgMixedOrSubqueryOuterFnRecognized(c *parser.Call, s schema.Metrics, ctx lowerCtx) (sumOrAvgMixedOrSubqueryShape, bool) {
 	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 		return sumOrAvgMixedOrSubqueryShape{}, false
@@ -130,6 +131,13 @@ func sumOrAvgMixedOrSubqueryOuterFnRecognized(c *parser.Call, s schema.Metrics, 
 	}
 	switch c.Func.Name {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
+		return sumOrAvgMixedOrSubqueryShape{sub: sub, agg: agg, b: b, windowFn: c.Func.Name}, true
+	case resetsWindowFn, changesWindowFn:
+		// Unlike the FOLD family below, resets/changes need no window-wide
+		// purity test at all (see histogram_native_mixed_or_subquery_resets_changes.go's
+		// own doc), so all three grid modes — instant, `@`-pinned
+		// broadcast, and true query_range fan-out — compose here with no
+		// restriction.
 		return sumOrAvgMixedOrSubqueryShape{sub: sub, agg: agg, b: b, windowFn: c.Func.Name}, true
 	case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:
 		// See this file's own top-level doc, "Scope": the window-purity
@@ -185,6 +193,8 @@ func lowerSumOrAvgMixedOrSubqueryOuterFn(shape sumOrAvgMixedOrSubqueryShape, s s
 	switch shape.windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
 		return lowerSumOrAvgMixedOrSubquerySelectFn(shape, gridCtx, s, ctx)
+	case resetsWindowFn, changesWindowFn:
+		return lowerMixedOrSubqueryResetsOrChanges(shape, gridCtx, s, ctx)
 	default:
 		return lowerSumOrAvgMixedOrSubqueryFoldFn(shape, gridCtx, s, ctx)
 	}
