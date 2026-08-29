@@ -75,6 +75,22 @@ type Decision struct {
 	CumulativeD time.Duration // D = Σ spine lookback (Range / Lookback)
 	OuterRange  time.Duration // OuterRange of the outermost spine
 	Step        time.Duration // the request grid step
+
+	// PerRungPredictive is true exactly when this route came from ModeAuto's
+	// per-rung bypass (planner.go's perRung branch, gated on
+	// minAnchorsForPerRungShard): F is unmeasurable for a per-rung carrier
+	// (carrierGeometry.perRungIntermediate), so admission read the anchor
+	// axis alone rather than MinFanout/MinAnchorPairs, which cannot see how
+	// much DATA backs the grid.
+	//
+	// This is a pure, additive readout of the SAME classification Plan
+	// already computed — it changes no routing behavior by itself. It exists
+	// so a caller (internal/engine's per-rung admission refinement) can tell
+	// "routed because a real cost threshold was cleared" apart from "routed
+	// because geometry alone cleared a bar that cannot see cost", and apply
+	// evidence-based scrutiny only to the latter population. False on every
+	// other route and on every non-route.
+	PerRungPredictive bool
 }
 
 // StrategyShardedTimeslice is the only decomposition strategy emitted:

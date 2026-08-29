@@ -596,6 +596,38 @@ wall-clock-duration guess, and it applies independent of, and in addition to,
 the Planner's own eligibility signals. Pinned in
 `internal/solver/avb_chdb_lane_test.go`'s `TestSolver_AvsB_ChDB_LiveEdgeBoundary`.
 
+### Per-rung predictive admission refinement
+
+The classic-histogram native ladder (`chplan.RangeBucketGridNative`) reports a
+flat `F = 1` — its per-`(series, le rung)` amplification is unmeasurable at
+plan time (its own doc, `internal/solver/planner.go`'s
+`minAnchorsForPerRungShard`) — so `auto`'s per-rung branch admits it on the
+anchor axis alone, bypassing both `MinFanout` and `MinAnchorPairs`, whenever
+`N >= minAnchorsForPerRungShard`. Anchor count is pure grid geometry: it says
+nothing about how much data backs the grid, and issue #2709 found a real case
+where that bites — a 24h/1m dashboard panel over a low-cardinality metric
+clears the anchor floor by 10x+ and predictively shards a nearly-empty table,
+paying `K` concurrent ClickHouse queries' contention for no benefit. #2709
+also shows geometry alone cannot fix this: a genuine incident the bypass
+exists to catch (#2677) has FEWER anchors than that false positive, so no
+anchor-only threshold can separate the two populations.
+
+`internal/engine/per_rung_admission.go`'s `PerRungAdmissionLearner` closes the
+gap with evidence instead: it watches what a `Decision.PerRungPredictive`
+route's cursor ACTUALLY, CLEANLY drains (a cancelled/errored drain is never
+recorded — see the file's own doc for why), and once a plan shape has
+produced a small enough composed result on `perRungEvidenceMinObservations`
+consecutive clean dispatches, it downgrades that shape's FUTURE per-rung
+routes back to route A until a fresh, larger drain is observed or the
+evidence ages past `perRungEvidenceTTL`. It never refuses a plan the Planner
+judged eligible and never touches `ModeSharded` or the failure-driven memo
+above — it only ever downgrades an ALREADY-`PerRungPredictive` route once
+evidence says the shape does not need it, falling back to today's
+anchor-only default with no evidence. `Engine.PerRungAdmission` is nil
+(feature off, byte-unchanged) unless wired from `cmd/cerberus`
+(`buildPerRungAdmission`), gated by the same `CERBERUS_SOLVER_ADAPTIVE_ENABLED`
+flag as the route memo above.
+
 ### Configuration
 
 On by default. It is the only half of the routing decision that reacts to what
