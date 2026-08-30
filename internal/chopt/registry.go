@@ -395,7 +395,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: true,
-		Doc:        "opt eligible query_range changes()/resets()/irate()/idelta() shapes onto a single lagInFrame/leadInFrame annotation pass with fixed-size per-anchor accumulators, retiring the array-fold fan-out (client-side SQL shape, no version floor, auto-enabled; bit-identical to the fan-out by construction)",
+		Doc:        "opt eligible query_range changes/resets/irate/idelta shapes onto a lagInFrame/leadInFrame annotation pass with fixed-size accumulators, retiring the array-fold fan-out (client-side, no version floor, auto-enabled, bit-identical to the fan-out)",
 	},
 }
 

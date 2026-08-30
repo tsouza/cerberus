@@ -3126,68 +3126,10 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		return broadcast, nil
 	case gridFanout:
 		// In range mode, fan the range function across the request's step
-		// grid: each anchor in [start, end] (spaced by step) emits one row
-		// per series with the per-anchor function value. The emitter
-		// already supports this via OuterRange + Step (the matrix path used
-		// by subqueries); we just need to flip the switch when LowerAtRange
-		// threaded a non-zero step. Without this, `rate(m[5m])` over
-		// query_range degenerates to a single anchor at end_ts and the
-		// matrix pivot only sees one sample per series — the same root
-		// cause as the bare-selector range-mode bug Pool-AK is fixing.
-		applyStepGridFanout(rw, ctx)
-
-		// BOOT-WIRED native dispatch (PURE polymorphic — no branching here):
-		// hand the fan-out RangeWindow to the boot-wired rate strategy. The
-		// decision of WHETHER the native path is active was made ONCE at boot
-		// (the ts_grid_range feature) and is encoded in the injected
-		// ctx.lowerers.Rate impl — there is NO feature-flag / version read AND
-		// NO nil/presence check here. The strategy ALWAYS returns a valid
-		// lowering: the native impl emits timeSeriesRateToGrid for a
-		// shape-eligible rate window (rate func, materialised grid, plain
-		// Scan/Filter input) and delegates to its embedded fan-out fallback for
-		// any other shape; the fan-out impl returns this RangeWindow unchanged.
-		// All intrinsic SHAPE / AST-node dispatch lives INSIDE the impl. The
-		// native node carries the same Func/Range/Step/Start/End/Offset/columns/
-		// GroupBy as the fan-out RangeWindow — only the emitter differs — and
-		// produces the identical per-(series, anchor) row shape (proven
-		// byte-identical on the chDB substrate; see
-		// test/spec/promql/native_rate_range_step.txtar and the dual-emit
-		// parity test).
-		//
-		// For a non-rate window (increase / delta / *_over_time) the strategy
-		// returns rw unchanged, so node stays rw and the last/first_over_time
-		// name-preservation wrap below applies exactly as before. For rate the
-		// returned node IS the lowering (native or fan-out RangeWindow); rate
-		// drops `__name__`, so it never matches the name-preservation wrap and
-		// flows through as-is.
-		//
-		// The function family is selected by c.Func.Name — pure AST/func
-		// dispatch, NOT a feature/version branch (that decision is baked into
-		// WHICH concrete strategy boot wired into each field). Each strategy is
-		// always non-nil (withDefaults), always returns a valid lowering, and
-		// keeps its own intrinsic shape-eligibility inside the impl. rate /
-		// changes / resets / irate / idelta each route to their own boot-wired
-		// strategy (changes/resets/irate/idelta may resolve to the lagInFrame
-		// annotation shape, chplan.RangeWindow.LagAdjacency — issue #2759 —
-		// layered beneath changes/resets' own native ts_grid strategy); every
-		// other range fn (increase / delta / *_over_time / ...) keeps the fan-out
-		// rw via the rate strategy's pass-through (those funcs have no native
-		// timeSeries*ToGrid aggregate or lagInFrame annotation proven equivalent
-		// yet).
-		switch c.Func.Name {
-		case "changes":
-			node = ctx.lowerers.Changes.LowerChanges(rw, s)
-		case "resets":
-			node = ctx.lowerers.Resets.LowerResets(rw, s)
-		case "deriv":
-			node = ctx.lowerers.Deriv.LowerDeriv(rw, s)
-		case "irate":
-			node = ctx.lowerers.Irate.LowerIrate(rw, s)
-		case "idelta":
-			node = ctx.lowerers.Idelta.LowerIdelta(rw, s)
-		default:
-			node = ctx.lowerers.Rate.LowerRate(rw, s)
-		}
+		// grid — see lowerRangeVectorCallFanout's own doc for the full
+		// rationale (split out to keep this switch under the maintidx
+		// budget as changes/resets/irate/idelta strategies were added).
+		node = lowerRangeVectorCallFanout(c, s, ctx, rw)
 	case gridSingleAnchor:
 	}
 	// `last_over_time` and `first_over_time` preserve `__name__`
@@ -3222,6 +3164,76 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 			&chplan.ColumnRef{Name: s.ValueColumn}), nil
 	}
 	return node, nil
+}
+
+// lowerRangeVectorCallFanout builds the query_range gridFanout lowering:
+// fan the range function across the request's step grid, then dispatch
+// c.Func.Name to its boot-wired strategy. Split out of lowerRangeVectorCall
+// to keep that function's cyclomatic complexity under the maintidx budget
+// as changes/resets/irate/idelta strategies were added (issue #2759).
+//
+// Fanning: each anchor in [start, end] (spaced by step) emits one row per
+// series with the per-anchor function value. The emitter already supports
+// this via OuterRange + Step (the matrix path used by subqueries); we just
+// need to flip the switch when LowerAtRange threaded a non-zero step.
+// Without this, `rate(m[5m])` over query_range degenerates to a single
+// anchor at end_ts and the matrix pivot only sees one sample per series —
+// the same root cause as the bare-selector range-mode bug Pool-AK is
+// fixing.
+//
+// BOOT-WIRED native dispatch (PURE polymorphic — no branching here): hand
+// the fan-out RangeWindow to the boot-wired strategy for c.Func.Name. The
+// decision of WHETHER a native/annotation path is active was made ONCE at
+// boot (the relevant chopt feature) and is encoded in the injected
+// ctx.lowerers.* impl — there is NO feature-flag / version read AND NO
+// nil/presence check here. Every strategy ALWAYS returns a valid lowering:
+// the native/annotation impl emits its own node for a shape-eligible window
+// (rate/changes/resets: timeSeries*ToGrid for a shape-eligible window;
+// changes/resets/irate/idelta: chplan.RangeWindow.LagAdjacency for a
+// shape-eligible window) and delegates to its embedded fan-out fallback for
+// any other shape; the fan-out impl returns this RangeWindow unchanged. All
+// intrinsic SHAPE / AST-node dispatch lives INSIDE the impl. A native node
+// carries the same Func/Range/Step/Start/End/Offset/columns/GroupBy as the
+// fan-out RangeWindow — only the emitter differs — and produces the
+// identical per-(series, anchor) row shape (proven byte-identical on the
+// chDB substrate; see test/spec/promql/native_rate_range_step.txtar and the
+// dual-emit parity tests).
+//
+// For a non-rate window (increase / delta / *_over_time) the Rate strategy
+// returns rw unchanged, so the caller's node stays rw and the
+// last/first_over_time name-preservation wrap applies exactly as before.
+// For rate the returned node IS the lowering (native or fan-out
+// RangeWindow); rate drops `__name__`, so it never matches the
+// name-preservation wrap and flows through as-is.
+//
+// The function family is selected by c.Func.Name — pure AST/func dispatch,
+// NOT a feature/version branch (that decision is baked into WHICH concrete
+// strategy boot wired into each field). Each strategy is always non-nil
+// (withDefaults) and keeps its own intrinsic shape-eligibility inside the
+// impl. rate / changes / resets / irate / idelta each route to their own
+// boot-wired strategy (changes/resets/irate/idelta may resolve to the
+// lagInFrame annotation shape, chplan.RangeWindow.LagAdjacency, layered
+// beneath changes/resets' own native ts_grid strategy); every other range
+// fn (increase / delta / *_over_time / ...) keeps the fan-out rw via the
+// rate strategy's pass-through (those funcs have no native
+// timeSeries*ToGrid aggregate or lagInFrame annotation proven equivalent
+// yet).
+func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
+	applyStepGridFanout(rw, ctx)
+	switch c.Func.Name {
+	case "changes":
+		return ctx.lowerers.Changes.LowerChanges(rw, s)
+	case "resets":
+		return ctx.lowerers.Resets.LowerResets(rw, s)
+	case "deriv":
+		return ctx.lowerers.Deriv.LowerDeriv(rw, s)
+	case "irate":
+		return ctx.lowerers.Irate.LowerIrate(rw, s)
+	case "idelta":
+		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
+	default:
+		return ctx.lowerers.Rate.LowerRate(rw, s)
+	}
 }
 
 // nativeTSGridRateNode returns a chplan.RangeWindowGridNative when rw is a
