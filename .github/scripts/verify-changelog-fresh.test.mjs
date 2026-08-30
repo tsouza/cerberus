@@ -53,6 +53,22 @@ test('extractChangelogSection does not cross-match a version that is a PREFIX of
   assert.equal(extractChangelogSection(cl, '1.19.0'), null);
 });
 
+test('extractChangelogSection treats every regex metacharacter in appVersion literally', () => {
+  // appVersion is read straight out of Chart.yaml (readAppVersion) with no
+  // format validation before reaching here, so a malformed value must never
+  // be able to warp the compiled heading pattern — each of these must match
+  // ONLY its own exact, literal heading text, and must not throw.
+  for (const version of ['1.1(9.0', '1.1*9.0', '1\\19.0', '1.19.0)', '1[9].0']) {
+    const heading = `## [v${version}] — 2026-08-30`;
+    const cl = `${heading}\n\n### Fixed\n\n- **x:** ok\n`;
+    assert.doesNotThrow(() => extractChangelogSection(cl, version), `version ${JSON.stringify(version)} must not throw`);
+    assert.match(extractChangelogSection(cl, version), /ok/, `version ${JSON.stringify(version)} must match its own heading`);
+    // A DIFFERENT literal string must not accidentally satisfy the pattern
+    // (e.g. if a metacharacter were left unescaped and matched too broadly).
+    assert.equal(extractChangelogSection(`## [vSOMETHING-ELSE] — 2026-08-30\n`, version), null);
+  }
+});
+
 test('expectedBullets renders exactly what SECTIONS-listed commits would produce, dropping unlisted types', () => {
   const parsed = parseCommits([
     'fix(ci): relieve contention',

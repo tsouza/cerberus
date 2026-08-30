@@ -60,6 +60,15 @@ export function readAppVersion(chartText) {
   return m[1].trim();
 }
 
+// Escapes every regex metacharacter, not just `.` — appVersion is read from
+// Chart.yaml (readAppVersion), untrusted input as far as this function is
+// concerned, and a partial escape (the earlier `.replace(/\./g, ...)` this
+// replaced) still lets any OTHER metacharacter — a stray `\`, `(`, `*` — warp
+// the compiled pattern instead of matching literally.
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Extracts one `## [vX.Y.Z] — <date>` section's body out of a changelog: from
  * that exact heading (any date) to the next `## [` heading, or EOF. Returns
@@ -68,7 +77,7 @@ export function readAppVersion(chartText) {
  * a `## [vX]` section, or nothing was generated for it at all).
  */
 export function extractChangelogSection(text, appVersion) {
-  const headingRe = new RegExp(`^## \\[v${appVersion.replace(/\./g, '\\.')}\\].*$`, 'm');
+  const headingRe = new RegExp(`^## \\[v${escapeRegExp(appVersion)}\\].*$`, 'm');
   const m = headingRe.exec(text);
   if (!m) return null;
   const start = m.index + m[0].length;
