@@ -36,6 +36,26 @@
 // (.github/scripts/lib/golden-shards.mjs), where it was MEASURED at 629s in
 // one process against 231s at four legs.
 //
+// A SECOND partition (cerberus#2737): internal/<ql>'s own hand-written
+// *_test.go suite. SPEC_SHARD_INDEX/COUNT above only ever partitioned the
+// TXTAR-fixture-driven walks (TestRoundTripChDB / TestLower) — every OTHER
+// top-level test in either package ran in FULL, redundantly, on every leg.
+// That suite's own growth (internal/promql crossed ~2000 new chDB-backed
+// test lines during the v1.19.0 cycle's composability campaign) blew a real
+// release-gate leg's timeout even after accounting for the fixture corpus
+// being properly split — one leg's SHARE of the corpus had finished in
+// 205s while the SAME leg's copy of the unpartitioned suite alone measured
+// past 23 real minutes locally. [listTestNames] enumerates every top-level
+// test both packages declare (authoritative — `go test -list`, not a
+// source-file regex scan that could miss one), [runFilterFor] hash-
+// partitions everything except the two SELF_SHARDING_TESTS entries
+// (which own their OWN corpus split and must run on every leg), and
+// [legCommands] wires the result in as an extra `-run` flag. See
+// chdb-roundtrip.test.mjs's own completeness tests for the safety net a
+// `-run`-regex partition needs: a leg that silently narrows to nothing
+// reports green over an empty walk, the exact failure class every other
+// shard in this file already guards against.
+//
 // Two levels of fan-out (tsouza/cerberus#2629)
 // ---------------------------------------------------------------------------
 // FANOUT is the IN-RUNNER level: N processes sharing one runner's cores. It
@@ -73,6 +93,7 @@
 // node: builtins only — no npm deps, no setup-node needed.
 
 import process from 'node:process';
+import { spawnSync } from 'node:child_process';
 import { error, notice, log, group } from './lib/gh.mjs';
 import { runLegBuffered } from './lib/spawn-tagged.mjs';
 
@@ -133,6 +154,127 @@ const SPEC_SHARD_COUNT_ENV = 'SPEC_SHARD_COUNT';
 export const HEADS = Object.keys(FANOUT);
 
 /**
+ * Top-level test names, keyed by ql, that already own their OWN corpus
+ * partition via spec.ShardFromEnv (test/spec/promql's TestRoundTripChDB and
+ * internal/promql's TestLower — the only two callers, confirmed by grepping
+ * for spec.ShardFromEnv across both packages) and so must be included in
+ * EVERY leg's -run filter below rather than hash-partitioned like the rest
+ * of the suite. Partitioning one of these would either drop its own
+ * SPEC_SHARD_INDEX/COUNT-driven walk out of the legs that don't draw it —
+ * walking none of ITS corpus on those legs, the exact "leg reports green
+ * over nothing" failure class spec.WalkShard's own fatal check exists to
+ * catch — or, on the legs that DO draw it, leave its corpus split doing
+ * exactly what it already does; there is no scenario where partitioning
+ * helps and one where it silently breaks, so these are simply exempted.
+ */
+const SELF_SHARDING_TESTS = {
+  promql: ['TestLower', 'TestRoundTripChDB'],
+};
+
+/**
+ * A stable, dependency-free 32-bit FNV-1a hash. Not the SAME partition as
+ * test/spec/shard.go's ShardOf — that hashes TXTAR fixture ids, this hashes
+ * Go test function names, a completely independent corpus — so there is no
+ * need for bit-for-bit parity with Go's hash/fnv package, only for this
+ * function's own determinism run to run (irrelevant here anyway: this
+ * corpus is a per-invocation `go test -list` snapshot, not committed data
+ * that must reproduce identically across toolchains). FNV-1a is still the
+ * right choice on its own merits: no dependency, no seed, trivial to audit.
+ */
+function fnv1a32(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** The 1-based shard `name` belongs to when the corpus is split `count` ways. */
+function shardOfName(name, count) {
+  if (count <= 1) return 1;
+  return (fnv1a32(name) % count) + 1;
+}
+
+/**
+ * Partitions `names` (assumed to already exclude every SELF_SHARDING_TESTS
+ * entry — see [runFilterFor]) into the slice global leg `index` of `count`
+ * owns, by a hash of each name — the same "hash the stable id, not a
+ * position in a sorted list" reasoning test/spec/shard.go's own ShardOf doc
+ * comment gives: a positional split re-assigns roughly half the corpus every
+ * time a test is added or removed anywhere but the end, so a leg's own
+ * membership — and wall-clock — would jitter run to run for reasons with no
+ * diff to explain them. A hash of the name is a pure function of that ONE
+ * test: a hundred new tests leave every existing test on the leg it was
+ * already on, and the new ones spread evenly across every leg.
+ */
+export function partitionTestNames(names, index, count) {
+  if (count <= 1) return names;
+  return names.filter((n) => shardOfName(n, count) === index);
+}
+
+/**
+ * The `-run` regex selecting global leg `index` of `count`'s share of
+ * `names` — every SELF_SHARDING_TESTS entry for `ql` unconditionally
+ * (present in every leg — see that const's own doc), plus this leg's
+ * hash-partitioned slice of everything else. Names are valid Go identifiers
+ * (`[A-Za-z0-9_]+`, enforced by [listTestNames]'s own filter), so no
+ * alternation member needs escaping.
+ *
+ * Anchored on both ends (`^...$`) so a name that is a PREFIX of another
+ * (`TestFoo` vs `TestFooBar`) never cross-matches — `go test -run`'s own
+ * semantics do this per `/`-separated path segment already for subtests,
+ * but two DISTINCT top-level test names sharing a prefix are not subtests
+ * of each other and must not share a match.
+ */
+export function runFilterFor(names, ql, index, count) {
+  const always = SELF_SHARDING_TESTS[ql] ?? [];
+  const alwaysSet = new Set(always);
+  const partitioned = partitionTestNames(
+    names.filter((n) => !alwaysSet.has(n)),
+    index,
+    count,
+  );
+  const selected = [...always, ...partitioned];
+  return `^(${selected.join('|')})$`;
+}
+
+/**
+ * Enumerates every top-level Test function `go test` would run across BOTH
+ * of a head's packages (`./test/spec/<ql>/...` and `./internal/<ql>/...`) —
+ * the exact pair [legCommands] runs together in one invocation, so the same
+ * `-run` regex has to cover names from either package. `go test -list`
+ * rather than a source-file regex scan: it is the authoritative enumeration
+ * (respects build tags, handles every legal function-signature spelling)
+ * where a hand-rolled scan of *_test.go files would silently miss a test
+ * behind an unusual signature or a tag this invocation's own TAGS does not
+ * select — exactly the "leg silently walks less than it should" failure
+ * class this whole partition exists to avoid, not reintroduce.
+ *
+ * Reuses [warmupCommand]'s already-warm build cache (this always runs AFTER
+ * it — see main()), so listing costs a link, not a compile.
+ *
+ * Throws on a non-zero exit rather than returning a partial list: a failed
+ * enumeration silently producing an empty or truncated corpus is the same
+ * "reports green over less than it should" shape as everything else this
+ * file's sharding logic guards against.
+ */
+export function listTestNames({ ql, tags, go = 'go' }) {
+  const res = spawnSync(go, ['test', '-tags', tags, '-list', '.*', `./test/spec/${ql}/...`, `./internal/${ql}/...`], {
+    encoding: 'utf8',
+  });
+  if (res.status !== 0) {
+    throw new Error(`listing ${ql} test names failed (exit ${res.status}): ${res.stderr || res.stdout}`);
+  }
+  const names = new Set();
+  for (const line of res.stdout.split('\n')) {
+    const t = line.trim();
+    if (/^Test[A-Za-z0-9_]*$/.test(t)) names.add(t);
+  }
+  return [...names];
+}
+
+/**
  * The commands one head's leg runs, fan-out expanded.
  *
  * `outerIndex`/`outerCount` name the cross-runner shard this process owns
@@ -152,26 +294,27 @@ export const HEADS = Object.keys(FANOUT);
  * would run both packages of every leg at once and the real concurrency would
  * be 2N — double what the fan-out count says, and past the core count.
  */
-export function legCommands({ ql, tags, go = 'go', outerIndex = 1, outerCount = 1 }) {
+export function legCommands({ ql, tags, go = 'go', outerIndex = 1, outerCount = 1, testNames = [] }) {
   const fanOut = FANOUT[ql];
   const totalLegs = fanOut * outerCount;
-  const argv = [
-    go,
-    'test',
-    '-tags',
-    tags,
-    '-count=1',
-    '-p',
-    '1',
-    `-timeout=${GO_TEST_TIMEOUT_MINUTES}m`,
-    `./test/spec/${ql}/...`,
-    `./internal/${ql}/...`,
-  ];
-  if (totalLegs <= 1) return [{ name: ql, argv, env: {} }];
+  const baseArgv = [go, 'test', '-tags', tags, '-count=1', '-p', '1', `-timeout=${GO_TEST_TIMEOUT_MINUTES}m`];
+  const packages = [`./test/spec/${ql}/...`, `./internal/${ql}/...`];
+  if (totalLegs <= 1) return [{ name: ql, argv: [...baseArgv, ...packages], env: {} }];
   return Array.from({ length: fanOut }, (_, i) => {
     const globalIndex = (outerIndex - 1) * fanOut + i + 1;
     const name =
       outerCount > 1 ? `${ql} shard ${outerIndex}/${outerCount} leg ${i + 1}/${fanOut}` : `${ql} ${i + 1}/${fanOut}`;
+    // testNames partitions internal/<ql>'s OWN hand-written test suite
+    // across legs too (cerberus#2737) — SPEC_SHARD_INDEX/COUNT below only
+    // ever partitioned the TXTAR-fixture-driven walks (TestRoundTripChDB /
+    // TestLower), so every OTHER top-level test ran in full, redundantly,
+    // on every leg. Empty testNames (the two logql/traceql heads, whose
+    // FANOUT is 1 and never reach this branch, plus any caller that hasn't
+    // enumerated yet) means no -run filter at all — the pre-#2737 behaviour.
+    const argv =
+      testNames.length > 0
+        ? [...baseArgv, `-run=${runFilterFor(testNames, ql, globalIndex, totalLegs)}`, ...packages]
+        : [...baseArgv, ...packages];
     return {
       name,
       argv,
@@ -263,10 +406,6 @@ async function main() {
   }
 
   const go = process.env.GO ?? 'go';
-  const legs = legCommands({ ql, tags, go, outerIndex, outerCount });
-  const outerNotice = outerCount > 1 ? `, outer shard ${outerIndex}/${outerCount}` : '';
-  notice(`roundtrip ${ql}: ${legs.length} leg(s)${outerNotice}, ${GO_TEST_TIMEOUT_MINUTES}m per-process timeout`);
-
   const started = Date.now();
 
   const warmup = warmupCommand({ ql, tags, go });
@@ -278,6 +417,23 @@ async function main() {
       process.exit(1);
     }
   }
+
+  // Enumerating AFTER the warmup build reuses its warm cache (a link, not a
+  // compile) and only when FANOUT[ql] > 1 — the sole reason to partition at
+  // all. cerberus#2737.
+  let testNames = [];
+  if (FANOUT[ql] > 1) {
+    try {
+      testNames = listTestNames({ ql, tags, go });
+    } catch (e) {
+      error(`roundtrip ${ql}: ${e.message}`);
+      process.exit(1);
+    }
+  }
+
+  const legs = legCommands({ ql, tags, go, outerIndex, outerCount, testNames });
+  const outerNotice = outerCount > 1 ? `, outer shard ${outerIndex}/${outerCount}` : '';
+  notice(`roundtrip ${ql}: ${legs.length} leg(s)${outerNotice}, ${GO_TEST_TIMEOUT_MINUTES}m per-process timeout`);
 
   const results = await Promise.all(legs.map(runLegBuffered));
   const elapsedSeconds = Math.round((Date.now() - started) / 1000);
