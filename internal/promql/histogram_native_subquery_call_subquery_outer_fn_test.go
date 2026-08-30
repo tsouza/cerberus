@@ -216,7 +216,11 @@ func TestLowerOuterFn2_UnmatchedNameLeavesMidGridUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LowerAtRange: %v", err)
 	}
-	for _, g := range outerFn2NestedGrids(plan) {
+	grids := outerFn2NestedGrids(plan)
+	if len(grids) == 0 {
+		t.Fatalf("no OuterRange-mode grid node found — the drop path no longer carries the MID relation at all, so this test would pass without asserting anything")
+	}
+	for _, g := range grids {
 		if g.outerRange != outerFn2TestOuterRange {
 			t.Errorf("%s outerRange = %s, want %s (the un-widened bracket width — an unmatched name must not re-anchor the MID grid)",
 				g.kind, g.outerRange, outerFn2TestOuterRange)
