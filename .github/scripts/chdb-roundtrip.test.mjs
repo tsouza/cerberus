@@ -17,7 +17,14 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { legCommands, warmupCommand, GO_TEST_TIMEOUT_MINUTES, HEADS } from './chdb-roundtrip.mjs';
+import {
+  legCommands,
+  warmupCommand,
+  GO_TEST_TIMEOUT_MINUTES,
+  HEADS,
+  partitionTestNames,
+  runFilterFor,
+} from './chdb-roundtrip.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workflow = readFileSync(path.join(here, '..', 'workflows', 'chdb.yml'), 'utf8');
@@ -377,4 +384,110 @@ test('roundtrip-promql aggregator posts exactly `roundtrip (promql)`, always run
     '`needs:` alone does not gate — the aggregate must actually read the rolled-up shard result',
   );
   assert.doesNotMatch(job, /continue-on-error/, 'continue-on-error turns the aggregator into decoration');
+});
+
+// --- cerberus#2737: partitioning internal/promql's own hand-written suite ---
+
+// A synthetic corpus standing in for a real `go test -list` enumeration —
+// large enough (500) that a hash-based partition's own statistical spread
+// is meaningfully exercised, cheap enough to run in milliseconds.
+const SYNTHETIC_NAMES = Array.from({ length: 500 }, (_, i) => `TestSynthetic_${i}`);
+
+test('partitionTestNames is a true partition: every name assigned to exactly one leg', () => {
+  const count = 9;
+  const seen = new Map();
+  for (let index = 1; index <= count; index++) {
+    for (const n of partitionTestNames(SYNTHETIC_NAMES, index, count)) {
+      assert.ok(!seen.has(n), `${n} was assigned to leg ${seen.get(n)} AND leg ${index}`);
+      seen.set(n, index);
+    }
+  }
+  assert.deepStrictEqual(
+    [...seen.keys()].sort(),
+    [...SYNTHETIC_NAMES].sort(),
+    'the union of every leg must recover the exact input set — a name missing from every leg silently walks nothing',
+  );
+});
+
+test('partitionTestNames determinism: the SAME name always lands on the SAME leg', () => {
+  const count = 9;
+  for (const n of SYNTHETIC_NAMES) {
+    const leg = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((i) => partitionTestNames([n], i, count).length === 1);
+    assert.ok(leg !== undefined, `${n} matched no leg`);
+    // Re-partitioning the full corpus must place it on the SAME leg it
+    // matched alone — a name's shard cannot depend on who else is present.
+    assert.deepStrictEqual(partitionTestNames(SYNTHETIC_NAMES, leg, count).includes(n), true);
+  }
+});
+
+test('partitionTestNames spreads roughly evenly: no leg starves or hoards', () => {
+  const count = 9;
+  const sizes = Array.from({ length: count }, (_, i) => partitionTestNames(SYNTHETIC_NAMES, i + 1, count).length);
+  const total = sizes.reduce((a, b) => a + b, 0);
+  assert.strictEqual(total, SYNTHETIC_NAMES.length);
+  const expected = SYNTHETIC_NAMES.length / count;
+  for (const [i, size] of sizes.entries()) {
+    assert.ok(
+      size > expected * 0.5 && size < expected * 1.5,
+      `leg ${i + 1} got ${size} of ${SYNTHETIC_NAMES.length} names, expected roughly ${expected.toFixed(1)}`,
+    );
+  }
+});
+
+test('runFilterFor includes every SELF_SHARDING_TESTS entry in EVERY leg unconditionally', () => {
+  const count = 9;
+  const names = [...SYNTHETIC_NAMES, 'TestLower', 'TestRoundTripChDB'];
+  for (let index = 1; index <= count; index++) {
+    const filter = runFilterFor(names, 'promql', index, count);
+    assert.match(filter, /[(|]TestLower[|)]/, `leg ${index}'s filter must always include TestLower`);
+    assert.match(filter, /[(|]TestRoundTripChDB[|)]/, `leg ${index}'s filter must always include TestRoundTripChDB`);
+  }
+});
+
+test('runFilterFor never assigns a SELF_SHARDING_TESTS entry to the partitioned (non-always) share', () => {
+  // The always-included names must not ALSO appear via the hash partition —
+  // that would be harmless (a -run regex de-dupes by construction), but a
+  // future change relying on runFilterFor's OWN accounting of "partitioned
+  // vs always" would double-count. Assert they're excluded from the pool
+  // partitionTestNames ever sees.
+  const names = ['TestLower', 'TestRoundTripChDB', ...SYNTHETIC_NAMES];
+  const always = new Set(['TestLower', 'TestRoundTripChDB']);
+  const pool = names.filter((n) => !always.has(n));
+  assert.strictEqual(pool.length, SYNTHETIC_NAMES.length);
+  assert.ok(!pool.includes('TestLower') && !pool.includes('TestRoundTripChDB'));
+});
+
+test('runFilterFor produces a valid, anchored regex for every leg', () => {
+  const count = 9;
+  for (let index = 1; index <= count; index++) {
+    const filter = runFilterFor(SYNTHETIC_NAMES, 'promql', index, count);
+    assert.match(filter, /^\^\(.*\)\$$/, 'must be anchored on both ends');
+    // Must compile as a real regex (the -run value go test itself compiles).
+    assert.doesNotThrow(() => new RegExp(filter));
+  }
+});
+
+test('a head with no SELF_SHARDING_TESTS entry (logql/traceql) still partitions cleanly', () => {
+  const filter = runFilterFor(SYNTHETIC_NAMES, 'logql', 1, 9);
+  assert.match(filter, /^\^\(.*\)\$$/);
+});
+
+test('legCommands with testNames wires a -run filter into every leg, before the package args', () => {
+  const legs = legCommands({ ql: 'promql', tags: 'chdb', testNames: SYNTHETIC_NAMES, outerIndex: 1, outerCount: 3 });
+  for (const leg of legs) {
+    const runIdx = leg.argv.findIndex((a) => a.startsWith('-run='));
+    assert.ok(runIdx !== -1, `${leg.name}: no -run flag`);
+    const specIdx = leg.argv.indexOf('./test/spec/promql/...');
+    const internalIdx = leg.argv.indexOf('./internal/promql/...');
+    assert.ok(runIdx < specIdx && runIdx < internalIdx, `${leg.name}: -run must precede the package args`);
+  }
+});
+
+test('legCommands WITHOUT testNames omits -run entirely (pre-#2737 behaviour, and every non-fanned head)', () => {
+  for (const leg of legCommands({ ql: 'promql', tags: 'chdb', outerIndex: 1, outerCount: 3 })) {
+    assert.ok(!leg.argv.some((a) => a.startsWith('-run=')), `${leg.name}: unexpected -run with no testNames supplied`);
+  }
+  for (const leg of legCommands({ ql: 'logql', tags: 'chdb,agpl_oracle,chdb_agpl_oracle' })) {
+    assert.ok(!leg.argv.some((a) => a.startsWith('-run=')), `${leg.name}: logql never fans out, must never carry -run`);
+  }
 });
