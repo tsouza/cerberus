@@ -2200,6 +2200,25 @@ func RowsUnboundedPrecedingToCurrentRow() Frag {
 	}
 }
 
+// RowsCurrentRowToUnboundedFollowing returns a Frag rendering the window
+// frame clause "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING" — the
+// forward-looking sibling of RowsUnboundedPrecedingToCurrentRow.
+//
+// A lead-style function (leadInFrame) reads an offset AHEAD of the current
+// row, and a window function can only see rows the FRAME itself admits: under
+// RowsUnboundedPrecedingToCurrentRow the frame's own upper bound IS the
+// current row, so any forward offset always falls outside it and the
+// function returns its out-of-frame default on every row, never the actual
+// next row (verified against chDB — every row read the DateTime64 zero
+// default). RowsCurrentRowToUnboundedFollowing is the complementary frame
+// that actually admits the rows ahead, exactly as
+// RowsUnboundedPrecedingToCurrentRow admits the rows behind for lagInFrame.
+func RowsCurrentRowToUnboundedFollowing() Frag {
+	return func(b *Builder) {
+		b.sb.WriteString("ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING")
+	}
+}
+
 // Star returns a Frag rendering "*" — the unqualified wildcard for
 // SELECT *. Use QualStar for the qualified "<table>.*" form.
 func Star() Frag {

@@ -887,6 +887,15 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // mechanism, so that narrowing is expressed HERE — reading it only where a
 // native rate lowerer is being built makes "recollapse without a native grid"
 // unrepresentable rather than merely unlikely.
+//
+// laginframe_adjacency (issue #2759) is a second non-independent knob, but in
+// the opposite direction from recollapse: it narrows changes/resets' FALLBACK
+// (the arm a shape-ineligible or sub-25.9 server lands on), not their native
+// arm, and it is irate/idelta's ONLY non-fan-out strategy since those two have
+// no timeSeries*ToGrid member at all. Unlike every ts_grid_* feature it carries
+// no version floor (chopt.AlwaysAvailable) and no experimental-setting gate, so
+// it composes with the version-gated native features purely via which
+// Fallback each Native*Lowerer embeds.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	if optSet.Has(chopt.FeatureTSGridRange) {
@@ -902,15 +911,34 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.Staleness = promql.FanoutStalenessLowerer{}
 	}
+	// laginframe_adjacency (issue #2759) layers BENEATH changes/resets' own
+	// native ts_grid strategy, exactly like ts_grid_recollapse layers inside
+	// ts_grid_range above: it is the improved fan-out a shape-ineligible or
+	// sub-25.9 server falls back to, never a competitor to the native path.
+	var changesFallback promql.ChangesLowerer = promql.FanoutChangesLowerer{}
+	var resetsFallback promql.ResetsLowerer = promql.FanoutResetsLowerer{}
+	if optSet.Has(chopt.FeatureLagInFrameAdjacency) {
+		changesFallback = promql.LagAdjacencyChangesLowerer{Fallback: changesFallback}
+		resetsFallback = promql.LagAdjacencyResetsLowerer{Fallback: resetsFallback}
+	}
 	if optSet.Has(chopt.FeatureTSGridChanges) {
-		l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+		l.Changes = promql.NativeChangesLowerer{Fallback: changesFallback}
 	} else {
-		l.Changes = promql.FanoutChangesLowerer{}
+		l.Changes = changesFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResets) {
-		l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+		l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback}
 	} else {
-		l.Resets = promql.FanoutResetsLowerer{}
+		l.Resets = resetsFallback
+	}
+	// irate/idelta have no native timeSeries*ToGrid member (issue #2759's own
+	// motivation): laginframe_adjacency is their only non-fan-out strategy.
+	if optSet.Has(chopt.FeatureLagInFrameAdjacency) {
+		l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
+		l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
+	} else {
+		l.Irate = promql.FanoutIrateLowerer{}
+		l.Idelta = promql.FanoutIdeltaLowerer{}
 	}
 	if optSet.Has(chopt.FeatureTSGridDeriv) {
 		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}

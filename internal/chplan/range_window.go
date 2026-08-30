@@ -276,6 +276,33 @@ type RangeWindow struct {
 	// (#1027 / #1048 / #1056 / #1059 / #1080 / #1088 / #1089 / #1098) into
 	// an enforced plan-build invariant rather than a per-emitter memory.
 	InstantScanBounded bool
+
+	// LagAdjacency asks the matrix-shape (OuterRange > 0) emitter to render
+	// changes / resets / irate / idelta via ONE sorted lagInFrame/leadInFrame
+	// annotation pass over Input plus fixed-size per-anchor accumulators,
+	// instead of the groupArray + arraySort + arrayPopBack/arrayPopFront
+	// array fold (cerberus issue #2759). Set only by the boot-wired
+	// promql.LagAdjacency{Changes,Resets,Irate,Idelta}Lowerer strategies —
+	// never read as a per-query feature flag — and only for the four Func
+	// values those strategies own; every other Func ignores it.
+	//
+	// The array-fold path re-derives each adjacent (prev, curr) sample pair
+	// once per COVERING ANCHOR (up to Range/Step+1 times for one pair), since
+	// the pair only exists inside the per-anchor groupArray. The annotation
+	// pass instead computes each raw sample's (prev_ts, prev_val) ONCE, via a
+	// PARTITION BY <series key> ORDER BY ts, value ROWS BETWEEN UNBOUNDED
+	// PRECEDING AND CURRENT ROW window, and carries the pair through the
+	// existing sample-anchor fan-out (sampleAnchorFanoutFrag) unchanged; the
+	// per-(series, anchor) reduction becomes a fixed-size accumulator
+	// (sumIf for changes/resets, argMaxIf for irate/idelta) instead of an
+	// O(window) array. See chsql/range_window_lag_adjacency.go for the emit
+	// side and internal/chplan/sliceinvariant.go's RangeWindow entry for why
+	// this remains slice-invariant despite reading a window function.
+	//
+	// false (the default) keeps the unchanged array-fold emission — the
+	// permanent, always-available fallback the FeatureLagInFrameAdjacency
+	// chopt kill-switch resolves to.
+	LagAdjacency bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -447,6 +474,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		}
 	}
 	if r.InstantScanBounded != o.InstantScanBounded {
+		return false
+	}
+	if r.LagAdjacency != o.LagAdjacency {
 		return false
 	}
 	if r.VariantColumn != o.VariantColumn || len(r.Variants) != len(o.Variants) {

@@ -178,6 +178,9 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		if v.Identity {
 			b.WriteString(" identity=true")
 		}
+		if v.LagAdjacency {
+			b.WriteString(" lagAdjacency=true")
+		}
 		if len(v.Variants) > 0 {
 			vs := make([]string, len(v.Variants))
 			for i, a := range v.Variants {
