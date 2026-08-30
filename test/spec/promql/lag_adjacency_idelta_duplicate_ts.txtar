@@ -33,7 +33,9 @@ INSERT INTO otel_metrics_gauge VALUES
     ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 5.0),
     ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 10.0);
 -- expected_rows --
-[]
+[
+  [{"host": "a"}, "2026-01-01T00:05:00Z", "2026-01-01T00:05:00Z", 5]
+]
 -- args --
 [0] string = "service_name"
 [1] string = "service.name"
