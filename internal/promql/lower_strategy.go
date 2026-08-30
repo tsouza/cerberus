@@ -53,6 +53,24 @@ type RateLowerer interface {
 	LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// IncreaseLowerer lowers a range-mode increase(<counter>[range]) RangeWindow
+// to a chplan node. It ALWAYS returns a valid lowering: the native impl
+// reuses rate's own timeSeriesRateToGrid aggregate (multiplied back by the
+// window seconds at emit time — see chsql.nativeGridValueExpr) for a
+// shape-eligible window and delegates to its embedded fan-out fallback for
+// any other shape; the fan-out impl returns the generic RangeWindow directly.
+// The shape eligibility (increase-over-counter with a materialised grid and a
+// plain Scan/Filter input) is intrinsic and lives inside the implementation;
+// it is NOT a feature-flag branch. Mirrors [RateLowerer] rather than
+// [ChangesLowerer] because increase() shares rate's DELTA-temporality
+// runtime-branch guard (see [NativeIncreaseLowerer.LowerIncrease]).
+type IncreaseLowerer interface {
+	// LowerIncrease returns the chplan node for rw — the native
+	// RangeWindowGridNative for a shape the impl handles, or the fan-out
+	// lowering otherwise. It never returns nil.
+	LowerIncrease(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // StalenessLowerer lowers a range-mode bare instant-vector selection (the
 // staleness shape) to a chplan node. It ALWAYS returns a valid lowering: the
 // native impl emits the native resample node and the fan-out impl emits the
@@ -187,6 +205,11 @@ type RangeLowerers struct {
 	// Rate handles range-mode rate(...) shapes. Concrete fan-out impl when the
 	// native path is off; never nil on the lowering path.
 	Rate RateLowerer
+	// Increase handles range-mode increase(...) shapes (native
+	// timeSeriesRateToGrid multiplied back by the window seconds, server >=
+	// 25.9). Concrete fan-out impl when the native path is off; never nil on
+	// the lowering path.
+	Increase IncreaseLowerer
 	// Staleness handles range-mode bare instant-vector selection (staleness)
 	// shapes. Concrete fan-out impl when the native path is off; never nil on
 	// the lowering path.
@@ -233,6 +256,9 @@ type RangeLowerers struct {
 func (l RangeLowerers) withDefaults() RangeLowerers {
 	if l.Rate == nil {
 		l.Rate = FanoutRateLowerer{}
+	}
+	if l.Increase == nil {
+		l.Increase = FanoutIncreaseLowerer{}
 	}
 	if l.Staleness == nil {
 		l.Staleness = FanoutStalenessLowerer{}
@@ -324,8 +350,10 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 
 // derivedRateArm restores the derived metric name the complementary range arms
 // expose to downstream PromQL nodes. Projecting once above their positional
-// union avoids repeating identical shaping work in both arms. rate() drops
-// source __name__, so the restored value is the empty literal.
+// union avoids repeating identical shaping work in both arms. Shared by
+// NativeRateLowerer and NativeIncreaseLowerer's temporality-union arms: both
+// rate() and increase() drop source __name__, so the restored value is the
+// empty literal for either caller.
 func derivedRateArm(input chplan.Node, s schema.Metrics) *chplan.Project {
 	return &chplan.Project{
 		Input: input,
@@ -390,6 +418,65 @@ func nativeTemporalityFilter(input chplan.Node, column string) chplan.Node {
 	}
 	projectCopy.Input = filter
 	return &projectCopy
+}
+
+// FanoutIncreaseLowerer is the concrete DEFAULT IncreaseLowerer: it returns
+// the generic fan-out RangeWindow (emitWindowedArrayExtrapolatedMatrix's
+// undivided extrapolated increase) unchanged. It is the fallback the native
+// impl embeds AND the strategy a fan-out-only deployment wires directly.
+type FanoutIncreaseLowerer struct{}
+
+// LowerIncrease returns the fan-out RangeWindow rw unchanged.
+func (FanoutIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeIncreaseLowerer is the boot-wired IncreaseLowerer that emits the
+// native timeSeriesRateToGrid lowering — multiplied back by the window
+// seconds at emit time (chsql.nativeGridValueExpr) — for shape-eligible
+// increase range-windows. cmd/cerberus wires it ONLY when chopt resolved the
+// ts_grid_increase feature at boot. It embeds a concrete Fallback (the
+// fan-out impl): a shape it cannot handle delegates to Fallback rather than
+// returning nil, so the interface method ALWAYS yields a valid lowering and
+// the dispatch site stays branch-free.
+//
+// Unlike NativeRateLowerer it carries no Recollapse field: no chopt feature
+// defers the label-shaping hoist past a native increase grid in this cut (see
+// nativeTSGridFn's "increase" entry doc in internal/chsql), so every eligible
+// node renders the plain two-level shape.
+type NativeIncreaseLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutIncreaseLowerer{}.
+	Fallback IncreaseLowerer
+}
+
+// LowerIncrease returns a RangeWindowGridNative for an eligible range-mode
+// increase shape, or delegates to the embedded Fallback otherwise. Mirrors
+// [NativeRateLowerer.LowerRate] exactly, including the DELTA-temporality
+// union split: a temporality-bearing window splits into complementary
+// CUMULATIVE-native and DELTA-fan-out arms, because the native aggregate has
+// no DELTA semantics while the fan-out emitter does. The eligibility
+// predicate is the intrinsic SHAPE check (increase func, materialised grid,
+// plain Scan/Filter input) — see nativeTSGridMatrixNode.
+func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if rw.TemporalityColumn != "" {
+		cumulative := *rw
+		cumulative.Input = nativeTemporalityFilter(rw.Input, rw.TemporalityColumn)
+		// The native aggregate is safe only after DELTA rows are excluded.
+		cumulative.TemporalityColumn = ""
+		if native := nativeTSGridMatrixNode(&cumulative, "increase", s, noRecollapse); native != nil {
+			delta := *rw
+			delta.Input = temporalityFilter(rw.Input, rw.TemporalityColumn, chplan.OpEq)
+			return derivedRateArm(&chplan.UnionAll{Inputs: []chplan.Node{
+				native,
+				&delta,
+			}}, s)
+		}
+	}
+	if native := nativeTSGridMatrixNode(rw, "increase", s, noRecollapse); native != nil {
+		return native
+	}
+	return n.Fallback.LowerIncrease(rw, s)
 }
 
 // FanoutStalenessLowerer is the concrete DEFAULT StalenessLowerer: it builds the

@@ -168,6 +168,18 @@ func TestPromQL_RateDupTimestamp_RowAndNative(t *testing.T) {
 			native:   true,
 			expected: gen.CounterDupExpectedRate,
 		},
+		{
+			// Native path, increase: increase() reuses the SAME
+			// timeSeriesRateToGrid aggregate rate() does (multiplied
+			// back by the window seconds — see chsql.nativeGridValueExpr),
+			// so its dedup behaviour is identical. Proves the multiply-back
+			// does not reintroduce the dup-inflation the aggregate itself
+			// already resolves.
+			name:     "native_path/increase",
+			query:    rangeQuery("increase"),
+			native:   true,
+			expected: gen.CounterDupExpectedIncrease,
+		},
 	}
 
 	for _, tc := range cases {
@@ -186,13 +198,16 @@ func TestPromQL_RateDupTimestamp_RowAndNative(t *testing.T) {
 			s.AggregationTemporalityColumn = ""
 			h := prom.New(cli, s, nil)
 			if tc.native {
-				// Boot-wire the native rate strategy exactly as
-				// cmd/cerberus does when ts_grid_range is enabled. The
-				// embedded Fallback keeps shape-ineligible windows on
-				// the fan-out path (never reached here — this shape is
-				// native-eligible).
+				// Boot-wire the native rate AND increase strategies exactly
+				// as cmd/cerberus does when ts_grid_range / ts_grid_increase
+				// are enabled. The embedded Fallbacks keep shape-ineligible
+				// windows on the fan-out path (never reached here — every
+				// case's shape is native-eligible); wiring both is harmless
+				// since each subtest's query only ever dispatches through
+				// its own function's field.
 				h.Lowerers = promql.RangeLowerers{
-					Rate: promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}},
+					Rate:     promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}},
+					Increase: promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}},
 				}
 			}
 			mux := http.NewServeMux()

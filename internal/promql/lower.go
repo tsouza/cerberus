@@ -3199,28 +3199,31 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // chDB substrate; see test/spec/promql/native_rate_range_step.txtar and the
 // dual-emit parity tests).
 //
-// For a non-rate window (increase / delta / *_over_time) the Rate strategy
-// returns rw unchanged, so the caller's node stays rw and the
-// last/first_over_time name-preservation wrap applies exactly as before.
-// For rate the returned node IS the lowering (native or fan-out
-// RangeWindow); rate drops `__name__`, so it never matches the
-// name-preservation wrap and flows through as-is.
+// For a window with no dedicated strategy (delta / *_over_time / ...) the
+// Rate strategy's fan-out fallback returns rw unchanged, so the caller's
+// node stays rw and the last/first_over_time name-preservation wrap applies
+// exactly as before. For rate / increase the returned node IS the lowering
+// (native or fan-out RangeWindow); both drop `__name__`, so they never match
+// the name-preservation wrap and flow through as-is.
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
-// impl. rate / changes / resets / irate / idelta each route to their own
-// boot-wired strategy (changes/resets/irate/idelta may resolve to the
-// lagInFrame annotation shape, chplan.RangeWindow.LagAdjacency, layered
-// beneath changes/resets' own native ts_grid strategy); every other range
-// fn (increase / delta / *_over_time / ...) keeps the fan-out rw via the
-// rate strategy's pass-through (those funcs have no native
-// timeSeries*ToGrid aggregate or lagInFrame annotation proven equivalent
-// yet).
+// impl. rate / increase / changes / resets / irate / idelta each route to
+// their own boot-wired strategy (changes/resets/irate/idelta may resolve to
+// the lagInFrame annotation shape, chplan.RangeWindow.LagAdjacency, layered
+// beneath changes/resets' own native ts_grid strategy; increase reuses
+// rate's timeSeriesRateToGrid aggregate, multiplied back by the window
+// seconds); every other range fn (delta / *_over_time / ...) keeps the
+// fan-out rw via the rate strategy's pass-through (those funcs have no
+// native timeSeries*ToGrid aggregate or lagInFrame annotation proven
+// equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
 	switch c.Func.Name {
+	case "increase":
+		return ctx.lowerers.Increase.LowerIncrease(rw, s)
 	case "changes":
 		return ctx.lowerers.Changes.LowerChanges(rw, s)
 	case "resets":
@@ -3247,10 +3250,14 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 // the no-feature-branch rule. The predicate is intentionally narrow — every clause
 // that fails sends the query down the unchanged fan-out path:
 //
-//   - rw.Func must be "rate". increase / delta have no proven-equivalent
-//     timeSeries*ToGrid aggregate yet (no timeSeriesIncreaseToGrid; the
-//     timeSeriesDeltaToGrid + reset-semantics mapping is unverified), so
-//     they stay on the fan-out until a dedicated differential sweep lands.
+//   - rw.Func must be "rate". increase() rides its own dedicated lowerer
+//     (NativeIncreaseLowerer, via the shared nativeTSGridMatrixNode
+//     eligibility funnel — see its own doc), reusing this same
+//     timeSeriesRateToGrid aggregate multiplied back by the window
+//     seconds. delta has no proven-equivalent timeSeries*ToGrid aggregate
+//     yet (the timeSeriesDeltaToGrid + reset-semantics mapping is
+//     unverified), so it stays on the fan-out until a dedicated
+//     differential sweep lands.
 //   - The window must be the materialised range grid: Step > 0 and both
 //     Start and End pinned. (The caller only reaches this with rw in
 //     matrix shape, but the guard is explicit so the node's invariants
