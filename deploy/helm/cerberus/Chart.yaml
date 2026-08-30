@@ -50,6 +50,10 @@ annotations:
   # cerberus release; informational for Artifact Hub's compatibility hints.
   artifacthub.io/changes: |
     - kind: fixed
+      description: "ci: partition internal/promql's unsharded test suite across roundtrip-promql-shard legs (#2738)"
+    - kind: fixed
+      description: "ci: relieve roundtrip-promql-shard's CPU contention and timeout budget"
+    - kind: fixed
       description: "chsql: bound emitted SQL at ClickHouse's own max_query_size (#2734)"
     - kind: fixed
       description: "promql: answer an outer range fn over the doubly-nested subquery composition (#2732)"

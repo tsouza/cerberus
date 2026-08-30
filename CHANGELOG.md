@@ -8,6 +8,8 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Fixed
 
+- **ci:** partition internal/promql's unsharded test suite across roundtrip-promql-shard legs (#2738)
+- **ci:** relieve roundtrip-promql-shard's CPU contention and timeout budget
 - **chsql:** bound emitted SQL at ClickHouse's own max_query_size (#2734)
 - **promql:** answer an outer range fn over the doubly-nested subquery composition (#2732)
 - **promql:** thread histogram/mixed shape through doubly-nested subquery composition (#2727)
