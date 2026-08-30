@@ -574,3 +574,96 @@ func TestReanchorRange_NilInput(t *testing.T) {
 		t.Fatalf("nil input should return (nil, nil), got (%v, %v)", out, err)
 	}
 }
+
+// TestReanchorRange_BucketFanoutOuterRangeFailsClosed asserts a
+// RangeBucketFanout in OuterRange mode (cerberus issue #2726's doubly-nested
+// subquery composition) is rejected by ReanchorRange rather than silently
+// re-gridded: that mode's slicing-safety has no proof or differential
+// fixture yet, so every query reaching this shape under the sharded-pushdown
+// solver must fall back to route A instead.
+func TestReanchorRange_BucketFanoutOuterRangeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	leaf := &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}}
+	in := &chplan.RangeBucketFanout{
+		Input:        leaf,
+		End:          time.Unix(9999, 0).UTC(),
+		Step:         time.Minute,
+		OuterRange:   time.Hour,
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+	}
+
+	start := time.Unix(1000, 0).UTC()
+	end := time.Unix(4600, 0).UTC()
+	_, err := chplan.ReanchorRange(in, start, end)
+	if !errors.Is(err, chplan.ErrReanchorGridMismatch) {
+		t.Fatalf("expected ErrReanchorGridMismatch for an OuterRange RangeBucketFanout, got %v", err)
+	}
+}
+
+// TestReanchorRange_BucketFanoutReGrids asserts the ordinary (Start, End,
+// Step) grid mode — OuterRange zero — still re-anchors normally, widening
+// the input spine by Offset+Lookback exactly like RangeLWR.
+func TestReanchorRange_BucketFanoutReGrids(t *testing.T) {
+	t.Parallel()
+
+	leaf := &chplan.Scan{Table: "metrics", Columns: []string{"Value", "TimeUnix"}}
+	lookback := 5 * time.Minute
+	offset := time.Minute
+	// Start/End left zero (unpinned) — checkPredictedGridBucketFanout only
+	// accepts a node already unpinned or already sitting on the target grid.
+	in := &chplan.RangeBucketFanout{
+		Input:        leaf,
+		Step:         time.Minute,
+		Lookback:     lookback,
+		Offset:       offset,
+		AnchorAlias:  "anchor_ts",
+		TimestampCol: "TimeUnix",
+	}
+
+	start := time.Unix(2000, 0).UTC()
+	end := time.Unix(2600, 0).UTC()
+	out, err := chplan.ReanchorRange(in, start, end)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := out.(*chplan.RangeBucketFanout)
+	if !r.Start.Equal(start) || !r.End.Equal(end) {
+		t.Fatalf("bounds: want [%v,%v] got [%v,%v]", start, end, r.Start, r.End)
+	}
+	wantInStart := start.Add(-offset - lookback)
+	wantInEnd := end
+	inStart, inEnd := r.InputWindow(start, end)
+	if !inStart.Equal(wantInStart) || !inEnd.Equal(wantInEnd) {
+		t.Fatalf("input window: want [%v,%v] got [%v,%v]", wantInStart, wantInEnd, inStart, inEnd)
+	}
+}
+
+// TestRangeBucketFanout_NumAnchors_OuterRangeMode pins the OuterRange
+// formula RangeBucketFanout.NumAnchors added for cerberus issue #2726 —
+// mirrors RangeWindow.NumAnchors' own OuterRange arithmetic exactly
+// (OuterRange/Step + 1, ignoring StepAlign), and stays the (Start, End,
+// Step) grid formula's dedicated axis whenever OuterRange is unset.
+func TestRangeBucketFanout_NumAnchors_OuterRangeMode(t *testing.T) {
+	t.Parallel()
+
+	outerRange := &chplan.RangeBucketFanout{OuterRange: time.Hour, Step: 5 * time.Minute}
+	if got, want := outerRange.NumAnchors(), int64(13); got != want {
+		t.Fatalf("OuterRange mode: got %d anchors, want %d", got, want)
+	}
+
+	zeroStep := &chplan.RangeBucketFanout{OuterRange: time.Hour, Step: 0}
+	if got := zeroStep.NumAnchors(); got != 0 {
+		t.Fatalf("OuterRange mode with Step<=0: got %d anchors, want 0", got)
+	}
+
+	classicGrid := &chplan.RangeBucketFanout{
+		Start: time.Unix(1000, 0).UTC(),
+		End:   time.Unix(1600, 0).UTC(),
+		Step:  time.Minute,
+	}
+	if got, want := classicGrid.NumAnchors(), int64(11); got != want {
+		t.Fatalf("classic grid mode (OuterRange unset): got %d anchors, want %d", got, want)
+	}
+}
