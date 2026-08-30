@@ -145,6 +145,27 @@ type ResetsLowerer interface {
 	LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// IrateLowerer lowers a range-mode irate(<counter>[range]) RangeWindow to a
+// chplan node. Unlike Changes/Resets there is no ClickHouse-native
+// timeSeries*ToGrid member for irate — the only alternative to the fan-out
+// (window_pairs[length]/[length-1]) is the lagInFrame annotation shape
+// (cerberus issue #2759), so this interface has exactly one non-fan-out impl.
+// It ALWAYS returns a valid lowering: the lag-adjacency impl emits
+// RangeWindow{LagAdjacency: true} for a shape-eligible window and delegates to
+// its embedded fan-out fallback otherwise; the fan-out impl returns rw
+// unchanged. Never nil.
+type IrateLowerer interface {
+	// LowerIrate returns the chplan node for rw. Never nil.
+	LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
+// IdeltaLowerer is IrateLowerer's sibling for idelta(<gauge>[range]). Never
+// nil.
+type IdeltaLowerer interface {
+	// LowerIdelta returns the chplan node for rw. Never nil.
+	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
 // RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
@@ -215,6 +236,15 @@ type RangeLowerers struct {
 	// server >= 25.9). Concrete fan-out impl when the native path is off;
 	// never nil on the lowering path.
 	ClassicHistogram ClassicHistogramWindowLowerer
+
+	// Irate handles range-mode irate(...) shapes (lagInFrame annotation,
+	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
+	// feature is off; never nil on the lowering path.
+	Irate IrateLowerer
+	// Idelta handles range-mode idelta(...) shapes (lagInFrame annotation,
+	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
+	// feature is off; never nil on the lowering path.
+	Idelta IdeltaLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -247,6 +277,12 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.ClassicHistogram == nil {
 		l.ClassicHistogram = FanoutClassicHistogramWindowLowerer{}
+	}
+	if l.Irate == nil {
+		l.Irate = FanoutIrateLowerer{}
+	}
+	if l.Idelta == nil {
+		l.Idelta = FanoutIdeltaLowerer{}
 	}
 	return l
 }
@@ -670,4 +706,146 @@ func nativePredictLinearHorizonEligible(rw *chplan.RangeWindow) bool {
 	}
 	t := rw.Scalars[0]
 	return t >= 0 && t == math.Trunc(t)
+}
+
+// This section wires the lagInFrame annotation shape (cerberus issue #2759):
+// a single sorted lagInFrame/leadInFrame pass plus fixed-size per-anchor
+// accumulators, in place of the array-fold fan-out, for changes / resets /
+// irate / idelta. Unlike the timeSeries*ToGrid family above it needs no
+// server-version floor or experimental setting — see chopt.
+// FeatureLagInFrameAdjacency — so cmd/cerberus wires it purely off the
+// resolved EnabledSet with no capability probe involved. changes/resets
+// layer it BENEATH their existing native ts_grid strategy (Native{Fallback:
+// LagAdjacency{Fallback: Fanout{}}}), same embed pattern as every strategy
+// above; irate/idelta have no native competitor, so their strategy is the
+// two-tier LagAdjacency{Fallback: Fanout{}} directly.
+
+// FanoutIrateLowerer is the concrete DEFAULT IrateLowerer: it returns the
+// generic fan-out RangeWindow (window_pairs[length]/[length-1]) unchanged.
+type FanoutIrateLowerer struct{}
+
+// LowerIrate returns the fan-out RangeWindow rw unchanged.
+func (FanoutIrateLowerer) LowerIrate(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// FanoutIdeltaLowerer is IdeltaLowerer's Fanout sibling.
+type FanoutIdeltaLowerer struct{}
+
+// LowerIdelta returns the fan-out RangeWindow rw unchanged.
+func (FanoutIdeltaLowerer) LowerIdelta(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// LagAdjacencyChangesLowerer is the boot-wired ChangesLowerer that emits
+// RangeWindow{LagAdjacency: true} for a shape-eligible changes range-window.
+// cmd/cerberus wires it ONLY when chopt resolved laginframe_adjacency at
+// boot, embedded beneath NativeChangesLowerer so ts_grid_changes (when also
+// enabled) still takes priority.
+type LagAdjacencyChangesLowerer struct {
+	// Fallback is the concrete lowerer for shapes lag-adjacency cannot
+	// handle. Boot wires it to FanoutChangesLowerer{}.
+	Fallback ChangesLowerer
+}
+
+// LowerChanges returns rw with LagAdjacency set for an eligible window, or
+// delegates to the embedded Fallback otherwise.
+func (l LagAdjacencyChangesLowerer) LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if lagAdjacencyEligible(rw) {
+		out := *rw
+		out.LagAdjacency = true
+		return &out
+	}
+	return l.Fallback.LowerChanges(rw, s)
+}
+
+// LagAdjacencyResetsLowerer mirrors [LagAdjacencyChangesLowerer] for resets.
+type LagAdjacencyResetsLowerer struct {
+	// Fallback is the concrete lowerer for shapes lag-adjacency cannot
+	// handle. Boot wires it to FanoutResetsLowerer{}.
+	Fallback ResetsLowerer
+}
+
+// LowerResets returns rw with LagAdjacency set for an eligible window, or
+// delegates to the embedded Fallback otherwise.
+func (l LagAdjacencyResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if lagAdjacencyEligible(rw) {
+		out := *rw
+		out.LagAdjacency = true
+		return &out
+	}
+	return l.Fallback.LowerResets(rw, s)
+}
+
+// LagAdjacencyIrateLowerer is the boot-wired (and only non-fan-out) IrateLowerer.
+// cmd/cerberus wires it ONLY when chopt resolved laginframe_adjacency at boot.
+type LagAdjacencyIrateLowerer struct {
+	// Fallback is the concrete lowerer for shapes lag-adjacency cannot
+	// handle. Boot wires it to FanoutIrateLowerer{}.
+	Fallback IrateLowerer
+}
+
+// LowerIrate returns rw with LagAdjacency set for an eligible window, or
+// delegates to the embedded Fallback otherwise.
+func (l LagAdjacencyIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if lagAdjacencyEligible(rw) {
+		out := *rw
+		out.LagAdjacency = true
+		return &out
+	}
+	return l.Fallback.LowerIrate(rw, s)
+}
+
+// LagAdjacencyIdeltaLowerer mirrors [LagAdjacencyIrateLowerer] for idelta.
+type LagAdjacencyIdeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes lag-adjacency cannot
+	// handle. Boot wires it to FanoutIdeltaLowerer{}.
+	Fallback IdeltaLowerer
+}
+
+// LowerIdelta returns rw with LagAdjacency set for an eligible window, or
+// delegates to the embedded Fallback otherwise.
+func (l LagAdjacencyIdeltaLowerer) LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if lagAdjacencyEligible(rw) {
+		out := *rw
+		out.LagAdjacency = true
+		return &out
+	}
+	return l.Fallback.LowerIdelta(rw, s)
+}
+
+// lagAdjacencyEligible is the intrinsic query-SHAPE eligibility predicate for
+// the lagInFrame annotation path — reads NO feature flag or server version,
+// exactly like nativeTSGridMatrixNode above. Every clause that fails sends
+// the query down the unchanged fan-out path:
+//
+//   - rw.Identity must be false — the bare-vector subquery no-op path is not
+//     one of the four owning functions.
+//   - The window must be the materialised MATRIX grid: OuterRange > 0,
+//     Step > 0, and both Start and End pinned. maybePushInnerScanTimeBounds
+//     (the annotation pass's scan-prune bound, and the widening the
+//     slice-invariance argument in internal/chplan/sliceinvariant.go rests
+//     on) is itself gated on Start/End being set, so a subquery-internal
+//     window (Start/End zero, OuterRange/Step-only) stays on the unchanged
+//     fan-out rather than run lagInFrame over an unbounded partition scan.
+//   - rw.DeltaPrefixAggregateInput must be nil: none of the four owning
+//     functions reconstruct a DELTA counter's absolute level (that is
+//     rate/increase/delta's concern), so a populated side-scan is a shape
+//     this path has never been proven against and it declines rather than
+//     silently ignoring the side-scan.
+//   - rw.Variants must be empty: the fused multi-arm shape reduces a shared
+//     per-window array across several Func arms at once (range_window_
+//     fused.go); the annotation path has its own single-Func emitter and
+//     does not participate in that fusion.
+func lagAdjacencyEligible(rw *chplan.RangeWindow) bool {
+	if rw.Identity {
+		return false
+	}
+	if rw.OuterRange <= 0 || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return false
+	}
+	if rw.DeltaPrefixAggregateInput != nil {
+		return false
+	}
+	return len(rw.Variants) == 0
 }

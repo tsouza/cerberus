@@ -100,7 +100,7 @@ export const PHASES = [
     // lwr_fanout_bound(2). range_window.go alone is the package's single
     // largest file; the rest of this leg is greedy-balance filler, not theme.
     exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_compare|metrics_second_stage|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window_fused|range_window_grid_native|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
+      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|metrics_compare|metrics_second_stage|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window_fused|range_window_grid_native|range_window_lag_adjacency|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -112,7 +112,7 @@ export const PHASES = [
     // range_lwr(24) + vector_set_op(10) +
     // nary_vector_set_op(6) + rate_window_fanout_bound(2).
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|mixed_vector_join|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_fused|range_window_grid_native|range_window_stale_resample|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|mixed_vector_join|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_fused|range_window_grid_native|range_window_lag_adjacency|range_window_stale_resample|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape)\\.go$',
   },
   {
     phase: 'phase2-compare',
@@ -125,7 +125,7 @@ export const PHASES = [
     // histogram_projection(21) + emit(12) +
     // metrics_second_stage(10).
     exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_size_bound|fnresolution|histogram_float_vector_join|histogram_quantile|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window|range_window_grid_native|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
+      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_size_bound|fnresolution|histogram_float_vector_join|histogram_quantile|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window|range_window_grid_native|range_window_lag_adjacency|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-other',

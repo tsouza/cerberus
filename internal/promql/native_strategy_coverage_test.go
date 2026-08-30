@@ -109,6 +109,20 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "Irate",
+		section: "experimental_lag_adjacency_irate",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
+		},
+	},
+	{
+		field:   "Idelta",
+		section: "experimental_lag_adjacency_idelta",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
+		},
+	},
+	{
 		field:   "ClassicHistogram",
 		section: "experimental_ts_grid_histogram",
 		// Fallback chains straight to the bare fan-out — matching
@@ -136,6 +150,25 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 		if has(ns.section) {
 			ns.wire(&l, has)
 		}
+	}
+	// laginframe_adjacency (issue #2759) is Changes/Resets' improved FALLBACK,
+	// not a competitor to their native ts_grid strategy above — mirroring
+	// cmd/cerberus's own nativeRangeLowerers composition (Native{Fallback:
+	// LagAdjacency{Fallback: Fanout{}}}). It is deliberately NOT a
+	// nativeStrategies row: a row's section is the ONLY way to reach that
+	// row's field, and Changes/Resets already have a row gated on their own
+	// ts_grid section. A fixture opts into the lag-adjacency SQL shape ALONE
+	// (unshadowed by the native path) by carrying ONLY this section, never
+	// alongside experimental_ts_grid_changes/resets — the two are mutually
+	// exclusive at this spec-fixture layer by convention, documented on each
+	// fixture. (The composed native-wraps-lag-adjacency shape is exercised
+	// directly in Go by internal/chsql/range_window_lag_adjacency_chdb_test.go,
+	// not through this table.)
+	if has("experimental_lag_adjacency_changes") {
+		l.Changes = promql.LagAdjacencyChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+	}
+	if has("experimental_lag_adjacency_resets") {
+		l.Resets = promql.LagAdjacencyResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
 	}
 	return l
 }

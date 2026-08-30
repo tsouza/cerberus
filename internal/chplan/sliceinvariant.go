@@ -51,6 +51,34 @@ func IsSliceInvariant(n Node) bool {
 //     reduce of exactly that anchor's `(anchor - Offset - Range, anchor -
 //     Offset]` window membership, independent of the scan lower bound.
 //
+//     RangeWindow.LagAdjacency=true (issue #2759) is the #92 hazard this
+//     doc's own opening paragraph warns about — a lagInFrame formulation
+//     seeded at the scan's first row — and it is admitted into this SAME
+//     entry (not a separate registration) because the hazard does not
+//     materialise here. lagInFrame runs over Input widened by
+//     RangeWindow.InputWindow (Offset + Range past the shard's own oldest
+//     anchor — the identical widening every RangeWindow shard already scans,
+//     proven by this entry's own criterion above), and every per-(series,
+//     anchor) value the emitter derives from the annotation ONLY consults a
+//     pair whose prev_ts satisfies `prev_ts > anchor - range` — checked BY
+//     CONSTRUCTION before the pair contributes anything (chsql's
+//     lagAdjacencyValidPrevFrag). A pair a shard's lagInFrame seeds
+//     WRONG (defaults to the column's zero value at the first row of a
+//     shard's own scan, or — for a row whose TRUE full-series predecessor
+//     sits before the widened scan's lower bound — skips straight to a
+//     later, wrong "prev") always has prev_ts AT OR BEFORE that widened lower
+//     bound, which is itself `<= anchor - range` for every anchor the shard
+//     covers (the widening IS anchor_min - Offset - Range); the validity
+//     check therefore excludes every such pair whether route A or a K-sharded
+//     route B produced it. A pair the validity check ADMITS has prev_ts
+//     strictly inside the widened scan, which places prev_ts's OWN sample row
+//     inside that same shard's scan too — a plain contiguous time-range read,
+//     not a sample — so lagInFrame finds the SAME true immediately-preceding
+//     row un-sliced execution would have found. Verified by dual-emit parity
+//     (LagAdjacency=false vs =true, internal/chsql's
+//     range_window_lag_adjacency_chdb_test.go) across duplicate-timestamp,
+//     all-NaN, and DELTA-temporality-reset windows — not merely asserted.
+//
 //   - RangeWindowGridNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
 //     of the SAME window semantics. The aggregate is handed (start, end, step,
 //     window) and evaluates grid point i from exactly the samples inside

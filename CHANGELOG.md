@@ -4,6 +4,10 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+### Added
+
+- **chsql,promql,chopt:** opt query_range changes()/resets()/irate()/idelta() onto a lagInFrame annotation pass with fixed-size per-anchor accumulators, retiring the array-fold fan-out for those shapes (#2759)
+
 ## [v1.19.0] — 2026-08-30
 
 ### Fixed
