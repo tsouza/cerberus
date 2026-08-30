@@ -501,6 +501,25 @@ native-lowerers-prom-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestNativeRangeLowerers_RealCH_Integration ./internal/api/prom/...
 
+# Run the quantile_prom_histogram real-CH differential (#2755): for every
+# representative classic-histogram bucket layout (a normal crossing, a
+# duplicate-bound layout, the equal-length/no-overflow-rung shape, an empty
+# histogram, a first-bucket non-positive upper bound, an all-zero-count
+# histogram, a single bucket) and the full phi domain (below range, the two
+# saturating edges, interior crossings, above range, a runtime NaN phi), emits
+# BOTH the hand-rolled rank walk and the native quantilePrometheusHistogram
+# aggregate for the identical chplan.HistogramQuantile plan and asserts they
+# agree exactly against a REAL ClickHouse. quantilePrometheusHistogram shipped
+# in ClickHouse 25.10 — above every other integration lane's pin — so this
+# lane boots its own dedicated CH_QUANTILE_PROM_HISTOGRAM_IMAGE server rather
+# than reusing CH_TEST_IMAGE. Requires Docker; gated behind the `integration`
+# build tag. See
+# internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go
+# and strict-scan.yml.
+quantile-prom-histogram-rankwalk-integration:
+    @just _pull-retry {{CH_QUANTILE_PROM_HISTOGRAM_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestHistogramQuantile_RankWalkNative_DifferentialRealCH ./internal/chsql/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
@@ -1209,6 +1228,17 @@ CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 # before a row decodes and the shape silently drops out of scope. Kept at or
 # above the highest chopt MinVersion by TestStrictScanImageClearsChoptFloors.
 CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"
+
+# CH_QUANTILE_PROM_HISTOGRAM_IMAGE is the server the quantile_prom_histogram
+# real-CH differential boots (internal/chsql's
+# TestHistogramQuantile_RankWalkNative_DifferentialRealCH). Its own dedicated
+# pin, like CH_TEST_IMAGE_PRIOR's: quantilePrometheusHistogram shipped in
+# ClickHouse 25.10, above every other integration lane's pin (CH_TEST_IMAGE is
+# 25.9), so reusing CH_TEST_IMAGE here would silently drop the aggregate out
+# of scope the same way a stale CH_STRICT_SCAN_IMAGE would for the
+# timeSeries*ToGrid family. TestIntegrationImagePinsMatchTheJustfile holds this
+# against the literal in the test source.
+CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
 
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to

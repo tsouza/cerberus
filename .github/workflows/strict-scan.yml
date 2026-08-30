@@ -293,3 +293,17 @@ jobs:
       # test/perf/smoke/realch_native_lowerers_integration_test.go.
       - name: Run native range-window lowerer activation, smoke package (real ClickHouse)
         run: just native-lowerers-smoke-integration
+
+      # The quantile_prom_histogram real-CH differential (#2755): for every
+      # representative classic-histogram bucket layout and the full phi
+      # domain, emits BOTH the hand-rolled rank walk and the native
+      # quantilePrometheusHistogram aggregate for the identical
+      # chplan.HistogramQuantile plan and asserts they agree exactly. This is
+      # what chopt.FeatureQuantilePromHistogram's AutoSelect: false decision
+      # rests on. quantilePrometheusHistogram shipped in ClickHouse 25.10 —
+      # above every other integration lane's pin — so this step boots its own
+      # dedicated server (CH_QUANTILE_PROM_HISTOGRAM_IMAGE) rather than
+      # reusing this job's CH_STRICT_SCAN_IMAGE container. See
+      # internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go.
+      - name: Run quantile_prom_histogram rank-walk differential (real ClickHouse)
+        run: just quantile-prom-histogram-rankwalk-integration

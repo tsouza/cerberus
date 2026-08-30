@@ -73,6 +73,9 @@ export const mirroredImages = [
   // lanes (24.8 is the older server the replicated-DDL pins are proved on).
   'clickhouse/clickhouse-server:24.8-alpine',
   'clickhouse/clickhouse-server:25.9-alpine',
+  // 25.10 is the quantile_prom_histogram real-CH differential's own pin
+  // (quantilePrometheusHistogram shipped in 25.10 — see CH_QUANTILE_PROM_HISTOGRAM_IMAGE).
+  'clickhouse/clickhouse-server:25.10-alpine',
   'clickhouse/clickhouse-server:26.3',
   'clickhouse/clickhouse-server:26.5',
   'clickhouse/clickhouse-server:26.5-alpine',

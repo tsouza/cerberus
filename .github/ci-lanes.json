@@ -404,6 +404,7 @@
         "native-lowerers-prom-integration",
         "native-lowerers-smoke-integration",
         "perf-smoke-integration",
+        "quantile-prom-histogram-rankwalk-integration",
         "route-b-differential-integration",
         "router-corpus-integration",
         "solver-memory-apportion-integration",
