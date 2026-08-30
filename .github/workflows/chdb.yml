@@ -457,7 +457,13 @@ jobs:
     # loudly rather than saving anything. A follow-up can lower it once
     # shards have actually run (tsouza/cerberus#2629's own acceptance notes
     # this explicitly).
-    timeout-minutes: 35
+    #
+    # Bumped from 35 to 45 on 2026-08-30 alongside chdb-roundtrip.mjs's
+    # GO_TEST_TIMEOUT_MINUTES bump (25 -> 32): must stay strictly above that
+    # per-process bound (chdb-roundtrip.test.mjs asserts the ordering) with
+    # real margin for the job's own setup (checkout, toolchain, libchdb
+    # install) on top. See GO_TEST_TIMEOUT_MINUTES's doc comment / cerberus#2737.
+    timeout-minutes: 45
     strategy:
       # MANDATORY: one shard's failure must NOT cancel its siblings, for the
       # same reason `perf-guards-shard` sets this below — a corpus-wide

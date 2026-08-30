@@ -5,14 +5,15 @@
 // Why this exists
 // ---------------
 // The promql leg of `roundtrip (<ql>)` used to be one matrix entry sharing a
-// single 4-core `ubuntu-latest` runner across 3 processes (FANOUT.promql, in
-// chdb-roundtrip.mjs). The corpus grew past 700 TXTAR fixtures and that
-// in-runner fan-out has a hard ceiling — chDB threads within a single query,
-// so oversubscribing past ~3-4 processes on one runner hurts rather than
-// helps — so promql is now split across N separate RUNNERS instead (the
-// `roundtrip-promql-shard` matrix), each still fanning out ~3 processes
-// in-runner. Total parallelism scales with shard count × in-runner fan-out
-// instead of being capped at ~3-4.
+// single 2-vCPU `ubuntu-latest` runner across several processes
+// (FANOUT.promql, in chdb-roundtrip.mjs). The corpus grew past 700 TXTAR
+// fixtures and that in-runner fan-out has a hard ceiling — chDB threads
+// within a single query, so oversubscribing past the runner's own core count
+// hurts rather than helps — so promql is now split across N separate RUNNERS
+// instead (the `roundtrip-promql-shard` matrix), each still fanning out a
+// couple of processes in-runner (FANOUT.promql's own doc comment has the
+// exact count and its history). Total parallelism scales with shard count ×
+// in-runner fan-out instead of being capped at the single-runner ceiling.
 //
 // That split renames the thing GitHub reports: matrix children post as
 // `roundtrip-promql-shard (1)` … `roundtrip-promql-shard (N)`, never
