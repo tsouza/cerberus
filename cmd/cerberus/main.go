@@ -131,18 +131,21 @@ type apiHeads struct {
 	consumers  chOptConsumers
 }
 
-// resolveIssue2667BoundOverrides resolves the five issue #2667
-// resource-bound safety-ceiling overrides run() threads into mountAPIHeads:
+// resolveBoundOverrides resolves the six resource-bound safety-ceiling
+// overrides run() threads into mountAPIHeads:
 // the three chsql sample-fanout knobs (CERBERUS_CH_RANGE_BUCKET_FANOUT_MAX_ROWS
 // / CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS / CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS)
 // and the two PromQL-only histogram-merge cost-unit knobs
 // (CERBERUS_PROMQL_HISTOGRAM_MERGE_MAX_COST_UNITS /
 // CERBERUS_PROMQL_CLASSIC_BUCKET_MERGE_MAX_COST_UNITS, wired only onto the
 // prom head's Handler.ResourceBounds — see newPromHandler's own doc for why
-// LogQL/TraceQL never see it). Both resolutions share the same fail-fast
-// contract as buildSolver's own solver.ConfigFromEnv() above: a typo'd or
-// non-positive override aborts startup rather than silently falling back.
-func resolveIssue2667BoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
+// LogQL/TraceQL never see it), all five from issue #2667, plus issue #2733's
+// head-agnostic emitted-SQL statement-size bound
+// (CERBERUS_CH_MAX_EMITTED_SQL_BYTES). Both resolutions share the same
+// fail-fast contract as buildSolver's own solver.ConfigFromEnv() above: a
+// typo'd or non-positive override aborts startup rather than silently falling
+// back.
+func resolveBoundOverrides() (engine.ResourceBoundOverrides, promql.ResourceBounds, error) {
 	resourceBounds, err := engine.ResourceBoundsFromEnv()
 	if err != nil {
 		return engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, err
@@ -230,6 +233,11 @@ func mountAPIHeads(
 		// silently inert, which is how a compare() grid 108x over the configured
 		// budget was still served.
 		tempoHandler.Engine.MaxQuerySamples = tempoClient.MaxQuerySamples()
+		// Issue #2733's emitted-SQL size bound, wired here for the same reason
+		// it is wired onto the prom and loki heads: it bounds a property every
+		// head has (the bytes of one emitted statement), unlike the row-fanout
+		// ceilings, which gate node kinds only some heads lower.
+		tempoHandler.Engine.MaxEmittedSQLBytes = resourceBounds.MaxEmittedSQLBytes
 		tempoHandler.Mount(traceMux)
 		engines = append(engines, tempoHandler.Engine)
 
@@ -559,7 +567,7 @@ func run() error {
 	// (one process = one OOM kills all heads today). The Tempo gRPC server is
 	// likewise nil when tempo is off. /healthz + /readyz are mounted below,
 	// unconditionally, in every mode.
-	resourceBounds, promResourceBounds, err := resolveIssue2667BoundOverrides()
+	resourceBounds, promResourceBounds, err := resolveBoundOverrides()
 	if err != nil {
 		return err
 	}
@@ -774,6 +782,10 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		RangeBucketFanoutMaxRows: resourceBounds.RangeBucketFanoutMaxRows,
 		RangeLWRFanoutMaxRows:    resourceBounds.RangeLWRFanoutMaxRows,
 		RateWindowFanoutMaxRows:  resourceBounds.RateWindowFanoutMaxRows,
+		// Head-AGNOSTIC, unlike the three above: every head emits statements,
+		// so issue #2733's emitted-SQL size bound is wired onto all three
+		// engines — see engine.Engine.MaxEmittedSQLBytes' own doc.
+		MaxEmittedSQLBytes: resourceBounds.MaxEmittedSQLBytes,
 		// PromQL-only, same inertness reasoning: chplan.RangeBucketGridNative
 		// only ever comes from PromQL's classic-histogram_quantile lowering —
 		// see engine.Engine.RangeBucketGridNativeMaxRows's doc.
@@ -971,6 +983,10 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	// head — see newPromHandler's own doc for why RangeBucketFanoutMaxRows /
 	// RangeLWRFanoutMaxRows stay prom-only.
 	h.Engine.RateWindowFanoutMaxRows = resourceBounds.RateWindowFanoutMaxRows
+	// Issue #2733's emitted-SQL size bound is head-agnostic — every head emits
+	// statements — so unlike the row-fanout ceilings it is wired onto this head
+	// as well as prom and tempo. See engine.Engine.MaxEmittedSQLBytes' own doc.
+	h.Engine.MaxEmittedSQLBytes = resourceBounds.MaxEmittedSQLBytes
 	return h
 }
 

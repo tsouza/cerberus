@@ -421,8 +421,9 @@ elsewhere, so they are enumerated here:
 - **` + "`CERBERUS_SHARD_MAX_OUTPUT_ROWS`" + `** (int64, default ` + "`2000000`" + `) -
   the per-request output-row ceiling across all shards combined.
 
-Five further resource-bound safety ceilings (issue #2667) are resolved by
-` + "`internal/chsql`" + ` and ` + "`internal/promql`" + ` rather than by the loader
+Six further resource-bound safety ceilings (five from issue #2667, the last
+from issue #2733) are resolved by ` + "`internal/chsql`" + ` and
+` + "`internal/promql`" + ` rather than by the loader
 documented above - those two packages may not import ` + "`internal/config`" + `
 (` + "`.go-arch-lint.yml`" + `), so each owns a small, self-contained env-parsing file
 instead (` + "`internal/engine/resource_bound_env.go`" + `,
@@ -444,8 +445,16 @@ instead (` + "`internal/engine/resource_bound_env.go`" + `,
   ` + "`10000000`" + `) - the classic-histogram across-series bucket-merge cost ceiling
   (` + "`internal/promql/classic_bucket_merge_bound.go`" + `,
   ` + "`maxClassicBucketMergeCostUnits`" + `).
+- **` + "`CERBERUS_CH_MAX_EMITTED_SQL_BYTES`" + `** (int64, default ` + "`262144`" + `) -
+  the bytes of SQL cerberus will emit for one statement
+  (` + "`internal/chsql/emit_size_bound.go`" + `, ` + "`maxEmittedSQLBytes`" + `).
+  Applies to all three heads. Its default is ClickHouse's own
+  ` + "`max_query_size`" + ` default rather than a cerberus calibration: a statement
+  past it is one the server refuses to parse anyway, so the bound turns a raw
+  driver ` + "`code 62`" + ` into a cerberus error naming the query shape. Raise it
+  only alongside ` + "`max_query_size`" + ` on the server itself.
 
-All five reject a malformed or non-positive override at startup rather than
+All six reject a malformed or non-positive override at startup rather than
 silently falling back to the default or admitting every query; see each
 constant's own doc for the calibration its shipped default protects.
 

@@ -19,6 +19,13 @@ import (
 //     emitWindowedArrayExtrapolatedMatrix's regroup GROUP BY
 //     (internal/chsql/rate_window_fanout_bound.go, maxRateWindowFanoutRows,
 //     default 2,800,000).
+//   - CERBERUS_CH_MAX_EMITTED_SQL_BYTES — the bytes of SQL one statement may
+//     render to (internal/chsql/emit_size_bound.go, maxEmittedSQLBytes,
+//     default 262,144). Unlike the three above this one is not a row-count
+//     ceiling but a statement-size one, and its default is ClickHouse's own
+//     max_query_size default rather than a cerberus calibration: an operator
+//     who raises max_query_size on the server raises this alongside it, and
+//     nobody else needs to touch it. Issue #2733.
 //
 // Each constant is a compile-time resource-bound safety ceiling gating
 // query execution/plan shape that has already cost this repo two real
@@ -52,15 +59,18 @@ const (
 	EnvRangeLWRFanoutMaxRows = "CERBERUS_CH_RANGE_LWR_FANOUT_MAX_ROWS"
 	// EnvRateWindowFanoutMaxRows overrides maxRateWindowFanoutRows.
 	EnvRateWindowFanoutMaxRows = "CERBERUS_CH_RATE_WINDOW_FANOUT_MAX_ROWS"
+	// EnvMaxEmittedSQLBytes overrides maxEmittedSQLBytes.
+	EnvMaxEmittedSQLBytes = "CERBERUS_CH_MAX_EMITTED_SQL_BYTES"
 )
 
-// ResourceBoundOverrides is the resolved operator override for the three
+// ResourceBoundOverrides is the resolved operator override for the four
 // env vars above. A zero field means "the operator did not set this one" —
 // the caller (emitForHead / routeBExecCtx) leaves the corresponding chsql
 // ctx value unthreaded so chsql falls back to its own compiled-in,
 // calibrated default. Unlike CERBERUS_DELTA_PREFIX_LOOKBACK, where 0 is a
-// meaningful explicit opt-out, a fanout row bound of 0 is never a
-// legitimate operator intent (it would reject every query outright), so
+// meaningful explicit opt-out, neither a fanout row bound nor a statement-size
+// bound of 0 is a legitimate operator intent (either would reject every query
+// outright), so
 // reserving 0 as the "unset" sentinel loses no real configuration and
 // ResourceBoundsFromEnv rejects an explicit 0 or negative override as a
 // startup error instead of silently accepting it.
@@ -68,9 +78,10 @@ type ResourceBoundOverrides struct {
 	RangeBucketFanoutMaxRows int64
 	RangeLWRFanoutMaxRows    int64
 	RateWindowFanoutMaxRows  int64
+	MaxEmittedSQLBytes       int64
 }
 
-// ResourceBoundsFromEnv reads the three CERBERUS_CH_*_MAX_ROWS knobs above.
+// ResourceBoundsFromEnv reads the four CERBERUS_CH_* knobs above.
 // An unset var resolves its field to 0 (see ResourceBoundOverrides' own
 // doc); a set var is parsed as a base-10 int64 and must be strictly
 // positive. A parse failure or a non-positive value is returned as an
@@ -87,6 +98,9 @@ func ResourceBoundsFromEnv() (ResourceBoundOverrides, error) {
 		return ResourceBoundOverrides{}, err
 	}
 	if overrides.RateWindowFanoutMaxRows, err = envPositiveInt64(EnvRateWindowFanoutMaxRows); err != nil {
+		return ResourceBoundOverrides{}, err
+	}
+	if overrides.MaxEmittedSQLBytes, err = envPositiveInt64(EnvMaxEmittedSQLBytes); err != nil {
 		return ResourceBoundOverrides{}, err
 	}
 	return overrides, nil

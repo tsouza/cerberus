@@ -31,6 +31,14 @@ func (e *emitter) renderNode(n chplan.Node) (string, []any, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	// The enclosing statement embeds this text verbatim, so a sub-statement
+	// already past the emitted-SQL byte bound proves the whole statement is
+	// past it too. Checking here rather than only on the finished statement is
+	// what keeps rejecting a deeply-composed plan cheap — see
+	// emit_size_bound.go's "The two call sites".
+	if err := e.requireEmittedSQLBounded(n, sql); err != nil {
+		return "", nil, err
+	}
 	return sql, args, nil
 }
 

@@ -160,6 +160,9 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 
 		rangeBucketGridNativeMaxRows:         rangeBucketGridNativeMaxRowsFromCtx(ctx),
 		rangeBucketGridNativeMaxDensityUnits: rangeBucketGridNativeMaxDensityUnitsFromCtx(ctx),
+
+		emittedSQLMaxBytes: maxEmittedSQLBytesFromCtx(ctx),
+		rootPlan:           n,
 	}
 	// Collapse a structure-tab plan's repeated top-N trace-id gates onto one
 	// single-evaluation scalar binding hoisted to the outermost statement
@@ -172,6 +175,17 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	}
 	sql := e.b.String()
 	if err := GuardEmittedSQL(ctx, sql); err != nil {
+		span.RecordError(err)
+		return "", nil, err
+	}
+	// Reject a statement ClickHouse would refuse to parse (issue #2733,
+	// emit_size_bound.go) with a cerberus error that names the composition,
+	// rather than handing the driver a statement past max_query_size and
+	// letting a code 62 "failed at position 262145" reach the user. The
+	// per-sub-statement check in renderNode has usually fired first for a
+	// deeply-composed plan; this is the site that catches a statement whose
+	// size is in the assembly rather than in any one of its parts.
+	if err := e.requireEmittedSQLBounded(n, sql); err != nil {
 		span.RecordError(err)
 		return "", nil, err
 	}
@@ -342,6 +356,25 @@ type emitter struct {
 	// why these are ctx-threaded rather than plain package consts.
 	rangeBucketGridNativeMaxRows         int64
 	rangeBucketGridNativeMaxDensityUnits int64
+
+	// emittedSQLMaxBytes is the ceiling on the bytes of SQL one statement may
+	// render to before the emitter refuses it (issue #2733,
+	// emit_size_bound.go), seeded here once per Emit call from
+	// maxEmittedSQLBytesFromCtx — the operator's
+	// CERBERUS_CH_MAX_EMITTED_SQL_BYTES override threaded via internal/engine
+	// (WithMaxEmittedSQLBytes) or, when none was threaded, ClickHouse's own
+	// max_query_size default. Read only through emittedSQLByteBound(), never
+	// directly, for the same zero-value reason the three fanout bounds above
+	// document: a direct &emitter{} — which many tests in this package build —
+	// leaves it 0, and 0 read literally would reject every statement.
+	emittedSQLMaxBytes int64
+
+	// rootPlan is the whole plan this emitter was started on, stamped once by
+	// Emit purely so an emitted-SQL-size rejection can name the composition the
+	// USER wrote rather than whichever sub-statement happened to cross the
+	// ceiling first (see requireEmittedSQLBounded). Nothing reads it on the
+	// success path, and an emitter built outside Emit leaves it nil.
+	rootPlan chplan.Node
 
 	// cteSeq is a monotonic counter handed out to every emitter that
 	// registers a named CTE, so each one gets a unique name: the
