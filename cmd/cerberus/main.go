@@ -864,6 +864,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // is wired to a CONCRETE non-nil strategy —
 //
 //	rate      = enabled ? NativeRateLowerer{Fallback: FanoutRateLowerer{}} : FanoutRateLowerer{}
+//	increase  = enabled ? NativeIncreaseLowerer{Fallback: FanoutIncreaseLowerer{}} : FanoutIncreaseLowerer{}
 //	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
 //	changes   = enabled ? NativeChangesLowerer{Fallback: FanoutChangesLowerer{}} : FanoutChangesLowerer{}
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
@@ -896,6 +897,11 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		}
 	} else {
 		l.Rate = promql.FanoutRateLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridIncrease) {
+		l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+	} else {
+		l.Increase = promql.FanoutIncreaseLowerer{}
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}

@@ -75,6 +75,8 @@ type nativeTSGridAgg struct {
 // (predict_linear only) one extra trailing parametric arg:
 //
 //   - rate           -> timeSeriesRateToGrid          (shipped v25.6, >= 2 samples/window)
+//   - increase       -> timeSeriesRateToGrid          (same aggregate as rate, multiplied back by
+//     the window seconds — see this map's own "increase" entry doc)
 //   - changes        -> timeSeriesChangesToGrid       (v25.9 — PR #86010, >= 1 sample/window)
 //   - resets         -> timeSeriesResetsToGrid        (v25.9 — PR #86010, >= 1 sample/window)
 //   - deriv          -> timeSeriesDerivToGrid         (v25.8 — PR #84328, >= 2 samples/window)
@@ -111,6 +113,18 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 		StateFn: "timeSeriesRateToGridState",
 		MergeFn: "timeSeriesRateToGridMerge",
 	},
+	// increase reuses rate's own aggregate: there is no dedicated
+	// timeSeriesIncreaseToGrid upstream. emitRangeWindowGridNative multiplies
+	// the per-grid-point rate back by the window seconds — Prometheus's
+	// increase() IS extrapolatedRate() without the final /range divide (see
+	// FeatureTSGridIncrease's own doc). StateFn/MergeFn are deliberately left
+	// empty: no Native*Lowerer sets RangeWindowGridNative.Recollapse for
+	// increase (nativeTSGridMatrixNode is always called with noRecollapse for
+	// it — see NativeIncreaseLowerer), so requireRecollapseEmittable rejects
+	// any Recollapse a future caller might mistakenly attach rather than
+	// silently re-collapsing a function this cut never validated the merge
+	// for.
+	"increase":       {Fn: "timeSeriesRateToGrid"},
 	"changes":        {Fn: "timeSeriesChangesToGrid"},
 	"resets":         {Fn: "timeSeriesResetsToGrid"},
 	"deriv":          {Fn: "timeSeriesDerivToGrid"},
@@ -192,15 +206,17 @@ func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 
 // emitRangeWindowGridNative renders a chplan.RangeWindowGridNative — the
 // experimental ClickHouse-native lowering of an eligible matrix range
-// function (`rate` / `changes` / `resets`) over a query_range expression.
-// The aggregate NAME is selected per r.Func via nativeTSGridFn; the SQL
-// SHAPE is identical across the family. It produces EXACTLY the
+// function (`rate` / `increase` / `changes` / `resets`) over a query_range
+// expression. The aggregate NAME is selected per r.Func via nativeTSGridFn;
+// the SQL SHAPE is identical across the family. It produces EXACTLY the
 // per-(series, anchor) row shape the matching fan-out matrix path produces
-// (emitWindowedArrayExtrapolatedMatrix for rate; emitRangeWindowChanges /
-// emitRangeWindowResets for changes / resets), so the wrapping outer
-// Aggregate is byte-for-byte unaffected by the substitution. Shown for
-// rate; changes / resets swap only the aggregate name (and emit a per-window
-// COUNT rather than an extrapolated rate):
+// (emitWindowedArrayExtrapolatedMatrix for rate / increase;
+// emitRangeWindowChanges / emitRangeWindowResets for changes / resets), so
+// the wrapping outer Aggregate is byte-for-byte unaffected by the
+// substitution. Shown for rate; changes / resets swap only the aggregate
+// name (and emit a per-window COUNT rather than an extrapolated rate);
+// increase swaps only the outer Value expression, multiplying the grid cell
+// back by the window seconds (see nativeGridValueExpr):
 //
 //	SELECT <group cols>, anchor_ts, anchor_ts AS <TimestampColumn>,
 //	       toFloat64(assumeNotNull(grid_val)) AS <ValueColumn>
@@ -300,7 +316,7 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	}
 	agg, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
 	}
 	// predict_linear threads its future-offset horizon t (whole seconds) as the
 	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering
@@ -462,7 +478,7 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	if r.TimestampColumn != RangeWindowAnchorAlias {
 		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
 	}
-	outer.Select(As(Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias))), r.ValueColumn))
+	outer.Select(As(nativeGridValueExpr(r), r.ValueColumn))
 	outer.ArrayJoin(
 		As(Col(nativeGridArrayAlias), nativeGridValAlias),
 		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),
@@ -470,6 +486,29 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	outer.Where(IsNotNull(Col(nativeGridValAlias)))
 
 	return e.emitSelect(outer)
+}
+
+// nativeGridValueExpr renders the outer level's Value column: the exploded
+// grid cell stripped of Nullable, and — for r.Func == "increase" only —
+// multiplied back by the window's Range in seconds.
+//
+// timeSeriesRateToGrid answers PromQL's `rate` — the extrapolated increase
+// DIVIDED by the range. increase() is that same extrapolated increase
+// UNDIVIDED (Prometheus's `increase()` IS `extrapolatedRate()` with the final
+// `/range` divide left out — see FeatureTSGridIncrease's own doc), so
+// re-multiplying by the range restores the quantity the fan-out's
+// emitWindowedArrayExtrapolatedMatrix publishes for increase(). The multiply
+// happens AFTER assumeNotNull strips the Nullable wrapper, matching the
+// bucket-ladder's identical "multiply after ifNull" ordering
+// (bucketGridRungValAlias in range_bucket_grid_native.go) — NULL cells are
+// already filtered to absent rows by the caller's own `WHERE grid_val IS NOT
+// NULL`, so nativeGridValueExpr never multiplies a NULL.
+func nativeGridValueExpr(r *chplan.RangeWindowGridNative) Frag {
+	v := Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias)))
+	if r.Func != "increase" {
+		return v
+	}
+	return Mul(v, InlineLit(r.Range.Seconds()))
 }
 
 // requireRecollapseEmittable rejects every deferred-shaping node the emitter

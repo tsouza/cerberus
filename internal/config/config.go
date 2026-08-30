@@ -269,9 +269,14 @@ type Config struct {
 	// depends on the experimental setting
 	// `allow_experimental_time_series_aggregate_functions=1`, sent only
 	// on the queries that actually use the native node (see
-	// internal/engine), so unrelated queries are never touched. First cut
-	// is rate-only; increase / delta stay on the fan-out until a dedicated
-	// chDB differential sweep proves the timeSeriesDeltaToGrid mapping.
+	// internal/engine), so unrelated queries are never touched. This legacy
+	// alias only ever resolves ts_grid_range (rate); increase() has its own
+	// auto-selected ts_grid_increase feature (reusing timeSeriesRateToGrid,
+	// multiplied back by the window seconds — see
+	// docs/clickhouse-optimizations.md), reachable only via
+	// CERBERUS_CH_OPTIMIZATIONS / auto, not this flag. delta stays on the
+	// fan-out until a dedicated chDB differential sweep proves the
+	// timeSeriesDeltaToGrid mapping.
 	ExperimentalTSGridRange bool
 
 	// LogCommentShape, when true, lets the engine stamp ClickHouse

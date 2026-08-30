@@ -210,6 +210,8 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// is known — Recollapse is a modifier on Rate, not its own field.
 		case chopt.FeatureTSGridResample:
 			l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+		case chopt.FeatureTSGridIncrease:
+			l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
 		case chopt.FeatureTSGridResets:
 			l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
 		case chopt.FeatureTSGridDeriv:

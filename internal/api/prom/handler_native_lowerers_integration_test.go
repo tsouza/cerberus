@@ -1,8 +1,8 @@
 //go:build integration
 
-// handler_native_lowerers_integration_test.go proves the six ts_grid_*
-// native range-window lowerers (rate, staleness/resample, changes, resets,
-// deriv, predict_linear) can activate through this package's OWN
+// handler_native_lowerers_integration_test.go proves the seven ts_grid_*
+// native range-window lowerers (rate, increase, staleness/resample, changes,
+// resets, deriv, predict_linear) can activate through this package's OWN
 // *prom.Handler against a REAL ClickHouse server — not just that the
 // request driving each one still returns HTTP 200.
 //
@@ -17,9 +17,9 @@
 // permanently fan-out-only regardless of the connected server's version.
 // Nothing else in CI outside a full binary boot (docker-compose / e2e /
 // compose-smoke, none of which assert a specific native family activated)
-// exercises NativeRateLowerer, NativeStalenessLowerer, NativeChangesLowerer,
-// NativeResetsLowerer, NativeDerivLowerer, or NativePredictLinearLowerer —
-// issue #2487.
+// exercises NativeRateLowerer, NativeIncreaseLowerer, NativeStalenessLowerer,
+// NativeChangesLowerer, NativeResetsLowerer, NativeDerivLowerer, or
+// NativePredictLinearLowerer — issue #2487 (increase added by #2744).
 //
 // This test wires a *prom.Handler the way a real deployment's boot path
 // does, via internal/chopttest — extracted from cmd/cerberus's own
@@ -113,14 +113,22 @@ type nativeLowererFamily struct {
 }
 
 // nativeLowererFamilies is deliberately just the six families issue #2487
-// names. ClassicHistogram is out of scope here: this package's own
-// handler_histogram_integration_test.go and test/perf/nightly's
-// nightlyClassicHistogramLowerer already give it real activation coverage.
+// names plus increase (issue #2744, a rate() sibling that reuses the same
+// timeSeriesRateToGrid aggregate). ClassicHistogram is out of scope here:
+// this package's own handler_histogram_integration_test.go and
+// test/perf/nightly's nightlyClassicHistogramLowerer already give it real
+// activation coverage.
 var nativeLowererFamilies = []nativeLowererFamily{
 	{
 		Name:    "rate",
 		Feature: chopt.FeatureTSGridRange,
 		Query:   fmt.Sprintf("sum by(host) (rate(%s[%s]))", nativeLowererCounterMetric, nativeLowererRangeSelector),
+		WantFn:  "timeSeriesRateToGrid",
+	},
+	{
+		Name:    "increase",
+		Feature: chopt.FeatureTSGridIncrease,
+		Query:   fmt.Sprintf("sum by(host) (increase(%s[%s]))", nativeLowererCounterMetric, nativeLowererRangeSelector),
 		WantFn:  "timeSeriesRateToGrid",
 	},
 	{
@@ -294,7 +302,7 @@ func runNativeLowererQuery(t *testing.T, mux *http.ServeMux, query string, start
 
 // seedNativeLowererCounter seeds one monotonically increasing counter
 // series (nativeLowererCounterMetric) at nativeLowererScrapeInterval
-// cadence across [start, end], for the rate/resets families.
+// cadence across [start, end], for the rate/increase/resets families.
 func seedNativeLowererCounter(ctx context.Context, t *testing.T, client *chclient.Client, start, end time.Time) {
 	t.Helper()
 	var sb strings.Builder

@@ -1,11 +1,11 @@
 //go:build integration
 
-// realch_native_lowerers_integration_test.go proves the six ts_grid_*
+// realch_native_lowerers_integration_test.go proves the seven ts_grid_*
 // native range-window lowerers cerberus's own boot wiring
 // (cmd/cerberus/main.go's nativeRangeLowerers) can activate — rate,
-// staleness (resample), changes, resets, deriv, predict_linear — each fires
-// against a REAL ClickHouse server, not just that the request they drive
-// still returns HTTP 200.
+// increase, staleness (resample), changes, resets, deriv, predict_linear —
+// each fires against a REAL ClickHouse server, not just that the request
+// they drive still returns HTTP 200.
 //
 // # Why this test exists
 //
@@ -18,7 +18,7 @@
 // internal/api/prom/handler_histogram_integration_test.go. Nothing in CI
 // outside a full binary boot (docker-compose / e2e / compose-smoke, none of
 // which assert a specific native family activated) ever exercised
-// NativeRateLowerer, NativeStalenessLowerer, NativeChangesLowerer,
+// NativeRateLowerer, NativeIncreaseLowerer, NativeStalenessLowerer, NativeChangesLowerer,
 // NativeResetsLowerer, NativeDerivLowerer, or NativePredictLinearLowerer —
 // issue #2487.
 //
@@ -114,16 +114,23 @@ type nativeLowererFamily struct {
 }
 
 // nativeLowererFamilies is deliberately just the six families issue #2487
-// names — NativeRateLowerer, NativeStalenessLowerer, NativeChangesLowerer,
-// NativeResetsLowerer, NativeDerivLowerer, NativePredictLinearLowerer.
-// ClassicHistogram is out of scope here: test/perf/nightly's own
-// nightlyClassicHistogramLowerer already gives it real per-family
-// activation coverage.
+// names plus increase (issue #2744, a rate() sibling reusing the same
+// timeSeriesRateToGrid aggregate) — NativeRateLowerer, NativeIncreaseLowerer,
+// NativeStalenessLowerer, NativeChangesLowerer, NativeResetsLowerer,
+// NativeDerivLowerer, NativePredictLinearLowerer. ClassicHistogram is out of
+// scope here: test/perf/nightly's own nightlyClassicHistogramLowerer already
+// gives it real per-family activation coverage.
 var nativeLowererFamilies = []nativeLowererFamily{
 	{
 		Name:    "rate",
 		Feature: chopt.FeatureTSGridRange,
 		Query:   fmt.Sprintf("sum by(host) (rate(%s[%s]))", nativeLowererCounterMetric, nativeLowererRangeSelector),
+		WantFn:  "timeSeriesRateToGrid",
+	},
+	{
+		Name:    "increase",
+		Feature: chopt.FeatureTSGridIncrease,
+		Query:   fmt.Sprintf("sum by(host) (increase(%s[%s]))", nativeLowererCounterMetric, nativeLowererRangeSelector),
 		WantFn:  "timeSeriesRateToGrid",
 	},
 	{

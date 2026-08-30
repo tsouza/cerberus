@@ -18,9 +18,15 @@ import (
 //   - The wired native-rate strategy is active (the ts_grid_range feature,
 //     resolved from chopt.EnabledSet and injected into the lowering as a
 //     RangeLowerers strategy — never read per query). Default off.
-//   - Func == "rate" (the first cut; increase / delta have no dedicated
-//     timeSeries*ToGrid aggregate proven equivalent to Prom's
-//     funcIncrease / funcDelta yet, so they stay on the fan-out).
+//   - Func names a member of the timeSeries*ToGrid family a Native*Lowerer
+//     is wired for: "rate", "increase", "changes", "resets", "deriv",
+//     "predict_linear" (see internal/chsql.nativeTSGridFn). "increase"
+//     reuses rate's own timeSeriesRateToGrid aggregate, multiplied back by
+//     the window seconds at emit time — Prometheus's `increase()` IS
+//     `extrapolatedRate()` without the final `/range` divide. "delta" has
+//     no proven-equivalent timeSeries*ToGrid aggregate yet (the
+//     timeSeriesDeltaToGrid + reset-semantics mapping is unverified), so it
+//     stays on the fan-out.
 //   - The query is in range mode: Step > 0 and both Start and End are
 //     pinned (the materialised query_range grid). Instant queries
 //     (Step == 0) have no grid and are never eligible.
@@ -60,11 +66,12 @@ import (
 type RangeWindowGridNative struct {
 	Input Node
 
-	// Func is the PromQL range function. The first cut supports "rate"
-	// only; the field is retained (rather than implied) so the emitter's
-	// per-Func aggregate-name map can generalise to the rest of the
-	// timeSeries*ToGrid family behind the same flag later without an IR
-	// change.
+	// Func is the PromQL range function ("rate", "increase", "changes",
+	// "resets", "deriv", or "predict_linear" today — see
+	// internal/chsql.nativeTSGridFn); the field is retained (rather than
+	// implied) so the emitter's per-Func aggregate-name map can generalise
+	// to the rest of the timeSeries*ToGrid family behind its own sibling
+	// feature without an IR change.
 	Func string
 
 	// Range is the [duration] window from the PromQL source — the

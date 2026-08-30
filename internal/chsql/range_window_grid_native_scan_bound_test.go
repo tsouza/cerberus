@@ -76,6 +76,10 @@ var nativeScanBoundCases = map[string]nativeScanBoundCase{
 		query:    "rate(requests_total[5m])",
 		lowerers: promql.RangeLowerers{Rate: promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}}},
 	},
+	"increase": {
+		query:    "increase(requests_total[5m])",
+		lowerers: promql.RangeLowerers{Increase: promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}},
+	},
 	"changes": {
 		query:    "changes(queue_depth[5m])",
 		lowerers: promql.RangeLowerers{Changes: promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}},

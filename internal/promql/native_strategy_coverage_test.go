@@ -67,6 +67,13 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "Increase",
+		section: "experimental_ts_grid_increase",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+		},
+	},
+	{
 		field:   "Staleness",
 		section: "experimental_ts_grid_resample",
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {

@@ -3137,10 +3137,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		applyStepGridFanout(rw, ctx)
 
 		// BOOT-WIRED native dispatch (PURE polymorphic — no branching here):
-		// hand the fan-out RangeWindow to the boot-wired rate strategy. The
+		// hand the fan-out RangeWindow to c.Func.Name's own boot-wired strategy
+		// (Rate by default, or Increase/Changes/Resets/Deriv below). The
 		// decision of WHETHER the native path is active was made ONCE at boot
-		// (the ts_grid_range feature) and is encoded in the injected
-		// ctx.lowerers.Rate impl — there is NO feature-flag / version read AND
+		// (its own sibling ts_grid_* feature) and is encoded in the injected
+		// strategy impl — there is NO feature-flag / version read AND
 		// NO nil/presence check here. The strategy ALWAYS returns a valid
 		// lowering: the native impl emits timeSeriesRateToGrid for a
 		// shape-eligible rate window (rate func, materialised grid, plain
@@ -3154,23 +3155,25 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// test/spec/promql/native_rate_range_step.txtar and the dual-emit
 		// parity test).
 		//
-		// For a non-rate window (increase / delta / *_over_time) the strategy
-		// returns rw unchanged, so node stays rw and the last/first_over_time
-		// name-preservation wrap below applies exactly as before. For rate the
-		// returned node IS the lowering (native or fan-out RangeWindow); rate
-		// drops `__name__`, so it never matches the name-preservation wrap and
-		// flows through as-is.
+		// For a window with no dedicated strategy (delta / *_over_time / ...)
+		// node stays the fan-out rw, so the last/first_over_time
+		// name-preservation wrap below applies exactly as before. For rate /
+		// increase the returned node IS the lowering (native or fan-out
+		// RangeWindow); both drop `__name__`, so they never match the
+		// name-preservation wrap and flow through as-is.
 		//
 		// The function family is selected by c.Func.Name — pure AST/func
 		// dispatch, NOT a feature/version branch (that decision is baked into
 		// WHICH concrete strategy boot wired into each field). Each strategy is
 		// always non-nil (withDefaults), always returns a valid lowering, and
 		// keeps its own intrinsic shape-eligibility inside the impl. rate /
-		// changes / resets each route to their own boot-wired strategy; every
-		// other range fn (increase / delta / *_over_time / ...) keeps the fan-out
-		// rw via the rate strategy's pass-through (those funcs have no native
-		// timeSeries*ToGrid aggregate proven equivalent yet).
+		// increase / changes / resets / deriv / predict_linear each route to
+		// their own boot-wired strategy; every other range fn (delta /
+		// *_over_time / ...) keeps the fan-out rw unconditionally (those funcs
+		// have no native timeSeries*ToGrid aggregate proven equivalent yet).
 		switch c.Func.Name {
+		case "increase":
+			node = ctx.lowerers.Increase.LowerIncrease(rw, s)
 		case "changes":
 			node = ctx.lowerers.Changes.LowerChanges(rw, s)
 		case "resets":
