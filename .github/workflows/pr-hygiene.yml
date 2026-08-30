@@ -60,3 +60,20 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/pr-body-check.mjs
+
+      # cerberus#2739: prepare-release.mjs generates CHANGELOG.md's new
+      # `[vX.Y.Z]` section exactly ONCE, at release-PR-creation time. A commit
+      # landing on the release branch afterward (a hotfix pushed directly, or
+      # a `main` merge) falls out of it silently — this job already re-runs on
+      # `synchronize`, i.e. every such push, so it is the natural place to
+      # catch it. Gated to a `release/` head branch only: an ordinary PR's
+      # CHANGELOG.md has no per-commit contract (only regenerated at release
+      # time — see editChangelog's own "Always-generated policy" comment), so
+      # running this off a release branch would fail on every routine commit.
+      - name: Pin the freshness-gate logic
+        if: startsWith(github.head_ref, 'release/')
+        run: node --test .github/scripts/verify-changelog-fresh.test.mjs
+
+      - name: CHANGELOG.md accounts for every commit since the last tag
+        if: startsWith(github.head_ref, 'release/')
+        run: node .github/scripts/verify-changelog-fresh.mjs
