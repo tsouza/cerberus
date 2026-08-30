@@ -49,9 +49,37 @@ type RangeBucketFanout struct {
 
 	// Start / End define the eval grid; Step is the grid spacing.
 	// N = (End-Start)/Step + 1 anchors, end-inclusive.
+	//
+	// Ignored for anchor-grid purposes whenever OuterRange > 0 — see that
+	// field's own doc. Start still doubles as the (optional) scan-prune
+	// lower bound in that mode: set once a caller widens the plan spine
+	// onto a query_range grid (promql.widenSubquerySpine's own
+	// *RangeBucketFanout arm), left zero for the single-eval-anchor /
+	// pinned subquery shape (no scan bound pushed then, mirroring
+	// RangeWindow's identical gating).
 	Start time.Time
 	End   time.Time
 	Step  time.Duration
+
+	// OuterRange enables the SAME independent-subquery-grid mode
+	// [RangeWindow.OuterRange] already provides: when non-zero, the anchor
+	// grid is derived from (End, OuterRange, Step) — [End-OuterRange, End]
+	// spaced by Step, end-inclusive — instead of the (Start, End, Step)
+	// grid above. Set by the doubly-nested subquery lowering
+	// (`<fn>(<inner-sub>)[<outer-range>:<step>]`, cerberus issue #2726)
+	// for a histogram/mixed-shaped `wideInner`, mirroring the plain-float
+	// sibling's OuterRange-mode RangeWindow at the identical composition
+	// point (internal/promql's lowerSubqueryOverCallSubquery).
+	//
+	// Zero (the default) preserves today's (Start, End, Step) grid, used
+	// by every existing bare-selector / request-grid-anchored caller.
+	OuterRange time.Duration
+
+	// StepAlign requests that the OuterRange anchor grid be snapped to
+	// absolute-epoch multiples of Step, mirroring [RangeWindow.StepAlign]
+	// exactly — PromQL subquery inner-sample-grid semantics. Meaningless
+	// (and ignored) when OuterRange is zero.
+	StepAlign bool
 
 	// Lookback is the staleness horizon for the per-anchor window
 	// `(anchor - Offset - Lookback, anchor - Offset]` — instantLookback
@@ -145,7 +173,33 @@ func (r *RangeBucketFanout) Children() []Node { return []Node{r.Input} }
 // histogram-quantile-as-subquery-inner query with a divergent [range:step]
 // escaped the same protection its scalar sibling already had.
 func (r *RangeBucketFanout) NumAnchors() int64 {
+	if r.OuterRange > 0 {
+		// Mirrors RangeWindow.NumAnchors' own OuterRange formula exactly,
+		// including its choice to ignore StepAlign: the inclusive count is a
+		// safe (equal-or-over) upper bound for the budget gate either way,
+		// and RangeWindow's own NumAnchors already sets that precedent.
+		if r.Step <= 0 {
+			return 0
+		}
+		return r.OuterRange.Nanoseconds()/r.Step.Nanoseconds() + 1
+	}
 	return numAnchorsFromGrid(r.Start, r.End, r.Step)
+}
+
+// InputWindow returns the [start, end) bound this fan-out's OWN Input
+// spine must be widened to so every anchor it evaluates across [start, end]
+// finds every sample its window needs — the RangeBucketFanout twin of
+// [RangeWindow.InputWindow], sharing that method's role as the single
+// owner of this arithmetic (promql.widenSubquerySpine and
+// chplan.ReanchorRange both call this instead of re-deriving it).
+//
+// Each anchor reduces the samples in `(anchor-Offset-Lookback,
+// anchor-Offset]`, so the union across every anchor in [start, end] needs
+// input covering [start-Offset-Lookback, end]. Offset enters with its
+// sign, mirroring RangeWindow.InputWindow and RangeLWR's identical
+// Offset+Lookback widening.
+func (r *RangeBucketFanout) InputWindow(start, end time.Time) (time.Time, time.Time) {
+	return start.Add(-r.Offset - r.Lookback), end
 }
 
 // numAnchorsFromGrid is the shared end-inclusive anchor-count formula every
@@ -173,6 +227,9 @@ func (r *RangeBucketFanout) Equal(other Node) bool {
 		return false
 	}
 	if r.Step != o.Step || r.Lookback != o.Lookback || r.Offset != o.Offset {
+		return false
+	}
+	if r.OuterRange != o.OuterRange || r.StepAlign != o.StepAlign {
 		return false
 	}
 	if r.MinSamples != o.MinSamples {

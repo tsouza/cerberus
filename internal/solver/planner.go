@@ -899,6 +899,19 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// last sample. Re-gridded by chplan.ReanchorRange (and zeroed/re-filled
 		// by the slicer's UnpinSpine) the same way RangeLWR is, so it is
 		// routable.
+		//
+		// OuterRange > 0 is the independent-subquery-grid mode cerberus issue
+		// #2726 added (the doubly-nested subquery composition). Read it
+		// explicitly rather than deriving the span from End-Start, mirroring
+		// RangeWindow's identical carve-out below: that mode leaves Start
+		// zero, so End.Sub(Start) would read a garbage multi-century span.
+		// chplan.ReanchorRange fails this node closed whenever OuterRange > 0
+		// (reanchorRangeBucketFanout — no slice-invariance proof yet), so it
+		// is reported non-reanchorable here too, mirroring AbsentOverTime's
+		// identical live-grid-but-not-yet-shardable shape.
+		if v.OuterRange > 0 {
+			return carrierGeometry{outerRange: v.OuterRange, lookback: v.Lookback, reanchorable: false}, true
+		}
 		return carrierGeometry{outerRange: v.End.Sub(v.Start), lookback: v.Lookback, reanchorable: true}, true
 
 	case *chplan.AbsentOverTime:

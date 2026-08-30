@@ -1556,17 +1556,19 @@ func threadOuterRangeFnScalars(
 }
 
 // widenSubquerySpine threads the range-mode evaluation window down a
-// lowered subquery plan's spine: every matrix RangeWindow on the spine
-// is re-anchored to emit one row per anchor across [start, end], and
-// its OWN input spine widens per RangeWindow.InputWindow (Offset+Range of
-// lookback — the window is [End-Offset-Range, End-Offset]) so each of its
-// anchors finds the samples it needs. Wrapper nodes the subquery lowerings
-// interpose (Project / Aggregate / TopK / Filter) pass the requirement
-// through unchanged — they reshape rows per anchor but don't move time.
+// lowered subquery plan's spine: every matrix RangeWindow / RangeBucketFanout
+// on the spine is re-anchored to emit one row per anchor across [start, end],
+// and its OWN input spine widens per its own InputWindow (Offset+Range /
+// Offset+Lookback of lookback) so each of its anchors finds the samples it
+// needs. Wrapper nodes the subquery lowerings interpose (Project / Aggregate
+// / TopK / Filter / HistogramProjection) pass the requirement through
+// unchanged — they reshape rows per anchor but don't move time. VectorSetOp
+// (the Mixed-shape FOLD-family recombination, cerberus issue #2726) widens
+// both of its arms.
 //
-// Instant-shape RangeWindows (Step == 0) terminate the walk: they
-// resolve a single anchor themselves and appear only below shapes
-// (e.g. the scalar-argument subplans) whose evaluation is
+// Instant-shape RangeWindows / RangeBucketFanouts (Step == 0) terminate the
+// walk: they resolve a single anchor themselves and appear only below
+// shapes (e.g. the scalar-argument subplans) whose evaluation is
 // per-statement by contract.
 func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 	switch v := n.(type) {
@@ -1594,6 +1596,50 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 		// prediction call the same method so all three stay consistent (#1464).
 		inStart, inEnd := v.InputWindow(start, end)
 		widenSubquerySpine(v.Input, inStart, inEnd)
+	case *chplan.RangeBucketFanout:
+		// Gated on OuterRange > 0 (already-set, not merely Step > 0): a
+		// RangeBucketFanout in the CLASSIC (Start, End, Step) grid mode —
+		// the histogram-quantile / histogram-value-fn bucket fan-out, or
+		// the ambient-grid subquery-inner continuations
+		// (histogram_native_subquery_select.go /
+		// histogram_native_range_fn.go's own RangeBucketFanout builders) —
+		// is NOT part of this subquery's OWN outer-range widening chain
+		// even when it appears somewhere inside wideInner (cerberus issue
+		// #2726's doubly-nested composition re-lowers innerSub.Expr
+		// through the ordinary histogram-native machinery, which builds
+		// exactly this classic shape for a bare/value-fn selector). That
+		// node was already correctly gridded at ITS OWN lowering time
+		// (ctx.start/ctx.end there already account for the widened
+		// Range); blindly re-gridding it here — as an earlier version of
+		// this arm did — silently OVERWROTE that already-correct grid
+		// with values derived from a completely unrelated step/lookback,
+		// a shape-confusion bug this gate exists to prevent. Only a
+		// fanout already IN OuterRange mode (built by this issue's own
+		// buildOuterRangeSubqueryFanout) is re-anchored, mirroring the
+		// RangeWindow arm immediately above exactly.
+		if v.Step <= 0 || v.OuterRange <= 0 {
+			return
+		}
+		v.Start = start.UTC()
+		v.End = end.UTC()
+		v.OuterRange = end.Sub(start)
+		v.StepAlign = true
+		inStart, inEnd := v.InputWindow(start, end)
+		widenSubquerySpine(v.Input, inStart, inEnd)
+	case *chplan.HistogramProjection:
+		widenSubquerySpine(v.Input, start, end)
+	case *chplan.VectorSetOp:
+		// The Mixed-shape FOLD-family recombination (cerberus issue #2726's
+		// lowerMixedFoldOverCallSubqueryInput, mirroring the sum/avg-wrapped
+		// composer's combineMixedAggregateBranches) nests two more
+		// VectorSetOps below this one, each sharing the SAME histBranch /
+		// floatBranch node pointers by reference — widening one instance
+		// widens every reference to it, so visiting both arms of every
+		// VectorSetOp on the spine (redundant recursion into the shared
+		// pointers is idempotent) reaches every windowed leaf regardless of
+		// which arm it hangs off.
+		widenSubquerySpine(v.Left, start, end)
+		widenSubquerySpine(v.Right, start, end)
 	case *chplan.Project:
 		widenSubquerySpine(v.Input, start, end)
 	case *chplan.Aggregate:
@@ -2883,7 +2929,44 @@ func lowerSubqueryOverCallSubquery(
 	// its full window on the inner spine.
 	widened := *innerSub
 	widened.Range = sub.Range + innerSub.Range
-	wideInner, err := lowerSubquery(&widened, s, ctx)
+
+	// A pinned `sub` (`@ <ts>`) fixes ITS OWN evaluation window regardless
+	// of the ambient ctx or query_range grid — cascade that fixed window
+	// into the ctx used to grid wideInner too, mirroring
+	// [subqueryGridCtx]'s own priority (a pin wins over both range mode
+	// and the ambient instant fill). Forcing wideCtx to look instant
+	// (step=0) is what makes that priority apply: [subqueryGridCtx] checks
+	// `subqueryPinned` against innerSub's OWN modifiers, which are almost
+	// never pinned themselves, so its `ctx.rangeMode()` branch would
+	// otherwise fire first and grid off the ambient request window instead.
+	//
+	// Left unshifted, an UNPINNED innerSub reaching the classic ambient-grid
+	// histogram-native continuation ([lowerHistogramNativeSubqueryInner])
+	// resolves its own window against ctx.start/ctx.end directly — wrong
+	// whenever `sub` overrides them — and [widenSubquerySpine]'s
+	// RangeBucketFanout arm deliberately never re-anchors a classic
+	// ambient-mode fanout (OuterRange == 0) once built, so nothing
+	// downstream ever corrects it. This is a safe no-op for a
+	// SampleRowShape wideInner (a plain RangeWindow): the caller's own
+	// widenSubquerySpine pass unconditionally overwrites a RangeWindow's
+	// Start/End/OuterRange regardless of what ctx built it with. Cerberus
+	// issue #2728's own investigation surfaced this via a MixedRowShape
+	// wideInner; the identical gap already existed in this composition's
+	// own bare HistogramRowShape case — it just never had Pinned+Mixed
+	// coverage (TestSubqueryCallSubquery_HistAnd_LastOverTime_Pinned_ChDB
+	// only pins a pure-histogram `and`, which an OLDER single-level
+	// recognizer intercepts before this function is ever reached).
+	wideCtx := ctx
+	anchor, err := subqueryAnchor(sub, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if subqueryPinned(sub) && !anchor.End.IsZero() {
+		wideCtx.step = 0
+		wideCtx.end = anchor.End
+	}
+
+	wideInner, err := lowerSubquery(&widened, s, wideCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -2898,6 +2981,17 @@ func lowerSubqueryOverCallSubquery(
 	// this mirrors) already gets for
 	// `<outer-fn>(<bare-histogram-selector>[range:step])`.
 	if shape := chplan.RowShapeOf(wideInner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape {
+		// Cerberus issue #2726: wideInner may be histogram/mixed-shaped
+		// because innerSub's OWN inner expression resolved histogram-native
+		// (or a further and/unless/or wrapping one, cerberus issue #2724).
+		// lowerHistogramOrMixedCallSubqueryInput answers every one of the
+		// fifteen SELECT/FOLD-family names for this doubly-nested
+		// composition; anything else (deriv, predict_linear, ...) falls
+		// through unmatched to the existing float-only-drop / rejection
+		// handling below, unchanged.
+		if node, matched, err := lowerHistogramOrMixedCallSubqueryInput(wideInner, shape, call.Func.Name, sub, innerSub, step, s, ctx); matched {
+			return node, err
+		}
 		if !histogramSubqueryFloatOnlyDropFunc(call.Func.Name) {
 			return nil, fmt.Errorf("promql: %s over a subquery wrapping a native-histogram-valued shape is unsupported", call.Func.Name)
 		}
@@ -2905,11 +2999,6 @@ func lowerSubqueryOverCallSubquery(
 			return nil, err
 		}
 		return dropExpHistogramSamples(wideInner, s), nil
-	}
-
-	anchor, err := subqueryAnchor(sub, ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	rw := &chplan.RangeWindow{

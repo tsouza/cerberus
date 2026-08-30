@@ -403,15 +403,35 @@ func reanchorRangeLWR(v *RangeLWR, start, end time.Time) (Node, error) {
 // (series, anchor)'s raw BucketCounts/ExplicitBounds rows via
 // `GROUP BY (<user keys>, anchor)` instead of picking one last sample. Its
 // per-anchor membership window is the same shape as RangeLWR's:
-// `(anchor - Offset - Lookback, anchor - Offset]`, and it carries no
-// OuterRange field and no StepAlign mode (RangeBucketFanout only ever
-// lowers already gridded to the request's own step, never as a
-// subquery-inner epoch-aligned leaf) — so this mirrors reanchorRangeLWR
-// with the StepAlign branch dropped.
+// `(anchor - Offset - Lookback, anchor - Offset]` — so for the (Start, End,
+// Step) grid this mirrors reanchorRangeLWR with the StepAlign branch
+// dropped, that grid never having carried a StepAlign mode of its own
+// (RangeBucketFanout only ever lowered already gridded to the request's
+// own step, never as a subquery-inner epoch-aligned leaf, until cerberus
+// issue #2726 added OuterRange below).
+//
+// A node with OuterRange > 0 (the doubly-nested subquery composition
+// `<fn>(<inner-sub>)[<outer-range>:<step>]`, cerberus issue #2726) is fail
+// closed rather than re-gridded: the anchor grid there is derived from
+// (End, OuterRange, Step) — mirroring RangeWindow's own OuterRange mode —
+// and re-anchoring it onto an arbitrary [start, end] sub-grid needs the
+// same three-bound predicted-grid check plus StepAlign-aware epoch-floor
+// re-derivation reanchorRangeLWR's StepAlign branch performs for its own
+// epoch-aligned leaf. That generalization has no slice-invariance proof or
+// differential fixture yet, so — per this file's own discipline of never
+// silently re-anchoring a shape that has not been proven correct — every
+// query reaching this node under the sharded-pushdown solver aborts to
+// route A instead. internal/promql's widenSubquerySpine (the head-side,
+// mutate-in-place twin of this pass) still re-grids an OuterRange fan-out
+// for ordinary (non-sharded) range-mode fan-out; only THIS solver-facing
+// slicing path declines.
 func reanchorRangeBucketFanout(v *RangeBucketFanout, start, end time.Time) (Node, error) {
 	if v.Step <= 0 {
 		// No anchor grid to re-grid; share verbatim.
 		return v, nil
+	}
+	if v.OuterRange > 0 {
+		return nil, fmt.Errorf("%w: RangeBucketFanout.OuterRange > 0 sharding is not yet supported", ErrReanchorGridMismatch)
 	}
 	if err := checkPredictedGridBucketFanout(v, start, end); err != nil {
 		return nil, err
@@ -421,7 +441,8 @@ func reanchorRangeBucketFanout(v *RangeBucketFanout, start, end time.Time) (Node
 	c.End = end
 	// The membership window looks back Offset+Lookback from each anchor;
 	// widen the input spine by that much so every anchor finds its samples.
-	input, err := reanchor(v.Input, c.Start.Add(-v.Offset-v.Lookback), c.End)
+	inStart, inEnd := v.InputWindow(start, end)
+	input, err := reanchor(v.Input, inStart, inEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -528,11 +549,14 @@ func checkPredictedGridLWR(r *RangeLWR, predStart, predEnd time.Time) error {
 }
 
 // checkPredictedGridBucketFanout is checkPredictedGrid for a
-// RangeBucketFanout. Like RangeLWR it carries no OuterRange field — its
-// grid span is End-Start directly — so the predicted grid is just
-// [predStart, predEnd]. Either the bounds are unpinned (zero Start and End —
-// the slicer's UnpinSpine shape) or they already sit exactly on the
-// predicted grid. Anything else is rejected so the solver routes A.
+// RangeBucketFanout, in its (Start, End, Step) grid mode — the only mode
+// this check is ever reached in, since reanchorRangeBucketFanout fails
+// closed before calling it whenever OuterRange > 0. Like RangeLWR it
+// carries no OuterRange contribution to weigh in THIS mode — its grid span
+// is End-Start directly — so the predicted grid is just [predStart,
+// predEnd]. Either the bounds are unpinned (zero Start and End — the
+// slicer's UnpinSpine shape) or they already sit exactly on the predicted
+// grid. Anything else is rejected so the solver routes A.
 // checkPredictedGridBucketGridNative is checkPredictedGridBucketFanout for the
 // native ladder: same two-bound form, same @-pinned-divergence refusal.
 func checkPredictedGridBucketGridNative(r *RangeBucketGridNative, predStart, predEnd time.Time) error {

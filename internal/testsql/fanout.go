@@ -239,12 +239,28 @@ func seededTables(seed string) map[string][]string {
 // referencedColumns returns the sorted set of backtick-quoted
 // identifiers in sql that name a base-relation column: every quoted
 // identifier, minus those that appear anywhere as an `AS` target, as a
-// `FROM`/`JOIN` operand, or as a `WITH <name> AS (…)` CTE head. See
-// [CheckSeedCoversFanOut] for why the subtraction is applied globally
-// (and is therefore under-approximate).
+// `FROM`/`JOIN` operand, as a `WITH <name> AS (…)` CTE head, or as the
+// UN-backticked target of a `RawAs`-style `AS <bareAlias>` (chsql's
+// verbatim-alias primitive, used package-wide for its own
+// emitter-chosen internal names — "anchor_ts", "window_pairs",
+// "series_array", and [fanoutTsSource]'s own "_src_ts" rename — which
+// render with no backticks at all, unlike every user-column alias
+// [As] emits). Without this last exclusion, a nested matrix RangeWindow
+// whose own TimestampColumn happens to be "anchor_ts" — the
+// [fanoutTsSource] rename this issue's doubly-nested subquery
+// composition (cerberus issue #2726) is the first shape to combine with
+// a merge()-fanout self-sufficiency check — renders `SELECT *, anchor_ts
+// AS _src_ts FROM (…)` with the alias bare, so the LATER backtick-quoted
+// “ `_src_ts` “ reads of it were flagged as an unseeded base column: a
+// false positive in this check, not a real gap in any fixture's seed.
+// See [CheckSeedCoversFanOut] for why the subtraction is applied
+// globally (and is therefore under-approximate).
 func referencedColumns(sql string) []string {
 	seen := map[string]bool{}
 	notColumn := map[string]bool{}
+	for _, name := range rawAliasTargets(sql) {
+		notColumn[name] = true
+	}
 	for i := 0; i < len(sql); i++ {
 		switch sql[i] {
 		case '\'':
@@ -263,6 +279,73 @@ func referencedColumns(sql string) []string {
 		}
 	}
 	return sortedKeys(seen, notColumn)
+}
+
+// rawAliasTargets returns every bare (un-backticked) identifier that
+// appears as the target of an `AS <ident>` clause in sql — the shape
+// chsql's RawAs primitive renders for its own emitter-chosen internal
+// aliases. String literals are skipped so a regex or literal payload
+// spelling " AS foo" is never mistaken for one.
+func rawAliasTargets(sql string) []string {
+	var out []string
+	for i := 0; i < len(sql); i++ {
+		if sql[i] == '\'' {
+			i = skipStringLiteral(sql, i)
+			continue
+		}
+		if sql[i] == '`' {
+			end := strings.IndexByte(sql[i+1:], '`')
+			if end < 0 {
+				break
+			}
+			i += end + 1
+			continue
+		}
+		if !hasWordPrefix(sql[i:], "AS") {
+			continue
+		}
+		rest := sql[i+2:]
+		if len(rest) == 0 || !isBlank(rest[0]) {
+			continue
+		}
+		rest = strings.TrimLeft(rest, " \t\n\r")
+		if rest == "" || rest[0] == '`' || rest[0] == '(' {
+			// Backtick-quoted (handled by the main scan) or a CTE body —
+			// not a bare alias.
+			continue
+		}
+		name := identPrefix(rest)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// hasWordPrefix reports whether s starts with word (case-insensitive)
+// followed by a non-identifier byte or end of string — i.e. word appears
+// as a whole token, not as the head of a longer identifier.
+func hasWordPrefix(s, word string) bool {
+	if len(s) < len(word) || !strings.EqualFold(s[:len(word)], word) {
+		return false
+	}
+	return len(s) == len(word) || !isIdentByte(s[len(word)])
+}
+
+// isBlank reports whether c is SQL whitespace.
+func isBlank(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// identPrefix returns the longest leading run of s's bytes matching
+// [isIdentByte] — the bare identifier at the start of s, or "" if s does
+// not start with one.
+func identPrefix(s string) string {
+	n := 0
+	for n < len(s) && isIdentByte(s[n]) {
+		n++
+	}
+	return s[:n]
 }
 
 // relationKeywords introduce a name that is an alias or a relation

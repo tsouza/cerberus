@@ -132,7 +132,7 @@ func lowerSumOrAvgOverMixedExpHistogramSetOp(agg *parser.AggregateExpr, b *parse
 		return nil, err
 	}
 
-	return combineMixedAggregateBranches(histBranch, floatBranch, s, ctx), nil
+	return combineMixedAggregateBranches(histBranch, floatBranch, s, ctx.step > 0), nil
 }
 
 // shadowResolveMixedExpHistogramOperands lowers b's two operands
@@ -160,9 +160,9 @@ func shadowResolveMixedExpHistogramOperands(b *parser.BinaryExpr, s schema.Metri
 	orMatch := mixedExpHistogramMatch(b)
 	histForAgg, floatForAgg = histNode, floatNode
 	if histOnLeft {
-		floatForAgg = mixedOrShadowUnless(floatNode, histNode, false, orMatch, s, ctx)
+		floatForAgg = mixedOrShadowUnless(floatNode, histNode, false, orMatch, s, ctx.step > 0)
 	} else {
-		histForAgg = mixedOrShadowUnless(histNode, floatNode, true, orMatch, s, ctx)
+		histForAgg = mixedOrShadowUnless(histNode, floatNode, true, orMatch, s, ctx.step > 0)
 	}
 	return histForAgg, floatForAgg, nil
 }
@@ -196,13 +196,21 @@ func shadowResolveFloatArmChecked(b *parser.BinaryExpr, s schema.Metrics, ctx lo
 // names which of left/right is the histogram-valued side, matching
 // [chplan.VectorSetOp.Histogram]'s existing "the arm actually publishing
 // the nine Histogram*Column outputs" contract.
-func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match chplan.VectorMatch, s schema.Metrics, ctx lowerCtx) chplan.Node {
+//
+// stepAligned tells the emitter whether left/right carry one row per
+// series (false) or one row per (series, anchor) (true) — the ambient
+// query's own rangeMode() for every caller except cerberus issue #2726's
+// doubly-nested composition, whose branches are multi-row per OUTER
+// subquery anchor regardless of whether the ambient query is instant or
+// range (its grid is sub.Range/step, not ctx's), so that caller passes
+// true unconditionally rather than deriving it from ctx.
+func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match chplan.VectorMatch, s schema.Metrics, stepAligned bool) chplan.Node {
 	return &chplan.VectorSetOp{
 		Left:             left,
 		Right:            right,
 		Op:               chplan.VectorSetUnless,
 		Match:            match,
-		StepAligned:      ctx.step > 0,
+		StepAligned:      stepAligned,
 		Histogram:        leftIsHistogram,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
@@ -230,17 +238,21 @@ func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match ch
 // surviving one side's UNLESS cannot also survive the other's), so the
 // union's own shadow test is a structural no-op and the arbitrary
 // Left/Right choice below doesn't affect the result.
-func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, ctx lowerCtx) chplan.Node {
+//
+// stepAligned is threaded through to [mixedOrShadowUnless] and the outer
+// Mixed union unchanged — see that function's doc for why a caller must
+// pass it explicitly rather than this function deriving it from ctx.
+func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
 	groupMatch := chplan.VectorMatch{}
-	histOnly := mixedOrShadowUnless(histBranch, floatBranch, true, groupMatch, s, ctx)
-	floatOnly := mixedOrShadowUnless(floatBranch, histBranch, false, groupMatch, s, ctx)
+	histOnly := mixedOrShadowUnless(histBranch, floatBranch, true, groupMatch, s, stepAligned)
+	floatOnly := mixedOrShadowUnless(floatBranch, histBranch, false, groupMatch, s, stepAligned)
 
 	return &chplan.VectorSetOp{
 		Left:                 histOnly,
 		Right:                floatOnly,
 		Op:                   chplan.VectorSetOr,
 		Match:                groupMatch,
-		StepAligned:          ctx.step > 0,
+		StepAligned:          stepAligned,
 		Mixed:                true,
 		MixedHistogramOnLeft: true,
 		MetricNameColumn:     s.MetricNameColumn,

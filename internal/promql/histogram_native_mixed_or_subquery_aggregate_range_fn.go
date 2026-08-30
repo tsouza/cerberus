@@ -280,7 +280,7 @@ func lowerSumOrAvgMixedOrSubqueryFoldFn(shape sumOrAvgMixedOrSubqueryShape, grid
 	// the SAME group cannot resurface in both folds) — the identical
 	// "structural no-op" reuse [combineMixedAggregateBranches]'s own doc
 	// describes for its ROOT-only caller applies here too, one level up.
-	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx), nil
+	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil
 }
 
 // lowerSumOrAvgMixedOrSubqueryFoldFnRange is [lowerSumOrAvgMixedOrSubqueryFoldFn]'s
@@ -348,8 +348,8 @@ func lowerSumOrAvgMixedOrSubqueryFoldFnRange(shape sumOrAvgMixedOrSubqueryShape,
 	histExists := mixedOrSubqueryHistExistsFanout(histBranch, sub.Range, anchor.Offset, s, ctx)
 	floatExists := mixedOrSubqueryFloatRangeWindow(floatBranch, countOverTimeWindowFn, sub.Range, anchor.Offset, s, ctx)
 
-	histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx)
-	floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx)
+	histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx.step > 0)
+	floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx.step > 0)
 
 	// histPure/floatPure are already disjoint by group-and-anchor
 	// construction (the two anti-joins above exclude any (group, anchor)
@@ -357,7 +357,7 @@ func lowerSumOrAvgMixedOrSubqueryFoldFnRange(shape sumOrAvgMixedOrSubqueryShape,
 	// recombine is the identical "structural no-op" reuse
 	// [lowerSumOrAvgMixedOrSubqueryFoldFn] already documents for its own
 	// single-window sibling.
-	return combineMixedAggregateBranches(histPure, floatPure, s, ctx), nil
+	return combineMixedAggregateBranches(histPure, floatPure, s, ctx.step > 0), nil
 }
 
 // mixedOrSubqueryFloatRangeWindow builds the plain-float per-anchor fan-out
