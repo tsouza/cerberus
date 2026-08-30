@@ -100,9 +100,13 @@ import { runLegBuffered } from './lib/spawn-tagged.mjs';
 /**
  * How many PROCESSES each head's leg fans out to.
  *
- * A GitHub-hosted `ubuntu-latest` runner has 4 cores, and each leg runs its two
- * packages with `-p 1` (below), so the fan-out count IS the number of test
- * binaries competing for those cores — no hidden second multiplier.
+ * A GitHub-hosted `ubuntu-latest` runner is 2 vCPU (confirmed by reproducing
+ * a `phase4-promql-h` gremlins leg's CI-only failure locally under
+ * `GOMAXPROCS=2 taskset -c 0,1` during the v1.19.0 cycle's own release
+ * ritual — the mismatch with the 4-core figure this comment used to state was
+ * never re-measured), and each leg runs its two packages with `-p 1` (below),
+ * so the fan-out count IS the number of test binaries competing for those
+ * cores — no hidden second multiplier.
  *
  * promql is the only head that needs one. Its leg takes ~700s where logql's and
  * traceql's whole JOBS — checkout, toolchain, libchdb install and all — finish
@@ -110,16 +114,29 @@ import { runLegBuffered } from './lib/spawn-tagged.mjs';
  * fan-out would buy them nothing but N-times-repeated compilation of the
  * non-corpus tests in the same packages.
  *
- * Three rather than four for promql, because chDB threads WITHIN a single query
- * as well: a leg already uses more than one core, so a fan-out matching the core
- * count oversubscribes rather than spreads. That is the same effect measured on
- * the update-golden fan-out, where 8 legs on an 8-core box (252s) came out
- * WORSE than 4 (231s) — the useful margin is over the serial walk, not at the
- * top of the range. Three legs leave a core for the runner's own work and still
- * cut the walk to roughly a third.
+ * Two rather than three for promql (dropped 2026-08-30): three processes on a
+ * confirmed 2-vCPU runner means every leg runs at roughly two thirds of a
+ * core, and `./internal/promql/...`'s own hand-written test suite — which
+ * this fan-out does NOT shard (only `spec.ShardFromEnv`-aware `TestLower` and
+ * `test/spec/promql`'s `TestRoundTripChDB` do; every other top-level test in
+ * the package runs in full on every leg) — grew past ~2000 new lines of
+ * chDB-backed tests over the doubly/triply-nested subquery composability
+ * campaign (EPIC #2617), until one leg's three-way-contended share of that
+ * now-larger fixed cost missed the per-process timeout below on a real
+ * release-gate run (`roundtrip-promql-shard (3)`, PR #2736). chDB also
+ * threads WITHIN a single query, so even two processes on two cores already
+ * lean toward oversubscription rather than headroom — matching the
+ * diminishing-returns floor the update-golden fan-out measured (8 legs on an
+ * 8-core box, 252s, came out WORSE than 4, 231s) — but two is the fan-out
+ * this runner's actual core count can spread across at all; one would forgo
+ * in-runner parallelism entirely. The unsharded internal/promql suite's own
+ * growing absolute cost is a wider problem the fan-out count alone cannot
+ * solve — see the timeout comment below for the immediate mitigation; a
+ * durable fix wants a partition of internal/promql's own test suite —
+ * cerberus#2737.
  */
 const FANOUT = {
-  promql: 3,
+  promql: 2,
   logql: 1,
   traceql: 1,
 };
@@ -143,8 +160,17 @@ const FANOUT = {
  * stuck). 25 restores real headroom over actual leg runtime while staying
  * well below chdb.yml's 35-minute job cap (see the assertion below), so it
  * stays a hang detector rather than a throughput ceiling.
+ *
+ * Bumped from 25 to 32 on 2026-08-30, alongside FANOUT.promql dropping from 3
+ * to 2 above: `internal/promql`'s own unsharded test suite (see the FANOUT
+ * comment) grew enough this cycle to blow the 25-minute bound on a real
+ * release-gate run (`roundtrip-promql-shard (3)`, PR #2736) even with the
+ * reduced fan-out's lighter contention. This is again a genuine-growth bump,
+ * not a wedged-call one — the failing run's goroutine dump showed ordinary
+ * tests still executing. See cerberus#2737 for the durable fix; this bump
+ * plus the fan-out cut are the release-blocking mitigation.
  */
-export const GO_TEST_TIMEOUT_MINUTES = 25;
+export const GO_TEST_TIMEOUT_MINUTES = 32;
 
 /** The env pair spec.ShardFromEnv reads. Contract with test/spec/shard.go. */
 const SPEC_SHARD_INDEX_ENV = 'SPEC_SHARD_INDEX';

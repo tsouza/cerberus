@@ -4,6 +4,24 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ## [Unreleased]
 
+## [v1.19.0] — 2026-08-30
+
+### Fixed
+
+- **ci:** gate release PRs on CHANGELOG.md staying current with their own commits (#2740)
+- **ci:** partition internal/promql's unsharded test suite across roundtrip-promql-shard legs (#2738)
+- **ci:** relieve roundtrip-promql-shard's CPU contention and timeout budget
+- **chsql:** bound emitted SQL at ClickHouse's own max_query_size (#2734)
+- **promql:** answer an outer range fn over the doubly-nested subquery composition (#2732)
+- **promql:** thread histogram/mixed shape through doubly-nested subquery composition (#2727)
+- **promql:** close further and/unless/or wrapping a mixed-or subquery (#2724) (#2725)
+- **promql:** close remaining sum/avg-wrapped mixed-or subquery gaps (#2714, #2715) (#2723)
+
+### Documentation
+
+- **release:** backfill v1.19.0's CHANGELOG/chart annotation for two late fixes
+- **promql:** correct widenSubquerySpine's VectorSetOp nesting rationale (#2735)
+
 ## [v1.18.1] — 2026-08-29
 
 ### Fixed
