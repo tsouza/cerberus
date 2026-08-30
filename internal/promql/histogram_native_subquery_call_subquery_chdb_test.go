@@ -813,3 +813,151 @@ func TestSubqueryCallSubquery_HistAnd_SelectFamily_OverMixedOrOperand_ChDB(t *te
 		})
 	}
 }
+
+// TestSubqueryCallSubquery_MixedOr_FirstOverTime_ChDB is
+// TestSubqueryCallSubquery_MixedOr_LastOverTime_ChDB's opposite-direction
+// twin: lowerMixedLastFirstOverCallSubqueryInput builds an argMin set
+// rather than an argMax one for first_over_time, and both selections read
+// wideInner's SAME published columns, so both directions have to be
+// pinned against a genuinely MixedRowShape wideInner (not merely
+// HistogramRowShape, which TestSubqueryCallSubquery_HistAnd_FirstOverTime_OverMixedOrOperand_ChDB
+// already covers) to prove this file's own Mixed dispatch line. Every
+// 2m/1m window at outer anchor T holds wideInner's samples at (T-1m) and
+// T, so the EARLIEST is (T-1m)'s — Count/Sum/Value = minute(T) in
+// callSubqMixedOrSeed's shared Count/Value=minute+1 pattern for both
+// series.
+func TestSubqueryCallSubquery_MixedOr_FirstOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	query := "first_over_time(((" + callSubqMixedHistMetric + ") or (" + callSubqMixedGaugeMetric + "))[2m:1m])[10m:1m]"
+	sqlStr, args := lowerAndEmit(t, query, s, evalTS)
+
+	histRows := subqHistQueryRows(t, fixture, sqlStr, args)
+	for _, anchor := range anchors {
+		row := subqHistRowAt(t, histRows, "h", anchor)
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		if row.cnt != j || row.sum != j || row.bucket1 != j*2 {
+			t.Errorf("series h anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v (the earliest sample in the 2m window, one minute before this anchor)",
+				anchor, row.cnt, row.sum, row.bucket1, j, j, j*2)
+		}
+	}
+
+	floatRows := rangeSampleValueRows(t, fixture, sqlStr, args)
+	for _, anchor := range anchors {
+		j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+		got, ok := floatRows["g"][anchor.Unix()]
+		if !ok {
+			t.Errorf("series g anchor %v: no float row found", anchor)
+			continue
+		}
+		if got != j {
+			t.Errorf("series g anchor %v: Value = %v, want %v (the earliest sample in the window)", anchor, got, j)
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_MixedOr_CountPresentOverTime_ChDB proves
+// count_over_time / present_over_time — dispatched through
+// lowerSelectFnOverCallSubqueryInput UNCONDITIONALLY on shape, per
+// lowerHistogramOrMixedCallSubqueryInput's own switch — over a genuinely
+// MixedRowShape wideInner: series "h" (histogram-typed at every anchor)
+// and series "g" (float-typed at every anchor) both read only the
+// sample-quartet aggregates these two names use, so neither series'
+// answer depends on its own row type. Every one of this file's 2m/1m
+// windows contains exactly two of wideInner's own per-inner-anchor rows,
+// so both series must read count=2 and present=1 at every outer anchor.
+func TestSubqueryCallSubquery_MixedOr_CountPresentOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	countSQL, countArgs := lowerAndEmit(t, "count_over_time((("+callSubqMixedHistMetric+") or ("+callSubqMixedGaugeMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	countRows := rangeSampleValueRows(t, fixture, countSQL, countArgs)
+	for _, series := range []string{"h", "g"} {
+		for _, anchor := range anchors {
+			got, ok := countRows[series][anchor.Unix()]
+			if !ok {
+				t.Fatalf("count_over_time: no row for series %s anchor %v: %+v", series, anchor, countRows)
+			}
+			if got != 2 {
+				t.Errorf("count_over_time series %s anchor %v: got %v, want 2 (exactly two 1-minute-spaced samples in every 2m window)", series, anchor, got)
+			}
+		}
+	}
+
+	presentSQL, presentArgs := lowerAndEmit(t, "present_over_time((("+callSubqMixedHistMetric+") or ("+callSubqMixedGaugeMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+	presentRows := rangeSampleValueRows(t, fixture, presentSQL, presentArgs)
+	for _, series := range []string{"h", "g"} {
+		for _, anchor := range anchors {
+			got, ok := presentRows[series][anchor.Unix()]
+			if !ok {
+				t.Fatalf("present_over_time: no row for series %s anchor %v: %+v", series, anchor, presentRows)
+			}
+			if got != 1 {
+				t.Errorf("present_over_time series %s anchor %v: got %v, want 1", series, anchor, got)
+			}
+		}
+	}
+}
+
+// TestSubqueryCallSubquery_MixedOr_SumAvgOverTime_ChDB proves the
+// MixedRowShape FOLD-family dispatch (lowerMixedFoldOverCallSubqueryInput)
+// for sum_over_time / avg_over_time: the histogram arm folds through
+// lowerExpHistogramFoldOverCallSubqueryInput exactly as
+// TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB's own
+// HistogramRowShape case does, the float arm folds through an ordinary
+// OuterRange-mode RangeWindow, and combineMixedAggregateBranches
+// recombines them. Unlike rate/increase/delta (which apply a boundary-
+// extrapolation factor TestSubqueryCallSubquery_MixedOr_Rate_ChDB's own
+// sibling declines to hand-derive), sum_over_time/avg_over_time are pure
+// additive folds with no correction, so — exactly as
+// TestSubqueryCallSubquery_HistAnd_SumAvgOverTime_ChDB does for the
+// HistogramRowShape case — both functions' results are exact arithmetic
+// here too, for EITHER series' own type: every 2m/1m window at outer
+// anchor T holds wideInner's two samples at (T-1m) and T (Count/Value =
+// minute+1 in callSubqMixedOrSeed's shared pattern for both series).
+func TestSubqueryCallSubquery_MixedOr_SumAvgOverTime_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, callSubqMixedOrSeed())
+	s := schema.DefaultOTelMetrics()
+	evalTS := callSubqSeedBaseTS.Add(12 * time.Minute)
+	anchors := callSubqOuterAnchors()
+
+	for _, fn := range []string{"sum_over_time", "avg_over_time"} {
+		sqlStr, args := lowerAndEmit(t, fn+"((("+callSubqMixedHistMetric+") or ("+callSubqMixedGaugeMetric+"))[2m:1m])[10m:1m]", s, evalTS)
+
+		histRows := subqHistQueryRows(t, fixture, sqlStr, args)
+		for _, anchor := range anchors {
+			row := subqHistRowAt(t, histRows, "h", anchor)
+			j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+			want := 2*j + 1
+			if fn == "avg_over_time" {
+				want /= 2
+			}
+			if row.cnt != want || row.sum != want || row.bucket1 != want*2 {
+				t.Errorf("%s series h anchor %v: got Count=%v Sum=%v Bucket1=%v, want %v/%v/%v",
+					fn, anchor, row.cnt, row.sum, row.bucket1, want, want, want*2)
+			}
+		}
+
+		floatRows := rangeSampleValueRows(t, fixture, sqlStr, args)
+		for _, anchor := range anchors {
+			j := float64(anchor.Sub(callSubqSeedBaseTS) / time.Minute)
+			want := 2*j + 1
+			if fn == "avg_over_time" {
+				want /= 2
+			}
+			got, ok := floatRows["g"][anchor.Unix()]
+			if !ok {
+				t.Errorf("%s series g anchor %v: no float row found", fn, anchor)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s series g anchor %v: got %v, want %v", fn, anchor, got, want)
+			}
+		}
+	}
+}
