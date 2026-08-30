@@ -1377,6 +1377,18 @@ func classifyEngineError(err error) error {
 	if ae := classifyThrowIfGuardError(err); ae != nil {
 		return ae
 	}
+	// A query whose plan composes to more SQL than ClickHouse will parse
+	// (issue #2733). Nothing is broken — the shape is valid and lowers
+	// cleanly, the emitter simply cannot express it in one statement the
+	// server would accept — so it belongs in the same 422 errorType=execution
+	// "cannot be served" class as the resource-bound guards above rather than
+	// in the emit-stage 500 bucket below, which would report a user's exotic
+	// query as a cerberus fault. It is also the status this exact query had
+	// before issue #2728 opened the composition arm it now rides: back then it
+	// was refused at LOWERING, which this function already maps to 422.
+	if errors.Is(err, chsql.ErrEmittedSQLTooLarge) {
+		return &apiError{Kind: ErrExecution, Err: err, Status: http.StatusUnprocessableEntity}
+	}
 	msg := err.Error()
 	switch {
 	case errContainsStage(msg, "emit"):

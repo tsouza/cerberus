@@ -196,10 +196,11 @@ func emitForHead(
 	return chsql.Emit(ctx, plan)
 }
 
-// applyResourceBoundOverrides threads onto ctx only the CERBERUS_CH_*_MAX_ROWS
-// overrides bounds actually carries (issue #2667) — a zero field means the
-// operator never set that one (see ResourceBoundOverrides' own doc: a
-// fanout row bound of zero is never a legitimate override), so it is left
+// applyResourceBoundOverrides threads onto ctx only the CERBERUS_CH_*
+// overrides bounds actually carries (issue #2667, plus issue #2733's
+// MaxEmittedSQLBytes) — a zero field means the operator never set that one
+// (see ResourceBoundOverrides' own doc: neither a fanout row bound nor a
+// statement-size bound of zero is a legitimate override), so it is left
 // unthreaded and chsql's own *FromCtx readers fall back to that bound's
 // compiled-in, calibrated default exactly as if this function were never
 // called. Shared by emitForHead (route A) and routeBExecCtx (route B) so
@@ -213,6 +214,9 @@ func applyResourceBoundOverrides(ctx context.Context, bounds ResourceBoundOverri
 	}
 	if bounds.RateWindowFanoutMaxRows > 0 {
 		ctx = chsql.WithRateWindowFanoutMaxRows(ctx, bounds.RateWindowFanoutMaxRows)
+	}
+	if bounds.MaxEmittedSQLBytes > 0 {
+		ctx = chsql.WithMaxEmittedSQLBytes(ctx, bounds.MaxEmittedSQLBytes)
 	}
 	return ctx
 }
@@ -229,6 +233,7 @@ func (e *Engine) resourceBoundOverrides() ResourceBoundOverrides {
 		RangeBucketFanoutMaxRows: e.RangeBucketFanoutMaxRows,
 		RangeLWRFanoutMaxRows:    e.RangeLWRFanoutMaxRows,
 		RateWindowFanoutMaxRows:  e.RateWindowFanoutMaxRows,
+		MaxEmittedSQLBytes:       e.MaxEmittedSQLBytes,
 	}
 }
 
@@ -915,6 +920,30 @@ type Engine struct {
 	RangeBucketFanoutMaxRows int64
 	RangeLWRFanoutMaxRows    int64
 	RateWindowFanoutMaxRows  int64
+
+	// MaxEmittedSQLBytes mirrors the operator override for chsql's
+	// emitted-SQL statement-size bound (issue #2733,
+	// internal/chsql/emit_size_bound.go): CERBERUS_CH_MAX_EMITTED_SQL_BYTES,
+	// wired from the same engine.ResourceBoundsFromEnv ResourceBoundOverrides
+	// in cmd/cerberus, threaded through the same applyResourceBoundOverrides
+	// seam, and carrying the same "0 means the operator set nothing" sentinel
+	// as the three fields above.
+	//
+	// Unlike those three it is wired onto EVERY head's Engine, because it
+	// bounds a property every head has: the bytes of one emitted statement.
+	// The default it falls back to is ClickHouse's own max_query_size default,
+	// so a deployment that has not touched either setting sees a cerberus
+	// rejection exactly where it would otherwise have seen the server's own
+	// code 62 — and a deployment that raised max_query_size raises this to
+	// match.
+	//
+	// The Tempo head's two non-Engine emit paths (root_lookup.go and
+	// structural_two_phase.go call chsql.Emit directly, off the request context
+	// rather than through emitForHead) never see this field and so always run
+	// on chsql's compiled-in default. Neither renders a composed metrics plan —
+	// they are a trace-by-id lookup and a bounded structural phase A — so
+	// neither approaches the ceiling; the override is simply not threaded there.
+	MaxEmittedSQLBytes int64
 
 	// RangeBucketGridNativeMaxRows / RangeBucketGridNativeMaxDensityUnits
 	// mirror config.Config's own fields of the same name (CERBERUS_RANGE_
