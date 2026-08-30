@@ -47,10 +47,20 @@ var derivedShapeVerdicts = map[string]bool{
 	// `_mvj_L_*`/`_mvj_R_*`-prefixed aliases (internal/chsql/
 	// mixed_vector_join.go) — no bare MetricName column either.
 	"MixedVectorJoin": true,
+	// StepGrid's own SELECT publishes ONE column — its anchor — so none
+	// of the canonical four is in scope. Its only consumer is CrossJoin
+	// (below), which is canonical exactly when the OTHER side is, so a
+	// broadcast Project over `StepGrid × <reducing node>` correctly stays
+	// derived instead of naming a MetricName nothing publishes.
+	"StepGrid": true,
 
 	// Everything else keeps the canonical columns in scope (or is
 	// re-canonicalised by its own emit, as a nested VectorSetOp is).
-	"AbsentOverTime":          false,
+	"AbsentOverTime": false,
+	// The populated instance below pairs two canonical Scans, so both
+	// sides supply the canonical columns; the real `StepGrid × reducing
+	// node` pairing is derived, and TestIsDerivedShape_Transparency pins
+	// both directions.
 	"CrossJoin":               false,
 	"Filter":                  false,
 	"HistogramQuantile":       false,
@@ -77,7 +87,6 @@ var derivedShapeVerdicts = map[string]bool{
 	"Scan":                     false,
 	"SearchTraceLimit":         false,
 	"SetOperation":             false,
-	"StepGrid":                 false,
 	"StructuralJoin":           false,
 	"TopK":                     false,
 	"UnionAll":                 false,
@@ -182,6 +191,37 @@ func TestIsDerivedShape_Transparency(t *testing.T) {
 		{
 			"Filter above a value-rewrite Project above a derived inner stays derived",
 			&chplan.Filter{Input: &chplan.Project{Input: window, Projections: valueRewrite}},
+			true,
+		},
+		// The `@`-pinned broadcast shape: a StepGrid CROSS JOINed with an
+		// already-reduced relation, re-projected without MetricName. Both
+		// sides have to be consulted — the grid publishes only its anchor
+		// and the reduction only its group keys and value, so the join
+		// publishes no MetricName at all. Classifying it canonical is what
+		// emitted a bare `MetricName` reference into that scope (ClickHouse
+		// code 47) for `sum_over_time(((<exp-hist>) or (<gauge>))[4m:1m] @
+		// <ts>)` under query_range.
+		{
+			"StepGrid alone is derived",
+			&chplan.StepGrid{Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(), Step: time.Minute},
+			true,
+		},
+		{
+			"StepGrid crossed with a derived inner stays derived",
+			&chplan.CrossJoin{Left: &chplan.StepGrid{Step: time.Minute}, Right: window},
+			true,
+		},
+		{
+			"StepGrid crossed with a canonical inner is canonical",
+			&chplan.CrossJoin{Left: &chplan.StepGrid{Step: time.Minute}, Right: scan},
+			false,
+		},
+		{
+			"broadcast Project over a StepGrid cross join stays derived",
+			&chplan.Project{
+				Input:       &chplan.CrossJoin{Left: &chplan.StepGrid{Step: time.Minute}, Right: window},
+				Projections: valueRewrite,
+			},
 			true,
 		},
 	} {

@@ -33,8 +33,9 @@ import (
 //     correctly implemented in this codebase — [combineMixedAggregateBranches]
 //     (histogram_native_mixed_or_aggregate.go, cerberus issue #2346),
 //     reduces the histogram arm and the float arm SEPARATELY and combines
-//     them with a drop-on-group-collision rule (two UNLESSes + a Mixed
-//     `or`), not a naive per-arm distribute. And it is ALREADY reachable at
+//     them with a drop-on-group-collision rule (one
+//     [chplan.VectorSetOp.MixedDropCollisions] union), not a naive
+//     per-arm distribute. And it is ALREADY reachable at
 //     a subquery's own per-anchor grid: [lowerSubquery] tries
 //     [lowerHistogramNativeSubqueryInner] first, which runs
 //     [lowerHistogramNativeRoot] — [sumOrAvgOverMixedExpHistogramSetOp] /
