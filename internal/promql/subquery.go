@@ -1566,8 +1566,10 @@ func threadOuterRangeFnScalars(
 // needs. Wrapper nodes the subquery lowerings interpose (Project / Aggregate
 // / TopK / Filter / HistogramProjection) pass the requirement through
 // unchanged — they reshape rows per anchor but don't move time. VectorSetOp
-// (the Mixed-shape FOLD-family recombination, cerberus issue #2726) widens
-// both of its arms.
+// widens both of its arms unconditionally, reaching both the flat node
+// combineMixedAggregateBranches emits and the 2-level nesting composers
+// like lowerSumOrAvgMixedOrSubqueryFoldFnRange (cerberus issue #2715) build
+// from independent mixedOrShadowUnless arms.
 //
 // Instant-shape RangeWindows / RangeBucketFanouts (Step == 0) terminate the
 // walk: they resolve a single anchor themselves and appear only below
@@ -1632,15 +1634,16 @@ func widenSubquerySpine(n chplan.Node, start, end time.Time) {
 	case *chplan.HistogramProjection:
 		widenSubquerySpine(v.Input, start, end)
 	case *chplan.VectorSetOp:
-		// The Mixed-shape FOLD-family recombination (cerberus issue #2726's
-		// lowerMixedFoldOverCallSubqueryInput, mirroring the sum/avg-wrapped
-		// composer's combineMixedAggregateBranches) nests two more
-		// VectorSetOps below this one, each sharing the SAME histBranch /
-		// floatBranch node pointers by reference — widening one instance
-		// widens every reference to it, so visiting both arms of every
-		// VectorSetOp on the spine (redundant recursion into the shared
-		// pointers is idempotent) reaches every windowed leaf regardless of
-		// which arm it hangs off.
+		// combineMixedAggregateBranches (post the MixedDropCollisions
+		// refactor) always emits exactly one flat VectorSetOp, so this arm
+		// is not walking shared node pointers under a single instance.
+		// Genuine 2-level nesting comes from composers like
+		// lowerSumOrAvgMixedOrSubqueryFoldFnRange, which builds its
+		// histPure/floatPure arms via two independent
+		// mixedOrShadowUnless-produced VectorSetOps and then wraps THOSE in
+		// one more via combineMixedAggregateBranches — three distinct nodes,
+		// not shared references. Visiting both arms unconditionally is what
+		// reaches every windowed leaf in either the flat or the nested case.
 		widenSubquerySpine(v.Left, start, end)
 		widenSubquerySpine(v.Right, start, end)
 	case *chplan.Project:
