@@ -18,6 +18,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Documentation
 
+- **release:** backfill v1.19.0's CHANGELOG/chart annotation for two late fixes
 - **promql:** correct widenSubquerySpine's VectorSetOp nesting rationale (#2735)
 
 ## [v1.18.1] — 2026-08-29
