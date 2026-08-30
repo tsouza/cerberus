@@ -8,6 +8,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 
 ### Fixed
 
+- **ci:** gate release PRs on CHANGELOG.md staying current with their own commits (#2740)
 - **ci:** partition internal/promql's unsharded test suite across roundtrip-promql-shard legs (#2738)
 - **ci:** relieve roundtrip-promql-shard's CPU contention and timeout budget
 - **chsql:** bound emitted SQL at ClickHouse's own max_query_size (#2734)
