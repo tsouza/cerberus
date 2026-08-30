@@ -1,0 +1,52 @@
+# lagInFrame annotation shape (cerberus issue #2759) for idelta() in RANGE
+# mode, exercising a DUPLICATE-TIMESTAMP window — chsql's
+# emitLagAdjacencyPairs. The `experimental_lag_adjacency_idelta` section
+# opts the fixture into RangeLowerers.Idelta = LagAdjacencyIdeltaLowerer.
+#
+# Two samples share timestamp 00:02:00 (values 2.0 and 5.0). The array-fold
+# path's arraySort(groupArray((ts, value))) tuple order picks the max-VALUE
+# duplicate (5.0) as the "later" element; this shape's
+# `PARTITION BY ... ORDER BY ts, value ROWS BETWEEN UNBOUNDED PRECEDING AND
+# CURRENT ROW` + `leadInFrame(ts) != ts` survivor flag is built to pick the
+# identical row (see range_window_lag_adjacency.go's doc). Window for the
+# 00:05:00 anchor is (00:00:00, 00:05:00]: samples 1.0, 2.0, 5.0, 10.0
+# sorted — idelta is the last two: 10.0 - 5.0 = 5.0 (NOT 10.0 - 2.0).
+-- query.promql --
+idelta(temperature[5m])
+-- range_step --
+5m
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- experimental_lag_adjacency_idelta --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 5.0),
+    ('temperature', map('host', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 10.0);
+-- expected_rows --
+[]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "temperature"
+-- chplan --
+RangeWindow func=idelta range=5m0s step=5m0s outerRange=5m0s lagAdjacency=true ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=(MetricName = "temperature")
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, tupleElement(curr, 1) - tupleElement(curr, 2) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, count() AS `n`, argMaxIf((`Value`, `prev_val`, `TimeUnix`, `prev_ts`), `TimeUnix`, `is_last_of_run`) AS `curr` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `prev_ts`, `prev_val`, `is_last_of_run`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 300000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(300000000000)) < 0) + 1), least(2, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(300000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(300000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `Attributes`, `TimeUnix`, `Value`, lagInFrame(`TimeUnix`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix`, `Value` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `prev_ts`, lagInFrame(`Value`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix`, `Value` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `prev_val`, leadInFrame(`TimeUnix`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix`, `Value` ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) != `TimeUnix` AS `is_last_of_run` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') PREWHERE (`MetricName` = ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9))) GROUP BY `Attributes`, `anchor_ts`) WHERE `n` >= 2

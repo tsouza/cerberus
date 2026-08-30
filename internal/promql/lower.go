@@ -3166,10 +3166,14 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// WHICH concrete strategy boot wired into each field). Each strategy is
 		// always non-nil (withDefaults), always returns a valid lowering, and
 		// keeps its own intrinsic shape-eligibility inside the impl. rate /
-		// changes / resets each route to their own boot-wired strategy; every
+		// changes / resets / irate / idelta each route to their own boot-wired
+		// strategy (changes/resets/irate/idelta may resolve to the lagInFrame
+		// annotation shape, chplan.RangeWindow.LagAdjacency — issue #2759 —
+		// layered beneath changes/resets' own native ts_grid strategy); every
 		// other range fn (increase / delta / *_over_time / ...) keeps the fan-out
 		// rw via the rate strategy's pass-through (those funcs have no native
-		// timeSeries*ToGrid aggregate proven equivalent yet).
+		// timeSeries*ToGrid aggregate or lagInFrame annotation proven equivalent
+		// yet).
 		switch c.Func.Name {
 		case "changes":
 			node = ctx.lowerers.Changes.LowerChanges(rw, s)
@@ -3177,6 +3181,10 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 			node = ctx.lowerers.Resets.LowerResets(rw, s)
 		case "deriv":
 			node = ctx.lowerers.Deriv.LowerDeriv(rw, s)
+		case "irate":
+			node = ctx.lowerers.Irate.LowerIrate(rw, s)
+		case "idelta":
+			node = ctx.lowerers.Idelta.LowerIdelta(rw, s)
 		default:
 			node = ctx.lowerers.Rate.LowerRate(rw, s)
 		}
