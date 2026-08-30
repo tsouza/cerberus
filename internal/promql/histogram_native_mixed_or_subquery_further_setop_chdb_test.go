@@ -17,6 +17,7 @@
 package promql_test
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -196,5 +197,61 @@ func TestFurtherSetOpAnd_TrueFanout_ChDB(t *testing.T) {
 	}
 	if got := rows["f1"][end.Unix()]; got != 55 {
 		t.Errorf("sum_over_time and @ %v: series f1 = %v, want 55 (only the 00:06 sample is in this anchor's own [1m] window)", end, got)
+	}
+}
+
+// TestFurtherSetOpMixedOr_PinnedBroadcast_ChDB pins the `@`-pinned
+// query_range shape of the very same FOLD-family lowering:
+// [lowerFloatFoldOverSubqueryInput]'s pinned branch broadcasts its
+// single-window reduction across the step grid through a StepGrid CROSS
+// JOIN, and the recombination that unions it with the histogram half has
+// to see that broadcast as a DERIVED shape and synthesise MetricName
+// rather than reference it.
+//
+// It did not: [chplan.IsDerivedShape] had no CrossJoin arm, so the
+// broadcast Project fell through to its "canonical" default and the
+// emitted union named a `MetricName` column that scope has none of —
+// ClickHouse code 47 (UNKNOWN_IDENTIFIER), for every query of this shape.
+// The chdb-tagged coverage this file already had never reached it because
+// every other case here is instant or unpinned.
+func TestFurtherSetOpMixedOr_PinnedBroadcast_ChDB(t *testing.T) {
+	fixture := newChDBFixture(t, fsopSeed)
+	s := schema.DefaultOTelMetrics()
+
+	// A query_range window 999 hours past every seeded sample, with the
+	// real eval instant pinned: every output step must reduce the pinned
+	// window and report the same per-series answer.
+	wrongStart := fsopEvalTS.Add(999 * time.Hour)
+	wrongEnd := wrongStart.Add(2 * time.Minute)
+	query := "sum_over_time(" + fsopMixedOr() + "[1m:1m] @ " + strconv.FormatInt(fsopEvalTS.Unix(), 10) + ")"
+	sqlStr, args := lowerAndEmitRange(t, query, s, wrongStart, wrongEnd, time.Minute)
+
+	rows := rangeSampleValueRows(t, fixture, sqlStr, args)
+	// [wrongStart, wrongEnd] at 1m spacing, end-inclusive.
+	wantSteps := int(wrongEnd.Sub(wrongStart)/time.Minute) + 1
+	for series, want := range map[string]float64{"f1": 42, "f2": 99} {
+		if got := len(rows[series]); got != wantSteps {
+			t.Errorf("series %s landed on %d steps, want %d (the pinned answer broadcast across the whole grid)", series, got, wantSteps)
+		}
+		for ts, got := range rows[series] {
+			if got != want {
+				t.Errorf("series %s step %v = %v, want %v (the pinned window's own sum, not the ambient window's)", series, time.Unix(ts, 0).UTC(), got, want)
+			}
+		}
+	}
+
+	histRows := subqHistQueryRows(t, fixture, sqlStr, args)
+	histSteps := map[int64]bool{}
+	for _, r := range histRows {
+		if r.series != "h1" {
+			continue
+		}
+		histSteps[r.ts] = true
+		if r.cnt != 2 || r.sum != 4 {
+			t.Errorf("series h1 step %v: Count=%v Sum=%v, want 2/4 (the pinned window's own single histogram sample)", time.Unix(r.ts, 0).UTC(), r.cnt, r.sum)
+		}
+	}
+	if len(histSteps) != wantSteps {
+		t.Errorf("series h1 landed on %d steps, want %d", len(histSteps), wantSteps)
 	}
 }

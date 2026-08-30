@@ -71,19 +71,19 @@ import (
 //     the canonical Timestamp contract the aggregate's own GroupBy
 //     needs).
 //  4. The two per-group reductions are combined with the reference
-//     "drop a group present on both sides" rule via TWO MORE VectorSetOp
-//     UNLESSes (histogram-only groups, float-only groups) and a final
-//     Mixed `or` union — reusing the plain (non-mixed) UNLESS's
-//     label-signature-and-timestamp matching and the leaf mixed-`or`
-//     union's [chplan.VectorSetOp.Mixed] contract respectively, neither
-//     of which needed a single new emitter line. A group present on
-//     both sides never reaches EITHER unless's output, so it is dropped
-//     exactly where reference drops it; a group present on only one
-//     side survives through that side's own reduction unchanged.
+//     "drop a group present on both sides" rule by ONE leaf mixed-`or`
+//     union in [chplan.VectorSetOp.MixedDropCollisions] mode: it reads
+//     each branch once and keeps only the label-signature-and-timestamp
+//     keys exactly one branch owns, so a group present on both sides is
+//     dropped exactly where reference drops it and a group present on
+//     only one side survives through that side's own reduction unchanged.
+//     See [combineMixedAggregateBranches] for why the equivalent
+//     `(hist unless float) or (float unless hist)` tree — the original
+//     spelling, which named each branch twice — had to go.
 //
-// No new chplan or chsql surface: every node this file builds is a
-// [chplan.VectorSetOp], a [chplan.Aggregate], or a [chplan.Project],
-// composed the same way their existing callers already do.
+// Every node this file builds is a [chplan.VectorSetOp], a
+// [chplan.Aggregate], or a [chplan.Project], composed the same way their
+// existing callers already do.
 
 // sumOrAvgOverMixedExpHistogramSetOp reports whether expr is `sum`/`avg`
 // [by/without] directly wrapping a mixed float/histogram `or`
@@ -227,38 +227,42 @@ func mixedOrShadowUnless(left, right chplan.Node, leftIsHistogram bool, match ch
 // annotation, not an error); a key present on only one side survives
 // through that side's own reduction unchanged.
 //
-// Built from three more [chplan.VectorSetOp] nodes, all reusing existing
-// mechanisms unchanged: two plain UNLESSes compute "histogram-only
-// groups" and "float-only groups" (matching on the FULL reconstructed
-// Attributes — the aggregation's own output identity — not the `or`'s
-// on()/ignoring() clause, which governed shadow resolution one stage
-// earlier and has no further role here), and the leaf mixed-`or` union
-// ([chplan.VectorSetOp.Mixed], histogram_native_mixed_or.go) combines
-// them. The two UNLESS outputs are disjoint by construction (a key
-// surviving one side's UNLESS cannot also survive the other's), so the
-// union's own shadow test is a structural no-op and the arbitrary
-// Left/Right choice below doesn't affect the result.
+// One [chplan.VectorSetOp] carries the whole rule:
+// [chplan.VectorSetOp.MixedDropCollisions] turns the leaf mixed-`or`
+// union (histogram_native_mixed_or.go) from `or`'s left-biased union
+// into a SYMMETRIC DIFFERENCE on the match key, which is exactly what
+// "drop the keys both sides claim, keep the keys one side owns" means.
+// The key matches on the FULL reconstructed Attributes — the
+// aggregation's own output identity — not the `or`'s on()/ignoring()
+// clause, which governed shadow resolution one stage earlier and has no
+// further role here.
 //
-// stepAligned is threaded through to [mixedOrShadowUnless] and the outer
-// Mixed union unchanged — see that function's doc for why a caller must
-// pass it explicitly rather than this function deriving it from ctx.
+// The equivalent spelling as a tree of three nodes — two plain UNLESSes
+// computing "histogram-only groups" and "float-only groups", unioned by
+// a left-biased mixed `or` — names each branch TWICE, so its emitted SQL
+// holds two copies of each branch's whole subplan and ClickHouse reads
+// each branch twice. That cost squares under stacking: cerberus issue
+// #2728's triple-nested subquery composition puts one of these
+// recombinations directly on top of another, and the two-node-per-branch
+// spelling emitted 549KB of SQL — past ClickHouse's own max_ast_elements
+// ceiling — where this one emits 142KB.
+//
+// stepAligned is threaded through to the union unchanged — see
+// [mixedOrShadowUnless]'s doc for why a caller must pass it explicitly
+// rather than this function deriving it from ctx.
 func combineMixedAggregateBranches(histBranch, floatBranch chplan.Node, s schema.Metrics, stepAligned bool) chplan.Node {
-	groupMatch := chplan.VectorMatch{}
-	histOnly := mixedOrShadowUnless(histBranch, floatBranch, true, groupMatch, s, stepAligned)
-	floatOnly := mixedOrShadowUnless(floatBranch, histBranch, false, groupMatch, s, stepAligned)
-
 	return &chplan.VectorSetOp{
-		Left:                 histOnly,
-		Right:                floatOnly,
-		Op:                   chplan.VectorSetOr,
-		Match:                groupMatch,
-		StepAligned:          stepAligned,
-		Mixed:                true,
-		MixedHistogramOnLeft: true,
-		MetricNameColumn:     s.MetricNameColumn,
-		AttributesColumn:     s.AttributesColumn,
-		TimestampColumn:      s.TimestampColumn,
-		ValueColumn:          s.ValueColumn,
+		Left:                histBranch,
+		Right:               floatBranch,
+		Op:                  chplan.VectorSetOr,
+		Match:               chplan.VectorMatch{},
+		StepAligned:         stepAligned,
+		Mixed:               true,
+		MixedDropCollisions: true,
+		MetricNameColumn:    s.MetricNameColumn,
+		AttributesColumn:    s.AttributesColumn,
+		TimestampColumn:     s.TimestampColumn,
+		ValueColumn:         s.ValueColumn,
 	}
 }
 

@@ -151,6 +151,30 @@ type VectorSetOp struct {
 	// "is this the histogram side" answer to give.
 	MixedHistogramOnLeft bool
 
+	// MixedDropCollisions narrows a Mixed VectorSetOr from `or`'s
+	// left-wins union to reference Prometheus's mixed-aggregation-group
+	// rule: a match key carrying rows from BOTH arms is a group whose
+	// members disagreed on value type, which reference drops entirely
+	// (a MixedFloatsHistogramsAggWarning annotation, not an error), while
+	// a key present on only one arm survives through that arm unchanged.
+	// The union is therefore a SYMMETRIC DIFFERENCE on the match key
+	// rather than a left-biased union, and MixedHistogramOnLeft has no
+	// effect: a collision drops both sides, so neither arm wins one.
+	//
+	// It exists so internal/promql's combineMixedAggregateBranches can
+	// express that rule as ONE node reading each branch ONCE, instead of
+	// the equivalent three-node `(hist unless float) or (float unless
+	// hist)` spelling — which names each branch TWICE, so every stacked
+	// recombination squared the emitted SQL and doubled the reads
+	// (cerberus issue #2728: a triple-nested subquery composition stacks
+	// two of them and emitted 549KB of SQL, past ClickHouse's own
+	// max_ast_elements ceiling, for a query the single-node spelling
+	// emits in 142KB).
+	//
+	// Meaningful only alongside Mixed with Op == VectorSetOr; the emitter
+	// rejects it anywhere else rather than silently ignoring it.
+	MixedDropCollisions bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -170,6 +194,9 @@ func (s *VectorSetOp) Equal(other Node) bool {
 		return false
 	}
 	if s.Mixed != o.Mixed || s.MixedHistogramOnLeft != o.MixedHistogramOnLeft {
+		return false
+	}
+	if s.MixedDropCollisions != o.MixedDropCollisions {
 		return false
 	}
 	if s.MetricNameColumn != o.MetricNameColumn ||

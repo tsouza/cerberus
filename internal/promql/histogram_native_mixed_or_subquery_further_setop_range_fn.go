@@ -55,20 +55,36 @@ import (
 //     sum/avg-wrapped composer's own FOLD-family lowering keeps the two
 //     arms separate the whole way through, precisely so its window-purity
 //     test can filter each one before folding).
+//
+// # A THIRD level of nesting
+//
+// When sub is ITSELF cerberus issue #2726's doubly-nested shape
+// (`<fn>(<inner-sub>)[<outer-range>:<step>]`, [nestedCallSubqueryShape]),
+// inner is a per-(series, OUTER-subquery-anchor) already-REDUCED relation
+// rather than a raw per-sample one. That is not a reason to refuse it:
+// what every continuation below folds over is exactly "the samples sub's
+// range vector holds", and for this shape those samples ARE inner's
+// per-outer-anchor rows. What the doubly-nested shape does need, and a
+// singly-nested one does not, is [widenNestedCallSubqueryInner] — its own
+// outer-subquery grid is built against sub's anchor alone
+// ([lowerSubqueryOverCallSubquery] leaves the re-anchoring to its caller,
+// exactly as the plain-float sibling does), so it must be re-anchored onto
+// THIS reduction's window before any continuation reads it. See that
+// function for the three grid modes, and for why the classic ambient-grid
+// fan-outs buried inside its own wideInner stay untouched (cerberus issue
+// #2728).
 func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.RowShape, windowFn string, sub *parser.SubqueryExpr, s schema.Metrics, ctx lowerCtx) (node chplan.Node, matched bool, err error) {
 	if nestedCallSubqueryShape(sub.Expr) {
-		// A THIRD level of nesting — `<outer-fn2>(<fn>(<inner-sub>)[<outer
-		// -range>:<step>])`, sub itself being the doubly-nested shape
-		// cerberus issue #2726's lowerSubqueryOverCallSubquery answers.
-		// That composition's own output is already a per-(series,
-		// OUTER-subquery-anchor) REDUCED relation, not a raw per-sample
-		// one — every continuation this switch dispatches to assumes the
-		// latter, so routing here would silently re-fold an
-		// already-folded value. #2726 scopes fixing its own doubly-nested
-		// shape only; a triple nesting stays unmatched here and falls
-		// through to the caller's pre-#2726 float-only-drop/reject
-		// fallback, exactly as it did before this fix.
-		return nil, false, nil
+		// Widening mutates inner in place, so it must not run for a name
+		// the switch below leaves unmatched (deriv, predict_linear, …) —
+		// those fall through to the caller's own float-only-drop /
+		// rejection handling over the UNwidened relation.
+		if !histogramSubqueryOuterFnName(windowFn) {
+			return nil, false, nil
+		}
+		if err := widenNestedCallSubqueryInner(inner, sub, ctx); err != nil {
+			return nil, false, err
+		}
 	}
 	switch windowFn {
 	case countOverTimeWindowFn, presentOverTimeWindowFn, tsOfFirstOverTimeExpHistFn, tsOfLastOverTimeExpHistFn:
@@ -119,8 +135,8 @@ func lowerHistogramOrMixedSubqueryOuterFnInput(inner chplan.Node, shape chplan.R
 // [lowerFloatFoldOverSubqueryInput] for the float side, both already
 // three-grid-mode capable) before recombining via
 // [combineMixedAggregateBranches]'s own "structural no-op" reuse (the two
-// folded branches are disjoint by construction, so its own UNLESS pair
-// keeps every row).
+// folded branches are disjoint by construction, so its drop-on-collision
+// rule never has a collision to drop and every row survives).
 func lowerFurtherWrapMixedOrSubqueryFoldFn(mixedRel chplan.Node, sub *parser.SubqueryExpr, windowFn string, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {
 	histSchema := histogramProjectionSchema(s)
 	histSchema.AggregationTemporalityColumn = ""

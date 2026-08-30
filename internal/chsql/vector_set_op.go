@@ -15,6 +15,15 @@ import (
 const (
 	setOpSideCol    = "_setop_side"
 	setOpHasLeftCol = "_setop_has_left"
+	// setOpHasRightCol is `_setop_has_left`'s mirror —
+	// `max(_setop_side = 1) OVER (PARTITION BY <sig>)` — projected only
+	// by a [chplan.VectorSetOp.MixedDropCollisions] union, whose survival
+	// test is symmetric: a signature carried by BOTH arms is a value-type
+	// collision reference Prometheus drops entirely, so `has_left = 0 OR
+	// has_right = 0` keeps exactly the signatures one arm alone owns.
+	// The left-biased `or` needs only the left flag and never projects
+	// this one.
+	setOpHasRightCol = "_setop_has_right"
 	// setOpMixedIsHistogramCol is the trailing per-row discriminator a
 	// Mixed VectorSetOr's fourteen-column projection carries (cerberus
 	// issue #2330): 1 when the row came from the histogram-shaped arm
@@ -268,6 +277,14 @@ func (e *emitter) emitVectorSetOp(s *chplan.VectorSetOp) error {
 //     internal/chclient's cursor needs it on every row of the actual
 //     result set to decide which of Sample.Value / Sample.Histogram is
 //     the real answer.
+//
+// [chplan.VectorSetOp.MixedDropCollisions] swaps the survival test for
+// its symmetric twin — `_setop_has_left = 0 OR _setop_has_right = 0`,
+// keeping only the signatures exactly one arm owns — without touching
+// either arm's projection or the single UNION ALL pass. That is the
+// whole point of expressing reference Prometheus's drop-the-disagreeing-
+// group rule here rather than as a `(L unless R) or (R unless L)` tree:
+// the tree names each arm twice, this reads each arm once.
 func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
 	leftFrag, err := e.subqueryFrag(s.Left)
 	if err != nil {
@@ -283,27 +300,27 @@ func (e *emitter) emitMixedVectorSetOp(s *chplan.VectorSetOp) error {
 
 	sideArmL := mixedVectorSetOpSideArmFrag(s, leftArm, 0)
 	sideArmR := mixedVectorSetOpSideArmFrag(s, rightArm, 1)
+	partition := setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned)
+	sideFlag := func(side int, alias string) Frag {
+		return As(Window(Call("max", Eq(Col(setOpSideCol), InlineLit(side))), partition, nil), alias)
+	}
+	// The left-biased union's survival test reads a row's OWN side, so
+	// that shape must re-project `_setop_side` alongside the flag; the
+	// symmetric-difference test reads only the two partition-wide flags,
+	// so it doesn't.
+	windowCols := []Frag{Col(setOpSideCol), sideFlag(0, setOpHasLeftCol)}
+	survives := Or(Eq(Col(setOpSideCol), InlineLit(0)), Eq(Col(setOpHasLeftCol), InlineLit(0)))
+	if s.MixedDropCollisions {
+		windowCols = []Frag{sideFlag(0, setOpHasLeftCol), sideFlag(1, setOpHasRightCol)}
+		survives = Or(Eq(Col(setOpHasLeftCol), InlineLit(0)), Eq(Col(setOpHasRightCol), InlineLit(0)))
+	}
 	windowed := NewQuery().
-		Select(append(
-			mixedVectorSetOpOutputCols(s),
-			Col(setOpSideCol),
-			As(
-				Window(
-					Call("max", Eq(Col(setOpSideCol), InlineLit(0))),
-					setOpMatchKeyFrags(s.Match, s.AttributesColumn, s.TimestampColumn, s.StepAligned),
-					nil,
-				),
-				setOpHasLeftCol,
-			),
-		)...).
+		Select(append(mixedVectorSetOpOutputCols(s), windowCols...)...).
 		From(Paren(UnionAll(sideArmL, sideArmR)))
 	outer := NewQuery().
 		Select(mixedVectorSetOpOutputCols(s)...).
 		From(windowed.Frag()).
-		Where(Or(
-			Eq(Col(setOpSideCol), InlineLit(0)),
-			Eq(Col(setOpHasLeftCol), InlineLit(0)),
-		))
+		Where(survives)
 	return e.emitSelect(outer)
 }
 
@@ -663,6 +680,25 @@ func vectorSetOpArmTimestampCol(n chplan.Node, s *chplan.VectorSetOp) (string, b
 		return vectorSetOpArmTimestampCol(v.Input, s)
 	case *chplan.Filter:
 		return vectorSetOpArmTimestampCol(v.Input, s)
+	case *chplan.StepGrid:
+		// The `@`-pinned broadcast shape's grid side. It publishes exactly
+		// one column, [chplan.RangeWindowAnchorColumn], and the broadcast
+		// Project above it republishes that anchor under BOTH its own name
+		// and the set op's TimestampColumn (internal/promql's
+		// wrapRangeWindowAtBroadcast), so naming the anchor here lands on a
+		// column the arm's outer SELECT really exposes.
+		return chplan.RangeWindowAnchorColumn, true
+	case *chplan.CrossJoin:
+		// The broadcast's join. Answering here is what keeps this
+		// classifier in step with [chplan.IsDerivedShape]'s own CrossJoin
+		// arm — the agreement this function's doc above requires. A derived
+		// arm with NO matrix answer takes the synthesised-instant-anchor
+		// branch in vectorSetOpCanonicalQuartetFrags, which collapses every
+		// broadcast step onto one timestamp.
+		if col, ok := vectorSetOpArmTimestampCol(v.Left, s); ok {
+			return col, ok
+		}
+		return vectorSetOpArmTimestampCol(v.Right, s)
 	}
 	return "", false
 }
@@ -726,6 +762,12 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 		return fmt.Errorf("%w: VectorSetOp.ValueColumn unset", ErrUnsupported)
 	case s.Mixed && s.Histogram:
 		return fmt.Errorf("%w: VectorSetOp.Mixed and .Histogram are mutually exclusive", ErrUnsupported)
+	case s.MixedDropCollisions && (!s.Mixed || s.Op != chplan.VectorSetOr):
+		// Only emitMixedVectorSetOp reads this flag, and only the Or arm
+		// reaches it. Rejecting instead of ignoring keeps a mis-built plan
+		// from silently emitting a left-biased union where the caller asked
+		// for a symmetric difference.
+		return fmt.Errorf("%w: VectorSetOp.MixedDropCollisions needs .Mixed with an `or` op", ErrUnsupported)
 	}
 	return nil
 }

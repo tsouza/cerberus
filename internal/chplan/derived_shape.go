@@ -50,6 +50,19 @@ type SampleColumns struct {
 // input is what emitted `SELECT MetricName, …, TimeUnix, … FROM
 // (<two-column derived>)` for an instant `topk(K, sum_over_time(m[5m]))`.
 //
+// StepGrid publishes ONE column — its own anchor — so it is derived by
+// definition, and CrossJoin (whose output is the union of both sides'
+// columns) is canonical exactly when one of its sides is. Every
+// construction site pairs a StepGrid with a relation, which is the
+// broadcast shape a range-mode `@`-pinned reduction fans across the step
+// grid; a broadcast Project over one carries only `[Attributes, anchor_ts,
+// TimeUnix, Value]` and must stay classified as derived. Without these
+// two arms that Project fell through to the final `return false` and a
+// Mixed VectorSetOr arm over it emitted a bare `MetricName` reference into
+// a scope that has none — ClickHouse code 47, for
+// `sum_over_time(((<exp-hist>) or (<gauge>))[4m:1m] @ <ts>)` under
+// query_range.
+//
 // Every other node — Scan, RangeLWR, a nested VectorSetOp (whose emit
 // wraps it in its own canonical-column SELECT), … — is canonical.
 func IsDerivedShape(n Node, cols SampleColumns) bool {
@@ -60,7 +73,8 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 		*MetricsAggregate,
 		*MetricsHistogramOverTime,
 		*HistogramVectorJoin,
-		*MixedVectorJoin:
+		*MixedVectorJoin,
+		*StepGrid:
 		// HistogramVectorJoin's own SELECT exposes `_hq_L_*`/`_hq_R_*`
 		// aliases — no bare `MetricName` column exists in its scope, so
 		// derived (true) is the honest answer, matching the reducing
@@ -76,6 +90,10 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 		return true
 	case *Filter:
 		return IsDerivedShape(v.Input, cols)
+	case *CrossJoin:
+		// Canonical when EITHER side supplies the canonical columns —
+		// never a claim about which side that is.
+		return IsDerivedShape(v.Left, cols) && IsDerivedShape(v.Right, cols)
 	case *Project:
 		if ProjectExposesCanonical(v, cols) {
 			return false

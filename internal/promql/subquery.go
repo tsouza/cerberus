@@ -1047,12 +1047,15 @@ func lowerOuterRangeFnOverSubquery(
 		// directly; the same Offset+Range arithmetic is inlined instead.
 		widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)
 		// A preserving outer fn over a name-dropping spine still projects
-		// the EMPTY LITERAL rather than nothing: `isDerivedShape` has no
-		// *chplan.CrossJoin arm, so a broadcast Project without a
-		// MetricName output falls through to its `return false` and the
-		// handler takes the canonical branch — emitting `SELECT MetricName`
-		// over a relation that has no such column (real CH: 502). Keeping
-		// the 5-column broadcast shape is what makes the fallback safe.
+		// the EMPTY LITERAL rather than nothing, so the API handler's own
+		// canonical-shape branch finds the MetricName output it is about
+		// to read. (This used to carry a second reason —
+		// [chplan.IsDerivedShape] had no *chplan.CrossJoin arm, so a
+		// four-column broadcast Project was misclassified as canonical and
+		// a consumer emitted `SELECT MetricName` over a scope that has
+		// none, real CH code 47. Cerberus issue #2728 gave the classifier
+		// that arm, so the misclassification is gone; the handler-side
+		// reason above stands on its own.)
 		broadcastName := nameExpr
 		if broadcastName == nil && rangeFnPreservesName(outer.Func.Name) {
 			broadcastName = &chplan.LitString{V: ""}

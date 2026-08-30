@@ -215,10 +215,9 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_StepAlignedTracksCtxStep(t *testing.
 // resulting nodes' StepAligned field is a direct, unmasked readout of its
 // own call site's expression. The three nodes nest structurally:
 // combineMixedAggregateBranches returns
-// &VectorSetOp{Left: histOnly, Right: floatOnly, StepAligned: <:360>},
-// where histOnly = &VectorSetOp{Left: histPure, Right: floatPure,
-// StepAligned: <:360, reused>} — so :351/:352's own StepAligned values
-// live one level further down, at histOnly.Left / histOnly.Right.
+// &VectorSetOp{Left: histPure, Right: floatPure, StepAligned: <:360>},
+// so :351/:352's own StepAligned values are read straight off that
+// node's two arms.
 func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *testing.T) {
 	t.Parallel()
 
@@ -269,20 +268,16 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *t
 	if top.StepAligned {
 		t.Fatalf("combine (mutants at :360:72) StepAligned = true, want false")
 	}
-	histOnly, ok := top.Left.(*chplan.VectorSetOp)
+	histPure, ok := top.Left.(*chplan.VectorSetOp)
 	if !ok {
 		t.Fatalf("top.Left = %T, want *chplan.VectorSetOp", top.Left)
-	}
-	histPure, ok := histOnly.Left.(*chplan.VectorSetOp)
-	if !ok {
-		t.Fatalf("histOnly.Left = %T, want *chplan.VectorSetOp", histOnly.Left)
 	}
 	if histPure.StepAligned {
 		t.Fatalf("histPure (mutants at :351:105) StepAligned = true, want false")
 	}
-	floatPure, ok := histOnly.Right.(*chplan.VectorSetOp)
+	floatPure, ok := top.Right.(*chplan.VectorSetOp)
 	if !ok {
-		t.Fatalf("histOnly.Right = %T, want *chplan.VectorSetOp", histOnly.Right)
+		t.Fatalf("top.Right = %T, want *chplan.VectorSetOp", top.Right)
 	}
 	if floatPure.StepAligned {
 		t.Fatalf("floatPure (mutants at :352:107) StepAligned = true, want false")
