@@ -36,7 +36,11 @@ export function bumpSemver(version, level) {
 
 // type -> changelog section heading (order matters; unlisted types are dropped
 // from the user-facing changelog but still listed in the PR body's "Other").
-const SECTIONS = [
+// Exported: verify-changelog-fresh.mjs (cerberus#2739) needs the SAME
+// type-to-heading mapping to reconstruct the exact bullets this file itself
+// would generate, so it can check them against what actually landed in
+// CHANGELOG.md rather than trusting the file was regenerated.
+export const SECTIONS = [
   ['feat', 'Added'],
   ['fix', 'Fixed'],
   ['perf', 'Performance'],
@@ -64,7 +68,10 @@ export function parseCommits(subjects) {
   return { groups, breaking }
 }
 
-function bullets(entries) {
+// Exported for the same reason SECTIONS is: verify-changelog-fresh.mjs needs
+// the EXACT bullet text this file would render, not a re-derived
+// approximation that could silently drift from it.
+export function bullets(entries) {
   return entries.map((e) => `- ${e.scope ? `**${e.scope}:** ` : ''}${e.desc}`).join('\n')
 }
 
@@ -156,7 +163,11 @@ function git(args) {
   return execFileSync('git', args, { encoding: 'utf8' })
 }
 
-function commitsSinceLastTag() {
+// Exported: verify-changelog-fresh.mjs re-derives this SAME range at
+// verification time (potentially long after generation, with more commits
+// landed) rather than trusting whatever range produced the committed
+// CHANGELOG.md section still describes the branch's current tip.
+export function commitsSinceLastTag() {
   let range = 'HEAD'
   try {
     const last = git(['describe', '--tags', '--abbrev=0', '--match', 'v*']).trim()
@@ -282,5 +293,9 @@ function selfTest() {
   console.log('::notice::prepare-release --self-test: all assertions passed')
 }
 
-if (process.argv.includes('--self-test')) selfTest()
-else main()
+// Import-safe: verify-changelog-fresh.mjs (cerberus#2739) imports SECTIONS /
+// bullets / commitsSinceLastTag from this module without running it.
+if (process.argv[1] && process.argv[1].endsWith('prepare-release.mjs')) {
+  if (process.argv.includes('--self-test')) selfTest()
+  else main()
+}
