@@ -88,6 +88,18 @@ type HistogramQuantile struct {
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
+
+	// UseNativeQuantileAggregate selects the ClickHouse-native
+	// quantilePrometheusHistogram(phi)(le, cum) rank-walk aggregate instead
+	// of the hand-rolled arrayCumSum / arrayFirstIndex interpolation chain
+	// (chsql.emitHistogramQuantile). Set exactly once at lowering time from
+	// the boot-wired promql.QuantileRankWalkLowerer strategy — see
+	// [promql.NativeQuantileRankWalkLowerer] — which cmd/cerberus wires ONLY
+	// when chopt resolved the quantile_prom_histogram feature (floor 25.10)
+	// at boot. Every classic-histogram-quantile shape this codebase builds
+	// is eligible (unlike the timeSeries*ToGrid family there is no per-shape
+	// fallback), so the field is a plain bool rather than a node-type split.
+	UseNativeQuantileAggregate bool
 }
 
 func (*HistogramQuantile) planNode() {}
@@ -112,6 +124,7 @@ func (h *HistogramQuantile) Equal(other Node) bool {
 		h.MetricNameColumn != o.MetricNameColumn ||
 		h.AttributesColumn != o.AttributesColumn ||
 		h.TimestampColumn != o.TimestampColumn ||
+		h.UseNativeQuantileAggregate != o.UseNativeQuantileAggregate ||
 		len(h.GroupBy) != len(o.GroupBy) ||
 		len(h.GroupByAliases) != len(o.GroupByAliases) {
 		return false

@@ -466,6 +466,7 @@ func lowerHistogramQuantileClassicBare(
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
 	}
+	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
 	// Wrap in a Project to match the Sample-row contract downstream
 	// (MetricName='', Attributes=<gkey>, TimeUnix=now64(9), Value=value).
@@ -1305,6 +1306,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
 	}
+	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
 	// Final Sample-row wrapping, same as the bare-selector path.
 	return &chplan.Project{

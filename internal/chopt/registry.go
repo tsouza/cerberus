@@ -197,6 +197,89 @@ const (
 	// allow_experimental_time_series_aggregate_functions gate cerberus already
 	// stamps for this family, so no new experimental setting is introduced.
 	FeatureTSGridHistogram = "ts_grid_histogram"
+
+	// FeatureQuantilePromHistogram opts the classic (non-native-histogram)
+	// `histogram_quantile(phi, <classic-selector>)` rank walk onto
+	// ClickHouse's own quantilePrometheusHistogram(phi)(le, cum) aggregate,
+	// retiring the hand-rolled arrayCumSum / arrayFirstIndex / linear-
+	// interpolation chain (internal/chsql/histogram_quantile.go) for every
+	// shape that node handles — see chplan.HistogramQuantile.
+	// UseNativeQuantileAggregate and its boot-wired seam,
+	// promql.QuantileRankWalkLowerer.
+	//
+	// quantilePrometheusHistogram shipped non-experimental, no setting gate,
+	// in ClickHouse 25.10 — confirmed present in system.functions on a real
+	// 25.10.7.6 server (probed directly; it is NOT documented as of this
+	// writing). Its sibling multi-phi form, quantilesPrometheusHistogram,
+	// was probed present too, but nothing in this codebase's IR carries more
+	// than one phi per classic-histogram-quantile node, so it has no
+	// consumer and this feature does not reach for it.
+	//
+	// The aggregate reproduces reference Prometheus's bucketQuantile
+	// natively — including the first-bucket non-positive-upper-bound
+	// short-circuit and the phi==1 highest-explicit-bound answer — so the
+	// native emission needs NONE of the existing emitter's edge-case
+	// branches (hasOverflowRung / firstBucketNonPositive / the interpolation
+	// formula). A real-CH differential sweep (25.10.7.6) against the
+	// existing rank walk, across a normal crossing, a duplicate-bound
+	// layout, the equal-length (no-overflow-rung) shape, an empty
+	// histogram, and a negative-bound first bucket, matched exactly (0 ULP
+	// difference) at every phi tested, including phi in {0, 1} and the
+	// out-of-range / NaN phi guards — see the quantile_prom_histogram
+	// real-CH integration test.
+	//
+	// Two input-contract quirks the emission MUST honor, both confirmed
+	// against the real server rather than assumed:
+	//
+	//   - The aggregate returns nan whenever no row carries le = +Inf, even
+	//     when every finite bucket is populated and phi is well within
+	//     range — there is no total-from-last-row inference. The emitter
+	//     therefore ALWAYS appends a terminal (+Inf, total) pair: the
+	//     genuine overflow rung when the row carries one, or a synthetic
+	//     tie-cum entry (le=+Inf, cum=<last coalesced cum>) when it does
+	//     not — verified to reproduce the existing emitter's equal-length
+	//     (no-overflow) shape exactly, including at phi == 1.
+	//   - Feeding raw (possibly duplicate-le) rows answers WRONG (confirmed:
+	//     a coalesced-vs-raw differential on a [1,1,5]-bound layout diverged
+	//     by more than 3x). The emitter therefore keeps the existing Stage-1
+	//     duplicate-bound coalescing (keptBoundIdx) ahead of the aggregate —
+	//     the one piece of the legacy walk this path does not delete.
+	//   - The parametric phi argument must be a compile-time-constant
+	//     expression in [0, 1]: passing it a value outside that range, or
+	//     NaN, throws PARAMETER_OUT_OF_BOUND and fails the WHOLE query — an
+	//     aggregate's parametric argument is evaluated regardless of which
+	//     branch of an enclosing scalar if() would select its result. The
+	//     emitter clamps the argument itself
+	//     (greatest(0, least(1, if(isNaN(phi), 0, phi)))) so the aggregate
+	//     is always called with a safe value, and wraps the call in the
+	//     SAME phi < 0 / phi > 1 / isNaN(phi) outer branch the existing
+	//     emitter already uses to answer -inf / inf / nan — reference
+	//     Prometheus's contract, not the aggregate's.
+	//
+	// AutoSelect is false. Correctness parity is proven by the sweep above,
+	// but a real-scale measurement (25.10.7.6, a real OTel classic-histogram
+	// export aggregated to one row per series, 12-bucket layout) found a
+	// genuine PERFORMANCE TRADEOFF, not just an unproven new floor: the
+	// emission's ARRAY JOIN multiplies row count by the bucket-ladder length
+	// before GROUP BY collapses it back down, which the legacy walk never
+	// does (every quantity it computes stays inside array-valued expressions
+	// on the original one-row-per-series input). At real-world dashboard
+	// scale (3,677 series) the native path was ~2x FASTER at EQUAL memory;
+	// at high series cardinality (73,540 series, ~880k post-unnest rows, a
+	// 20x synthetic fan-out of the same real seed) wall time stayed roughly
+	// even but memory grew ~3.3x (219 MiB vs 66 MiB, reproduced across
+	// repeated runs via system.query_log.memory_usage). See
+	// https://github.com/tsouza/cerberus/issues/2790 for the full numbers
+	// and the mitigation options that issue leaves for future investigation.
+	// Combined with the 25.10 floor being very new (no fielded deployment
+	// history yet) and this repo's own testcontainers substrate for real-CH
+	// tests being pinned to 25.9-alpine elsewhere in the suite — below this
+	// feature's own floor — the feature is reachable only by explicit
+	// CERBERUS_CH_OPTIMIZATIONS=quantile_prom_histogram listing, mirroring
+	// FeatureColumnarResultDecode's same conservative posture for a
+	// different reason (there a client-side tradeoff, here a genuine
+	// memory-vs-cardinality one).
+	FeatureQuantilePromHistogram = "quantile_prom_histogram"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -357,13 +440,20 @@ var registry = []Feature{
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "opt the classic-histogram rate() window fold behind histogram_quantile onto a native timeSeriesRateToGrid ladder over the unnested le rungs (experimental maturity, auto-enabled on server >= 25.9 — floor inherited from the timeSeries*ToGrid family)",
 	},
+	{
+		ID:         FeatureQuantilePromHistogram,
+		MinVersion: Version{Major: 25, Minor: 10},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_histogram). The copy
-// keeps the
+// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_histogram,
+// quantile_prom_histogram). The copy keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

@@ -123,17 +123,32 @@ func IsSliceInvariant(n Node) bool {
 //   - HistogramQuantile — the classic-histogram bucket-array-to-quantile
 //     interpolation. Its input is a reshape Project over a RangeBucketFanout,
 //     whose GROUP BY carries the anchor key (AnchorAlias, always prepended),
-//     so HistogramQuantile's own row-wise Project/interpolation reads exactly
-//     one (series, anchor) group's BucketCounts/ExplicitBounds columns — no
-//     cross-anchor read, no scan-order dependence, no window function (the
-//     emitter, internal/chsql/histogram_quantile.go, renders plain
-//     arrayMap/arraySort over one row's array columns). Its per-(series,
-//     anchor) output is therefore exactly as scan-lower-bound-independent as
-//     its RangeBucketFanout input already is. See internal/chplan/reanchor.go's
-//     *HistogramQuantile arm (a pass-through, mirroring *Project) and
-//     internal/solver/avb_chdb_lane_test.go's classic-histogram fixtures for
-//     the differential (route A vs K-sharded route B) proof this registry
-//     entry rests on. HistogramQuantileNative / HistogramProjection (the
+//     so HistogramQuantile's own per-(series, anchor) computation reads
+//     exactly one input row's BucketCounts/ExplicitBounds columns — no
+//     cross-anchor read, no scan-order dependence. By default
+//     (UseNativeQuantileAggregate == false) the emitter renders plain
+//     arrayMap/arraySort over that one row's array columns, no window
+//     function, no GROUP BY of its own. When chopt.FeatureQuantilePromHistogram
+//     is boot-enabled (UseNativeQuantileAggregate == true — opt-in only,
+//     AutoSelect: false), the emitter instead ARRAY JOINs that SAME single
+//     row's arrays into per-bucket sub-rows and GROUP BYs them back down by
+//     the identical GroupBy key the row already carried — see
+//     internal/chsql/histogram_quantile_rankwalk_native.go. The GROUP BY
+//     never spans more than the one input row's own exploded sub-rows, so it
+//     collapses ACROSS BUCKETS, never across series or anchors, and the same
+//     locality argument holds unchanged: slicing the anchor grid upstream
+//     changes which (series, anchor) rows this node sees, never what any
+//     surviving row's own group computes. Its per-(series, anchor) output is
+//     therefore exactly as scan-lower-bound-independent as its
+//     RangeBucketFanout input already is, under EITHER emission. See
+//     internal/chplan/reanchor.go's *HistogramQuantile arm (a pass-through,
+//     mirroring *Project) and internal/solver/avb_chdb_lane_test.go's
+//     classic-histogram fixtures for the differential (route A vs
+//     K-sharded route B) proof this registry entry rests on — that lane
+//     covers the default (fan-out) emission only; the opt-in native
+//     emission's own route-A/route-B differential is tracked separately,
+//     see https://github.com/tsouza/cerberus/issues/2791.
+//     HistogramQuantileNative / HistogramProjection (the
 //     native/exponential-histogram siblings) remain DELIBERATELY ABSENT —
 //     same shape family, but no production traffic exists yet to validate
 //     against; a follow-up PR with its own fixtures registers them.

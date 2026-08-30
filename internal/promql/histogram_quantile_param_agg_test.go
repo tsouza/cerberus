@@ -287,7 +287,11 @@ func TestHistogramQuantile_QuantileAgg_ReachesHistogramPath(t *testing.T) {
 		name string
 		ctx  lowerCtx
 	}{
-		{name: "instant", ctx: lowerCtx{}},
+		// The instant path now also dispatches through the boot-wired
+		// QuantileRankWalk strategy (chplan.HistogramQuantile.
+		// UseNativeQuantileAggregate), so a hand-built ctx needs the same
+		// withDefaults() normalisation the range case below already applies.
+		{name: "instant", ctx: lowerCtx{lowerers: RangeLowerers{}.withDefaults()}},
 		{name: "range", ctx: lowerCtx{
 			start: rangeStart,
 			end:   rangeStart.Add(5 * time.Minute),
