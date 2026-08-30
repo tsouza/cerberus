@@ -134,14 +134,44 @@ export const PHASES = [
     workers: DEFAULT_WORKERS,
     // catch-all leg: prewhere + ddl + structural_join + set_op +
     // range_window_grid_native + scan_resource_bound + emit_size_bound +
-    // query_exemplars + histogram_quantile + tableshape, plus every file no
-    // other leg claims (the
-    // zero-mutant/uncovered files: absent_over_time, chaos_sleep,
-    // chaos_sleep_stub, doc, histogram_float_vector_join, histogram_vector_join,
-    // info_join, mixed_vector_join, range_bucket_grid_native,
-    // range_bucket_grid_native_bound, search_trace_limit). A file newly added to
-    // internal/chsql needs no edit here — it is picked up automatically, which
-    // is why this leg keeps no positive file list to fall out of sync.
+    // query_exemplars + histogram_quantile + tableshape +
+    // range_bucket_grid_native + range_bucket_grid_native_bound, plus every
+    // file no other leg claims (the true zero-mutant/uncovered files:
+    // absent_over_time, chaos_sleep, chaos_sleep_stub, doc,
+    // histogram_float_vector_join, histogram_vector_join, info_join,
+    // mixed_vector_join, search_trace_limit — range_bucket_grid_native and
+    // range_bucket_grid_native_bound were wrongly listed here before cerberus
+    // issue #2741: both carry real, covered mutants, they just had no
+    // dedicated `_mutation_test.go` file defending their input-validation
+    // guards until #2741 added one). A file newly added to internal/chsql
+    // needs no edit here — it is picked up automatically, which is why this
+    // leg keeps no positive file list to fall out of sync.
+    //
+    // Documented-equivalent tally (docs/test-strategy.md's "Surviving-mutant
+    // policy" #1 — proven, permanent, and NOT absorbed by lowering `efficacy`
+    // below `MUTATION_MIN_EFFICACY`; see that section for why). Re-measured
+    // via `gremlins unleash --dry-run` scoped to this leg's own
+    // `exclude_files`: 356 executed mutants today. 10 are proven equivalent
+    // (≈2.8%, comfortably under the ~5-point margin `efficacy` below leaves):
+    // prewhere.go:131,:148,:187,:207 (INVERT_LOOPCTRL — a "found it, stop"
+    // boolean latch or a sorted-subarray early exit; scanning further can
+    // never change the result) and :283 (INVERT_LOGICAL — a swap guard whose
+    // two orientations always resolve the same (columnOK, literalOK) pair —
+    // see prewhere_mutation_test.go's own footer), set_op.go:327,:490 and
+    // structural_join.go:525,:738 (set_op_mutation_test.go /
+    // structural_join_anchor_mutation_test.go's own footers), and
+    // emit_size_bound.go:251 (CONDITIONALS_BOUNDARY on a running-max update
+    // that reassigns the SAME value at the boundary — see
+    // emit_size_bound_mutation_test.go's own footer). cerberus issue #2741's
+    // own 13-survivor CI failure was NOT caused by this list growing past
+    // the margin — six of the thirteen were real, previously-undefended
+    // gaps in range_bucket_grid_native.go / range_bucket_grid_native_bound.go
+    // (now fixed) and one more was a #2730-class CI-timing flake on an
+    // existing, correct test (prewhere.go:287, reproduced and confirmed by
+    // manual mutation-and-revert — see prewhere_mutation_test.go's own
+    // TestIsNarrowIntegerDiscriminatorFinalReturnLogical). Re-count this
+    // tally the next time a mutant here gets a new "NOT KILLABLE" note, and
+    // re-partition the leg wider if it ever approaches the margin.
     exclude_files:
       '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
