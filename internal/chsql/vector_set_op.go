@@ -762,7 +762,7 @@ func (e *emitter) validateVectorSetOpCols(s *chplan.VectorSetOp) error {
 		return fmt.Errorf("%w: VectorSetOp.ValueColumn unset", ErrUnsupported)
 	case s.Mixed && s.Histogram:
 		return fmt.Errorf("%w: VectorSetOp.Mixed and .Histogram are mutually exclusive", ErrUnsupported)
-	case s.MixedDropCollisions && !(s.Mixed && s.Op == chplan.VectorSetOr):
+	case s.MixedDropCollisions && (!s.Mixed || s.Op != chplan.VectorSetOr):
 		// Only emitMixedVectorSetOp reads this flag, and only the Or arm
 		// reaches it. Rejecting instead of ignoring keeps a mis-built plan
 		// from silently emitting a left-biased union where the caller asked

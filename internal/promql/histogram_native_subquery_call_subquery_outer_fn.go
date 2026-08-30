@@ -101,8 +101,8 @@ func widenNestedCallSubqueryInner(inner chplan.Node, sub *parser.SubqueryExpr, c
 		widenSubquerySpine(inner, anchor.End.Add(-anchor.Offset-sub.Range), anchor.End)
 	}
 	// A bare [Lower] with no query time at all resolves no anchor and no
-	// range: nothing to widen against, and the continuations below fall
-	// back to their own now64() shapes exactly as they do for a
-	// singly-nested sub.
+	// range: nothing to widen against, and the continuations the caller
+	// dispatches to fall back to their own now64() shapes exactly as they
+	// do for a singly-nested sub.
 	return nil
 }
