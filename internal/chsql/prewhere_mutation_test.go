@@ -107,13 +107,11 @@ func TestOrderedConjunctsSingleFastPath(t *testing.T) {
 // TestSortRankForMinimum defends sortRankFor's running-minimum update
 // (prewhere.go:148). It pins that sortRankFor returns the LOWEST matching
 // rank across a predicate's columns regardless of the order the columns are
-// discovered — i.e. a later, larger rank never overwrites an earlier rank-0.
-//
-// Note: with deduplicated column refs no two columns share a rank, so the
-// `r < best` boundary itself is never exercised at equality and that exact
-// mutation is behaviourally equivalent. This test instead nails the broader
-// min-tracking contract (and would catch a `best < 0`→`best <= 0` flip,
-// which lets a larger rank clobber an existing rank-0 minimum).
+// discovered — i.e. a later, larger rank never overwrites an earlier rank-0
+// (and would catch a `best < 0`→`best <= 0` flip, which lets a larger rank
+// clobber an existing rank-0 minimum). The `r < best`→`r <= best` boundary at
+// this same line is a separate, genuinely equivalent mutation — see this
+// file's own "NOT KILLABLE" footer below for why.
 func TestSortRankForMinimum(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "SeverityText", "Timestamp"}} // ranks 0,1,2
@@ -171,6 +169,23 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 	}
 }
 
+// CI-TIMING NOISE, not a test gap — cerberus issue #2741.
+//
+// prewhere.go:287:18 (INVERT_LOGICAL, the same mutation
+// TestIsNarrowIntegerDiscriminatorFinalReturnLogical above defends) showed
+// LIVED on the v1.19.0 release-gate's phase2-other run despite this test
+// existing and being correct. Reproduced locally per cerberus issue #2730's
+// precedent (manual mutation-and-revert, no CI resource contention): apply
+// exactly this mutation by hand (`columnOK && literalOK` →
+// `columnOK || literalOK`) and `go test -run
+// '^TestIsNarrowIntegerDiscriminatorFinalReturnLogical$' ./internal/chsql/`
+// fails as expected; revert and it passes. #2730 root-caused this exact
+// class for phase4-promql-h: an unrelated flaky test elsewhere in the same
+// whole-package `go test` run can corrupt gremlins' exit-code read for an
+// otherwise-correctly-killed mutant. No code or test change follows from
+// this — the fix is the documentation trail so the next occurrence isn't
+// re-investigated from scratch.
+//
 // NOT KILLABLE — documented, not defended by a test.
 //
 // prewhere.go:131:4, :187:5 and :207:4 (INVERT_LOOPCTRL) each swap a
@@ -190,3 +205,15 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 // unreachable from the swapped (Right, Left) orientation, and vice versa —
 // the branch this condition guards can only ever produce the SAME final
 // (columnOK, literalOK) pair whether or not the swap runs.
+//
+// prewhere.go:148:20 (CONDITIONALS_BOUNDARY, `r < best` → `r <= best` in
+// sortRankFor's running-minimum update) is equivalent because the boundary
+// (`r == best`) is unreachable for two DISTINCT columns under any
+// TableShape: SortRank(name) returns the index of name's first match in
+// SortColumns, so two different column names can never resolve to the same
+// index — the same name obviously always resolves to the same index too.
+// Either way `r == best` never holds for a fresh comparison, so `best = r`
+// under the mutant is always either skipped (same as the original) or a
+// same-value no-op reassignment. Verified by manual mutation-and-revert:
+// with the mutation applied, the whole internal/chsql suite (not just
+// TestSortRankForMinimum) still passes.

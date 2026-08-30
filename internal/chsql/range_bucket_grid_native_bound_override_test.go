@@ -133,6 +133,27 @@ func TestRangeBucketGridNativeBound_MaxDensityUnitsOverride_NonPositiveIsIgnored
 	}
 }
 
+// TestRangeBucketGridNativeBound_MaxDensityUnitsOverride_ZeroIsIgnored covers
+// the exact boundary TestRangeBucketGridNativeBound_MaxDensityUnitsOverride_
+// NonPositiveIsIgnored's negative-only override cannot reach:
+// rangeBucketGridNativeMaxDensityUnitsFromCtx's `ok && n > 0` guard
+// (range_bucket_grid_native_bound.go) only distinguishes strict `>` from
+// `>=` at n == 0 exactly — a negative override is already false under
+// either spelling, so it can never catch a `>` -> `>=` boundary flip. Mirrors
+// TestRangeBucketGridNativeBound_MaxRowsOverride_NonPositiveIsIgnored, axis1's
+// own zero case.
+func TestRangeBucketGridNativeBound_MaxDensityUnitsOverride_ZeroIsIgnored(t *testing.T) {
+	node := overrideTestPlan()
+	zeroCtx := chsql.WithRangeBucketGridNativeMaxDensityUnits(context.Background(), 0)
+	sqlStr, _, err := chsql.Emit(zeroCtx, node)
+	if err != nil {
+		t.Fatalf("emit (zero override): %v", err)
+	}
+	if !strings.Contains(sqlStr, "400000000") {
+		t.Errorf("a zero override should fall back to the real default (400000000), got: %s", sqlStr)
+	}
+}
+
 // TestResolveRangeBucketGridNativeMaxRows pins the "override-or-default"
 // contract ResolveRangeBucketGridNativeMaxRows answers WITHOUT a context —
 // added for issue #2705's route-B apportionment, which must resolve the

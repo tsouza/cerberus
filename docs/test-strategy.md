@@ -1075,10 +1075,34 @@ suite carry the discipline:
 
 1. **PREFERRED — prove equivalent.** Add a comment in the source
    explaining why the mutated branch is semantically identical to the
-   original, then drop that leg's efficacy threshold in
-   `.github/scripts/mutation-phases.mjs`
-   by 1 percentage point to absorb the equivalent mutant. The mutation
-   count is now defensible and the source stays clear.
+   original, and add (or extend) that source file's own
+   `<file>_mutation_test.go` "NOT KILLABLE — documented, not defended
+   by a test." footer with the same reasoning. Do **not** drop the
+   leg's `efficacy` in `.github/scripts/mutation-phases.mjs` to
+   "absorb" it: `MUTATION_MIN_EFFICACY` (95, declared independently in
+   `.github/scripts/mutation-matrix.mjs`) is a floor no phase entry may
+   go below, checked by `tableViolations` and enforced in CI — see
+   "Gremlins mutation" above for why it exists (to stop the *shared*
+   phase constant from being lowered to buy every leg a green
+   zero-evidence run) and note it applies just as absolutely to a
+   single leg's own override. A proven-equivalent mutant is a
+   PERMANENT cost: gremlins v0.6.0 has no per-mutant suppression (only
+   a whole-file `--exclude-files`, see `.gremlins.yaml`'s own note), so
+   every future run pays it again with no way to net it out of the
+   kill/live ratio. The only lever available to absorb that permanent
+   cost while staying at-or-above 95% is the leg's own size: keep a
+   leg's documented-equivalent count comfortably under 5% of its own
+   `gremlins unleash --dry-run`-measured mutant total — the same
+   dilution principle the phase4-promql-h merge (cerberus issue #2730)
+   already applies to a transient CI-timing flake, generalised to a
+   permanent one. Cerberus issue #2741 found `phase2-other` at 10
+   documented equivalents against 356 measured mutants (≈2.8%,
+   comfortably under that margin) once the SIX real gaps that actually
+   caused its 94.80% failure were fixed — the equivalents were never
+   the cause. See `mutation-phases.mjs`'s own `phase2-other` comment
+   for the running count. If a leg's equivalents ever approach the
+   margin, re-partition it wider (`mutation-phases.mjs`'s own
+   "Rebalance by re-measuring" rule) rather than touching `efficacy`.
 2. **ACCEPTABLE — add a distinguishing test.** Write a unit / property
    test whose output differs between the original and the mutated
    branch. This is the right call when the mutation reveals real
