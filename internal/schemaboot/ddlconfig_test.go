@@ -282,3 +282,62 @@ func TestDDLConfig_SettingsOnlyNoStoragePolicy(t *testing.T) {
 		t.Errorf("settings not threaded as-is: %+v", got.Settings)
 	}
 }
+
+// TestDDLConfig_MapBucketedSerializationOff pins the default: with
+// SchemaMapBucketedSerialization false (the zero value — no live resolve ran,
+// or the feature was never requested), LogsSettings / TracesSettings stay
+// nil, so the auto-create DDL is byte-identical to a deployment that has
+// never heard of cerberus issue #2774.
+func TestDDLConfig_MapBucketedSerializationOff(t *testing.T) {
+	got, err := schemaboot.DDLConfig(config.Config{})
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	if got.LogsSettings != nil || got.TracesSettings != nil {
+		t.Errorf("LogsSettings/TracesSettings = %+v/%+v; want nil/nil when the feature is off", got.LogsSettings, got.TracesSettings)
+	}
+}
+
+// TestDDLConfig_MapBucketedSerializationOn pins that the resolved chopt
+// verdict (cfg.SchemaMapBucketedSerialization) adds
+// map_serialization_version='with_buckets' to BOTH LogsSettings and
+// TracesSettings — never to the generic Settings (which metrics tables also
+// read), since the feature is scoped to logs/traces only.
+func TestDDLConfig_MapBucketedSerializationOn(t *testing.T) {
+	cfg := config.Config{SchemaMapBucketedSerialization: true}
+	got, err := schemaboot.DDLConfig(cfg)
+	if err != nil {
+		t.Fatalf("DDLConfig: %v", err)
+	}
+	want := []schema.KV{{Key: "map_serialization_version", Value: "with_buckets"}}
+	if len(got.LogsSettings) != 1 || got.LogsSettings[0] != want[0] {
+		t.Errorf("LogsSettings = %+v; want %+v", got.LogsSettings, want)
+	}
+	if len(got.TracesSettings) != 1 || got.TracesSettings[0] != want[0] {
+		t.Errorf("TracesSettings = %+v; want %+v", got.TracesSettings, want)
+	}
+	if len(got.Settings) != 0 {
+		t.Errorf("generic Settings = %+v; want empty — the feature must not reach the metrics tables Settings also feeds", got.Settings)
+	}
+}
+
+// TestDDLConfig_MapBucketedSerializationDualSourceRejected pins the fail-fast
+// dedup guard: an operator who both enables the chopt feature AND hand-sets
+// map_serialization_version via CERBERUS_SCHEMA_SETTINGS would otherwise emit
+// a SETTINGS clause repeating the same key on the logs/traces tables — a
+// ClickHouse DDL error at apply time instead of a precise boot-time one. This
+// mirrors TestDDLConfig_StoragePolicyDualSourceRejected's shape for the
+// storage_policy shorthand.
+func TestDDLConfig_MapBucketedSerializationDualSourceRejected(t *testing.T) {
+	cfg := config.Config{
+		SchemaMapBucketedSerialization: true,
+		SchemaProvisioning: config.SchemaProvisioning{
+			Settings: []schema.KV{
+				{Key: "map_serialization_version", Value: "basic"},
+			},
+		},
+	}
+	if _, err := schemaboot.DDLConfig(cfg); err == nil {
+		t.Fatal("want error for map_serialization_version set via both CERBERUS_SCHEMA_SETTINGS and the chopt feature, got nil")
+	}
+}

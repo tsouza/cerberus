@@ -1225,6 +1225,15 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// resolved set, not the raw env.
 	cfg.ExperimentalTSGridRange = set.Has(chopt.FeatureTSGridRange)
 
+	// Same back-fill for map_bucketed_serialization (cerberus issue #2774):
+	// schemaboot.DDLConfig reads cfg.SchemaMapBucketedSerialization directly
+	// rather than taking an EnabledSet parameter, so this is the ONE place the
+	// version-gated, capability-independent verdict is threaded into it. This
+	// runs before schemaboot.DDLConfig is called below (schemaReady/applyCfg),
+	// so the auto-create DDL reflects the SAME resolved server this boot log
+	// line reports.
+	cfg.SchemaMapBucketedSerialization = set.Has(chopt.FeatureMapBucketedSerialization)
+
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never
 	// auto), so its enable decision flows through the EnabledSet exactly like
