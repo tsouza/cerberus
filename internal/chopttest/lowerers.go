@@ -111,6 +111,26 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.Delta = promql.FanoutDeltaLowerer{}
 	}
 
+	// irate/idelta: laginframe_adjacency layers BENEATH their own native
+	// ts_grid strategy, mirroring cmd/cerberus's own nativeRangeLowerers
+	// (cerberus issue #2746).
+	var irateFallback promql.IrateLowerer = promql.FanoutIrateLowerer{}
+	var ideltaFallback promql.IdeltaLowerer = promql.FanoutIdeltaLowerer{}
+	if set.Has(chopt.FeatureLagInFrameAdjacency) {
+		irateFallback = promql.LagAdjacencyIrateLowerer{Fallback: irateFallback}
+		ideltaFallback = promql.LagAdjacencyIdeltaLowerer{Fallback: ideltaFallback}
+	}
+	if set.Has(chopt.FeatureTSGridIrate) {
+		l.Irate = promql.NativeIrateLowerer{Fallback: irateFallback}
+	} else {
+		l.Irate = irateFallback
+	}
+	if set.Has(chopt.FeatureTSGridIdelta) {
+		l.Idelta = promql.NativeIdeltaLowerer{Fallback: ideltaFallback}
+	} else {
+		l.Idelta = ideltaFallback
+	}
+
 	// The anchor-injection window-slide mechanism was removed by #2511's
 	// root-cause investigation (structural over-read, see main.go's
 	// nativeRangeLowerers doc) — fan-out is the sole fallback below the
