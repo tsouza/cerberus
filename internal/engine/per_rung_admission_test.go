@@ -227,14 +227,14 @@ func TestWrapPerRungObserver_PassesThroughWhenNotApplicable(t *testing.T) {
 	t.Parallel()
 	fake := &perRungFakeCursor{}
 
-	if got := wrapPerRungObserver(fake, nil, perRungTestPlan(), perRungTestDecision()); got != chclient.Cursor(fake) {
+	if got := wrapPerRungObserver(fake, nil, nil, perRungTestPlan(), perRungTestDecision()); got != chclient.Cursor(fake) {
 		t.Error("a nil learner must return the cursor unchanged")
 	}
 
 	notPerRung := perRungTestDecision()
 	notPerRung.PerRungPredictive = false
 	l := NewPerRungAdmissionLearner()
-	if got := wrapPerRungObserver(fake, l, perRungTestPlan(), notPerRung); got != chclient.Cursor(fake) {
+	if got := wrapPerRungObserver(fake, l, nil, perRungTestPlan(), notPerRung); got != chclient.Cursor(fake) {
 		t.Error("a non-PerRungPredictive decision must return the cursor unchanged")
 	}
 }
@@ -250,7 +250,7 @@ func TestWrapPerRungObserver_RecordsOnlyOnACleanDrain(t *testing.T) {
 	// cancel after 19s), which would otherwise teach the learner the
 	// opposite of the truth.
 	cancelled := &perRungFakeCursor{err: errors.New("context canceled"), inspected: 1}
-	wrapped := wrapPerRungObserver(cancelled, l, plan, decision)
+	wrapped := wrapPerRungObserver(cancelled, l, nil, plan, decision)
 	if err := wrapped.Close(); err != nil {
 		t.Fatalf("Close returned an unexpected error: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestWrapPerRungObserver_RecordsOnlyOnACleanDrain(t *testing.T) {
 	// mirroring two distinct requests) accumulate toward the decline.
 	for i := 0; i < perRungEvidenceMinObservations; i++ {
 		clean := &perRungFakeCursor{inspected: 1}
-		wrapped := wrapPerRungObserver(clean, l, plan, decision)
+		wrapped := wrapPerRungObserver(clean, l, nil, plan, decision)
 		if err := wrapped.Close(); err != nil {
 			t.Fatalf("Close returned an unexpected error: %v", err)
 		}
@@ -280,7 +280,7 @@ func TestWrapPerRungObserver_DoubleCloseRecordsOnce(t *testing.T) {
 	key := routememo.KeyFor(plan, decision.NAnchors, decision.Fanout, decision.Step)
 
 	clean := &perRungFakeCursor{inspected: 1}
-	wrapped := wrapPerRungObserver(clean, l, plan, decision)
+	wrapped := wrapPerRungObserver(clean, l, nil, plan, decision)
 	_ = wrapped.Close()
 	_ = wrapped.Close()
 

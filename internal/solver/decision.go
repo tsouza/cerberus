@@ -51,6 +51,21 @@ type RequestMeta struct {
 	// round trip itself: the I/O already happened, by the caller, before
 	// Plan/Classify/Eligible ever runs.
 	Estimate *ScanEstimate
+
+	// ShapeID is the literal-free plan-shape id the engine adapter already
+	// computed for this request (internal/engine/plan_shape_id.go's
+	// planShapeID — the SAME "cerb:..." id SettingsRules stamps into
+	// ClickHouse's log_comment), threaded through PURELY so
+	// Decision.ShapeID (withGrid, below) can carry it onto the routing
+	// output without solver recomputing a plan-shape fingerprint of its
+	// own (it already has routememo.KeyFor for the memo's own coarser
+	// key — see that package's doc for why the two fingerprints are
+	// deliberately not the same granularity). Empty when the caller has no
+	// actuals tracker wired (issue #2789's own kill switch) — every
+	// existing Planner behavior is unaffected either way, since neither
+	// Plan nor Eligible ever reads this field for a routing decision, only
+	// withGrid copies it through.
+	ShapeID string
 }
 
 // ScanEstimate is the package-local advisory read-out of a ClickHouse scan
@@ -153,6 +168,29 @@ type Decision struct {
 	// evidence-based scrutiny only to the latter population. False on every
 	// other route and on every non-route.
 	PerRungPredictive bool
+
+	// ShapeID is a pure, additive readout of RequestMeta.ShapeID (see that
+	// field's own doc), copied through by withGrid onto EVERY Decision —
+	// routed or not — exactly like NAnchors/Fanout/CumulativeD/OuterRange/
+	// Step above. Empty when the caller left RequestMeta.ShapeID unset
+	// (issue #2789's kill switch off, the default). Consumed by
+	// internal/engine's actuals wiring (both route-A's execContext and
+	// route-B's routeBExecCtx) to tag a dispatch's ctx for the
+	// native-protocol packet capture, and by the query_log fallback
+	// reconciler as the correlation key back to system.query_log's
+	// log_comment column.
+	ShapeID string
+
+	// HasPredictedEstimate / PredictedRows mirror RequestMeta.Estimate.Rows
+	// (see that field's own doc) onto the Decision that was actually routed
+	// on, for the SAME "pure readout, changes no routing behavior" reason
+	// every other withGrid field exists: internal/engine's actuals wiring
+	// needs the EXACT prediction the K clamp saw for THIS decision, not a
+	// second, possibly-stale read of RequestMeta after Plan/Eligible
+	// returns. HasPredictedEstimate is false (and PredictedRows 0) whenever
+	// meta.Estimate was nil — the overwhelmingly common case.
+	HasPredictedEstimate bool
+	PredictedRows        uint64
 }
 
 // StrategyShardedTimeslice is the only decomposition strategy emitted:

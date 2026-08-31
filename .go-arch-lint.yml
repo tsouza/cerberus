@@ -126,6 +126,16 @@ components:
   # only chplan (to build the Key) and the standard library. Importable by
   # engine (which classifies dispatch outcomes through it) and cmd only.
   routememo: { in: routememo }
+  # Bounded predicted-vs-actual drift tracker for query resource usage
+  # (issue #2789): records EXPLAIN ESTIMATE's advisory row prediction per
+  # plan-shape id and the REAL read_rows/read_bytes/peak-memory a dispatch
+  # actually consumed (native-protocol progress/ProfileEvents packets, or
+  # system.query_log as the batch fallback), and reports a bounded
+  # calibration factor plus a drift-alert verdict. Pure leaf — stdlib only
+  # (no chplan: it is keyed by the ALREADY-computed literal-free shape-id
+  # string, not a plan tree) — so it is importable by chclient (the packet
+  # capture site), engine (the query_log fallback + every consumer) and cmd.
+  actuals:   { in: actuals }
   config:    { in: config }
   api-loki:  { in: api/loki }
   api-prom:  { in: api/prom }
@@ -281,6 +291,16 @@ deps:
     mayDependOn:
       - chplan
 
+  # actuals is a true leaf (stdlib only) — no entry needed here (see the
+  # chplan comment above for why an omitted entry is correct, not an
+  # oversight). chclient depends on it to feed the native-protocol packet
+  # capture site (internal/chclient/progress.go); engine depends on it for
+  # every consumer (calibration, route-memo magnitude, per-rung admission,
+  # the query_log fallback reconciler, and the drift alert itself).
+  chclient:
+    mayDependOn:
+      - actuals
+
   # QL layers parse upstream syntax and lower to chplan. The LogQL
   # adapter has migrated to the engine.Lang interface, so it depends
   # on `engine` for the typed contracts (engine.Meta etc); promql and
@@ -380,6 +400,7 @@ deps:
       - optimizer
       - solver
       - routememo
+      - actuals
 
   # solver is the sharded-pushdown query-solver framework (off by
   # default — Mode="single"). The Planner/Slicer classify + re-anchor

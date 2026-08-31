@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tsouza/cerberus/internal/actuals"
 	"github.com/tsouza/cerberus/internal/cerbtrace"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -297,6 +298,12 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// result-equivalent, like the compare() bound above.
 	ctx = applyNativeHistogramAnalyzerFix(ctx, plan)
 	ctx = e.settings().apply(ctx, plan)
+	// Issue #2789: tag this route-A dispatch for actuals capture — see
+	// applyActualsCapture's own doc. No-op (ctx unchanged) whenever Actuals
+	// is nil or decision carries no ShapeID (either because Actuals was nil
+	// back when classify() ran, or classify() never ran at all — the
+	// non-classified heads).
+	ctx = applyActualsCapture(ctx, e.Actuals, decision)
 	// Fix the per-dispatch ClickHouse query_id ONCE here, on the ctx that
 	// flows into the chclient dispatch, so the corpus reconciler records the
 	// exact same id the chclient query path later stamps via WithQueryID. The
@@ -998,6 +1005,23 @@ type Engine struct {
 	// for why the two are kept as independent advisors sharing one merge
 	// point rather than one combined mechanism.
 	CardinalityProbeAdvisor *CardinalityProbeAdvisor
+
+	// Actuals is the OPTIONAL predicted-vs-actual drift tracker (issue
+	// #2789, actuals_wiring.go). Nil unless wired from cmd/cerberus
+	// (buildActualsTracker, gated on CERBERUS_QUERY_ACTUALS_ENABLED — a
+	// plain config knob, NOT a chopt feature: see actuals.Config's own doc
+	// for why), so the default path is byte-unchanged: every dispatch that
+	// currently reaches ScanEstimateAdvisor / CardinalityProbeAdvisor /
+	// RouteMemo / PerRungAdmission stays reachable and correct exactly as
+	// before this field existed. When non-nil, classify records every
+	// advisory prediction it produces (Hook: drift-detection core) and
+	// applies a bounded calibration correction to it (Hook 1:
+	// carrier-geometry cost-model calibration, calibrateEstimate), and
+	// execContext / routeBExecCtx tag every dispatch's ctx so the
+	// native-protocol packet fast path (internal/chclient/progress.go) can
+	// record the real (rows, bytes, peak-memory) actual once the query
+	// completes.
+	Actuals *actuals.Tracker
 }
 
 // SetSettings installs rules as the per-query settings the engine evaluates
@@ -1533,13 +1557,14 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 // is off OR the head is not PromQL — both cases make the engine omit the
 // shadow header and stay byte-identical to the pre-solver path.
 //
-// When e.ScanEstimateAdvisor and/or e.CardinalityProbeAdvisor are wired AND
-// the deployment routes in solver.ModeAuto, classify runs a first,
-// no-estimate classification pass (pure, no I/O — see the Advise call
-// sites' own comments on why redoing it is free) purely to hand each
-// advisor a baseline Decision and let it decide, per its own doc, whether
-// the request is worth its advisory round trip. Both advisors are threaded
-// through the SAME rm.Estimate value — CardinalityProbeAdvisor.Advise folds
+// When e.ScanEstimateAdvisor and/or e.CardinalityProbeAdvisor are wired, OR
+// e.PerRungAdmission and e.Actuals are BOTH wired (issue #2789's Hook 3,
+// independent of either advisor — see perRungActualsHook below), AND the
+// deployment routes in solver.ModeAuto, classify runs a first, no-estimate
+// classification pass (pure, no I/O — see the Advise call sites' own
+// comments on why redoing it is free) purely to hand each advisor (and Hook
+// 3) a baseline Decision. Both advisors are threaded through the SAME
+// rm.Estimate value — CardinalityProbeAdvisor.Advise folds
 // its own result on top of whatever ScanEstimateAdvisor.Advise already
 // produced (nil when that one is unwired or itself skipped) — so a shape
 // needing both signals gets one merged solver.ScanEstimate, never two
@@ -1557,7 +1582,24 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 		End:   end,
 		Step:  step,
 	}
-	if (e.ScanEstimateAdvisor != nil || e.CardinalityProbeAdvisor != nil) && e.Solver.Cfg.Mode == solver.ModeAuto {
+	// Issue #2789: the shape id is threaded onto RequestMeta unconditionally
+	// whenever Actuals is wired (a pure, no-I/O plan walk — see
+	// planShapeID's own doc), independent of Mode, so withGrid (planner.go)
+	// carries it onto EVERY Decision this classify() call produces,
+	// including a non-ModeAuto one. Nil Actuals (the default) leaves
+	// rm.ShapeID at its zero value, exactly as before this field existed.
+	if e.Actuals != nil {
+		rm.ShapeID = planShapeID(plan)
+	}
+	// Hook 3 (below) needs a baseline classification pass exactly like the
+	// two advisors do, so it is folded into the SAME gate — widened here to
+	// admit "PerRungAdmission + Actuals wired, neither advisor is" as a
+	// legitimate independent configuration (the two mechanisms are gated on
+	// different knobs: ScanEstimateAdvisor/CardinalityProbeAdvisor on the
+	// chopt feature set, PerRungAdmission/Actuals on
+	// solver.Cfg.AdaptiveEnabled / CERBERUS_QUERY_ACTUALS_ENABLED).
+	perRungActualsHook := e.PerRungAdmission != nil && e.Actuals != nil
+	if (e.ScanEstimateAdvisor != nil || e.CardinalityProbeAdvisor != nil || perRungActualsHook) && e.Solver.Cfg.Mode == solver.ModeAuto {
 		baseline, _ := e.Solver.Classify(plan, rm)
 		if e.ScanEstimateAdvisor != nil {
 			emit := func(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
@@ -1573,6 +1615,18 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 		if e.CardinalityProbeAdvisor != nil {
 			rm.Estimate = e.CardinalityProbeAdvisor.Advise(ctx, e.RouteMemo, plan, baseline, rm.Estimate)
 		}
+		// Hook 1 (issue #2789): calibrate the advisory estimate against this
+		// shape's OWN measured drift history before it ever reaches the K
+		// clamp — a bounded correction (actuals.CalibrationFactor's own
+		// [0.5, 2.0] clamp), never a new fitting loop. No-op (rm.Estimate
+		// unchanged) whenever Actuals is nil, rm.Estimate is nil, or the
+		// shape has not yet accumulated enough evidence.
+		rm.Estimate = e.calibrateEstimate(rm.ShapeID, rm.Estimate)
+		// Hook 3 (issue #2789): seed the per-rung admission learner from
+		// this shape's OWN tracked actuals history — see
+		// maybeSeedPerRungAdmissionFromActuals's own doc. No-op unless both
+		// PerRungAdmission and Actuals are wired.
+		e.maybeSeedPerRungAdmissionFromActuals(plan, rm.ShapeID, baseline)
 	}
 	return e.Solver.Classify(plan, rm)
 }
@@ -1680,8 +1734,16 @@ func routeBExecCtx(
 	deltaPrefixLookback time.Duration, deltaPrefixReadEnabled bool,
 	bounds ResourceBoundOverrides,
 	rangeBucketGridNativeMaxRows, rangeBucketGridNativeMaxDensityUnits int64,
+	actualsTracker *actuals.Tracker,
 ) context.Context {
 	ctx = chclient.WithResponseShape(chclient.WithProgressFor(ctx, langName), responseShape)
+	// Issue #2789: tag this route-B dispatch for actuals capture — see
+	// applyActualsCapture's own doc. Threaded here (rather than assumed
+	// already on ctx) because route B is the SAME funnel every
+	// non-baseline dispatch site shares (this function's own doc: "the
+	// four of them: executeRouted, ... the route-memo hit and the A->B
+	// retry"), so wiring it here covers all four in one place.
+	ctx = applyActualsCapture(ctx, actualsTracker, decision)
 	if decisionHasTSGridNative(decision) {
 		ctx = chclient.WithTSGridSetting(ctx)
 	}
@@ -1765,7 +1827,10 @@ func (e *Engine) executeRouted(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(
+			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	if err != nil {
 		execT.Done(ctx)
@@ -2270,7 +2335,10 @@ func (e *Engine) executeRoutedCursor(
 	execT := telemetry.ObserveStage(telemetry.StageExecute, lang.Name())
 	start := time.Now()
 	cursor, info, err := e.Solver.Executor.Execute(
-		routeBExecCtx(ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled, e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
+		routeBExecCtx(
+			ctx, lang.Name(), meta.ResponseShape, decision, e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+			e.resourceBoundOverrides(), e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits, e.Actuals,
+		), lang.Name(), decision, chclient.SampleBudgetFromContext(ctx),
 	)
 	execT.Done(ctx)
 	if err != nil {
@@ -2282,7 +2350,7 @@ func (e *Engine) executeRoutedCursor(
 	// evidence-based per-rung refinement, which supplies its OWN drain-time
 	// site by wrapping the cursor below.
 	e.observeRoutedQuery(info, plan, lang.Name(), decision)
-	cursor = wrapPerRungObserver(cursor, e.PerRungAdmission, plan, decision)
+	cursor = wrapPerRungObserver(cursor, e.PerRungAdmission, e.RouteMemo, plan, decision)
 
 	nodes := cerbtrace.CountNodes(plan)
 	strategy := strategyFor(meta)

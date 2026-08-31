@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
 
+	"github.com/tsouza/cerberus/internal/actuals"
 	"github.com/tsouza/cerberus/internal/api/admit"
 	"github.com/tsouza/cerberus/internal/api/health"
 	"github.com/tsouza/cerberus/internal/api/info"
@@ -201,7 +202,18 @@ func mountAPIHeads(
 		if err != nil {
 			return apiHeads{}, fmt.Errorf("configure solver: %w", err)
 		}
-		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger, resourceBounds, promResourceBounds)
+		// Issue #2789: same fail-fast contract as buildSolver's own
+		// solver.ConfigFromEnv() above — a malformed CERBERUS_QUERY_ACTUALS_*
+		// knob refuses to boot rather than silently running on an unintended
+		// value. Prom-only, mirroring evalSolver/RouteMemo/PerRungAdmission's
+		// own scope: the actuals hooks all key off the solver's own
+		// plan-shape-id / K-clamp machinery, which is PromQL-only
+		// (solver.RequestMeta.Lang's own doc).
+		actualsTracker, err := buildActualsTracker(ctx, logger, promClient)
+		if err != nil {
+			return apiHeads{}, fmt.Errorf("configure query actuals: %w", err)
+		}
+		promHandler = newPromHandler(promClient, cfg, optSet, evalSolver, limiters.prom, logger, resourceBounds, promResourceBounds, actualsTracker)
 		promHandler.Mount(traceMux)
 		engines = append(engines, promHandler.Engine)
 	}
@@ -762,7 +774,11 @@ const gracefulShutdownTimeout = 10 * time.Second
 // chplan.RangeWindow for rate()/increase()/etc — and independently onto the
 // Loki head below, since LogQL's own range aggregations lower to the same
 // node kind.
-func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides, promResourceBounds promql.ResourceBounds) *prom.Handler {
+func newPromHandler(
+	client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver,
+	limiter *admit.Limiter, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides,
+	promResourceBounds promql.ResourceBounds, actualsTracker *actuals.Tracker,
+) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	h.ResourceBounds = promResourceBounds
 	// Constructed once and threaded into BOTH Engine fields below —
@@ -779,6 +795,12 @@ func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 		PerRungAdmission:        perRungAdmission,
 		ScanEstimateAdvisor:     buildScanEstimateAdvisor(client, optSet, evalSolver, perRungAdmission),
 		CardinalityProbeAdvisor: buildCardinalityProbeAdvisor(client, optSet, evalSolver, perRungAdmission),
+		// The OPTIONAL predicted-vs-actual drift tracker (issue #2789),
+		// gated on CERBERUS_QUERY_ACTUALS_ENABLED (mountAPIHeads's own
+		// wiring) rather than a chopt feature — see actuals.Config.Enabled's
+		// own doc for why. nil (the default) leaves every hook in
+		// internal/engine/actuals_wiring.go inert.
+		Actuals: actualsTracker,
 		// PromQL-only: TraceQL / LogQL plans never carry a
 		// chplan.RangeWindow.TemporalityColumn (the OTel Sum
 		// AggregationTemporality concept), so this is inert for the other
@@ -925,6 +947,73 @@ func buildCardinalityProbeAdvisor(
 		return nil
 	}
 	return engine.NewCardinalityProbeAdvisor(client, perRungAdmission)
+}
+
+// buildActualsTracker wires issue #2789's predicted-vs-actual drift tracker
+// (internal/actuals), gated on CERBERUS_QUERY_ACTUALS_ENABLED — a plain
+// solver-policy config knob, NOT a chopt feature (actuals.Config.Enabled's
+// own doc explains why: ProfileEvents on the native protocol and
+// system.query_log are both ancient, always-available ClickHouse surfaces
+// with no version floor to probe). Returns (nil, nil) — the engine's
+// byte-unchanged, feature-off default — when the operator has not opted in;
+// returns a non-nil error only on a malformed CERBERUS_QUERY_ACTUALS_* env
+// var, the same fail-fast contract buildSolver's own solver.ConfigFromEnv()
+// uses.
+//
+// When enabled, this ALSO starts the query_log fallback reconciler
+// (query_log_actuals.go) on its own goroutine, bound to ctx — mirroring
+// startOptCorpus's own goroutine-launch-and-log shape, independently
+// implemented (see query_log_actuals.go's own doc for why this package
+// cannot import internal/optcorpus).
+func buildActualsTracker(ctx context.Context, logger *slog.Logger, promClient *chclient.Client) (*actuals.Tracker, error) {
+	cfg, err := actuals.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	tracker := actuals.NewTracker(cfg)
+	rec := engine.NewQueryLogActualsReconciler(queryLogQuerierAdapter{promClient}, tracker, cfg, logger.With("component", "query_actuals"))
+	go rec.Run(ctx)
+	logger.Info(
+		"query actuals predicted-vs-actual drift tracker started",
+		"query_log_poll_interval", cfg.QueryLogPollInterval.String(),
+		"drift_band", fmt.Sprintf("[%g, %g]", cfg.DriftLowerRatio, cfg.DriftUpperRatio),
+	)
+	return tracker, nil
+}
+
+// queryLogQuerierAdapter adapts *chclient.Client to engine.QueryLogQuerier.
+// The two QueryLogActualRow types (chclient's transport type,
+// engine.QueryLogActualRow's package-local stand-in — see that type's own
+// doc) are field-for-field identical; this is the one-line conversion that
+// doc promises, kept here rather than in internal/engine so that package
+// depends only on its own narrow interface, never chclient's concrete type
+// (mirrors every other Estimator-style seam in this codebase).
+type queryLogQuerierAdapter struct {
+	client *chclient.Client
+}
+
+func (a queryLogQuerierAdapter) QueryLogActuals(ctx context.Context, since time.Time, shapeIDPrefix string, limit int) ([]engine.QueryLogActualRow, error) {
+	rows, err := a.client.QueryLogActuals(ctx, since, shapeIDPrefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]engine.QueryLogActualRow, len(rows))
+	for i, r := range rows {
+		out[i] = engine.QueryLogActualRow{
+			LogComment:  r.LogComment,
+			ReadRows:    r.ReadRows,
+			ReadBytes:   r.ReadBytes,
+			MemoryUsage: r.MemoryUsage,
+			EventTime:   r.EventTime,
+		}
+	}
+	return out, nil
 }
 
 // nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table

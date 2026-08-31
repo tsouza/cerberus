@@ -382,8 +382,10 @@ func notRouted(reason string) *Decision {
 }
 
 // withGrid stamps the RAW classifier cost scalars (N/F/D/OuterRange/Step)
-// onto the Decision from the eligibility-pass signals plus the request grid.
-// It is a pure readout of values analyze already computed — it changes no
+// onto the Decision from the eligibility-pass signals plus the request grid,
+// plus meta's ShapeID and advisory Estimate (issue #2789's actuals wiring —
+// see Decision.ShapeID / Decision.HasPredictedEstimate's own docs). It is a
+// pure readout of values analyze/the caller already computed — it changes no
 // routing behavior — and is applied to BOTH routed and not-routed decisions
 // so the calibration corpus can compare route-A and route-B cost
 // distributions at equal (N, F, D). Returns the receiver for chaining.
@@ -393,6 +395,11 @@ func (d *Decision) withGrid(sig signals, meta RequestMeta) *Decision {
 	d.CumulativeD = sig.cumulativeD
 	d.OuterRange = sig.outerRange
 	d.Step = meta.Step
+	d.ShapeID = meta.ShapeID
+	if meta.Estimate != nil {
+		d.HasPredictedEstimate = true
+		d.PredictedRows = meta.Estimate.Rows
+	}
 	return d
 }
 
