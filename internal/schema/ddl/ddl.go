@@ -175,6 +175,20 @@ type Config struct {
 	// tolerates that specific refusal instead of failing the whole apply; see
 	// isColumnStatisticsUnsupported.
 	ColumnStatisticsEnabled bool
+
+	// TraceIDProjectionEnabled gates the curated `ADD PROJECTION IF NOT
+	// EXISTS proj_trace_id (SELECT TraceId, _part_offset ORDER BY TraceId)`
+	// ALTER (cerberus issue #2767) on the traces spans table and the logs
+	// table. False (the default) renders no projection statements at all —
+	// an operator on today's schema sees byte-identical DDL. The chopt
+	// trace_id_projection feature (version-gated at ClickHouse >= 25.5, the
+	// first release accepting `_part_offset` inside a normal projection's
+	// SELECT list) resolves this bit at boot — see
+	// internal/schemaboot.DDLConfig — mirroring exactly how
+	// ColumnStatisticsEnabled is threaded from its own chopt verdict; a
+	// deployment below the floor never sees the statement rendered at all,
+	// not a statement that is rendered and then refused.
+	TraceIDProjectionEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -726,6 +740,13 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		// same way every other curated ALTER in this package trails its
 		// table's CREATE — see renderLogsCodecs' doc comment.
 		stmts := append([]string{logs}, renderLogsCodecs(cfg)...)
+		// The curated proj_trace_id projection (issue #2767) trails the CREATE
+		// + codec ALTERs the same way every other curated ALTER in this
+		// package trails its table's CREATE — see TraceIDProjectionEnabled's
+		// doc comment on why the logs table carries it too, not traces alone.
+		if cfg.TraceIDProjectionEnabled {
+			stmts = append(stmts, renderAddTraceIDProjection(cfg, cfg.Tables.Logs))
+		}
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
 		}
@@ -740,6 +761,11 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		// table the first statement above just created — see
 		// renderTracesCodecs' doc comment.
 		stmts = append(stmts, renderTracesCodecs(cfg)...)
+		// The curated proj_trace_id projection (issue #2767) targets the
+		// spans table too — see TraceIDProjectionEnabled's doc comment.
+		if cfg.TraceIDProjectionEnabled {
+			stmts = append(stmts, renderAddTraceIDProjection(cfg, cfg.Tables.Traces))
+		}
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderTracesColumnStatistics(cfg)...)
 		}
@@ -874,6 +900,50 @@ var metricCatalogProjections = []metricProjection{
 // both freshly-created and pre-existing tables.
 func renderAddMetricProjection(cfg Config, table string, p metricProjection, hasMonotonic bool) string {
 	stmt := chsql.AlterTableAddProjection(cfg.Database, table, p.name, p.body(hasMonotonic))
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+const (
+	// traceIDProjectionName is the ALTER TABLE ADD PROJECTION identifier for
+	// the exact-row TraceId lookup projection (cerberus issue #2767) — see
+	// TraceIDProjectionEnabled's doc comment.
+	traceIDProjectionName = "proj_trace_id"
+	// partOffsetColumn is ClickHouse's per-part virtual row-offset column.
+	// Selecting it (alongside the sort key) into a projection's body, rather
+	// than every column of the base table, is what makes the projection a
+	// lightweight secondary index — the merge engine stores only the sort
+	// key + this pointer, not a second copy of every row — instead of a full
+	// materialized copy of the table under a different sort order. Requires
+	// ClickHouse >= 25.5 (upstream PR #78429); see FeatureTraceIDProjection.
+	partOffsetColumn = "_part_offset"
+)
+
+// traceIDProjectionBody is the ADD PROJECTION body `SELECT TraceId,
+// _part_offset ORDER BY TraceId` — no GROUP BY, unlike
+// metricCatalogProjections' aggregating projections: this one re-sorts the
+// same two columns rather than pre-aggregating them, which is exactly what
+// makes it usable as a secondary index (ClickHouse can binary-search the
+// projection's own TraceId-ordered part for the seek, then dereference
+// _part_offset back into the base part for the matching rows).
+func traceIDProjectionBody() *chsql.QueryBuilder {
+	return chsql.NewQuery().
+		Select(chsql.Col(traceIdColumn), chsql.Col(partOffsetColumn)).
+		OrderBy(chsql.Col(traceIdColumn), false)
+}
+
+// renderAddTraceIDProjection builds the idempotent ADD PROJECTION ALTER
+// installing proj_trace_id on table (otel_traces or otel_logs). ON CLUSTER is
+// threaded so the ALTER replicates the same way the CREATE statements do; ADD
+// PROJECTION IF NOT EXISTS is metadata-only and idempotent, so the same Apply
+// path covers both freshly-created and pre-existing tables — mirroring
+// renderAddMetricProjection / renderAddTemporalityIndex. Unlike ADD
+// STATISTICS, ADD PROJECTION is supported on ClickHouse Cloud (see
+// applySignal's own comment), so this needs no unsupported-server tolerance.
+func renderAddTraceIDProjection(cfg Config, table string) string {
+	stmt := chsql.AlterTableAddProjection(cfg.Database, table, traceIDProjectionName, traceIDProjectionBody())
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)
 	}

@@ -143,6 +143,8 @@ table.
 | `column_statistics`              | 26.3       | experimental | no         |
 | `classic_bucket_merge_summap`    | none       | experimental | no         |
 | `join_spill`                     | 26.4       | experimental | yes        |
+| `trace_id_projection`            | 25.5       | experimental | no         |
+| `trace_id_bitmap_filter`         | 25.11      | experimental | yes        |
 | `arg_and_max_fusion`             | 25.11      | experimental | yes        |
 | `result_cache`                   | 24.8       | stable       | yes        |
 <!-- END GENERATED: chopt-feature-table -->

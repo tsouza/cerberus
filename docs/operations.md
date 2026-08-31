@@ -1316,6 +1316,87 @@ maintenance window, not the boot path. Track progress in `system.mutations`
 (the `is_done` / `parts_to_do` columns), same as the projection and index
 runbooks above.
 
+### TraceId lookup projection (cerberus issue #2767)
+
+Trace-by-id lookups and logs<->traces correlation hops filter on `TraceId`,
+but neither `otel_traces` (`ORDER BY (ServiceName, SpanName, Timestamp)`) nor
+`otel_logs` (`ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName,
+Timestamp)`) sorts on it — today these lookups are served only by the
+`idx_trace_id` bloom_filter skip index, a probabilistic, GRANULARITY-coarse
+filter, not exact row addressing.
+
+Auto-create can install a lightweight **TraceId lookup projection** — an
+opt-in feature gated behind `CERBERUS_CH_OPTIMIZATIONS=trace_id_projection`
+(server `>= 25.5`, the first release accepting `_part_offset` inside a
+normal projection's `SELECT` list; see `docs/clickhouse-optimizations.md`'s
+`trace_id_projection` entry). Enabled, it appends one curated statement per
+table after each signal's other DDL:
+
+```sql
+ALTER TABLE <db>.otel_traces ADD PROJECTION IF NOT EXISTS proj_trace_id (SELECT TraceId, _part_offset ORDER BY TraceId)
+ALTER TABLE <db>.otel_logs   ADD PROJECTION IF NOT EXISTS proj_trace_id (SELECT TraceId, _part_offset ORDER BY TraceId)
+```
+
+Unlike the metrics catalog projections above, this one carries no `GROUP
+BY`: it re-sorts two columns — the sort key plus ClickHouse's per-part
+virtual row-offset column, `_part_offset` — rather than pre-aggregating
+them, so the merge engine stores only that pair per row, not a second full
+copy of the table. That is what makes it usable as a lightweight secondary
+index: ClickHouse can binary-search the projection's own TraceId-ordered
+part for a seek, then dereference `_part_offset` back into the base part for
+the matching rows, on ClickHouse `>= 25.5`. On `>= 25.11` the optimizer can
+additionally route an eligible `TraceId` predicate onto a row-precise
+PREWHERE **bitmap filter** via this same projection — see the
+`trace_id_bitmap_filter` feature below.
+
+**Both tables carry it, not traces alone.** The issue's own motivation names
+logs<->traces correlation as well as trace-by-id, and
+`trace_id_index_probe_chdb_test.go`'s own bar already requires both sides
+index-served for `Consistent() == true` — `otel_logs` has no more `TraceId`
+locality than `otel_traces` does, so scoping the projection to traces alone
+would leave the logs side of every correlation hop on the bloom filter.
+
+`ADD PROJECTION IF NOT EXISTS` is metadata-only and idempotent, so the
+auto-create hook (re)applies it safely on every boot. **New parts written
+after the ALTER carry the projection automatically; existing parts are not
+back-filled by `ADD PROJECTION` alone.**
+
+#### One-time `MATERIALIZE PROJECTION` back-fill runbook
+
+To back-fill existing parts immediately on a deployment that predates the
+projection, run the one-time materialize per table (a background mutation,
+non-blocking for reads — see the metrics catalog projections' own
+write-amplification discussion above for what this costs on a large table):
+
+```sql
+ALTER TABLE <db>.otel_traces MATERIALIZE PROJECTION proj_trace_id;
+ALTER TABLE <db>.otel_logs   MATERIALIZE PROJECTION proj_trace_id;
+```
+
+`MATERIALIZE` is intentionally **not** issued by the auto-create hook, same
+as every other projection/index/statistics runbook above. Track progress in
+`system.mutations`.
+
+#### The `trace_id_bitmap_filter` query-time setting (server >= 25.11)
+
+Independently of the projection's own version floor, `CERBERUS_CH_OPTIMIZATIONS`
+also carries a second, auto-enabled feature: `trace_id_bitmap_filter`. On a
+server `>= 25.11` (upstream PR
+[#81021](https://github.com/ClickHouse/ClickHouse/pull/81021)), cerberus
+stamps `min_table_rows_to_use_projection_index=0` on any query plan carrying
+a `TraceId`-keyed predicate or join — a top-level equality, a flat or
+subquery membership test, or a TraceQL structural join's recursive closure
+(see `internal/engine.eligibleForTraceIDBitmapFilter`). ClickHouse's own
+default for that setting (1,000,000 rows) is cleared trivially by any real
+production `otel_traces`/`otel_logs` table, but stamping it to 0 makes the
+bitmap-filter path reachable regardless of table size rather than leaving it
+contingent on production scale — and, unlike the projection itself, this
+setting is a pure query-time knob with no DDL and no version floor below
+25.11 to opt into: it stamps automatically once the server clears that
+floor, the same way `aggregation_in_order` / `condition_cache` do for their
+own floors. It is harmless (a no-op) on a table that carries no
+`proj_trace_id` projection at all.
+
 ### Curated column compression codecs (cerberus issue #2768)
 
 Auto-create also installs two curated `MODIFY COLUMN` codec ALTERs, retuning
