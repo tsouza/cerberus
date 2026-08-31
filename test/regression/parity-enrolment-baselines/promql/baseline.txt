@@ -560,6 +560,8 @@ sort_by_label_natural_order.txtar
 sort_by_label_no_label.txtar
 sort_desc_descending.txtar
 sort_of_dropping_binop_exp_histogram.txtar
+sorted_slab_avg_over_time_range_step.txtar
+sorted_slab_sum_over_time_range_step.txtar
 sqrt_metric.txtar
 stddev_by_job.txtar
 stddev_over_time_window.txtar
