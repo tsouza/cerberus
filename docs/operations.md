@@ -1113,6 +1113,104 @@ maintenance window, not the boot path. Track progress in `system.mutations`
 reads and rewrites the indexed column's marks, not the whole part, so it is
 far cheaper than a `MATERIALIZE PROJECTION` over the same table.
 
+### Column statistics (cerberus issue #2766)
+
+Auto-create can also install ClickHouse **column statistics** — an opt-in
+feature gated behind `CERBERUS_CH_OPTIMIZATIONS=column_statistics` (server
+`>= 26.3`; see `docs/clickhouse-optimizations.md`'s `column_statistics`
+entry). Enabled, it appends curated statements after the CREATE / projection
+/ skip-index statements for each signal:
+
+```sql
+-- metrics: every table gets ServiceName + MetricName; sum/histogram add AggregationTemporality
+ALTER TABLE <db>.otel_metrics_gauge      ADD STATISTICS IF NOT EXISTS ServiceName, MetricName TYPE uniq
+ALTER TABLE <db>.otel_metrics_sum        ADD STATISTICS IF NOT EXISTS ServiceName, MetricName TYPE uniq
+ALTER TABLE <db>.otel_metrics_histogram  ADD STATISTICS IF NOT EXISTS ServiceName, MetricName TYPE uniq
+ALTER TABLE <db>.otel_metrics_exponential_histogram ADD STATISTICS IF NOT EXISTS ServiceName, MetricName TYPE uniq
+ALTER TABLE <db>.otel_metrics_summary    ADD STATISTICS IF NOT EXISTS ServiceName, MetricName TYPE uniq
+ALTER TABLE <db>.otel_metrics_sum        ADD STATISTICS IF NOT EXISTS AggregationTemporality TYPE minmax, uniq
+ALTER TABLE <db>.otel_metrics_histogram  ADD STATISTICS IF NOT EXISTS AggregationTemporality TYPE minmax, uniq
+
+-- logs
+ALTER TABLE <db>.otel_logs ADD STATISTICS IF NOT EXISTS ServiceName, TraceId TYPE uniq
+ALTER TABLE <db>.otel_logs ADD STATISTICS IF NOT EXISTS SeverityNumber TYPE minmax, uniq
+
+-- traces
+ALTER TABLE <db>.otel_traces ADD STATISTICS IF NOT EXISTS ServiceName, SpanName, TraceId TYPE uniq
+ALTER TABLE <db>.otel_traces ADD STATISTICS IF NOT EXISTS Duration TYPE minmax, uniq, tdigest
+```
+
+**Why these columns, and why two ALTERs per table.** ServiceName / MetricName
+/ SpanName / TraceId are all `String` or `LowCardinality(String)` in the
+upstream OTel-CH schema, and ClickHouse rejects `minmax` and `tdigest`
+outright on a string-typed column (`Code: 708, ILLEGAL_STATISTICS` —
+verified against a live ClickHouse 26.5 server, not merely read off the
+docs), so they carry `uniq` only. That is also the semantically right choice
+for an equality-filtered identity column: `minmax` exists for RANGE
+predicates a string equality never issues. AggregationTemporality (`Int32`)
+and SeverityNumber (`UInt8`) are numeric, so they carry `minmax, uniq` in
+their OWN ALTER — ClickHouse applies one TYPE list to every column in a
+single ADD STATISTICS statement, so a string column and a numeric column
+sharing supported types can never share one statement. Duration (`UInt64`)
+additionally carries `tdigest`, since it is filtered by RANGE (a latency
+threshold) far more than by equality, and only `tdigest` lets the planner
+estimate a range predicate's selectivity rather than just its `[min, max]`
+bounds. AggregationTemporality is scoped to the SAME sum/histogram pair the
+`idx_agg_temporality` skip index above already targets — gauge never carries
+the column, and exp_histogram carries it but sits outside every
+temporality-aware routing path (see `renderAddTemporalityIndex`'s doc
+comment), so statistics there would only tax writes for a column no read
+path filters.
+
+**ClickHouse Cloud refuses ADD STATISTICS outright** — statistics are not
+supported there at all. The auto-create apply path treats that specific
+refusal as skip-and-warn rather than fatal (`internal/schema/ddl`'s
+`isColumnStatisticsUnsupported`), so a Cloud deployment with the feature
+enabled logs a warning per signal and otherwise boots normally instead of
+leaving `/readyz` stuck reporting "pending" (setupSchema's background retry
+loop would otherwise retry the whole apply forever against a refusal that
+can never succeed).
+
+**Insert overhead.** ClickHouse's statistics GA (PR
+[#97487](https://github.com/ClickHouse/ClickHouse/pull/97487), which landed
+the 26.3 floor above) disables `materialize_statistics_on_insert` by
+default: new parts do NOT compute statistics synchronously on every insert,
+so the overhead lands on the existing background merge pool rather than the
+synchronous write path.
+
+`ADD STATISTICS IF NOT EXISTS` is metadata-only and idempotent, so the
+auto-create hook (re)applies it safely on every boot, covering both
+freshly-created and pre-existing tables. **New parts written after the
+ALTER carry statistics automatically; existing parts are not back-filled by
+`ADD STATISTICS` alone.**
+
+#### One-time `MATERIALIZE STATISTICS` back-fill runbook
+
+To back-fill existing parts immediately on a deployment that predates the
+statistics, run the one-time materialize per table (a background mutation,
+non-blocking for reads):
+
+```sql
+ALTER TABLE <db>.otel_metrics_gauge      MATERIALIZE STATISTICS ServiceName, MetricName;
+ALTER TABLE <db>.otel_metrics_sum        MATERIALIZE STATISTICS ServiceName, MetricName, AggregationTemporality;
+ALTER TABLE <db>.otel_metrics_histogram  MATERIALIZE STATISTICS ServiceName, MetricName, AggregationTemporality;
+ALTER TABLE <db>.otel_metrics_exponential_histogram MATERIALIZE STATISTICS ServiceName, MetricName;
+ALTER TABLE <db>.otel_metrics_summary    MATERIALIZE STATISTICS ServiceName, MetricName;
+ALTER TABLE <db>.otel_logs               MATERIALIZE STATISTICS ServiceName, TraceId, SeverityNumber;
+ALTER TABLE <db>.otel_traces             MATERIALIZE STATISTICS ServiceName, SpanName, TraceId, Duration;
+```
+
+(`MATERIALIZE STATISTICS` accepts every listed column regardless of which
+`ADD STATISTICS` ALTER declared it, so one line per table is enough even
+though the identity and numeric columns above were added in separate
+ALTERs.)
+
+`MATERIALIZE` is intentionally **not** issued by the auto-create hook — it
+rewrites statistics for every existing part and belongs in a deliberate
+maintenance window, not the boot path. Track progress in `system.mutations`
+(the `is_done` / `parts_to_do` columns), same as the projection and index
+runbooks above.
+
 ### DELTA-prefix aggregate table + backfill (cerberus issue #2389)
 
 Auto-create can also provision an **opt-in, cerberus-owned** table + materialized

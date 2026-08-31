@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -835,5 +836,144 @@ func TestDeltaPrefixDefaultsMatchSchemaPackage(t *testing.T) {
 	if m.DeltaPrefixSumColumn != defaultDeltaPrefixSumColumn {
 		t.Errorf("schema.DefaultOTelMetricsFrom DeltaPrefixSumColumn = %q; ddl's defaultDeltaPrefixSumColumn = %q",
 			m.DeltaPrefixSumColumn, defaultDeltaPrefixSumColumn)
+	}
+}
+
+// TestRenderSignal_ColumnStatisticsDisabledByDefault pins that
+// ColumnStatisticsEnabled=false (the zero value) renders byte-identical DDL
+// to today across every signal — no ADD STATISTICS statement anywhere.
+func TestRenderSignal_ColumnStatisticsDisabledByDefault(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	for _, s := range []Signal{Metrics, Logs, Traces} {
+		stmts, err := renderSignal(cfg, s)
+		if err != nil {
+			t.Fatalf("renderSignal(%s): %v", s, err)
+		}
+		for i, stmt := range stmts {
+			if strings.Contains(stmt, "ADD STATISTICS") {
+				t.Errorf("%s[%d]: ADD STATISTICS rendered despite ColumnStatisticsEnabled=false:\n%s", s, i, stmt)
+			}
+		}
+	}
+}
+
+// TestRenderSignal_MetricsColumnStatistics pins the seven metrics ALTERs
+// (issue #2766): ServiceName+MetricName `uniq` on every table (String-family
+// columns — ClickHouse rejects minmax/tdigest on them, verified against a
+// live server), then AggregationTemporality `minmax, uniq` (an Int32 column)
+// on sum/histogram only — the same pair renderAddTemporalityIndex targets —
+// and that they trail every other metrics statement (CREATE, projections,
+// temporality index).
+func TestRenderSignal_MetricsColumnStatistics(t *testing.T) {
+	cfg := Config{ColumnStatisticsEnabled: true}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	const wantStats = 7 // 5 identity (uniq) + 2 AggregationTemporality (minmax, uniq)
+	if len(stmts) < wantStats {
+		t.Fatalf("expected at least %d column-statistics statements appended, got %d total: %v", wantStats, len(stmts), stmts)
+	}
+	stats := stmts[len(stmts)-wantStats:]
+	want := []string{
+		"ALTER TABLE default.otel_metrics_gauge ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE uniq",
+		"ALTER TABLE default.otel_metrics_sum ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE uniq",
+		"ALTER TABLE default.otel_metrics_histogram ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE uniq",
+		"ALTER TABLE default.otel_metrics_exponential_histogram ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE uniq",
+		"ALTER TABLE default.otel_metrics_summary ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE uniq",
+		"ALTER TABLE default.otel_metrics_sum ADD STATISTICS IF NOT EXISTS `AggregationTemporality` TYPE minmax, uniq",
+		"ALTER TABLE default.otel_metrics_histogram ADD STATISTICS IF NOT EXISTS `AggregationTemporality` TYPE minmax, uniq",
+	}
+	for i := range want {
+		if stats[i] != want[i] {
+			t.Errorf("metrics column statistics[%d]:\ngot  %s\nwant %s", i, stats[i], want[i])
+		}
+	}
+}
+
+// TestRenderSignal_LogsColumnStatistics pins the two logs ALTERs:
+// ServiceName+TraceId `uniq` (String-family), then SeverityNumber
+// `minmax, uniq` (a UInt8 column) in its own ALTER.
+func TestRenderSignal_LogsColumnStatistics(t *testing.T) {
+	cfg := Config{ColumnStatisticsEnabled: true}.withDefaults()
+	stmts, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	if len(stmts) != 3 {
+		t.Fatalf("logs: got %d statements, want 3 (CREATE + 2 statistics ALTERs): %v", len(stmts), stmts)
+	}
+	wantIdentity := "ALTER TABLE default.otel_logs ADD STATISTICS IF NOT EXISTS `ServiceName`, `TraceId` TYPE uniq"
+	if stmts[1] != wantIdentity {
+		t.Errorf("logs identity column statistics:\ngot  %s\nwant %s", stmts[1], wantIdentity)
+	}
+	wantSeverity := "ALTER TABLE default.otel_logs ADD STATISTICS IF NOT EXISTS `SeverityNumber` TYPE minmax, uniq"
+	if stmts[2] != wantSeverity {
+		t.Errorf("logs SeverityNumber column statistics:\ngot  %s\nwant %s", stmts[2], wantSeverity)
+	}
+}
+
+// TestRenderSignal_TracesColumnStatistics pins the two traces ALTERs: the
+// shared `uniq` statement over ServiceName/SpanName/TraceId (String-family),
+// and the separate Duration statement (`minmax, uniq, tdigest` — a UInt64
+// column).
+func TestRenderSignal_TracesColumnStatistics(t *testing.T) {
+	cfg := Config{ColumnStatisticsEnabled: true}.withDefaults()
+	stmts, err := renderSignal(cfg, Traces)
+	if err != nil {
+		t.Fatalf("renderSignal(Traces): %v", err)
+	}
+	if len(stmts) != 5 {
+		t.Fatalf("traces: got %d statements, want 5 (3 CREATEs + 2 statistics ALTERs): %v", len(stmts), stmts)
+	}
+	wantIdentity := "ALTER TABLE default.otel_traces ADD STATISTICS IF NOT EXISTS `ServiceName`, `SpanName`, `TraceId` TYPE uniq"
+	if stmts[3] != wantIdentity {
+		t.Errorf("traces identity column statistics:\ngot  %s\nwant %s", stmts[3], wantIdentity)
+	}
+	wantDuration := "ALTER TABLE default.otel_traces ADD STATISTICS IF NOT EXISTS `Duration` TYPE minmax, uniq, tdigest"
+	if stmts[4] != wantDuration {
+		t.Errorf("traces Duration column statistics:\ngot  %s\nwant %s", stmts[4], wantDuration)
+	}
+}
+
+// TestRenderSignal_ColumnStatisticsOnCluster pins that the statistics ALTERs
+// carry the same ON CLUSTER clause as every other curated ALTER when a
+// cluster is configured.
+func TestRenderSignal_ColumnStatisticsOnCluster(t *testing.T) {
+	cfg := Config{ColumnStatisticsEnabled: true, Cluster: "prod"}.withDefaults()
+	stmts, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	want := "ALTER TABLE default.otel_logs ON CLUSTER `prod` ADD STATISTICS IF NOT EXISTS `ServiceName`, `TraceId` TYPE uniq"
+	if stmts[1] != want {
+		t.Errorf("logs column statistics with cluster:\ngot  %s\nwant %s", stmts[1], want)
+	}
+}
+
+// TestIsColumnStatisticsUnsupported pins the phrase-match heuristic
+// (isColumnStatisticsUnsupported): it must catch a plausible ClickHouse
+// Cloud rejection while NEVER matching an unrelated failure, even one that
+// happens to mention "cloud" or be "disabled" without also mentioning
+// statistics.
+func TestIsColumnStatisticsUnsupported(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"cloud_not_supported", errors.New("Code: 48. DB::Exception: Statistics is not supported in ClickHouse Cloud"), true},
+		{"disabled", errors.New("column statistics are disabled on this server"), true},
+		{"unrelated_syntax_error", errors.New("Code: 62. DB::Exception: Syntax error: failed at position 12"), false},
+		{"unrelated_cloud_mention", errors.New("connection refused: cloud endpoint unreachable"), false},
+		{"unrelated_disabled_mention", errors.New("query cache is disabled"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isColumnStatisticsUnsupported(tc.err); got != tc.want {
+				t.Errorf("isColumnStatisticsUnsupported(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

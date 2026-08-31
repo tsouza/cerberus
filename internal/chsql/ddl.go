@@ -816,6 +816,108 @@ func (a *AddIndexBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
 
+// --- ALTER TABLE ... ADD STATISTICS surface ---
+//
+// AddStatisticsBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] ADD STATISTICS IF NOT EXISTS
+// <col1>[, <col2>, ...] TYPE <type1>[, <type2>, ...]`, the statement that
+// installs ClickHouse column statistics (cerberus issue #2766) on columns of
+// a table cerberus does not otherwise own the CREATE TABLE body of (the
+// upstream OTel exporter template — see the package doc comment). Statistics
+// give the query planner real cardinality/selectivity estimates for
+// PREWHERE-pushdown and join-ordering decisions, in place of cerberus's own
+// hand-rolled static heuristic (internal/chsql/prewhere.go).
+//
+// Grammar confirmed against
+// https://clickhouse.com/docs/sql-reference/statements/alter/statistics:
+// both the column list and the TYPE list are bare comma-separated lists — NO
+// enclosing parentheses (unlike, say, a tuple literal) — e.g.
+// `ALTER TABLE t1 MODIFY STATISTICS c, d TYPE tdigest, uniq_v2`.
+//
+// Adding statistics is metadata-only for NEW parts; existing parts need a
+// separate `ALTER TABLE ... MATERIALIZE STATISTICS` backfill to benefit
+// retroactively — see docs/operations.md. ClickHouse Cloud does not support
+// column statistics at all and refuses ADD STATISTICS outright; the apply
+// path tolerates that refusal rather than treating it as fatal — see
+// internal/schema/ddl's isColumnStatisticsUnsupported.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// AddStatisticsBuilder builds an ALTER TABLE ADD STATISTICS statement.
+type AddStatisticsBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	cluster  string // "" => no ON CLUSTER clause
+	columns  []string
+	types    []string
+}
+
+// AlterTableAddStatistics starts an ADD STATISTICS builder installing every
+// entry of types on every entry of columns of [<database>.]<table>. An empty
+// database emits no qualifier, so a table the connection's own database owns
+// is referenced bare. Both columns and types must carry at least one entry —
+// ClickHouse's grammar requires both lists non-empty, so an empty slice
+// panics at construction time rather than rendering DDL ClickHouse would
+// reject at apply time.
+func AlterTableAddStatistics(database, table string, columns, types []string) *AddStatisticsBuilder {
+	if len(columns) == 0 {
+		panic("chsql: AlterTableAddStatistics requires at least one column")
+	}
+	if len(types) == 0 {
+		panic("chsql: AlterTableAddStatistics requires at least one statistics type")
+	}
+	return &AddStatisticsBuilder{database: database, table: table, columns: columns, types: types}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *AddStatisticsBuilder) OnCluster(name string) *AddStatisticsBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table identifiers via BareIdent, each column via
+// Col (backtick-quoted), each statistics type via BareIdent (a fixed
+// ClickHouse type keyword, never data), and the optional ON CLUSTER clause
+// via the typed constructor — no raw token is written here.
+func (a *AddStatisticsBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" ADD STATISTICS IF NOT EXISTS ")(b)
+		for i, col := range a.columns {
+			if i > 0 {
+				ddlToken(", ")(b)
+			}
+			Col(col)(b)
+		}
+		ddlToken(" TYPE ")(b)
+		for i, typ := range a.types {
+			if i > 0 {
+				ddlToken(", ")(b)
+			}
+			BareIdent(typ)(b)
+		}
+	}
+}
+
+// SQL renders the ALTER TABLE ADD STATISTICS statement to ClickHouse text
+// via RenderDDL (which asserts the no-positional-bindings DDL invariant).
+func (a *AddStatisticsBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
+
 // --- CREATE MATERIALIZED VIEW surface (cerberus-owned aggregate tables) ---
 //
 // CreateMaterializedViewBuilder renders the `CREATE MATERIALIZED VIEW ...
