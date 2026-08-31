@@ -122,6 +122,10 @@ const (
 	// substring/regex).
 	FnArrayHas Fn = "has"
 
+	// indexOf(arr, x) — the 1-based position of the first element of arr equal
+	// to x, or 0 when arr holds no such element.
+	FnIndexOf Fn = "indexOf"
+
 	// range([start,] end[, step]) — the half-open numeric sequence [start, end) as
 	// an Array, default start 0 and step 1.
 	FnRange Fn = "range"
@@ -594,6 +598,12 @@ const (
 
 	// sumForEach(array) aggregate — the positional sum of equally shaped arrays.
 	FnSumForEach Fn = "sumForEach"
+
+	// sumMap(keys, values) aggregate — keys/values summed key-wise across the
+	// group into a Tuple(Array(K) sorted ascending, Array(V)); a key whose
+	// summed value is exactly zero is DROPPED from the result (a real, load-
+	// bearing ClickHouse quirk — see classicBucketSumMapMergeShaping's doc).
+	FnSumMap Fn = "sumMap"
 
 	// uniqExact(x) aggregate — the exact count of distinct x values in the group
 	// (no sketch approximation).

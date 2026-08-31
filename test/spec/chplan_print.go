@@ -850,6 +850,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnArrayZip:                        "FnArrayZip",
 	chplan.FnEmptyArrayFloat64:               "FnEmptyArrayFloat64",
 	chplan.FnArrayHas:                        "FnArrayHas",
+	chplan.FnIndexOf:                         "FnIndexOf",
 	chplan.FnRange:                           "FnRange",
 	chplan.FnTransform:                       "FnTransform",
 	chplan.FnTuple:                           "FnTuple",
@@ -979,6 +980,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnStddevPop:                       "FnStddevPop",
 	chplan.FnSum:                             "FnSum",
 	chplan.FnSumForEach:                      "FnSumForEach",
+	chplan.FnSumMap:                          "FnSumMap",
 	chplan.FnUniqExact:                       "FnUniqExact",
 	chplan.FnVarPop:                          "FnVarPop",
 }

@@ -141,6 +141,7 @@ table.
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
 | `ts_grid_last_over_time`         | 26.6       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
+| `classic_bucket_merge_summap`    | none       | experimental | no         |
 | `join_spill`                     | 26.4       | experimental | yes        |
 | `arg_and_max_fusion`             | 25.11      | experimental | yes        |
 | `result_cache`                   | 24.8       | stable       | yes        |
@@ -205,12 +206,10 @@ Notes:
   as `ts_grid_range`, co-stamped on exactly the queries that emit the native
   resample node. The two features are independent (either can be on without the
   other): the PromQL lowering wires each as a separate boot-decided strategy.
-  Before ClickHouse 25.9 the native function used a CLOSED left-edge
-  staleness window (`[anchor - lookback, anchor]`); PR #86588 made it
-  left-open (`(anchor - lookback, anchor]`), matching the fan-out exactly.
-  Since the feature's floor IS 25.9, production never observes the
-  closed-left form — see `chplan.RangeWindowStaleResample`'s own doc for the
-  full history.
+  The native function uses a CLOSED left-edge staleness window
+  (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
+  fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
+  sample landing exactly on the left boundary.
 - **`columnar_result_decode`** is a **client-side** decode optimization with
   **no version floor** (`minVersion` is the always-available zero floor): it
   changes how cerberus reads the result blocks, not what it asks the server to
@@ -455,39 +454,6 @@ Notes:
   `mapConcat`) roughly 2x SLOWER, so enabling it is a deliberate
   single-key-vs-whole-map tradeoff an operator opts into, not a version-gated
   pure win `auto` can assume.
-- **`ts_grid_last_over_time`** ([#2747](https://github.com/tsouza/cerberus/issues/2747))
-  lowers matrix-mode `last_over_time(<v>[<range>])` through the SAME native
-  node `ts_grid_resample` already rides
-  (`chplan.RangeWindowStaleResample` /
-  `timeSeriesResampleToGridWithStaleness`) rather than a dedicated aggregate:
-  the function's "most recent sample within the window per grid point, absent
-  when none" contract IS that aggregate's own contract, with the matrix
-  `[range]` supplying the staleness parameter (`Lookback`) in place of the
-  bare-selector shape's fixed 5m `instantLookback`. Delta from
-  `ts_grid_resample` is eligibility classification (matrix-mode
-  `last_over_time`, not a bare selector) plus the staleness parameter
-  source — the emitter, the `ARRAY JOIN` consumer, and the settings plumbing
-  are all shared unchanged. `__name__` is preserved (`last_over_time` is one
-  of the two range functions Prometheus keeps the name for) natively: the
-  node's `GROUP BY` reads the real per-row `MetricName` column, so no
-  wrapping Project has to synthesise it the way the fan-out path does.
-  **Floor is 26.6, NOT the family's 25.9**: two real correctness fixes to
-  `timeSeriesResampleToGridWithStaleness` /
-  `timeSeriesLastToGrid` landed after 25.9 —
-  [#106504](https://github.com/ClickHouse/ClickHouse/pull/106504) ("timestamps
-  before start") and [#106577](https://github.com/ClickHouse/ClickHouse/pull/106577)
-  ("out-of-window timestamps"), both merged into 26.6.1. #106577 is the
-  binding one here: its own regression fixture is a staleness window SMALLER
-  than the grid step — exactly the common last_over_time shape (a `[range]`
-  narrower than the query resolution), unlike `ts_grid_resample`'s fixed 5m
-  default lookback, which is comfortably wider than the step in the
-  overwhelming majority of deployments and so rarely exercises the bug.
-  `AutoSelect` is `false`, the same posture `quantile_prom_histogram` and
-  `map_bucketed_serialization` took for their own new floors: opt-in only
-  (`CERBERUS_CH_OPTIMIZATIONS=ts_grid_last_over_time`) pending fielded
-  validation of 26.6. `first_over_time` has no native sibling — the aggregate
-  carries the LATEST in-window sample forward, never the earliest — and
-  stays on the fan-out unconditionally.
 - **`column_statistics`** ([#2766](https://github.com/tsouza/cerberus/issues/2766))
   is the second SCHEMA feature: it adds curated `ALTER TABLE ... ADD
   STATISTICS IF NOT EXISTS` statements (`internal/schema/ddl`'s

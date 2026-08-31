@@ -84,7 +84,7 @@ func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 		t.Run("reduces/"+op.String(), func(t *testing.T) {
 			t.Parallel()
 			agg := &parser.AggregateExpr{Op: op, Param: param(op)}
-			fold, err := classicBucketLadderFold(agg, s, lowerCtx{})
+			fold, _, err := classicBucketLadderFold(agg, s, lowerCtx{})
 			if err != nil {
 				t.Fatalf("classicBucketLadderFold(%s): %v", op, err)
 			}
@@ -112,7 +112,7 @@ func TestClassicBucketLadderFold_OperatorTable(t *testing.T) {
 		t.Run("no_fold/"+op.String(), func(t *testing.T) {
 			t.Parallel()
 			agg := &parser.AggregateExpr{Op: op, Param: param(op)}
-			fold, err := classicBucketLadderFold(agg, s, lowerCtx{})
+			fold, _, err := classicBucketLadderFold(agg, s, lowerCtx{})
 			if err != nil {
 				t.Fatalf("classicBucketLadderFold(%s): %v", op, err)
 			}
@@ -181,7 +181,7 @@ func TestHistogramWindowFold_RateDividesFactorBeforeBucketIncrease(t *testing.T)
 func TestClassicBucketLadderFold_NilAggIsSum(t *testing.T) {
 	t.Parallel()
 
-	fold, err := classicBucketLadderFold(nil, schema.DefaultOTelMetrics(), lowerCtx{})
+	fold, _, err := classicBucketLadderFold(nil, schema.DefaultOTelMetrics(), lowerCtx{})
 	if err != nil {
 		t.Fatalf("classicBucketLadderFold(nil): %v", err)
 	}
@@ -192,6 +192,48 @@ func TestClassicBucketLadderFold_NilAggIsSum(t *testing.T) {
 	call, ok := out.(*chplan.FuncCall)
 	if !ok || call.Fn != chplan.FnArraySum {
 		t.Fatalf("bare-rate fold = %#v, want arraySum", out)
+	}
+}
+
+// TestClassicBucketLadderFold_IsSumFlag pins classicBucketLadderFold's isSum
+// return: true ONLY for the nil-agg bare-rate case and parser.SUM — the two
+// shapes classicBucketMergeShapingSumMap (classic_bucket_merge_summap.go,
+// issue #2756) may replace with the sumMap-based merge. Every other
+// reducer must report false, so ClassicBucketMergeLowerer never routes a
+// non-sum fold onto that path.
+func TestClassicBucketLadderFold_IsSumFlag(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+
+	if _, isSum, err := classicBucketLadderFold(nil, s, lowerCtx{}); err != nil || !isSum {
+		t.Fatalf("classicBucketLadderFold(nil) isSum = %v, err = %v; want true, nil", isSum, err)
+	}
+
+	cases := []struct {
+		op        parser.ItemType
+		param     parser.Expr
+		wantIsSum bool
+	}{
+		{op: parser.SUM, wantIsSum: true},
+		{op: parser.AVG, wantIsSum: false},
+		{op: parser.MIN, wantIsSum: false},
+		{op: parser.MAX, wantIsSum: false},
+		{op: parser.COUNT, wantIsSum: false},
+		{op: parser.GROUP, wantIsSum: false},
+		{op: parser.STDDEV, wantIsSum: false},
+		{op: parser.STDVAR, wantIsSum: false},
+		{op: parser.QUANTILE, param: &parser.NumberLiteral{Val: 0.5}, wantIsSum: false},
+	}
+	for _, tc := range cases {
+		agg := &parser.AggregateExpr{Op: tc.op, Param: tc.param}
+		_, isSum, err := classicBucketLadderFold(agg, s, lowerCtx{})
+		if err != nil {
+			t.Fatalf("classicBucketLadderFold(%s): %v", tc.op, err)
+		}
+		if isSum != tc.wantIsSum {
+			t.Errorf("classicBucketLadderFold(%s) isSum = %v, want %v", tc.op, isSum, tc.wantIsSum)
+		}
 	}
 }
 
@@ -361,7 +403,7 @@ func TestHistogramQuantile_QuantileAgg_ComputedPhi(t *testing.T) {
 	if !ok {
 		t.Fatalf("test setup: %q's inner expression is not an aggregation", query)
 	}
-	fold, err := classicBucketLadderFold(agg, s, lowerCtx{})
+	fold, _, err := classicBucketLadderFold(agg, s, lowerCtx{})
 	if err != nil {
 		t.Fatalf("classicBucketLadderFold(quantile with computed param): %v", err)
 	}

@@ -175,6 +175,15 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "ClassicBucketMerge",
+		section: "experimental_classic_bucket_merge_summap",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
+				Fallback: promql.FanoutClassicBucketMergeLowerer{},
+			}
+		},
+	},
+	{
 		field:   "ArgAndMaxFusion",
 		section: "experimental_arg_and_max_fusion",
 		// Unlike every other row, this sets a plain bool, not a Lowerer —
