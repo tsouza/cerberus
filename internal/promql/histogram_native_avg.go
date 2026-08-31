@@ -21,11 +21,14 @@ import (
 //
 // So `avg()` is `sum()` plus one division, and this file is deliberately
 // only that division: [sumOrAvgOverExpHistogram] recognises both
-// aggregations and [expHistogramGroupMerge] builds the identical merge
-// for both, so the two can never drift apart in the arithmetic that
-// reconciles bucket ladders. Sharing the merge is the whole point of the
-// split — a second, parallel merge would be a second place for the
-// scale-fold to go wrong.
+// aggregations and both route through the SAME
+// [ExpHistogramMergeLowerer.LowerExpHistogramMerge] call, so the two can
+// never drift apart in the arithmetic that reconciles bucket ladders. avg
+// is never eligible for the sumMap alternate shape
+// (exp_histogram_merge_summap.go) — it always resolves to
+// [expHistogramGroupMergeFanout] — but sharing the ONE dispatch call is
+// still the whole point of the split: a second, parallel merge call site
+// would be a second place for the scale-fold to go wrong.
 //
 // WHICH fields the division touches is the load-bearing detail, and it
 // is not "all of them". Reference divides a FloatHistogram by a scalar

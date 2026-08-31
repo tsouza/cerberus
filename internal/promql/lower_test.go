@@ -114,7 +114,13 @@ func TestLower(t *testing.T) {
 		// A `range_step:` section opts the fixture into range mode: the
 		// section value is a duration parsed by time.ParseDuration, and
 		// the lowering uses LowerAtRange with the deterministic
-		// rangeStart/rangeEnd window. This is the fixture-side mechanism
+		// rangeStart/rangeEnd window. A fixture with no `range_step:` but
+		// carrying one of [nativeStrategies]' own marker sections
+		// (hasAnyNativeStrategyMarker) instead lowers instant-mode through
+		// LowerAtRangeOpts with a zero step — the ONLY way to reach an
+		// instant-only strategy (one whose RangeLowerers field a
+		// production call site only ever populates for anchor==nil, e.g.
+		// ExpHistogramMerge) from this harness at all. This is the fixture-side mechanism
 		// for exercising query_range lowerings (histogram_quantile per-
 		// step anchor, etc.) without requiring per-test Go scaffolding.
 		// A `metadata_label_values:` section (body = the Prom label whose
@@ -158,6 +164,22 @@ func TestLower(t *testing.T) {
 					return hasSection(c, name)
 				})
 				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, fixtureSchema, rangeStart, rangeEnd, stepDur,
+					promql.LowerOpts{Lowerers: lowerers})
+			} else if hasAnyNativeStrategyMarker(c) {
+				// An instant-mode fixture (no `range_step:`) that still
+				// carries a nativeStrategies marker section — e.g. a
+				// strategy that is ONLY ever instant-eligible, like
+				// ExpHistogramMerge (exp_histogram_merge_summap.go, cerberus
+				// issue #2757). LowerAtRangeOpts with a zero step and the
+				// SAME wired table [LowerAt] itself calls internally, so
+				// this is byte-identical to the plain LowerAt branch below
+				// whenever no marker is present (wireNativeStrategies then
+				// resolves to the all-fan-out default) — the two branches
+				// diverge only when a marker section actually opts in.
+				lowerers := wireNativeStrategies(func(name string) bool {
+					return hasSection(c, name)
+				})
+				plan, err = promql.LowerAtRangeOpts(context.Background(), expr, fixtureSchema, instantEval, instantEval, 0,
 					promql.LowerOpts{Lowerers: lowerers})
 			} else {
 				plan, err = promql.LowerAt(context.Background(), expr, fixtureSchema, instantEval, instantEval)
@@ -231,6 +253,21 @@ func TestLower(t *testing.T) {
 func hasSection(c *spec.Case, name string) bool {
 	_, ok := c.Section(name)
 	return ok
+}
+
+// hasAnyNativeStrategyMarker reports whether c carries ANY of
+// [nativeStrategies]' marker sections — the instant-mode (no
+// `range_step:`) counterpart of the range-mode branch's own per-row
+// lookup, letting an instant-only strategy (ExpHistogramMerge) opt a
+// fixture into [promql.LowerAtRangeOpts] instead of the plain
+// no-opts [promql.LowerAt].
+func hasAnyNativeStrategyMarker(c *spec.Case) bool {
+	for _, ns := range nativeStrategies {
+		if hasSection(c, ns.section) {
+			return true
+		}
+	}
+	return false
 }
 
 // nonEmptyLines splits a fixture section into its non-blank lines,

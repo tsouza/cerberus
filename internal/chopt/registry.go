@@ -906,6 +906,44 @@ const (
 	// map_bucketed_serialization already took on their own new floors.
 	FeatureTraceIDProjection = "trace_id_projection"
 
+	// FeatureExpHistogramMergeSumMap opts the across-series exponential
+	// (native) histogram merge stage (histogram_native_sum.go's
+	// expHistogramGroupMergedInstant, the ONLY eligible call site) onto a
+	// two-pass sumMap-keyed reshape — see
+	// internal/promql/exp_histogram_merge_summap.go — for the INSTANT,
+	// SINGLE-GROUP (no by()/without()), SUM-fold shape only. avg(), any
+	// grouped shape, and range/query_range mode are NOT eligible and
+	// always keep the existing groupArray + arrayReduce/arraySlice picker
+	// fold (histogram_merge_bound.go's own audited `rows x width^2`
+	// finding) regardless of this feature's state — see
+	// promql.NativeExpHistogramMergeLowerer's own doc for exactly why
+	// those shapes need a per-group JOIN this change does not build
+	// (tracked by cerberus issue #2834).
+	//
+	// sumMap is old, always-available ClickHouse functionality — no
+	// version floor to probe, matching FeatureClassicBucketMergeSumMap's
+	// own posture.
+	//
+	// AutoSelect is false. Real ClickHouse 26.6 measurements taken for
+	// issue #2757, against the actual emitted SQL, found this design wins
+	// 13-43x on memory at realistic OTel-SDK-default bucket width (~160)
+	// once row count reaches the hundreds-to-thousands range — but is
+	// roughly PARITY at a single series and costs MORE memory than the
+	// existing fold for a SINGLE series carrying an unusually wide
+	// individual bucket layout (width 1,280 and up), because the new
+	// design's own reconstruction step is width^2 in the worst case,
+	// independent of row count (see exp_histogram_merge_summap.go's
+	// header for the full measured table). The
+	// existing histogram-merge budget guard is reused UNCHANGED (proven
+	// safe under the new cost model too, just conservative — see that
+	// same header) rather than newly calibrated, so this feature does not
+	// yet unlock the guard's full potential upside; recalibrating it is
+	// tracked by cerberus issue #2834. Until both land, this feature is reachable
+	// only by explicit CERBERUS_CH_OPTIMIZATIONS=exp_histogram_merge_summap
+	// listing, mirroring FeatureClassicBucketMergeSumMap's own posture for
+	// a feature with a proven, real regression on a specific input shape.
+	FeatureExpHistogramMergeSumMap = "exp_histogram_merge_summap"
+
 	// FeatureJoinSpill stamps max_bytes_before_external_join = cap/2 (the
 	// SAME cap-relative arithmetic internal/engine/spill.go's unconditional
 	// group_by/sort stamps use, keyed off CERBERUS_CH_QUERY_MAX_MEMORY) on
@@ -1427,6 +1465,13 @@ var registry = []Feature{
 		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap+arrayCumSum, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — heterogeneous bucket layouts diverge, #2817)",
 	},
 	{
+		ID:         FeatureExpHistogramMergeSumMap,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "opt the instant, single-group, SUM-fold exponential-histogram cross-series merge onto a two-pass sumMap-keyed reshape (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — regresses a single wide-layout series, #2757)",
+	},
+	{
 		ID:         FeatureJoinSpill,
 		MinVersion: Version{Major: 26, Minor: 4},
 		Stability:  Experimental,
@@ -1485,8 +1530,8 @@ var registry = []Feature{
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
-// column_statistics, classic_bucket_merge_summap, join_spill,
-// trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
+// column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
+// join_spill, trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
 // result_cache, lazy_materialization, explain_estimate). The copy keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.

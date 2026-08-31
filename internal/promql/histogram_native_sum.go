@@ -203,7 +203,7 @@ func expHistogramGroupMergedInstant(agg *parser.AggregateExpr, vs *parser.Vector
 		input = &chplan.Filter{Input: scan, Predicate: pred}
 	}
 	perSeries := latestSampleAgg(input, nativeExpHistValuedLatestAggs(s), s)
-	return expHistogramGroupMerge(perSeries, nil, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
+	return ctx.lowerers.ExpHistogramMerge.LowerExpHistogramMerge(perSeries, nil, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), nil
 }
 
 // lowerExpHistogramSumOrAvgRange is the query_range shape. Stage 1 is the
@@ -226,10 +226,10 @@ func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.Vector
 		nativeExpHistValuedLatestAggs(s), s, ctx,
 	)
 	anchor := &chplan.ColumnRef{Name: stepGridAnchorColumn}
-	return aggregatedHistogramProjection(expHistogramGroupMerge(perSeries, anchor, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), anchor, s)
+	return aggregatedHistogramProjection(ctx.lowerers.ExpHistogramMerge.LowerExpHistogramMerge(perSeries, anchor, agg, s, ctx.resourceBounds.HistogramMergeMaxCostUnits), anchor, s)
 }
 
-// expHistogramGroupMerge is the across-SERIES stage: it adds the per-series
+// expHistogramGroupMergeFanout is the across-SERIES stage: it adds the per-series
 // distributions perSeries hands up, grouped by the user's `by/without`
 // clause, and reshapes the result back into the exp-histogram row
 // contract under the schema's own column names.
@@ -248,7 +248,7 @@ func lowerExpHistogramSumOrAvgRange(agg *parser.AggregateExpr, vs *parser.Vector
 // maxCostUnits is the caller's already-resolved histogram-merge cost
 // ceiling (ctx.resourceBounds.HistogramMergeMaxCostUnits, cerberus issue
 // #2667), passed straight through to [expHistogramMergeSortStage].
-func expHistogramGroupMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
+func expHistogramGroupMergeFanout(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	groupBy, groupByAliases, attrsRebuild := histogramAggGroupBy(
 		agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)

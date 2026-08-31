@@ -353,6 +353,15 @@ type RangeLowerers struct {
 	// on the lowering path.
 	ClassicBucketMerge ClassicBucketMergeLowerer
 
+	// ExpHistogramMerge handles the across-series exponential-histogram
+	// merge stage (two-pass sumMap keying for the instant, single-group,
+	// SUM fold shape, exp_histogram_merge_summap.go — no version floor,
+	// exp_histogram_merge_summap chopt feature). Concrete fan-out impl
+	// (the existing groupArray + picker fold) when the feature is off, or
+	// for every ineligible shape (avg, any by/without grouping, range
+	// mode); never nil on the lowering path.
+	ExpHistogramMerge ExpHistogramMergeLowerer
+
 	// ArgAndMaxFusion is the resolved chopt.FeatureArgAndMaxFusion verdict
 	// (server >= 25.11, cerberus issue #2764), threaded to
 	// internal/promql/binary.go's vector-vector join lowering so it can set
@@ -425,6 +434,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.ClassicBucketMerge == nil {
 		l.ClassicBucketMerge = FanoutClassicBucketMergeLowerer{}
+	}
+	if l.ExpHistogramMerge == nil {
+		l.ExpHistogramMerge = FanoutExpHistogramMergeLowerer{}
 	}
 	return l
 }

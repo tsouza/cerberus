@@ -1137,6 +1137,19 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
 	}
+	// exp_histogram_merge_summap (issue #2757) has no version floor to
+	// probe, but ships AutoSelect: false: it is eligible only for the
+	// instant, single-group, SUM-fold shape (never avg, any by/without
+	// grouping, or range mode) and reuses the existing, rows-dominated
+	// budget guard unchanged rather than a newly-calibrated one — see
+	// promql.NativeExpHistogramMergeLowerer's own doc.
+	if optSet.Has(chopt.FeatureExpHistogramMergeSumMap) {
+		l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{
+			Fallback: promql.FanoutExpHistogramMergeLowerer{},
+		}
+	} else {
+		l.ExpHistogramMerge = promql.FanoutExpHistogramMergeLowerer{}
+	}
 	return l
 }
 
