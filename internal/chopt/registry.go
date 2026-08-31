@@ -343,6 +343,56 @@ const (
 	// native timeSeries*ToGrid member at all, and changes/resets fall back to
 	// this improved fan-out on any server the native path does not cover.
 	FeatureLagInFrameAdjacency = "laginframe_adjacency"
+
+	// FeatureFixedAccumulatorExtrapolated opts eligible query_range
+	// rate()/increase()/delta() matrix shapes onto per-(series, anchor)
+	// fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the
+	// groupArray/arraySort/arrayFilter array-fold fan-out
+	// (internal/chsql.emitWindowedArrayExtrapolatedMatrix) for those shapes
+	// (cerberus issue #2760) — the FALLBACK path for the extrapolated family
+	// when the native timeSeries*ToGrid grid path (ts_grid_range /
+	// ts_grid_increase) isn't eligible: below the 25.9 floor, capability-
+	// forbidden, or a temporality-bearing window (the native aggregate has no
+	// DELTA-temporality arm, see nativeTSGridMatrixNode). This is issue
+	// #2759's own direct sibling/precedent — the timeSeries*ToGrid family
+	// needs the FIRST and LAST sample of each anchor's window (Prom's
+	// extrapolatedRate boundary correction), which #2759's own lagInFrame
+	// shape does not compute, so this is a SEPARATE registration rather than
+	// a narrowing of laginframe_adjacency; its counter-reset term reuses
+	// that feature's own lagInFrame kernel and validity check directly (see
+	// internal/chsql/range_window_fixed_accumulator.go), without depending
+	// on laginframe_adjacency being independently enabled — the two resolve
+	// as SEPARATE floor-independent client-side SQL-shape optimizations,
+	// composed by which fallback each Native*Lowerer wraps at the
+	// cmd/cerberus wiring site (mirroring how laginframe_adjacency itself
+	// narrows the changes/resets fallback there).
+	//
+	// Like laginframe_adjacency this is a pure SQL-SHAPE optimization —
+	// argMin/argMax/uniqExact/count/lagInFrame are all long-standing
+	// ClickHouse primitives present well below the 25.9 floor the ts_grid
+	// family needs — so it carries NO version gate (AlwaysAvailable) and no
+	// allow_experimental_* setting.
+	//
+	// AutoSelect is false, unlike laginframe_adjacency: the issue's own
+	// proposal calls for an optcorpus A/B pass before promoting this to
+	// auto-selected (the reset-correction term's summation runs in
+	// ClickHouse's own non-deterministic aggregation order, unlike the
+	// array-fold's strict time-ordered fold — proven algebraically
+	// equivalent and verified bit-identical on the dual-emit parity corpus,
+	// but not yet fielded). Reachable only via an explicit
+	// CERBERUS_CH_OPTIMIZATIONS=fixed_accumulator_extrapolated listing.
+	//
+	// Scope: eligible for a temporality-bearing counter window too — the
+	// DELTA/CUMULATIVE runtime branch and the reconstructed counter
+	// zero-clamp are both decomposed into fixed accumulators, reusing
+	// range_window.go's deltaMatrixLevelSource / deltaFirstValFrag
+	// UNCHANGED (see internal/chsql/range_window_fixed_accumulator.go's own
+	// doc, "Temporality-bearing counters"). What stays excluded is the
+	// EXACT, retention-independent DELTA-prefix aggregate mechanism (issue
+	// #2389, RangeWindow.DeltaPrefixAggregateInput != nil) — a narrower
+	// opt-in-only population needing its own separate re-plumbing, tracked
+	// at https://github.com/tsouza/cerberus/issues/2797.
+	FeatureFixedAccumulatorExtrapolated = "fixed_accumulator_extrapolated"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -525,15 +575,23 @@ var registry = []Feature{
 		AutoSelect: true,
 		Doc:        "opt eligible query_range changes/resets/irate/idelta shapes onto a lagInFrame/leadInFrame annotation pass with fixed-size accumulators, retiring the array-fold fan-out (client-side, no version floor, auto-enabled, bit-identical to the fan-out)",
 	},
+	{
+		ID:         FeatureFixedAccumulatorExtrapolated,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (client-side, no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
-// ts_grid_histogram, quantile_prom_histogram, laginframe_adjacency). The copy
-// keeps the canonical entries immutable from the caller's side. Exposed so
-// tests can enumerate the gates and the docs generator can render the table.
+// ts_grid_histogram, quantile_prom_histogram, laginframe_adjacency,
+// fixed_accumulator_extrapolated). The copy keeps the canonical entries
+// immutable from the caller's side. Exposed so tests can enumerate the gates
+// and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

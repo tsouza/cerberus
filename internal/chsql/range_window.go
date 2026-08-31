@@ -2487,6 +2487,9 @@ func (e *emitter) emitRangeWindowLogRate(r *chplan.RangeWindow) error {
 // (matches Prom's funcRate / extrapolatedRate). The outer SELECT gets
 // `WHERE length(window_vals) >= 2`.
 func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
+	if r.FixedAccumulatorExtrapolated {
+		return e.emitFixedAccumulatorExtrapolatedMatrix(r, extrapolationKindRate)
+	}
 	return e.emitWindowedArrayExtrapolated(r, extrapolationKindRate)
 }
 
@@ -2496,6 +2499,9 @@ func (e *emitter) emitRangeWindowRate(r *chplan.RangeWindow) error {
 //
 // PromQL increase drops series whose window holds fewer than 2 samples.
 func (e *emitter) emitRangeWindowIncrease(r *chplan.RangeWindow) error {
+	if r.FixedAccumulatorExtrapolated {
+		return e.emitFixedAccumulatorExtrapolatedMatrix(r, extrapolationKindIncrease)
+	}
 	return e.emitWindowedArrayExtrapolated(r, extrapolationKindIncrease)
 }
 
@@ -3201,6 +3207,9 @@ func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
 // PromQL `delta` returns NaN when the window holds fewer than 2
 // samples — same as Prom's `funcDelta`.
 func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
+	if r.FixedAccumulatorExtrapolated {
+		return e.emitFixedAccumulatorExtrapolatedMatrix(r, extrapolationKindDelta)
+	}
 	return e.emitWindowedArrayExtrapolated(r, extrapolationKindDelta)
 }
 

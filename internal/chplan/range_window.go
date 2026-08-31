@@ -303,6 +303,28 @@ type RangeWindow struct {
 	// permanent, always-available fallback the FeatureLagInFrameAdjacency
 	// chopt kill-switch resolves to.
 	LagAdjacency bool
+
+	// FixedAccumulatorExtrapolated asks the matrix-shape (OuterRange > 0)
+	// emitter to render rate() / increase() / delta() via per-(series,
+	// anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf)
+	// instead of the groupArray + arraySort + arrayFilter array fold
+	// (cerberus issue #2760). Set only by the boot-wired
+	// promql.FixedAccumulator{Rate,Increase,Delta}Lowerer strategies — never
+	// read as a per-query feature flag.
+	//
+	// The array-fold path this narrows needs the FIRST and LAST sample of
+	// each anchor's window (Prom's extrapolatedRate boundary correction), not
+	// merely adjacent pairs, so it cannot reuse LagAdjacency's shape
+	// directly. See chsql/range_window_fixed_accumulator.go for the emit
+	// side (including the duplicate-timestamp dedup this shape needs that
+	// LagAdjacency's own targets never did) and
+	// internal/chplan/sliceinvariant.go's RangeWindow entry for why this
+	// remains slice-invariant despite reading window functions.
+	//
+	// false (the default) keeps the unchanged array-fold emission — the
+	// permanent, always-available fallback the
+	// FeatureFixedAccumulatorExtrapolated chopt kill-switch resolves to.
+	FixedAccumulatorExtrapolated bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -477,6 +499,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		return false
 	}
 	if r.LagAdjacency != o.LagAdjacency {
+		return false
+	}
+	if r.FixedAccumulatorExtrapolated != o.FixedAccumulatorExtrapolated {
 		return false
 	}
 	if r.VariantColumn != o.VariantColumn || len(r.Variants) != len(o.Variants) {

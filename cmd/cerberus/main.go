@@ -865,6 +865,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //
 //	rate      = enabled ? NativeRateLowerer{Fallback: FanoutRateLowerer{}} : FanoutRateLowerer{}
 //	increase  = enabled ? NativeIncreaseLowerer{Fallback: FanoutIncreaseLowerer{}} : FanoutIncreaseLowerer{}
+//	delta     = fixedAccumEnabled ? FixedAccumulatorDeltaLowerer{Fallback: FanoutDeltaLowerer{}} : FanoutDeltaLowerer{}
 //	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
 //	changes   = enabled ? NativeChangesLowerer{Fallback: FanoutChangesLowerer{}} : FanoutChangesLowerer{}
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
@@ -905,20 +906,43 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // no version floor (chopt.AlwaysAvailable) and no experimental-setting gate, so
 // it composes with the version-gated native features purely via which
 // Fallback each Native*Lowerer embeds.
+//
+// fixed_accumulator_extrapolated (issue #2760) is laginframe_adjacency's own
+// sibling for the extrapolated family: it narrows rate/increase's FALLBACK
+// the same way, and it is delta's ONLY non-fan-out strategy since delta has
+// no timeSeries*ToGrid member either. Same AlwaysAvailable floor, same
+// no-experimental-setting posture, same "narrows the fallback, never
+// competes with the native arm" composition.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
+	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
+	// rate/increase's own native ts_grid strategy, exactly like
+	// laginframe_adjacency layers inside changes/resets below: it is the
+	// improved fan-out a shape-ineligible, sub-25.9, or temporality-bearing
+	// window falls back to, never a competitor to the native path. delta has
+	// no native competitor, so its strategy is the two-tier
+	// FixedAccumulator{Fallback: Fanout{}} directly.
+	var rateFallback promql.RateLowerer = promql.FanoutRateLowerer{}
+	var increaseFallback promql.IncreaseLowerer = promql.FanoutIncreaseLowerer{}
+	if optSet.Has(chopt.FeatureFixedAccumulatorExtrapolated) {
+		rateFallback = promql.FixedAccumulatorRateLowerer{Fallback: rateFallback}
+		increaseFallback = promql.FixedAccumulatorIncreaseLowerer{Fallback: increaseFallback}
+		l.Delta = promql.FixedAccumulatorDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+	} else {
+		l.Delta = promql.FanoutDeltaLowerer{}
+	}
 	if optSet.Has(chopt.FeatureTSGridRange) {
 		l.Rate = promql.NativeRateLowerer{
-			Fallback:   promql.FanoutRateLowerer{},
+			Fallback:   rateFallback,
 			Recollapse: optSet.Has(chopt.FeatureTSGridRecollapse),
 		}
 	} else {
-		l.Rate = promql.FanoutRateLowerer{}
+		l.Rate = rateFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridIncrease) {
-		l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+		l.Increase = promql.NativeIncreaseLowerer{Fallback: increaseFallback}
 	} else {
-		l.Increase = promql.FanoutIncreaseLowerer{}
+		l.Increase = increaseFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}

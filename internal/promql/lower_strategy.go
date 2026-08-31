@@ -166,6 +166,20 @@ type IdeltaLowerer interface {
 	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// DeltaLowerer lowers a range-mode delta(<gauge>[range]) RangeWindow to a
+// chplan node. Unlike Rate/Increase there is no ClickHouse-native
+// timeSeries*ToGrid member for delta — the only alternative to the fan-out
+// (groupArray + arraySort + arrayFilter) is the fixed-accumulator shape
+// (cerberus issue #2760), so this interface has exactly one non-fan-out impl.
+// It ALWAYS returns a valid lowering: the fixed-accumulator impl emits
+// RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible window
+// and delegates to its embedded fan-out fallback otherwise; the fan-out impl
+// returns rw unchanged. Never nil.
+type DeltaLowerer interface {
+	// LowerDelta returns the chplan node for rw. Never nil.
+	LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
 // RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
@@ -253,6 +267,12 @@ type RangeLowerers struct {
 	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
 	// feature is off; never nil on the lowering path.
 	Idelta IdeltaLowerer
+
+	// Delta handles range-mode delta(...) shapes (fixed-accumulator
+	// decomposition, fixed_accumulator_extrapolated — no version floor).
+	// Concrete fan-out impl when the feature is off; never nil on the
+	// lowering path.
+	Delta DeltaLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -294,6 +314,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Idelta == nil {
 		l.Idelta = FanoutIdeltaLowerer{}
+	}
+	if l.Delta == nil {
+		l.Delta = FanoutDeltaLowerer{}
 	}
 	return l
 }
@@ -488,6 +511,144 @@ func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Me
 		return native
 	}
 	return n.Fallback.LowerIncrease(rw, s)
+}
+
+// This section wires the fixed-accumulator decomposition (cerberus issue
+// #2760): per-(series, anchor) count/min/max/argMin/argMax/sumIf aggregates,
+// in place of the groupArray + arraySort + arrayFilter array fold, for
+// rate() / increase() / delta(). Unlike the timeSeries*ToGrid family it needs
+// no server-version floor or experimental setting — see
+// chopt.FeatureFixedAccumulatorExtrapolated — so cmd/cerberus wires it purely
+// off the resolved EnabledSet. rate/increase layer it BENEATH their existing
+// native ts_grid strategy (Native{Fallback: FixedAccumulator{Fallback:
+// Fanout{}}}), same embed pattern laginframe_adjacency uses for
+// changes/resets; delta has no native competitor, so its strategy is the
+// two-tier FixedAccumulator{Fallback: Fanout{}} directly.
+//
+// Scope: a temporality-bearing rate()/increase() window IS eligible — see
+// chsql/range_window_fixed_accumulator.go's own doc comment
+// ("Temporality-bearing counters") for the DELTA/CUMULATIVE runtime branch
+// and the reconstructed counter zero-clamp this needs and reuses UNCHANGED
+// from the array-fold path. What stays excluded is the EXACT,
+// retention-independent DELTA-prefix aggregate mechanism (issue #2389,
+// rw.DeltaPrefixAggregateInput != nil) — a narrower opt-in-only population
+// needing its own separate re-plumbing; see
+// https://github.com/tsouza/cerberus/issues/2797.
+
+// FanoutDeltaLowerer is the concrete DEFAULT DeltaLowerer: it returns the
+// generic fan-out RangeWindow (the array-fold emitWindowedArrayExtrapolated)
+// unchanged.
+type FanoutDeltaLowerer struct{}
+
+// LowerDelta returns the fan-out RangeWindow rw unchanged.
+func (FanoutDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// FixedAccumulatorRateLowerer is the boot-wired RateLowerer that emits
+// RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible rate
+// range-window. cmd/cerberus wires it ONLY when chopt resolved
+// fixed_accumulator_extrapolated at boot, embedded beneath NativeRateLowerer
+// so ts_grid_range (when also enabled) still takes priority.
+type FixedAccumulatorRateLowerer struct {
+	// Fallback is the concrete lowerer for shapes the fixed-accumulator path
+	// cannot handle. Boot wires it to FanoutRateLowerer{}.
+	Fallback RateLowerer
+}
+
+// LowerRate returns rw with FixedAccumulatorExtrapolated set for an eligible
+// window, or delegates to the embedded Fallback otherwise.
+func (l FixedAccumulatorRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if fixedAccumulatorEligible(rw) {
+		out := *rw
+		out.FixedAccumulatorExtrapolated = true
+		return &out
+	}
+	return l.Fallback.LowerRate(rw, s)
+}
+
+// FixedAccumulatorIncreaseLowerer mirrors [FixedAccumulatorRateLowerer] for
+// increase(). cmd/cerberus wires it ONLY when chopt resolved
+// fixed_accumulator_extrapolated at boot, embedded beneath
+// NativeIncreaseLowerer so ts_grid_increase (when also enabled) still takes
+// priority.
+type FixedAccumulatorIncreaseLowerer struct {
+	// Fallback is the concrete lowerer for shapes the fixed-accumulator path
+	// cannot handle. Boot wires it to FanoutIncreaseLowerer{}.
+	Fallback IncreaseLowerer
+}
+
+// LowerIncrease returns rw with FixedAccumulatorExtrapolated set for an
+// eligible window, or delegates to the embedded Fallback otherwise.
+func (l FixedAccumulatorIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if fixedAccumulatorEligible(rw) {
+		out := *rw
+		out.FixedAccumulatorExtrapolated = true
+		return &out
+	}
+	return l.Fallback.LowerIncrease(rw, s)
+}
+
+// FixedAccumulatorDeltaLowerer is the boot-wired (and only non-fan-out)
+// DeltaLowerer. cmd/cerberus wires it ONLY when chopt resolved
+// fixed_accumulator_extrapolated at boot.
+type FixedAccumulatorDeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes the fixed-accumulator path
+	// cannot handle. Boot wires it to FanoutDeltaLowerer{}.
+	Fallback DeltaLowerer
+}
+
+// LowerDelta returns rw with FixedAccumulatorExtrapolated set for an eligible
+// window, or delegates to the embedded Fallback otherwise. delta() carries no
+// TemporalityColumn concern (it is a gauge function — see
+// fixedAccumulatorEligible), so its only exclusions are the shared
+// shape/Variants/DeltaPrefixAggregateInput guards.
+func (l FixedAccumulatorDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if fixedAccumulatorEligible(rw) {
+		out := *rw
+		out.FixedAccumulatorExtrapolated = true
+		return &out
+	}
+	return l.Fallback.LowerDelta(rw, s)
+}
+
+// fixedAccumulatorEligible is the intrinsic query-SHAPE eligibility predicate
+// for the fixed-accumulator decomposition — reads NO feature flag or server
+// version, exactly like lagAdjacencyEligible above (whose first three clauses
+// this mirrors verbatim). Every clause that fails sends the query down the
+// unchanged fan-out path:
+//
+//   - rw.Identity must be false — the bare-vector subquery no-op path is not
+//     one of the three owning functions.
+//   - The window must be the materialised MATRIX grid: OuterRange > 0,
+//     Step > 0, and both Start and End pinned — the fixed-accumulator
+//     emitter's own dedup/lag passes need the same scan-prune bound
+//     lagAdjacencyEligible's identical clause exists for.
+//   - rw.DeltaPrefixAggregateInput must be nil: the issue #2389 exact
+//     DELTA-prefix aggregate mechanism is out of scope for this cut (see
+//     chsql/range_window_fixed_accumulator.go's doc and
+//     https://github.com/tsouza/cerberus/issues/2797) — a populated side-scan
+//     declines rather than silently ignoring it.
+//   - rw.Variants must be empty: the fused multi-arm shape has its own
+//     emitter and does not participate in this decomposition.
+//
+// rw.TemporalityColumn is deliberately NOT excluded: a temporality-bearing
+// rate()/increase() window IS eligible (see this file's earlier doc comment
+// and chsql/range_window_fixed_accumulator.go's own "Temporality-bearing
+// counters" section) — the DELTA/CUMULATIVE runtime branch and the
+// reconstructed counter zero-clamp are both decomposed into fixed
+// accumulators too, not merely the no-temporality case.
+func fixedAccumulatorEligible(rw *chplan.RangeWindow) bool {
+	if rw.Identity {
+		return false
+	}
+	if rw.OuterRange <= 0 || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return false
+	}
+	if rw.DeltaPrefixAggregateInput != nil {
+		return false
+	}
+	return len(rw.Variants) == 0
 }
 
 // FanoutStalenessLowerer is the concrete DEFAULT StalenessLowerer: it builds the

@@ -138,6 +138,16 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		// Delta has no timeSeries*ToGrid competitor (issue #2760's own
+		// motivation, mirroring Irate/Idelta above), so — unlike Rate/Increase
+		// below — its fixed-accumulator strategy gets a normal top-level row.
+		field:   "Delta",
+		section: "experimental_fixed_accumulator_delta",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.Delta = promql.FixedAccumulatorDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+		},
+	},
+	{
 		field:   "QuantileRankWalk",
 		section: "experimental_quantile_prom_histogram",
 		// No embedded Fallback: promql.QuantileRankWalkLowerer's own doc
@@ -180,6 +190,21 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 	}
 	if has("experimental_lag_adjacency_resets") {
 		l.Resets = promql.LagAdjacencyResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+	}
+	// fixed_accumulator_extrapolated (issue #2760) is Rate/Increase's improved
+	// FALLBACK, not a competitor to their native ts_grid strategy above —
+	// mirroring the laginframe_adjacency block just above (and cmd/cerberus's
+	// own nativeRangeLowerers composition). Deliberately NOT a
+	// nativeStrategies row for the same reason: Rate/Increase already have a
+	// row gated on their own ts_grid section. A fixture opts into the
+	// fixed-accumulator SQL shape ALONE (unshadowed by the native path) by
+	// carrying ONLY this section, never alongside
+	// experimental_ts_grid_range/increase.
+	if has("experimental_fixed_accumulator_rate") {
+		l.Rate = promql.FixedAccumulatorRateLowerer{Fallback: promql.FanoutRateLowerer{}}
+	}
+	if has("experimental_fixed_accumulator_increase") {
+		l.Increase = promql.FixedAccumulatorIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
 	}
 	return l
 }

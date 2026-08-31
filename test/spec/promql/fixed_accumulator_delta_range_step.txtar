@@ -1,0 +1,86 @@
+# Fixed-accumulator decomposition (cerberus issue #2760) for delta() in RANGE
+# mode — chsql's emitFixedAccumulatorExtrapolatedMatrix. The
+# `experimental_fixed_accumulator_delta` section opts the fixture into
+# RangeLowerers.Delta = FixedAccumulatorDeltaLowerer — delta has no native
+# timeSeries*ToGrid competitor, so this pins the fixed-accumulator SQL shape
+# directly.
+#
+# job 'gauge' walks up and down (a plain gauge, no counter-reset semantics);
+# job 'flat' never changes (delta 0 throughout).
+-- query.promql --
+sum by(job) (delta(cpu_temp_celsius[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_fixed_accumulator_delta --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:00:00', 9), 40.0),
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:01:00', 9), 55.0),
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:02:00', 9), 45.0),
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:03:00', 9), 60.0),
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('cpu_temp_celsius', map('job', 'gauge'), toDateTime64('2026-01-01 00:05:00', 9), 65.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:02:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:03:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:04:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:05:00', 9), 20.0);
+-- expected_rows --
+[
+  ["", {"job": "flat"}, "2026-01-01T00:01:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:01:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:02:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:02:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:03:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:03:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:04:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:04:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:05:00Z", 0],
+  ["", {"job": "gauge"}, "2026-01-01T00:01:00Z", 22.5],
+  ["", {"job": "gauge"}, "2026-01-01T00:01:30Z", 30],
+  ["", {"job": "gauge"}, "2026-01-01T00:02:00Z", 6.25],
+  ["", {"job": "gauge"}, "2026-01-01T00:02:30Z", 7.5],
+  ["", {"job": "gauge"}, "2026-01-01T00:03:00Z", 23.333333333333336],
+  ["", {"job": "gauge"}, "2026-01-01T00:03:30Z", 26.666666666666664],
+  ["", {"job": "gauge"}, "2026-01-01T00:04:00Z", 12.5],
+  ["", {"job": "gauge"}, "2026-01-01T00:04:30Z", 12.5],
+  ["", {"job": "gauge"}, "2026-01-01T00:05:00Z", 12.5]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "job"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "cpu_temp_celsius"
+[11] string = "cpu.temp.celsius"
+[12] string = "cpu.temp/celsius"
+[13] string = "cpu.temp_celsius"
+[14] string = "cpu/temp/celsius"
+[15] string = "cpu/temp_celsius"
+[16] string = "cpu_temp.celsius"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
+    RangeWindow func=delta range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("cpu_temp_celsius", "cpu.temp.celsius", "cpu.temp/celsius", "cpu.temp_celsius", "cpu/temp/celsius", "cpu/temp_celsius", "cpu_temp.celsius"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, (last_val - first_val) * ((sampled_interval + duration_to_start + duration_to_end) / sampled_interval), nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `n`, `first_val`, `last_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (`n` - 1), sampled_interval / (`n` - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (`n` - 1), sampled_interval / (`n` - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, count() AS `n`, min(`TimeUnix`) AS `first_ts`, argMin(`Value`, `TimeUnix`) AS `first_val`, max(`TimeUnix`) AS `last_ts`, argMax(`Value`, `TimeUnix`) AS `last_val` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS anchor_ts FROM (SELECT `Attributes`, `TimeUnix`, `Value` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, leadInFrame(`TimeUnix`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix`, `Value` ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) != `TimeUnix` AS `is_last_of_run` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) WHERE `is_last_of_run`)) GROUP BY `Attributes`, `anchor_ts`)) WHERE `n` >= 2) GROUP BY `gkey_0`, `bucket_ts`)

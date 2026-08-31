@@ -1,0 +1,87 @@
+# Fixed-accumulator decomposition (cerberus issue #2760) for increase() in
+# RANGE mode — chsql's emitFixedAccumulatorExtrapolatedMatrix. The
+# `experimental_fixed_accumulator_increase` section opts the fixture into
+# RangeLowerers.Increase = FixedAccumulatorIncreaseLowerer (WITHOUT the
+# native ts_grid_increase strategy layered on top, so this pins the
+# fixed-accumulator SQL shape itself, unshadowed).
+#
+# Same seed as fixed_accumulator_rate_range_step.txtar DELIBERATELY: job
+# 'api' is a sawtooth counter (exercises the reset-correction sumIf term);
+# job 'web' is monotonic.
+-- query.promql --
+sum by(job) (increase(http_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_fixed_accumulator_increase --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 5],
+  ["", {"job": "api"}, "2026-01-01T00:01:30Z", 7],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 7],
+  ["", {"job": "api"}, "2026-01-01T00:02:30Z", 8.5],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 13],
+  ["", {"job": "api"}, "2026-01-01T00:03:30Z", 15],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 14],
+  ["", {"job": "api"}, "2026-01-01T00:04:30Z", 15.625],
+  ["", {"job": "api"}, "2026-01-01T00:05:00Z", 17.5],
+  ["", {"job": "web"}, "2026-01-01T00:01:00Z", 15],
+  ["", {"job": "web"}, "2026-01-01T00:01:30Z", 20],
+  ["", {"job": "web"}, "2026-01-01T00:02:00Z", 25],
+  ["", {"job": "web"}, "2026-01-01T00:02:30Z", 30],
+  ["", {"job": "web"}, "2026-01-01T00:03:00Z", 35],
+  ["", {"job": "web"}, "2026-01-01T00:03:30Z", 40],
+  ["", {"job": "web"}, "2026-01-01T00:04:00Z", 50],
+  ["", {"job": "web"}, "2026-01-01T00:04:30Z", 50],
+  ["", {"job": "web"}, "2026-01-01T00:05:00Z", 50]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "job"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "http_requests_total"
+[11] string = "http.requests.total"
+[12] string = "http.requests/total"
+[13] string = "http.requests_total"
+[14] string = "http/requests/total"
+[15] string = "http/requests_total"
+[16] string = "http_requests.total"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
+    RangeWindow func=increase range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value temporality=AggregationTemporality groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
+        Filter predicate=(MetricName IN ("http_requests_total", "http.requests.total", "http.requests/total", "http.requests_total", "http/requests/total", "http/requests_total", "http_requests.total"))
+          Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, if(temporality = 1, sum_val - first_val, (last_val - first_val) + `reset_sum`) * ((sampled_interval + if(if(temporality = 1, sum_val - first_val, (last_val - first_val) + `reset_sum`) > 0 AND if(temporality = 1, delta_anchor_levels + first_val, first_val) >= 0, least(duration_to_start, sampled_interval * if(temporality = 1, delta_anchor_levels + first_val, first_val) / if(temporality = 1, sum_val - first_val, (last_val - first_val) + `reset_sum`)), duration_to_start) + duration_to_end) / sampled_interval), nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `n`, `first_val`, `last_val`, `reset_sum`, `sum_val`, `temporality`, `delta_anchor_levels`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (`n` - 1), sampled_interval / (`n` - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (`n` - 1), sampled_interval / (`n` - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, `temporality`, `n`, `first_ts`, `first_val`, `last_ts`, `last_val`, `sum_val`, `reset_sum`, sum(`delta_prefix_step`) OVER (PARTITION BY `Attributes` ORDER BY `anchor_ts`) AS `delta_anchor_levels` FROM (SELECT `Attributes`, `anchor_ts`, `temporality`, `n`, `first_ts`, `first_val`, `last_ts`, `last_val`, `sum_val`, `reset_sum`, arraySum(arrayMap(p -> tupleElement(p, 2), arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(`delta_prefix_pairs`))))) AS `delta_prefix_step` FROM (SELECT `Attributes`, `anchor_ts`, any(`AggregationTemporality`) AS `temporality`, countIf(`TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `n`, minIf(`TimeUnix`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `first_ts`, argMinIf(`Value`, `TimeUnix`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `first_val`, maxIf(`TimeUnix`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `last_ts`, argMaxIf(`Value`, `TimeUnix`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `last_val`, sumIf(`prev_val`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000) AND `prev_ts` > `anchor_ts` - toIntervalNanosecond(300000000000) AND `Value` < `prev_val`) AS `reset_sum`, sumIf(`Value`, `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000)) AS `sum_val`, arraySort(groupArrayIf((`TimeUnix`, `Value`), `TimeUnix` <= `anchor_ts` - toIntervalNanosecond(300000000000))) AS `delta_prefix_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `prev_ts`, `prev_val`, `AggregationTemporality`, arrayJoin(arrayConcat(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1))), arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)), least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)) + if(`AggregationTemporality` = 1 AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000), 1, 0))))) AS anchor_ts FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, lagInFrame(`TimeUnix`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `prev_ts`, lagInFrame(`Value`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix` ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS `prev_val` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, leadInFrame(`TimeUnix`) OVER (PARTITION BY `Attributes` ORDER BY `TimeUnix`, `Value` ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) != `TimeUnix` AS `is_last_of_run` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) AND (`AggregationTemporality` = 1 AND `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(86400000000000) OR `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000))) WHERE `is_last_of_run`))) GROUP BY `Attributes`, `anchor_ts`)))) WHERE `n` >= 2) GROUP BY `gkey_0`, `bucket_ts`)
