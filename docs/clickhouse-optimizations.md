@@ -139,6 +139,7 @@ table.
 | `fixed_accumulator_extrapolated` | none       | experimental | no         |
 | `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
+| `ts_grid_last_over_time`         | 26.6       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
 | `join_spill`                     | 26.4       | experimental | yes        |
 <!-- END GENERATED: chopt-feature-table -->
@@ -170,6 +171,7 @@ reference Prometheus on NaN-adjacent windows, tracked as
 | `ts_grid_increase`           | `allow_experimental_time_series_aggregate_functions` | opts eligible `increase(<counter>[<range>])` query_range shapes onto the SAME native `timeSeriesRateToGrid` aggregate `ts_grid_range` uses, multiplied back by the window seconds at emit time (`increase()` is `extrapolatedRate()` without the final `/range` divide). Retires the `arrayJoin` sample-per-anchor fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                                                                                                                  |
 | `quantile_prom_histogram`    | (none)                                               | opts the classic `histogram_quantile(phi, ...)` rank walk onto the native `quantilePrometheusHistogram(phi)(le, cum)` aggregate, retiring the `arrayCumSum`/`arrayFirstIndex`/interpolation chain. Opt-in only (never auto): faster at real-world series counts but costs ~3.3x memory at high cardinality ([#2790](https://github.com/tsouza/cerberus/issues/2790)), on top of the new 25.10 floor still lacking fielded evidence.                                                                                                                                                                                                                                          |
 | `map_bucketed_serialization` | (none)                                               | stamps `map_serialization_version='with_buckets'` on new logs/traces tables' `CREATE TABLE` SETTINGS tail only, never metrics. Fully transparent to reads (no chsql/chplan change — ClickHouse's Map reader already resolves the bucket for a subscript/`mapContains` read). Opt-in only (never auto): a full-map read measures ~2x slower, and only NEW tables get it — an existing table keeps `basic` until re-provisioned.                                                                                                                                                                                                                                               |
+| `ts_grid_last_over_time`     | `allow_experimental_time_series_aggregate_functions` | opts eligible `last_over_time(<v>[<range>])` query_range shapes onto the SAME native `timeSeriesResampleToGridWithStaleness` aggregate `ts_grid_resample` uses, with `[range]` as the staleness parameter in place of the bare-selector shape's fixed 5m lookback. Retires the windowed-array `window_vals[length(window_vals)]` fan-out. Opt-in only (never auto): new 26.6 floor, above the family's usual 25.9, fixing two real correctness bugs ([#106504](https://github.com/ClickHouse/ClickHouse/pull/106504), [#106577](https://github.com/ClickHouse/ClickHouse/pull/106577)) that bite the common window-smaller-than-step shape.                                  |
 | `column_statistics`          | (none)                                               | installs the curated `ADD STATISTICS IF NOT EXISTS` ALTER registry on the metrics/logs/traces fact tables — `uniq` on the String-family identity columns (ServiceName/MetricName/SpanName/TraceId), `minmax, uniq` on the numeric ones (SeverityNumber/AggregationTemporality), `minmax, uniq, tdigest` on Duration — feeding the query planner real cardinality estimates for PREWHERE-pushdown and join-ordering. Opt-in only (never auto): unsupported on ClickHouse Cloud (tolerated, not fatal), and while a live probe confirms statistics DO reorder cerberus's own explicit PREWHERE conjuncts, the real-world magnitude on production data is still uncalibrated.   |
 | `join_spill`                 | (none)                                               | stamps `max_bytes_before_external_join=cap/2` (the SAME cap-relative arithmetic the unconditional `max_bytes_before_external_group_by`/`sort` stamps use) on join-bearing plans: PromQL vector matching (one-to-one, `group_left`/`group_right`, mixed), `info()`, TraceQL structural joins, cross joins, and the delta-prefix LEFT JOIN. Result-equivalent and auto-enabled on server >= 26.4 — an OOM abort is an availability bug, not an optimization opportunity, mirroring the group_by/sort stamps' own posture. Explicit stamp, not the 26.5+ `max_bytes_ratio_before_external_join` default, which is silently ignored with no server/user memory limit configured. |
 
@@ -198,10 +200,12 @@ Notes:
   as `ts_grid_range`, co-stamped on exactly the queries that emit the native
   resample node. The two features are independent (either can be on without the
   other): the PromQL lowering wires each as a separate boot-decided strategy.
-  The native function uses a CLOSED left-edge staleness window
-  (`[anchor - lookback, anchor]`) which matches reference Prometheus, vs the
-  fan-out's half-open `(anchor - lookback, anchor]`; they diverge only on a
-  sample landing exactly on the left boundary.
+  Before ClickHouse 25.9 the native function used a CLOSED left-edge
+  staleness window (`[anchor - lookback, anchor]`); PR #86588 made it
+  left-open (`(anchor - lookback, anchor]`), matching the fan-out exactly.
+  Since the feature's floor IS 25.9, production never observes the
+  closed-left form — see `chplan.RangeWindowStaleResample`'s own doc for the
+  full history.
 - **`columnar_result_decode`** is a **client-side** decode optimization with
   **no version floor** (`minVersion` is the always-available zero floor): it
   changes how cerberus reads the result blocks, not what it asks the server to
@@ -446,6 +450,39 @@ Notes:
   `mapConcat`) roughly 2x SLOWER, so enabling it is a deliberate
   single-key-vs-whole-map tradeoff an operator opts into, not a version-gated
   pure win `auto` can assume.
+- **`ts_grid_last_over_time`** ([#2747](https://github.com/tsouza/cerberus/issues/2747))
+  lowers matrix-mode `last_over_time(<v>[<range>])` through the SAME native
+  node `ts_grid_resample` already rides
+  (`chplan.RangeWindowStaleResample` /
+  `timeSeriesResampleToGridWithStaleness`) rather than a dedicated aggregate:
+  the function's "most recent sample within the window per grid point, absent
+  when none" contract IS that aggregate's own contract, with the matrix
+  `[range]` supplying the staleness parameter (`Lookback`) in place of the
+  bare-selector shape's fixed 5m `instantLookback`. Delta from
+  `ts_grid_resample` is eligibility classification (matrix-mode
+  `last_over_time`, not a bare selector) plus the staleness parameter
+  source — the emitter, the `ARRAY JOIN` consumer, and the settings plumbing
+  are all shared unchanged. `__name__` is preserved (`last_over_time` is one
+  of the two range functions Prometheus keeps the name for) natively: the
+  node's `GROUP BY` reads the real per-row `MetricName` column, so no
+  wrapping Project has to synthesise it the way the fan-out path does.
+  **Floor is 26.6, NOT the family's 25.9**: two real correctness fixes to
+  `timeSeriesResampleToGridWithStaleness` /
+  `timeSeriesLastToGrid` landed after 25.9 —
+  [#106504](https://github.com/ClickHouse/ClickHouse/pull/106504) ("timestamps
+  before start") and [#106577](https://github.com/ClickHouse/ClickHouse/pull/106577)
+  ("out-of-window timestamps"), both merged into 26.6.1. #106577 is the
+  binding one here: its own regression fixture is a staleness window SMALLER
+  than the grid step — exactly the common last_over_time shape (a `[range]`
+  narrower than the query resolution), unlike `ts_grid_resample`'s fixed 5m
+  default lookback, which is comfortably wider than the step in the
+  overwhelming majority of deployments and so rarely exercises the bug.
+  `AutoSelect` is `false`, the same posture `quantile_prom_histogram` and
+  `map_bucketed_serialization` took for their own new floors: opt-in only
+  (`CERBERUS_CH_OPTIMIZATIONS=ts_grid_last_over_time`) pending fielded
+  validation of 26.6. `first_over_time` has no native sibling — the aggregate
+  carries the LATEST in-window sample forward, never the earliest — and
+  stays on the fan-out unconditionally.
 - **`column_statistics`** ([#2766](https://github.com/tsouza/cerberus/issues/2766))
   is the second SCHEMA feature: it adds curated `ALTER TABLE ... ADD
   STATISTICS IF NOT EXISTS` statements (`internal/schema/ddl`'s

@@ -130,6 +130,13 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "LastOverTime",
+		section: "experimental_ts_grid_last_over_time",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
+		},
+	},
+	{
 		field:   "ClassicHistogram",
 		section: "experimental_ts_grid_histogram",
 		// Fallback chains straight to the bare fan-out — matching

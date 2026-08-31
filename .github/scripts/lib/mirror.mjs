@@ -78,7 +78,6 @@ export const mirroredImages = [
   'clickhouse/clickhouse-server:25.10-alpine',
   'clickhouse/clickhouse-server:26.3',
   'clickhouse/clickhouse-server:26.5',
-  'clickhouse/clickhouse-server:26.5-alpine',
   'clickhouse/clickhouse-server:26.6',
   'clickhouse/clickhouse-server:26.6-alpine',
 

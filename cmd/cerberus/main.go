@@ -879,6 +879,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
+//	lastOverTime = enabled ? NativeLastOverTimeLowerer{Fallback: FanoutLastOverTimeLowerer{}} : FanoutLastOverTimeLowerer{}
 //	overTime  = sortedSlabEnabled ? SortedSlabOverTimeLowerer{Fallback: FanoutOverTimeLowerer{}} : FanoutOverTimeLowerer{}
 //
 // rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
@@ -1057,6 +1058,15 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
 	} else {
 		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
+	}
+	// ts_grid_last_over_time rides the SAME native strategy shape as every
+	// other independent family member (Native{Fallback: Fanout{}}) — it has
+	// no narrowing/narrowed sibling knob of its own (no recollapse-style
+	// dependent, no laginframe/fixed-accumulator-style improved fallback).
+	if optSet.Has(chopt.FeatureTSGridLastOverTime) {
+		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
+	} else {
+		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
 	}
 	// sorted_slab_over_time (issue #2761) has no native timeSeries*ToGrid
 	// competitor: sum_over_time/avg_over_time's only non-fan-out arm is the

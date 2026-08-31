@@ -661,6 +661,50 @@ const (
 	// FeatureQuantilePromHistogram and FeatureColumnarResultDecode.
 	FeatureMapBucketedSerialization = "map_bucketed_serialization"
 
+	// FeatureTSGridLastOverTime opts eligible query_range matrix-mode
+	// last_over_time(<v>[<range>]) shapes onto the SAME native
+	// timeSeriesResampleToGridWithStaleness aggregate FeatureTSGridResample
+	// already rides (also spelled timeSeriesLastToGrid) — its contract, "most
+	// recent sample within the staleness window per grid point, NULL when
+	// none", IS last_over_time's contract, with the matrix [range] supplying
+	// the staleness parameter (chplan.RangeWindowStaleResample.Lookback) in
+	// place of the bare-selector shape's fixed 5m instantLookback.
+	//
+	// IMPORTANT — the floor is 26.6, NOT the family's 25.9. Two real
+	// correctness fixes to timeSeriesResampleToGridWithStaleness /
+	// timeSeriesLastToGrid landed after 25.9: ClickHouse/ClickHouse#106504
+	// ("Fix timeSeriesLastToGrid() for timestamps before start") and #106577
+	// ("Fix timeSeriesLastToGrid() for out-of-window timestamps"), both
+	// merged into 26.6.1. #106577 is the binding one for this shape
+	// specifically: its own regression fixture is
+	// `last_over_time(test[10s])[120s:15s]` — a staleness window (10s)
+	// SMALLER than the grid step (15s). Pre-fix, the sparse resample
+	// carry-forward only re-checked staleness for a grid cell that started
+	// NULL (AggregateFunctionTimeseriesToGridSparse.h); a cell that already
+	// held a direct sample skipped the check entirely, so a sample landing
+	// inside grid bucket i's coarse span but stale for bucket i's own
+	// [current-window, current] membership was still emitted uncorrected.
+	// ts_grid_resample's own default instantLookback (5m) comfortably
+	// dominates the request step in the overwhelming majority of
+	// deployments, so #106577 rarely bites that shape; last_over_time's
+	// staleness parameter is the caller's OWN [range] literal, which is
+	// routinely smaller than or comparable to the query step — exactly the
+	// regime #106577 fixes. A 25.9 floor here would auto-enable a path that
+	// silently emits a wrong value on that common shape.
+	//
+	// AutoSelect is false: 26.6 is a brand-new floor with no fielded
+	// validation yet, the same conservative posture
+	// FeatureQuantilePromHistogram's 25.10 bump and
+	// FeatureMapBucketedSerialization's 26.4 one took — opt-in only via
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_last_over_time until the floor earns
+	// auto promotion. Shares the family's RequiresExperimentalTSGrid gate
+	// (allow_experimental_time_series_aggregate_functions).
+	//
+	// first_over_time has no native sibling: the aggregate carries the
+	// LATEST in-window sample forward, never the earliest, so it stays on
+	// the fan-out unconditionally.
+	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
+
 	// FeatureColumnStatistics gates the curated `ADD STATISTICS IF NOT
 	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
 	// column statistics on the metrics/logs/traces fact tables' highest-value
@@ -1016,6 +1060,14 @@ var registry = []Feature{
 		Doc:        "stamp map_serialization_version='with_buckets' on new logs/traces tables only, never metrics (server >= 26.4, opt-in only via CERBERUS_CH_OPTIMIZATIONS — read side is transparent, but full-map reads get ~2x slower, so auto never picks it)",
 	},
 	{
+		ID:                         FeatureTSGridLastOverTime,
+		MinVersion:                 Version{Major: 26, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)",
+	},
+	{
 		ID:         FeatureColumnStatistics,
 		MinVersion: Version{Major: 26, Minor: 3},
 		Stability:  Experimental,
@@ -1037,10 +1089,10 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
-// sorted_slab_over_time, map_bucketed_serialization, column_statistics,
-// join_spill). The copy keeps the canonical entries immutable from the
-// caller's side. Exposed so tests can enumerate the gates and the docs
-// generator can render the table.
+// sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
+// column_statistics, join_spill). The copy keeps the canonical entries
+// immutable from the caller's side. Exposed so tests can enumerate the gates
+// and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)
