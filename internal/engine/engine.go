@@ -281,14 +281,17 @@ func strategyFor(meta Meta) string {
 // way regardless of which one runs.
 //
 // On top of the always-on ts-grid gate, spill bound, compare() memory bound
-// and native-histogram analyzer fix, execContext layers the DARK, flag-gated
-// settings rules from e.settings() (optimize_aggregation_in_order, log_comment
-// shape id). Each of THOSE rules is OFF unless its CERBERUS_* flag is set, so
-// the default ctx is byte-identical to before they existed; the always-on
-// rules above them fire unconditionally whenever their plan shape matches.
-// Every rule writes through chclient.WithQuerySetting, so a plan that
-// triggers more than one rule carries all of them on the one per-request
-// settings map.
+// and native-histogram analyzer fix, execContext applies the join spill bound
+// — gated on BOTH the join_spill chopt feature (server >= 26.4, resolved once
+// at boot into e.settings().JoinSpill) AND the plan containing a join-bearing
+// node, so it is absent on every server too old to carry
+// max_bytes_before_external_join — and layers the DARK, flag-gated settings
+// rules from e.settings() (optimize_aggregation_in_order, log_comment shape
+// id). Each of THOSE rules is OFF unless its CERBERUS_* flag is set, so the
+// default ctx is byte-identical to before they existed; the always-on rules
+// above them fire unconditionally whenever their plan shape matches. Every
+// rule writes through chclient.WithQuerySetting, so a plan that triggers more
+// than one rule carries all of them on the one per-request settings map.
 func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language string, decision *solver.Decision) (context.Context, string) {
 	if planHasTSGridNative(plan) {
 		ctx = chclient.WithTSGridSetting(ctx)
@@ -297,6 +300,11 @@ func (e *Engine) execContext(ctx context.Context, plan chplan.Node, language str
 	// rather than blow the per-query memory cap (MEMORY_LIMIT_EXCEEDED / 241).
 	memCap := e.queryMemoryCap()
 	ctx = applySpillSettings(ctx, memCap)
+	// Join-bearing plans only, and only when the join_spill feature resolved
+	// in (server >= 26.4): let a large join's hash build spill to disk
+	// rather than blow the per-query memory cap, the same guardrail
+	// applySpillSettings already gives GROUP BY / sort.
+	ctx = applyJoinSpillSettings(ctx, plan, memCap, e.settings().JoinSpill)
 	// Compare()-only: cap read parallelism so the concurrent S3 read buffers
 	// for the wide attribute Map columns can't blow the budget even after the
 	// aggregation spills. Fires only on the metrics-compare plan shape.

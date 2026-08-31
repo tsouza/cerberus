@@ -237,6 +237,38 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	}
 }
 
+// TestResolve_Auto_JoinSpill_VersionBoundaries pins join_spill's own 26.4
+// floor across below/at/above, independent of TestResolve_Auto_VersionBoundaries
+// above (which stops at 25.9 and would otherwise need every AutoSelect=true
+// feature re-enumerated up to 26.4 just to add this one row). AutoSelect=true
+// like the ts_grid_* family, so `auto` alone — no explicit listing needed —
+// is enough to pick it up once the server clears the floor.
+func TestResolve_Auto_JoinSpill_VersionBoundaries(t *testing.T) {
+	cases := []struct {
+		name   string
+		server Version
+		want   bool
+	}{
+		{"26.3 below the 26.4 floor", v(26, 3), false},
+		{"26.4 at the floor (setting first exists to stamp)", v(26, 4), true},
+		{"26.5 above the floor (ratio-default sibling ships here too)", v(26, 5), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := set.Has(FeatureJoinSpill); got != tc.want {
+				t.Errorf("server %v: join_spill enabled = %v; want %v", tc.server, got, tc.want)
+			}
+			if len(warns) != 0 {
+				t.Errorf("auto emitted warnings %v; want none (auto is silent on version skips)", warns)
+			}
+		})
+	}
+}
+
 func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	// On 24.8 only aggregation_in_order (24.8) is supported; condition_cache
 	// (25.3) is silently excluded under auto (no warning, "best available").
@@ -599,6 +631,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSGridLastOverTime:           {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureColumnStatistics:             {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

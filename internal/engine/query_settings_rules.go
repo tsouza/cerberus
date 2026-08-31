@@ -72,6 +72,18 @@ type SettingsRules struct {
 	// check (predicateStableForConditionCache) is still conservative.
 	ConditionCache bool
 
+	// JoinSpill, when true, stamps max_bytes_before_external_join=cap/2 on a
+	// join-bearing plan (see planHasJoin in spill.go) so a large hash build
+	// spills to disk instead of aborting with MEMORY_LIMIT_EXCEEDED (code
+	// 241). Driven by the join_spill registry feature, which only resolves
+	// in on server >= 26.4; below that the feature is absent from the
+	// resolved set, so this flag is false and nothing is stamped (a no-op on
+	// every server too old to carry the setting). Applied via
+	// applyJoinSpillSettings rather than inside apply below, because unlike
+	// OptimizeAggregationInOrder/ConditionCache it also needs the live
+	// per-query memory cap — see engine.go's execContext.
+	JoinSpill bool
+
 	// LogCommentShape, when true, stamps log_comment with a compact cerberus
 	// shape id (planShapeID) carrying the emit-root node kind plus key
 	// modifiers and NEVER any literal values, so operators with query_log
@@ -101,6 +113,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.ConditionCache {
 		opts = append(opts, "condition_cache")
+	}
+	if r.JoinSpill {
+		opts = append(opts, "join_spill")
 	}
 	return opts
 }
