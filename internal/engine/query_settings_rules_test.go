@@ -121,6 +121,27 @@ func TestApply_StampsOptimizeAggregationInOrder(t *testing.T) {
 	}
 }
 
+// TestApply_StampsQueryWorkload confirms QueryWorkload rides EVERY query (no
+// plan-shape eligibility gate, unlike every other rule apply evaluates) when
+// non-empty, and stamps nothing when empty — the default, so an
+// unconfigured deployment's queries are byte-identical to before this field
+// existed. A trivial Scan plan (no Aggregate/GroupBy) is deliberately used
+// here, in contrast to aggOverScan above, to prove the stamp does not depend
+// on plan shape at all.
+func TestApply_StampsQueryWorkload(t *testing.T) {
+	plan := &chplan.Scan{Table: "otel_metrics_sum"}
+
+	on := SettingsRules{QueryWorkload: "cerberus_queries"}.apply(context.Background(), plan)
+	if got := settingValue(on, chclient.SettingWorkload); got != "cerberus_queries" {
+		t.Errorf("QueryWorkload set: setting = %v; want cerberus_queries", got)
+	}
+
+	off := SettingsRules{}.apply(context.Background(), plan)
+	if got := settingValue(off, chclient.SettingWorkload); got != nil {
+		t.Errorf("QueryWorkload empty: setting = %v; want absent (default off)", got)
+	}
+}
+
 func TestPlanShapeID_CompactAndLiteralFree(t *testing.T) {
 	// A realistic metrics shape: Project over Aggregate(3 keys) over RangeWindow
 	// over Scan, with literal-bearing nodes (metric name, label value) that must

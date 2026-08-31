@@ -336,6 +336,25 @@ type Config struct {
 	// under auto/off.
 	CHOptimizationsMode chopt.Mode
 
+	// CHQueryWorkload is CERBERUS_CH_QUERY_WORKLOAD: the ClickHouse WORKLOAD
+	// name to stamp as the `workload` setting on every outgoing query when
+	// non-empty (default empty — no setting stamped, byte-identical to
+	// before this knob existed). It names a workload the OPERATOR has
+	// already created server-side (`CREATE RESOURCE` / `CREATE WORKLOAD`,
+	// see docs/operations.md#workload-scheduling); cerberus never creates or
+	// alters WORKLOAD/RESOURCE objects itself — that DDL runs against a
+	// cluster cerberus does not own in the common (bring-your-own-ClickHouse)
+	// deployment. cmd/cerberus probes at boot (ProbeQueryWorkloadCapability)
+	// whether the connected server accepts the `workload` setting at all;
+	// on a server that refuses it (too old, or a hardened profile that pins
+	// the setting) the probe verdict — combined with CHOptimizationsMode —
+	// decides whether boot is FATAL (enforcing) or the knob is silently
+	// dropped with a WARN (permissive/auto), the same enforcing/permissive
+	// contract CHOptimizationsMode already gives the chopt registry
+	// features, applied here directly since this is an operator-supplied
+	// policy value rather than an auto-selectable SQL-emission optimization.
+	CHQueryWorkload string
+
 	// LegacyTSGridFlag carries the tri-state deprecated
 	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias (unset vs explicit true/false).
 	// cmd/cerberus passes it into chopt.Resolve so the legacy flag is re-routed
@@ -902,6 +921,7 @@ const (
 	envCHOptCorpusSinkPath      = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
 	envCHOptCorpusRing          = "CERBERUS_CH_OPT_CORPUS_RING"
 	envCHOptCorpusSinkMode      = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
+	envCHQueryWorkload          = "CERBERUS_CH_QUERY_WORKLOAD"
 	envLogFormat                = "CERBERUS_LOG_FORMAT"
 	envLogLevel                 = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint             = "CERBERUS_OTLP_ENDPOINT"
@@ -1126,15 +1146,7 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// Both accept 0 (see their own doc: 0 disables the respective margin/ttl
-	// rather than being "use the default" — v.SetDefault below already
-	// resolves an UNSET env var to the non-zero default), so
-	// getNonNegativeDuration's only job here is rejecting a negative value.
-	resultCacheIngestLag, err := getNonNegativeDuration(v, envResultCacheIngestLag)
-	if err != nil {
-		return Config{}, err
-	}
-	resultCacheTTL, err := getNonNegativeDuration(v, envResultCacheTTL)
+	resultCacheIngestLag, resultCacheTTL, err := resultCacheDurationsFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
@@ -1245,6 +1257,7 @@ func FromEnv() (Config, error) {
 		ResultCacheTTL:          resultCacheTTL,
 		CHOptimizations:         flags.CHOptimizations,
 		CHOptimizationsMode:     flags.CHOptimizationsMode,
+		CHQueryWorkload:         flags.CHQueryWorkload,
 		LegacyTSGridFlag:        flags.TSGrid,
 		CHOptCorpus:             flags.CHOptCorpus,
 		Log:                     logCfg,
@@ -1343,6 +1356,7 @@ var allEnvKeys = []string{
 	envCHOptCorpusSinkPath,
 	envCHOptCorpusRing,
 	envCHOptCorpusSinkMode,
+	envCHQueryWorkload,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -1555,6 +1569,7 @@ func setCHOptDefaults(v *viper.Viper) {
 	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
 	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
 	v.SetDefault(envCHOptCorpusSinkMode, defaultCHOptCorpusSinkMode)
+	v.SetDefault(envCHQueryWorkload, defaultCHQueryWorkload)
 }
 
 // setAdmitDefaults seeds the CERBERUS_ADMIT_* defaults: the master
@@ -1619,6 +1634,9 @@ const (
 	// defaultCHOptCorpusSinkPath is empty: no JSONL sink unless an operator
 	// supplies a path.
 	defaultCHOptCorpusSinkPath = ""
+	// defaultCHQueryWorkload is empty: no `workload` setting is stamped on
+	// any query unless an operator names one — the knob is off by default.
+	defaultCHQueryWorkload = ""
 	// defaultCHOptCorpusSinkMode is the JSONL file sink; "chtable" selects the
 	// cerberus_router_corpus MergeTree instead.
 	defaultCHOptCorpusSinkMode = "jsonl"
@@ -2558,6 +2576,9 @@ type bootFlags struct {
 	CHOptimizations     string
 	CHOptimizationsMode chopt.Mode
 	CHOptCorpus         CHOptCorpusConfig
+	// CHQueryWorkload mirrors chOptParsed.QueryWorkload — see that field's
+	// own doc.
+	CHQueryWorkload string
 }
 
 // bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
@@ -2620,6 +2641,7 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 		CHOptimizations:         chOpt.Optimizations,
 		CHOptimizationsMode:     chOpt.Mode,
 		CHOptCorpus:             chOpt.Corpus,
+		CHQueryWorkload:         chOpt.QueryWorkload,
 	}, nil
 }
 
@@ -2631,13 +2653,20 @@ type chOptParsed struct {
 	Optimizations string
 	Mode          chopt.Mode
 	Corpus        CHOptCorpusConfig
+	// QueryWorkload is CERBERUS_CH_QUERY_WORKLOAD, carried verbatim (no
+	// validation beyond the string parse — see Config.CHQueryWorkload's own
+	// doc for the boot-probe contract). Grouped here, rather than a separate
+	// parse in FromEnv, for the same statement-count reason every other
+	// field on this struct is.
+	QueryWorkload string
 }
 
 // chOptFromEnv parses the CERBERUS_CH_OPTIMIZATIONS, CERBERUS_CH_OPTIMIZATIONS_
-// MODE, and CERBERUS_CH_OPT_CORPUS_* knobs. The mode fails fast on an invalid
-// value; the raw optimizations string is carried verbatim (it is resolved
-// against the probed server version in cmd/cerberus, not here). Extracted from
-// FromEnv so the parses live in one place.
+// MODE, CERBERUS_CH_OPT_CORPUS_*, and CERBERUS_CH_QUERY_WORKLOAD knobs. The
+// mode fails fast on an invalid value; the raw optimizations string and the
+// query-workload name are carried verbatim (both are resolved/probed against
+// the connected server in cmd/cerberus, not here). Extracted from FromEnv so
+// the parses live in one place.
 func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 	mode, err := chopt.ParseMode(getString(v, envCHOptimizationsMode))
 	if err != nil {
@@ -2651,7 +2680,27 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 		Optimizations: getString(v, envCHOptimizations),
 		Mode:          mode,
 		Corpus:        corpus,
+		QueryWorkload: getString(v, envCHQueryWorkload),
 	}, nil
+}
+
+// resultCacheDurationsFromEnv parses CERBERUS_RESULT_CACHE_INGEST_LAG and
+// CERBERUS_RESULT_CACHE_TTL. Both accept 0 (see their own field doc: 0
+// disables the respective margin/ttl rather than meaning "use the default"
+// — v.SetDefault elsewhere already resolves an UNSET env var to the
+// non-zero default), so getNonNegativeDuration's only job here is rejecting
+// a negative value. Extracted from FromEnv so the two parses live in one
+// place, the same statement-count reason chOptFromEnv exists.
+func resultCacheDurationsFromEnv(v *viper.Viper) (ingestLag, ttl time.Duration, err error) {
+	ingestLag, err = getNonNegativeDuration(v, envResultCacheIngestLag)
+	if err != nil {
+		return 0, 0, err
+	}
+	ttl, err = getNonNegativeDuration(v, envResultCacheTTL)
+	if err != nil {
+		return 0, 0, err
+	}
+	return ingestLag, ttl, nil
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a

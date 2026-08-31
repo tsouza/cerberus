@@ -61,6 +61,7 @@ func (l *chOptLive) infoState() info.OptState {
 		ServerVersion:       res.ResolvedVersion.String(),
 		ServerVersionSource: source,
 		Enabled:             res.Set.IDs(),
+		QueryWorkload:       res.QueryWorkload,
 	}
 }
 
@@ -83,18 +84,26 @@ type chOptConsumers struct {
 	prom *prom.Handler
 }
 
-// apply installs the decisions set implies on every consumer. The two swaps are
-// independent pointer stores, so a query dispatched between them lowers with one
-// table and executes with the other's settings — both of which are individually
-// valid for the same server, since a capability the set dropped only ever
-// DISABLES a native path and a capability it gained only ever enables one.
-func (c chOptConsumers) apply(cfg config.Config, set chopt.EnabledSet) {
-	rules := settingsRules(cfg, set)
+// apply installs the decisions res implies on every consumer. The two swaps
+// are independent pointer stores, so a query dispatched between them lowers
+// with one table and executes with the other's settings — both of which are
+// individually valid for the same server, since a capability the set dropped
+// only ever DISABLES a native path and a capability it gained only ever
+// enables one.
+//
+// cfg.CHQueryWorkload is overridden from res.QueryWorkload (rather than left
+// at whatever boot resolved) so a live reprobe's freshly re-probed verdict —
+// not the boot-time snapshot the caller's cfg copy was taken from — is what
+// actually reaches settingsRules; see resolveQueryWorkload's own doc for why
+// this value can change across a live server capability change.
+func (c chOptConsumers) apply(cfg config.Config, res chOptResolution) {
+	cfg.CHQueryWorkload = res.QueryWorkload
+	rules := settingsRules(cfg, res.Set)
 	for _, e := range c.engines {
 		e.SetSettings(rules)
 	}
 	if c.prom != nil {
-		c.prom.SetLowerers(nativeRangeLowerers(set))
+		c.prom.SetLowerers(nativeRangeLowerers(res.Set))
 	}
 }
 
@@ -170,6 +179,16 @@ func nextReprobeDelay(res chOptResolution, steady time.Duration) time.Duration {
 // carries one line per real capability change and an operator watching an
 // upgrade sees the transition rather than having to find it in a stream of
 // repetitions.
+//
+// rawQueryWorkload is the ORIGINAL operator-configured CERBERUS_CH_QUERY_
+// WORKLOAD, captured by the caller BEFORE boot's resolveCHOptimizations
+// mutates cfg.CHQueryWorkload down to "" on a rejected/unreachable boot
+// probe. Re-probing against cfg.CHQueryWorkload instead would permanently
+// wedge a boot-time rejection: once boot zeroes it, every later tick would
+// see "" and skip probing forever, even after a ClickHouse upgrade makes
+// the setting available. rawQueryWorkload is passed straight through to
+// resolveCHOptimizationsOnce untouched, so each tick re-evaluates the
+// SAME original request against whatever the server answers right now.
 func reprobeCHOptimizations(
 	ctx context.Context,
 	logger *slog.Logger,
@@ -177,6 +196,7 @@ func reprobeCHOptimizations(
 	live *chOptLive,
 	consumers chOptConsumers,
 	interval time.Duration,
+	rawQueryWorkload string,
 ) {
 	// A timer rather than a ticker: the delay is re-derived from the
 	// resolution in force after every attempt, so a pod pinned to the floor
@@ -191,7 +211,7 @@ func reprobeCHOptimizations(
 		case <-timer.C:
 		}
 
-		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg)
+		next, ok := resolveCHOptimizationsOnce(ctx, logger, cfg, rawQueryWorkload)
 		if !ok {
 			// The resolution in force is unchanged, so the delay is derived
 			// from it: still on the floor means still retrying fast.
@@ -200,20 +220,22 @@ func reprobeCHOptimizations(
 		}
 		prev := live.get()
 		timer.Reset(nextReprobeDelay(next, interval))
-		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion {
+		if next.Set.Equal(prev.Set) && next.ResolvedVersion == prev.ResolvedVersion && next.QueryWorkload == prev.QueryWorkload {
 			continue
 		}
 		// Publish BEFORE swapping the consumers: /info then never reports a
 		// capability set older than the one the query path is already emitting
 		// against, which is the direction an operator can act on.
 		live.store(next)
-		consumers.apply(cfg, next.Set)
+		consumers.apply(cfg, next)
 		logger.Info(
 			"clickhouse optimizations re-resolved",
 			"server_version", next.ResolvedVersion.String(),
 			"previous_server_version", prev.ResolvedVersion.String(),
 			"enabled", strings.Join(next.Set.IDs(), ","),
 			"previous_enabled", strings.Join(prev.Set.IDs(), ","),
+			"query_workload", next.QueryWorkload,
+			"previous_query_workload", prev.QueryWorkload,
 		)
 	}
 }
@@ -221,11 +243,16 @@ func reprobeCHOptimizations(
 // resolveCHOptimizationsOnce runs one probe-and-resolve pass and reports the
 // result, or ok=false when the resolution failed and the caller must keep the
 // set already in force. It is the re-probe's half of resolveCHOptimizations:
-// the same version probe, the same TWO capability canaries, and the same
+// the same version probe, the same THREE capability canaries, and the same
 // resolver against the same configured selection — but with none of boot's side effects
 // (no config back-fill, no columnar-decode swap, no fatal exit), because those
 // are decisions a process makes once and the re-probe must not re-make.
-func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg config.Config) (chOptResolution, bool) {
+//
+// rawQueryWorkload is the ORIGINAL operator-configured
+// CERBERUS_CH_QUERY_WORKLOAD — see reprobeCHOptimizations's own doc for why
+// this must be the immutable raw value, not a copy of cfg.CHQueryWorkload
+// that boot may already have zeroed.
+func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg config.Config, rawQueryWorkload string) (chOptResolution, bool) {
 	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
 	versionFallback := err != nil
 	if err != nil {
@@ -247,6 +274,13 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 		logger.Warn("clickhouse optimizations re-resolve failed; keeping the set in force", "err", err)
 		return chOptResolution{}, false
 	}
+	// resolveQueryWorkload with fatalOnReject=false: a reprobe never fails a
+	// serving pod over a capability regression, mirroring the resolve-error
+	// handling immediately above (logged and the previous resolution kept).
+	// The error return is always nil here by construction (fatalOnReject
+	// false means resolveQueryWorkload's only error branch is unreachable),
+	// so it is intentionally discarded rather than threaded into ok.
+	queryWorkload, _, _ := resolveQueryWorkload(ctx, logger, cfg.ClickHouse, rawQueryWorkload, cfg.CHOptimizationsMode, false)
 	// The resolver's warnings are boot-time operator guidance (permissive skips,
 	// the legacy-alias deprecation) about a selection that has not changed, so
 	// re-logging them every tick would say nothing new.
@@ -254,6 +288,7 @@ func resolveCHOptimizationsOnce(ctx context.Context, logger *slog.Logger, cfg co
 		Set:             set,
 		ResolvedVersion: resolvedVersion,
 		VersionFallback: versionFallback,
+		QueryWorkload:   queryWorkload,
 	}, true
 }
 
