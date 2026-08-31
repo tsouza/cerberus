@@ -368,6 +368,16 @@ type Config struct {
 	// traces tables (see internal/schema/ddl.Config.ColumnStatisticsEnabled).
 	SchemaColumnStatistics bool
 
+	// SchemaTraceIDProjection is the resolved chopt trace_id_projection
+	// verdict (cerberus issue #2767), back-filled the SAME way as
+	// SchemaColumnStatistics immediately above — including the offline
+	// `migrate schema` preview's chopt.ExplicitlyRequested fallback, since
+	// trace_id_projection is also AutoSelect=false. internal/schemaboot.
+	// DDLConfig is the only reader: true adds the curated `ADD PROJECTION IF
+	// NOT EXISTS proj_trace_id` ALTER to the traces and logs tables (see
+	// internal/schema/ddl.Config.TraceIDProjectionEnabled).
+	SchemaTraceIDProjection bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).

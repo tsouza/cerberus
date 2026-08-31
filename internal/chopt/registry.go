@@ -831,6 +831,55 @@ const (
 	// TestClassicBucketMergeSumMapDifferential's NaN case, not glossed over.
 	FeatureClassicBucketMergeSumMap = "classic_bucket_merge_summap"
 
+	// FeatureTraceIDProjection gates the curated `ADD PROJECTION IF NOT
+	// EXISTS proj_trace_id (SELECT TraceId, _part_offset ORDER BY TraceId)`
+	// ALTER (cerberus issue #2767) on the otel_traces and otel_logs tables.
+	// Neither table's own ORDER BY carries TraceId — otel_traces sorts
+	// (ServiceName, SpanName, Timestamp) and otel_logs sorts
+	// (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp) — so a
+	// trace-by-id lookup or a logs<->traces correlation hop has no primary-key
+	// locality on either side; today it is served only by the idx_trace_id
+	// bloom_filter skip index (trace_id_index_probe_chdb_test.go's bar),
+	// which grants probabilistic GRANULARITY-coarse pruning, not exact row
+	// addressing. proj_trace_id stores only the sort key plus the
+	// _part_offset pointer back into the base part — a lightweight
+	// "secondary index" projection, not a full column copy — so ClickHouse
+	// can resolve a TraceId predicate to exact rows once the query optimizer
+	// (>= 25.11, see FeatureTraceIDBitmapFilter) or an explicit query targets
+	// it.
+	//
+	// VERSION FLOOR: 25.5 — the first release accepting `_part_offset` inside
+	// a normal projection's SELECT list (upstream PR #78429, "Projection
+	// Index Step 1: Support _part_offset in normal projections"); ADD
+	// PROJECTION with this shape is rejected outright below it. cerberus's
+	// supported floor is 24.8 (versions.yaml), so unlike every projection in
+	// metricCatalogProjections (unconditional today) this ALTER needs the
+	// version-conditional DDL gate internal/schema/ddl.Config.
+	// TraceIDProjectionEnabled threads — the boot resolver here supplies the
+	// verdict the SAME way it already does for FeatureColumnStatistics
+	// (internal/schemaboot.DDLConfig, cmd/cerberus's chOptResolution),
+	// reusing the SAME probed-version detection rather than adding a second
+	// one.
+	//
+	// BOTH otel_traces and otel_logs carry the projection, not traces alone:
+	// the issue's own motivation names logs<->traces correlation, not just
+	// trace-by-id, and TraceIDIndexProbe (trace_id_index_probe_chdb_test.go)
+	// already requires BOTH sides index-served for Consistent()==true —
+	// otel_logs' ORDER BY has no more TraceId locality than otel_traces'
+	// does, so scoping the projection to traces alone would leave the logs
+	// side of every correlation hop on the bloom filter.
+	//
+	// NOT auto-selected (AutoSelect=false), mirroring FeatureColumnStatistics'
+	// posture on a fresh floor-raising DDL feature: the MATERIALIZE
+	// PROJECTION backfill cost for existing parts and the steady-state
+	// merge-time maintenance cost on new parts are real (if the issue's own
+	// Risks section correctly calls them "tiny") but unmeasured at production
+	// data volumes beyond this PR's own synthetic benchmark — an operator
+	// opt-in via CERBERUS_CH_OPTIMIZATIONS=trace_id_projection until that
+	// evidence accumulates, exactly the posture column_statistics and
+	// map_bucketed_serialization already took on their own new floors.
+	FeatureTraceIDProjection = "trace_id_projection"
+
 	// FeatureJoinSpill stamps max_bytes_before_external_join = cap/2 (the
 	// SAME cap-relative arithmetic internal/engine/spill.go's unconditional
 	// group_by/sort stamps use, keyed off CERBERUS_CH_QUERY_MAX_MEMORY) on
@@ -885,6 +934,53 @@ const (
 	// OOM abort is an availability bug, not an optimisation opportunity — so
 	// it does not change the AutoSelect posture.
 	FeatureJoinSpill = "join_spill"
+
+	// FeatureTraceIDBitmapFilter stamps
+	// min_table_rows_to_use_projection_index=0 (internal/engine's
+	// settingMinTableRowsToUseProjectionIndex) on a query plan carrying a
+	// TraceId-keyed predicate or join (cerberus issue #2767) — a top-level
+	// equality (the Tempo trace-by-id GET), a flat or subquery membership
+	// test (the /api/search root-lookup and structure-tab top-N gate), or a
+	// chplan.StructuralJoin's recursive closure (every TraceQL structural
+	// query). See internal/engine.eligibleForTraceIDBitmapFilter for the
+	// exact plan shapes matched.
+	//
+	// VERSION FLOOR: 25.11 — upstream PR #81021 ("Projection Index Step 3:
+	// ... allow using projections (that use SELECT of _part_offset and a
+	// different ORDER BY) as a secondary index. When enabled, certain query
+	// predicates can be used to read from projection parts and generate
+	// bitmaps to filter rows efficiently during the PREWHERE stage"), the
+	// changelog's own "when enabled" phrasing. The gate the changelog names
+	// is NOT a single boolean toggle — verified against the PR's own diff of
+	// src/Core/Settings.cpp / SettingsChangesHistory.cpp, not assumed from
+	// the changelog prose — but the pair of UInt64 thresholds the same PR
+	// introduces alongside it: min_table_rows_to_use_projection_index (only
+	// consider the projection index once the scanned table clears this row
+	// count; default 1,000,000) and max_projection_rows_to_use_projection_index
+	// (only apply it once the estimated projection read is under this row
+	// count; default 1,000,000, left untouched — a TraceId point lookup's
+	// estimated projection read is a handful of rows regardless of table
+	// size, so the default never blocks it). A real production otel_traces/
+	// otel_logs table clears the row-count default on its own, but a small
+	// or synthetic table — every chdb-tagged test fixture included — does
+	// not, which would silently leave the bitmap path unreachable exactly
+	// where this issue's own EXPLAIN acceptance test needs to prove it fires;
+	// stamping the threshold to 0 makes the path deterministic regardless of
+	// table size rather than relying on production scale to clear a default
+	// that was never meant to gate correctness.
+	//
+	// AutoSelect is true: the stamp is RESULT-EQUIVALENT (it only widens
+	// which physical path the optimizer is allowed to consider; a table
+	// carrying no proj_trace_id projection at all is unaffected either way)
+	// and strictly protective in the same sense FeatureJoinSpill and
+	// FeatureArgAndMaxFusion are — there is no server on which lowering this
+	// threshold produces a different query result, only a different (never
+	// worse, per ClickHouse's own cost-based projection selection) physical
+	// plan. Independent of FeatureTraceIDProjection: a server can satisfy
+	// this floor (25.11) without satisfying that one (25.5) only if it
+	// regressed version, which preflight already rejects, and the stamp is a
+	// harmless no-op on any table that carries no proj_trace_id projection.
+	FeatureTraceIDBitmapFilter = "trace_id_bitmap_filter"
 
 	// FeatureArgAndMaxFusion opts two narrow chsql emission sites off the
 	// `argMax(Value, TimeUnix)` + separate `max(TimeUnix)` two-aggregate
@@ -1257,6 +1353,20 @@ var registry = []Feature{
 		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
 	},
 	{
+		ID:         FeatureTraceIDProjection,
+		MinVersion: Version{Major: 25, Minor: 5},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "curated ADD PROJECTION proj_trace_id (TraceId, _part_offset) on otel_traces/otel_logs for exact-row trace lookups (server >= 25.5, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/merge cost unmeasured at production volume pending real-world calibration)",
+	},
+	{
+		ID:         FeatureTraceIDBitmapFilter,
+		MinVersion: Version{Major: 25, Minor: 11},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "stamp min_table_rows_to_use_projection_index=0 on TraceId-keyed predicates/joins so the projection-index bitmap PREWHERE path (server >= 25.11) is reachable regardless of table size (result-equivalent, auto-enabled)",
+	},
+	{
 		ID:         FeatureArgAndMaxFusion,
 		MinVersion: Version{Major: 25, Minor: 11},
 		Stability:  Experimental,
@@ -1281,9 +1391,10 @@ var registry = []Feature{
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, join_spill,
-// arg_and_max_fusion, result_cache). The copy keeps the canonical entries
-// immutable from the caller's side. Exposed so tests can enumerate the gates
-// and the docs generator can render the table.
+// trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
+// result_cache). The copy keeps the canonical entries immutable from the
+// caller's side. Exposed so tests can enumerate the gates and the docs
+// generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)
