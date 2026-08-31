@@ -1,5 +1,5 @@
 {
-  "query": "lag_adjacency_idelta_duplicate_ts/native",
+  "query": "native_irate_range_step/native",
   "lowering": "native",
   "routed": false,
   "k": 0,

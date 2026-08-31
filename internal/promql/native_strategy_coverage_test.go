@@ -117,16 +117,16 @@ var nativeStrategies = []nativeStrategy{
 	},
 	{
 		field:   "Irate",
-		section: "experimental_lag_adjacency_irate",
+		section: "experimental_ts_grid_irate",
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
+			l.Irate = promql.NativeIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
 		},
 	},
 	{
 		field:   "Idelta",
-		section: "experimental_lag_adjacency_idelta",
+		section: "experimental_ts_grid_idelta",
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
+			l.Idelta = promql.NativeIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
 		},
 	},
 	{
@@ -181,24 +181,40 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 			ns.wire(&l, has)
 		}
 	}
-	// laginframe_adjacency (issue #2759) is Changes/Resets' improved FALLBACK,
-	// not a competitor to their native ts_grid strategy above — mirroring
-	// cmd/cerberus's own nativeRangeLowerers composition (Native{Fallback:
-	// LagAdjacency{Fallback: Fanout{}}}). It is deliberately NOT a
-	// nativeStrategies row: a row's section is the ONLY way to reach that
-	// row's field, and Changes/Resets already have a row gated on their own
-	// ts_grid section. A fixture opts into the lag-adjacency SQL shape ALONE
-	// (unshadowed by the native path) by carrying ONLY this section, never
-	// alongside experimental_ts_grid_changes/resets — the two are mutually
-	// exclusive at this spec-fixture layer by convention, documented on each
-	// fixture. (The composed native-wraps-lag-adjacency shape is exercised
-	// directly in Go by internal/chsql/range_window_lag_adjacency_chdb_test.go,
-	// not through this table.)
+	// laginframe_adjacency (issue #2759) is changes/resets/irate/idelta's
+	// improved FALLBACK, not a competitor to their native ts_grid strategy
+	// above — mirroring cmd/cerberus's own nativeRangeLowerers composition
+	// (Native{Fallback: LagAdjacency{Fallback: Fanout{}}}). It is
+	// deliberately NOT a nativeStrategies row: a row's section is the ONLY
+	// way to reach that row's field, and all four functions already have a
+	// row gated on their own ts_grid section (irate/idelta's landed in
+	// cerberus issue #2746). A fixture opts into the lag-adjacency SQL shape
+	// ALONE (unshadowed by the native path) by carrying ONLY this section,
+	// never alongside experimental_ts_grid_changes/resets/irate/idelta — the
+	// two are mutually exclusive at this spec-fixture layer by convention,
+	// documented on each fixture. (The composed native-wraps-lag-adjacency
+	// shape is exercised directly in Go by
+	// internal/chsql/range_window_lag_adjacency_chdb_test.go, not through
+	// this table.)
 	if has("experimental_lag_adjacency_changes") {
 		l.Changes = promql.LagAdjacencyChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
 	}
 	if has("experimental_lag_adjacency_resets") {
 		l.Resets = promql.LagAdjacencyResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+	}
+	// irate/idelta gained their own native ts_grid strategy (cerberus issue
+	// #2746) and moved into the nativeStrategies table above, exactly
+	// mirroring changes/resets: laginframe_adjacency is now THEIR improved
+	// fallback too, so its two existing fixtures
+	// (lag_adjacency_irate_delta_temporality_range.txtar,
+	// lag_adjacency_idelta_duplicate_ts.txtar) keep opting into the
+	// lag-adjacency SQL shape ALONE via this override, unshadowed by the
+	// native path.
+	if has("experimental_lag_adjacency_irate") {
+		l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
+	}
+	if has("experimental_lag_adjacency_idelta") {
+		l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
 	}
 	// fixed_accumulator_extrapolated (issue #2760) is Rate/Increase/Delta's
 	// improved FALLBACK, not a competitor to their native ts_grid strategy

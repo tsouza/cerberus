@@ -100,6 +100,14 @@ var nativeScanBoundCases = map[string]nativeScanBoundCase{
 		query:    "delta(queue_depth[5m])",
 		lowerers: promql.RangeLowerers{Delta: promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}},
 	},
+	"irate": {
+		query:    "irate(requests_total[5m])",
+		lowerers: promql.RangeLowerers{Irate: promql.NativeIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}},
+	},
+	"idelta": {
+		query:    "idelta(queue_depth[5m])",
+		lowerers: promql.RangeLowerers{Idelta: promql.NativeIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}},
+	},
 }
 
 // nativeScanBoundSchema is the default OTel-CH metrics schema with

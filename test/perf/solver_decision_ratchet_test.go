@@ -222,6 +222,10 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 		case chopt.FeatureTSGridDelta:
 			l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+		case chopt.FeatureTSGridIrate, chopt.FeatureTSGridIdelta:
+			// Composed below, once FeatureLagInFrameAdjacency (which narrows
+			// their Fallback) is known — mirrors Resets above (cerberus issue
+			// #2746).
 		case chopt.FeatureTSGridHistogram:
 			// Matches cmd/cerberus/main.go's nativeRangeLowerers exactly.
 			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{
@@ -230,9 +234,8 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 		case chopt.FeatureTSGridRecollapse:
 			recollapse = true
 		case chopt.FeatureLagInFrameAdjacency:
-			// Composed below: it narrows Changes/Resets' Fallback and is
-			// Irate/Idelta's only non-fan-out strategy — see
-			// cmd/cerberus/main.go's nativeRangeLowerers.
+			// Composed below: it narrows Changes/Resets/Irate/Idelta's
+			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
 		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
@@ -244,25 +247,27 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 	}
 	l.Rate = promql.NativeRateLowerer{Fallback: promql.FanoutRateLowerer{}, Recollapse: recollapse}
 	// Changes/Resets/Irate/Idelta — mirrors cmd/cerberus/main.go's
-	// nativeRangeLowerers composition exactly (issue #2759).
+	// nativeRangeLowerers composition exactly (issue #2759, #2746).
 	changesFallback := promql.ChangesLowerer(promql.FanoutChangesLowerer{})
 	resetsFallback := promql.ResetsLowerer(promql.FanoutResetsLowerer{})
+	irateFallback := promql.IrateLowerer(promql.FanoutIrateLowerer{})
+	ideltaFallback := promql.IdeltaLowerer(promql.FanoutIdeltaLowerer{})
 	if lagAdjacency {
 		changesFallback = promql.LagAdjacencyChangesLowerer{Fallback: changesFallback}
 		resetsFallback = promql.LagAdjacencyResetsLowerer{Fallback: resetsFallback}
-		l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
-		l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
-	} else {
-		l.Irate = promql.FanoutIrateLowerer{}
-		l.Idelta = promql.FanoutIdeltaLowerer{}
+		irateFallback = promql.LagAdjacencyIrateLowerer{Fallback: irateFallback}
+		ideltaFallback = promql.LagAdjacencyIdeltaLowerer{Fallback: ideltaFallback}
 	}
 	// ts_grid_changes is permanently AutoSelect=false (#1721), so it never
 	// appears in this "every AutoSelect feature on" table — Changes gets
 	// ONLY the (possibly lag-adjacency-wrapped) fan-out, never
-	// NativeChangesLowerer. Resets' native wrapper IS applied: ts_grid_resets
-	// is AutoSelect=true.
+	// NativeChangesLowerer. Resets/Irate/Idelta's native wrappers ARE
+	// applied: ts_grid_resets/ts_grid_irate/ts_grid_idelta are all
+	// AutoSelect=true (irate/idelta since cerberus issue #2746).
 	l.Changes = changesFallback
 	l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback}
+	l.Irate = promql.NativeIrateLowerer{Fallback: irateFallback}
+	l.Idelta = promql.NativeIdeltaLowerer{Fallback: ideltaFallback}
 	return l
 }
 

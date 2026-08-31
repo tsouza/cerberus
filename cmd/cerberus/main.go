@@ -869,8 +869,12 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	  // where rateFallback/increaseFallback/deltaFallback are each
 //	  // fixedAccumEnabled ? FixedAccumulator*Lowerer{Fallback: Fanout*Lowerer{}} : Fanout*Lowerer{}
 //	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
-//	changes   = enabled ? NativeChangesLowerer{Fallback: FanoutChangesLowerer{}} : FanoutChangesLowerer{}
-//	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
+//	changes   = enabled ? NativeChangesLowerer{Fallback: changesFallback} : changesFallback
+//	resets    = enabled ? NativeResetsLowerer{Fallback: resetsFallback} : resetsFallback
+//	irate     = enabled ? NativeIrateLowerer{Fallback: irateFallback} : irateFallback
+//	idelta    = enabled ? NativeIdeltaLowerer{Fallback: ideltaFallback} : ideltaFallback
+//	  // where changesFallback/resetsFallback/irateFallback/ideltaFallback are each
+//	  // laginframeEnabled ? LagAdjacency*Lowerer{Fallback: Fanout*Lowerer{}} : Fanout*Lowerer{}
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
@@ -910,13 +914,16 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // unrepresentable rather than merely unlikely.
 //
 // laginframe_adjacency (issue #2759) is a second non-independent knob, but in
-// the opposite direction from recollapse: it narrows changes/resets' FALLBACK
-// (the arm a shape-ineligible or sub-25.9 server lands on), not their native
-// arm, and it is irate/idelta's ONLY non-fan-out strategy since those two have
-// no timeSeries*ToGrid member at all. Unlike every ts_grid_* feature it carries
-// no version floor (chopt.AlwaysAvailable) and no experimental-setting gate, so
-// it composes with the version-gated native features purely via which
-// Fallback each Native*Lowerer embeds.
+// the opposite direction from recollapse: it narrows changes/resets/irate/
+// idelta's FALLBACK (the arm a shape-ineligible or sub-25.9 server lands on),
+// not their native arm. It was irate/idelta's ONLY non-fan-out strategy until
+// issue #2746 gave them their own native timeSeriesInstantRateToGrid /
+// timeSeriesInstantDeltaToGrid competitor, so all four of changes / resets /
+// irate / idelta now share the identical three-tier Native{Fallback:
+// LagAdjacency{Fallback: Fanout{}}} composition. Unlike every ts_grid_*
+// feature it carries no version floor (chopt.AlwaysAvailable) and no
+// experimental-setting gate, so it composes with the version-gated native
+// features purely via which Fallback each Native*Lowerer embeds.
 //
 // fixed_accumulator_extrapolated (issue #2760) is laginframe_adjacency's own
 // sibling for the extrapolated family: it narrows rate/increase/delta's
@@ -979,14 +986,27 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.Resets = resetsFallback
 	}
-	// irate/idelta have no native timeSeries*ToGrid member (issue #2759's own
-	// motivation): laginframe_adjacency is their only non-fan-out strategy.
+	// irate/idelta gained their own native timeSeries*ToGrid member
+	// (timeSeriesInstantRateToGrid / timeSeriesInstantDeltaToGrid, cerberus
+	// issue #2746): laginframe_adjacency now layers BENEATH that native
+	// strategy exactly like it does for changes/resets above, rather than
+	// being their only non-fan-out strategy the way issue #2759 originally
+	// left it.
+	var irateFallback promql.IrateLowerer = promql.FanoutIrateLowerer{}
+	var ideltaFallback promql.IdeltaLowerer = promql.FanoutIdeltaLowerer{}
 	if optSet.Has(chopt.FeatureLagInFrameAdjacency) {
-		l.Irate = promql.LagAdjacencyIrateLowerer{Fallback: promql.FanoutIrateLowerer{}}
-		l.Idelta = promql.LagAdjacencyIdeltaLowerer{Fallback: promql.FanoutIdeltaLowerer{}}
+		irateFallback = promql.LagAdjacencyIrateLowerer{Fallback: irateFallback}
+		ideltaFallback = promql.LagAdjacencyIdeltaLowerer{Fallback: ideltaFallback}
+	}
+	if optSet.Has(chopt.FeatureTSGridIrate) {
+		l.Irate = promql.NativeIrateLowerer{Fallback: irateFallback}
 	} else {
-		l.Irate = promql.FanoutIrateLowerer{}
-		l.Idelta = promql.FanoutIdeltaLowerer{}
+		l.Irate = irateFallback
+	}
+	if optSet.Has(chopt.FeatureTSGridIdelta) {
+		l.Idelta = promql.NativeIdeltaLowerer{Fallback: ideltaFallback}
+	} else {
+		l.Idelta = ideltaFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridDeriv) {
 		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
