@@ -922,6 +922,111 @@ the boot **requirements check** as a warning naming the exact fix. Those are
 warnings rather than boot failures because storage layout is a cost property of
 the tables, not a correctness property of the gateway.
 
+### Local filesystem cache (cerberus issue #2780)
+
+Production is explicitly a **single node with S3-backed storage** (see
+"Helm: bundled ClickHouse on object storage" above), so a cold dashboard scan
+is latency-dominated by object-store round trips, not CPU. ClickHouse's local
+filesystem cache — a disk-backed cache of the raw S3 byte ranges a MergeTree
+read touches, keyed by object path + offset — sits directly on that leverage:
+a part whose ranges are already cached serves from local disk instead of
+re-fetching from S3 on every scan, which matters most for cerberus's own
+access pattern of the same recent partitions being rescanned by every
+dashboard refresh.
+
+**This is a SERVER-CONFIG concern, not a `chopt` stamp.** The per-query
+toggle (`enable_filesystem_cache`) already defaults to `1` on every
+ClickHouse version cerberus supports — confirmed live via chDB (ClickHouse
+26.5.1.1) rather than assumed, see "Audited, not adopted" in
+[`docs/clickhouse-optimizations.md`](clickhouse-optimizations.md) — so there
+is nothing for cerberus to stamp per query. What the per-query default cannot
+do is create the cache: a `cache`-type disk has to exist in the server's
+`storage_configuration` before `enable_filesystem_cache=1` has anywhere to
+write, exactly the gap
+[ClickHouse's own "using local cache" doc](https://clickhouse.com/docs/operations/storing-data#using-local-cache)
+describes. That disk definition, and the operator work below, lives entirely
+in the ClickHouse server config cerberus does not template — cerberus's own
+knob is `CERBERUS_SCHEMA_STORAGE_POLICY` (see "Hot/cold storage tiering"
+above), which only SELECTS which already-defined server-side policy new
+tables use.
+
+**Wiring a cache disk over the S3 disk**, in the ClickHouse server's own
+`config.xml`/`config.d` — the shape the doc above walks through, wrapping
+whatever `<s3_disk>` the "bundled ClickHouse on object storage" section
+already defines:
+
+```xml
+<storage_configuration>
+  <disks>
+    <s3_cache>
+      <type>cache</type>
+      <disk>s3_disk</disk>
+      <path>/var/lib/clickhouse/disks/s3_cache/</path>
+      <max_size>107374182400</max_size> <!-- 100 GiB; see sizing below -->
+    </s3_cache>
+  </disks>
+  <policies>
+    <s3_main>
+      <volumes>
+        <main>
+          <disk>s3_cache</disk>
+        </main>
+      </volumes>
+    </s3_main>
+  </policies>
+</storage_configuration>
+```
+
+Point `CERBERUS_SCHEMA_STORAGE_POLICY` at the wrapping policy name (`s3_main`
+above) so cerberus's auto-created tables land on the cache-backed disk
+instead of the raw S3 one directly.
+
+**Sizing the cache disk for the single-node profile.** The cache only pays
+off across the "hot" window a dashboard actually rescans — sized past that
+window it just holds cold, never-revisited ranges. A first-pass estimate
+uses the same production figures already measured elsewhere in this doc
+("Metadata-enumeration projections", "Ongoing ingest cost"): ~2,824 rows/s
+sustained ingest against a measured ~4 billion rows / ~140 GiB on-disk
+(compressed) ratio is ~35 bytes/row, so:
+
+```text
+hot_window_bytes ≈ sustained_rows_per_sec × bytes_per_row × hot_window_seconds
+                ≈ 2,824 × 35 × hot_window_seconds
+```
+
+A 24-hour hot window (the busiest Grafana panels' typical lookback) is
+therefore ~**8.3 GiB/day**; a 7-day hot window (weekly comparisons, longer
+on-call lookback) is ~**58 GiB**. Recompute with the deployment's OWN
+sustained ingest rate and per-row size (`system.parts` on the live table) —
+the figures above are this doc's own measured production numbers, not a
+universal constant — and size the disk with headroom past the busiest
+window an operator's dashboards actually reissue, not the full retention
+window: cold, rarely-revisited history gains little from caching and would
+just evict the hot ranges that pay for themselves.
+
+**Warm-up for the hot recent window.** ClickHouse's cache metadata persists
+across a graceful restart (`load_metadata_threads` reloads it at startup), so
+a routine restart does not empty it. It DOES start genuinely cold the first
+time a cache disk is wired in, and a cache freshly resized larger has empty
+new capacity until something touches it. In either case the fastest path to
+a warm cache is deliberately re-issuing the query shapes that would
+otherwise warm it organically off real traffic: replay a representative
+sample of recent dashboard queries (or, simplest, a broad `SELECT count()`
+over the last `hot_window`'s worth of each fact table) once after standing
+up or resizing the cache, rather than letting the first wave of real user
+traffic pay the cold-scan cost.
+
+**Observability.** `GET /info`'s `filesystemCache` object reports whether a
+cache is configured at all (`configured`, `caches`) plus its aggregate
+configured capacity and live occupancy (`maxSizeBytes`, `currentSizeBytes`,
+`currentElements`), read live from `system.filesystem_cache_settings` on
+every poll — so "is the cache actually there, and how full is it" is
+answered without a ClickHouse shell. `configured: false` on a deployment that
+believes it wired a cache disk is the single most actionable signal this
+section can give: it means the `storage_configuration` above never took
+effect (a config-reload miss, a typo'd disk name in the policy, or the
+policy itself not yet applied via `CERBERUS_SCHEMA_STORAGE_POLICY`).
+
 ### Metadata-enumeration projections (curated registry)
 
 Auto-create installs a small **curated registry** of aggregating projections

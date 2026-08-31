@@ -167,6 +167,56 @@ func TestInfo_ResultCacheNilFuncDefaultsToZero(t *testing.T) {
 	}
 }
 
+// TestInfo_FilesystemCacheConfigured (cerberus issue #2780) confirms a
+// configured server-side filesystem cache surfaces verbatim under
+// filesystemCache.{configured,caches,maxSizeBytes,currentSizeBytes,currentElements}.
+func TestInfo_FilesystemCacheConfigured(t *testing.T) {
+	h := New(Options{
+		Snapshot:      baseSnapshot(),
+		Optimizations: staticOpts(baseOptState()),
+		FilesystemCache: func(context.Context) FilesystemCacheState {
+			return FilesystemCacheState{
+				Configured:       true,
+				Caches:           1,
+				MaxSizeBytes:     10 << 30, // 10 GiB
+				CurrentSizeBytes: 6 << 30,  // 6 GiB
+				CurrentElements:  12345,
+			}
+		},
+	})
+	got, _ := decodeInfo(t, h)
+
+	if !got.FilesystemCache.Configured {
+		t.Errorf("filesystemCache.configured = false; want true")
+	}
+	if got.FilesystemCache.Caches != 1 {
+		t.Errorf("filesystemCache.caches = %d; want 1", got.FilesystemCache.Caches)
+	}
+	if got.FilesystemCache.MaxSizeBytes != 10<<30 {
+		t.Errorf("filesystemCache.maxSizeBytes = %d; want %d", got.FilesystemCache.MaxSizeBytes, 10<<30)
+	}
+	if got.FilesystemCache.CurrentSizeBytes != 6<<30 {
+		t.Errorf("filesystemCache.currentSizeBytes = %d; want %d", got.FilesystemCache.CurrentSizeBytes, 6<<30)
+	}
+	if got.FilesystemCache.CurrentElements != 12345 {
+		t.Errorf("filesystemCache.currentElements = %d; want 12345", got.FilesystemCache.CurrentElements)
+	}
+}
+
+// TestInfo_FilesystemCacheNilFuncDefaultsToZero confirms a handler wired
+// without Options.FilesystemCache reports Configured=false with every
+// counter at 0 rather than an absent field — the honest answer for a
+// handler wired without chclient.QueryFilesystemCacheState.
+func TestInfo_FilesystemCacheNilFuncDefaultsToZero(t *testing.T) {
+	h := New(Options{Snapshot: baseSnapshot()})
+	got, _ := decodeInfo(t, h)
+
+	want := filesystemCacheInfo{}
+	if got.FilesystemCache != want {
+		t.Errorf("filesystemCache with no resolver = %+v; want zero", got.FilesystemCache)
+	}
+}
+
 // TestInfo_ServerVersionSource verifies probe-vs-fallback round-trips
 // faithfully — the field that makes the 24.8-floor pin obvious.
 func TestInfo_ServerVersionSource(t *testing.T) {
