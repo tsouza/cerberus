@@ -1357,7 +1357,7 @@ func infoOptions(
 		// error beyond that degrades the same way rather than surfacing a
 		// transient error on a metadata endpoint that always returns 200.
 		LokiCatalogViewRefresh: func(ctx context.Context) info.ViewRefreshState {
-			state, err := probe.QueryViewRefreshState(ctx, cfg.ClickHouse.Database, cfg.Logs.LabelCatalogTable+schema.LabelCatalogViewSuffix)
+			state, err := probe.QueryViewRefreshState(ctx, cfg.ClickHouse.Database, schema.LabelCatalogTable+schema.LabelCatalogViewSuffix)
 			if err != nil || !state.Found {
 				return info.ViewRefreshState{}
 			}

@@ -3,8 +3,6 @@ package ddl
 import (
 	"strings"
 	"testing"
-
-	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestRenderLokiLabelCatalogTable_ExactSQL pins the catalog table's shape
@@ -115,16 +113,5 @@ func TestRenderSignal_LokiLabelCatalogEnabled_OtherSignalsUntouched(t *testing.T
 				t.Errorf("%s: unexpected loki_label_catalog statement:\n%s", sig, stmt)
 			}
 		}
-	}
-}
-
-// TestLokiLabelCatalogDefaultMatchesSchemaPackage pins defaultLokiLabelCatalogTable
-// in lockstep with schema.DefaultOTelLogs().LabelCatalogTable — the same
-// lockstep contract defaultMetricsDeltaPrefixTable's own doc comment
-// promises against schema.DefaultOTelMetrics().DeltaPrefixTable.
-func TestLokiLabelCatalogDefaultMatchesSchemaPackage(t *testing.T) {
-	if defaultLokiLabelCatalogTable != schema.DefaultOTelLogs().LabelCatalogTable {
-		t.Errorf("defaultLokiLabelCatalogTable = %q; want %q (schema.DefaultOTelLogs().LabelCatalogTable)",
-			defaultLokiLabelCatalogTable, schema.DefaultOTelLogs().LabelCatalogTable)
 	}
 }

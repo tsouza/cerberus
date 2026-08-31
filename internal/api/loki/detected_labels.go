@@ -192,7 +192,7 @@ func labelCatalogEligible(matchers []*labels.Matcher) bool {
 }
 
 // detectedLabelsFromCatalog attempts the catalog read: it queries
-// h.Schema.LabelCatalogTable and returns ok=true only on a genuine hit — a
+// schema.LabelCatalogTable and returns ok=true only on a genuine hit — a
 // successful query that returned at least one row. Both failure shapes
 // (a query error — most commonly the table not yet existing, on a
 // deployment where LabelCatalogEnabled predates a successful DDL apply, or
@@ -209,7 +209,7 @@ func labelCatalogEligible(matchers []*labels.Matcher) bool {
 // distinguish the two via a second query (system.view_refreshes) on every
 // request.
 func (h *Handler) detectedLabelsFromCatalog(ctx context.Context) ([]DetectedLabel, bool) {
-	sqlStr, args := buildLabelCatalogSQL(h.Schema)
+	sqlStr, args := buildLabelCatalogSQL()
 	rows, err := h.Client.QueryLabelCardinalities(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Debug("cerberus loki detected_labels catalog query failed; falling back to per-request path", "err", err, "sql", sqlStr)
@@ -229,8 +229,13 @@ func (h *Handler) detectedLabelsFromCatalog(ctx context.Context) ([]DetectedLabe
 // buildLabelCatalogSQL renders:
 //
 //	SELECT LabelKey, uniqMerge(CardinalityState) AS cardinality
-//	FROM <loki_label_catalog>
+//	FROM loki_label_catalog
 //	GROUP BY LabelKey
+//
+// The table name is schema.LabelCatalogTable — a fixed, cerberus-invented
+// constant rather than a schema.Logs field (see that constant's doc
+// comment for why), so this takes no schema.Logs parameter, unlike every
+// other SQL builder in this file.
 //
 // uniqMerge finalises the per-key uniqState sketch
 // internal/schema/ddl.renderLokiLabelCatalogView's refresh maintains — the
@@ -238,13 +243,13 @@ func (h *Handler) detectedLabelsFromCatalog(ctx context.Context) ([]DetectedLabe
 // because AggregatingMergeTree only guarantees per-key states are
 // EVENTUALLY merged by background merges, not that every part has already
 // been merged into one row per key at read time.
-func buildLabelCatalogSQL(s schema.Logs) (string, []any) {
+func buildLabelCatalogSQL() (string, []any) {
 	sb := chsql.NewQuery().
 		Select(
 			chsql.Col(schema.LabelCatalogKeyColumn),
 			chsql.As(chsql.Call("uniqMerge", chsql.Col(schema.LabelCatalogCardinalityStateColumn)), "cardinality"),
 		).
-		From(chsql.Col(s.LabelCatalogTable)).
+		From(chsql.Col(schema.LabelCatalogTable)).
 		GroupBy(chsql.Col(schema.LabelCatalogKeyColumn))
 	return sb.Build()
 }

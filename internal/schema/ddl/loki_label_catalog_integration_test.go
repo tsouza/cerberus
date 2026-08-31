@@ -30,11 +30,16 @@ type viewRefreshRow struct {
 }
 
 // succeeded reports whether the most recently COMPLETED attempt this row
-// describes was a success: no exception text, and last_success_time caught
-// up to last_refresh_time (both timestamps a completed attempt always sets
-// together on success).
+// describes was a success: no exception text, and a non-empty
+// last_success_time. Deliberately does NOT also require last_success_time
+// == last_refresh_time: both are set as part of the same successful
+// attempt, but system.view_refreshes' DateTime (second-granularity)
+// columns can observably land one apart even within a single successful
+// completion — verified live (a real "Finished" attempt read
+// last_success_time one second behind last_refresh_time) — so an exact
+// equality check is a false-negative risk exception alone does not carry.
 func (r viewRefreshRow) succeeded() bool {
-	return r.exception == "" && r.lastSuccessTime == r.lastRefreshTime && r.lastRefreshTime != ""
+	return r.exception == "" && r.lastSuccessTime != ""
 }
 
 // queryViewRefresh reads system.view_refreshes for one (database, view).

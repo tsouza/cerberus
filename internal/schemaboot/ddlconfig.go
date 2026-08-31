@@ -112,7 +112,6 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			MetricsExpHistogram: cfg.Schema.ExpHistogramTable,
 			MetricsSummary:      cfg.Schema.SummaryTable,
 			MetricsDeltaPrefix:  cfg.Schema.DeltaPrefixTable,
-			LokiLabelCatalog:    cfg.Logs.LabelCatalogTable,
 		},
 		Settings:       settings,
 		LogsSettings:   logsSettings,

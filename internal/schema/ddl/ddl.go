@@ -330,13 +330,6 @@ type Tables struct {
 	// aggregate table (cerberus issue #2389). Unlike every other field on
 	// this struct it has no upstream template — see DeltaPrefixEnabled.
 	MetricsDeltaPrefix string
-	// LokiLabelCatalog names the refreshable-materialized-view-backed
-	// per-label-key cardinality catalog table (cerberus issue #2770). Like
-	// MetricsDeltaPrefix it has no upstream template — see
-	// LokiLabelCatalogEnabled. Empty falls back to
-	// schema.DefaultOTelLogs().LabelCatalogTable's default
-	// ("loki_label_catalog") via withDefaults.
-	LokiLabelCatalog string
 }
 
 // Defaults mirror the upstream OTel ClickHouse Exporter's table names. They
@@ -369,11 +362,6 @@ const (
 	defaultMetricsDeltaPrefixTable = "otel_metrics_sum_delta_prefix"
 	defaultDeltaPrefixBucketColumn = "BucketStart"
 	defaultDeltaPrefixSumColumn    = "PartialSum"
-
-	// defaultLokiLabelCatalogTable mirrors
-	// schema.DefaultOTelLogs().LabelCatalogTable's default (cerberus issue
-	// #2770) — kept in lockstep by TestLokiLabelCatalogDefaultMatchesSchemaPackage.
-	defaultLokiLabelCatalogTable = "loki_label_catalog"
 )
 
 // withDefaults returns a copy of cfg with empty string fields filled in
@@ -409,9 +397,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Tables.MetricsDeltaPrefix == "" {
 		c.Tables.MetricsDeltaPrefix = defaultMetricsDeltaPrefixTable
-	}
-	if c.Tables.LokiLabelCatalog == "" {
-		c.Tables.LokiLabelCatalog = defaultLokiLabelCatalogTable
 	}
 	if c.DeltaPrefixBucketColumn == "" {
 		c.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
@@ -1299,7 +1284,7 @@ func renderLokiLabelCatalogTable(cfg Config) string {
 	if cfg.DatabaseEngine.Replicated {
 		engine = chsql.EngineReplicatedAggregatingMergeTree()
 	}
-	return chsql.CreateTable(cfg.Tables.LokiLabelCatalog).
+	return chsql.CreateTable(schema.LabelCatalogTable).
 		Database(cfg.Database).
 		IfNotExists().
 		Columns(
@@ -1345,11 +1330,11 @@ func renderLokiLabelCatalogView(cfg Config) string {
 		Where(chsql.Gte(chsql.Col(logsTimestampColumnName), windowStart)).
 		Where(chsql.Neq(chsql.Col(labelValueColumn), chsql.InlineLit(""))).
 		GroupBy(chsql.Col(schema.LabelCatalogKeyColumn))
-	stmt := chsql.CreateMaterializedView(cfg.Tables.LokiLabelCatalog+schema.LabelCatalogViewSuffix).
+	stmt := chsql.CreateMaterializedView(schema.LabelCatalogTable+schema.LabelCatalogViewSuffix).
 		Database(cfg.Database).
 		IfNotExists().
 		RefreshEveryMinutes(lokiLabelCatalogRefreshMinutes).
-		To(cfg.Database, cfg.Tables.LokiLabelCatalog).
+		To(cfg.Database, schema.LabelCatalogTable).
 		As(body)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)

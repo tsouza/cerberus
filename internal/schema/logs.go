@@ -1,27 +1,39 @@
 package schema
 
-// LabelCatalogKeyColumn / LabelCatalogCardinalityStateColumn name the two
-// columns of the loki label-cardinality catalog table (cerberus issue
-// #2770, Logs.LabelCatalogTable) — cerberus-invented, not upstream OTel-CH
-// names. Exported (unlike this package's other schema constants, which
-// stay unexported implementation details) because BOTH the DDL side
-// (internal/schema/ddl, which creates the table with these column names)
-// and the read side (internal/api/loki, which queries them) need the SAME
-// literal, and internal/schema is the one leaf package both already
-// import — so this is the single source of truth rather than each side
-// hand-duplicating the string.
+// LabelCatalogTable / LabelCatalogKeyColumn / LabelCatalogCardinalityStateColumn
+// name the loki label-cardinality catalog table (cerberus issue #2770) and
+// its two columns — cerberus-invented, not upstream OTel-CH names, and NOT
+// a Logs struct field (unlike LogsTable and friends): nothing today needs
+// to rename this table per deployment the way an operator renames otel_logs
+// to match a pre-existing custom schema, since cerberus itself invented it
+// wholesale. Package-level constants are exported (unlike this package's
+// other schema constants, which stay unexported implementation details)
+// because internal/schema/ddl (which creates the table), internal/api/loki
+// (which queries it), and cmd/cerberus (which queries
+// system.view_refreshes for the view) all need the SAME literal, and
+// internal/schema is the one leaf package all three already import — the
+// single source of truth, no per-side duplication.
+//
+// A field would also have made this table a false positive for
+// TestReadSurfaceCoversEveryReadSideSchemaField (test/e2e/migration/steps):
+// that reflective check requires every non-empty `*Table`/`*Column` field
+// on Logs to be provably present on ANY live migrated cluster, which does
+// not hold for a chopt-version-gated, opt-in table a deployment may never
+// have provisioned — unlike Metrics.DeltaPrefixTable, whose OWN opt-in gate
+// is a static env var the offline schema resolution can already see (so it
+// defaults to "" and the same check skips it), loki_catalog_mv's gate needs
+// a LIVE ClickHouse version probe that plain env resolution has no access
+// to. A constant sidesteps the field-completeness question entirely rather
+// than answering it with a second, parallel enablement toggle.
 const (
+	LabelCatalogTable                  = "loki_label_catalog"
 	LabelCatalogKeyColumn              = "LabelKey"
 	LabelCatalogCardinalityStateColumn = "CardinalityState"
 
-	// LabelCatalogViewSuffix is appended to Logs.LabelCatalogTable to name
-	// the refreshable materialized view feeding it (matching the upstream
+	// LabelCatalogViewSuffix is appended to LabelCatalogTable to name the
+	// refreshable materialized view feeding it (matching the upstream
 	// traces lookup table's own `<table>_mv` convention — see
-	// internal/schema/ddl.renderLokiLabelCatalogView). Exported for the
-	// SAME cross-package reason as the two columns above: cmd/cerberus's
-	// /info wiring (internal/api/info) needs the exact view name to query
-	// system.view_refreshes, and DDL-side (internal/schema/ddl) is what
-	// creates it under this name.
+	// internal/schema/ddl.renderLokiLabelCatalogView).
 	LabelCatalogViewSuffix = "_mv"
 )
 
@@ -99,17 +111,6 @@ type Logs struct {
 	// ResourceAttributes Map with no materialized siblings — so the
 	// routing is LogQL-only by construction.
 	MaterializedResourceColumns map[string]string
-
-	// LabelCatalogTable names the refreshable-materialized-view-backed
-	// per-label-key cardinality catalog table (cerberus issue #2770) that
-	// `/loki/api/v1/detected_labels` serves selector-less requests from
-	// when internal/schema/ddl.Config.LokiLabelCatalogEnabled provisioned
-	// it. Read-side (internal/api/loki) and DDL-side
-	// (internal/schemaboot.DDLConfig) both thread it from this ONE field,
-	// so a query never targets a table name the DDL didn't create. Empty
-	// falls back to "loki_label_catalog" the same way every other
-	// DefaultOTelLogs() field defaults when a caller builds Logs by hand.
-	LabelCatalogTable string
 }
 
 // materializedColumnPrefix is the literal prefix the OTel ClickHouse
@@ -175,11 +176,5 @@ func DefaultOTelLogs() Logs {
 		// on the logs table — routing a matcher/group-by here avoids
 		// decompressing the wide ResourceAttributes Map.
 		MaterializedResourceColumns: defaultMaterializedResourceColumns(),
-		LabelCatalogTable:           defaultLabelCatalogTable,
 	}
 }
-
-// defaultLabelCatalogTable names the label-cardinality catalog table
-// LabelCatalogTable defaults to — see its doc comment (cerberus issue
-// #2770).
-const defaultLabelCatalogTable = "loki_label_catalog"
