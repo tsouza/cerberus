@@ -54,6 +54,12 @@ type Lang struct {
 	Start  time.Time
 	End    time.Time
 	Step   time.Duration
+
+	// TextIndexLineFilter is chopt text_index_line_filter's resolved
+	// verdict (cerberus issue #2773), threaded into [LowerAtRangeOpts] —
+	// see [LowerOpts.TextIndexLineFilter]. false (the zero value) renders
+	// byte-identical to today.
+	TextIndexLineFilter bool
 }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
@@ -87,7 +93,7 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	}
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
-	plan, err := LowerAtRange(ctx, expr, l.Schema, l.Start, l.End, l.Step)
+	plan, err := LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step, LowerOpts{TextIndexLineFilter: l.TextIndexLineFilter})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &httperr.Error{

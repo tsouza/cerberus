@@ -1,0 +1,10 @@
+-- args --
+[0] string = "%connection%"
+[1] string = "%reset%"
+[2] string = "%peer%"
+[3] string = "connection reset by peer"
+-- chplan --
+Filter predicate=lineContent(Body, "connection reset by peer", substr)
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND (position(`Body`, ?) > 0))

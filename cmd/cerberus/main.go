@@ -1199,6 +1199,17 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.Limiter = limiters.loki
 	h.TailLimiter = limiters.lokiTail
 	h.Version = Version
+	// text_index_line_filter (cerberus issue #2773) gates the LogQL
+	// line-filter emitter's ANDed LIKE prefilter rewrite — read straight off
+	// optSet, the SAME EnabledSet settingsRules below reads join_spill and
+	// trace_id_bitmap_filter from, since this is a query-time rewrite, not
+	// a DDL statement (see SchemaFullTextIndex's back-fill above for its
+	// DDL sibling, full_text_index). h.Lang is the long-lived metadata-path
+	// adapter; h.TextIndexLineFilter is copied onto the fresh *logql.Lang
+	// langForRequest/langForRangeRequest build per /query and /query_range
+	// request.
+	h.TextIndexLineFilter = optSet.Has(chopt.FeatureTextIndexLineFilter)
+	h.Lang.TextIndexLineFilter = h.TextIndexLineFilter
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
 	h.Engine.Settings = settingsRules(cfg, optSet)
@@ -1476,6 +1487,15 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// the map_bucketed_serialization comment above for why this runs here
 	// rather than being threaded as an EnabledSet parameter.
 	cfg.SchemaTraceIDProjection = set.Has(chopt.FeatureTraceIDProjection)
+
+	// Same back-fill for full_text_index (cerberus issue #2773) — see
+	// the map_bucketed_serialization comment above for why this runs here
+	// rather than being threaded as an EnabledSet parameter. Its sibling
+	// query-time feature, text_index_line_filter, gates a loki-handler
+	// rewrite rather than any DDL statement, so — like join_spill and
+	// trace_id_bitmap_filter — it is read straight off the EnabledSet at
+	// newLokiHandler's construction site instead of being back-filled here.
+	cfg.SchemaFullTextIndex = set.Has(chopt.FeatureFullTextIndex)
 
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never

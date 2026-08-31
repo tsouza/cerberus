@@ -1499,6 +1499,134 @@ the recoded column — budget accordingly on a large table, and prefer letting
 normal background merges converge new codecs onto old parts over time rather
 than forcing an immediate rewrite unless the storage win is needed sooner.
 
+### Text index on logs Body + LogQL line-filter prefilter (cerberus issue #2773)
+
+The logs table's `idx_lower_body` skip index over `lower(Body)` shipped as a
+`tokenbf_v1(32768, 3, 0)` bloom filter — but cerberus's LogQL line filters
+(`|=` / `!=` / `|~` / `!~`) emit `position(Body, ?) > 0` / `match(Body, ?)`
+against the case-sensitive `Body` column directly, a predicate shape
+`tokenbf_v1` never matches. The most expensive LogQL predicate class (a
+substring or regex filter over the log line itself) has always full-scanned
+Body, even on a deployment that already pays to maintain `idx_lower_body`.
+
+Two independent, opt-in `CERBERUS_CH_OPTIMIZATIONS` features fix this:
+
+#### The `full_text_index` DDL feature (server >= 26.2)
+
+`enable_full_text_index` — the setting gating ClickHouse's own acceptance of
+`TYPE text(...)` — flips from default-OFF to default-ON at ClickHouse 26.2
+(confirmed live: `SELECT value FROM system.settings WHERE name =
+'enable_full_text_index'` reports `0` on a 26.1.12 server and `1` on 26.2.19),
+the GA floor this feature gates on. Enabled, a **freshly created** logs table
+gets `idx_lower_body` as `TYPE text(tokenizer = 'splitByNonAlpha')` instead of
+`tokenbf_v1` — the upstream OTel-CH exporter template's own
+`HasFullTextSearch` branch already carries this shape; the feature only
+decides which branch a boot renders. An **existing** table (already carrying
+the tokenbf branch from an earlier boot) instead gets an ADDITIVE,
+separately-named index:
+
+```sql
+ALTER TABLE <db>.otel_logs ADD INDEX IF NOT EXISTS idx_body_text lower(Body) TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 100000000
+```
+
+A second name, not an in-place type swap of `idx_lower_body`: ClickHouse
+matches `ADD INDEX IF NOT EXISTS` on NAME, not type, so re-running it against
+a table that already carries `idx_lower_body` as `tokenbf_v1` is a silent
+no-op — it could never install the text index on an upgraded deployment.
+Swapping the type in place needs `DROP INDEX` + `ADD INDEX`, which is
+destructive (existing `MATERIALIZE`'d granules are discarded, forcing a full
+re-backfill) and, since this render-time DDL layer has no live
+`system.data_skipping_indexes` read, cannot tell whether `idx_lower_body` is
+ALREADY the text type — repeating that drop+add on every boot would be
+pure, repeated, backfill-losing churn. Installing a second, non-colliding
+name is the only additive, idempotent, crash-safe option available here, the
+same reasoning `ADD PROJECTION` / `ADD STATISTICS` / `ADD INDEX` above all
+already follow. `GRANULARITY 100000000` reproduces ClickHouse's OWN implicit
+default for a `text` index type when no `GRANULARITY` clause is given
+(confirmed live via `EXPLAIN indexes=1`, and re-confirmed byte-identical when
+stamped explicitly) — `chsql.AlterTableAddIndex` has no omit-GRANULARITY
+mode, so this reproduces the default rather than widening that builder's
+contract for one index type.
+
+**Retiring the now-redundant legacy `idx_lower_body` tokenbf index on an
+upgraded existing table is explicitly out of scope of this feature** —
+dropping an index a running deployment's queries may still be planning
+against is a real production-cluster risk this render-time DDL apply should
+not take unilaterally. Tracked as a follow-up issue.
+
+##### One-time `MATERIALIZE INDEX` back-fill runbook
+
+`ADD INDEX` is metadata-only for NEW parts; existing parts need the one-time
+materialize to benefit retroactively:
+
+```sql
+ALTER TABLE <db>.otel_logs MATERIALIZE INDEX idx_body_text;
+```
+
+(On a freshly created table the index is `idx_lower_body` itself, already
+the text type — no separate materialize needed for those parts.) Track
+progress in `system.mutations`, same as every other index/projection/
+statistics runbook above.
+
+#### The `text_index_line_filter` query-time feature (server >= 26.4)
+
+Independently of the DDL feature's own version floor,
+`CERBERUS_CH_OPTIMIZATIONS` also carries `text_index_line_filter`, gating a
+chsql emission rewrite, not any DDL statement. On a server `>= 26.4` — the
+release introducing `use_text_index_like_evaluation_by_dictionary_scan`
+(confirmed live: 0 rows from `SELECT name FROM system.settings WHERE name
+ILIKE '%text_index_like%'` on a 26.2.19 server, 3 rows on 26.4.5) — a text
+index can answer a `LIKE '%needle%'` predicate by dictionary scan instead of
+a row-by-row match. cerberus's LogQL line-filter emitter uses this by
+prepending an ANDed per-token strict-superset prefilter ahead of the
+UNCHANGED row predicate:
+
+```sql
+-- |= "connection reset by peer" becomes:
+(lower(Body) LIKE '%connection%' AND lower(Body) LIKE '%reset%' AND lower(Body) LIKE '%peer%'
+ AND (position(Body, 'connection reset by peer') > 0))
+```
+
+Each conjunct is a necessary (never sufficient) condition for the original
+literal to be a substring of `Body` — a strict superset the granule-pruning
+index can use to eliminate ranges the row predicate would have rejected
+anyway, never one that admits a false positive past the always-kept row
+predicate. `by` is dropped (below the 4-rune minimum useful token length —
+see `internal/chsql`'s `textIndexLikeMinTokenLength`), and every token is
+lowered ASCII-only (matching ClickHouse's own `lower()`, not the Unicode-aware
+`lowerUTF8()` idx_lower_body does NOT use) and LIKE-escaped (`\`, `%`, `_`)
+before embedding.
+
+**Scope boundary — negated and regex filters:**
+
+- `!=` / `!~` (negated) are passed through byte-identical: a superset
+  prefilter has no sound dual for a "must NOT contain" predicate.
+- `|~` (regex, non-negated) is rewritten ONLY when the pattern round-trips
+  through Go's `regexp/syntax` (RE2 — the same engine ClickHouse's `match()`
+  runs) as a single `OpLiteral` — a regex only in name, with no
+  metacharacters. Any other regex shape (alternation, anchors, character
+  classes, quantifiers) renders byte-identical to today; this package does
+  not compile partial RE2 semantics into index predicates.
+
+**Independent of `full_text_index`, but inert without it**: the floors are
+strictly ordered (26.4 > 26.2), so a server can satisfy one without the
+other, and the rewrite is a harmless (if pointless) no-op on any table that
+carries no text index at all — every LIKE conjunct just evaluates against
+the same undexed `lower(Body)` scan the row predicate already pays for.
+
+**Unverified ClickHouse 26.6 claims — do not build on these without
+re-verifying against a real 26.6+ instance.** `multiSearchAny` inside the
+skip-index analyzer and a dedicated posting-list segment cache were both
+raised as possible 26.6 extras. Live-probed against a real ClickHouse
+26.6.3.62 server: `multiSearchAny(Body, [...])` produced NO skip-index entry
+in `EXPLAIN indexes=1` at all (full granule scan, unlike `hasAnyTokens` /
+`hasAllTokens` / `hasToken`, which all pruned correctly) — this claim did
+NOT hold on the probed build. `use_text_index_postings_cache` DOES exist as
+a real setting on 26.6.3.62, defaulting to `0` (off) — its existence is
+confirmed, but no benchmark evidence was gathered on its actual effect.
+Neither claim is relied on by `text_index_line_filter`. See the follow-up
+issue this PR files for someone with continued 26.6+ access to settle these.
+
 ### DELTA-prefix aggregate table + backfill (cerberus issue #2389)
 
 Auto-create can also provision an **opt-in, cerberus-owned** table + materialized

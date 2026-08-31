@@ -122,6 +122,16 @@ type Handler struct {
 	// Handler keep the historical 10s bound.
 	TailWriteTimeout time.Duration
 
+	// TextIndexLineFilter is chopt text_index_line_filter's resolved
+	// verdict (cerberus issue #2773), wired from cmd/cerberus's boot
+	// EnabledSet at construction (mirroring Limiter/QueryTimeout/Version
+	// above). langForRequest / langForRangeRequest copy it onto every
+	// per-request *logql.Lang; New's own long-lived h.Lang picks it up the
+	// same way a caller sets any other post-construction field. false (the
+	// default — every bare Handler{} test fixture) keeps the LogQL emitter
+	// byte-identical to today.
+	TextIndexLineFilter bool
+
 	// onQueryRangeDrain, when non-nil, is invoked once per
 	// /loki/api/v1/query_range request with the number of rows
 	// h.Engine.Query pulled from ClickHouse (res.Inspected) — the
@@ -447,7 +457,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 // regardless of the requested window, violating the wire-format
 // contract.
 func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
-	return &logql.Lang{Schema: h.Schema, Start: start, End: end}
+	return &logql.Lang{Schema: h.Schema, Start: start, End: end, TextIndexLineFilter: h.TextIndexLineFilter}
 }
 
 // langForRangeRequest builds a per-request *logql.Lang carrying the
@@ -461,7 +471,7 @@ func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
 // since lowerCtx.rangeMode() only fires inside the range-aggregation
 // lowering.
 func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration) *logql.Lang {
-	return &logql.Lang{Schema: h.Schema, Start: start, End: end, Step: step}
+	return &logql.Lang{Schema: h.Schema, Start: start, End: end, Step: step, TextIndexLineFilter: h.TextIndexLineFilter}
 }
 
 // classifyEngineErr maps the error chains engine.Engine returns onto

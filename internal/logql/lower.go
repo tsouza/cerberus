@@ -67,6 +67,16 @@ type lowerCtx struct {
 	// that consumes this list and [topLevelLogColumnFor] for the
 	// label→column resolution.
 	OuterByLabels []string
+
+	// TextIndexLineFilter is the resolved chopt text_index_line_filter
+	// verdict (cerberus issue #2773), threaded from [LowerOpts] down to
+	// [lineFilterPart] — the only reader. true opts an eligible LogQL line
+	// filter's chplan.LineContent node onto the ANDed LIKE strict-superset
+	// prefilter; false (the default — every non-Opts entry point leaves it
+	// unset) renders byte-identical to today. See
+	// chplan.LineContent.TextIndexPrefilter's doc comment for the full
+	// rewrite and its eligibility shape.
+	TextIndexLineFilter bool
 }
 
 // withOuterByLabels returns a copy of c with OuterByLabels set to
@@ -148,6 +158,27 @@ func LowerAt(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end ti
 // falls back to the instant shape (same as LowerAt).
 func LowerAtRange(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time, step time.Duration) (chplan.Node, error) {
 	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end, Step: step})
+}
+
+// LowerOpts carries the resolved chopt verdicts a caller opts into —
+// mirrors internal/promql.LowerOpts, kept deliberately smaller: LogQL has
+// no boot-wired polymorphic strategy table today, only the single boolean
+// below.
+type LowerOpts struct {
+	// TextIndexLineFilter is chopt text_index_line_filter's resolved
+	// verdict (cerberus issue #2773) — see lowerCtx.TextIndexLineFilter's
+	// doc comment for what it does and its default-off, byte-identical
+	// posture.
+	TextIndexLineFilter bool
+}
+
+// LowerAtRangeOpts is the options-carrying variant of [LowerAtRange]. The
+// loki handler adapter (internal/logql.Lang) passes a populated LowerOpts
+// so the resolved chopt verdicts reach the lowering; every other caller
+// uses [Lower] / [LowerAt] / [LowerAtRange] and gets the zero-options
+// (default, byte-identical) behaviour.
+func LowerAtRangeOpts(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
+	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end, Step: step, TextIndexLineFilter: opts.TextIndexLineFilter})
 }
 
 func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
@@ -275,7 +306,7 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
 			continue
 		}
-		next, newLabels, err := lowerStage(stage, s, labelsExpr)
+		next, newLabels, err := lowerStage(stage, s, labelsExpr, lc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -553,10 +584,10 @@ func labelFiltererHasDuration(lf syntax.LabelFilterer) bool {
 // `ResourceAttributes` column, or a `mapConcat(...)` wrapped form after
 // a `| logfmt` stage. Label filters MapAccess against it so they see
 // both stream-selector labels and parser-extracted keys.
-func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr) (chplan.Expr, chplan.Expr, error) {
+func lowerStage(stage syntax.StageExpr, s schema.Logs, labelsExpr chplan.Expr, lc lowerCtx) (chplan.Expr, chplan.Expr, error) {
 	switch st := stage.(type) {
 	case *syntax.LineFilterExpr:
-		p, err := lowerLineFilter(st, s)
+		p, err := lowerLineFilter(st, s, lc)
 		return p, nil, err
 	case *syntax.LabelFilterExpr:
 		pred, marks, err := labelFiltererLower(st.LabelFilterer, s, labelsExpr)
@@ -2240,19 +2271,19 @@ func labelPresenceOnMap(s schema.Logs, labelsExpr chplan.Expr, key string) chpla
 // clauses) and `Or` walks alternates joined by `or`. We AND the Left
 // chain and OR the Or chain so the final predicate matches Loki's
 // evaluation order.
-func lowerLineFilter(f *syntax.LineFilterExpr, s schema.Logs) (chplan.Expr, error) {
+func lowerLineFilter(f *syntax.LineFilterExpr, s schema.Logs, lc lowerCtx) (chplan.Expr, error) {
 	body := &chplan.ColumnRef{Name: s.BodyColumn}
-	return lowerLineFilterChain(f, body)
+	return lowerLineFilterChain(f, body, lc)
 }
 
-func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr) (chplan.Expr, error) {
-	current, err := lineFilterPart(&f.LineFilter, body)
+func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr, lc lowerCtx) (chplan.Expr, error) {
+	current, err := lineFilterPart(&f.LineFilter, body, lc)
 	if err != nil {
 		return nil, err
 	}
 	// `or` alternates fold into a disjunction with the head clause.
 	for or := f.Or; or != nil; or = or.Or {
-		next, err := lineFilterPart(&or.LineFilter, body)
+		next, err := lineFilterPart(&or.LineFilter, body, lc)
 		if err != nil {
 			return nil, err
 		}
@@ -2260,7 +2291,7 @@ func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr) (chplan.Ex
 	}
 	// Older filters in the same pipeline live on `Left`. AND them in.
 	if f.Left != nil {
-		prev, err := lowerLineFilterChain(f.Left, body)
+		prev, err := lowerLineFilterChain(f.Left, body, lc)
 		if err != nil {
 			return nil, err
 		}
@@ -2269,7 +2300,7 @@ func lowerLineFilterChain(f *syntax.LineFilterExpr, body chplan.Expr) (chplan.Ex
 	return current, nil
 }
 
-func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error) {
+func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr, lc lowerCtx) (chplan.Expr, error) {
 	if lf.Op == syntax.OpFilterIP {
 		// `|= ip("192.168.0.0/16")` matches lines containing an IP
 		// inside the CIDR / range / single-IP match set — see
@@ -2294,6 +2325,14 @@ func lineFilterPart(lf *syntax.LineFilter, body chplan.Expr) (chplan.Expr, error
 		Pattern: lf.Match,
 		IsRegex: isRegex,
 		Negated: negated,
+		// TextIndexPrefilter (cerberus issue #2773): the chopt verdict is
+		// necessary but not sufficient — a negated filter has no sound
+		// prefilter dual, so it is excluded here at the one call site that
+		// knows Negated, rather than re-checked in every emitter path. The
+		// emitter (internal/chsql's exprLineContent) makes the remaining,
+		// SQL-shape-dependent eligibility calls (regex-literal extraction,
+		// per-token length filtering).
+		TextIndexPrefilter: lc.TextIndexLineFilter && !negated,
 	}, nil
 }
 

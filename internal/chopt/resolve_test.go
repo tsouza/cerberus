@@ -653,6 +653,8 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureLazyMaterialization:          {ID: FeatureLazyMaterialization, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureExplainEstimate:              {ID: FeatureExplainEstimate, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureCardinalityProbe:             {ID: FeatureCardinalityProbe, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureFullTextIndex:                {ID: FeatureFullTextIndex, MinVersion: v(26, 2), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTextIndexLineFilter:          {ID: FeatureTextIndexLineFilter, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

@@ -1,0 +1,12 @@
+-- args --
+[0] string = "%lookup%"
+[1] string = "%user\\_id=50%"
+[2] string = "%storage%"
+[3] string = "%87\\%full%"
+[4] string = "%done%"
+[5] string = "lookup user_id=50 storage 87%full done"
+-- chplan --
+Filter predicate=lineContent(Body, "lookup user_id=50 storage 87%full done", substr)
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND lower(`Body`) LIKE ? AND (position(`Body`, ?) > 0))
