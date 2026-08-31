@@ -1467,8 +1467,10 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
-	v.SetDefault(envResultCacheIngestLag, defaultResultCacheIngestLag.String())
-	v.SetDefault(envResultCacheTTL, defaultResultCacheTTL.String())
+	// Grouped for the same reason setDeltaPrefixAndRBGNDefaults is: keeping
+	// newDefaults under golangci-lint's funlen cap. The two result-cache
+	// defaults have no relationship to each other beyond being set here.
+	setResultCacheDefaults(v)
 	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
@@ -1499,6 +1501,14 @@ func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
 	// 0 is the SENTINEL for "derive from CERBERUS_CH_QUERY_MAX_MEMORY" — see
 	// rbgnDensityUnitsForMemory for why this bound cannot be a fixed constant.
 	v.SetDefault(envRBGNMaxDensityUnits, 0)
+}
+
+// setResultCacheDefaults seeds CERBERUS_RESULT_CACHE_INGEST_LAG /
+// CERBERUS_RESULT_CACHE_TTL. Extracted purely to keep newDefaults under
+// golangci-lint's funlen cap, mirroring setDeltaPrefixAndRBGNDefaults above.
+func setResultCacheDefaults(v *viper.Viper) {
+	v.SetDefault(envResultCacheIngestLag, defaultResultCacheIngestLag.String())
+	v.SetDefault(envResultCacheTTL, defaultResultCacheTTL.String())
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and

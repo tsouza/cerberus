@@ -43,11 +43,24 @@ func observeResultCacheProfileEvents(events []clickhouse.ProfileEvent) {
 	for i := range events {
 		switch events[i].Name {
 		case profileEventQueryCacheHits:
-			resultCacheHits.Add(uint64(events[i].Value))
+			resultCacheHits.Add(clampU64(events[i].Value))
 		case profileEventQueryCacheMisses:
-			resultCacheMisses.Add(uint64(events[i].Value))
+			resultCacheMisses.Add(clampU64(events[i].Value))
 		}
 	}
+}
+
+// clampU64 narrows a non-negative int64 ProfileEvent count to uint64,
+// clamping a negative value to 0 so the conversion is provably overflow-free
+// (gosec G115), mirroring internal/engine's clampU32 /
+// internal/optcorpus's clampShardCount. A ClickHouse counter ProfileEvent is
+// always non-negative; the clamp documents that invariant rather than
+// trusting it silently.
+func clampU64(v int64) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
 }
 
 // ResultCacheStats returns the process-wide result-cache hit/miss totals

@@ -279,10 +279,11 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 }
 
 // resultCacheInfoNow reads the current query-result-cache tally and renders
-// it as the JSON-shaped resultCacheInfo.
+// it as the JSON-shaped resultCacheInfo. ResultCacheState and resultCacheInfo
+// share an identical field set (only struct tags differ), so this is a plain
+// type conversion rather than a field-by-field literal.
 func (h *Handler) resultCacheInfoNow() resultCacheInfo {
-	rc := h.resultCacheNow()
-	return resultCacheInfo{Hits: rc.Hits, Misses: rc.Misses}
+	return resultCacheInfo(h.resultCacheNow())
 }
 
 // uptime is set by New via the StartTime closure; see startTime.
