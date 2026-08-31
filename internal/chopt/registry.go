@@ -733,6 +733,59 @@ const (
 	// enabling it is a deliberate operator choice pending that evidence, not
 	// a version-gated pure win the auto-picker can assume.
 	FeatureColumnStatistics = "column_statistics"
+
+	// FeatureClassicBucketMergeSumMap opts the aggregated classic-histogram-
+	// quantile cross-series merge stage (histogram_quantile.go's
+	// lowerHistogramQuantileAgg / histogram_quantile_range.go's
+	// lowerHistogramQuantileClassicAggRange) onto a linear
+	// sumMap(bounds, counts) + arrayCumSum reshape for the SUM fold ONLY —
+	// see internal/promql/classic_bucket_merge_summap.go — retiring the
+	// groupArray + per-rung arrayFilter-rescan fold
+	// (classicBucketMergedLadderExpr) that classic_bucket_merge_bound.go's
+	// own audited doc identifies as quadratic in (merge width x total
+	// bucket-element volume). avg/min/max/count/group/stddev/stdvar/quantile
+	// folds are untouched — every non-sum operator keeps the existing
+	// groupArray-fold shaping unconditionally, chopt feature or not.
+	//
+	// sumMap is old, always-available ClickHouse functionality — there is no
+	// version floor to probe, matching FeatureLagInFrameAdjacency's own
+	// posture for a client-side, no-server-setting optimization.
+	//
+	// AutoSelect is false, UNLIKE FeatureLagInFrameAdjacency's "bit-identical
+	// to the fan-out" bar. A chDB differential probe run while implementing
+	// this feature found a REAL, measurable divergence from the existing
+	// merge for a HETEROGENEOUS group (contributing rows reporting different
+	// ExplicitBounds layouts): sumMap + arrayCumSum sums, at each union bound
+	// u, every row's own sub-cumulative count over its OWN buckets <= u,
+	// while reference Prometheus's sum by(le) — and the existing has-filter
+	// fold that reproduces it — only sums rows whose OWN layout contains u
+	// exactly. Worked/chDB-confirmed example: bounds [1,2,3]/counts [10,5,0]
+	// merged with bounds [1,5]/counts [7,0] — the existing merge (plus its
+	// monotonic repair) yields [17,17,17,17] at union bounds [1,2,3,5];
+	// sumMap + arrayCumSum yields [17,22,22,22].
+	//
+	// For a HOMOGENEOUS group (every row shares one ExplicitBounds — the
+	// overwhelmingly common real shape, and the one this feature's own
+	// ~50x win estimate is calibrated on) the two constructions are provably
+	// identical: every row carries every union bound, so the has-filter is a
+	// no-op and both reduce to the same per-bound sum. The divergence is real
+	// only for genuinely mismatched bucket boundaries across a group's
+	// series — an already-degenerate input Prometheus itself handles poorly.
+	// See https://github.com/tsouza/cerberus/issues/2817, filed to
+	// investigate restricting the sumMap path to provably-homogeneous groups
+	// (which would let AutoSelect move to true). Until that lands this
+	// feature is reachable only by explicit
+	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing,
+	// mirroring FeatureQuantilePromHistogram's and FeatureTSGridChanges'
+	// posture for a feature with a proven, real divergence on a specific
+	// input shape.
+	//
+	// A second, independent risk is DOCUMENTED rather than gating AutoSelect
+	// further: arrayCumSum propagates a NaN forward to every higher union
+	// rung once it appears, while the existing has-filter fold only poisons
+	// the rungs a NaN row's own layout carries — pinned by
+	// TestClassicBucketMergeSumMapDifferential's NaN case, not glossed over.
+	FeatureClassicBucketMergeSumMap = "classic_bucket_merge_summap"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -967,6 +1020,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in via CERBERUS_CH_OPTIMIZATIONS — unsupported on ClickHouse Cloud, tolerated; auto never picks it pending real-world calibration)",
 	},
+	{
+		ID:         FeatureClassicBucketMergeSumMap,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap(bounds, counts) + arrayCumSum, retiring the groupArray + per-rung arrayFilter-rescan fold (no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a chDB probe found a real divergence from the existing merge on heterogeneous bucket layouts, #2817)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -975,9 +1035,10 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
-// sorted_slab_over_time, map_bucketed_serialization, column_statistics). The
-// copy keeps the canonical entries immutable from the caller's side. Exposed so
-// tests can enumerate the gates and the docs generator can render the table.
+// sorted_slab_over_time, map_bucketed_serialization, column_statistics,
+// classic_bucket_merge_summap). The copy keeps the canonical entries
+// immutable from the caller's side. Exposed so tests can enumerate the gates
+// and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

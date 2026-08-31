@@ -167,6 +167,15 @@ var nativeStrategies = []nativeStrategy{
 			l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
 		},
 	},
+	{
+		field:   "ClassicBucketMerge",
+		section: "experimental_classic_bucket_merge_summap",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
+				Fallback: promql.FanoutClassicBucketMergeLowerer{},
+			}
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

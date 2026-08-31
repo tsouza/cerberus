@@ -1070,6 +1070,17 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.OverTime = promql.FanoutOverTimeLowerer{}
 	}
+	// classic_bucket_merge_summap (issue #2756) has no version floor to
+	// probe, but ships AutoSelect: false pending #2817's investigation of
+	// the heterogeneous-bucket-layout divergence — see
+	// promql.NativeClassicBucketMergeLowerer's own doc.
+	if optSet.Has(chopt.FeatureClassicBucketMergeSumMap) {
+		l.ClassicBucketMerge = promql.NativeClassicBucketMergeLowerer{
+			Fallback: promql.FanoutClassicBucketMergeLowerer{},
+		}
+	} else {
+		l.ClassicBucketMerge = promql.FanoutClassicBucketMergeLowerer{}
+	}
 	return l
 }
 

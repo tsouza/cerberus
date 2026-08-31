@@ -206,13 +206,14 @@ func lowerHistogramQuantile(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chp
 		// only ever read by a classic-bucket lowering, so it is bound
 		// under that family's scalar scope; the shaping operators that
 		// leave it nil never read it.
-		fold, err := classicBucketLadderFold(
+		fold, isSum, err := classicBucketLadderFold(
 			shape.agg, s, histogramScalarArgCtx(shape.selector, ctx),
 		)
 		if err != nil {
 			return nil, err
 		}
 		shape.classicFold = fold
+		shape.classicFoldIsSum = isSum
 	}
 
 	// The bare-selector fallthrough is resolved here rather than after the
@@ -783,6 +784,12 @@ type histogramAggShape struct {
 	// dispatcher fills it, because resolving `quantile`'s parameter needs
 	// the schema + lowering context the matcher does not have.
 	classicFold classicBucketRungFold
+	// classicFoldIsSum is true exactly when classicFold is the SUM
+	// reduction — the only fold classicBucketMergeShapingSumMap
+	// (classic_bucket_merge_summap.go) may replace. Set alongside
+	// classicFold by the same dispatcher assignment, from
+	// classicBucketLadderFold's own isSum return.
+	classicFoldIsSum bool
 }
 
 // histogramWindowMinSamples maps a matched range-vector function to the
@@ -872,7 +879,11 @@ const promGroupSampleValue = 1.0
 // the routing signal lowerHistogramQuantile uses to send the query through
 // lowerHistogramQuantileClassicFloat instead — the float-domain evaluator
 // that reproduces what Prometheus does with these operators.
-func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (classicBucketRungFold, error) {
+// The bool return is classicFoldIsSum: true exactly when the returned fold
+// is the SUM reduction (the nil-agg bare-rate case, or parser.SUM) — the
+// only fold classic_bucket_merge_summap.go's sumMap-based shaping may
+// replace. See histogramAggShape.classicFoldIsSum.
+func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (classicBucketRungFold, bool, error) {
 	arrayFold := func(fn chplan.Fn) classicBucketRungFold {
 		return func(rungs chplan.Expr) chplan.Expr {
 			return &chplan.FuncCall{Fn: fn, Args: []chplan.Expr{rungs}}
@@ -893,40 +904,40 @@ func classicBucketLadderFold(agg *parser.AggregateExpr, s schema.Metrics, ctx lo
 		// A bare `rate(...)` with no aggregation wrapper still folds every
 		// in-window row of a series into one ladder, and summing is what
 		// that window collapse means.
-		return arrayFold(chplan.FnArraySum), nil
+		return arrayFold(chplan.FnArraySum), true, nil
 	}
 	switch agg.Op {
 	case parser.SUM:
-		return arrayFold(chplan.FnArraySum), nil
+		return arrayFold(chplan.FnArraySum), true, nil
 	case parser.AVG:
-		return arrayFold(chplan.FnArrayAvg), nil
+		return arrayFold(chplan.FnArrayAvg), false, nil
 	case parser.MIN:
-		return arrayFold(chplan.FnArrayMin), nil
+		return arrayFold(chplan.FnArrayMin), false, nil
 	case parser.MAX:
-		return arrayFold(chplan.FnArrayMax), nil
+		return arrayFold(chplan.FnArrayMax), false, nil
 	case parser.COUNT:
 		// Prom's `count` is the number of contributing series at that
 		// `le`; here it is the number of contributing ROWS, the same
 		// window model every other fold on this path uses.
-		return arrayFold(chplan.FnLength), nil
+		return arrayFold(chplan.FnLength), false, nil
 	case parser.GROUP:
 		return func(chplan.Expr) chplan.Expr {
 			return &chplan.LitFloat{V: promGroupSampleValue}
-		}, nil
+		}, false, nil
 	case parser.STDDEV:
 		// Prom's stddev / stdvar are POPULATION statistics over the
 		// group's samples (promql/engine.go), so stddevPop / varPop.
-		return reduceFold("stddevPop"), nil
+		return reduceFold("stddevPop"), false, nil
 	case parser.STDVAR:
-		return reduceFold("varPop"), nil
+		return reduceFold("varPop"), false, nil
 	case parser.QUANTILE:
 		phi, err := lowerQuantileParamArg(agg.Param, s, ctx)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return promQuantileRungFold(phi), nil
+		return promQuantileRungFold(phi), false, nil
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 // lowerQuantileParamArg resolves `quantile(<param>, ...)`'s scalar
@@ -1269,7 +1280,7 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(
 		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)
-	shaping := classicBucketMergeShaping(shape.classicFold, s)
+	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	agg := &chplan.Aggregate{
 		Input:              perSeries,
 		GroupBy:            userGroupBy,
@@ -1435,16 +1446,10 @@ func classicBucketFiniteBoundsRestriction(input chplan.Node, s schema.Metrics) c
 
 	// keptIdx = the 1-based positions in [1, length(ExplicitBounds)] whose
 	// bound is finite, in ascending order (arrayFilter preserves source
-	// order).
-	keptIdx := &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
-		&chplan.Lambda{
-			Params: []string{"i"},
-			Body: classicBucketFiniteExpr(&chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: "i"},
-			}),
-		},
-		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{&chplan.LitInt{V: 1}, addExpr(n, &chplan.LitInt{V: 1})}},
-	}}
+	// order). Shared with classicBucketSumMapRowArgs
+	// (classic_bucket_merge_summap.go) — see
+	// classicBucketFiniteBoundKeptIndicesExpr's own doc.
+	keptIdx := classicBucketFiniteBoundKeptIndicesExpr(eb)
 
 	finiteBounds := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
@@ -1484,9 +1489,17 @@ type classicBucketShaping struct {
 	// fold is nil when the aggregate already surfaces BucketCounts +
 	// ExplicitBounds by name (the argMax newest-row bare-selector path,
 	// which picks ONE row per group and so has no layouts to merge).
-	// Non-nil selects the layout-merge reshape and names the per-rung
-	// reduction it applies.
+	// Non-nil selects a layout-merge reshape (groupArray-fold, or sumMap
+	// when sumMap is set) and names the per-rung reduction the
+	// groupArray-fold branch applies. Unused (but still set) when sumMap is
+	// true — see classicBucketMergeShapingSumMap's own doc.
 	fold classicBucketRungFold
+	// sumMap selects classic_bucket_merge_summap.go's linear sumMap +
+	// arrayCumSum reshape instead of the groupArray + per-rung
+	// arrayFilter-rescan fold. Only classicBucketMergeShapingSumMap ever
+	// sets it, and only ever for the SUM fold — see
+	// ClassicBucketMergeLowerer (lower_strategy.go).
+	sumMap bool
 }
 
 // classicBucketMergeShaping is the shaping for the aggregated classic
@@ -1528,6 +1541,22 @@ func (sh classicBucketShaping) reshape(
 			chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ExplicitBoundsColumn}, Alias: s.ExplicitBoundsColumn},
 		)
 		return &chplan.Project{Input: group, Projections: projections}, false
+	}
+
+	if sh.sumMap {
+		// classicBucketSumMapLadderExpr's arrayCumSum construction is
+		// monotonic by construction (a running sum of non-negative
+		// per-bucket deltas never decreases) — unlike the groupArray-fold
+		// branch below, no separate monotonic-repair layer is needed. See
+		// classic_bucket_merge_summap.go's header.
+		projections := make([]chplan.Projection, 0, len(passthrough)+2)
+		projections = append(projections, passthrough...)
+		projections = append(
+			projections,
+			chplan.Projection{Expr: classicBucketSumMapLadderExpr(), Alias: s.BucketCountsColumn},
+			chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
+		)
+		return &chplan.Project{Input: group, Projections: projections}, true
 	}
 
 	// Layer 1: the merged layout (union of every row's bounds) and the

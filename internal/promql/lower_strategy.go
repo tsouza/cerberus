@@ -309,6 +309,14 @@ type RangeLowerers struct {
 	// sorted_slab_over_time — no version floor). Concrete fan-out impl when
 	// the feature is off; never nil on the lowering path.
 	OverTime OverTimeLowerer
+
+	// ClassicBucketMerge handles the aggregated classic-histogram-quantile
+	// cross-series merge stage (sumMap + arrayCumSum for the SUM fold,
+	// classic_bucket_merge_summap.go — no version floor,
+	// classic_bucket_merge_summap chopt feature). Concrete fan-out impl
+	// (the groupArray + per-rung fold) when the feature is off; never nil
+	// on the lowering path.
+	ClassicBucketMerge ClassicBucketMergeLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -356,6 +364,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.OverTime == nil {
 		l.OverTime = FanoutOverTimeLowerer{}
+	}
+	if l.ClassicBucketMerge == nil {
+		l.ClassicBucketMerge = FanoutClassicBucketMergeLowerer{}
 	}
 	return l
 }

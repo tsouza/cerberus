@@ -140,6 +140,7 @@ table.
 | `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
+| `classic_bucket_merge_summap`    | none       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they
