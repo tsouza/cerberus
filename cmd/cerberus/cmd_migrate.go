@@ -215,6 +215,10 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// #2766) — also AutoSelect=false, so the same explicit-listing-only
 			// reasoning applies.
 			cfg.SchemaColumnStatistics = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureColumnStatistics)
+			// Same best-effort preview for trace_id_projection (cerberus issue
+			// #2767) — also AutoSelect=false, so the same explicit-listing-only
+			// reasoning applies.
+			cfg.SchemaTraceIDProjection = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureTraceIDProjection)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}

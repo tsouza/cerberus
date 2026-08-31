@@ -1142,18 +1142,18 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 
 // settingsRules builds the per-query ClickHouse settings rules from the
 // resolved optimization EnabledSet plus the CERBERUS_* config. The
-// aggregation-in-order, condition-cache, join-spill, result-cache and
-// lazy-materialization rules are all driven by the frozen EnabledSet
-// (set.Has(...)), not raw env flags: under the default `auto` the stable
-// 24.8-safe aggregation_in_order is on, condition_cache is on when the
+// aggregation-in-order, condition-cache, join-spill, trace-id-bitmap-filter,
+// lazy-materialization and result-cache rules are all driven by the frozen
+// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
+// stable 24.8-safe aggregation_in_order is on, condition_cache is on when the
 // probed server is >= 25.3, join_spill is on when the probed server is >=
-// 26.4, lazy_materialization is on when the probed server is >= 25.11, and
-// result_cache is on when the boot result-cache capability probe came back
-// Available (its setting family predates cerberus's own 24.8 floor, so
-// unlike the others it carries no version gate — see
-// chopt.FeatureResultCache). log_comment shape stays its own dark flag
-// (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus reconciler; the
-// result-cache ingest-lag horizon and ttl are their own
+// 26.4, trace_id_bitmap_filter and lazy_materialization are on when the
+// probed server is >= 25.11, and result_cache is on when the boot
+// result-cache capability probe came back Available (its setting family
+// predates cerberus's own 24.8 floor, so unlike the others it carries no
+// version gate — see chopt.FeatureResultCache). log_comment shape stays its
+// own dark flag (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus
+// reconciler; the result-cache ingest-lag horizon and ttl are their own
 // CERBERUS_RESULT_CACHE_* knobs (cfg.ResultCacheIngestLag / ResultCacheTTL),
 // threaded straight through regardless of whether the feature itself
 // resolved in. The schema instances are always supplied so the eligibility
@@ -1165,6 +1165,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
 		ConditionCache:             set.Has(chopt.FeatureConditionCache),
 		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
+		TraceIDBitmapFilter:        set.Has(chopt.FeatureTraceIDBitmapFilter),
 		LogCommentShape:            cfg.LogCommentShape,
 		ResultCache:                set.Has(chopt.FeatureResultCache),
 		ResultCacheIngestLag:       cfg.ResultCacheIngestLag,
@@ -1391,6 +1392,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// map_bucketed_serialization comment immediately above for why this runs
 	// here rather than being threaded as an EnabledSet parameter.
 	cfg.SchemaColumnStatistics = set.Has(chopt.FeatureColumnStatistics)
+
+	// Same back-fill for trace_id_projection (cerberus issue #2767) — see
+	// the map_bucketed_serialization comment above for why this runs here
+	// rather than being threaded as an EnabledSet parameter.
+	cfg.SchemaTraceIDProjection = set.Has(chopt.FeatureTraceIDProjection)
 
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never

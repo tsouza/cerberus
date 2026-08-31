@@ -58,6 +58,26 @@ const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_ma
 // than a fixed ceiling, guaranteeing it never under-shoots.
 const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for_lazy_materialization"
 
+// settingMinTableRowsToUseProjectionIndex is the ClickHouse setting (>= 25.11,
+// upstream PR #81021) that gates whether the optimizer will even CONSIDER a
+// lightweight (`_part_offset`-only) projection as a secondary index for
+// exact-row PREWHERE bitmap filtering: only once the scanned table's own
+// estimated row count clears this threshold. It is RESULT-EQUIVALENT — it
+// only widens which physical plan the optimizer is allowed to pick, never
+// which rows a query returns.
+const settingMinTableRowsToUseProjectionIndex = "min_table_rows_to_use_projection_index"
+
+// traceIDBitmapFilterMinTableRows is the value cerberus stamps for
+// settingMinTableRowsToUseProjectionIndex. ClickHouse's own default (1,000,000)
+// is cleared trivially by any real production otel_traces/otel_logs table, but
+// NOT by a small or synthetic one — every chdb-tagged test fixture included —
+// which would leave the bitmap-filter path silently unreachable exactly where
+// cerberus's own EXPLAIN acceptance test (internal/schema/ddl) needs to prove
+// it fires. 0 makes "table rows >= threshold" trivially true regardless of
+// table size, so the path is deterministic rather than contingent on
+// production scale.
+const traceIDBitmapFilterMinTableRows = 0
+
 // SettingsRules holds the DARK-by-default, plan-shape-gated per-query
 // ClickHouse settings rules the engine evaluates at the execute seam. The
 // zero value applies NOTHING: with both flags false the ctx is returned
@@ -99,6 +119,25 @@ type SettingsRules struct {
 	// OptimizeAggregationInOrder/ConditionCache it also needs the live
 	// per-query memory cap — see engine.go's execContext.
 	JoinSpill bool
+
+	// TraceIDBitmapFilter, when true, stamps
+	// min_table_rows_to_use_projection_index=0 on a plan carrying a
+	// TraceId-keyed predicate or join (see eligibleForTraceIDBitmapFilter)
+	// so the ClickHouse >= 25.11 projection-index bitmap PREWHERE path stays
+	// reachable regardless of the scanned table's row count. Driven by the
+	// trace_id_bitmap_filter registry feature, which only resolves in on
+	// server >= 25.11; below that the feature is absent from the resolved
+	// set, so this flag is false and nothing is stamped (a no-op on every
+	// older server). The stamp is harmless even on a table that carries no
+	// proj_trace_id projection at all (cerberus issue #2767).
+	//
+	// No memory-bounding sentinel (test/perf/{smoke,nightly}/sentinels.go)
+	// covers this rule: min_table_rows_to_use_projection_index is a
+	// query-optimizer index-SELECTION threshold, not a memory cap — it
+	// cannot increase peak memory versus not stamping it at all, so it is
+	// not the #2364-class regression that sentinel corpus exists to catch.
+	// See issue #2832 (PERF-SENTINEL-WAIVER: #2832).
+	TraceIDBitmapFilter bool
 
 	// LogCommentShape, when true, stamps log_comment with a compact cerberus
 	// shape id (planShapeID) carrying the emit-root node kind plus key
@@ -178,6 +217,9 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.JoinSpill {
 		opts = append(opts, "join_spill")
 	}
+	if r.TraceIDBitmapFilter {
+		opts = append(opts, "trace_id_bitmap_filter")
+	}
 	if r.ResultCache {
 		opts = append(opts, "result_cache")
 	}
@@ -210,6 +252,9 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 		// disabled the analyzer. Result-equivalent and version-safe on the
 		// >= 25.3 servers this rule resolves on.
 		ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
+	}
+	if r.TraceIDBitmapFilter && r.eligibleForTraceIDBitmapFilter(plan) {
+		ctx = chclient.WithQuerySetting(ctx, settingMinTableRowsToUseProjectionIndex, traceIDBitmapFilterMinTableRows)
 	}
 	if r.LogCommentShape {
 		if id := planShapeID(plan); id != "" {
@@ -513,6 +558,90 @@ func predicateStableForConditionCache(plan chplan.Node) bool {
 		return true
 	})
 	return hasFilter && hasScan
+}
+
+// eligibleForTraceIDBitmapFilter reports whether plan carries a predicate or
+// join keyed on the TraceId column ANYWHERE in its tree — cerberus's real
+// emitted shapes (cerberus issue #2767), not merely a synthetic top-level
+// equality:
+//
+//   - a top-level equality (chplan.Binary{Op: OpEq}) against TraceId, the
+//     Tempo trace-by-id GET handler's shape (internal/api/tempo/handler.go);
+//   - a flat membership test (chplan.InList), the /api/search root-lookup's
+//     `TraceId IN (<literal ids>)` shape (internal/api/tempo/root_lookup.go);
+//   - a subquery membership test (chplan.InSubquery) or the structure-tab's
+//     top-N gate (chplan.BoundedTraceScope), both `TraceId IN (<subquery>)`
+//     shapes (internal/chplan/bounded_trace_scope.go);
+//   - a chplan.StructuralJoin, whose recursive closure walks the spans table
+//     keyed on TraceIDColumn by construction even though (per walk_deep.go's
+//     nodeExprs) it carries no Expr-typed field to inspect — every TraceQL
+//     structural query (`>`, `<`, `>>`, `<<`) lowers to one, and its emitted
+//     SQL is the `WITH RECURSIVE` shape the issue calls out by name.
+//
+// The sweep composes WalkDeep with InspectNodeExprs + InspectExpr, mirroring
+// planHasNowExpr, so a predicate buried inside an InSubquery's own Subquery
+// plan — invisible to a plain [chplan.Walk] — is still found.
+func (r SettingsRules) eligibleForTraceIDBitmapFilter(plan chplan.Node) bool {
+	traceIDColumn := r.Traces.TraceIDColumn
+	if traceIDColumn == "" {
+		return false
+	}
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if found {
+			return false
+		}
+		if _, ok := n.(*chplan.StructuralJoin); ok {
+			found = true
+			return false
+		}
+		chplan.InspectNodeExprs(n, func(e chplan.Expr) {
+			if found {
+				return
+			}
+			chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+				if found {
+					return false
+				}
+				if traceIDPredicateExpr(sub, traceIDColumn) {
+					found = true
+					return false
+				}
+				return true
+			})
+		})
+		return true
+	})
+	return found
+}
+
+// traceIDPredicateExpr reports whether e itself (not its children — the
+// caller's InspectExpr walk already visits those independently) is a
+// predicate that tests traceIDColumn for equality or membership.
+func traceIDPredicateExpr(e chplan.Expr, traceIDColumn string) bool {
+	switch v := e.(type) {
+	case *chplan.Binary:
+		return v.Op == chplan.OpEq && (isTraceIDColumnRef(v.Left, traceIDColumn) || isTraceIDColumnRef(v.Right, traceIDColumn))
+	case *chplan.InList:
+		return isTraceIDColumnRef(v.Left, traceIDColumn)
+	case *chplan.InSubquery:
+		return isTraceIDColumnRef(v.Left, traceIDColumn)
+	case *chplan.BoundedTraceScope:
+		return v.TraceIDColumn == traceIDColumn
+	default:
+		return false
+	}
+}
+
+// isTraceIDColumnRef reports whether e is a bare (unqualified) column
+// reference to traceIDColumn. A qualified reference (e.g. `R.TraceId` off a
+// join side) is deliberately excluded: it never appears as a raw
+// TraceId-only predicate cerberus emits for a lookup or membership test,
+// only inside StructuralJoin's own recursive step, which this function's
+// caller matches by NODE TYPE instead (see eligibleForTraceIDBitmapFilter).
+func isTraceIDColumnRef(e chplan.Expr, traceIDColumn string) bool {
+	ref, ok := e.(*chplan.ColumnRef)
+	return ok && ref.Qualifier == "" && ref.Name == traceIDColumn
 }
 
 // singleAggregate returns the sole Aggregate in plan, or ok=false when there

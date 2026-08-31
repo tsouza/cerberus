@@ -132,6 +132,12 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// SchemaMapBucketedSerialization above uses for the logs/traces
 		// SETTINGS tail.
 		ColumnStatisticsEnabled: cfg.SchemaColumnStatistics,
+		// TraceIDProjectionEnabled (cerberus issue #2767) is the resolved
+		// chopt trace_id_projection verdict, back-filled by cmd/cerberus's
+		// boot resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the SAME threading
+		// ColumnStatisticsEnabled above uses for its own chopt verdict.
+		TraceIDProjectionEnabled: cfg.SchemaTraceIDProjection,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

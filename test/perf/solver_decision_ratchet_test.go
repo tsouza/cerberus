@@ -249,7 +249,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below: it narrows Changes/Resets/Irate/Idelta's
 			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization, chopt.FeatureTraceIDBitmapFilter:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -269,7 +269,13 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// eligibleForLazyMaterialization (a Limit(OrderBy(...)) plan shape
 			// that only Tempo's search paths ever build — no PromQL
 			// query_range lowering constructs it), so it has zero effect on
-			// RangeLowerers.
+			// RangeLowerers. FeatureTraceIDBitmapFilter (cerberus issue #2767)
+			// is the same shape again: it stamps
+			// min_table_rows_to_use_projection_index=0 based on
+			// eligibleForTraceIDBitmapFilter (a TraceId-keyed predicate or a
+			// chplan.StructuralJoin — the Tempo/TraceQL heads, which do not lower
+			// through promql.RangeLowerers at all), so it too has zero effect on
+			// this table.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
 				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
