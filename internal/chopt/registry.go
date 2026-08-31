@@ -893,7 +893,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the SAME native timeSeriesResampleToGridWithStaleness aggregate ts_grid_resample rides, with [range] as the staleness parameter (experimental maturity, server >= 26.6 — ClickHouse/ClickHouse#106504 + #106577 out-of-window/pre-start fixes, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
+		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)",
 	},
 }
 
