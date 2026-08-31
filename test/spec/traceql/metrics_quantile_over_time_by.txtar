@@ -26,4 +26,4 @@ MetricsAggregate op=quantile_over_time attr=(Duration / 1e+09) groupBy=[Resource
   Filter predicate=true
     Scan(otel_traces)
 -- sql --
-SELECT `ResourceAttributes`[?] AS `service.name`, quantile(toFloat64(?))((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`
+SELECT `ResourceAttributes`[?] AS `service.name`, quantileExactInclusive(toFloat64(?))((`Duration` / toFloat64(?))) AS `Value` FROM (SELECT * FROM `otel_traces` WHERE ?) GROUP BY `service.name`
