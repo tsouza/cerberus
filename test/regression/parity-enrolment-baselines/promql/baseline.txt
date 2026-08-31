@@ -441,6 +441,7 @@ month_default.txtar
 month_of_vector.txtar
 multiple_matchers.txtar
 native_changes_range_step.txtar
+native_delta_range_step.txtar
 native_deriv_range_step.txtar
 native_increase_range_step.txtar
 native_predict_linear_negative_horizon_fanout.txtar

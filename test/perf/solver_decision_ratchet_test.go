@@ -220,6 +220,8 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
 		case chopt.FeatureTSGridPredictLinear:
 			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		case chopt.FeatureTSGridDelta:
+			l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
 		case chopt.FeatureTSGridHistogram:
 			// Matches cmd/cerberus/main.go's nativeRangeLowerers exactly.
 			l.ClassicHistogram = promql.NativeClassicHistogramWindowLowerer{

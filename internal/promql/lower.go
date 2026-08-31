@@ -3188,37 +3188,39 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // ctx.lowerers.* impl — there is NO feature-flag / version read AND NO
 // nil/presence check here. Every strategy ALWAYS returns a valid lowering:
 // the native/annotation impl emits its own node for a shape-eligible window
-// (rate/changes/resets: timeSeries*ToGrid for a shape-eligible window;
-// changes/resets/irate/idelta: chplan.RangeWindow.LagAdjacency for a
-// shape-eligible window) and delegates to its embedded fan-out fallback for
-// any other shape; the fan-out impl returns this RangeWindow unchanged. All
-// intrinsic SHAPE / AST-node dispatch lives INSIDE the impl. A native node
-// carries the same Func/Range/Step/Start/End/Offset/columns/GroupBy as the
-// fan-out RangeWindow — only the emitter differs — and produces the
-// identical per-(series, anchor) row shape (proven byte-identical on the
-// chDB substrate; see test/spec/promql/native_rate_range_step.txtar and the
+// (rate/increase/changes/resets/deriv/delta: timeSeries*ToGrid for a
+// shape-eligible window; changes/resets/irate/idelta:
+// chplan.RangeWindow.LagAdjacency for a shape-eligible window) and delegates
+// to its embedded fan-out fallback for any other shape; the fan-out impl
+// returns this RangeWindow unchanged. All intrinsic SHAPE / AST-node
+// dispatch lives INSIDE the impl. A native node carries the same
+// Func/Range/Step/Start/End/Offset/columns/GroupBy as the fan-out
+// RangeWindow — only the emitter differs — and produces the identical
+// per-(series, anchor) row shape (proven byte-identical on the chDB
+// substrate; see test/spec/promql/native_rate_range_step.txtar and the
 // dual-emit parity tests).
 //
-// For a window with no dedicated strategy (delta / *_over_time / ...) the
-// Rate strategy's fan-out fallback returns rw unchanged, so the caller's
-// node stays rw and the last/first_over_time name-preservation wrap applies
-// exactly as before. For rate / increase the returned node IS the lowering
-// (native or fan-out RangeWindow); both drop `__name__`, so they never match
-// the name-preservation wrap and flow through as-is.
+// For a window with no dedicated strategy (the *_over_time family and
+// friends) the Rate strategy's fan-out fallback returns rw unchanged, so the
+// caller's node stays rw and the last/first_over_time name-preservation wrap
+// applies exactly as before. For rate / increase / delta the returned node
+// IS the lowering (native or fan-out RangeWindow); all three drop
+// `__name__`, so they never match the name-preservation wrap and flow
+// through as-is.
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
-// impl. rate / increase / changes / resets / irate / idelta each route to
-// their own boot-wired strategy (changes/resets/irate/idelta may resolve to
-// the lagInFrame annotation shape, chplan.RangeWindow.LagAdjacency, layered
-// beneath changes/resets' own native ts_grid strategy; increase reuses
-// rate's timeSeriesRateToGrid aggregate, multiplied back by the window
-// seconds); every other range fn (delta / *_over_time / ...) keeps the
-// fan-out rw via the rate strategy's pass-through (those funcs have no
-// native timeSeries*ToGrid aggregate or lagInFrame annotation proven
-// equivalent yet).
+// impl. rate / increase / changes / resets / deriv / delta / irate / idelta
+// each route to their own boot-wired strategy (changes/resets/irate/idelta
+// may resolve to the lagInFrame annotation shape,
+// chplan.RangeWindow.LagAdjacency, layered beneath changes/resets' own
+// native ts_grid strategy; increase reuses rate's timeSeriesRateToGrid
+// aggregate, multiplied back by the window seconds); every other range fn
+// (the *_over_time family and friends) keeps the fan-out rw via the rate
+// strategy's pass-through (those funcs have no native timeSeries*ToGrid
+// aggregate or lagInFrame annotation proven equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
 	switch c.Func.Name {
@@ -3234,6 +3236,8 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
+	case "delta":
+		return ctx.lowerers.Delta.LowerDelta(rw, s)
 	default:
 		return ctx.lowerers.Rate.LowerRate(rw, s)
 	}
@@ -3254,10 +3258,11 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 //     (NativeIncreaseLowerer, via the shared nativeTSGridMatrixNode
 //     eligibility funnel — see its own doc), reusing this same
 //     timeSeriesRateToGrid aggregate multiplied back by the window
-//     seconds. delta has no proven-equivalent timeSeries*ToGrid aggregate
-//     yet (the timeSeriesDeltaToGrid + reset-semantics mapping is
-//     unverified), so it stays on the fan-out until a dedicated
-//     differential sweep lands.
+//     seconds. delta() rides its own dedicated lowerer too
+//     (NativeDeltaLowerer, same eligibility funnel, timeSeriesDeltaToGrid —
+//     a differential sweep proved the aggregate applies NO counter-reset
+//     correction, matching PromQL's extrapolatedRate(isCounter=false,
+//     isRate=false), see chopt.FeatureTSGridDelta's own doc).
 //   - The window must be the materialised range grid: Step > 0 and both
 //     Start and End pinned. (The caller only reaches this with rw in
 //     matrix shape, but the guard is explicit so the node's invariants

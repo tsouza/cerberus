@@ -870,6 +870,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
+//	delta     = enabled ? NativeDeltaLowerer{Fallback: FanoutDeltaLowerer{}} : FanoutDeltaLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
 //
@@ -963,6 +964,11 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
+	}
+	if optSet.Has(chopt.FeatureTSGridDelta) {
+		l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+	} else {
+		l.Delta = promql.FanoutDeltaLowerer{}
 	}
 	// The anchor-injection window-slide mechanism (#2408 follow-up, #2493)
 	// was removed by #2511's root-cause investigation: its anchor-injection
