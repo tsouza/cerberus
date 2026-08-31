@@ -733,6 +733,61 @@ const (
 	// enabling it is a deliberate operator choice pending that evidence, not
 	// a version-gated pure win the auto-picker can assume.
 	FeatureColumnStatistics = "column_statistics"
+
+	// FeatureJoinSpill stamps max_bytes_before_external_join = cap/2 (the
+	// SAME cap-relative arithmetic internal/engine/spill.go's unconditional
+	// group_by/sort stamps use, keyed off CERBERUS_CH_QUERY_MAX_MEMORY) on
+	// join-bearing query plans (cerberus issue #2779). Join memory today is
+	// protected only by throwIf cardinality guards (VectorJoin's own
+	// ManyToManyMatchMessage) and structural shape restrictions — neither is
+	// a memory backstop — so a big hash build (PromQL many-to-many vector
+	// matching, a group_left skew, the delta-prefix LEFT JOIN, a TraceQL
+	// structural join) can still hit the destructive MEMORY_LIMIT_EXCEEDED
+	// (code 241) abort the group_by/sort stamps were added to prevent for
+	// aggregation and sort.
+	//
+	// EXPLICIT stamp, not the ClickHouse-native ratio default: ClickHouse
+	// 26.5+ ships max_bytes_ratio_before_external_join=0.5, but a ratio
+	// setting is silently ignored when no server/user memory limit is
+	// configured — the exact failure mode ClickHouse#76740 documents for the
+	// analogous max_bytes_ratio_before_external_group_by. cerberus does not
+	// control whether an operator's ClickHouse profile sets a server-side
+	// limit, so the ratio default cannot be relied on at any floor this
+	// feature supports; the explicit byte stamp is unconditional the way the
+	// group_by/sort stamps already are.
+	//
+	// VERSION FLOOR: max_bytes_before_external_join itself carries an
+	// EXPERIMENTAL marker at its 26.4 introduction (the release
+	// presentations.clickhouse.com/2026-release-26.4 covers it; the
+	// changelog #264 anchor does not surface the entry) and is treated as
+	// production-grade from 26.5, where the ratio-default sibling setting
+	// ships alongside it. This registry entry pins the floor to 26.4 —
+	// where the setting is FIRST available to stamp, regardless of its own
+	// maturity label — and separately marks the registry Stability as
+	// Experimental to keep that honestly reflected in operator-facing docs,
+	// mirroring how the timeSeries*ToGrid family stays Experimental in
+	// maturity while still being version-gated AutoSelect (Stability and
+	// AutoSelect are deliberately decoupled — see the Feature.AutoSelect
+	// doc below).
+	//
+	// AutoSelect is true: like the group_by/sort stamps this narrows, the
+	// setting is RESULT-EQUIVALENT (spill changes only execution strategy,
+	// never the rows) and strictly protective — an operation whose join
+	// build stays under spillThreshold(cap) never spills, so a normal query
+	// is byte-for-byte unaffected, and only a join approaching the cap
+	// spills-and-completes instead of aborting. There is no downside to
+	// auto-enabling a pure availability win on every server that supports
+	// the setting.
+	//
+	// Known cost (from the issue, verified): on 26.4-26.7 configuring join
+	// spill loses some post-build join optimisations (tryRerangeRightTableData,
+	// FixedHashMap conversion, shared runtime filters) — a cost the
+	// ratio-default path pays too, so it is not specific to the explicit
+	// stamp. The fix ships in 26.8 (upstream PR #111972), NOT 26.7. This is
+	// the same trade the group_by/sort spill stamps already accept — an
+	// OOM abort is an availability bug, not an optimisation opportunity — so
+	// it does not change the AutoSelect posture.
+	FeatureJoinSpill = "join_spill"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -967,6 +1022,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in via CERBERUS_CH_OPTIMIZATIONS — unsupported on ClickHouse Cloud, tolerated; auto never picks it pending real-world calibration)",
 	},
+	{
+		ID:         FeatureJoinSpill,
+		MinVersion: Version{Major: 26, Minor: 4},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans, mirroring the unconditional group_by/sort spill stamps (server >= 26.4, experimental maturity but auto-enabled — result-equivalent and strictly protective; explicit stamp rather than the 26.5+ ratio default, which is silently ignored with no server/user memory limit configured, cf. ClickHouse#76740)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -975,9 +1037,10 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
-// sorted_slab_over_time, map_bucketed_serialization, column_statistics). The
-// copy keeps the canonical entries immutable from the caller's side. Exposed so
-// tests can enumerate the gates and the docs generator can render the table.
+// sorted_slab_over_time, map_bucketed_serialization, column_statistics,
+// join_spill). The copy keeps the canonical entries immutable from the
+// caller's side. Exposed so tests can enumerate the gates and the docs
+// generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

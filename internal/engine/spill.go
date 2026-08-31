@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // settingMaxBytesBeforeExternalGroupBy / settingMaxBytesBeforeExternalSort are
@@ -16,6 +17,16 @@ const (
 	settingMaxBytesBeforeExternalGroupBy = "max_bytes_before_external_group_by"
 	settingMaxBytesBeforeExternalSort    = "max_bytes_before_external_sort"
 )
+
+// settingMaxBytesBeforeExternalJoin is the ClickHouse setting that makes a
+// hash join spill its build-side hash table to disk once it grows past the
+// configured byte threshold, instead of holding it unbounded in RAM. Unlike
+// settingMaxBytesBeforeExternalGroupBy / settingMaxBytesBeforeExternalSort it
+// is NOT version-safe back to cerberus's CH floor — it first ships in
+// ClickHouse 26.4 — so stamping it is gated on the chopt.FeatureJoinSpill
+// boot-resolved verdict (see applyJoinSpillSettings) rather than being
+// unconditional like its two siblings.
+const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 
 // spillThresholdBytes is the byte threshold at which a GROUP BY / sort begins
 // spilling to disk when NO per-query memory cap is configured. A
@@ -94,4 +105,95 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 	ctx = chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalGroupBy, threshold)
 	ctx = chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalSort, threshold)
 	return ctx
+}
+
+// applyJoinSpillSettings stamps the external-join spill threshold on ctx,
+// mirroring applySpillSettings' cap/2 arithmetic (spillThreshold), but ONLY
+// when BOTH:
+//
+//   - joinSpillEnabled is true — the boot-resolved chopt.FeatureJoinSpill
+//     verdict (see cmd/cerberus's settingsRules, engine.SettingsRules.JoinSpill),
+//     which is false below the feature's 26.4 version floor. Unlike the
+//     group_by/sort spill above, max_bytes_before_external_join is not safe
+//     to stamp unconditionally: the setting itself does not exist before
+//     26.4, and an unknown setting name errors the whole query rather than
+//     no-op'ing.
+//   - plan contains a join-bearing node (planHasJoin) — join memory is
+//     otherwise protected only by throwIf cardinality guards and structural
+//     shape restrictions, never a memory backstop, so any plan that lowers
+//     to a real ClickHouse JOIN can build an unbounded hash table.
+//
+// Like its group_by/sort sibling this is RESULT-EQUIVALENT and
+// THRESHOLD-GATED: a join whose build side stays under spillThreshold(cap)
+// never spills, so an ordinary join query is byte-for-byte unaffected; only
+// a join approaching the cap spills-and-completes instead of aborting with
+// MEMORY_LIMIT_EXCEEDED (code 241).
+func applyJoinSpillSettings(ctx context.Context, plan chplan.Node, maxMemory int64, joinSpillEnabled bool) context.Context {
+	if !joinSpillEnabled || !planHasJoin(plan) {
+		return ctx
+	}
+	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))
+}
+
+// planHasJoin reports whether plan contains any join-bearing chplan node —
+// a node whose ClickHouse emission renders a real SQL JOIN with a hash-table
+// build side, as opposed to a plan-IR node whose NAME merely contains "Join"
+// (chplan.LabelJoin lowers PromQL's label_join() string function and never
+// emits a SQL JOIN; it is deliberately excluded).
+//
+// The sweep is chplan.WalkDeep, not chplan.Walk, so a join nested inside a
+// scalar subquery's Expr slot is still found — the same total-traversal
+// reasoning applyCompareMemoryBound's planHasMetricsCompare relies on.
+//
+// Covers every join chplan.WalkDeep can observe on the plan pre-emission:
+//
+//   - VectorJoin / HistogramVectorJoin / HistogramFloatVectorJoin /
+//     MixedVectorJoin — PromQL vector matching: one-to-one, the
+//     group_left()/group_right() many-to-one shape, and the mixed-family
+//     join. VectorJoin's own ManyToManyMatchMessage throwIf guard exists
+//     precisely because a many-to-many match here can build an unbounded
+//     hash table.
+//   - InfoJoin — PromQL's info() label-enrichment join.
+//   - StructuralJoin — TraceQL's structural (descendant/child/sibling) joins.
+//   - CrossJoin — the unconditional Cartesian product.
+//   - RangeWindow with a non-nil DeltaPrefixAggregateInput — the
+//     delta-prefix LEFT JOIN (internal/chsql/range_window.go) that
+//     side-feeds the day-bucket aggregate input into the raw window.
+//
+// Late materialisation's INNER JOIN-back (internal/chsql/late_mat.go) is a
+// KNOWN, tracked gap: (*emitter).isLateMatCandidate's structural match is
+// decided inside the chsql emitter using per-request wide-column/row-key
+// metadata that is not reconstructable from a chplan.Node walk here without
+// duplicating that emitter-internal logic, and settings are stamped in
+// internal/engine strictly before emission — see
+// https://github.com/tsouza/cerberus/issues/2816.
+func planHasJoin(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		switch v := n.(type) {
+		case *chplan.VectorJoin:
+			found = true
+		case *chplan.HistogramVectorJoin:
+			found = true
+		case *chplan.HistogramFloatVectorJoin:
+			found = true
+		case *chplan.MixedVectorJoin:
+			found = true
+		case *chplan.InfoJoin:
+			found = true
+		case *chplan.StructuralJoin:
+			found = true
+		case *chplan.CrossJoin:
+			found = true
+		case *chplan.RangeWindow:
+			if v.DeltaPrefixAggregateInput != nil {
+				found = true
+			}
+		}
+		if found {
+			return false
+		}
+		return true
+	})
+	return found
 }

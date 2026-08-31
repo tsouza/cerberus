@@ -1113,11 +1113,12 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 
 // settingsRules builds the per-query ClickHouse settings rules from the
 // resolved optimization EnabledSet plus the CERBERUS_* config. The
-// aggregation-in-order and condition-cache rules are now driven by the frozen
-// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
-// stable 24.8-safe aggregation_in_order is on, and condition_cache is on when
-// the probed server is >= 25.3. log_comment shape stays its own dark flag
-// (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus reconciler. The
+// aggregation-in-order, condition-cache and join-spill rules are all driven
+// by the frozen EnabledSet (set.Has(...)), not raw env flags: under the
+// default `auto` the stable 24.8-safe aggregation_in_order is on,
+// condition_cache is on when the probed server is >= 25.3, and join_spill is
+// on when the probed server is >= 26.4. log_comment shape stays its own dark
+// flag (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus reconciler. The
 // schema instances are always supplied so the eligibility checks can map ANY
 // scanned signal table to its sort-key prefix regardless of which head runs
 // the query. Shared by all three heads' engines so the rules flip uniformly.
@@ -1125,6 +1126,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 	return engine.SettingsRules{
 		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
 		ConditionCache:             set.Has(chopt.FeatureConditionCache),
+		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
 		LogCommentShape:            cfg.LogCommentShape,
 		Metrics:                    cfg.Schema,
 		Traces:                     cfg.Traces,
