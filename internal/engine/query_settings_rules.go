@@ -115,6 +115,13 @@ type SettingsRules struct {
 	// set, so this flag is false and nothing is stamped (a no-op on every
 	// older server). The stamp is harmless even on a table that carries no
 	// proj_trace_id projection at all (cerberus issue #2767).
+	//
+	// No memory-bounding sentinel (test/perf/{smoke,nightly}/sentinels.go)
+	// covers this rule: min_table_rows_to_use_projection_index is a
+	// query-optimizer index-SELECTION threshold, not a memory cap — it
+	// cannot increase peak memory versus not stamping it at all, so it is
+	// not the #2364-class regression that sentinel corpus exists to catch.
+	// See issue #2832 (PERF-SENTINEL-WAIVER: #2832).
 	TraceIDBitmapFilter bool
 
 	// LogCommentShape, when true, stamps log_comment with a compact cerberus
