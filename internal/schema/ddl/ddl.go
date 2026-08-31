@@ -117,6 +117,23 @@ type Config struct {
 	// Settings does not apply to it.
 	Settings []schema.KV
 
+	// LogsSettings / TracesSettings append extra SETTINGS to ONLY the logs
+	// table / ONLY the traces spans table respectively, continuing the same
+	// SETTINGS tail Settings continues but WITHOUT reaching the metrics
+	// tables or the traces trace_id_ts lookup table (which carries no Map
+	// column at all). This is the per-table application machinery cerberus
+	// issue #2774 needed: Settings alone applies uniformly to every
+	// auto-created table, so a setting that must land on the two
+	// Attributes-bearing signals and nowhere else (chopt's
+	// map_bucketed_serialization) cannot be expressed through it. Order is
+	// Settings first, then the per-table slice, so a duplicate key across
+	// the two is deterministic about which wins the render position (though
+	// internal/schemaboot.DDLConfig rejects that duplication outright — see
+	// its own guard). The zero value (nil) appends nothing to either table,
+	// same backward-compat contract as Settings.
+	LogsSettings   []schema.KV
+	TracesSettings []schema.KV
+
 	// DeltaPrefixEnabled gates provisioning the DELTA-temporality
 	// prefix-reconstruction aggregate table + its materialized view
 	// (Tables.MetricsDeltaPrefix; cerberus issue #2389) alongside the five
@@ -379,28 +396,35 @@ func (c Config) ttlExpr(column string, retention, moveAfter time.Duration) strin
 }
 
 // settingsClause renders the leading-comma-continued SETTINGS tail
-// (`, k = v, k2 = v2`) for cfg.Settings, or "" when none are configured.
-// The fragment continues the `SETTINGS index_granularity=..., ttl_only_drop_parts=1`
-// clause the upstream templates already bake, rather than opening a second
-// SETTINGS clause. Built via the typed chsql.TableSettings constructor — no
-// hand-assembled SQL — so the RHS quoting is type-inferred per entry.
-func (c Config) settingsClause() string {
-	frag := chsql.TableSettings(c.Settings...)
+// (`, k = v, k2 = v2`) for cfg.Settings plus any per-table extra entries, or
+// "" when none are configured. The fragment continues the
+// `SETTINGS index_granularity=..., ttl_only_drop_parts=1` clause the upstream
+// templates already bake, rather than opening a second SETTINGS clause. Built
+// via the typed chsql.TableSettings constructor — no hand-assembled SQL — so
+// the RHS quoting is type-inferred per entry. extra is appended AFTER
+// c.Settings — see LogsSettings / TracesSettings.
+func (c Config) settingsClause(extra ...schema.KV) string {
+	all := c.Settings
+	if len(extra) > 0 {
+		all = append(append([]schema.KV{}, c.Settings...), extra...)
+	}
+	frag := chsql.TableSettings(all...)
 	if frag == nil {
 		return ""
 	}
 	return chsql.RenderDDL(frag)
 }
 
-// appendSettings splices the configured SETTINGS continuation into a rendered
-// CREATE TABLE statement, immediately after the baked SETTINGS tail and before
-// any trailing newline the template carried. When no extra settings are
-// configured it returns stmt unchanged, so the auto-create DDL stays
-// byte-identical to the bare upstream template (the backward-compat contract).
-// Splicing before the trailing newline (rather than appending after it) keeps
-// the continuation part of the SETTINGS line it extends.
-func (c Config) appendSettings(stmt string) string {
-	clause := c.settingsClause()
+// appendSettings splices the configured SETTINGS continuation (c.Settings
+// plus any per-table extra entries — see LogsSettings / TracesSettings) into
+// a rendered CREATE TABLE statement, immediately after the baked SETTINGS
+// tail and before any trailing newline the template carried. When no extra
+// settings are configured it returns stmt unchanged, so the auto-create DDL
+// stays byte-identical to the bare upstream template (the backward-compat
+// contract). Splicing before the trailing newline (rather than appending
+// after it) keeps the continuation part of the SETTINGS line it extends.
+func (c Config) appendSettings(stmt string, extra ...schema.KV) string {
+	clause := c.settingsClause(extra...)
 	if clause == "" {
 		return stmt
 	}
@@ -963,19 +987,22 @@ func renderLogsTable(cfg Config) (string, error) {
 	if err := sqltemplates.LogsCreateTableTmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("ddl: execute logs create-table template: %w", err)
 	}
-	return cfg.appendSettings(buf.String()), nil
+	return cfg.appendSettings(buf.String(), cfg.LogsSettings...), nil
 }
 
 // renderTracesTable formats the traces spans-table DDL. Upstream shape:
 // `(database, table, cluster, engine, ttl)`. TTL field is
-// `toDateTime(Timestamp)`.
+// `toDateTime(Timestamp)`. TracesSettings lands here (the spans table carries
+// every Attributes-shaped Map column: ResourceAttributes, SpanAttributes,
+// Events.Attributes, Links.Attributes) but NOT on renderTracesCreateTsTable —
+// see that function's doc comment.
 func renderTracesTable(cfg Config) string {
 	return cfg.appendSettings(fmt.Sprintf(
 		sqltemplates.TracesCreateTable,
 		cfg.Database, cfg.Tables.Traces, cfg.clusterClause(),
 		cfg.Engine,
 		cfg.ttlExpr("Timestamp", cfg.TTL.Traces, cfg.Tiering.Traces),
-	))
+	), cfg.TracesSettings...)
 }
 
 // renderTracesCreateTsTable formats the `<table>_trace_id_ts` lookup table
@@ -983,6 +1010,13 @@ func renderTracesTable(cfg Config) string {
 // ttl) — the `_trace_id_ts` suffix is hard-coded into the template, so the
 // caller passes the base traces table name. TTL field is
 // `toDateTime(Start)`.
+//
+// Deliberately does NOT apply cfg.TracesSettings: this lookup table's only
+// columns are TraceId/Start/End (see the upstream
+// traces_id_ts_lookup_table.sql template) — no Map column exists here for a
+// map_bucketed_serialization-shaped setting to have anything to act on, so
+// stamping it would be a pure no-op MergeTree setting on a table it cannot
+// possibly affect.
 func renderTracesCreateTsTable(cfg Config) string {
 	return cfg.appendSettings(fmt.Sprintf(
 		sqltemplates.TracesCreateTsTable,

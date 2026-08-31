@@ -412,6 +412,23 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 	return warnings, nil
 }
 
+// ExplicitlyRequested reports whether id appears as an explicit token in the
+// raw selection string ("auto"/"off" tokens never match). It answers a
+// narrower question than Resolve: "did the operator ASK for this feature",
+// with no server version or capability consulted at all. It exists for
+// offline tooling that has no live ClickHouse connection to run Resolve
+// against — cmd/cerberus's `migrate schema` preview uses it for
+// map_bucketed_serialization (cerberus issue #2774), a feature that is never
+// auto-selected (Feature.AutoSelect false), so the only way it is ever on is
+// an explicit listing this function can read straight off the raw string.
+// Callers that DO have a live connection must use Resolve instead — this
+// function does not check the version floor, so it can say "requested" for a
+// server too old to actually run the setting.
+func ExplicitlyRequested(selection, id string) bool {
+	tokens := splitSelection(strings.ToLower(strings.TrimSpace(selection)))
+	return hasToken(tokens, strings.ToLower(strings.TrimSpace(id)))
+}
+
 // allFeatureIDs returns every registered feature id, for the unknown-id error
 // message.
 func allFeatureIDs() []string {

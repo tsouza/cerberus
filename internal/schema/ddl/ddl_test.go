@@ -221,6 +221,67 @@ func TestRenderSignal_Traces(t *testing.T) {
 	}
 }
 
+// TestRenderSignal_LogsSettings pins that LogsSettings (cerberus issue #2774
+// — chopt's map_bucketed_serialization) lands in the logs table's SETTINGS
+// tail, continuing the baked `index_granularity=..., ttl_only_drop_parts=1`
+// clause rather than opening a second one.
+func TestRenderSignal_LogsSettings(t *testing.T) {
+	cfg := Config{
+		LogsSettings: []schema.KV{{Key: "map_serialization_version", Value: "with_buckets"}},
+	}.withDefaults()
+	stmts, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	logs := stmts[0]
+	if !strings.Contains(logs, "ttl_only_drop_parts = 1, map_serialization_version = 'with_buckets'") {
+		t.Errorf("logs: LogsSettings not appended after the baked SETTINGS tail:\n%s", logs)
+	}
+}
+
+// TestRenderSignal_TracesSettings pins that TracesSettings lands ONLY on the
+// spans table ([0]) — never the trace_id_ts lookup table ([1], no Map column
+// to bucket) or its materialized view ([2], no SETTINGS tail upstream).
+func TestRenderSignal_TracesSettings(t *testing.T) {
+	cfg := Config{
+		TracesSettings: []schema.KV{{Key: "map_serialization_version", Value: "with_buckets"}},
+	}.withDefaults()
+	stmts, err := renderSignal(cfg, Traces)
+	if err != nil {
+		t.Fatalf("renderSignal(Traces): %v", err)
+	}
+	if !strings.Contains(stmts[0], "map_serialization_version = 'with_buckets'") {
+		t.Errorf("traces[0] (spans): missing TracesSettings:\n%s", stmts[0])
+	}
+	if strings.Contains(stmts[1], "map_serialization_version") {
+		t.Errorf("traces[1] (trace_id_ts lookup): must not carry TracesSettings (no Map column):\n%s", stmts[1])
+	}
+	if strings.Contains(stmts[2], "map_serialization_version") {
+		t.Errorf("traces[2] (MV): must not carry TracesSettings:\n%s", stmts[2])
+	}
+}
+
+// TestRenderSignal_MapBucketedSerializationExcludesMetrics pins the
+// deliberate exclusion at the heart of cerberus issue #2774's scoping: the
+// per-table LogsSettings/TracesSettings fields have no metrics counterpart —
+// a metrics render path only ever reads the generic Settings, so there is no
+// way for the bucketed-serialization setting to reach a metrics table at all.
+func TestRenderSignal_MapBucketedSerializationExcludesMetrics(t *testing.T) {
+	cfg := Config{
+		LogsSettings:   []schema.KV{{Key: "map_serialization_version", Value: "with_buckets"}},
+		TracesSettings: []schema.KV{{Key: "map_serialization_version", Value: "with_buckets"}},
+	}.withDefaults()
+	stmts, err := renderSignal(cfg, Metrics)
+	if err != nil {
+		t.Fatalf("renderSignal(Metrics): %v", err)
+	}
+	for i, stmt := range stmts {
+		if strings.Contains(stmt, "map_serialization_version") {
+			t.Errorf("metrics[%d]: must never carry map_serialization_version:\n%s", i, stmt)
+		}
+	}
+}
+
 // TestRenderSignal_CustomConfig exercises every Config override.
 func TestRenderSignal_CustomConfig(t *testing.T) {
 	cfg := Config{

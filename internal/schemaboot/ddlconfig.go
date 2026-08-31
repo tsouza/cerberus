@@ -32,6 +32,16 @@ func resolveSignalDuration(global, override time.Duration) time.Duration {
 // deterministic regardless of any further Settings entries.
 const storagePolicySetting = "storage_policy"
 
+// mapSerializationVersionSetting / mapSerializationVersionWithBuckets are the
+// ClickHouse MergeTree setting chopt's map_bucketed_serialization feature
+// (cerberus issue #2774) stamps onto new logs/traces tables — see
+// internal/chopt.FeatureMapBucketedSerialization's doc comment for the full
+// mechanism and the reasoning behind scoping it to those two signals only.
+const (
+	mapSerializationVersionSetting     = "map_serialization_version"
+	mapSerializationVersionWithBuckets = "with_buckets"
+)
+
 // MetricsRetention resolves the effective metrics-table retention TTL from
 // cfg's SchemaProvisioning knobs — CERBERUS_SCHEMA_TTL_METRICS overrides
 // CERBERUS_SCHEMA_TTL, the same inherit-or-override rule DDLConfig applies
@@ -68,6 +78,10 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 	if err != nil {
 		return ddl.Config{}, err
 	}
+	logsSettings, tracesSettings, err := mapBucketedSettings(cfg.SchemaMapBucketedSerialization, settings)
+	if err != nil {
+		return ddl.Config{}, err
+	}
 	out := ddl.Config{
 		Database: cfg.ClickHouse.Database,
 		Cluster:  p.Cluster,
@@ -99,7 +113,9 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			MetricsSummary:      cfg.Schema.SummaryTable,
 			MetricsDeltaPrefix:  cfg.Schema.DeltaPrefixTable,
 		},
-		Settings: settings,
+		Settings:       settings,
+		LogsSettings:   logsSettings,
+		TracesSettings: tracesSettings,
 		// DeltaPrefixEnabled (cerberus issue #2389) is a second, independent
 		// gate on top of AutoCreateSchema — see SchemaProvisioning's doc
 		// comment. The table + column names come from cfg.Schema (the SAME
@@ -142,4 +158,41 @@ func schemaSettings(p config.SchemaProvisioning) ([]schema.KV, error) {
 	out = append(out, schema.KV{Key: storagePolicySetting, Value: p.StoragePolicy})
 	out = append(out, p.Settings...)
 	return out, nil
+}
+
+// mapBucketedSettings resolves the ddl.Config.LogsSettings / TracesSettings
+// chopt's map_bucketed_serialization feature (cerberus issue #2774) drives.
+// enabled is cfg.SchemaMapBucketedSerialization — the resolved verdict
+// back-filled by cmd/cerberus's boot resolver (or, for the offline `migrate
+// schema` preview, chopt.ExplicitlyRequested). false returns (nil, nil): the
+// generic Settings tail is untouched and every table's DDL stays
+// byte-identical to today, the same backward-compat contract every other
+// Config field defaults to.
+//
+// resolvedSettings is schemaSettings' already-resolved generic Settings
+// slice (the only way to hand-set map_serialization_version today is
+// CERBERUS_SCHEMA_SETTINGS — there is no per-key shorthand the way
+// StoragePolicy is for storage_policy), checked here purely because it is
+// the slice ddl.Config.Settings actually ends up carrying. Both the generic
+// tail and this feature's tail land on the SAME logs/traces SETTINGS clause
+// (ddl.appendSettings concatenates Settings then the per-table extra — see
+// its doc comment), and ClickHouse rejects a SETTINGS clause that repeats a
+// key, so a manually configured map_serialization_version alongside the
+// feature is a fail-fast misconfiguration here rather than a
+// DDL-execution-time error at boot — mirroring the storage_policy dedup
+// guard immediately above.
+func mapBucketedSettings(enabled bool, resolvedSettings []schema.KV) (logs, traces []schema.KV, err error) {
+	if !enabled {
+		return nil, nil, nil
+	}
+	for _, kv := range resolvedSettings {
+		if kv.Key == mapSerializationVersionSetting {
+			return nil, nil, fmt.Errorf(
+				"schema: %s set via both CERBERUS_SCHEMA_SETTINGS and the map_bucketed_serialization ch_opt feature — set it in exactly one",
+				mapSerializationVersionSetting,
+			)
+		}
+	}
+	kv := []schema.KV{{Key: mapSerializationVersionSetting, Value: mapSerializationVersionWithBuckets}}
+	return kv, kv, nil
 }

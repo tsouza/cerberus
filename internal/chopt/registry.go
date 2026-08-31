@@ -393,6 +393,102 @@ const (
 	// opt-in-only population needing its own separate re-plumbing, tracked
 	// at https://github.com/tsouza/cerberus/issues/2797.
 	FeatureFixedAccumulatorExtrapolated = "fixed_accumulator_extrapolated"
+
+	// FeatureMapBucketedSerialization stamps
+	// map_serialization_version='with_buckets' on the logs table and the
+	// traces spans table's CREATE TABLE SETTINGS tail (cerberus issue #2774).
+	// ClickHouse's bucketed Map serialization distributes a Map column's
+	// entries across N independent sub-streams by a hash of the key, so a
+	// read that only touches one key (a PromQL/LogQL/TraceQL label matcher,
+	// a tempo tag_values scan) decompresses just that key's bucket instead
+	// of the whole map — see
+	// https://clickhouse.com/blog/clickhouse-vs-promethous-high-cardinality-part-2-cardinality-in-clickhouse.
+	// It is a TABLE-level MergeTree setting (not per-column, not an ALTER
+	// target): confirmed against the ClickHouse docs
+	// (https://clickhouse.com/docs/sql-reference/data-types/map) that
+	// max_buckets_in_map already DEFAULTS to 32 and map_buckets_strategy to
+	// 'sqrt' — the two knobs the issue's proposal names as "tuned" are
+	// already ClickHouse's own defaults, so this feature stamps ONLY
+	// map_serialization_version and leaves both alone rather than
+	// re-asserting values that would already apply.
+	//
+	// The read side needs NO change. Bucketing is a storage/serialization
+	// detail the ClickHouse Map reader resolves internally: `m['key']` and
+	// mapContains(m, 'key') already compute the same key hash to pick a
+	// bucket whether or not with_buckets is active, and a full-map read
+	// (`SELECT m`, mapConcat, stream-label rendering) reassembles every
+	// bucket transparently. Every place cerberus reads a single Attributes
+	// key today (LogQL matcherLHS, TraceQL FieldAccess, tempo
+	// tag_values' mapContains/subscript scan) already emits exactly that
+	// subscript/mapContains SQL shape — none of it needs to compute a
+	// bucket index itself, so no internal/chsql / internal/chplan / lowering
+	// change accompanies this feature. (Confirmed against the ClickHouse docs
+	// page above, not merely inferred from the blog post.)
+	//
+	// EXCLUDES the five metrics tables. A metrics series' identity IS its
+	// whole Attributes map (every catalog/metadata read and the
+	// seriesProjection in internal/schema/ddl already read/hash the full
+	// map), so the family's own ~2x whole-map-read penalty (see Risks below)
+	// would land squarely on metrics' hottest path for zero benefit — the
+	// mechanism only pays off for the SINGLE-key reads logs/traces filter
+	// shapes are dominated by. internal/schema/ddl.Config therefore carries
+	// LogsSettings / TracesSettings as a DIFFERENT field from the generic
+	// Settings escape hatch, which still applies uniformly to every
+	// auto-created table (metrics included) — the per-table application
+	// machinery a setting scoped to exactly two signals needs, since
+	// appendSettings splices ONE Settings continuation into every template
+	// alike.
+	//
+	// SCOPE: new tables only. internal/schemaboot.DDLConfig folds this
+	// feature's verdict into the CREATE TABLE SETTINGS tail auto-create
+	// renders — it never touches an existing table. An operator upgrading an
+	// existing deployment keeps the current 'basic' serialization on every
+	// already-created table (byte-identical DDL, zero risk) until they
+	// re-provision or run their own
+	// `ALTER TABLE ... MODIFY SETTING map_serialization_version='with_buckets'`
+	// (existing parts stay flat and readable; only parts written by a
+	// SUBSEQUENT merge adopt the bucketed layout — the docs page above
+	// confirms with_buckets is not itself an ALTER target requiring a
+	// rewrite, and map_serialization_version_for_zero_level_parts can keep
+	// fresh inserts flat while merges convert). Scoping to new tables avoids
+	// this PR needing to drive or verify that merge-triggered conversion
+	// against a live cluster; it is the safe half of the feature to land
+	// first, matching this repo's own precedent of shipping a schema knob
+	// auto-create renders before any migration tooling exists for it (the
+	// AggregationTemporality skip index shipped the same way — see
+	// renderAddTemporalityIndex's own MATERIALIZE INDEX backfill note).
+	//
+	// PRECONDITION (verified against the docs page): pre-26.8 with_buckets
+	// does NOT preserve Map key order (order preservation via a
+	// bucket_indexes metadata stream ships in 26.8+). Cerberus is safe at
+	// any floor at or above this feature's own 26.4 MinVersion solely
+	// because every stream-identity / series read already goes through
+	// mapSort canonicalization (internal/chplan/canonical_attributes.go,
+	// map_key_order_chdb_test.go) rather than trusting raw map iteration
+	// order — a future read path that inspects raw map order without
+	// mapSort would break under this setting regardless of version.
+	//
+	// VERSION FLOOR: the upstream feature landed via a backport in
+	// v26.3.2.3-lts; 26.3.0/26.3.1 lack it. chopt.Version compares
+	// (major, minor) only, so a "26.3" MinVersion would wrongly claim
+	// 26.3.0/26.3.1 support it. 26.4 is the first minor whose EVERY patch
+	// carries the feature, so it is the floor this registry — which cannot
+	// express a patch-level exception — can state without lying to an
+	// operator on an early 26.3 patch. An operator who knows their cluster
+	// is >= 26.3.2 may still list the feature explicitly.
+	//
+	// RISKS (from the issue, unmitigated by this feature — a hard gate for
+	// promoting past opt-in): the SAME blog source measures roughly a 2x
+	// SLOWER full-map read under with_buckets. Cerberus has real full-map
+	// read paths on logs/traces too — stream-label rendering, Loki
+	// series/labels/detected_labels/index_stats/index_volume, tempo
+	// mapConcat — so this feature is NOT auto-selected (AutoSelect=false):
+	// enabling it is a deliberate operator tradeoff (single-key filters get
+	// faster, whole-map reads get slower) pending a real before/after
+	// benchmark on both shapes, not a version-gated pure win the auto-picker
+	// can safely assume — the same conservative posture as
+	// FeatureQuantilePromHistogram and FeatureColumnarResultDecode.
+	FeatureMapBucketedSerialization = "map_bucketed_serialization"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -582,6 +678,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (client-side, no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
 	},
+	{
+		ID:         FeatureMapBucketedSerialization,
+		MinVersion: Version{Major: 26, Minor: 4},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "stamp map_serialization_version='with_buckets' on new logs/traces tables only, never metrics (server >= 26.4, opt-in only via CERBERUS_CH_OPTIMIZATIONS — read side is transparent, but full-map reads get ~2x slower, so auto never picks it)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -589,9 +692,9 @@ var registry = []Feature{
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, laginframe_adjacency,
-// fixed_accumulator_extrapolated). The copy keeps the canonical entries
-// immutable from the caller's side. Exposed so tests can enumerate the gates
-// and the docs generator can render the table.
+// fixed_accumulator_extrapolated, map_bucketed_serialization). The copy
+// keeps the canonical entries immutable from the caller's side. Exposed so
+// tests can enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)
