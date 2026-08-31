@@ -812,7 +812,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 true,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "opt eligible irate(<counter>[<range>]) shapes onto native timeSeriesInstantRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved trailing-pair counter-reset correction, matching PromQL)",
+		Doc:                        "opt eligible irate(<counter>[<range>]) shapes onto native timeSeriesInstantRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB sweep proved trailing-pair counter-reset correction, matching PromQL)",
 	},
 	{
 		ID:                         FeatureTSGridIdelta,
