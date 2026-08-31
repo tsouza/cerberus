@@ -828,6 +828,137 @@ governs `MinFanout` / `MinAnchorPairs` today.
 | `CERBERUS_SHARD_MAX_K_WITH_ESTIMATE`                     | int   | 32      | `Config.MaxKWithEstimate`. Must be `>= CERBERUS_SHARD_MAX_K`.                                                            |
 | `CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD`  | int64 | 50,000  | `Config.EstimateMinRowsPerAdditionalShard`.                                                                              |
 
+## Bounded cardinality pre-probe (issue #2788)
+
+`EXPLAIN ESTIMATE` (above) answers "how many marks did the index analysis
+fail to prune" — a granule-resolution SCAN-side upper bound. It has no
+comparable answer for a different, equally real question: how many DISTINCT
+SERIES actually back a window. Issue #2788 closes that gap with a second,
+independent advisory input — a bounded, REAL aggregate (`count()`,
+`uniqUpTo(100)(...)`) run over the plan's already-pruned scan window, gated
+and cached by `internal/engine/cardinality_probe_wiring.go`'s
+`CardinalityProbeAdvisor`, exactly the way `ScanEstimateAdvisor` gates and
+caches `EXPLAIN ESTIMATE`.
+
+**Real execution, not estimation — and that is the whole point.** Unlike
+`EXPLAIN ESTIMATE`, this probe DOES read data: `count()` is an exact row
+count, and `uniqUpTo(100)(...)` is an exact distinct-series count up to 100
+(ClickHouse's own hard cap on `uniqUpTo`'s parameter — issue #2788 verified
+`uniqUpTo(K_max*16)` throws rather than saturating past it — see
+`chplan.FnUniqUpTo`'s own doc for the "reports 101" saturation contract).
+Both advisors are wired as two SEPARATE `*Engine` fields
+(`ScanEstimateAdvisor`, `CardinalityProbeAdvisor`) whose results merge into
+one `solver.ScanEstimate` at the `Engine.classify` call site: the
+cardinality probe's real `count()` overwrites `Rows` when it runs (strictly
+more precise than the granule upper bound for the SAME K-clamp arithmetic
+below), and its `DistinctSeries` is a field only this probe ever populates.
+
+### What it feeds
+
+1. **K clamping, for free.** `planner.go`'s existing `Rows`-based near-empty
+   skip and `MaxKWithEstimate` raise (documented above) already consume
+   `RequestMeta.Estimate.Rows` — no new code, no new `Config` knob, no new
+   `Reason` token. Feeding it a REAL count when the probe ran is strictly an
+   accuracy improvement over the granule-resolution upper bound
+   `EXPLAIN ESTIMATE` alone would have supplied.
+2. **Per-rung admission priors, answered more directly.**
+   `CardinalityProbeAdvisor.maybeSeedPerRungPrior` mirrors
+   `ScanEstimateAdvisor.maybeSeedPerRungPrior`'s one-directional contract (only
+   ever seeds `cheap=true`, comparing against the SAME
+   `perRungCheapRowsPerAnchor` threshold `PerRungAdmissionLearner.Observe`
+   itself uses) — but compares `DistinctSeries`, not a raw scan-row upper
+   bound. A per-rung carrier fans a classic-histogram bucket ladder out per
+   SERIES, so the composed output `Observe()` measures scales with distinct
+   series far more directly than with raw scanned rows — issue #2788's own
+   "answer per-rung admission's rows/anchor question directly" phrase.
+3. **Route memo corroboration — deliberately NOT wired**, for the identical
+   reason `EXPLAIN ESTIMATE` is not: see "Why the failure-driven route memo
+   is NOT seeded" above. A real bounded aggregate is still one non-drain
+   observation, not the repeated real-traffic corroboration
+   `minCorroboratingFailures` + the pressure damper exist to require.
+
+### Cost bound and scope (deliberately narrow)
+
+Gated identically to `ScanEstimateAdvisor`'s own three narrowings (ModeAuto
+AND reached-cost-grid only; cached per shape; skipped once the route memo or
+per-rung admission already holds a verdict) — reusing that file's own
+`reachedCostGrid` / `shapeKey` / `hasExistingVerdict` helpers rather than
+re-deriving them. Two further narrowings are specific to this probe, both
+documented at length on `cardinality_probe_wiring.go`'s own top-level doc:
+
+- **Carrier kind:** only `*chplan.RangeWindow` (the "matrix" family — by far
+  the most common ModeAuto shape, and the one issue #2709's own incident and
+  this issue's own dashboard-panel example both concern). Every other
+  routable carrier kind (`RangeLWR`, `RangeBucketFanout`,
+  `RangeBucketGridNative`, `RangeWindowGridNative`) fails open — no probe,
+  exactly as if the feature did not exist for that shape. Extending the
+  probe to them, and adding the issue's own bracketed-optional third stat
+  (`avg(length(ExplicitBounds))`, a classic-histogram bucket-width bias
+  signal neither consumer above needs), are tracked as separate follow-up
+  work (issue #2840) rather than folded into this narrower landing.
+- **Metric identity:** the probe's cache key is `(routememo.Key, metric)` —
+  the ONE literal this signal cannot do without, because cardinality is
+  fundamentally metric-specific in a way a literal-free structural shape
+  alone cannot capture. It fires only when the carrier's nearest `Filter`
+  gates on exactly one literal `MetricName = '...'` equality; a regex
+  `__name__` matcher or a multi-metric selector has no single metric to key
+  on and is skipped.
+
+The bound (`Start - Offset - Range, End - Offset]`) the probe scans is the
+EXACT window `chsql`'s own `maybePushInnerScanTimeBounds` pushes down for
+this SAME `RangeWindow`'s real matrix emission — the probe reads precisely
+the rows the real dispatch would read, no more.
+
+A probe failure (breaker-open, transport error, emission error, or the
+probe's own strict `cardinalityProbeTimeout` firing) is treated as "no
+signal" and never surfaces as a query failure — advisory-only, fail-open by
+construction, same as `EXPLAIN ESTIMATE`.
+
+### Measurement
+
+Measured with `buildCardinalityProbePlan`'s own real chplan tree, executed
+via chDB against `test/perf/smoke/testdata/samples/svc_http_requests_total.parquet`
+(the SAME corpus `EXPLAIN ESTIMATE` above was calibrated against) and
+`kube_pod_status_reason.parquet` (the set's highest-cardinality sample, up
+to ~4,800 series in a single window per its own `README.md`):
+
+| window                                                          | rows    | distinct_series  |
+| --------------------------------------------------------------- | ------- | ---------------- |
+| 1h over `svc_http_requests_total`'s densest real hour           | 596,424 | 101 (saturated)  |
+| 6h spanning that hour                                           | 895,858 | 101 (saturated)  |
+| 6h a year outside the sample's captured span (empty)            | 0       | 0                |
+| 1h over `kube_pod_status_reason`'s densest real hour            | 567,360 | 101 (saturated)  |
+
+The 6h row count (895,858) lands EXACTLY on `EXPLAIN ESTIMATE`'s own
+measurement for the identical window (the "Calibration" table above) — the
+two probes independently scanning the same real data agree, cross-validating
+that this probe's `(Start - Offset - Range, End - Offset]` bound is the
+same window the granule-upper-bound probe already reasons about. Every dense
+real window this sample carries saturates `uniqUpTo(100)` at 101 — this
+sample's own real per-panel cardinality already exceeds the cap throughout
+its captured span, confirming issue #2788's own verified constraint (a K
+above 100 throws rather than silently under-counting) matters in practice,
+not only in theory: a deployment probing production traffic at this
+sample's own density needs `uniqCombined`/`uniqCombined64` (issue #2788's
+own named alternative) to see past 100 distinct series, not `uniqUpTo`
+alone — left for the same follow-up (issue #2840) that widens the carrier
+scope, since neither of this landing's two consumers (K-clamp `Rows`,
+per-rung `cheap` seeding) needs an exact count above the 100-series
+threshold either already answers.
+
+### Configuration
+
+| Variable                                      | Type | Default | Description                                                                                                               |
+| --------------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `CERBERUS_CH_OPTIMIZATIONS=cardinality_probe` | flag | off     | Enables the chopt `cardinality_probe` feature (opt-in only, `AutoSelect=false` — see `docs/clickhouse-optimizations.md`). |
+
+No numeric knobs: `cardinalityProbeUniqUpToCap` (ClickHouse's own hard
+`uniqUpTo` ceiling, not a tuning value), `cardinalityProbeTimeout`, and the
+cache capacity/TTL (reused from `ScanEstimateAdvisor`'s own constants) are
+fixed Go constants pending real-world calibration evidence, mirroring
+`per_rung_admission.go`'s own unexported constants (`perRungCheapRowsPerAnchor`
+et al.) rather than growing a `Config` surface ahead of that evidence.
+
 ## Routing-decision calibration corpus (measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single
