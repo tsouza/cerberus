@@ -1436,7 +1436,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "extend each of rate/changes/resets/deriv/predict_linear's already-enabled native MATRIX strategy to also cover the instant (single-anchor) shape via a degenerate one-point grid (narrows ts_grid_range/ts_grid_changes/ts_grid_resets/ts_grid_deriv/ts_grid_predict_linear; experimental maturity, server >= 26.5 — the extreme-parameter and staleness overflow fixes, #103223/#105319 — opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
+		Doc:                        "extend rate/changes/resets/deriv/predict_linear's native matrix strategy to the instant shape via a one-point grid (narrows ts_grid_range/changes/resets/deriv/predict_linear; server >= 26.5, #103223/#105319; opt-in)",
 	},
 	{
 		ID:                         FeatureTSGridIncrease,
