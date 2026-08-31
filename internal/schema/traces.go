@@ -1,5 +1,54 @@
 package schema
 
+// TagCatalogTable / TagCatalogScopeColumn / TagCatalogKeyColumn /
+// TagCatalogTopValuesStateColumn name the Tempo tag-catalog table
+// (cerberus issue #2771, the Tempo sibling of the loki_label_catalog
+// pattern — see LabelCatalogTable's doc comment for the full rationale
+// this one repeats verbatim): cerberus-invented, not upstream OTel-CH
+// names, and NOT a Traces struct field, for the exact same reason
+// LabelCatalogTable isn't a Logs field — a field would false-positive
+// TestReadSurfaceCoversEveryReadSideSchemaField on a cluster that never
+// enabled this version-gated, opt-in table. Package-level constants are
+// exported because internal/schema/ddl (which creates the table),
+// internal/api/tempo (which queries it), and cmd/cerberus (which queries
+// system.view_refreshes for the view) all need the SAME literal, and
+// internal/schema is the one leaf package all three already import.
+//
+// TagCatalogScopeResource / TagCatalogScopeSpan are the two values the
+// Scope column carries — the two attribute-map scopes the catalog
+// covers (see internal/schema/ddl's Tempo catalog doc comment for why
+// event/link/instrumentation stay off the catalog). They are exported
+// from here, not from internal/api/tempo's own scope-vocabulary
+// constants, because the DDL package (which renders these exact string
+// literals into the view body) cannot import internal/api/tempo without
+// an import cycle; internal/api/tempo's tagScopeResource / tagScopeSpan
+// alias these instead of duplicating the literal — see that package's
+// tag_catalog.go.
+const (
+	TagCatalogTable                = "tempo_tag_catalog"
+	TagCatalogScopeColumn          = "Scope"
+	TagCatalogKeyColumn            = "TagKey"
+	TagCatalogTopValuesStateColumn = "TopValuesState"
+	TagCatalogScopeResource        = "resource"
+	TagCatalogScopeSpan            = "span"
+
+	// TagCatalogTopValuesLimit is the N in the catalog's
+	// `topKState(N)(...)` / `topKMerge(N)(...)` aggregate pair — the
+	// single source of truth for both the WRITE side
+	// (internal/schema/ddl's refreshable view, which computes the state)
+	// and the READ side (internal/api/tempo's catalog query, which merges
+	// it): the two must agree, since a read-side N larger than the
+	// write-side N could never return more values than the state
+	// actually retained, and a mismatch would be silently wrong rather
+	// than a compile error if each side carried its own literal.
+	TagCatalogTopValuesLimit = 50
+
+	// TagCatalogViewSuffix is appended to TagCatalogTable to name the
+	// refreshable materialized view feeding it — the same convention
+	// LabelCatalogViewSuffix uses for its Loki sibling.
+	TagCatalogViewSuffix = "_mv"
+)
+
 // Traces describes how cerberus reads spans from ClickHouse. The default
 // (returned by DefaultOTelTraces) matches the OpenTelemetry ClickHouse
 // Exporter v0.x traces schema; users with custom layouts override

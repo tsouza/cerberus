@@ -150,6 +150,12 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// chopt.ExplicitlyRequested) — the SAME threading
 		// TraceIDProjectionEnabled above uses for its own chopt verdict.
 		LokiLabelCatalogEnabled: cfg.SchemaLokiCatalogMV,
+		// TempoTagCatalogEnabled (cerberus issue #2771) is the resolved
+		// chopt tempo_tag_catalog_mv verdict, back-filled by cmd/cerberus's
+		// boot resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the SAME threading
+		// LokiLabelCatalogEnabled above uses for its own chopt verdict.
+		TempoTagCatalogEnabled: cfg.SchemaTempoTagCatalogMV,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

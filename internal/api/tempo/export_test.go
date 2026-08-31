@@ -27,3 +27,34 @@ var (
 	GroupBatchesForTest      = groupBatches
 	GroupBatchesProtoForTest = groupBatchesProto
 )
+
+// TagsCatalogEligibleForTest / TagValuesCatalogEligibleForTest /
+// BuildTagCatalogKeysSQLForTest / BuildTagCatalogValuesSQLForTest
+// re-export the tag-catalog (cerberus issue #2771) eligibility rule and
+// SQL builders so they can be pinned directly on synthetic inputs,
+// without a handler round-trip per case — mirroring the re-export
+// pattern above.
+var (
+	TagsCatalogEligibleForTest      = tagsCatalogEligible
+	TagValuesCatalogEligibleForTest = tagValuesCatalogEligible
+	BuildTagCatalogKeysSQLForTest   = buildTagCatalogKeysSQL
+	BuildTagCatalogValuesSQLForTest = buildTagCatalogValuesSQL
+)
+
+// ResolvedTagNameForTest constructs a resolvedTagName for
+// TagValuesCatalogEligibleForTest's tests — the struct's fields are
+// unexported, so the external tempo_test package needs a constructor
+// rather than a literal.
+func ResolvedTagNameForTest(isIntrinsic bool, key string, mapScope AttrMapScopeForTest) resolvedTagName {
+	return resolvedTagName{IsIntrinsic: isIntrinsic, Key: key, MapScope: attrMapScope(mapScope)}
+}
+
+// AttrMapScopeForTest re-exports the attrMapScope type + its three
+// values for ResolvedTagNameForTest callers in the external package.
+type AttrMapScopeForTest = attrMapScope
+
+const (
+	AttrMapScopeAnyForTest      = attrMapScopeAny
+	AttrMapScopeResourceForTest = attrMapScopeResource
+	AttrMapScopeSpanForTest     = attrMapScopeSpan
+)

@@ -99,8 +99,14 @@ type TagScope struct {
 // permissive backend, which silently trains clients into a request
 // shape that breaks the moment they point at real Tempo.
 const (
-	tagScopeResource        = "resource"
-	tagScopeSpan            = "span"
+	// tagScopeResource / tagScopeSpan alias schema.TagCatalogScopeResource /
+	// TagCatalogScopeSpan rather than repeating the literal: those two
+	// scope names are also the exact Scope column values the tag catalog
+	// (cerberus issue #2771, see tag_catalog.go) stores, and schema is the
+	// single source of truth both this package and internal/schema/ddl
+	// import — see that constant's doc comment.
+	tagScopeResource        = schema.TagCatalogScopeResource
+	tagScopeSpan            = schema.TagCatalogScopeSpan
 	tagScopeEvent           = "event"
 	tagScopeLink            = "link"
 	tagScopeInstrumentation = "instrumentation"
@@ -167,6 +173,12 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
+	// windowless is captured BEFORE BoundDiscoveryWindow defaults start/end
+	// below — it is the tag-catalog eligibility signal (cerberus issue
+	// #2771): only a true datasource-open-probe request, carrying no
+	// start/end at all, describes the same trailing window the catalog
+	// itself maintains. See tagsCatalogEligible's doc comment.
+	windowless := start.IsZero() && end.IsZero()
 	// Bound a windowless discovery request to the recent window so the
 	// mapKeys fan-out part-prunes otel_traces instead of full-scanning +
 	// exploding the attribute Map (the multi-minute / timeout failure).
@@ -194,10 +206,22 @@ func (h *Handler) respondTags(w http.ResponseWriter, r *http.Request, route Tags
 		return
 	}
 
-	scopes, err := h.collectAttributeTagScopes(ctx, scope, filter, start, end)
-	if err != nil {
-		writeError(w, tagsErrStatus(err), "", "", err)
-		return
+	// Catalog-eligible fast path (cerberus issue #2771): see
+	// tagsCatalogEligible's doc comment for the exact rule. A miss (feature
+	// off, ineligible shape, table not yet provisioned, catalog query
+	// error, or an empty/not-yet-refreshed snapshot) falls straight
+	// through to the SAME per-request live scan every other request
+	// already takes — that path is untouched below.
+	scopes, ok := ([]TagScope)(nil), false
+	if h.TagCatalogEnabled && tagsCatalogEligible(scope, filter, windowless) {
+		scopes, ok = h.tagsFromCatalog(ctx, scope)
+	}
+	if !ok {
+		scopes, err = h.collectAttributeTagScopes(ctx, scope, filter, start, end)
+		if err != nil {
+			writeError(w, tagsErrStatus(err), "", "", err)
+			return
+		}
 	}
 	var all []string
 	for _, s := range scopes {

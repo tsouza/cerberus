@@ -225,6 +225,13 @@ func mountAPIHeads(
 		// pooled connection even if the server-side ClickHouse cap doesn't
 		// fire. See issue #2302.
 		tempoHandler.QueryTimeout = cfg.ClickHouse.QueryTimeout
+		// TagCatalogEnabled (cerberus issue #2771) is the resolved chopt
+		// tempo_tag_catalog_mv verdict — the SAME cfg.SchemaTempoTagCatalogMV
+		// DDLConfig threads to gate provisioning the catalog table in the
+		// first place, so the read path only ever attempts the catalog query
+		// on a deployment where the DDL side actually created it. Mirrors
+		// newLokiHandler's own LabelCatalogEnabled wiring.
+		tempoHandler.TagCatalogEnabled = cfg.SchemaTempoTagCatalogMV
 		tempoHandler.Engine.Settings = settingsRules(cfg, optSet)
 		// The per-query sample budget the ENGINE-level bounds read. The cursor
 		// enforces the same ceiling on rows it drains from ClickHouse, but the
@@ -1289,6 +1296,34 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 	}
 }
 
+// viewRefreshStateInfo reads system.view_refreshes for one (database, view)
+// over probe and renders it as an info.ViewRefreshState, degrading to the
+// zero value (Configured=false) on either a query error or a not-found row
+// — QueryViewRefreshState itself already degrades to Found=false on a
+// deployment where the view was never provisioned (UNKNOWN_TABLE, or simply
+// no matching row), the same honest "not configured" answer
+// filesystemCacheInfoNow reports for an unconfigured cache; a query error
+// beyond that degrades the same way rather than surfacing a transient error
+// on a metadata endpoint that always returns 200. Extracted because
+// infoOptions wired this exact body twice (LokiCatalogViewRefresh, cerberus
+// issue #2770, and TempoTagCatalogViewRefresh, cerberus issue #2771) —
+// mirroring internal/chclient's queryScanRows extraction, done for the same
+// golangci-lint dupl reason.
+func viewRefreshStateInfo(ctx context.Context, probe *chclient.Client, database, view string) info.ViewRefreshState {
+	state, err := probe.QueryViewRefreshState(ctx, database, view)
+	if err != nil || !state.Found {
+		return info.ViewRefreshState{}
+	}
+	return info.ViewRefreshState{
+		Configured:      true,
+		Status:          state.Status,
+		Exception:       state.Exception,
+		LastSuccessTime: state.LastSuccessTime,
+		LastRefreshTime: state.LastRefreshTime,
+		Retry:           state.Retry,
+	}
+}
+
 // infoOptions assembles the /info handler options: the static boot Snapshot
 // (build identity, enabled heads, CH address/database, and the raw optimization
 // SELECTION, all of which are configuration) plus the live closures the handler
@@ -1373,18 +1408,16 @@ func infoOptions(
 		// error beyond that degrades the same way rather than surfacing a
 		// transient error on a metadata endpoint that always returns 200.
 		LokiCatalogViewRefresh: func(ctx context.Context) info.ViewRefreshState {
-			state, err := probe.QueryViewRefreshState(ctx, cfg.ClickHouse.Database, schema.LabelCatalogTable+schema.LabelCatalogViewSuffix)
-			if err != nil || !state.Found {
-				return info.ViewRefreshState{}
-			}
-			return info.ViewRefreshState{
-				Configured:      true,
-				Status:          state.Status,
-				Exception:       state.Exception,
-				LastSuccessTime: state.LastSuccessTime,
-				LastRefreshTime: state.LastRefreshTime,
-				Retry:           state.Retry,
-			}
+			return viewRefreshStateInfo(ctx, probe, cfg.ClickHouse.Database, schema.LabelCatalogTable+schema.LabelCatalogViewSuffix)
+		},
+		// TempoTagCatalogViewRefresh reports system.view_refreshes' status
+		// for the Tempo tag-catalog view (cerberus issue #2771), the exact
+		// same shape and posture LokiCatalogViewRefresh reports for its
+		// sibling — see that field's own doc comment above for why this is
+		// unconditional and how it degrades, and viewRefreshStateInfo's doc
+		// for why the two share one body.
+		TempoTagCatalogViewRefresh: func(ctx context.Context) info.ViewRefreshState {
+			return viewRefreshStateInfo(ctx, probe, cfg.ClickHouse.Database, schema.TagCatalogTable+schema.TagCatalogViewSuffix)
 		},
 		StartTime:   startTime,
 		Reachable:   func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
@@ -1594,6 +1627,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// map_bucketed_serialization comment above for why this runs here
 	// rather than being threaded as an EnabledSet parameter.
 	cfg.SchemaLokiCatalogMV = set.Has(chopt.FeatureLokiCatalogMV)
+
+	// Same back-fill for tempo_tag_catalog_mv (cerberus issue #2771) — see
+	// the map_bucketed_serialization comment above for why this runs here
+	// rather than being threaded as an EnabledSet parameter.
+	cfg.SchemaTempoTagCatalogMV = set.Has(chopt.FeatureTempoTagCatalogMV)
 
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never

@@ -118,6 +118,11 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 		writeError(w, http.StatusBadRequest, "", "", err)
 		return
 	}
+	// windowless is captured BEFORE BoundDiscoveryWindow defaults start/end
+	// below — the tag-catalog eligibility signal (cerberus issue #2771);
+	// see tagValuesCatalogEligible's doc comment (in tag_catalog.go,
+	// alongside tagsCatalogEligible's fuller writeup) for why.
+	windowless := start.IsZero() && end.IsZero()
 	// Bound a windowless tag-value lookup to the recent window so the
 	// per-key scan part-prunes otel_traces instead of full-scanning the
 	// fact table (same map-explosion failure as /search/tags).
@@ -141,33 +146,44 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 	}
 
 	resolved, _ := resolveTagName(name, h.Schema)
-	var (
-		sqlStr   string
-		args     []any
-		valueTyp string
-	)
-	if resolved.IsIntrinsic {
-		sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end)
-		valueTyp = intrinsicType(resolved.IntrinsicName)
-	} else {
-		sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end)
-		valueTyp = "string"
-	}
-	h.Logger.Debug("cerberus tempo /search/tag/values",
-		"tag", name,
-		"intrinsic", resolved.IsIntrinsic,
-		"map_scope", resolved.MapScope,
-		"key", resolved.Key,
-		"sql", sqlStr,
-		"args", telemetry.SanitizeArgsForLog(args))
 
-	values, err := h.Client.QueryStrings(ctx, sqlStr, args...)
-	if err != nil {
-		h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
-		writeError(w, tagsErrStatus(err), "", "", err)
-		return
+	// Catalog-eligible fast path (cerberus issue #2771): see
+	// tagValuesCatalogEligible's doc comment for the exact rule. A miss
+	// falls straight through to the SAME live per-key lookup every other
+	// request already takes — that path is untouched below.
+	var values []string
+	valueTyp := "string"
+	fromCatalog := false
+	if h.TagCatalogEnabled && tagValuesCatalogEligible(resolved, filter, windowless) {
+		values, fromCatalog = h.tagValuesFromCatalog(ctx, resolved)
 	}
-	values = sortedUnique(values)
+	if !fromCatalog {
+		var (
+			sqlStr string
+			args   []any
+		)
+		if resolved.IsIntrinsic {
+			sqlStr, args = buildIntrinsicValuesSQL(h.Schema, resolved.IntrinsicCol, filter, start, end)
+			valueTyp = intrinsicType(resolved.IntrinsicName)
+		} else {
+			sqlStr, args = buildAttributeValuesSQL(h.Schema, resolved.Key, resolved.MapScope, filter, start, end)
+		}
+		h.Logger.Debug("cerberus tempo /search/tag/values",
+			"tag", name,
+			"intrinsic", resolved.IsIntrinsic,
+			"map_scope", resolved.MapScope,
+			"key", resolved.Key,
+			"sql", sqlStr,
+			"args", telemetry.SanitizeArgsForLog(args))
+
+		values, err = h.Client.QueryStrings(ctx, sqlStr, args...)
+		if err != nil {
+			h.Logger.Error("cerberus tempo /search/tag/values CH query failed", "err", err, "tag", name)
+			writeError(w, tagsErrStatus(err), "", "", err)
+			return
+		}
+		values = sortedUnique(values)
+	}
 
 	if route == TagValuesRouteV2 {
 		out := make([]TagValueV2, 0, len(values))
