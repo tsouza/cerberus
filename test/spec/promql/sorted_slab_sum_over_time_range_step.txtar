@@ -64,3 +64,28 @@ Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, 
           Scan(otel_metrics_sum)
 -- sql --
 SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, tupleElement(anchor_row, 1) AS `anchor_ts`, anchor_ts AS `TimeUnix`, tupleElement(anchor_row, 3) AS `Value` FROM (SELECT `Attributes`, arrayJoin(arrayFilter(p -> tupleElement(p, 2), anchor_grid)) AS `anchor_row` FROM (SELECT `Attributes`, arrayMap(a -> arrayMap(vals -> (a, length(vals) >= 1, arraySum(vals)), [arrayMap(p -> tupleElement(p, 2), arrayFilter(p -> tupleElement(p, 1) > a - toIntervalNanosecond(300000000000) AND tupleElement(p, 1) <= a, samples))])[1], arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(11))) AS `anchor_grid` FROM (SELECT `Attributes`, arraySort(groupArray((`TimeUnix`, `Value`))) AS `samples` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`)))) GROUP BY `gkey_0`, `bucket_ts`)
+-- expected_rows --
+[
+  ["", {"job": "api"}, "2026-01-01T00:00:00Z", 1],
+  ["", {"job": "api"}, "2026-01-01T00:00:30Z", 1],
+  ["", {"job": "api"}, "2026-01-01T00:01:00Z", 6],
+  ["", {"job": "api"}, "2026-01-01T00:01:30Z", 6],
+  ["", {"job": "api"}, "2026-01-01T00:02:00Z", 11],
+  ["", {"job": "api"}, "2026-01-01T00:02:30Z", 11],
+  ["", {"job": "api"}, "2026-01-01T00:03:00Z", 19],
+  ["", {"job": "api"}, "2026-01-01T00:03:30Z", 19],
+  ["", {"job": "api"}, "2026-01-01T00:04:00Z", 20],
+  ["", {"job": "api"}, "2026-01-01T00:04:30Z", 20],
+  ["", {"job": "api"}, "2026-01-01T00:05:00Z", 25],
+  ["", {"job": "web"}, "2026-01-01T00:00:00Z", 10],
+  ["", {"job": "web"}, "2026-01-01T00:00:30Z", 10],
+  ["", {"job": "web"}, "2026-01-01T00:01:00Z", 30],
+  ["", {"job": "web"}, "2026-01-01T00:01:30Z", 30],
+  ["", {"job": "web"}, "2026-01-01T00:02:00Z", 60],
+  ["", {"job": "web"}, "2026-01-01T00:02:30Z", 60],
+  ["", {"job": "web"}, "2026-01-01T00:03:00Z", 100],
+  ["", {"job": "web"}, "2026-01-01T00:03:30Z", 100],
+  ["", {"job": "web"}, "2026-01-01T00:04:00Z", 150],
+  ["", {"job": "web"}, "2026-01-01T00:04:30Z", 150],
+  ["", {"job": "web"}, "2026-01-01T00:05:00Z", 200]
+]
