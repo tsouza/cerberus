@@ -381,19 +381,15 @@ func (h *Handler) resultCacheNow() ResultCacheState {
 // state and renders it as the JSON-shaped filesystemCacheInfo. An unwired
 // closure yields the zero FilesystemCacheState (Configured=false, every
 // counter 0), the honest answer for a handler wired without
-// chclient.QueryFilesystemCacheState.
+// chclient.QueryFilesystemCacheState. FilesystemCacheState and
+// filesystemCacheInfo share an identical field set (only struct tags
+// differ), so this is a plain type conversion rather than a field-by-field
+// literal — the same shape resultCacheInfoNow uses.
 func (h *Handler) filesystemCacheInfoNow(ctx context.Context) filesystemCacheInfo {
 	if h.filesystemCache == nil {
 		return filesystemCacheInfo{}
 	}
-	s := h.filesystemCache(ctx)
-	return filesystemCacheInfo{
-		Configured:       s.Configured,
-		Caches:           s.Caches,
-		MaxSizeBytes:     s.MaxSizeBytes,
-		CurrentSizeBytes: s.CurrentSizeBytes,
-		CurrentElements:  s.CurrentElements,
-	}
+	return filesystemCacheInfo(h.filesystemCache(ctx))
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {
