@@ -1,21 +1,32 @@
 package chopt
 
-// Capability is the boot-time verdict on whether the connected ClickHouse
-// server will actually RUN the experimental timeSeries*ToGrid aggregate family
-// when cerberus stamps `allow_experimental_time_series_aggregate_functions=1`.
-// It is a SECOND axis the resolver gates the native ts_grid features on, layered
-// on top of the version floor: a server can be new enough (>= 25.9) yet
-// still REFUSE the experimental setting (a hardened profile that pins/constrains
-// it, or a readonly user), in which case auto-selecting the native node would
-// only earn a SETTING_CONSTRAINT_VIOLATION / READONLY rejection at query time.
+// Capability is the boot-time, tri-state verdict on whether the connected
+// ClickHouse server will actually accept a particular setting (or setting
+// family) cerberus wants to stamp. It is a REUSABLE shape: two independent
+// registry axes each thread their OWN Capability value through Resolve on
+// their own Config field —
 //
-// The verdict is produced by the boot canary (chclient.ProbeTSGridCapability)
-// and threaded into Resolve via Config.Capability, mirroring how the version
-// probe is threaded in as the server Version. The resolver treats "capability
-// not Available" EXACTLY like "version too old" for the four native features
-// that require the setting (Feature.RequiresExperimentalTSGrid): under auto it
-// is a silent skip + a boot WARN, under an explicit list it is FATAL (enforcing)
-// or WARN+skip (permissive).
+//   - the native timeSeries*ToGrid aggregate family's experimental gate
+//     (`allow_experimental_time_series_aggregate_functions`), probed by
+//     chclient.ProbeTSGridCapability and carried on Config.Capability, gating
+//     every Feature.RequiresExperimentalTSGrid entry;
+//   - the query result cache (`use_query_cache` / `query_cache_ttl`), probed
+//     by chclient.ProbeResultCacheCapability and carried on
+//     Config.ResultCacheCapability, gating Feature.RequiresResultCacheCapability
+//     (result_cache).
+//
+// Both exist because a server can be new enough — even, for result_cache,
+// simply RUNNING at all, since that setting family predates cerberus's own
+// version floor — yet still REFUSE the specific setting (a hardened profile
+// that pins/constrains it, a readonly user, or the underlying cache disabled
+// server-side), in which case auto-selecting the feature would only earn a
+// SETTING_CONSTRAINT_VIOLATION / READONLY rejection at query time.
+//
+// The resolver treats "capability not Available" EXACTLY like "version too
+// old" for a feature that requires it: under auto it is a silent skip + a
+// boot WARN, under an explicit list it is FATAL (enforcing) or WARN+skip
+// (permissive) — see PermitsExperimentalTSGrid / PermitsResultCache for the
+// per-axis "does this verdict allow the feature" reading.
 type Capability int
 
 const (
@@ -48,6 +59,15 @@ const (
 // timeSeries*ToGrid family. Only CapabilityAvailable does; every other state
 // (Unknown / Forbidden / Unreachable) is conservative.
 func (c Capability) PermitsExperimentalTSGrid() bool {
+	return c == CapabilityAvailable
+}
+
+// PermitsResultCache reports whether the server verdict allows the
+// result_cache feature to stamp use_query_cache / query_cache_ttl. Only
+// CapabilityAvailable does; every other state (Unknown / Forbidden /
+// Unreachable) is conservative — see the type doc for why a version-new-
+// enough server can still fail this probe.
+func (c Capability) PermitsResultCache() bool {
 	return c == CapabilityAvailable
 }
 

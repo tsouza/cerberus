@@ -915,9 +915,20 @@ func (c *Client) queryContext(ctx context.Context) context.Context {
 	if s == nil && queryID == "" {
 		return ctx
 	}
-	opts := make([]clickhouse.QueryOption, 0, 2)
+	opts := make([]clickhouse.QueryOption, 0, 3)
 	if s != nil {
 		opts = append(opts, clickhouse.WithSettings(s))
+		if resultCacheStamped(s) {
+			// This dispatch is one the engine's result-cache rule marked
+			// eligible (SettingUseQueryCache=1 on the settings map just
+			// wrapped above): wire the ProfileEvents observer so the real
+			// server-reported QueryCacheHits/QueryCacheMisses counters (not
+			// merely cerberus's own eligibility count) feed ResultCacheStats,
+			// the /info hit-rate signal (issue #2781). Scoped to exactly the
+			// queries that carry the setting, mirroring how WithTSGridSetting
+			// rides only the queries that need it.
+			opts = append(opts, clickhouse.WithProfileEvents(observeResultCacheProfileEvents))
+		}
 	}
 	if queryID != "" {
 		opts = append(opts, clickhouse.WithQueryID(queryID))

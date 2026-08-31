@@ -81,6 +81,15 @@ type Config struct {
 	// the fan-out path — so a caller that does not run the canary never silently
 	// enables the experimental path.
 	Capability Capability
+
+	// ResultCacheCapability is the SAME shape as Capability, but the verdict
+	// of the SEPARATE query-result-cache boot canary
+	// (chclient.ProbeResultCacheCapability): it gates the result_cache
+	// feature (Feature.RequiresResultCacheCapability) instead of the
+	// timeSeries*ToGrid family, because the two probe DIFFERENT settings and
+	// a server can permit one while forbidding the other. Same conservative
+	// zero value.
+	ResultCacheCapability Capability
 }
 
 // EnabledSet is the immutable resolved result: the set of feature ids the
@@ -191,7 +200,7 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 		// "auto" tokens union in the auto-set; every other token is an explicit
 		// feature request. They compose, so "auto,columnar_result_decode" is the
 		// auto-set plus that one opt-in feature.
-		warns, err := resolveTokens(tokens, cfg.Mode, server, cfg.Capability, enabled)
+		warns, err := resolveTokens(tokens, cfg.Mode, server, cfg.Capability, cfg.ResultCacheCapability, enabled)
 		if err != nil {
 			return EnabledSet{}, nil, err
 		}
@@ -221,14 +230,17 @@ func Resolve(cfg Config, server Version) (EnabledSet, []string, error) {
 // "auto,columnar_result_decode" yields the auto-set plus that one opt-in
 // feature. Returns the permissive WARN strings.
 //
-// "Supported" now folds in TWO gates: the version floor AND, for the native
-// timeSeries*ToGrid features (Feature.RequiresExperimentalTSGrid), the boot
-// capability verdict. featureBlockReason returns the human-readable reason a
+// "Supported" now folds in TWO independent capability gates ON TOP OF the
+// version floor: the native timeSeries*ToGrid features
+// (Feature.RequiresExperimentalTSGrid) against capability, and result_cache
+// (Feature.RequiresResultCacheCapability) against resultCacheCapability. A
+// feature declares at most one of the two flags, so the two never compete for
+// the same verdict. featureBlockReason returns the human-readable reason a
 // feature is blocked (or "" when supported), so a capability-forbidden feature
 // flows through the IDENTICAL auto-skip / enforcing-fatal / permissive-warn
 // paths a version-too-old feature does -- just with a reason that names the
-// experimental setting instead of a version.
-func resolveTokens(tokens []string, mode Mode, server Version, capability Capability, enabled map[string]struct{}) ([]string, error) {
+// blocked setting instead of a version.
+func resolveTokens(tokens []string, mode Mode, server Version, capability, resultCacheCapability Capability, enabled map[string]struct{}) ([]string, error) {
 	var warnings []string
 	for _, id := range tokens {
 		if id == selectionAuto {
@@ -245,7 +257,13 @@ func resolveTokens(tokens []string, mode Mode, server Version, capability Capabi
 					// experimental setting. Unlike a version skip, this is WARNed
 					// at boot so the operator sees the fan-out fallback (a working
 					// deployment that lost the native path, not a too-old server).
-					warnings = append(warnings, autoCapabilityWarn(f, capability))
+					warnings = append(warnings, autoCapabilityWarn(f, tsGridCapabilityBlockReason(capability)))
+					continue
+				}
+				if f.RequiresResultCacheCapability && !resultCacheCapability.PermitsResultCache() {
+					// Same shape, the result-cache probe's own verdict: WARN and
+					// skip rather than stamping a setting the server will refuse.
+					warnings = append(warnings, autoCapabilityWarn(f, resultCacheCapabilityBlockReason(resultCacheCapability)))
 					continue
 				}
 				enabled[f.ID] = struct{}{}
@@ -257,20 +275,20 @@ func resolveTokens(tokens []string, mode Mode, server Version, capability Capabi
 			// Typo guard: unknown id is fatal in BOTH modes.
 			return nil, fmt.Errorf("unknown ch_opt feature %q (valid: %s, or %q/%q)", id, strings.Join(allFeatureIDs(), ", "), selectionAuto, selectionOff)
 		}
-		reason := featureBlockReason(f, server, capability)
+		reason := featureBlockReason(f, server, capability, resultCacheCapability)
 		if reason == "" {
 			enabled[f.ID] = struct{}{}
 			continue
 		}
 		// Explicitly requested but blocked by the connected server. A DEFINITIVE
 		// block -- too old, or a FORBIDDEN capability verdict (the server is
-		// reachable and reachably refused the experimental setting) -- keeps the
+		// reachable and reachably refused the setting) -- keeps the
 		// enforcing "I require this" contract fatal, even alongside "auto". An
 		// INCONCLUSIVE capability probe (Unreachable / Unknown) is NOT fatal: the
-		// canary could not reach a verdict, so cerberus degrades to fan-out with a
-		// WARN exactly like the version probe's connectivity fallback rather than
-		// crashing a deployment that may well be capable.
-		if mode == Enforcing && !blockIsInconclusive(f, server, capability) {
+		// canary could not reach a verdict, so cerberus degrades to the fallback
+		// with a WARN exactly like the version probe's connectivity fallback
+		// rather than crashing a deployment that may well be capable.
+		if mode == Enforcing && !blockIsInconclusive(f, server, capability, resultCacheCapability) {
 			return nil, fmt.Errorf("ch_opt %q disabled: %s", f.ID, reason)
 		}
 		warnings = append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason))
@@ -279,41 +297,54 @@ func resolveTokens(tokens []string, mode Mode, server Version, capability Capabi
 }
 
 // featureBlockReason reports why feature f cannot be enabled on this server, or
-// "" when it can. It folds the two supportedness gates the resolver applies:
-// the version floor first, then -- for the native timeSeries*ToGrid features --
-// the boot capability verdict. A capability block is reported only AFTER the
+// "" when it can. It folds the version floor first, then whichever ONE of the
+// two capability axes f declares (RequiresExperimentalTSGrid against
+// capability, RequiresResultCacheCapability against resultCacheCapability — a
+// feature never declares both). A capability block is reported only AFTER the
 // version floor passes, so the operator-facing message names the most specific
 // cause (a too-old server is reported as a version problem, never masked as a
 // capability one).
-func featureBlockReason(f Feature, server Version, capability Capability) string {
+func featureBlockReason(f Feature, server Version, capability, resultCacheCapability Capability) string {
 	if !server.AtLeast(f.MinVersion) {
 		return fmt.Sprintf("needs ClickHouse >=%s, server is %s", f.MinVersion, server)
 	}
 	if f.RequiresExperimentalTSGrid && !capability.PermitsExperimentalTSGrid() {
-		return capabilityBlockReason(capability)
+		return tsGridCapabilityBlockReason(capability)
+	}
+	if f.RequiresResultCacheCapability && !resultCacheCapability.PermitsResultCache() {
+		return resultCacheCapabilityBlockReason(resultCacheCapability)
 	}
 	return ""
 }
 
 // blockIsInconclusive reports whether feature f's block stems from an
 // INCONCLUSIVE capability probe (Unreachable / Unknown) rather than a definitive
-// refusal. It is true only once the version floor passes (a too-old server is a
-// definitive, fatal-eligible block) AND the feature requires the experimental
-// setting AND the capability verdict is inconclusive. An inconclusive block
-// degrades to fan-out with a WARN and is NEVER fatal -- even for an explicit
-// request under enforcing -- mirroring the version probe's connectivity
-// fallback; a definitive block (too old, or Forbidden) stays fatal under
-// enforcing.
-func blockIsInconclusive(f Feature, server Version, capability Capability) bool {
-	return f.RequiresExperimentalTSGrid && server.AtLeast(f.MinVersion) && capability.Inconclusive()
+// refusal, on WHICHEVER of the two capability axes f declares. It is true only
+// once the version floor passes (a too-old server is a definitive,
+// fatal-eligible block) AND the declared verdict is inconclusive. An
+// inconclusive block degrades to the fallback with a WARN and is NEVER fatal --
+// even for an explicit request under enforcing -- mirroring the version probe's
+// connectivity fallback; a definitive block (too old, or Forbidden) stays fatal
+// under enforcing.
+func blockIsInconclusive(f Feature, server Version, capability, resultCacheCapability Capability) bool {
+	if !server.AtLeast(f.MinVersion) {
+		return false
+	}
+	if f.RequiresExperimentalTSGrid {
+		return capability.Inconclusive()
+	}
+	if f.RequiresResultCacheCapability {
+		return resultCacheCapability.Inconclusive()
+	}
+	return false
 }
 
-// capabilityBlockReason renders the reason a native ts_grid feature is blocked
-// by the boot capability verdict (the server meets the version floor but will
-// not run the experimental setting). Forbidden names the rejected setting;
-// Unreachable / Unknown report the inconclusive probe. Both end at the fan-out
-// fallback.
-func capabilityBlockReason(capability Capability) string {
+// tsGridCapabilityBlockReason renders the reason a native ts_grid feature is
+// blocked by the boot capability verdict (the server meets the version floor
+// but will not run the experimental setting). Forbidden names the rejected
+// setting; Unreachable / Unknown report the inconclusive probe. Both end at
+// the fan-out fallback.
+func tsGridCapabilityBlockReason(capability Capability) string {
 	const setting = "allow_experimental_time_series_aggregate_functions"
 	if capability == CapabilityForbidden {
 		return "server forbids " + setting + " (constrained or readonly profile); falling back to fan-out"
@@ -321,12 +352,26 @@ func capabilityBlockReason(capability Capability) string {
 	return "experimental-setting capability probe was inconclusive (" + capability.String() + "); falling back to fan-out"
 }
 
+// resultCacheCapabilityBlockReason is tsGridCapabilityBlockReason's twin for
+// the result_cache feature's OWN boot probe (ProbeResultCacheCapability),
+// naming the setting IT stamps rather than the ts-grid experimental one. Both
+// end at the same fallback: no use_query_cache/query_cache_ttl stamped, so a
+// query that would have been cache-eligible just runs uncached.
+func resultCacheCapabilityBlockReason(capability Capability) string {
+	const setting = "use_query_cache"
+	if capability == CapabilityForbidden {
+		return "server forbids " + setting + " (constrained or readonly profile, or the query cache is disabled server-side); falling back to uncached"
+	}
+	return "result-cache capability probe was inconclusive (" + capability.String() + "); falling back to uncached"
+}
+
 // autoCapabilityWarn is the boot WARN emitted when auto would have selected a
-// native ts_grid feature on a version-capable server, but the boot capability
-// verdict blocks it. It names the feature and the capability reason so the
-// fan-out fallback is visible in the logs.
-func autoCapabilityWarn(f Feature, capability Capability) string {
-	return fmt.Sprintf("ch_opt %q disabled: %s", f.ID, capabilityBlockReason(capability))
+// capability-gated feature on a version-capable server, but the boot
+// capability verdict blocks it. reason is the axis-specific rendering
+// (tsGridCapabilityBlockReason / resultCacheCapabilityBlockReason) so the
+// message names the exact setting and fallback for whichever axis blocked.
+func autoCapabilityWarn(f Feature, reason string) string {
+	return fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason)
 }
 
 // splitSelection comma-splits a selection string into trimmed, non-empty tokens.
@@ -388,7 +433,7 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 		// a RequiresExperimentalTSGrid feature, so a server that forbids the
 		// experimental setting blocks the legacy force-enable exactly as a
 		// too-old server does.
-		reason := featureBlockReason(f, server, cfg.Capability)
+		reason := featureBlockReason(f, server, cfg.Capability, cfg.ResultCacheCapability)
 		if reason == "" {
 			enabled[f.ID] = struct{}{}
 			return warnings, nil
@@ -398,7 +443,7 @@ func applyLegacyTSGrid(cfg Config, server Version, overridden bool, enabled map[
 		// stays fatal under enforcing, but an inconclusive capability probe
 		// (Unreachable / Unknown) degrades to fan-out with a WARN rather than
 		// crashing boot.
-		if cfg.Mode == Enforcing && !blockIsInconclusive(f, server, cfg.Capability) {
+		if cfg.Mode == Enforcing && !blockIsInconclusive(f, server, cfg.Capability, cfg.ResultCacheCapability) {
 			return nil, fmt.Errorf("ch_opt %q (via CERBERUS_EXPERIMENTAL_TS_GRID_RANGE) disabled: %s", f.ID, reason)
 		}
 		return append(warnings, fmt.Sprintf("ch_opt %q disabled: %s", f.ID, reason)), nil

@@ -136,6 +136,37 @@ func TestInfo_OptimizationsEnabled(t *testing.T) {
 	}
 }
 
+// TestInfo_ResultCacheHitsAndMisses (cerberus issue #2781) confirms the
+// query-result-cache tally surfaces verbatim under resultCache.{hits,misses}.
+func TestInfo_ResultCacheHitsAndMisses(t *testing.T) {
+	h := New(Options{
+		Snapshot:      baseSnapshot(),
+		Optimizations: staticOpts(baseOptState()),
+		ResultCache:   func() ResultCacheState { return ResultCacheState{Hits: 42, Misses: 7} },
+	})
+	got, _ := decodeInfo(t, h)
+
+	if got.ResultCache.Hits != 42 {
+		t.Errorf("resultCache.hits = %d; want 42", got.ResultCache.Hits)
+	}
+	if got.ResultCache.Misses != 7 {
+		t.Errorf("resultCache.misses = %d; want 7", got.ResultCache.Misses)
+	}
+}
+
+// TestInfo_ResultCacheNilFuncDefaultsToZero confirms a handler wired without
+// Options.ResultCache reports 0/0 rather than an absent field — the honest
+// answer for a deployment where result_cache never resolved in (below the
+// version floor, or the boot capability probe came back Forbidden).
+func TestInfo_ResultCacheNilFuncDefaultsToZero(t *testing.T) {
+	h := New(Options{Snapshot: baseSnapshot()})
+	got, _ := decodeInfo(t, h)
+
+	if got.ResultCache.Hits != 0 || got.ResultCache.Misses != 0 {
+		t.Errorf("resultCache with no resolver = %+v; want zero", got.ResultCache)
+	}
+}
+
 // TestInfo_ServerVersionSource verifies probe-vs-fallback round-trips
 // faithfully — the field that makes the 24.8-floor pin obvious.
 func TestInfo_ServerVersionSource(t *testing.T) {

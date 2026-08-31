@@ -83,6 +83,24 @@ const (
 	ServerVersionSourceFallback = "fallback"
 )
 
+// ResultCacheState is the current query-result-cache hit/miss tally (cerberus
+// issue #2781): the process-wide totals accumulated since boot, read from
+// chclient.ResultCacheStats. Unlike OptState it carries no "did this even
+// resolve" ambiguity — Hits/Misses are honest zero-value counters whether or
+// not result_cache ever resolved in, so a deployment running on an older
+// ClickHouse (or one whose capability probe came back Forbidden) reports
+// 0/0 rather than an absent field.
+type ResultCacheState struct {
+	// Hits is the ClickHouse-reported QueryCacheHits ProfileEvent total,
+	// summed across every dispatch that carried use_query_cache=1.
+	Hits uint64
+	// Misses is the ClickHouse-reported QueryCacheMisses ProfileEvent total,
+	// summed the same way. A query cerberus stamped eligible but the server
+	// still recomputed (a cold entry, an evicted one, or a byte-differing
+	// settings fingerprint) counts here, never silently dropped.
+	Misses uint64
+}
+
 // Options configure Handler.
 type Options struct {
 	// Snapshot is the static, boot-captured fingerprint. Required.
@@ -93,6 +111,11 @@ type Options struct {
 	// When nil the body reports an unknown server version and an empty enabled
 	// set, which is the honest answer for a handler wired without the resolver.
 	Optimizations func() OptState
+
+	// ResultCache reports the CURRENT query-result-cache hit/miss tally
+	// (cerberus issue #2781). When nil the body reports 0/0, the honest
+	// answer for a handler wired without chclient.ResultCacheStats.
+	ResultCache func() ResultCacheState
 
 	// Reachable reports whether ClickHouse is reachable right now. It is the
 	// same ping the /readyz probe issues, but reported as a plain bool here.
@@ -126,6 +149,7 @@ type Options struct {
 type Handler struct {
 	snap        Snapshot
 	opts        func() OptState
+	resultCache func() ResultCacheState
 	reachable   func(ctx context.Context) bool
 	breaker     func() string
 	schemaReady func() bool
@@ -145,6 +169,7 @@ func New(opts Options) *Handler {
 	h := &Handler{
 		snap:        opts.Snapshot,
 		opts:        opts.Optimizations,
+		resultCache: opts.ResultCache,
 		reachable:   opts.Reachable,
 		breaker:     opts.Breaker,
 		schemaReady: opts.SchemaReady,
@@ -183,6 +208,13 @@ type optimizationsInfo struct {
 	Enabled                []string `json:"enabled"`
 }
 
+// resultCacheInfo is the nested "resultCache" object of the /info body
+// (cerberus issue #2781) — the query-result-cache hit/miss tally.
+type resultCacheInfo struct {
+	Hits   uint64 `json:"hits"`
+	Misses uint64 `json:"misses"`
+}
+
 // infoResponse is the single JSON fingerprint GET /info returns. Field casing
 // (lowerCamelCase) mirrors the health handler's JSON conventions.
 type infoResponse struct {
@@ -194,6 +226,7 @@ type infoResponse struct {
 	Heads         []string          `json:"heads"`
 	ClickHouse    clickHouseInfo    `json:"clickhouse"`
 	Optimizations optimizationsInfo `json:"optimizations"`
+	ResultCache   resultCacheInfo   `json:"resultCache"`
 	Ready         bool              `json:"ready"`
 }
 
@@ -240,8 +273,16 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 			ResolvedAgainstVersion: opts.ServerVersion,
 			Enabled:                opts.Enabled,
 		},
-		Ready: h.readyNow(pingCtx),
+		ResultCache: h.resultCacheInfoNow(),
+		Ready:       h.readyNow(pingCtx),
 	}
+}
+
+// resultCacheInfoNow reads the current query-result-cache tally and renders
+// it as the JSON-shaped resultCacheInfo.
+func (h *Handler) resultCacheInfoNow() resultCacheInfo {
+	rc := h.resultCacheNow()
+	return resultCacheInfo{Hits: rc.Hits, Misses: rc.Misses}
 }
 
 // uptime is set by New via the StartTime closure; see startTime.
@@ -268,6 +309,16 @@ func (h *Handler) optsNow() OptState {
 		return OptState{}
 	}
 	return h.opts()
+}
+
+// resultCacheNow reads the current query-result-cache tally. An unwired
+// closure yields the zero ResultCacheState (0/0), the honest answer for a
+// handler wired without chclient.ResultCacheStats.
+func (h *Handler) resultCacheNow() ResultCacheState {
+	if h.resultCache == nil {
+		return ResultCacheState{}
+	}
+	return h.resultCache()
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {
