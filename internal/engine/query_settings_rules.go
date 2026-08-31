@@ -158,6 +158,12 @@ type SettingsRules struct {
 	// holds whether the knob is simply unset or the probe found it
 	// unusable. cerberus never creates the named WORKLOAD itself — see
 	// SettingWorkload's own doc.
+	//
+	// Not memory-bounding: `workload` governs CPU-slot/IO-byte scheduling
+	// fairness, never max_memory_usage or any spill threshold, so it cannot
+	// move a query's peak memory versus not stamping it — same reasoning
+	// TraceIDBitmapFilter's own doc gives for carrying no perf-sentinel
+	// coverage (PERF-SENTINEL-WAIVER: #2849).
 	QueryWorkload string
 
 	// ResultCache, when true, stamps use_query_cache=1 + query_cache_ttl on a
