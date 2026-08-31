@@ -99,6 +99,21 @@ func IsSliceInvariant(n Node) bool {
 //     single-sample, exactly-two-samples-at-the-boundary, and
 //     counter-reset windows.
 //
+//     RangeWindow.SortedSlabOverTime=true (issue #2761, sum_over_time() /
+//     avg_over_time()) needs no comparable argument at all: unlike
+//     LagAdjacency / FixedAccumulatorExtrapolated it reads no window
+//     function (no lagInFrame/leadInFrame seeded at the scan's first row).
+//     chsql/range_window_sorted_slab.go's per-anchor value is
+//     `arraySum`/`arrayAvg` over `arrayFilter(samples, a-range < ts <= a)`,
+//     which — same as the base RangeWindow entry above — is a pure
+//     function of that anchor's window membership over `samples`
+//     (itself the per-series groupArray over Input, widened by
+//     RangeWindow.InputWindow exactly like every other RangeWindow shard),
+//     with no cross-anchor or scan-position state threaded through. Verified
+//     by dual-emit parity (SortedSlabOverTime=false vs =true,
+//     range_window_sorted_slab_chdb_test.go) across duplicate-timestamp,
+//     single-sample, and empty-window cases.
+//
 //   - RangeWindowGridNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
 //     of the SAME window semantics. The aggregate is handed (start, end, step,
 //     window) and evaluates grid point i from exactly the samples inside

@@ -137,6 +137,7 @@ table.
 | `ts_grid_idelta`                 | 25.9       | experimental | yes        |
 | `laginframe_adjacency`           | none       | experimental | yes        |
 | `fixed_accumulator_extrapolated` | none       | experimental | no         |
+| `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
 | `ts_grid_last_over_time`         | 26.6       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |

@@ -2548,6 +2548,15 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn); ok {
 		return e.emitRangeWindowOverTimeDirect(r, agg)
 	}
+	// SortedSlabOverTime (cerberus issue #2761, sum_over_time /
+	// avg_over_time only — see chopt.FeatureSortedSlabOverTime) is set only
+	// by the boot-wired promql.SortedSlabOverTimeLowerer for a
+	// shape-eligible matrix window (sortedSlabOverTimeEligible already
+	// checked OuterRange > 0 / Step > 0 / Start,End pinned at lowering
+	// time), so no further shape guard is needed here.
+	if r.SortedSlabOverTime {
+		return e.emitRangeWindowSortedSlabOverTime(r)
+	}
 	inner, err := overTimeArrayValueFrag(r.Func, BareIdent("window_vals"))
 	if err != nil {
 		return err
