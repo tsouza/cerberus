@@ -75,6 +75,11 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.Rate = promql.FanoutRateLowerer{}
 	}
+	if set.Has(chopt.FeatureTSGridIncrease) {
+		l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+	} else {
+		l.Increase = promql.FanoutIncreaseLowerer{}
+	}
 	if set.Has(chopt.FeatureTSGridResample) {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
 	} else {

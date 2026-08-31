@@ -129,6 +129,7 @@ table.
 | `ts_grid_deriv`           | 25.9       | experimental | yes        |
 | `ts_grid_predict_linear`  | 25.9       | experimental | yes        |
 | `ts_grid_recollapse`      | 25.9       | experimental | yes        |
+| `ts_grid_increase`        | 25.9       | experimental | yes        |
 | `ts_grid_histogram`       | 25.9       | experimental | yes        |
 | `quantile_prom_histogram` | 25.10      | experimental | no         |
 | `laginframe_adjacency`    | none       | experimental | yes        |
@@ -158,6 +159,7 @@ reference Prometheus on NaN-adjacent windows, tracked as
 | `ts_grid_deriv`           | `allow_experimental_time_series_aggregate_functions` | opts eligible `deriv(<gauge>[<range>])` query_range shapes onto the native `timeSeriesDerivToGrid` aggregate (per-window least-squares slope), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                         |
 | `ts_grid_predict_linear`  | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                |
 | `ts_grid_recollapse`      | `allow_experimental_time_series_aggregate_functions` | defers the OTel -> Prometheus label-shaping tower PAST an eligible `ts_grid_range` rate grid, splitting it into `timeSeriesRateToGridState` over the raw keys and `timeSeriesRateToGridMerge` over the shaped ones, so the reshape runs once per raw series instead of once per raw row. Narrows `ts_grid_range`. Auto-enabled on server >= 25.9.                                                                                   |
+| `ts_grid_increase`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `increase(<counter>[<range>])` query_range shapes onto the SAME native `timeSeriesRateToGrid` aggregate `ts_grid_range` uses, multiplied back by the window seconds at emit time (`increase()` is `extrapolatedRate()` without the final `/range` divide). Retires the `arrayJoin` sample-per-anchor fan-out. Auto-enabled on server >= 25.9.                                                                         |
 | `quantile_prom_histogram` | (none)                                               | opts the classic `histogram_quantile(phi, ...)` rank walk onto the native `quantilePrometheusHistogram(phi)(le, cum)` aggregate, retiring the `arrayCumSum`/`arrayFirstIndex`/interpolation chain. Opt-in only (never auto): faster at real-world series counts but costs ~3.3x memory at high cardinality ([#2790](https://github.com/tsouza/cerberus/issues/2790)), on top of the new 25.10 floor still lacking fielded evidence. |
 
 Notes:
@@ -226,6 +228,18 @@ Notes:
   It opts eligible `resets(<counter>[<range>])` shapes onto the native
   `timeSeriesResetsToGrid` aggregate, retiring the per-window counter-reset
   fan-out.
+- **`ts_grid_increase`** reuses `ts_grid_range`'s own `timeSeriesRateToGrid`
+  aggregate — there is no dedicated `timeSeriesIncreaseToGrid` upstream — and
+  multiplies the per-grid-point result back by the window seconds at emit
+  time: Prometheus's `increase()` IS `extrapolatedRate()` without the final
+  `/range` divide, so `rate * range` recovers the same undivided extrapolated
+  increase the fan-out publishes. Shares `ts_grid_range`'s **25.9** floor and
+  experimental setting; `autoSelect: yes` because the divide-then-multiply
+  round trip introduces only a documented, measured 1-ULP float64 rounding
+  divergence from the fan-out's direct multiply-then-sum (proven by a
+  dual-emit chDB parity test), never a wrong answer the way `ts_grid_changes`'
+  NaN-adjacent overcount is. It carries no `ts_grid_recollapse` counterpart in
+  this cut: the label-shaping hoist is not wired for `increase()`.
 - **`ts_grid_deriv`** and **`ts_grid_predict_linear`** are the LAST members of
   the `timeSeries*ToGrid` family to adopt the native path: experimental
   maturity, auto-enabled on a capable server, same experimental setting. Their
@@ -435,9 +449,9 @@ a restart.
 
 ## Capability probe (experimental ts_grid setting)
 
-The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_resample`,
-`ts_grid_changes`, `ts_grid_resets`, `ts_grid_deriv`, `ts_grid_predict_linear`)
-need the server to run with
+The native `timeSeries*ToGrid` features (`ts_grid_range`, `ts_grid_increase`,
+`ts_grid_resample`, `ts_grid_changes`, `ts_grid_resets`, `ts_grid_deriv`,
+`ts_grid_predict_linear`) need the server to run with
 `allow_experimental_time_series_aggregate_functions=1`, which cerberus
 co-stamps on exactly the queries that emit the native node. A server can be
 **new enough** for the version floor yet still **forbid** that setting — a

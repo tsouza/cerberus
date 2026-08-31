@@ -161,6 +161,36 @@ const (
 	// for the probe shape and the versions it was executed against).
 	FeatureTSGridRecollapse = "ts_grid_recollapse"
 
+	// FeatureTSGridIncrease opts eligible increase(<counter>[<range>])
+	// query_range shapes onto the native timeSeriesRateToGrid aggregate,
+	// retiring the arrayJoin sample-per-anchor fan-out
+	// (internal/chsql.emitWindowedArrayExtrapolatedMatrix) that increase()
+	// otherwise shares with rate(). There is no dedicated
+	// timeSeriesIncreaseToGrid aggregate upstream, so this reuses
+	// timeSeriesRateToGrid and multiplies its per-grid-point result back by
+	// the window's range in seconds: Prometheus's `increase()` IS
+	// `extrapolatedRate()` with the final `/range` divide left out, so
+	// `rate * range` recovers the undivided extrapolated increase in real
+	// arithmetic. The same round-trip already backs
+	// FeatureTSGridHistogram's classic-histogram ladder (see
+	// internal/chsql/range_bucket_grid_native.go's own "multiplied back by
+	// the window seconds" note).
+	//
+	// The floor is 25.9, shared with the rest of the family for the same
+	// reason FeatureTSGridRange is: increase() rides the same
+	// timeSeriesRateToGrid aggregate, whose membership window was CLOSED
+	// (wrong) until the left-open / right-closed fix (PR #86588, ClickHouse
+	// 25.9).
+	//
+	// AutoSelect is true, unlike FeatureTSGridChanges: the division-then-
+	// multiply round trip introduces only a documented, measured 1-ULP
+	// float64 rounding divergence from the fan-out's direct
+	// multiply-then-sum (proven by a dual-emit chDB parity test against the
+	// SAME fixture the fan-out's own Prometheus-pinned golden covers — see
+	// internal/chsql/range_window_grid_native_increase_chdb_test.go), never a
+	// wrong ANSWER the way ts_grid_changes' NaN-adjacent-window overcount is.
+	FeatureTSGridIncrease = "ts_grid_increase"
+
 	// FeatureTSGridHistogram opts the per-series `rate` window stage under the
 	// range-mode classic-histogram quantile idiom
 	// `histogram_quantile(phi, <agg> by(le) (rate(<bucket>[range])))` onto a
@@ -466,6 +496,14 @@ var registry = []Feature{
 		Doc:                        "defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)",
 	},
 	{
+		ID:                         FeatureTSGridIncrease,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible increase(<counter>[<range>]) shapes onto native timeSeriesRateToGrid multiplied back by the window seconds (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix)",
+	},
+	{
 		ID:                         FeatureTSGridHistogram,
 		MinVersion:                 Version{Major: 25, Minor: 9},
 		Stability:                  Experimental,
@@ -492,10 +530,10 @@ var registry = []Feature{
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_histogram,
-// quantile_prom_histogram, laginframe_adjacency). The copy keeps the
-// canonical entries immutable from the caller's side. Exposed so tests can
-// enumerate the gates and the docs generator can render the table.
+// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
+// ts_grid_histogram, quantile_prom_histogram, laginframe_adjacency). The copy
+// keeps the canonical entries immutable from the caller's side. Exposed so
+// tests can enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)
