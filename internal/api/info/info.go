@@ -213,6 +213,14 @@ type Options struct {
 	// handler wired without chclient.QueryViewRefreshState.
 	LokiCatalogViewRefresh func(ctx context.Context) ViewRefreshState
 
+	// TempoTagCatalogViewRefresh reports the CURRENT scheduler status of
+	// the Tempo tag-catalog's refreshable materialized view (cerberus
+	// issue #2771), the exact same posture LokiCatalogViewRefresh takes
+	// for its sibling — read live under the handler's own ping budget,
+	// nil degrades to Configured=false and every other field at its zero
+	// value.
+	TempoTagCatalogViewRefresh func(ctx context.Context) ViewRefreshState
+
 	// Reachable reports whether ClickHouse is reachable right now. It is the
 	// same ping the /readyz probe issues, but reported as a plain bool here.
 	// When nil, reachability is reported false.
@@ -243,17 +251,18 @@ type Options struct {
 
 // Handler serves GET /info. Construct via New and register via Mount.
 type Handler struct {
-	snap                   Snapshot
-	opts                   func() OptState
-	resultCache            func() ResultCacheState
-	filesystemCache        func(ctx context.Context) FilesystemCacheState
-	lokiCatalogViewRefresh func(ctx context.Context) ViewRefreshState
-	reachable              func(ctx context.Context) bool
-	breaker                func() string
-	schemaReady            func() bool
-	ready                  func(ctx context.Context) bool
-	start                  time.Time
-	pingTimeout            time.Duration
+	snap                       Snapshot
+	opts                       func() OptState
+	resultCache                func() ResultCacheState
+	filesystemCache            func(ctx context.Context) FilesystemCacheState
+	lokiCatalogViewRefresh     func(ctx context.Context) ViewRefreshState
+	tempoTagCatalogViewRefresh func(ctx context.Context) ViewRefreshState
+	reachable                  func(ctx context.Context) bool
+	breaker                    func() string
+	schemaReady                func() bool
+	ready                      func(ctx context.Context) bool
+	start                      time.Time
+	pingTimeout                time.Duration
 }
 
 // defaultPingTimeout bounds the live reachability/ready probes per request.
@@ -265,17 +274,18 @@ const defaultPingTimeout = time.Second
 // well-formed body.
 func New(opts Options) *Handler {
 	h := &Handler{
-		snap:                   opts.Snapshot,
-		opts:                   opts.Optimizations,
-		resultCache:            opts.ResultCache,
-		filesystemCache:        opts.FilesystemCache,
-		lokiCatalogViewRefresh: opts.LokiCatalogViewRefresh,
-		reachable:              opts.Reachable,
-		breaker:                opts.Breaker,
-		schemaReady:            opts.SchemaReady,
-		ready:                  opts.Ready,
-		start:                  opts.StartTime,
-		pingTimeout:            opts.PingTimeout,
+		snap:                       opts.Snapshot,
+		opts:                       opts.Optimizations,
+		resultCache:                opts.ResultCache,
+		filesystemCache:            opts.FilesystemCache,
+		lokiCatalogViewRefresh:     opts.LokiCatalogViewRefresh,
+		tempoTagCatalogViewRefresh: opts.TempoTagCatalogViewRefresh,
+		reachable:                  opts.Reachable,
+		breaker:                    opts.Breaker,
+		schemaReady:                opts.SchemaReady,
+		ready:                      opts.Ready,
+		start:                      opts.StartTime,
+		pingTimeout:                opts.PingTimeout,
 	}
 	if h.pingTimeout <= 0 {
 		h.pingTimeout = defaultPingTimeout
@@ -338,21 +348,36 @@ type lokiCatalogViewRefreshInfo struct {
 	Retry           uint64 `json:"retry"`
 }
 
+// tempoTagCatalogViewRefreshInfo is the nested "tempoTagCatalogViewRefresh"
+// object of the /info body (cerberus issue #2771) — the Tempo tag-catalog
+// refreshable materialized view's system.view_refreshes status, reported
+// verbatim, the exact same shape lokiCatalogViewRefreshInfo reports for
+// its sibling.
+type tempoTagCatalogViewRefreshInfo struct {
+	Configured      bool   `json:"configured"`
+	Status          string `json:"status"`
+	Exception       string `json:"exception"`
+	LastSuccessTime string `json:"lastSuccessTime"`
+	LastRefreshTime string `json:"lastRefreshTime"`
+	Retry           uint64 `json:"retry"`
+}
+
 // infoResponse is the single JSON fingerprint GET /info returns. Field casing
 // (lowerCamelCase) mirrors the health handler's JSON conventions.
 type infoResponse struct {
-	Service                string                     `json:"service"`
-	Version                string                     `json:"version"`
-	Revision               string                     `json:"revision"`
-	GoVersion              string                     `json:"goVersion"`
-	UptimeSeconds          int64                      `json:"uptimeSeconds"`
-	Heads                  []string                   `json:"heads"`
-	ClickHouse             clickHouseInfo             `json:"clickhouse"`
-	Optimizations          optimizationsInfo          `json:"optimizations"`
-	ResultCache            resultCacheInfo            `json:"resultCache"`
-	FilesystemCache        filesystemCacheInfo        `json:"filesystemCache"`
-	LokiCatalogViewRefresh lokiCatalogViewRefreshInfo `json:"lokiCatalogViewRefresh"`
-	Ready                  bool                       `json:"ready"`
+	Service                    string                         `json:"service"`
+	Version                    string                         `json:"version"`
+	Revision                   string                         `json:"revision"`
+	GoVersion                  string                         `json:"goVersion"`
+	UptimeSeconds              int64                          `json:"uptimeSeconds"`
+	Heads                      []string                       `json:"heads"`
+	ClickHouse                 clickHouseInfo                 `json:"clickhouse"`
+	Optimizations              optimizationsInfo              `json:"optimizations"`
+	ResultCache                resultCacheInfo                `json:"resultCache"`
+	FilesystemCache            filesystemCacheInfo            `json:"filesystemCache"`
+	LokiCatalogViewRefresh     lokiCatalogViewRefreshInfo     `json:"lokiCatalogViewRefresh"`
+	TempoTagCatalogViewRefresh tempoTagCatalogViewRefreshInfo `json:"tempoTagCatalogViewRefresh"`
+	Ready                      bool                           `json:"ready"`
 }
 
 // handleInfo writes the fingerprint. It always returns 200: /info is a
@@ -398,10 +423,11 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 			ResolvedAgainstVersion: opts.ServerVersion,
 			Enabled:                opts.Enabled,
 		},
-		ResultCache:            h.resultCacheInfoNow(),
-		FilesystemCache:        h.filesystemCacheInfoNow(pingCtx),
-		LokiCatalogViewRefresh: h.lokiCatalogViewRefreshInfoNow(pingCtx),
-		Ready:                  h.readyNow(pingCtx),
+		ResultCache:                h.resultCacheInfoNow(),
+		FilesystemCache:            h.filesystemCacheInfoNow(pingCtx),
+		LokiCatalogViewRefresh:     h.lokiCatalogViewRefreshInfoNow(pingCtx),
+		TempoTagCatalogViewRefresh: h.tempoTagCatalogViewRefreshInfoNow(pingCtx),
+		Ready:                      h.readyNow(pingCtx),
 	}
 }
 
@@ -478,6 +504,17 @@ func (h *Handler) lokiCatalogViewRefreshInfoNow(ctx context.Context) lokiCatalog
 		return lokiCatalogViewRefreshInfo{}
 	}
 	return lokiCatalogViewRefreshInfo(h.lokiCatalogViewRefresh(ctx))
+}
+
+// tempoTagCatalogViewRefreshInfoNow reads the current Tempo tag-catalog
+// view refresh status and renders it as the JSON-shaped
+// tempoTagCatalogViewRefreshInfo — the exact same plain type-conversion
+// shape lokiCatalogViewRefreshInfoNow uses for its sibling.
+func (h *Handler) tempoTagCatalogViewRefreshInfoNow(ctx context.Context) tempoTagCatalogViewRefreshInfo {
+	if h.tempoTagCatalogViewRefresh == nil {
+		return tempoTagCatalogViewRefreshInfo{}
+	}
+	return tempoTagCatalogViewRefreshInfo(h.tempoTagCatalogViewRefresh(ctx))
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {

@@ -224,6 +224,23 @@ type Config struct {
 	// mirroring exactly how TraceIDProjectionEnabled is threaded from its
 	// own chopt verdict.
 	LokiLabelCatalogEnabled bool
+
+	// TempoTagCatalogEnabled gates the curated `CREATE TABLE
+	// tempo_tag_catalog` + `CREATE MATERIALIZED VIEW ... REFRESH EVERY 5
+	// MINUTE ... TO tempo_tag_catalog` pair (cerberus issue #2771, the
+	// Tempo sibling of LokiLabelCatalogEnabled) that maintains a
+	// per-(scope, tag-key) top-values catalog on top of the traces table,
+	// refreshed on a schedule instead of scanned per request by
+	// `/api/v2/search/tags` and `/api/search/tag/{name}/values`
+	// (internal/api/tempo/search_tags.go, search_tag_values.go). False
+	// (the default) renders neither statement at all — an operator on
+	// today's schema sees byte-identical DDL. The chopt
+	// tempo_tag_catalog_mv feature (version-gated at ClickHouse >= 24.10,
+	// the same refreshable-materialized-view floor LokiLabelCatalogEnabled
+	// uses) resolves this bit at boot — see internal/schemaboot.DDLConfig
+	// — mirroring exactly how LokiLabelCatalogEnabled is threaded from its
+	// own chopt verdict.
+	TempoTagCatalogEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -824,6 +841,18 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderTracesColumnStatistics(cfg)...)
 		}
+		// The Tempo tag catalog table + its refreshable MV (issue #2771)
+		// trail every other traces statement, mirroring the loki
+		// label-catalog pair's own CREATE-then-MV order on the logs
+		// signal — the catalog table must exist before the MV's TO clause
+		// can reference it.
+		if cfg.TempoTagCatalogEnabled {
+			stmts = append(
+				stmts,
+				renderTempoTagCatalogTable(cfg),
+				renderTempoTagCatalogView(cfg),
+			)
+		}
 		return stmts, nil
 	default:
 		return nil, fmt.Errorf("ddl: unknown signal: %d", int(s))
@@ -1335,6 +1364,210 @@ func renderLokiLabelCatalogView(cfg Config) string {
 		IfNotExists().
 		RefreshEveryMinutes(lokiLabelCatalogRefreshMinutes).
 		To(cfg.Database, schema.LabelCatalogTable).
+		As(body)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// --- Tempo tag catalog (cerberus issue #2771) ---
+//
+// The Tempo sibling of the Loki label-cardinality catalog above: a
+// refreshable MV maintaining, per (Scope, TagKey), a topK sketch of the
+// most frequent values observed for that key in the aggregation window.
+// The table's four columns live in internal/schema (TagCatalogTable and
+// friends), not here — see that package's doc comment for why, mirroring
+// LabelCatalogTable's own rationale.
+//
+// SCOPE COVERAGE: only the two flat-Map attribute scopes — resource
+// (ResourceAttributes) and span (SpanAttributes) — feed the catalog.
+// Event/Link attributes (Events.Attributes / Links.Attributes) are
+// Array(Map(String, String)) — one map PER EVENT / PER LINK on a span
+// row, not one map per row — so exploding them costs an extra
+// arrayFlatten(arrayMap(...)) fan-out per row on top of the mapKeys/
+// mapValues explosion this view already pays twice (see
+// distinctNestedMapKeysFrag in internal/api/tempo/search_tags.go for the
+// live-path shape this would have to mirror). That is not "cheap" the
+// way issue #2771 asked the catalog to stay, and events/links are a
+// materially rarer autocomplete target than resource/span attributes, so
+// they are excluded — an honest scope-down, not a deferral: the live
+// scan remains their permanent, unconditional path, the same posture the
+// resource/span buckets keep for every OTHER Tempo request shape (see
+// tagsCatalogEligible's doc in internal/api/tempo/tag_catalog.go).
+// Instrumentation-scope attributes (ScopeAttributes) are excluded for a
+// different reason: the upstream traces_table.sql template carries no
+// such column at all (schema.Traces.ScopeAttributesColumn defaults to
+// "" — see that field's doc comment), so a stock deployment has nothing
+// to catalog there; a custom schema that populates it stays on the live
+// path, consistent with how attributeTagScopes() already treats an empty
+// ScopeAttributesColumn as "no bucket".
+//
+// VALUE SHAPE: topKState/topKMerge (a bounded top-N sketch, N =
+// schema.TagCatalogTopValuesLimit) rather than uniqState (a cardinality-only
+// sketch, what the Loki catalog stores). The two endpoints this catalog
+// serves need actual VALUES back — /search/tags needs the key names,
+// /search/tag/{name}/values needs a sample of the key's values — not a
+// count, so a cardinality sketch alone would have no read-side consumer.
+// topK is approximate (Space-Saving algorithm) and caps at N values per
+// key: a key with more than N distinct values in the window returns only
+// its N most frequent, not the exhaustive set the live scan would. This
+// is the same kind of documented divergence FeatureLokiCatalogMV's own
+// doc accepts for its cardinality numbers — exempted from exact parity
+// with the live path, not merely undertested against it.
+const (
+	// tempoTagValueColumn names the second column the catalog view's
+	// UNION ALL arms project — the exploded map value each arm's
+	// ArrayJoin produces, before it feeds the outer topKState aggregate.
+	// Local to this view's body (mirrors labelValueColumn's own scoping).
+	tempoTagValueColumn = "TagValue"
+
+	// tracesSpanAttributesColumn names the traces spans table's
+	// span-level attribute Map column — fixed by the upstream OTel-CH
+	// exporter template, like every other columnName constant in this
+	// package. The view's OTHER two map/timestamp columns
+	// (ResourceAttributes, Timestamp) reuse metricResourceAttributesColumn
+	// / logsTimestampColumnName rather than duplicating the same literal
+	// under a third name — the same cross-signal reuse
+	// renderLokiLabelCatalogView and the spanNameColumn block's own doc
+	// comment already establish for this package.
+	tracesSpanAttributesColumn = "SpanAttributes"
+
+	// tempoTagCatalogRefreshMinutes is the REFRESH EVERY interval for the
+	// catalog view — the same 5-minute cadence lokiLabelCatalogRefreshMinutes
+	// uses, for the same reason: frequent enough that a freshly-appearing
+	// tag surfaces within one Grafana Explore session, infrequent enough
+	// that the refresh's own scan cost stays a small fraction of the
+	// period even against a busy traces table.
+	tempoTagCatalogRefreshMinutes = 5
+
+	// tempoTagCatalogWindowHours bounds the catalog's aggregation window to
+	// the most recent N hours, keeping each refresh's scan cost bounded
+	// the same way lokiLabelCatalogWindowHours does. 1 hour — narrower than
+	// the Loki catalog's 24h — is deliberately chosen to match
+	// internal/api/tempo.DefaultSearchLookback: the catalog answers exactly
+	// the window the LIVE path already defaults a windowless discovery
+	// request to (see BoundDiscoveryWindow), so a catalog hit and a
+	// catalog-miss-fallback describe the same trailing hour rather than two
+	// different windows.
+	tempoTagCatalogWindowHours = 1
+)
+
+// tempoTagCatalogTopValuesType renders the `topK(N)` column-type
+// descriptor `AggregateFunction(topK(N), String)` and the ALTER/CREATE
+// column type share — built via the typed chsql.Call constructor (a
+// parametric aggregate function name IS a function call in CH's type
+// grammar), not a hand-formatted string. N is schema.TagCatalogTopValuesLimit
+// — see that constant's doc for why it is the single source of truth
+// shared with the read-side topKMerge in internal/api/tempo.
+func tempoTagCatalogTopValuesType() chsql.Frag {
+	return chsql.Call("topK", chsql.InlineLit(int64(schema.TagCatalogTopValuesLimit)))
+}
+
+// tempoTagCatalogTopValuesStateFrag renders `topKState(N)(<col>)` — the
+// per-row aggregate state expression the catalog view's SELECT computes.
+// ParamAgg is CH's parameterised-aggregate shape
+// (`name(params...)(args...)`); Builder.ParamAgg takes plain
+// func(*Builder) slices, so the typed chsql.Frag values are adapted via
+// paramAggArgs.
+func tempoTagCatalogTopValuesStateFrag(col chsql.Frag) chsql.Frag {
+	return func(b *chsql.Builder) {
+		b.ParamAgg("topKState", paramAggArgs(chsql.InlineLit(int64(schema.TagCatalogTopValuesLimit))), paramAggArgs(col))
+	}
+}
+
+// paramAggArgs adapts a small fixed list of typed chsql.Frag values to
+// the []func(*chsql.Builder) shape Builder.ParamAgg's params/args
+// parameters take — Frag's underlying type is already func(*Builder), so
+// this is a plain element-wise slice conversion, not a rendering step.
+func paramAggArgs(frags ...chsql.Frag) []func(b *chsql.Builder) {
+	out := make([]func(b *chsql.Builder), len(frags))
+	for i, f := range frags {
+		out[i] = f
+	}
+	return out
+}
+
+// renderTempoTagCatalogTable renders the CREATE TABLE for the tag
+// catalog: one row per (Scope, TagKey), carrying a topKState sketch of
+// the most frequent values observed for that key in the catalog view's
+// aggregation window. AggregatingMergeTree for the same reason
+// renderLokiLabelCatalogTable uses it: topK's combinator is a genuine
+// multi-state merge, not an idempotent max/sum. ORDER BY (Scope, TagKey)
+// mirrors renderLokiLabelCatalogTable's ORDER BY LabelKey: the refreshable
+// view's atomic swap — not incremental MergeTree merges — keeps this
+// table's content current, so the sort key only needs to make the
+// per-(scope, key) read path (internal/api/tempo's catalog read) and the
+// per-scope key listing efficient.
+func renderTempoTagCatalogTable(cfg Config) string {
+	engine := chsql.EngineAggregatingMergeTree()
+	if cfg.DatabaseEngine.Replicated {
+		engine = chsql.EngineReplicatedAggregatingMergeTree()
+	}
+	return chsql.CreateTable(schema.TagCatalogTable).
+		Database(cfg.Database).
+		IfNotExists().
+		Columns(
+			chsql.ColumnDef{Name: schema.TagCatalogScopeColumn, Type: chsql.TypeRaw("String")},
+			chsql.ColumnDef{Name: schema.TagCatalogKeyColumn, Type: chsql.TypeRaw("String")},
+			chsql.ColumnDef{
+				Name: schema.TagCatalogTopValuesStateColumn,
+				Type: chsql.Call("AggregateFunction", tempoTagCatalogTopValuesType(), chsql.TypeRaw("String")),
+			},
+		).
+		Engine(engine).
+		OrderBy(schema.TagCatalogScopeColumn, schema.TagCatalogKeyColumn).
+		SQL()
+}
+
+// tempoTagCatalogScopeArm renders one UNION ALL arm of
+// renderTempoTagCatalogView's source subquery: every (key, value) pair in
+// mapCol across the trailing tempoTagCatalogWindowHours, tagged with the
+// literal scope name. scope is baked in as a DDL-time literal
+// (chsql.InlineLit), not a bound `?` parameter — the view body is stored
+// DDL, not a per-request statement — mirroring how
+// renderLokiLabelCatalogView's window bound is itself a literal
+// expression re-evaluated at each refresh.
+func tempoTagCatalogScopeArm(cfg Config, scope, mapCol string, windowStart chsql.Frag) *chsql.QueryBuilder {
+	return chsql.NewQuery().
+		Select(
+			chsql.As(chsql.InlineLit(scope), schema.TagCatalogScopeColumn),
+			chsql.As(chsql.Col("k"), schema.TagCatalogKeyColumn),
+			chsql.As(chsql.Col("v"), tempoTagValueColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.Traces)).
+		ArrayJoin(
+			chsql.As(chsql.Call("mapKeys", chsql.Col(mapCol)), "k"),
+			chsql.As(chsql.Call("mapValues", chsql.Col(mapCol)), "v"),
+		).
+		Where(chsql.Gte(chsql.Col(logsTimestampColumnName), windowStart)).
+		Where(chsql.Neq(chsql.Col("v"), chsql.InlineLit("")))
+}
+
+// renderTempoTagCatalogView renders the REFRESH-scheduled CREATE
+// MATERIALIZED VIEW feeding renderTempoTagCatalogTable from the traces
+// table: a UNION ALL of the resource-scope and span-scope arms (see
+// tempoTagCatalogScopeArm), re-aggregated into one topKState per (Scope,
+// TagKey). Like renderLokiLabelCatalogView this uses RefreshEveryMinutes
+// rather than an on-insert trigger, because the window bound must be
+// re-evaluated at EACH refresh to stay "the trailing N hours".
+func renderTempoTagCatalogView(cfg Config) string {
+	windowStart := chsql.Sub(chsql.Call("now"), chsql.Call("toIntervalHour", chsql.InlineLit(int64(tempoTagCatalogWindowHours))))
+	resourceArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeResource, metricResourceAttributesColumn, windowStart)
+	spanArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeSpan, tracesSpanAttributesColumn, windowStart)
+	body := chsql.NewQuery().
+		Select(
+			chsql.Col(schema.TagCatalogScopeColumn),
+			chsql.Col(schema.TagCatalogKeyColumn),
+			chsql.As(tempoTagCatalogTopValuesStateFrag(chsql.Col(tempoTagValueColumn)), schema.TagCatalogTopValuesStateColumn),
+		).
+		From(chsql.Paren(chsql.UnionAll(resourceArm.Frag(), spanArm.Frag()))).
+		GroupBy(chsql.Col(schema.TagCatalogScopeColumn), chsql.Col(schema.TagCatalogKeyColumn))
+	stmt := chsql.CreateMaterializedView(schema.TagCatalogTable+schema.TagCatalogViewSuffix).
+		Database(cfg.Database).
+		IfNotExists().
+		RefreshEveryMinutes(tempoTagCatalogRefreshMinutes).
+		To(cfg.Database, schema.TagCatalogTable).
 		As(body)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)

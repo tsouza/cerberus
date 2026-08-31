@@ -1042,6 +1042,41 @@ const (
 	// CERBERUS_CH_OPTIMIZATIONS=loki_catalog_mv pending that evidence.
 	FeatureLokiCatalogMV = "loki_catalog_mv"
 
+	// FeatureTempoTagCatalogMV gates the curated `CREATE MATERIALIZED VIEW
+	// ... REFRESH EVERY 5 MINUTE ... TO tempo_tag_catalog AS SELECT ...`
+	// DDL (cerberus issue #2771, the Tempo sibling of FeatureLokiCatalogMV
+	// above) that maintains a per-(scope, tag-key) top-values catalog over
+	// the traces table's SpanAttributes / ResourceAttributes maps,
+	// refreshed on a schedule instead of scanned per request.
+	// `/api/v2/search/tags` and `/api/search/tag/{name}/values`
+	// (internal/api/tempo/search_tags.go, search_tag_values.go) serve from
+	// the catalog when eligible — see internal/api/tempo/tag_catalog.go's
+	// eligibility rule — and fall back to the existing live attribute-map
+	// scan otherwise; the fallback path is untouched and permanent, exactly
+	// as FeatureLokiCatalogMV's own doc describes for its sibling.
+	//
+	// The catalog covers only the resource and span scopes — event, link,
+	// and instrumentation scopes stay on the live path unconditionally
+	// (Nested Array(Map) explosion is a materially different, costlier
+	// shape than a flat Map explosion; see the DDL render function's own
+	// doc for the honest scope-down). Filtered tag/tag-value lookups (the
+	// V2 `q=<TraceQL>` narrowing parameter) also stay on the live path
+	// unconditionally: the catalog has no way to answer "values on spans
+	// matching this predicate" without evaluating the predicate per row,
+	// which is exactly the scan this feature exists to avoid.
+	//
+	// VERSION FLOOR: 24.10 — same upstream PR #70550 floor
+	// FeatureLokiCatalogMV cites; see that constant's doc for the
+	// evidence, which applies identically here (same REFRESH EVERY DDL
+	// shape, same server-side gate).
+	//
+	// NOT auto-selected (AutoSelect=false), mirroring FeatureLokiCatalogMV's
+	// posture: the refresh's steady-state scan cost against a real traces
+	// table is unmeasured beyond this feature's own synthetic benchmark, so
+	// enabling it is an operator opt-in via
+	// CERBERUS_CH_OPTIMIZATIONS=tempo_tag_catalog_mv pending that evidence.
+	FeatureTempoTagCatalogMV = "tempo_tag_catalog_mv"
+
 	// FeatureExpHistogramMergeSumMap opts the across-series exponential
 	// (native) histogram merge stage (histogram_native_sum.go's
 	// expHistogramGroupMergedInstant, the ONLY eligible call site) onto a
@@ -1713,6 +1748,13 @@ var registry = []Feature{
 		Doc:        "REFRESH EVERY 5 MINUTE materialized view for /detected_labels' selector-less requests (server >= 24.10, opt-in via CERBERUS_CH_OPTIMIZATIONS — refresh scan cost unmeasured at production volume pending real-world calibration)",
 	},
 	{
+		ID:         FeatureTempoTagCatalogMV,
+		MinVersion: Version{Major: 24, Minor: 10},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "REFRESH EVERY 5 MINUTE materialized view for /search/tags and /search/tag/{name}/values' unfiltered resource+span lookups (server >= 24.10, opt-in via CERBERUS_CH_OPTIMIZATIONS — refresh scan cost unmeasured at production volume pending real-world calibration)",
+	},
+	{
 		ID:         FeatureTraceIDBitmapFilter,
 		MinVersion: Version{Major: 25, Minor: 11},
 		Stability:  Experimental,
@@ -1779,9 +1821,10 @@ var registry = []Feature{
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
-// join_spill, trace_id_projection, loki_catalog_mv, trace_id_bitmap_filter,
-// arg_and_max_fusion, result_cache, lazy_materialization, explain_estimate,
-// cardinality_probe, full_text_index, text_index_line_filter). The copy
+// join_spill, trace_id_projection, loki_catalog_mv, tempo_tag_catalog_mv,
+// trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
+// lazy_materialization, explain_estimate, cardinality_probe,
+// full_text_index, text_index_line_filter). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
 // table.

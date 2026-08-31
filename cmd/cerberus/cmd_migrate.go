@@ -229,6 +229,10 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// #2770) — also AutoSelect=false, so the same explicit-listing-only
 			// reasoning applies.
 			cfg.SchemaLokiCatalogMV = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureLokiCatalogMV)
+			// Same best-effort preview for tempo_tag_catalog_mv (cerberus
+			// issue #2771) — also AutoSelect=false, so the same
+			// explicit-listing-only reasoning applies.
+			cfg.SchemaTempoTagCatalogMV = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureTempoTagCatalogMV)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}

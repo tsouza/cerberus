@@ -1503,6 +1503,98 @@ refresh-count column (verified live against a 25.9 server) — a failed
 refresh reads as a non-empty `exception` plus `lastRefreshTime` having
 advanced past `lastSuccessTime`, not a distinct status value.
 
+### Tempo tag catalog (cerberus issue #2771)
+
+`GET /api/v2/search/tags` and `GET /api/search/tag/{name}/values` normally
+answer every request with a live scan of the traces table's
+`SpanAttributes`/`ResourceAttributes` attribute maps — a full
+`arrayJoin(mapKeys(...))` explosion per Grafana Explore keystroke, since
+Tempo's tag/tag-value autocomplete fires as the user types a TraceQL query.
+
+Auto-create can install a **refreshable materialized view**, the Tempo
+sibling of the Loki label-cardinality catalog above, gated behind
+`CERBERUS_CH_OPTIMIZATIONS=tempo_tag_catalog_mv` (server `>= 24.10`, the
+same refreshable-materialized-view floor `loki_catalog_mv` uses; see
+`docs/clickhouse-optimizations.md`'s `tempo_tag_catalog_mv` entry). Enabled,
+it appends two curated statements after the traces table's other DDL:
+
+```sql
+CREATE TABLE <db>.tempo_tag_catalog (Scope String, TagKey String, TopValuesState AggregateFunction(topK(50), String))
+ENGINE = AggregatingMergeTree ORDER BY (Scope, TagKey)
+
+CREATE MATERIALIZED VIEW <db>.tempo_tag_catalog_mv REFRESH EVERY 5 MINUTE
+TO <db>.tempo_tag_catalog AS
+SELECT Scope, TagKey, topKState(50)(TagValue) AS TopValuesState
+FROM (
+    SELECT 'resource' AS Scope, k AS TagKey, v AS TagValue FROM <db>.otel_traces
+    ARRAY JOIN mapKeys(ResourceAttributes) AS k, mapValues(ResourceAttributes) AS v
+    WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+    UNION ALL
+    SELECT 'span' AS Scope, k AS TagKey, v AS TagValue FROM <db>.otel_traces
+    ARRAY JOIN mapKeys(SpanAttributes) AS k, mapValues(SpanAttributes) AS v
+    WHERE Timestamp >= now() - toIntervalHour(1) AND v != ''
+)
+GROUP BY Scope, TagKey
+```
+
+Every five minutes the view re-aggregates the **trailing 1 hour** of
+`otel_traces` — deliberately narrower than the Loki catalog's 24h window,
+because it is sized to match `internal/api/tempo.DefaultSearchLookback`
+exactly: the same window the live path already defaults a windowless
+discovery request to. A catalog hit and a catalog-miss fallback therefore
+describe the SAME trailing window rather than two different ones.
+
+`/search/tags` and `/search/tag/{name}/values` serve from the catalog only
+for a **windowless request** (no `start`/`end` at all — the true
+datasource-open-probe shape, stricter than the Loki catalog's own
+selector-less-only rule because this catalog answers with an actual key/value
+LIST rather than a cardinality count, so a window mismatch would silently
+omit real entries rather than merely reporting an approximate count), with
+**no `q=<TraceQL>` narrowing filter**, and, for `/search/tags`, only for the
+`resource`/`span`/unscoped `?scope=` values. Every other shape — a real
+window, a `q=` filter, or `event`/`link`/`instrumentation`/`intrinsic`/`trace`
+scope — stays on the existing live scan unconditionally; that path is
+untouched and permanent, not a transitional shim.
+
+Each key's top values carry a bounded top-50 sample (`topKState`/
+`topKMerge`, a Space-Saving sketch) rather than the exhaustive value set the
+live scan returns — the catalog trades exhaustiveness for a bounded per-key
+state, the same kind of documented divergence the Loki catalog's
+cardinality numbers accept.
+
+**Verified, not assumed:**
+`internal/api/tempo/search_tags_filter.go`'s `tagQueryFilter` only resolves a
+non-nil filter when `q` is present AND lowers to a real span-row predicate,
+so a filtered tag-values lookup provably never reaches the catalog — see
+`TestSearchTagValues_WithQFilter_StaysOnLivePath`.
+
+**Event/link scopes are intentionally out of scope for this feature.**
+`Events.Attributes`/`Links.Attributes` are `Array(Map(String, String))` — one
+map PER EVENT/PER LINK on a span row, not one map per row — so cataloging
+them costs an extra `arrayFlatten(arrayMap(...))` fan-out on top of the
+explosion the resource/span arms already pay twice, a materially costlier
+shape the "if cheap" qualifier in the originating issue was not written to
+cover. See cerberus issue
+[#2850](https://github.com/tsouza/cerberus/issues/2850) for tracking a
+dedicated design pass on that, independent of this feature.
+
+**Measured before/after cost** (2,000,000 synthetic `otel_traces` rows
+spread across a trailing 1h window, 5 resource-attribute keys + 10
+span-attribute keys including two deliberately higher-cardinality tails
+[`http.route`, `db.statement`], ClickHouse 25.9 in Docker via
+testcontainers): the existing live scan
+(`SELECT DISTINCT arrayJoin(mapKeys(ResourceAttributes))` over the same
+window) reads 1,991,808 rows (294,022,617 bytes) in 302ms; the catalog read
+(`SELECT TagKey FROM tempo_tag_catalog WHERE Scope = 'resource' GROUP BY
+TagKey`) reads 15 rows (515 bytes) in 4.6ms — roughly 132,800x fewer rows
+and ~65.6x less wall-clock time, verified via `system.query_log`
+(`read_rows`/`read_bytes`), not client-side row counting. See
+`internal/schema/ddl.TestTempoTagCatalog_MeasuredCost`.
+
+`system.view_refreshes`' live status for this view is surfaced on `GET
+/info` under `tempoTagCatalogViewRefresh`, the exact same shape and posture
+`lokiCatalogViewRefresh` reports for its sibling.
+
 ### Curated column compression codecs (cerberus issue #2768)
 
 Auto-create also installs two curated `MODIFY COLUMN` codec ALTERs, retuning

@@ -147,6 +147,7 @@ table.
 | `join_spill`                     | 26.4       | experimental | yes        |
 | `trace_id_projection`            | 25.5       | experimental | no         |
 | `loki_catalog_mv`                | 24.10      | experimental | no         |
+| `tempo_tag_catalog_mv`           | 24.10      | experimental | no         |
 | `trace_id_bitmap_filter`         | 25.11      | experimental | yes        |
 | `arg_and_max_fusion`             | 25.11      | experimental | yes        |
 | `result_cache`                   | 24.8       | stable       | yes        |

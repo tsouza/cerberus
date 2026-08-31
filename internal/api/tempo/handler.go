@@ -164,6 +164,16 @@ type Handler struct {
 	// no `?timeout=` convention of its own, so in practice this static
 	// default is the only source of the budget — see applyQueryTimeout.
 	QueryTimeout time.Duration
+
+	// TagCatalogEnabled reports whether internal/schema/ddl provisioned
+	// the tempo_tag_catalog refreshable materialized view (cerberus issue
+	// #2771) — the resolved chopt tempo_tag_catalog_mv verdict, wired from
+	// Config.SchemaTempoTagCatalogMV in cmd/cerberus. false (the default,
+	// matching every un-wired Handler in tests) leaves the tag-discovery
+	// endpoints on their existing live attribute-map scan unconditionally,
+	// byte-identical to before this feature existed. Mirrors
+	// internal/api/loki.Handler.LabelCatalogEnabled.
+	TagCatalogEnabled bool
 }
 
 // New constructs a Handler with the seed optimizer wired in.
