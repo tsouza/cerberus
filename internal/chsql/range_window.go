@@ -3126,6 +3126,9 @@ func (e *emitter) emitRangeWindowDeriv(r *chplan.RangeWindow) error {
 // above, and #1772 (closed by the native lowering) for the shape that
 // used to be rejected here.
 func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
+	if r.LagAdjacency {
+		return e.emitRangeWindowResetsLagAdjacency(r)
+	}
 	value := Cast(
 		Call(
 			"arraySum",
@@ -3163,6 +3166,9 @@ func (e *emitter) emitRangeWindowResets(r *chplan.RangeWindow) error {
 // already evaluates true there (IEEE-754, both in Go and ClickHouse),
 // so the carve-out only needs to suppress the both-NaN case.
 func (e *emitter) emitRangeWindowChanges(r *chplan.RangeWindow) error {
+	if r.LagAdjacency {
+		return e.emitRangeWindowChangesLagAdjacency(r)
+	}
 	value := Cast(
 		Call(
 			"arraySum",
@@ -3205,6 +3211,9 @@ func (e *emitter) emitRangeWindowDelta(r *chplan.RangeWindow) error {
 // `idelta` returns NaN when the window holds fewer than 2 samples
 // (matches Prom's `funcIdelta`).
 func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
+	if r.LagAdjacency {
+		return e.emitRangeWindowIDeltaLagAdjacency(r)
+	}
 	n := Call("length", BareIdent("window_vals"))
 	last := Subscript(BareIdent("window_vals"), n)
 	prev := Subscript(BareIdent("window_vals"), Sub(n, InlineLit(int64(1))))
@@ -3231,6 +3240,9 @@ func (e *emitter) emitRangeWindowIDelta(r *chplan.RangeWindow) error {
 // seconds. PromQL's `funcIrate` returns NaN if there are fewer than 2
 // samples in the window.
 func (e *emitter) emitRangeWindowIRate(r *chplan.RangeWindow) error {
+	if r.LagAdjacency {
+		return e.emitRangeWindowIRateLagAdjacency(r)
+	}
 	// We need both the last two values and the last two timestamps,
 	// so reach for `window_pairs` (Array(Tuple(ts, value))) via
 	// emitWindowedArrayPairs rather than the values-only

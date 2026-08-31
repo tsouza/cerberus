@@ -280,6 +280,39 @@ const (
 	// different reason (there a client-side tradeoff, here a genuine
 	// memory-vs-cardinality one).
 	FeatureQuantilePromHistogram = "quantile_prom_histogram"
+
+	// FeatureLagInFrameAdjacency opts eligible query_range
+	// changes()/resets()/irate()/idelta() matrix shapes onto a single sorted
+	// lagInFrame/leadInFrame annotation pass with fixed-size per-anchor
+	// accumulators, retiring the arrayPopBack/arrayPopFront /
+	// window_pairs[length]/[length-1] array-fold fan-out
+	// (internal/chsql.emitRangeWindowChanges/Resets/IRate/IDelta) for those
+	// four functions (cerberus issue #2759).
+	//
+	// Unlike the timeSeries*ToGrid family this is a pure SQL-SHAPE
+	// optimization — lagInFrame/leadInFrame are long-standing ClickHouse
+	// window functions (present well below the 25.9 floor the ts_grid family
+	// needs), so it carries NO version gate (AlwaysAvailable) and no
+	// allow_experimental_* setting. It is registered as a chopt feature
+	// purely for the boot-wired kill-switch this repo's optimization
+	// features all share (one lifecycle, no per-query branch) — see
+	// docs/clickhouse-optimizations.md.
+	//
+	// AutoSelect is true: the annotation pass carries the SAME kernels the
+	// fan-out does (curr < prev for resets; curr != prev AND NOT
+	// both-NaN for changes, #1489's carve-out; CounterOrDeltaPairDelta's
+	// DELTA/CUMULATIVE branch for irate, with AggregationTemporality riding
+	// the argMax tuple so the branch survives the annotation stage) and every
+	// pair whose prev falls outside the anchor's window is excluded BY
+	// CONSTRUCTION, so a shard's lagInFrame seed can never differ from route
+	// A's (see internal/chplan/sliceinvariant.go's RangeWindow entry) —
+	// proven bit-identical against the fan-out by dual-emit parity
+	// (internal/chsql/range_window_lag_adjacency_chdb_test.go), not merely
+	// asserted. It complements FeatureTSGridChanges (permanently opt-in,
+	// #1721) and FeatureTSGridResets (25.9+ only): irate/idelta have no
+	// native timeSeries*ToGrid member at all, and changes/resets fall back to
+	// this improved fan-out on any server the native path does not cover.
+	FeatureLagInFrameAdjacency = "laginframe_adjacency"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -447,13 +480,20 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
 	},
+	{
+		ID:         FeatureLagInFrameAdjacency,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "opt eligible query_range changes/resets/irate/idelta shapes onto a lagInFrame/leadInFrame annotation pass with fixed-size accumulators, retiring the array-fold fan-out (client-side, no version floor, auto-enabled, bit-identical to the fan-out)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_histogram,
-// quantile_prom_histogram). The copy keeps the
+// quantile_prom_histogram, laginframe_adjacency). The copy keeps the
 // canonical entries immutable from the caller's side. Exposed so tests can
 // enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
