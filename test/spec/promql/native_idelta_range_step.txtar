@@ -59,7 +59,18 @@ INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
   ('connections_active', map('host', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 150.0),
   ('connections_active', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 400.0);
 -- expected_rows --
-[]
+[
+  ["", {"host": "a"}, "2026-01-01T00:00:30Z", 100],
+  ["", {"host": "a"}, "2026-01-01T00:01:00Z", 100],
+  ["", {"host": "a"}, "2026-01-01T00:01:30Z", -150],
+  ["", {"host": "a"}, "2026-01-01T00:02:00Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:02:30Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:03:00Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:03:30Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:04:00Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:04:30Z", 250],
+  ["", {"host": "a"}, "2026-01-01T00:05:00Z", 250]
+]
 -- args --
 [0] string = ""
 [1] string = "host"
