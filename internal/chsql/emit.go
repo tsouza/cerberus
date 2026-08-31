@@ -145,12 +145,9 @@ func Emit(ctx context.Context, n chplan.Node) (string, []any, error) {
 	// node past the canonicalising projection — cannot emit SQL that splits one
 	// series across two Map key orders.
 	n = chplan.CanonicalizeSeriesIdentityKeys(n, attributeMapColumns)
-	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
 	e := &emitter{
 		spansTable:             spansTable,
 		ctxSpansTable:          spansTable,
-		ctxLateMatTable:        ctxLMTable,
-		ctxLateMatShape:        ctxLMShape,
 		deltaPrefixLookbackNS:  deltaPrefixLookbackFromCtx(ctx).Nanoseconds(),
 		deltaPrefixReadEnabled: deltaPrefixReadEnabledFromCtx(ctx),
 
@@ -276,25 +273,6 @@ type emitter struct {
 	// required only on the real Tempo path and the golden lane stays
 	// byte-identical (no window-bearing fixtures churn).
 	ctxSpansTable string
-
-	// ctxLateMatTable / ctxLateMatShape carry the resolved late-materialisation
-	// table + shape threaded via chsql.WithLateMatShape (see late_mat.go),
-	// mirroring the ctxSpansTable pattern above. #1703: the package-level
-	// lateMatShapes registry is keyed on the OTel DEFAULT table names, so a
-	// deployment overriding LogsTable / SpansTable (CERBERUS_SCHEMA_LOGS_TABLE
-	// / CERBERUS_SCHEMA_TRACES_TABLE) would silently never match it and lose
-	// late materialisation with no error, no metric, nothing — a pure perf
-	// cliff. internal/engine's lateMatTabler duck-type threads the actually-
-	// resolved (table, wide, rowKey) triple from each Lang's own schema.Logs /
-	// schema.Traces value onto the emit context; isLateMatCandidate prefers
-	// this over the static registry when the ctx table matches the Scan's
-	// table. ctxLateMatTable is "" when the caller hasn't threaded one (the
-	// spec/golden lane, or any as-yet-unmigrated caller), so
-	// isLateMatCandidate falls back to the default-name-keyed registry —
-	// existing callers see no behaviour change, only callers that opt in gain
-	// correctness under an overridden table name.
-	ctxLateMatTable string
-	ctxLateMatShape lateMatShape
 
 	// deltaPrefixLookbackNS bounds, in nanoseconds, how far before a
 	// rate()/increase() window's start instantDeltaPrefixSource /

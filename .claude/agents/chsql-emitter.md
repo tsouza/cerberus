@@ -43,7 +43,7 @@ The domain emitters build query and expression *shapes* and must compose Frags:
 `range_lwr.go`, `range_bucket_fanout.go`, `absent_over_time.go`, `histogram_over_time.go`,
 `histogram_quantile.go`, `histogram_quantile_native.go`, `metrics_compare.go`,
 `metrics_second_stage.go`, `vector_join.go`, `vector_set_op.go`, `nary_vector_set_op.go`,
-`set_op.go`, `structural_join.go`, `info_join.go`, `late_mat.go`, `prewhere.go`,
+`set_op.go`, `structural_join.go`, `info_join.go`, `prewhere.go`,
 `scan_resource_bound.go`, `search_trace_limit.go`, `exemplars.go`, `query_exemplars.go`,
 `tableshape.go`.
 

@@ -159,14 +159,6 @@ func applyJoinSpillSettings(ctx context.Context, plan chplan.Node, maxMemory int
 //   - RangeWindow with a non-nil DeltaPrefixAggregateInput — the
 //     delta-prefix LEFT JOIN (internal/chsql/range_window.go) that
 //     side-feeds the day-bucket aggregate input into the raw window.
-//
-// Late materialisation's INNER JOIN-back (internal/chsql/late_mat.go) is a
-// KNOWN, tracked gap: (*emitter).isLateMatCandidate's structural match is
-// decided inside the chsql emitter using per-request wide-column/row-key
-// metadata that is not reconstructable from a chplan.Node walk here without
-// duplicating that emitter-internal logic, and settings are stamped in
-// internal/engine strictly before emission — see
-// https://github.com/tsouza/cerberus/issues/2816.
 func planHasJoin(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {

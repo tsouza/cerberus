@@ -845,12 +845,9 @@ func EmitCompareRootLeg(ctx context.Context, r *chplan.RangeWindow) (string, []a
 		return fail(fmt.Errorf("%w: MetricsCompare.RootLookup is nil (no root leg to render)", ErrUnsupported))
 	}
 
-	ctxLMTable, ctxLMShape, _ := lateMatShapeFromCtx(ctx)
 	e := &emitter{
-		spansTable:      spansTable,
-		ctxSpansTable:   spansTable,
-		ctxLateMatTable: ctxLMTable,
-		ctxLateMatShape: ctxLMShape,
+		spansTable:    spansTable,
+		ctxSpansTable: spansTable,
 	}
 	windowed, bound, err := e.compareWindowedScanBound(rw, m, rangeNS)
 	if err != nil {

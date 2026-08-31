@@ -114,10 +114,16 @@ projections toward the scan so ClickHouse does less work:
 
 - **Predicate pushdown** moves filters below aggregates / range windows so the
   emitter can promote them into `PREWHERE` / skip-index territory.
-- **Projection pushdown / late materialisation** resolves wide columns only
-  after `LIMIT` has cut the row set.
+- **Projection pushdown** narrows a Scan's column list to what the enclosing
+  Project / Filter / Aggregate / RangeWindow actually reads, so wide columns
+  the plan never touches are never fetched.
 - **Constant folding** collapses pure-literal subtrees so downstream rules and
   the emitter see simplified predicates.
+
+Server-side **lazy materialisation** (the `lazy_materialization` chopt
+feature) is a separate, ClickHouse-native mechanism that defers wide-column
+IO past an `ORDER BY … LIMIT N` on Tempo's search shapes — see
+[`clickhouse-optimizations.md`](clickhouse-optimizations.md).
 
 The optimizer carries **no cost model** — it is a deterministic rewrite engine,
 and every rule must earn its place: it carries only rules that fire.

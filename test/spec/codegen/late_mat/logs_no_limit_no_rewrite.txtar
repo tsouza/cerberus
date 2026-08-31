@@ -1,8 +1,0 @@
--- args --
-[0] string = "api"
--- sql --
-SELECT `Body`, `Timestamp` FROM (SELECT * FROM `otel_logs` WHERE (`ServiceName` = ?))
--- chplan --
-Project [Body, Timestamp]
-  Filter predicate=(ServiceName = "api")
-    Scan(otel_logs)

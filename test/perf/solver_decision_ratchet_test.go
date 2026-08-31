@@ -249,7 +249,7 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below: it narrows Changes/Resets/Irate/Idelta's
 			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache, chopt.FeatureLazyMaterialization:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
@@ -261,7 +261,15 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// use_query_cache=1 + query_cache_ttl based on
 			// eligibleForResultCache (the plan's evaluated windows, not which
 			// lowering strategy produced them), so it likewise has zero effect
-			// on RangeLowerers.
+			// on RangeLowerers. FeatureLazyMaterialization (cerberus issue
+			// #2782) is the same shape again, and PromQL-irrelevant besides:
+			// internal/engine/query_settings_rules.go's apply stamps
+			// query_plan_optimize_lazy_materialization=1 +
+			// query_plan_max_limit_for_lazy_materialization=<limit> based on
+			// eligibleForLazyMaterialization (a Limit(OrderBy(...)) plan shape
+			// that only Tempo's search paths ever build — no PromQL
+			// query_range lowering constructs it), so it has zero effect on
+			// RangeLowerers.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
 				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)

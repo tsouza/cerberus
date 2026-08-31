@@ -53,7 +53,9 @@ Where a change belongs, by the question it answers:
   `Aggregate`, `RangeWindow`, `Limit`, and the `Expr` tree). Shared by all three heads.
 - **"The plan is correct but slow"** → `internal/optimizer/`, a rule-based fixpoint driver with a
   Pattern API and an analyzer/optimizer rule split (transposes, projection pushdown). Emitter-side
-  optimizations such as PREWHERE promotion and late materialisation live in `internal/chsql/`.
+  optimizations such as PREWHERE promotion live in `internal/chsql/`; per-query ClickHouse settings
+  (lazy materialisation, aggregation-in-order, spill bounds, …) live in `internal/engine/`, driven by
+  the `internal/chopt` capability registry.
 - **"The SQL is wrong"** → `internal/chsql/`, the plan → ClickHouse SQL emitter. Typed Frags only
   (invariant 10).
 - **"The HTTP response shape is wrong"** → `internal/api/prom/`, `internal/api/loki/`,

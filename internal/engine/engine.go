@@ -105,19 +105,6 @@ func (ChsqlEmitter) Emit(ctx context.Context, plan chplan.Node) (string, []any, 
 // chsql.Emit's RequireSpansScansBounded chokepoint runs over the whole plan.
 type spansTabler interface{ SpansTable() string }
 
-// lateMatTabler is implemented by a Lang that knows its own resolved
-// late-materialisation shape: the table it scans plus that table's wide
-// columns and row-key columns, straight from the request's actually-resolved
-// schema.Logs / schema.Traces value (which may differ from the OTel default
-// table name under CERBERUS_SCHEMA_LOGS_TABLE / CERBERUS_SCHEMA_TRACES_TABLE
-// or the equivalent config key). The engine threads that triple onto the
-// emit context so chsql's late-materialisation gate (see
-// internal/chsql/late_mat.go) matches even when the table has been renamed
-// — see #1703.
-type lateMatTabler interface {
-	LateMatShape() (table string, wide, rowKey []string)
-}
-
 // rangeSeriesOrderer is implemented by a Lang whose route-A SQL wants its
 // rows sorted before a streaming, per-series pivot downstream reads them
 // (the Prom head's matrixFromCursor — see prom.lang.RangeSeriesOrder's doc
@@ -132,15 +119,13 @@ type rangeSeriesOrderer interface {
 	RangeSeriesOrder(plan chplan.Node) chplan.Node
 }
 
-// emitForHead lowers plan to SQL, threading the spans-table scope and the
-// late-materialisation shape onto the emit context for a head that exposes
-// them, and applying a route-A-only row-ordering rewrite for a head that
-// wants one (see rangeSeriesOrderer). Heads without a spans table (PromQL)
-// emit unchanged — RequireSpansScansBounded is a table-scoped no-op for
-// them, a Lang that doesn't implement lateMatTabler leaves chsql to fall
-// back to its default-OTel-name-keyed static registry (pre-#1703 behaviour,
-// unchanged), and a Lang that doesn't implement rangeSeriesOrderer emits plan
-// exactly as it was optimized (pre-#1442 behaviour, unchanged).
+// emitForHead lowers plan to SQL, threading the spans-table scope onto the
+// emit context for a head that exposes it, and applying a route-A-only
+// row-ordering rewrite for a head that wants one (see rangeSeriesOrderer).
+// Heads without a spans table (PromQL) emit unchanged — RequireSpansScansBounded
+// is a table-scoped no-op for them — and a Lang that doesn't implement
+// rangeSeriesOrderer emits plan exactly as it was optimized (pre-#1442
+// behaviour, unchanged).
 //
 // deltaPrefixLookback is always threaded (unlike the two duck-typed hooks
 // above, it is not head-specific — every caller passes its Engine's own
@@ -175,10 +160,6 @@ func emitForHead(
 ) (string, []any, error) {
 	if st, ok := lang.(spansTabler); ok {
 		ctx = chsql.WithSpansTable(ctx, st.SpansTable())
-	}
-	if lt, ok := lang.(lateMatTabler); ok {
-		table, wide, rowKey := lt.LateMatShape()
-		ctx = chsql.WithLateMatShape(ctx, table, wide, rowKey)
 	}
 	if ro, ok := lang.(rangeSeriesOrderer); ok {
 		plan = ro.RangeSeriesOrder(plan)
