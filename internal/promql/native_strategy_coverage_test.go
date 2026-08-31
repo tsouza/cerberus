@@ -174,6 +174,32 @@ var nativeStrategies = []nativeStrategy{
 			l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
 		},
 	},
+	{
+		field:   "ArgAndMaxFusion",
+		section: "experimental_arg_and_max_fusion",
+		// Unlike every other row, this sets a plain bool, not a Lowerer —
+		// see RangeLowerers.ArgAndMaxFusion's own doc for why there is no
+		// alternate strategy TYPE to wire, and wireNativeStrategies' own
+		// post-loop block below for how the SAME marker section also
+		// reaches chplan.RangeLWR's copy of the verdict
+		// (FanoutStalenessLowerer.ArgAndMaxFusion) — a second field this
+		// row deliberately does NOT touch, so the "exactly one field set"
+		// check below stays meaningful for this row's own field.
+		//
+		// At the real cmd/cerberus boot wiring this same verdict also
+		// reaches chplan.VectorJoin, but the spec lane's ONLY path to a
+		// custom RangeLowerers table is the range_step: branch
+		// (lower_test.go), which always sets ctx.step > 0 and therefore
+		// StepAligned=true on any VectorJoin lowered under it — outside the
+		// non-StepAligned scope this feature covers for that node. So this
+		// row's fixture coverage is RangeLWR-only; VectorJoin's fused SQL
+		// is pinned instead by internal/chsql's own
+		// vector_join_argandmax_fusion_test.go (structural) and
+		// vector_join_argandmax_fusion_chdb_test.go (differential).
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ArgAndMaxFusion = true
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the
@@ -242,6 +268,18 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 	if has("experimental_fixed_accumulator_delta") {
 		l.Delta = promql.FixedAccumulatorDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
 	}
+	// arg_and_max_fusion (issue #2764) reaches chplan.RangeLWR through
+	// FanoutStalenessLowerer's OWN copy of the verdict — see the
+	// ArgAndMaxFusion row's own doc above for why the table row only sets
+	// the top-level bool and this second assignment lives here instead.
+	// Overriding l.Staleness unconditionally mirrors cmd/cerberus's own
+	// nativeRangeLowerers: RangeLWR.ArgAndMaxFusion only matters when
+	// SampleTimestamp is requested, which forces NativeStalenessLowerer to
+	// its Fallback regardless, so no fixture under this marker needs to
+	// also carry experimental_ts_grid_resample.
+	if has("experimental_arg_and_max_fusion") {
+		l.Staleness = promql.FanoutStalenessLowerer{ArgAndMaxFusion: true}
+	}
 	return l
 }
 
@@ -285,7 +323,19 @@ func TestNativeStrategies_CoverEveryRangeLowerersField(t *testing.T) {
 		v := reflect.ValueOf(got)
 		for i := range tableType.NumField() {
 			name := tableType.Field(i).Name
-			set := !v.Field(i).IsNil()
+			// Every strategy field is an interface (nilable); ArgAndMaxFusion
+			// is a plain bool (there is no alternate NODE shape to select
+			// between, only an emission-detail bit read directly off the
+			// same node — see RangeLowerers.ArgAndMaxFusion's own doc), so
+			// "set" reads its zero value instead of IsNil, which panics on
+			// a non-interface Kind.
+			field := v.Field(i)
+			var set bool
+			if field.Kind() == reflect.Bool {
+				set = field.Bool()
+			} else {
+				set = !field.IsNil()
+			}
 			switch {
 			case name == ns.field && !set:
 				t.Errorf("nativeStrategies row %q (section %q) left field %s nil",

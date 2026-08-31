@@ -238,6 +238,7 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		Include:          include,
 		ReturnBool:       b.ReturnBool,
 		StepAligned:      stepAligned,
+		ArgAndMaxFusion:  ctx.lowerers.ArgAndMaxFusion,
 		MetricNameColumn: s.MetricNameColumn,
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
