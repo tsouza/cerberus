@@ -36,17 +36,22 @@ import "time"
 // are filtered to ABSENT rows (matching PromQL's staleness-gap semantics,
 // exactly what RangeLWR's "no fanned row -> no GROUP BY row" does).
 //
-// Window-edge note (the one documented divergence from RangeLWR). RangeLWR's
-// membership window is the half-open `(anchor - Offset - Lookback,
-// anchor - Offset]` (strict left edge). The native function uses the CLOSED
-// left edge `[anchor - Offset - Lookback, anchor - Offset]` — a sample landing
-// EXACTLY on the left boundary is included natively but excluded by the
-// fan-out. The closed-left form matches reference Prometheus's `t >= refTime -
-// lookbackDelta` staleness selection, so the native node is, if anything, the
-// MORE Prometheus-faithful of the two; the divergence is a measure-zero,
-// nanosecond-exact boundary coincidence that no Prometheus-pinned spec fixture
-// exercises. It is called out here (rather than masked) so a future fixture
-// that does hit the boundary is read as intended, not a regression.
+// Window-edge note. RangeLWR's membership window is the half-open
+// `(anchor - Offset - Lookback, anchor - Offset]` (strict left edge).
+// timeSeriesResampleToGridWithStaleness used a CLOSED left edge
+// `[anchor - Offset - Lookback, anchor - Offset]` before ClickHouse 25.9 (PR
+// #86588, "Make the staleness window in timeSeries*() functions left-open and
+// right-closed") — a sample landing EXACTLY on the left boundary was included
+// natively but excluded by the fan-out. chopt.FeatureTSGridResample and
+// chopt.FeatureTSGridLastOverTime both floor at (or above) that release — see
+// each feature's own registry doc — so on every server either feature can
+// actually select, the native window IS left-open, matching RangeLWR exactly:
+// there is no window-edge divergence between the two paths in production.
+// The closed-left form survives only as pre-25.9 history (and as the reason
+// the family's floor is 25.9 rather than the release the aggregate first
+// shipped in, 25.6) — it is called out here rather than silently dropped so
+// a reader tracing the floor back from the registry finds the same story on
+// both ends.
 //
 // Required ClickHouse setting. `timeSeriesResampleToGridWithStaleness` is a
 // member of the experimental timeSeries*ToGrid family: a query carrying this

@@ -168,6 +168,35 @@ type IdeltaLowerer interface {
 	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// LastOverTimeLowerer lowers a range-mode last_over_time(<v>[range])
+// RangeWindow to a chplan node. It ALWAYS returns a valid lowering: the
+// native impl emits chplan.RangeWindowStaleResample — the SAME native node
+// [StalenessLowerer]'s native impl builds, reusing
+// timeSeriesResampleToGridWithStaleness with the matrix [range] as the
+// staleness parameter in place of the bare-selector shape's fixed 5m
+// instantLookback — for a shape-eligible window, and delegates to its
+// embedded fan-out fallback for any other shape; the fan-out impl returns rw
+// unchanged. The shape eligibility (last_over_time func, materialised grid,
+// plain Scan/Filter input, the fixed [Attributes] grouping key
+// RangeWindowStaleResample requires) is intrinsic and lives inside the
+// implementation; it is NOT a feature-flag branch.
+//
+// Unlike every other RangeLowerers member, the two functions
+// [rangeFnPreservesName] names (last_over_time, first_over_time) keep
+// `__name__` on their output — so LowerLastOverTime's caller
+// (lowerRangeVectorCall) treats a returned node that differs from the input
+// rw as ALREADY the canonical named shape (see nativeLastOverTimeNode's own
+// doc) rather than routing it through the fan-out's name-synthesis wrap.
+// first_over_time has no native sibling — the aggregate carries the LATEST
+// in-window sample forward, never the earliest — so it stays on the fan-out
+// unconditionally and never reaches this interface at all.
+type LastOverTimeLowerer interface {
+	// LowerLastOverTime returns the chplan node for rw — the native
+	// RangeWindowStaleResample for a shape the impl handles, or the fan-out
+	// lowering otherwise. It never returns nil.
+	LowerLastOverTime(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
 // RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
@@ -287,6 +316,12 @@ type RangeLowerers struct {
 	// Concrete fan-out impl when both features are off; never nil on the
 	// lowering path.
 	Idelta IdeltaLowerer
+
+	// LastOverTime handles range-mode last_over_time(...) shapes (native
+	// timeSeriesResampleToGridWithStaleness, server >= 26.6 — the SAME
+	// aggregate ts_grid_resample rides). Concrete fan-out impl when the
+	// native path is off; never nil on the lowering path.
+	LastOverTime LastOverTimeLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -331,6 +366,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Idelta == nil {
 		l.Idelta = FanoutIdeltaLowerer{}
+	}
+	if l.LastOverTime == nil {
+		l.LastOverTime = FanoutLastOverTimeLowerer{}
 	}
 	return l
 }
@@ -1145,4 +1183,45 @@ func (n NativeIdeltaLowerer) LowerIdelta(rw *chplan.RangeWindow, s schema.Metric
 		return native
 	}
 	return n.Fallback.LowerIdelta(rw, s)
+}
+
+// FanoutLastOverTimeLowerer is the concrete DEFAULT LastOverTimeLowerer: it
+// returns the generic fan-out RangeWindow (the windowed-array
+// `window_vals[length(window_vals)]` reducer, overTimeArrayValueFrag's
+// lastWindowValOrNaNFrag) unchanged. It is the fallback the native impl
+// embeds AND the strategy a fan-out-only deployment wires directly.
+type FanoutLastOverTimeLowerer struct{}
+
+// LowerLastOverTime returns the fan-out RangeWindow rw unchanged.
+func (FanoutLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeLastOverTimeLowerer is the boot-wired LastOverTimeLowerer that emits
+// the native timeSeriesResampleToGridWithStaleness lowering (a
+// chplan.RangeWindowStaleResample, reusing the SAME node
+// [NativeStalenessLowerer] builds) for shape-eligible last_over_time
+// range-windows. cmd/cerberus wires it ONLY when chopt resolved the
+// ts_grid_last_over_time feature at boot. It embeds a concrete Fallback (the
+// fan-out impl): a shape it cannot handle delegates to Fallback rather than
+// returning nil, so the interface method ALWAYS yields a valid lowering and
+// the dispatch site stays branch-free.
+type NativeLastOverTimeLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutLastOverTimeLowerer{}.
+	Fallback LastOverTimeLowerer
+}
+
+// LowerLastOverTime returns a RangeWindowStaleResample for an eligible
+// range-mode last_over_time shape (see nativeLastOverTimeNode's own doc for
+// the eligibility predicate — the shape check, not a feature/version read),
+// or delegates to the embedded Fallback otherwise. The returned node's
+// Lookback is rw.Range — last_over_time's matrix [range] literal — in place
+// of the bare-selector staleness shape's fixed 5m instantLookback; every
+// other field mirrors [NativeStalenessLowerer.LowerStaleness].
+func (n NativeLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeLastOverTimeNode(rw, s); native != nil {
+		return native
+	}
+	return n.Fallback.LowerLastOverTime(rw, s)
 }

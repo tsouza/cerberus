@@ -3156,7 +3156,24 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// (`__name__=~"foo|bar"`) spans several metrics whose names differ
 	// per series, so `preservedNameExpr` threads MetricName through the
 	// window's grouping key instead.
+	//
+	// That synthesis is only needed for the plain fan-out RangeWindow (node
+	// == rw): NativeLastOverTimeLowerer's RangeWindowStaleResample is
+	// ALREADY the canonical 4-column shape — its GROUP BY reads the real
+	// per-row MetricName column, so `__name__` rides through natively for
+	// both a pinned literal and a multi-name regex selector alike (see
+	// nativeLastOverTimeNode's own doc). Wrapping it again would double a
+	// Project that is a no-op at best and, for the regex case, would
+	// silently re-collapse the very per-name split the native GROUP BY
+	// already performed. `node != rw` is exactly "the boot-wired strategy
+	// swapped in something other than the fan-out RangeWindow it was
+	// handed" — true only for this one case among rangeFnPreservesName's
+	// two members (first_over_time has no native strategy and always keeps
+	// node == rw).
 	if rangeFnPreservesName(c.Func.Name) {
+		if node != chplan.Node(rw) {
+			return node, nil
+		}
 		return wrapRangeWindowPreserveName(rw, s, preservedNameExpr(rw, vs.LabelMatchers, s)), nil
 	}
 	if guardNameCollision {
@@ -3189,48 +3206,62 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // nil/presence check here. Every strategy ALWAYS returns a valid lowering:
 // the native/annotation impl emits its own node for a shape-eligible window
 // (rate/increase/changes/resets/deriv/delta/irate/idelta: timeSeries*ToGrid
-// for a shape-eligible window; changes/resets/irate/idelta additionally fall
-// back to chplan.RangeWindow.LagAdjacency for a shape-eligible window when
-// their own native path is off or ineligible) and delegates to its embedded
-// fan-out fallback for any other shape; the fan-out impl returns this
-// RangeWindow unchanged. All intrinsic SHAPE / AST-node
-// dispatch lives INSIDE the impl. A native node carries the same
+// for a shape-eligible window; last_over_time: the SAME
+// timeSeriesResampleToGridWithStaleness aggregate ts_grid_resample rides,
+// with [range] as the staleness parameter; changes/resets/irate/idelta
+// additionally fall back to chplan.RangeWindow.LagAdjacency for a
+// shape-eligible window when their own native path is off or ineligible) and
+// delegates to its embedded fan-out fallback for any other shape; the
+// fan-out impl returns this RangeWindow unchanged. All intrinsic SHAPE /
+// AST-node dispatch lives INSIDE the impl. A rate/increase/changes/resets/
+// deriv/delta/irate/idelta native node carries the same
 // Func/Range/Step/Start/End/Offset/columns/GroupBy as the fan-out
 // RangeWindow — only the emitter differs — and produces the identical
 // per-(series, anchor) row shape (proven byte-identical on the chDB
 // substrate; see test/spec/promql/native_rate_range_step.txtar and the
-// dual-emit parity tests).
+// dual-emit parity tests). last_over_time's native node
+// (chplan.RangeWindowStaleResample) carries a DIFFERENT shape — it has no
+// GroupBy field, grouping instead on the fixed (MetricName, Attributes) pair
+// — because it is already the canonical 4-column output, not a windowed
+// array feeding an outer reducer; see nativeLastOverTimeNode's own doc.
 //
-// For a window with no dedicated strategy (the *_over_time family and
-// friends) the Rate strategy's fan-out fallback returns rw unchanged, so the
-// caller's node stays rw and the last/first_over_time name-preservation wrap
-// applies exactly as before. For rate / increase / delta the returned node IS
-// the lowering (native, fixed-accumulator, or fan-out RangeWindow); all three
-// drop `__name__`, so they never match the name-preservation wrap and flow
-// through as-is.
+// For a window with no dedicated strategy (first_over_time and the other
+// *_over_time siblings) the Rate strategy's fan-out fallback returns rw
+// unchanged, so the caller's node stays rw and the last/first_over_time
+// name-preservation wrap applies exactly as before. For rate / increase /
+// delta the returned node IS the lowering (native, fixed-accumulator, or
+// fan-out RangeWindow); all three drop `__name__`, so they never match the
+// name-preservation wrap and flow through as-is. last_over_time's returned
+// node also IS the lowering when its native strategy fires — but unlike
+// rate/increase/delta it DOES match the name-preservation wrap (it is one of
+// the two functions that keeps `__name__`), so the caller compares the
+// returned node against rw to skip the now-redundant synthesis wrap (see the
+// `node != chplan.Node(rw)` check above).
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
-// impl. rate / increase / delta / changes / resets / deriv / irate / idelta
-// each route to their own boot-wired strategy (changes/resets/irate/idelta
-// may ADDITIONALLY resolve to the lagInFrame annotation shape,
-// chplan.RangeWindow.LagAdjacency, layered BENEATH each function's own native
-// ts_grid strategy — irate/idelta gained their own native
-// timeSeriesInstantRateToGrid / timeSeriesInstantDeltaToGrid competitor
-// (cerberus issue #2746), so as of that feature all four of changes / resets
-// / irate / idelta share the identical three-tier Native{Fallback:
-// LagAdjacency{Fallback: Fanout{}}} shape; increase reuses rate's
-// timeSeriesRateToGrid aggregate, multiplied back by the window seconds;
-// rate/increase/delta may ADDITIONALLY resolve to the fixed-accumulator
-// decomposition, chplan.RangeWindow.FixedAccumulatorExtrapolated, layered
-// beneath each function's own native ts_grid strategy — delta gained its own
-// native ts_grid_delta competitor (cerberus issue #2745), so all three of
-// rate / increase / delta share the same three-tier Native{Fallback:
-// FixedAccumulator{Fallback: Fanout{}}} shape); every other range fn (the
-// *_over_time family and friends) keeps the fan-out rw via the rate
-// strategy's pass-through (those funcs have no native timeSeries*ToGrid
+// impl. rate / increase / delta / changes / resets / deriv / irate / idelta /
+// last_over_time each route to their own boot-wired strategy
+// (changes/resets/irate/idelta may ADDITIONALLY resolve to the lagInFrame
+// annotation shape, chplan.RangeWindow.LagAdjacency, layered BENEATH each
+// function's own native ts_grid strategy — irate/idelta gained their own
+// native timeSeriesInstantRateToGrid / timeSeriesInstantDeltaToGrid
+// competitor (cerberus issue #2746), so as of that feature all four of
+// changes / resets / irate / idelta share the identical three-tier
+// Native{Fallback: LagAdjacency{Fallback: Fanout{}}} shape; increase reuses
+// rate's timeSeriesRateToGrid aggregate, multiplied back by the window
+// seconds; rate/increase/delta may ADDITIONALLY resolve to the
+// fixed-accumulator decomposition, chplan.RangeWindow.
+// FixedAccumulatorExtrapolated, layered beneath each function's own native
+// ts_grid strategy — delta gained its own native ts_grid_delta competitor
+// (cerberus issue #2745), so all three of rate / increase / delta share the
+// same three-tier Native{Fallback: FixedAccumulator{Fallback: Fanout{}}}
+// shape; last_over_time has no such narrowed-fallback sibling of its own —
+// its NativeLastOverTimeLowerer embeds the bare fan-out directly); every
+// other range fn (first_over_time and friends) keeps the fan-out rw via the
+// rate strategy's pass-through (those funcs have no native timeSeries*ToGrid
 // aggregate, lagInFrame annotation, or fixed-accumulator decomposition proven
 // equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
@@ -3250,6 +3281,8 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
+	case "last_over_time":
+		return ctx.lowerers.LastOverTime.LowerLastOverTime(rw, s)
 	default:
 		return ctx.lowerers.Rate.LowerRate(rw, s)
 	}
@@ -3392,6 +3425,94 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 		// (NativePredictLinearLowerer) gates eligibility to a whole-second
 		// literal before reaching here, so any element present is native-safe.
 		Scalars: rw.Scalars,
+	}
+}
+
+// nativeLastOverTimeNode returns a chplan.RangeWindowStaleResample when rw is a
+// SHAPE-eligible query_range `last_over_time(<v>[<range>])` RangeWindow;
+// otherwise nil (NativeLastOverTimeLowerer then delegates to its embedded
+// fan-out fallback). Unlike nativeTSGridMatrixNode's family (which builds a
+// RangeWindowGridNative), this reuses the SAME native aggregate
+// FeatureTSGridResample's NativeStalenessLowerer already rides
+// (timeSeriesResampleToGridWithStaleness) — last_over_time's "most recent
+// in-window sample, absent when none" contract IS that aggregate's own
+// contract, with the matrix [range] supplying the staleness parameter
+// (Lookback) in place of the bare-selector shape's fixed 5m instantLookback.
+//
+// Like nativeTSGridMatrixNode it reads NO feature flag or server version —
+// the boot decision lives in WHICH strategy cmd/cerberus wired
+// (NativeLastOverTimeLowerer vs FanoutLastOverTimeLowerer); this is a pure
+// shape classifier called only from inside NativeLastOverTimeLowerer. Every
+// clause that fails sends the query down the unchanged fan-out path:
+//
+//   - rw.Func must be "last_over_time" (the caller's own dispatch already
+//     guarantees this; kept explicit so the classifier is total on its own).
+//   - The window must be the materialised range grid: Step > 0 and both
+//     Start and End pinned.
+//   - rw.Identity must be false and rw.Input must be a plain Scan / Filter,
+//     optionally wrapped in the canonical selector-attributes Project — the
+//     row-shape relation the native emitter consumes (isNativeRateInput).
+//   - rw.GroupBy must be EXACTLY the plain [Attributes] key.
+//     chplan.RangeWindowStaleResample groups by its fixed (MetricNameCol,
+//     AttributesCol) pair — unlike RangeWindowGridNative it carries no
+//     GroupBy field at all, so it cannot express a widened key.
+//     last_over_time never widens rw.GroupBy in practice
+//     (rangeFnCollidesOnNameDrop is unconditionally false for a
+//     name-preserving function — see rangeFnPreservesName), but the check is
+//     kept explicit rather than assumed.
+//   - rw.TemporalityColumn must be empty. last_over_time is not among
+//     counterTemporalityRangeFn's members (it never applies the
+//     counter-reset rule), so this is normally already true; kept as the
+//     same defensive guard nativeTSGridMatrixNode applies.
+//   - rw.DeltaPrefixAggregateInput, rw.Variants, rw.ScalarExprs and
+//     rw.Scalars must all be empty/nil: none of DELTA-prefix
+//     reconstruction, LogQL variant fusion, or a scalar argument apply to
+//     last_over_time, and RangeWindowStaleResample has no field for any of
+//     them.
+//
+// The OuterRange field is intentionally NOT copied, mirroring
+// nativeTSGridMatrixNode: it is a fan-out-only emit knob the native grid
+// encodes directly via Start/End/Step.
+//
+// The node's output is ALREADY the canonical 4-column Sample shape
+// (MetricName, Attributes, TimestampCol, ValueCol) — its GROUP BY reads the
+// real per-row MetricName column, so it carries `__name__` through natively
+// for both a single pinned name and a multi-name regex selector alike. The
+// caller (NativeLastOverTimeLowerer.LowerLastOverTime) therefore returns it
+// directly rather than routing it through wrapRangeWindowPreserveName, which
+// exists to SYNTHESISE that same shape only for the plain fan-out
+// RangeWindow (whose own output carries no MetricName column at all).
+func nativeLastOverTimeNode(rw *chplan.RangeWindow, s schema.Metrics) *chplan.RangeWindowStaleResample {
+	if rw.Func != "last_over_time" {
+		return nil
+	}
+	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return nil
+	}
+	if !isNativeRateInput(rw.Input, s) {
+		return nil
+	}
+	if rw.TemporalityColumn != "" {
+		return nil
+	}
+	if len(rw.GroupBy) != 1 || !isIdentityColumnRef(rw.GroupBy[0], s.AttributesColumn) {
+		return nil
+	}
+	if rw.DeltaPrefixAggregateInput != nil || len(rw.Variants) != 0 ||
+		len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 0 {
+		return nil
+	}
+	return &chplan.RangeWindowStaleResample{
+		Input:         rw.Input,
+		Start:         rw.Start,
+		End:           rw.End,
+		Step:          rw.Step,
+		Lookback:      rw.Range,
+		Offset:        rw.Offset,
+		MetricNameCol: s.MetricNameColumn,
+		AttributesCol: s.AttributesColumn,
+		TimestampCol:  rw.TimestampColumn,
+		ValueCol:      rw.ValueColumn,
 	}
 }
 

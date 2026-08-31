@@ -879,6 +879,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
+//	lastOverTime = enabled ? NativeLastOverTimeLowerer{Fallback: FanoutLastOverTimeLowerer{}} : FanoutLastOverTimeLowerer{}
 //
 // rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
 // wraps ClickHouse's separate quantilePrometheusHistogram aggregate (floor
@@ -1048,6 +1049,15 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
 	} else {
 		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
+	}
+	// ts_grid_last_over_time rides the SAME native strategy shape as every
+	// other independent family member (Native{Fallback: Fanout{}}) — it has
+	// no narrowing/narrowed sibling knob of its own (no recollapse-style
+	// dependent, no laginframe/fixed-accumulator-style improved fallback).
+	if optSet.Has(chopt.FeatureTSGridLastOverTime) {
+		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
+	} else {
+		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
 	}
 	return l
 }
