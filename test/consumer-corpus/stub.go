@@ -42,6 +42,10 @@ func (s *StubQuerier) QueryLabelSets(context.Context, string, ...any) ([]map[str
 	return s.LabelSets, nil
 }
 
+func (s *StubQuerier) QueryLabelCardinalities(context.Context, string, ...any) ([]chclient.LabelCardinalityRow, error) {
+	return nil, nil
+}
+
 func (s *StubQuerier) QueryMetricMeta(_ context.Context, _, metricType string, _ ...any) ([]chclient.MetricMetaRow, error) {
 	// The metadata handler fans out once per table kind and stamps
 	// the kind itself; serve the canned rows only for the kind they

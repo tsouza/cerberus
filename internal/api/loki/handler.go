@@ -41,6 +41,9 @@ type Querier interface {
 	QueryIndexStats(ctx context.Context, sql string, args ...any) (chclient.IndexStatsRow, error)
 	QueryIndexVolume(ctx context.Context, sql string, args ...any) ([]chclient.IndexVolumeRow, error)
 	QueryLabelSets(ctx context.Context, sql string, args ...any) ([]map[string]string, error)
+	// QueryLabelCardinalities serves the /detected_labels catalog-eligible
+	// read path (cerberus issue #2770) — see detected_labels.go.
+	QueryLabelCardinalities(ctx context.Context, sql string, args ...any) ([]chclient.LabelCardinalityRow, error)
 }
 
 // Handler implements the Loki HTTP API endpoints cerberus speaks. Mount
@@ -131,6 +134,15 @@ type Handler struct {
 	// default — every bare Handler{} test fixture) keeps the LogQL emitter
 	// byte-identical to today.
 	TextIndexLineFilter bool
+
+	// LabelCatalogEnabled reports whether internal/schema/ddl provisioned
+	// the loki_label_catalog refreshable materialized view (cerberus issue
+	// #2770) — the resolved chopt loki_catalog_mv verdict, wired from
+	// Config.SchemaLokiCatalogMV in cmd/cerberus. false (the default,
+	// matching every un-wired Handler in tests) leaves
+	// handleDetectedLabels on its existing per-request GROUP BY path
+	// unconditionally, byte-identical to before this feature existed.
+	LabelCatalogEnabled bool
 
 	// onQueryRangeDrain, when non-nil, is invoked once per
 	// /loki/api/v1/query_range request with the number of rows

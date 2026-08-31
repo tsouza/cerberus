@@ -225,6 +225,10 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// it gates a query-time chsql rewrite, not any DDL statement this
 			// tool renders.
 			cfg.SchemaFullTextIndex = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureFullTextIndex)
+			// Same best-effort preview for loki_catalog_mv (cerberus issue
+			// #2770) — also AutoSelect=false, so the same explicit-listing-only
+			// reasoning applies.
+			cfg.SchemaLokiCatalogMV = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureLokiCatalogMV)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}

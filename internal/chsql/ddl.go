@@ -1022,15 +1022,17 @@ func (a *AddStatisticsBuilder) SQL() string {
 // renders through RenderDDL.
 
 // CreateMaterializedViewBuilder builds a CREATE MATERIALIZED VIEW ... TO
-// ... AS ... statement.
+// ... AS ... statement, optionally as a REFRESH-scheduled (rather than
+// on-insert-triggered) view — see RefreshEveryMinutes.
 type CreateMaterializedViewBuilder struct {
-	database    string // "" => unqualified view reference
-	name        string
-	ifNotExists bool
-	cluster     string // "" => no ON CLUSTER clause
-	toDatabase  string // "" => unqualified target reference
-	toTable     string
-	body        *QueryBuilder
+	database            string // "" => unqualified view reference
+	name                string
+	ifNotExists         bool
+	cluster             string // "" => no ON CLUSTER clause
+	refreshEveryMinutes int    // 0 => on-insert-triggered (no REFRESH clause)
+	toDatabase          string // "" => unqualified target reference
+	toTable             string
+	body                *QueryBuilder
 }
 
 // CreateMaterializedView starts a builder for the named materialized view.
@@ -1056,6 +1058,29 @@ func (c *CreateMaterializedViewBuilder) IfNotExists() *CreateMaterializedViewBui
 // needs no clause.
 func (c *CreateMaterializedViewBuilder) OnCluster(name string) *CreateMaterializedViewBuilder {
 	c.cluster = name
+	return c
+}
+
+// RefreshEveryMinutes turns the view into a REFRESH-scheduled materialized
+// view — `REFRESH EVERY <n> MINUTE` — instead of the default on-insert
+// trigger. Each scheduled refresh re-runs the whole body query and, on
+// success, ATOMICALLY swaps it into the target table (an EXCHANGE TABLES
+// under the hood — see ClickHouse's refreshable-materialized-view design
+// doc: https://clickhouse.com/docs/materialize/refreshable-materialized-view
+// and upstream PR #70550, which GA'd the feature in 24.10 by dropping the
+// `allow_experimental_refreshable_materialized_view` flag requirement); a
+// refresh that ERRORS leaves the target holding whatever the last
+// successful swap produced, never a partial or empty result — the whole
+// reason this shape suits an interactive-read catalog table over the
+// on-insert form. n must be > 0 — callers gate emitting this clause at all
+// behind their own capability check, so a non-positive n here is a caller
+// bug, not a "no REFRESH clause" request; it panics immediately rather
+// than silently falling back to the on-insert form.
+func (c *CreateMaterializedViewBuilder) RefreshEveryMinutes(n int) *CreateMaterializedViewBuilder {
+	if n <= 0 {
+		panic("chsql: CreateMaterializedViewBuilder.RefreshEveryMinutes requires n > 0")
+	}
+	c.refreshEveryMinutes = n
 	return c
 }
 
@@ -1098,6 +1123,11 @@ func (c *CreateMaterializedViewBuilder) frag() Frag {
 		if c.cluster != "" {
 			ddlToken(" ")(b)
 			OnCluster(c.cluster)(b)
+		}
+		if c.refreshEveryMinutes > 0 {
+			ddlToken(" REFRESH EVERY ")(b)
+			InlineLit(int64(c.refreshEveryMinutes))(b)
+			ddlToken(" MINUTE")(b)
 		}
 		ddlToken(" TO ")(b)
 		if c.toDatabase != "" {

@@ -103,6 +103,10 @@ func (s *tailStubQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) 
 	return s.labelSets, s.labelSetsErr
 }
 
+func (s *tailStubQuerier) QueryLabelCardinalities(_ context.Context, _ string, _ ...any) ([]chclient.LabelCardinalityRow, error) {
+	return nil, nil
+}
+
 // dialTail upgrades a synthetic httptest.Server to a WebSocket via the
 // /loki/api/v1/tail endpoint. Helper so individual tests stay focused
 // on the chunk-shape assertions.

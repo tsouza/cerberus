@@ -168,6 +168,10 @@ func (q *cursorAwareQuerier) QueryLabelSets(context.Context, string, ...any) ([]
 	return nil, nil
 }
 
+func (q *cursorAwareQuerier) QueryLabelCardinalities(context.Context, string, ...any) ([]chclient.LabelCardinalityRow, error) {
+	return nil, nil
+}
+
 // TestTail_OverflowRowsNotDropped is the regression guard for the
 // poll-window-exceeds-limit data-loss bug. Five rows share ONE poll window
 // (they open one lead time after the tail's start, so the polls before that

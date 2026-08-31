@@ -103,6 +103,14 @@ func (c *chaosQuerier) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]
 	return c.labelSets, nil
 }
 
+func (c *chaosQuerier) QueryLabelCardinalities(_ context.Context, _ string, _ ...any) ([]chclient.LabelCardinalityRow, error) {
+	c.calls.Add(1)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return nil, nil
+}
+
 // TestLokiCH_UpstreamError_QueryReturns502 — CH error on /query
 // surfaces as 502 + the Loki error envelope.
 func TestLokiCH_UpstreamError_QueryReturns502(t *testing.T) {

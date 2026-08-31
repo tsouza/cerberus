@@ -1,5 +1,42 @@
 package schema
 
+// LabelCatalogTable / LabelCatalogKeyColumn / LabelCatalogCardinalityStateColumn
+// name the loki label-cardinality catalog table (cerberus issue #2770) and
+// its two columns — cerberus-invented, not upstream OTel-CH names, and NOT
+// a Logs struct field (unlike LogsTable and friends): nothing today needs
+// to rename this table per deployment the way an operator renames otel_logs
+// to match a pre-existing custom schema, since cerberus itself invented it
+// wholesale. Package-level constants are exported (unlike this package's
+// other schema constants, which stay unexported implementation details)
+// because internal/schema/ddl (which creates the table), internal/api/loki
+// (which queries it), and cmd/cerberus (which queries
+// system.view_refreshes for the view) all need the SAME literal, and
+// internal/schema is the one leaf package all three already import — the
+// single source of truth, no per-side duplication.
+//
+// A field would also have made this table a false positive for
+// TestReadSurfaceCoversEveryReadSideSchemaField (test/e2e/migration/steps):
+// that reflective check requires every non-empty `*Table`/`*Column` field
+// on Logs to be provably present on ANY live migrated cluster, which does
+// not hold for a chopt-version-gated, opt-in table a deployment may never
+// have provisioned — unlike Metrics.DeltaPrefixTable, whose OWN opt-in gate
+// is a static env var the offline schema resolution can already see (so it
+// defaults to "" and the same check skips it), loki_catalog_mv's gate needs
+// a LIVE ClickHouse version probe that plain env resolution has no access
+// to. A constant sidesteps the field-completeness question entirely rather
+// than answering it with a second, parallel enablement toggle.
+const (
+	LabelCatalogTable                  = "loki_label_catalog"
+	LabelCatalogKeyColumn              = "LabelKey"
+	LabelCatalogCardinalityStateColumn = "CardinalityState"
+
+	// LabelCatalogViewSuffix is appended to LabelCatalogTable to name the
+	// refreshable materialized view feeding it (matching the upstream
+	// traces lookup table's own `<table>_mv` convention — see
+	// internal/schema/ddl.renderLokiLabelCatalogView).
+	LabelCatalogViewSuffix = "_mv"
+)
+
 // Logs describes how cerberus reads logs from ClickHouse. The default
 // (returned by DefaultOTelLogs) matches the OpenTelemetry ClickHouse
 // Exporter v0.x logs schema; users with custom layouts override

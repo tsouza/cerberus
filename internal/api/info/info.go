@@ -131,6 +131,51 @@ type FilesystemCacheState struct {
 	CurrentElements uint64
 }
 
+// ViewRefreshState is the current scheduler status of the loki
+// label-cardinality catalog's refreshable materialized view (cerberus
+// issue #2770), read live off system.view_refreshes on every /info poll —
+// the same posture FilesystemCacheState and ResultCacheState take, since
+// it too is a property of the CONNECTED server, not of cerberus's own
+// process. Reported verbatim, with no cerberus-side "healthy"/"unhealthy"
+// verdict layered on: a failed refresh reads here as a non-empty Exception
+// plus LastRefreshTime having advanced past LastSuccessTime, so an operator
+// can see the catalog is serving a stale-but-real previous snapshot (rather
+// than cerberus silently deciding that for them). The field set mirrors
+// system.view_refreshes' REAL columns — verified live against ClickHouse
+// 25.9 (`SELECT name FROM system.columns WHERE table='view_refreshes'`) —
+// which notably carries NO "last refresh result" enum and NO refresh
+// counter, unlike an earlier draft of this struct assumed; see
+// chclient.ViewRefreshState's doc comment for the verification detail and
+// internal/schema/ddl's TestLokiLabelCatalog_RefreshAndFailureMode for the
+// live proof this shape's fields actually behave as documented.
+type ViewRefreshState struct {
+	// Configured reports whether the view exists on the connected server
+	// at all — false when LokiLabelCatalogEnabled is off, the DDL has not
+	// applied yet, or the server predates the chopt loki_catalog_mv
+	// version floor. Every other field is the zero value when false.
+	Configured bool
+	// Status is the view's current scheduler state (e.g. "Scheduled",
+	// "Running"), read verbatim from ClickHouse. Does NOT flip to an
+	// "Error" value on a failed refresh (verified live) — Exception is
+	// what carries the failure signal.
+	Status string
+	// Exception is the most recently COMPLETED attempt's error text, or ""
+	// when that attempt succeeded (or none has completed yet).
+	Exception string
+	// LastSuccessTime is the last successful refresh's completion
+	// timestamp, or "" when no refresh has EVER succeeded.
+	LastSuccessTime string
+	// LastRefreshTime is the most recent refresh ATTEMPT's completion
+	// timestamp (successful or not), or "" when none has completed yet.
+	// LastRefreshTime > LastSuccessTime means the most recent attempt
+	// failed (Exception is then non-empty) — exactly the "still serving
+	// the previous snapshot" case this pair of fields surfaces.
+	LastRefreshTime string
+	// Retry is the current backoff retry counter for a REPEATEDLY failing
+	// refresh (reset to 0 by ClickHouse on a successful attempt).
+	Retry uint64
+}
+
 // Options configure Handler.
 type Options struct {
 	// Snapshot is the static, boot-captured fingerprint. Required.
@@ -156,6 +201,17 @@ type Options struct {
 	// Configured=false and every counter at 0, the honest answer for a
 	// handler wired without chclient.QueryFilesystemCacheState.
 	FilesystemCache func(ctx context.Context) FilesystemCacheState
+
+	// LokiCatalogViewRefresh reports the CURRENT scheduler status of the
+	// loki label-catalog's refreshable materialized view (cerberus issue
+	// #2770), read live under the handler's own ping budget the same way
+	// FilesystemCache is — the refresh's success/failure state is a
+	// property of the connected server, not of cerberus's own process, so
+	// a refresh that starts failing mid-run shows up on the next poll
+	// without a restart. When nil the body reports Configured=false and
+	// every other field at its zero value, the honest answer for a
+	// handler wired without chclient.QueryViewRefreshState.
+	LokiCatalogViewRefresh func(ctx context.Context) ViewRefreshState
 
 	// Reachable reports whether ClickHouse is reachable right now. It is the
 	// same ping the /readyz probe issues, but reported as a plain bool here.
@@ -187,16 +243,17 @@ type Options struct {
 
 // Handler serves GET /info. Construct via New and register via Mount.
 type Handler struct {
-	snap            Snapshot
-	opts            func() OptState
-	resultCache     func() ResultCacheState
-	filesystemCache func(ctx context.Context) FilesystemCacheState
-	reachable       func(ctx context.Context) bool
-	breaker         func() string
-	schemaReady     func() bool
-	ready           func(ctx context.Context) bool
-	start           time.Time
-	pingTimeout     time.Duration
+	snap                   Snapshot
+	opts                   func() OptState
+	resultCache            func() ResultCacheState
+	filesystemCache        func(ctx context.Context) FilesystemCacheState
+	lokiCatalogViewRefresh func(ctx context.Context) ViewRefreshState
+	reachable              func(ctx context.Context) bool
+	breaker                func() string
+	schemaReady            func() bool
+	ready                  func(ctx context.Context) bool
+	start                  time.Time
+	pingTimeout            time.Duration
 }
 
 // defaultPingTimeout bounds the live reachability/ready probes per request.
@@ -208,16 +265,17 @@ const defaultPingTimeout = time.Second
 // well-formed body.
 func New(opts Options) *Handler {
 	h := &Handler{
-		snap:            opts.Snapshot,
-		opts:            opts.Optimizations,
-		resultCache:     opts.ResultCache,
-		filesystemCache: opts.FilesystemCache,
-		reachable:       opts.Reachable,
-		breaker:         opts.Breaker,
-		schemaReady:     opts.SchemaReady,
-		ready:           opts.Ready,
-		start:           opts.StartTime,
-		pingTimeout:     opts.PingTimeout,
+		snap:                   opts.Snapshot,
+		opts:                   opts.Optimizations,
+		resultCache:            opts.ResultCache,
+		filesystemCache:        opts.FilesystemCache,
+		lokiCatalogViewRefresh: opts.LokiCatalogViewRefresh,
+		reachable:              opts.Reachable,
+		breaker:                opts.Breaker,
+		schemaReady:            opts.SchemaReady,
+		ready:                  opts.Ready,
+		start:                  opts.StartTime,
+		pingTimeout:            opts.PingTimeout,
 	}
 	if h.pingTimeout <= 0 {
 		h.pingTimeout = defaultPingTimeout
@@ -268,20 +326,33 @@ type filesystemCacheInfo struct {
 	CurrentElements  uint64 `json:"currentElements"`
 }
 
+// lokiCatalogViewRefreshInfo is the nested "lokiCatalogViewRefresh" object
+// of the /info body (cerberus issue #2770) — the refreshable materialized
+// view's system.view_refreshes status, reported verbatim.
+type lokiCatalogViewRefreshInfo struct {
+	Configured      bool   `json:"configured"`
+	Status          string `json:"status"`
+	Exception       string `json:"exception"`
+	LastSuccessTime string `json:"lastSuccessTime"`
+	LastRefreshTime string `json:"lastRefreshTime"`
+	Retry           uint64 `json:"retry"`
+}
+
 // infoResponse is the single JSON fingerprint GET /info returns. Field casing
 // (lowerCamelCase) mirrors the health handler's JSON conventions.
 type infoResponse struct {
-	Service         string              `json:"service"`
-	Version         string              `json:"version"`
-	Revision        string              `json:"revision"`
-	GoVersion       string              `json:"goVersion"`
-	UptimeSeconds   int64               `json:"uptimeSeconds"`
-	Heads           []string            `json:"heads"`
-	ClickHouse      clickHouseInfo      `json:"clickhouse"`
-	Optimizations   optimizationsInfo   `json:"optimizations"`
-	ResultCache     resultCacheInfo     `json:"resultCache"`
-	FilesystemCache filesystemCacheInfo `json:"filesystemCache"`
-	Ready           bool                `json:"ready"`
+	Service                string                     `json:"service"`
+	Version                string                     `json:"version"`
+	Revision               string                     `json:"revision"`
+	GoVersion              string                     `json:"goVersion"`
+	UptimeSeconds          int64                      `json:"uptimeSeconds"`
+	Heads                  []string                   `json:"heads"`
+	ClickHouse             clickHouseInfo             `json:"clickhouse"`
+	Optimizations          optimizationsInfo          `json:"optimizations"`
+	ResultCache            resultCacheInfo            `json:"resultCache"`
+	FilesystemCache        filesystemCacheInfo        `json:"filesystemCache"`
+	LokiCatalogViewRefresh lokiCatalogViewRefreshInfo `json:"lokiCatalogViewRefresh"`
+	Ready                  bool                       `json:"ready"`
 }
 
 // handleInfo writes the fingerprint. It always returns 200: /info is a
@@ -327,9 +398,10 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 			ResolvedAgainstVersion: opts.ServerVersion,
 			Enabled:                opts.Enabled,
 		},
-		ResultCache:     h.resultCacheInfoNow(),
-		FilesystemCache: h.filesystemCacheInfoNow(pingCtx),
-		Ready:           h.readyNow(pingCtx),
+		ResultCache:            h.resultCacheInfoNow(),
+		FilesystemCache:        h.filesystemCacheInfoNow(pingCtx),
+		LokiCatalogViewRefresh: h.lokiCatalogViewRefreshInfoNow(pingCtx),
+		Ready:                  h.readyNow(pingCtx),
 	}
 }
 
@@ -390,6 +462,22 @@ func (h *Handler) filesystemCacheInfoNow(ctx context.Context) filesystemCacheInf
 		return filesystemCacheInfo{}
 	}
 	return filesystemCacheInfo(h.filesystemCache(ctx))
+}
+
+// lokiCatalogViewRefreshInfoNow reads the current loki label-catalog view
+// refresh status and renders it as the JSON-shaped
+// lokiCatalogViewRefreshInfo. ViewRefreshState and lokiCatalogViewRefreshInfo
+// share an identical field set in the SAME order (only struct tags differ),
+// so this is a plain type conversion — the same shape
+// filesystemCacheInfoNow uses. An unwired closure yields the zero
+// ViewRefreshState (Configured=false, every other field at its zero
+// value), the honest answer for a handler wired without
+// chclient.QueryViewRefreshState.
+func (h *Handler) lokiCatalogViewRefreshInfoNow(ctx context.Context) lokiCatalogViewRefreshInfo {
+	if h.lokiCatalogViewRefresh == nil {
+		return lokiCatalogViewRefreshInfo{}
+	}
+	return lokiCatalogViewRefreshInfo(h.lokiCatalogViewRefresh(ctx))
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {

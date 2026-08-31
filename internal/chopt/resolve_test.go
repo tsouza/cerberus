@@ -648,6 +648,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureExpHistogramMergeSumMap:      {ID: FeatureExpHistogramMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureTraceIDProjection:            {ID: FeatureTraceIDProjection, MinVersion: v(25, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureLokiCatalogMV:                {ID: FeatureLokiCatalogMV, MinVersion: v(24, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTraceIDBitmapFilter:          {ID: FeatureTraceIDBitmapFilter, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureArgAndMaxFusion:              {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureResultCache:                  {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},

@@ -389,6 +389,17 @@ type Config struct {
 	// internal/schema/ddl.Config.TextIndexEnabled).
 	SchemaFullTextIndex bool
 
+	// SchemaLokiCatalogMV is the resolved chopt loki_catalog_mv verdict
+	// (cerberus issue #2770), back-filled the SAME way as
+	// SchemaTraceIDProjection immediately above — including the offline
+	// `migrate schema` preview's chopt.ExplicitlyRequested fallback, since
+	// loki_catalog_mv is also AutoSelect=false. internal/schemaboot.
+	// DDLConfig is the only reader: true adds the curated `CREATE
+	// MATERIALIZED VIEW ... REFRESH EVERY 5 MINUTE` label-cardinality
+	// catalog to the logs table (see
+	// internal/schema/ddl.Config.LokiLabelCatalogEnabled).
+	SchemaLokiCatalogMV bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).

@@ -238,6 +238,10 @@ func (s *lokiStub) QueryLabelSets(_ context.Context, _ string, _ ...any) ([]map[
 	return nil, nil
 }
 
+func (s *lokiStub) QueryLabelCardinalities(_ context.Context, _ string, _ ...any) ([]chclient.LabelCardinalityRow, error) {
+	return nil, nil
+}
+
 var _ loki.Querier = (*lokiStub)(nil)
 
 func TestNoGoroutineLeak_LokiQuery(t *testing.T) {
