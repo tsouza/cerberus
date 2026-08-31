@@ -921,7 +921,7 @@ var registry = []Feature{
 		MinVersion: Version{Major: 26, Minor: 3},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in only via CERBERUS_CH_OPTIMIZATIONS — statistics are unsupported on ClickHouse Cloud and the apply path tolerates that refusal; auto never picks it pending real-world PREWHERE/plan calibration)",
+		Doc:        "curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in via CERBERUS_CH_OPTIMIZATIONS — unsupported on ClickHouse Cloud, tolerated; auto never picks it pending real-world calibration)",
 	},
 }
 
