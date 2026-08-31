@@ -116,32 +116,43 @@ export function tableViolations(phases) {
       problems.push(`phase "${name}" has a negative or non-integer \`workers\`: ${JSON.stringify(p.workers)}`);
     }
 
+    if (p.include_files !== undefined && p.exclude_files !== undefined) {
+      problems.push(
+        `phase "${name}" declares both \`include_files\` and \`exclude_files\` — a leg owns its file set ` +
+          `one way or the other, never both; the combination is ambiguous about which one gremlins would honour.`,
+      );
+    }
     if (p.exclude_files !== undefined) {
-      problems.push(...excludeViolations(name, p.exclude_files));
+      problems.push(...filePatternViolations(name, 'exclude_files', p.exclude_files));
+    }
+    if (p.include_files !== undefined) {
+      problems.push(...filePatternViolations(name, 'include_files', p.include_files));
     }
   }
 
   return problems;
 }
 
-function excludeViolations(name, pattern) {
+function filePatternViolations(name, field, pattern) {
   const problems = [];
   if (typeof pattern !== 'string' || pattern === '') {
-    problems.push(`phase "${name}" has an empty \`exclude_files\` — omit the key instead of excluding nothing.`);
+    problems.push(`phase "${name}" has an empty \`${field}\` — omit the key instead of matching nothing.`);
     return problems;
   }
   for (const { re, what } of NON_RE2_CONSTRUCTS) {
     if (re.test(pattern)) {
       problems.push(
-        `phase "${name}" \`exclude_files\` uses ${what}, which Go's RE2 engine rejects. gremlins would ` +
-          `error the leg out at run time, after the checkout and toolchain setup have already been paid for.`,
+        `phase "${name}" \`${field}\` uses ${what}, which Go's RE2 engine rejects. \`include_files\` is ` +
+          `resolved into an \`exclude_files\` for gremlins (see resolvePhases), so this check applies to ` +
+          `both fields identically — a non-RE2 construct would error the leg out at run time either way, ` +
+          `after the checkout and toolchain setup have already been paid for.`,
       );
     }
   }
   try {
     new RegExp(pattern);
   } catch (e) {
-    problems.push(`phase "${name}" \`exclude_files\` is not a valid regular expression: ${e.message}`);
+    problems.push(`phase "${name}" \`${field}\` is not a valid regular expression: ${e.message}`);
   }
   return problems;
 }
@@ -382,9 +393,50 @@ export function ownershipViolations({ phases, registryFiles, root = process.cwd(
 // direction for a gate.
 export function phaseClaims(phase, path) {
   if (!underPrefix(path, phase.scope)) return false;
-  if (!phase.exclude_files) return true;
   const rel = normalise(path).slice(normalise(phase.scope).length + 1);
+  if (phase.include_files) return new RegExp(phase.include_files).test(rel);
+  if (!phase.exclude_files) return true;
   return !new RegExp(phase.exclude_files).test(rel);
+}
+
+// resolvePhases — translate every `include_files` leg into an equivalent
+// `exclude_files` gremlins (and the Go partition test's `dump` reader) can
+// consume directly. RE2 has no way to express "match only this small set"
+// without negative lookahead (NON_RE2_CONSTRUCTS bans it), so an include-based
+// leg's real exclude pattern is computed by walking every mutable file
+// actually in its scope and excluding whichever ones `include_files` does NOT
+// match. The output never carries `include_files` — mutation.yml's
+// `matrix.exclude_files` interpolation and the Go test's JSON parse both stay
+// exactly as they are today.
+//
+// This is the one place a NEW file gets classified for free. Today, adding a
+// file to a directory shared by an include-based leg and its siblings means
+// walkMutableGoFiles sees it, it matches none of the static include patterns,
+// so it lands in every include-based leg's DERIVED exclude — i.e. it is
+// excluded from all of them — and falls through to whichever sibling in the
+// group has no `include_files` (the scope's catch-all), the same way a file
+// no exclude_files pattern names already falls through today. No hand edit
+// needed anywhere, closing the gap that let a new chsql file collide across
+// four legs until someone remembered to hand-patch three separate regexes.
+export function resolvePhases(phases, root = process.cwd(), problems = []) {
+  return phases.map((phase) => {
+    if (!phase.include_files) return phase;
+    const directory = normalise(phase.scope);
+    const includeRe = new RegExp(phase.include_files);
+    const excludedStems = [];
+    for (const file of walkMutableGoFiles(root, directory, problems)) {
+      const rel = file.slice(directory.length + 1);
+      if (includeRe.test(rel)) continue;
+      if (!rel.endsWith('.go')) {
+        problems.push(`phase "${phase.phase}": derived exclude cannot express non-.go mutable file "${rel}"`);
+        continue;
+      }
+      excludedStems.push(rel.slice(0, -3).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    }
+    const { include_files: _includeFiles, ...rest } = phase;
+    if (excludedStems.length === 0) return rest; // this leg's include already claims everything in scope
+    return { ...rest, exclude_files: `^(${excludedStems.sort().join('|')})\\.go$` };
+  });
 }
 
 // selectPhases — the phases this event must run, plus the reason, plus any
@@ -531,14 +583,24 @@ function main() {
   if (problems.length === 0) {
     problems.push(...ownershipViolations({ phases: PHASES, registryFiles: surface.files }));
   }
+  // resolvePhases only produces a well-formed table once PHASES itself is
+  // sound (an include_files leg scoped to a non-directory, say, would make the
+  // walk below meaningless) — but its own derivation can independently fail
+  // (a non-.go mutable file the derived exclude cannot express), so its
+  // problems are validated regardless of ownership state and folded into the
+  // same fatal set.
+  const resolvedPhases = resolvePhases(PHASES, process.cwd(), problems);
   for (const p of problems) error(`mutation-matrix: ${p}`);
   if (problems.length > 0) process.exit(1);
 
   // dump puts the table on stdout and NOTHING else, because a consumer parses
   // that stream as JSON. Validation still runs first: a dump of a table that
-  // would have failed verify is worse than no dump at all.
+  // would have failed verify is worse than no dump at all. Resolved, not raw
+  // PHASES: the Go partition test (and gremlins itself, via emit below) only
+  // ever reads `exclude_files` — an include_files leg's derived equivalent
+  // must reach both the same way a hand-written one would.
   if (mode === 'dump') {
-    process.stdout.write(`${JSON.stringify(PHASES, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(resolvedPhases, null, 2)}\n`);
 
     return;
   }
@@ -562,8 +624,13 @@ function main() {
           headSha: process.env.HEAD_SHA,
         });
 
+  // resolvedPhases, not PHASES: selectPhases' own claim-matching is identical
+  // either way (resolvePhases changes how a leg's ownership is EXPRESSED, not
+  // WHICH files it claims), but only the resolved form carries a real
+  // `exclude_files` for the matrix JSON below to interpolate into gremlins'
+  // own CLI invocation.
   const { phases, reason, gaps } = selectPhases({
-    phases: PHASES,
+    phases: resolvedPhases,
     harnessPaths: HARNESS_PATHS,
     registryGlobs: surface.globs,
     eventName,

@@ -99,8 +99,19 @@ export const PHASES = [
     // range_window_stale_resample(11) + fnresolution(4) +
     // lwr_fanout_bound(2). range_window.go alone is the package's single
     // largest file; the rest of this leg is greedy-balance filler, not theme.
-    exclude_files:
-      '^(absent_over_time|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_quantile_rankwalk_native|histogram_vector_join|info_join|metrics_compare|metrics_second_stage|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window_fixed_accumulator|range_window_fused|range_window_grid_native|range_window_lag_adjacency|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
+    //
+    // `include_files` (an allowlist), not `exclude_files`: this leg owns a
+    // small, curated set, and an exclude-shaped pattern would have to name
+    // every OTHER file in the package to express that — including files that
+    // do not exist yet. cerberus issue #2814: a new chsql file matched none of
+    // the four legs' hand-written exclude lists and was claimed by all of
+    // them until three separate regexes were hand-patched. An allowlist leg
+    // cannot make that mistake — a new file simply isn't in it — and
+    // resolvePhases (mutation-matrix.mjs) derives the real `exclude_files`
+    // gremlins runs against from this list plus a live directory walk, so a
+    // new file falls straight through to phase2-other's catch-all, exactly
+    // as an existing unclaimed file already does today.
+    include_files: '^(aggregate_range_lwr_fusion|fnresolution|late_mat|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -111,8 +122,10 @@ export const PHASES = [
     // range_window_variants(31) + vector_join(27) +
     // range_lwr(24) + vector_set_op(10) +
     // nary_vector_set_op(6) + rate_window_fanout_bound(2).
-    exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|chaos_sleep|chaos_sleep_stub|ddl|doc|emit|emit_node|emit_size_bound|exemplars|fnresolution|histogram_float_vector_join|histogram_over_time|histogram_projection|histogram_quantile|histogram_quantile_native|histogram_quantile_rankwalk_native|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|mixed_vector_join|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_window|range_window_fixed_accumulator|range_window_fused|range_window_grid_native|range_window_lag_adjacency|range_window_stale_resample|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape)\\.go$',
+    //
+    // `include_files`, not `exclude_files` — see phase2-range's own comment
+    // for why (cerberus issue #2814).
+    include_files: '^(builder|nary_vector_set_op|nested_set_annotate|range_lwr|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase2-compare',
@@ -124,8 +137,10 @@ export const PHASES = [
     // range_window_fused(29) + histogram_over_time(25) +
     // histogram_projection(21) + emit(12) +
     // metrics_second_stage(10).
-    exclude_files:
-      '^(absent_over_time|aggregate_range_lwr_fusion|builder|chaos_sleep|chaos_sleep_stub|ddl|doc|emit_size_bound|fnresolution|histogram_float_vector_join|histogram_quantile|histogram_quantile_rankwalk_native|histogram_vector_join|info_join|late_mat|lwr_fanout_bound|mixed_vector_join|nary_vector_set_op|nested_set_annotate|prewhere|query_exemplars|range_bucket_fanout|range_bucket_grid_native|range_bucket_grid_native_bound|range_lwr|range_window|range_window_fixed_accumulator|range_window_grid_native|range_window_lag_adjacency|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|scan_resource_bound|search_trace_limit|set_op|structural_join|tableshape|vector_join|vector_set_op)\\.go$',
+    //
+    // `include_files`, not `exclude_files` — see phase2-range's own comment
+    // for why (cerberus issue #2814).
+    include_files: '^(emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|metrics_compare|metrics_second_stage|range_window_fused)\\.go$',
   },
   {
     phase: 'phase2-other',

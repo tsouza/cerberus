@@ -17,7 +17,8 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -32,6 +33,7 @@ import {
   ownershipViolations,
   phaseClaims,
   registryMutableFiles,
+  resolvePhases,
   selectPhases,
   tableViolations,
 } from './mutation-matrix.mjs';
@@ -409,6 +411,60 @@ test('the chsql legs partition the package by exclude_files, one leg per file', 
   // everything no sibling names.
   assert.deepEqual(names(select(['internal/chsql/range_window_grid_native.go'])), ['phase2-other']);
   assert.deepEqual(names(select(['internal/chsql/tableshape.go'])), ['phase2-other']);
+});
+
+test('resolvePhases derives an include_files leg\'s real exclude_files from a directory walk', () => {
+  // cerberus issue #2814: a new file under a scope shared by several
+  // exclude_files-shaped legs matched none of their hand-written patterns and
+  // was therefore claimed by ALL of them (a hard `ownershipViolations`
+  // failure), because an exclude-shaped leg claims anything it does not name.
+  // An include_files-shaped leg cannot make that mistake — a new file is
+  // never in its static allowlist — but gremlins itself only understands
+  // `--exclude-files`, so resolvePhases has to translate the allowlist into
+  // an equivalent denylist by actually walking the scope's real files. This
+  // test proves that translation against a real (temporary) directory, not
+  // just against mutation-phases.mjs's own hand-curated table.
+  // resolvePhases' own `walkMutableGoFiles` joins `root` (process.cwd() below)
+  // with the phase's `scope`, exactly as production scopes do — so the
+  // fixture has to live UNDER cwd, not under the OS tmpdir, or that join
+  // would silently walk the wrong (nonexistent) path.
+  const dir = mkdtempSync(join(process.cwd(), 'mutation-resolve-fixture-'));
+  const scope = `./${basename(dir)}`;
+  try {
+    for (const name of ['owned.go', 'sibling.go', 'shared_test.go']) {
+      writeFileSync(join(dir, name), '// fixture\n');
+    }
+    const phases = [
+      { phase: 'curated', scope, efficacy: 95, workers: 0, include_files: '^owned\\.go$' },
+      { phase: 'catchall', scope, efficacy: 95, workers: 0 },
+    ];
+
+    const resolved = resolvePhases(phases, process.cwd());
+    const curated = resolved.find((p) => p.phase === 'curated');
+    assert.equal(curated.include_files, undefined, 'the resolved leg must not still carry include_files');
+    assert.equal(curated.exclude_files, '^(sibling)\\.go$', 'sibling.go is the only OTHER real .go file in scope');
+
+    // The property under test: a file that exists in neither owned.go's
+    // include pattern NOR the derived exclude pattern (because it did not
+    // exist at derivation time) is claimed by exactly the catch-all — never
+    // by both, and never by neither.
+    writeFileSync(join(dir, 'brand_new.go'), '// added after resolution\n');
+    const reResolved = resolvePhases(phases, process.cwd());
+    const newFilePath = `${basename(dir)}/brand_new.go`;
+    const claimers = reResolved.filter((p) => phaseClaims(p, newFilePath));
+    assert.deepEqual(
+      claimers.map((p) => p.phase),
+      ['catchall'],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolvePhases leaves an exclude_files (or bare) leg completely untouched', () => {
+  const [rangeLeg] = PHASES.filter((p) => p.phase === 'phase3-optimizer');
+  const [resolved] = resolvePhases([rangeLeg], process.cwd());
+  assert.deepEqual(resolved, rangeLeg);
 });
 
 test('the promql legs partition the package by exclude_files, one leg per file', () => {
