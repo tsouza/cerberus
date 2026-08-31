@@ -16,6 +16,7 @@ import (
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chopt"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/engine"
 	"github.com/tsouza/cerberus/internal/logql"
@@ -200,6 +201,16 @@ func newMigrateSchemaCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config from environment: %w", err)
 			}
+			// This tool is offline (no live ClickHouse connection), so it cannot
+			// run chopt.Resolve — that needs a probed server version. It reflects
+			// the operator's STATED intent instead: map_bucketed_serialization
+			// (cerberus issue #2774) is never auto-selected, so the only way it is
+			// ever on is an explicit CERBERUS_CH_OPTIMIZATIONS listing, which
+			// ExplicitlyRequested reads straight off the raw string with no version
+			// check. The live boot path (cmd/cerberus's resolveCHOptimizations)
+			// remains the actual authority: it enforces the version floor before
+			// ever applying this DDL for real.
+			cfg.SchemaMapBucketedSerialization = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureMapBucketedSerialization)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}
