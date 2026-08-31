@@ -1214,6 +1214,27 @@ func infoOptions(
 			hits, misses := chclient.ResultCacheStats()
 			return info.ResultCacheState{Hits: hits, Misses: misses}
 		},
+		// FilesystemCache reports the server-side filesystem cache reading
+		// (cerberus issue #2780), read over the SAME probe head as
+		// Reachable/Ready. A query failure (server unreachable, or too old
+		// to carry system.filesystem_cache_settings — the table has existed
+		// well below cerberus's own 24.8 floor, but a query error is
+		// possible on ANY live poll) degrades to the honest all-zero
+		// Configured=false reading rather than surfacing a transient error
+		// on a metadata endpoint that always returns 200.
+		FilesystemCache: func(ctx context.Context) info.FilesystemCacheState {
+			state, err := probe.QueryFilesystemCacheState(ctx)
+			if err != nil {
+				return info.FilesystemCacheState{}
+			}
+			return info.FilesystemCacheState{
+				Configured:       state.Configured,
+				Caches:           state.Caches,
+				MaxSizeBytes:     state.MaxSizeBytes,
+				CurrentSizeBytes: state.CurrentSizeBytes,
+				CurrentElements:  state.CurrentElements,
+			}
+		},
 		StartTime:   startTime,
 		Reachable:   func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
 		Breaker:     probe.PeekBreakerState,

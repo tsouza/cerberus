@@ -101,6 +101,36 @@ type ResultCacheState struct {
 	Misses uint64
 }
 
+// FilesystemCacheState is the current server-side filesystem cache reading
+// (cerberus issue #2780): whether an operator has configured a named
+// filesystem cache disk at all (see docs/operations.md's "Local filesystem
+// cache" section) plus its aggregate configured capacity and live
+// occupancy, read from chclient.QueryFilesystemCacheState. Configured is
+// the headline field — the per-query enable_filesystem_cache toggle already
+// defaults to on across every ClickHouse version cerberus supports
+// (verified live; see docs/clickhouse-optimizations.md), so the one thing
+// standing between "cerberus" and "cerberus with a warm S3 read cache" is
+// whether the operator has wired a cache disk into the server's
+// storage_configuration — this field answers that directly instead of
+// leaving it to be inferred from a zero byte count that could otherwise
+// mean either "no cache" or "an empty configured one".
+type FilesystemCacheState struct {
+	// Configured reports whether at least one named filesystem cache is
+	// configured on the connected server.
+	Configured bool
+	// Caches is the number of named filesystem caches configured.
+	Caches uint64
+	// MaxSizeBytes is the summed configured max_size across every
+	// configured cache.
+	MaxSizeBytes uint64
+	// CurrentSizeBytes is the summed current_size (live occupied bytes)
+	// across every configured cache.
+	CurrentSizeBytes uint64
+	// CurrentElements is the summed current_elements_num (live occupied
+	// file segments) across every configured cache.
+	CurrentElements uint64
+}
+
 // Options configure Handler.
 type Options struct {
 	// Snapshot is the static, boot-captured fingerprint. Required.
@@ -116,6 +146,16 @@ type Options struct {
 	// (cerberus issue #2781). When nil the body reports 0/0, the honest
 	// answer for a handler wired without chclient.ResultCacheStats.
 	ResultCache func() ResultCacheState
+
+	// FilesystemCache reports the CURRENT server-side filesystem cache
+	// state (cerberus issue #2780), read live under the handler's own ping
+	// budget the same way Reachable/Ready are — cache configuration and
+	// occupancy are properties of the connected server, not of cerberus's
+	// own process, so a rolling ClickHouse config change is reflected on
+	// the next poll without a restart. When nil the body reports
+	// Configured=false and every counter at 0, the honest answer for a
+	// handler wired without chclient.QueryFilesystemCacheState.
+	FilesystemCache func(ctx context.Context) FilesystemCacheState
 
 	// Reachable reports whether ClickHouse is reachable right now. It is the
 	// same ping the /readyz probe issues, but reported as a plain bool here.
@@ -147,15 +187,16 @@ type Options struct {
 
 // Handler serves GET /info. Construct via New and register via Mount.
 type Handler struct {
-	snap        Snapshot
-	opts        func() OptState
-	resultCache func() ResultCacheState
-	reachable   func(ctx context.Context) bool
-	breaker     func() string
-	schemaReady func() bool
-	ready       func(ctx context.Context) bool
-	start       time.Time
-	pingTimeout time.Duration
+	snap            Snapshot
+	opts            func() OptState
+	resultCache     func() ResultCacheState
+	filesystemCache func(ctx context.Context) FilesystemCacheState
+	reachable       func(ctx context.Context) bool
+	breaker         func() string
+	schemaReady     func() bool
+	ready           func(ctx context.Context) bool
+	start           time.Time
+	pingTimeout     time.Duration
 }
 
 // defaultPingTimeout bounds the live reachability/ready probes per request.
@@ -167,15 +208,16 @@ const defaultPingTimeout = time.Second
 // well-formed body.
 func New(opts Options) *Handler {
 	h := &Handler{
-		snap:        opts.Snapshot,
-		opts:        opts.Optimizations,
-		resultCache: opts.ResultCache,
-		reachable:   opts.Reachable,
-		breaker:     opts.Breaker,
-		schemaReady: opts.SchemaReady,
-		ready:       opts.Ready,
-		start:       opts.StartTime,
-		pingTimeout: opts.PingTimeout,
+		snap:            opts.Snapshot,
+		opts:            opts.Optimizations,
+		resultCache:     opts.ResultCache,
+		filesystemCache: opts.FilesystemCache,
+		reachable:       opts.Reachable,
+		breaker:         opts.Breaker,
+		schemaReady:     opts.SchemaReady,
+		ready:           opts.Ready,
+		start:           opts.StartTime,
+		pingTimeout:     opts.PingTimeout,
 	}
 	if h.pingTimeout <= 0 {
 		h.pingTimeout = defaultPingTimeout
@@ -215,19 +257,31 @@ type resultCacheInfo struct {
 	Misses uint64 `json:"misses"`
 }
 
+// filesystemCacheInfo is the nested "filesystemCache" object of the /info
+// body (cerberus issue #2780) — the server-side filesystem cache's
+// configured-vs-occupied state.
+type filesystemCacheInfo struct {
+	Configured       bool   `json:"configured"`
+	Caches           uint64 `json:"caches"`
+	MaxSizeBytes     uint64 `json:"maxSizeBytes"`
+	CurrentSizeBytes uint64 `json:"currentSizeBytes"`
+	CurrentElements  uint64 `json:"currentElements"`
+}
+
 // infoResponse is the single JSON fingerprint GET /info returns. Field casing
 // (lowerCamelCase) mirrors the health handler's JSON conventions.
 type infoResponse struct {
-	Service       string            `json:"service"`
-	Version       string            `json:"version"`
-	Revision      string            `json:"revision"`
-	GoVersion     string            `json:"goVersion"`
-	UptimeSeconds int64             `json:"uptimeSeconds"`
-	Heads         []string          `json:"heads"`
-	ClickHouse    clickHouseInfo    `json:"clickhouse"`
-	Optimizations optimizationsInfo `json:"optimizations"`
-	ResultCache   resultCacheInfo   `json:"resultCache"`
-	Ready         bool              `json:"ready"`
+	Service         string              `json:"service"`
+	Version         string              `json:"version"`
+	Revision        string              `json:"revision"`
+	GoVersion       string              `json:"goVersion"`
+	UptimeSeconds   int64               `json:"uptimeSeconds"`
+	Heads           []string            `json:"heads"`
+	ClickHouse      clickHouseInfo      `json:"clickhouse"`
+	Optimizations   optimizationsInfo   `json:"optimizations"`
+	ResultCache     resultCacheInfo     `json:"resultCache"`
+	FilesystemCache filesystemCacheInfo `json:"filesystemCache"`
+	Ready           bool                `json:"ready"`
 }
 
 // handleInfo writes the fingerprint. It always returns 200: /info is a
@@ -273,8 +327,9 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 			ResolvedAgainstVersion: opts.ServerVersion,
 			Enabled:                opts.Enabled,
 		},
-		ResultCache: h.resultCacheInfoNow(),
-		Ready:       h.readyNow(pingCtx),
+		ResultCache:     h.resultCacheInfoNow(),
+		FilesystemCache: h.filesystemCacheInfoNow(pingCtx),
+		Ready:           h.readyNow(pingCtx),
 	}
 }
 
@@ -320,6 +375,25 @@ func (h *Handler) resultCacheNow() ResultCacheState {
 		return ResultCacheState{}
 	}
 	return h.resultCache()
+}
+
+// filesystemCacheInfoNow reads the current server-side filesystem cache
+// state and renders it as the JSON-shaped filesystemCacheInfo. An unwired
+// closure yields the zero FilesystemCacheState (Configured=false, every
+// counter 0), the honest answer for a handler wired without
+// chclient.QueryFilesystemCacheState.
+func (h *Handler) filesystemCacheInfoNow(ctx context.Context) filesystemCacheInfo {
+	if h.filesystemCache == nil {
+		return filesystemCacheInfo{}
+	}
+	s := h.filesystemCache(ctx)
+	return filesystemCacheInfo{
+		Configured:       s.Configured,
+		Caches:           s.Caches,
+		MaxSizeBytes:     s.MaxSizeBytes,
+		CurrentSizeBytes: s.CurrentSizeBytes,
+		CurrentElements:  s.CurrentElements,
+	}
 }
 
 func (h *Handler) reachableNow(ctx context.Context) bool {

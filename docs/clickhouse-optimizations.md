@@ -638,6 +638,65 @@ Notes:
   `sum_over_time` (`increase`, `delta`, `irate`, `idelta`), continues to lower
   through the existing array-expression fan-out unchanged.
 
+## Audited, not adopted
+
+Not every settings family the audit epic (#2778) reviews earns a registry
+entry. Recording an audit that found nothing to stamp is itself the useful
+artifact — the alternative is the same family getting silently re-reviewed
+by a future pass with no memory of this one.
+
+### S3/remote-filesystem read tuning (cerberus issue #2780)
+
+Production is a single node with S3-backed storage, so the working
+hypothesis was that cerberus's cold dashboard scans need explicit tuning of
+ClickHouse's prefetch and remote-filesystem concurrent-read settings. Probed
+live via chDB (ClickHouse 26.5.1.1) rather than assumed from the settings'
+documented defaults — `system.settings` reports:
+
+| Setting                                                             | Live value | Live default |
+| ------------------------------------------------------------------- | ---------- | ------------ |
+| `remote_filesystem_read_prefetch`                                   | `1`        | `1`          |
+| `allow_prefetched_read_pool_for_remote_filesystem`                  | `1`        | `1`          |
+| `merge_tree_min_rows_for_concurrent_read_for_remote_filesystem`     | `0`        | `0`          |
+| `merge_tree_min_bytes_for_concurrent_read_for_remote_filesystem`    | `0`        | `0`          |
+
+Prefetch is already on. The remote-filesystem concurrent-read thresholds are
+already at `0` — the most aggressive setting available, meaning ClickHouse
+already runs EVERY remote-filesystem part read concurrently regardless of
+size, unlike the local-disk counterparts
+(`merge_tree_min_rows_for_concurrent_read` / `..._bytes_...`, which default
+to 163840 rows / 240 MiB — a real threshold, because a local read is cheap
+enough that a small part isn't worth parallelizing). ClickHouse's own
+defaults, on the exact deployment shape this issue targets, are already
+tuned past what a `chopt` stamp forcing `remote_filesystem_read_prefetch=1`
+or lowering an already-zero threshold could add — the entire premise
+"stamp only where the default is off or measurably wrong" resolves to
+neither being true. Per the audit-epic mandate (#2778) to verify a proposal
+against the live server rather than assume it from documentation alone, no
+`chopt` feature is registered for either family: it would be machinery
+duplicating what the server already does unconditionally.
+
+**A genuinely open question this audit surfaced, not resolved by it**: the
+issue's own "fan-out-heavy wide scans vs point lookups" framing implies the
+OPPOSITE tuning direction might pay off — deliberately RAISING the
+remote-filesystem concurrent-read thresholds (toward the local-disk
+defaults) on a detected narrow, highly-selective point-lookup shape, to
+avoid the coordination overhead of spinning up concurrent S3 fetches for a
+read that only touches a handful of granules. That is a real, plausible
+optimization, but — unlike the two settings families above — it needs an
+optcorpus A/B pass against representative point-lookup and wide-scan query
+shapes to earn adoption, the same bar `fixed_accumulator_extrapolated` and
+`sorted_slab_over_time` were held to before their own AutoSelect posture was
+decided. Tracked at
+[cerberus#2827](https://github.com/tsouza/cerberus/issues/2827), not
+attempted in this PR.
+
+**Local filesystem cache** (`enable_filesystem_cache` + the server-side
+cache disk) IS adopted by this issue, but as documented operator guidance
+plus `/info` reporting rather than a `chopt` stamp — it is a server-config /
+disk-sizing concern, not a per-query setting. See
+[`docs/operations.md`](operations.md)'s "Local filesystem cache" section.
+
 ## Runtime version probe
 
 At connection init the client issues `SELECT version()` once, parses the
