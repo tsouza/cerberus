@@ -1079,7 +1079,7 @@ var registry = []Feature{
 		MinVersion: Version{Major: 26, Minor: 4},
 		Stability:  Experimental,
 		AutoSelect: true,
-		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans, mirroring the unconditional group_by/sort spill stamps (server >= 26.4, experimental maturity but auto-enabled — result-equivalent and strictly protective; explicit stamp rather than the 26.5+ ratio default, which is silently ignored with no server/user memory limit configured, cf. ClickHouse#76740)",
+		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
 	},
 }
 

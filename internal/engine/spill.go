@@ -190,10 +190,7 @@ func planHasJoin(plan chplan.Node) bool {
 				found = true
 			}
 		}
-		if found {
-			return false
-		}
-		return true
+		return !found
 	})
 	return found
 }
