@@ -172,30 +172,21 @@ func (e *emitter) emitRangeWindowSortedSlabOverTime(r *chplan.RangeWindow) error
 
 // sortedSlabWindowValsFrag renders the values of the per-series `samples`
 // array whose timestamp falls in anchor `a`'s half-open `(a-rangeNS, a]`
-// window, cut out with one arraySlice instead of an arrayFilter re-scan.
-// `samples` is arraySort-ascending by (ts, value), so both window boundaries
-// are monotone prefix-counts over it, located by arrayLastIndex (already
-// used unconditionally elsewhere in this package —
-// histogram_quantile_native.go — so no new version floor):
-//
-//	lo = arrayLastIndex(p -> p.1 <= a-range, samples)   -- count NOT in window
-//	hi = arrayLastIndex(p -> p.1 <= a,       samples)   -- count AT OR BEFORE a
-//
-// arrayLastIndex returns 0 when no element satisfies the predicate, which is
-// already the correct "start of array" index for lo — no extra empty-window
-// case needed. `{ts <= a-range} ⊆ {ts <= a}` for every anchor (a-range < a),
-// so lo <= hi always: hi-lo needs no clamp. arraySlice preserves the sliced
-// elements' relative order, so the mapped values feed overTimeArrayValueFrag
-// in the SAME left-to-right order the array-fold's window_vals would.
+// window — element order preserved from `samples` (arraySort-ascending),
+// matching windowFilterPairsFrag + windowValsFrag's combined membership and
+// ordering over a per-(series, anchor) regrouped array, applied instead to
+// the single per-series slab.
 func sortedSlabWindowValsFrag(a Frag, rangeNS int64) Frag {
-	tsOf := func(t Frag) Frag { return tupleElemFrag(t, 1) }
-	samples := BareIdent("samples")
-	lo := Call("arrayLastIndex", Lambda1("p", Lte(tsOf(BareIdent("p")), rangeStartFrag(a, rangeNS))), samples)
-	hi := Call("arrayLastIndex", Lambda1("p", Lte(tsOf(BareIdent("p")), a)), samples)
-	slice := Call("arraySlice", samples, Add(lo, InlineLit(int64(1))), Sub(hi, lo))
 	return Call(
 		"arrayMap",
 		Lambda1("p", tupleElemFrag(BareIdent("p"), 2)),
-		slice,
+		Call(
+			"arrayFilter",
+			Lambda1("p", And(
+				Gt(tupleElemFrag(BareIdent("p"), 1), rangeStartFrag(a, rangeNS)),
+				Lte(tupleElemFrag(BareIdent("p"), 1), a),
+			)),
+			BareIdent("samples"),
+		),
 	)
 }
