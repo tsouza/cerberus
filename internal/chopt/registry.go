@@ -1247,7 +1247,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap(bounds, counts) + arrayCumSum, retiring the groupArray + per-rung arrayFilter-rescan fold (no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a chDB probe found a real divergence from the existing merge on heterogeneous bucket layouts, #2817)",
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap+arrayCumSum, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — heterogeneous bucket layouts diverge, #2817)",
 	},
 	{
 		ID:         FeatureJoinSpill,
