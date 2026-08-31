@@ -3,9 +3,11 @@ package chsql
 import (
 	"fmt"
 	"math"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -1259,32 +1261,198 @@ func (b *Builder) exprLabelJoin(l *chplan.LabelJoin) error {
 	return nil
 }
 
-func (b *Builder) exprLineContent(l *chplan.LineContent) error {
-	if l.IsRegex {
-		if l.Negated {
-			b.sb.WriteString("NOT ")
+// textIndexLikeMinTokenLength is the minimum literal-word length (in
+// runes) exprLineContent will emit as a `lower(<Source>) LIKE '%tok%'`
+// prefilter conjunct (chopt text_index_line_filter, cerberus issue #2773).
+// Mirrors ClickHouse's own text_index_like_min_pattern_length default —
+// confirmed via `SELECT value FROM system.settings WHERE name =
+// 'text_index_like_min_pattern_length'` against a live 26.4+ server, which
+// reports 4. A word shorter than this is still logically implied by the
+// row predicate if emitted (the superset guarantee doesn't depend on
+// length), but the server's own LIKE-via-text-index dictionary scan can't
+// use it for pruning, so dropping it keeps the WHERE clause from growing
+// with conjuncts that add per-row evaluation cost with no offsetting
+// benefit.
+const textIndexLikeMinTokenLength = 4
+
+// asciiLower lowercases only ASCII 'A'-'Z' bytes, leaving every other byte
+// — including any UTF-8 continuation byte of a non-ASCII rune — untouched.
+// This matches ClickHouse's `lower()` function EXACTLY: `lower()` is
+// ASCII-only (confirmed live: `lower('CAFÉ')` → `cafÉ`, the trailing 'É'
+// unchanged); `lowerUTF8()` is the separate, Unicode-aware function CH
+// offers, and idx_lower_body's DDL expression uses plain `lower(Body)`, not
+// lowerUTF8. Go's Unicode-aware strings.ToLower would silently diverge from
+// what `lower(Body)` actually contains for any non-ASCII letter, breaking
+// the LIKE prefilter's strict-superset guarantee: a needle lowered
+// differently than the column it is matched against can mismatch a row the
+// exact row predicate DOES match, and the surrounding AND would then wrongly
+// drop it.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
 		}
-		b.sb.WriteString("match(")
+	}
+	return string(b)
+}
+
+// escapeLikeLiteral escapes s for embedding inside a ClickHouse LIKE
+// pattern's literal portion: backslash (CH's LIKE escape character) and the
+// two LIKE metacharacters, `%` and `_`. All three replacements run in ONE
+// strings.Replacer pass over the ORIGINAL bytes of s, so a backslash
+// introduced by escaping a `%` or `_` is never itself re-escaped — the
+// double-escaping bug a naive sequential ReplaceAll chain would have.
+// Needed for real log content: an unescaped `_` in a word like "user_id" is
+// read by LIKE as the any-single-char wildcard rather than a literal
+// underscore, and an unescaped `%` in "92% done" is read as the any-
+// sequence wildcard — both would silently widen a conjunct's match set
+// beyond the true substring it is meant to test for.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func escapeLikeLiteral(s string) string {
+	return likeEscaper.Replace(s)
+}
+
+// textIndexLikeTokens splits literal into the whitespace-delimited words
+// exprLineContent's ANDed LIKE prefilter checks (cerberus issue #2773) —
+// "for multi-word |= literals, emit ANDed per-token LIKE conjuncts" in the
+// issue's own words, where a multi-word literal's "tokens" are its words.
+// A word shorter than textIndexLikeMinTokenLength is dropped (see that
+// constant's doc). A literal with no qualifying word returns nil, telling
+// the caller to skip the prefilter and fall back to the exact predicate
+// alone.
+func textIndexLikeTokens(literal string) []string {
+	fields := strings.Fields(literal)
+	tokens := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if utf8.RuneCountInString(f) >= textIndexLikeMinTokenLength {
+			tokens = append(tokens, f)
+		}
+	}
+	return tokens
+}
+
+// textIndexRegexLiteral reports whether pattern is safely extractable as a
+// plain substring literal for the ANDed LIKE prefilter (cerberus issue
+// #2773): pattern is parsed with regexp/syntax under RE2 semantics — the
+// same engine ClickHouse's match() runs, per internal/logql/lower.go's own
+// regexpMergeLabels precedent — and simplified. Only when the result is a
+// SINGLE OpLiteral (no anchors, alternation, character classes,
+// quantifiers, or any other RE2 construct survives Simplify) is "matches
+// this regex" provably equivalent to "contains this substring" for CH's
+// unanchored match() search — the equivalence the LIKE prefilter's
+// strict-superset argument depends on. Any other pattern shape returns
+// ok=false and the caller falls back to match()-only, the boundary the
+// issue itself calls for: partial literal-prefix/substring extraction from
+// an arbitrary RE2 AST (alternation branches, anchors, repetition) is
+// deliberately NOT attempted — this package does not compile RE2 semantics
+// into index predicates, only recognizes the special case where a "regex"
+// carries none.
+func textIndexRegexLiteral(pattern string) (string, bool) {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return "", false
+	}
+	re = re.Simplify()
+	if re.Op != syntax.OpLiteral {
+		return "", false
+	}
+	return string(re.Rune), true
+}
+
+// textIndexPrefilterArgs returns the fully-escaped `%tok%` LIKE needles
+// exprLineContent should AND together ahead of l's row predicate, or nil
+// when no prefilter applies:
+//
+//   - l.TextIndexPrefilter is false (chopt text_index_line_filter is
+//     disabled, or the lowerer never set it) — the whole rewrite is
+//     inert, matching the plain predicate byte-for-byte.
+//   - l.Negated is true — a superset prefilter has no sound dual for a
+//     "must not contain" predicate; see LineContent.TextIndexPrefilter's
+//     doc comment.
+//   - l.IsRegex is true and the Pattern is not a plain literal in
+//     disguise (textIndexRegexLiteral).
+//   - the extracted literal has no word long enough to be worth
+//     prefiltering (textIndexLikeTokens).
+func textIndexPrefilterArgs(l *chplan.LineContent) []string {
+	if !l.TextIndexPrefilter || l.Negated {
+		return nil
+	}
+	literal := l.Pattern
+	if l.IsRegex {
+		lit, ok := textIndexRegexLiteral(l.Pattern)
+		if !ok {
+			return nil
+		}
+		literal = lit
+	}
+	words := textIndexLikeTokens(literal)
+	if len(words) == 0 {
+		return nil
+	}
+	args := make([]string, len(words))
+	for i, w := range words {
+		args[i] = "%" + escapeLikeLiteral(asciiLower(w)) + "%"
+	}
+	return args
+}
+
+func (b *Builder) exprLineContent(l *chplan.LineContent) error {
+	renderRow := func() error {
+		if l.IsRegex {
+			if l.Negated {
+				b.sb.WriteString("NOT ")
+			}
+			b.sb.WriteString("match(")
+			if err := b.Expr(l.Source); err != nil {
+				return err
+			}
+			b.sb.WriteString(", ")
+			b.Arg(l.Pattern)
+			b.sb.WriteByte(')')
+			return nil
+		}
+		op := " > 0"
+		if l.Negated {
+			op = " = 0"
+		}
+		b.sb.WriteString("(position(")
 		if err := b.Expr(l.Source); err != nil {
 			return err
 		}
 		b.sb.WriteString(", ")
 		b.Arg(l.Pattern)
 		b.sb.WriteByte(')')
+		b.sb.WriteString(op)
+		b.sb.WriteByte(')')
 		return nil
 	}
-	op := " > 0"
-	if l.Negated {
-		op = " = 0"
+
+	prefilterArgs := textIndexPrefilterArgs(l)
+	if len(prefilterArgs) == 0 {
+		return renderRow()
 	}
-	b.sb.WriteString("(position(")
-	if err := b.Expr(l.Source); err != nil {
+
+	// Strict-superset prefilter (cerberus issue #2773): each conjunct below
+	// can only ELIMINATE granules/rows the row predicate rendered by
+	// renderRow() would also have rejected — see
+	// LineContent.TextIndexPrefilter's doc comment — so ANDing them ahead of
+	// the unchanged row predicate never changes the result set, only how
+	// much of Body ClickHouse has to decompress and scan to compute it.
+	b.sb.WriteByte('(')
+	for _, arg := range prefilterArgs {
+		b.sb.WriteString("lower(")
+		if err := b.Expr(l.Source); err != nil {
+			return err
+		}
+		b.sb.WriteString(") LIKE ")
+		b.Arg(arg)
+		b.sb.WriteString(" AND ")
+	}
+	if err := renderRow(); err != nil {
 		return err
 	}
-	b.sb.WriteString(", ")
-	b.Arg(l.Pattern)
-	b.sb.WriteByte(')')
-	b.sb.WriteString(op)
 	b.sb.WriteByte(')')
 	return nil
 }

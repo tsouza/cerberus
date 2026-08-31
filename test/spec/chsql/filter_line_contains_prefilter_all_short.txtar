@@ -1,0 +1,7 @@
+-- args --
+[0] string = "ok go"
+-- chplan --
+Filter predicate=lineContent(Body, "ok go", substr)
+  Scan(otel_logs)
+-- sql --
+SELECT * FROM `otel_logs` WHERE (position(`Body`, ?) > 0)

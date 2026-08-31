@@ -322,6 +322,72 @@ var plans = map[string]chplan.Node{
 		},
 	},
 
+	// TextIndexPrefilter variants (cerberus issue #2773 — chopt
+	// text_index_line_filter). A multi-word |= literal ANDs one
+	// lower(Body) LIKE '%tok%' conjunct per qualifying word ahead of the
+	// unchanged position() row predicate.
+	"filter_line_contains_prefilter": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            "connection reset by peer",
+			TextIndexPrefilter: true,
+		},
+	},
+	// A negated filter never rewrites, even with TextIndexPrefilter set —
+	// a superset prefilter has no sound dual for "must not contain".
+	"filter_line_not_contains_prefilter_inert": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            "connection reset by peer",
+			Negated:            true,
+			TextIndexPrefilter: true,
+		},
+	},
+	// A pure-literal regex (no RE2 metacharacters) gets the SAME prefilter
+	// treatment as a plain |= literal — see textIndexRegexLiteral.
+	"filter_line_regex_literal_prefilter": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            "connection reset",
+			IsRegex:            true,
+			TextIndexPrefilter: true,
+		},
+	},
+	// A regex carrying real RE2 structure is NOT safely extractable —
+	// renders byte-identical to filter_line_regex above.
+	"filter_line_regex_metachar_prefilter_inert": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            `failed: \w+`,
+			IsRegex:            true,
+			TextIndexPrefilter: true,
+		},
+	},
+	// LIKE escaping: a literal word containing `%` / `_` must not have
+	// either read back as a LIKE wildcard.
+	"filter_line_contains_prefilter_escaping": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            "lookup user_id=50 storage 87%full done",
+			TextIndexPrefilter: true,
+		},
+	},
+	// Every word below the 4-rune minimum is dropped; none survive here,
+	// so this renders byte-identical to the TextIndexPrefilter=false form.
+	"filter_line_contains_prefilter_all_short": &chplan.Filter{
+		Input: &chplan.Scan{Table: "otel_logs"},
+		Predicate: &chplan.LineContent{
+			Source:             &chplan.ColumnRef{Name: "Body"},
+			Pattern:            "ok go",
+			TextIndexPrefilter: true,
+		},
+	},
+
 	// RangeWindow with offset modifier (PromQL `rate(...)[5m] offset 1h`).
 	"range_window_rate_offset": &chplan.RangeWindow{
 		Input:           &chplan.Scan{Table: "otel_metrics_sum"},

@@ -189,6 +189,26 @@ type Config struct {
 	// deployment below the floor never sees the statement rendered at all,
 	// not a statement that is rendered and then refused.
 	TraceIDProjectionEnabled bool
+
+	// TextIndexEnabled gates two things (cerberus issue #2773): on the
+	// CREATE TABLE branch, it flips the upstream sqltemplates.
+	// LogsCreateTableTmpl's HasFullTextSearch flag — see renderLogsTable —
+	// which swaps `idx_lower_body` from `tokenbf_v1(32768, 3, 0)` to `TYPE
+	// text(tokenizer = 'splitByNonAlpha')`, the SAME index name over the
+	// SAME lower(Body) expression, so a brand-new table gets the text index
+	// straight away. On an EXISTING table (already carrying the tokenbf
+	// branch from an earlier boot), it additionally renders an idempotent
+	// `ADD INDEX IF NOT EXISTS idx_body_text lower(Body) TYPE text(...)`
+	// ALTER — see renderAddBodyTextIndex's doc comment for why this is a
+	// SEPARATELY-named additive index rather than an in-place type swap of
+	// idx_lower_body. False (the default) renders byte-identical DDL to
+	// today: the tokenbf_v1 branch on CREATE, no additive ALTER. The chopt
+	// full_text_index feature (version-gated at ClickHouse >= 26.2, the
+	// first release with enable_full_text_index default-on — see the
+	// registry entry's doc for the probed-version evidence) resolves this
+	// bit at boot — see internal/schemaboot.DDLConfig — mirroring exactly
+	// how TraceIDProjectionEnabled is threaded from its own chopt verdict.
+	TextIndexEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -747,6 +767,14 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		if cfg.TraceIDProjectionEnabled {
 			stmts = append(stmts, renderAddTraceIDProjection(cfg, cfg.Tables.Logs))
 		}
+		// The additive idx_body_text index (issue #2773) trails every other
+		// curated ALTER in this package the same way — see
+		// renderAddBodyTextIndex's doc comment for why it targets a
+		// separately-named index rather than swapping idx_lower_body in
+		// place.
+		if cfg.TextIndexEnabled {
+			stmts = append(stmts, renderAddBodyTextIndex(cfg))
+		}
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
 		}
@@ -951,6 +979,73 @@ func renderAddTraceIDProjection(cfg Config, table string) string {
 }
 
 const (
+	// bodyTextIndexName is the ALTER TABLE ADD INDEX identifier
+	// renderAddBodyTextIndex installs on an EXISTING logs table (cerberus
+	// issue #2773) — see that function's doc comment for why it is a
+	// SEPARATE name from idx_lower_body rather than an in-place type swap.
+	bodyTextIndexName = "idx_body_text"
+	// bodyTextIndexType is the ClickHouse index type clause: a word-level
+	// text index over the tokenizer the upstream template's own
+	// HasFullTextSearch=true branch uses for idx_lower_body (sqltemplates'
+	// logs_table.sql), so a freshly-created table and an upgraded existing
+	// one tokenize identically.
+	bodyTextIndexType = "text(tokenizer = 'splitByNonAlpha')"
+	// bodyTextIndexGranularity mirrors ClickHouse's OWN implicit default
+	// for a `text` index type when no GRANULARITY clause is given —
+	// confirmed by omitting the clause against a live ClickHouse 26.6.3.62
+	// server and reading back `EXPLAIN indexes=1`, which reports "text
+	// GRANULARITY 100000000" — and re-confirmed byte-for-byte identical
+	// (same EXPLAIN Description, same pruning) when the clause is stamped
+	// explicitly with this value. chsql.AlterTableAddIndex has no
+	// omit-GRANULARITY mode (every other index type it renders — minmax,
+	// bloom_filter — requires an explicit, meaningful one), so this
+	// constant reproduces the upstream template's own implicit choice
+	// rather than widening that builder's contract for one index type.
+	bodyTextIndexGranularity = 100000000
+)
+
+// renderAddBodyTextIndex builds the idempotent ADD INDEX ALTER installing a
+// text-type skip index over lower(Body) on an EXISTING logs table (cerberus
+// issue #2773, cfg.TextIndexEnabled).
+//
+// A SEPARATELY-named index (idx_body_text), not an in-place upgrade of
+// idx_lower_body: the upstream template's HasFullTextSearch branch reuses
+// idx_lower_body's name for BOTH the tokenbf_v1 (false) and text (true)
+// index types (sqltemplates' logs_table.sql), which only works because a
+// CREATE TABLE ... IF NOT EXISTS never re-runs against a table that already
+// exists. An ALTER TABLE ADD INDEX IF NOT EXISTS idx_lower_body against a
+// table that already carries idx_lower_body as tokenbf_v1 is a silent
+// NO-OP — ClickHouse matches on name, not type — so it could never install
+// the text index on an upgraded deployment. Swapping the TYPE of an
+// existing index requires DROP INDEX + ADD INDEX, which is destructive
+// (existing MATERIALIZE'd granules are discarded, forcing a full backfill)
+// and this render-time-only package has no live system.data_skipping_indexes
+// read to tell whether idx_lower_body is ALREADY the text type (in which
+// case dropping and re-adding it on every boot would be pure, repeated,
+// backfill-losing churn). Installing a second, differently-named index is
+// the only additive, idempotent, crash-safe option available here — the
+// SAME reasoning every other ALTER in this package already follows (ADD
+// PROJECTION, ADD STATISTICS, ADD INDEX all install NEW, non-colliding
+// names). Retiring the now-redundant legacy idx_lower_body tokenbf index on
+// upgraded tables is left to a dedicated follow-up (cerberus issue #2773's
+// PR body links it) — dropping an index an operator's running queries may
+// still be planning against is a real production-cluster risk this
+// render-time DDL apply should not make unilaterally.
+//
+// Adding a skip index is metadata-only for NEW parts; EXISTING parts need
+// the one-time `ALTER TABLE ... MATERIALIZE INDEX idx_body_text` backfill
+// to benefit retroactively — see docs/operations.md, mirroring
+// renderAddTemporalityIndex's own backfill note.
+func renderAddBodyTextIndex(cfg Config) string {
+	expr := chsql.Call("lower", chsql.Col(bodyColumn))
+	stmt := chsql.AlterTableAddIndex(cfg.Database, cfg.Tables.Logs, bodyTextIndexName, expr, bodyTextIndexType, bodyTextIndexGranularity)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+const (
 	// temporalityIndexName is the ALTER TABLE ADD INDEX identifier for the
 	// AggregationTemporality skip index — see renderAddTemporalityIndex.
 	temporalityIndexName = "idx_agg_temporality"
@@ -1102,9 +1197,11 @@ func renderDeltaPrefixView(cfg Config) string {
 // [sqltemplates.LogsCreateTableTmpl] against [sqltemplates.CreateTableData],
 // mirroring exporter_logs.go's renderCreateLogsTableSQL. The TTL field is
 // `toDateTime(Timestamp)` (the dedicated TimestampTime column was removed
-// from the schema). HasFullTextSearch stays false: the text-index branch
-// needs ClickHouse >= 26.2; false renders the bloom-filter index branch
-// that works everywhere cerberus deploys.
+// from the schema). HasFullTextSearch threads cfg.TextIndexEnabled (cerberus
+// issue #2773): false (the default) renders the bloom-filter/tokenbf_v1
+// branch that works everywhere cerberus deploys; true renders the text-index
+// branch, which needs ClickHouse >= 26.2 — see TextIndexEnabled's doc for the
+// chopt full_text_index gate that resolves this bit.
 func renderLogsTable(cfg Config) (string, error) {
 	data := sqltemplates.CreateTableData{
 		Database:          cfg.Database,
@@ -1112,7 +1209,7 @@ func renderLogsTable(cfg Config) (string, error) {
 		ClusterString:     cfg.clusterClause(),
 		Engine:            cfg.Engine,
 		TTL:               cfg.ttlExpr("Timestamp", cfg.TTL.Logs, cfg.Tiering.Logs),
-		HasFullTextSearch: false,
+		HasFullTextSearch: cfg.TextIndexEnabled,
 	}
 	var buf strings.Builder
 	if err := sqltemplates.LogsCreateTableTmpl.Execute(&buf, data); err != nil {

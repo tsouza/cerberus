@@ -378,6 +378,17 @@ type Config struct {
 	// internal/schema/ddl.Config.TraceIDProjectionEnabled).
 	SchemaTraceIDProjection bool
 
+	// SchemaFullTextIndex is the resolved chopt full_text_index verdict
+	// (cerberus issue #2773), back-filled the SAME way as
+	// SchemaTraceIDProjection immediately above — including the offline
+	// `migrate schema` preview's chopt.ExplicitlyRequested fallback, since
+	// full_text_index is also AutoSelect=false. internal/schemaboot.
+	// DDLConfig is the only reader: true swaps the logs table's
+	// idx_lower_body CREATE-time index to TYPE text(...) and adds the
+	// additive idx_body_text ALTER for existing tables (see
+	// internal/schema/ddl.Config.TextIndexEnabled).
+	SchemaFullTextIndex bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).

@@ -1229,6 +1229,82 @@ const (
 	// analyzer is GA on every server this feature's 25.11 floor reaches (well
 	// past condition_cache's own 25.3 GA baseline).
 	FeatureLazyMaterialization = "lazy_materialization"
+
+	// FeatureFullTextIndex flips internal/schema/ddl.Config.TextIndexEnabled,
+	// which swaps the `idx_lower_body` skip index on the logs table's CREATE
+	// branch from `tokenbf_v1(32768, 3, 0)` to `TYPE text(tokenizer =
+	// 'splitByNonAlpha')` — the SAME index name, over the SAME `lower(Body)`
+	// expression, in the SAME upstream-template mutually-exclusive branch
+	// HasFullTextSearch already selects (cerberus issue #2773). On an
+	// EXISTING table (which already carries the tokenbf branch from an
+	// earlier boot), the DDL apply path additionally installs a
+	// SEPARATELY-named `idx_body_text` text index via idempotent `ADD INDEX
+	// IF NOT EXISTS` — see renderAddBodyTextIndex's doc comment for why a
+	// second name, not an in-place type swap, is the only additive
+	// (crash-safe, no MATERIALIZE-losing DROP) upgrade path available to a
+	// render-time-only DDL layer with no live system.data_skipping_indexes
+	// read.
+	//
+	// VERSION FLOOR: 26.2 — the release the `enable_full_text_index` setting
+	// (gating table-level acceptance of `TYPE text(...)`) flips from
+	// default-OFF (26.1: DB::Exception SUPPORT_IS_DISABLED unless a caller
+	// stamps the setting itself) to default-ON, i.e. the text index's actual
+	// GA floor, not merely its earliest experimental availability. Verified
+	// directly against a probed 26.1.12 vs 26.2.19 pair (`SELECT value,
+	// changed FROM system.settings WHERE name = 'enable_full_text_index'`:
+	// 26.1 reports "0", 26.2 reports "1"), not assumed from the changelog
+	// prose.
+	//
+	// NOT auto-selected (AutoSelect=false), mirroring FeatureColumnStatistics
+	// and FeatureTraceIDProjection's posture on their own new floors: the
+	// MATERIALIZE INDEX backfill cost for existing parts and the steady-state
+	// index-maintenance cost on new parts (a second body index alongside the
+	// untouched legacy tokenbf one — see the doc comment above on why this
+	// PR does not retire it) are real but unmeasured at production data
+	// volumes beyond this PR's own synthetic benchmark — an operator opt-in
+	// via CERBERUS_CH_OPTIMIZATIONS=full_text_index until that evidence
+	// accumulates.
+	FeatureFullTextIndex = "full_text_index"
+
+	// FeatureTextIndexLineFilter opts internal/chsql's LogQL line-filter
+	// emitter (exprLineContent) onto an ANDed per-token `lower(Body) LIKE
+	// '%tok%'` prefilter ahead of the UNCHANGED, always-kept
+	// `position(Body, ?) > 0` / `match(Body, ?)` row predicate (cerberus
+	// issue #2773) — a STRICT-SUPERSET skip-index hint, never a replacement:
+	// every token substring of a literal that is itself a substring of Body
+	// is trivially also a substring of lower(Body) once both sides are
+	// lowered, so the prefilter can only prune granules the row predicate
+	// would have rejected anyway, never admit a false positive past the row
+	// filter. Scoped to non-negated filters only (`|=`, and `|~` when the
+	// pattern round-trips through regexp/syntax as a single OpLiteral, i.e.
+	// it is a regex only in name) — a superset prefilter has no sound
+	// dual for a NEGATED "must not contain" predicate, so `!=`/`!~` and
+	// structurally regex patterns are passed through byte-identical to
+	// today. See chplan.LineContent.TextIndexPrefilter's doc for the full
+	// eligibility shape.
+	//
+	// VERSION FLOOR: 26.4 — the release introducing
+	// use_text_index_like_evaluation_by_dictionary_scan (default-on),
+	// the setting family that lets a text index answer a LIKE '%needle%'
+	// predicate by dictionary scan instead of a row-by-row match. Verified
+	// directly: `SELECT name FROM system.settings WHERE name ILIKE
+	// '%text_index_like%'` returns 0 rows on a probed 26.2.19 server and 3
+	// rows (use_text_index_like_evaluation_by_dictionary_scan,
+	// text_index_like_min_pattern_length=4,
+	// text_index_like_max_postings_to_read=50) on 26.4.5. This feature's
+	// floor is thus STRICTLY ABOVE FeatureFullTextIndex's own 26.2 — a
+	// server can satisfy one without the other, and this feature is INERT
+	// (byte-identical SQL) on any table that carries no text index at all,
+	// so listing it without full_text_index is a harmless no-op, not a
+	// fatal combination.
+	//
+	// NOT auto-selected: depends on an independently opt-in DDL feature
+	// (full_text_index) actually having been applied and backfilled — auto-
+	// enabling the row-filter rewrite ahead of that leaves every emitted
+	// LIKE conjunct evaluating the SAME unindexed lower(Body) scan the row
+	// predicate already pays for, a pure (if small) per-row LIKE-evaluation
+	// tax with no pruning to offset it.
+	FeatureTextIndexLineFilter = "text_index_line_filter"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -1555,6 +1631,20 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "advisory bounded count()/uniqUpTo(100) cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
 	},
+	{
+		ID:         FeatureFullTextIndex,
+		MinVersion: Version{Major: 26, Minor: 2},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "swap idx_lower_body from tokenbf_v1 to TYPE text on CREATE, plus an additive idx_body_text on existing tables (server >= 26.2 — verified GA floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/maintenance cost unmeasured at production volume)",
+	},
+	{
+		ID:         FeatureTextIndexLineFilter,
+		MinVersion: Version{Major: 26, Minor: 4},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "prepend an ANDed per-token LIKE strict-superset prefilter ahead of the unchanged row predicate for non-negated LogQL line filters (server >= 26.4 — verified LIKE-via-text-index floor, opt-in via CERBERUS_CH_OPTIMIZATIONS, inert without full_text_index)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1566,10 +1656,10 @@ var registry = []Feature{
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
 // join_spill, trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
-// result_cache, lazy_materialization, explain_estimate, cardinality_probe).
-// The copy keeps the canonical entries immutable from the caller's side.
-// Exposed so tests can enumerate the gates and the docs generator can
-// render the table.
+// result_cache, lazy_materialization, explain_estimate, cardinality_probe,
+// full_text_index, text_index_line_filter). The copy keeps the canonical
+// entries immutable from the caller's side. Exposed so tests can enumerate
+// the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

@@ -138,6 +138,12 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// chopt.ExplicitlyRequested) — the SAME threading
 		// ColumnStatisticsEnabled above uses for its own chopt verdict.
 		TraceIDProjectionEnabled: cfg.SchemaTraceIDProjection,
+		// TextIndexEnabled (cerberus issue #2773) is the resolved chopt
+		// full_text_index verdict, back-filled by cmd/cerberus's boot
+		// resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the SAME threading
+		// TraceIDProjectionEnabled above uses for its own chopt verdict.
+		TextIndexEnabled: cfg.SchemaFullTextIndex,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

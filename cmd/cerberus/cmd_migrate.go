@@ -219,6 +219,12 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// #2767) — also AutoSelect=false, so the same explicit-listing-only
 			// reasoning applies.
 			cfg.SchemaTraceIDProjection = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureTraceIDProjection)
+			// Same best-effort preview for full_text_index (cerberus issue
+			// #2773) — also AutoSelect=false, so the same explicit-listing-only
+			// reasoning applies. text_index_line_filter has no preview here:
+			// it gates a query-time chsql rewrite, not any DDL statement this
+			// tool renders.
+			cfg.SchemaFullTextIndex = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureFullTextIndex)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}
