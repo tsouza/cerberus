@@ -722,7 +722,10 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		stmts := []string{logs}
+		// The curated Body codec ALTER (issue #2768) trails the CREATE the
+		// same way every other curated ALTER in this package trails its
+		// table's CREATE — see renderLogsCodecs' doc comment.
+		stmts := append([]string{logs}, renderLogsCodecs(cfg)...)
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
 		}
@@ -733,6 +736,10 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 			renderTracesCreateTsTable(cfg),
 			renderTracesCreateTsView(cfg),
 		}
+		// The curated Duration codec ALTER (issue #2768) targets the spans
+		// table the first statement above just created — see
+		// renderTracesCodecs' doc comment.
+		stmts = append(stmts, renderTracesCodecs(cfg)...)
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderTracesColumnStatistics(cfg)...)
 		}
@@ -1093,6 +1100,136 @@ func renderTracesCreateTsView(cfg Config) string {
 		cfg.Database, cfg.Tables.Traces,
 		cfg.Database, cfg.Tables.Traces,
 	)
+}
+
+// --- Column compression codecs (cerberus issue #2768) ---
+//
+// Codecs on the metrics/logs/traces fact tables are upstream fork-template
+// defaults, not tuned to cerberus's own data. Every candidate below was
+// MEASURED — not merely reasoned about — against real production-shaped
+// sample data (test/perf/nightly/testdata/samples/*.parquet, cerberus issue
+// #2411) via a real MergeTree engine (chDB), comparing whole-table
+// compressed bytes before/after the codec swap; see the PR that introduced
+// this section for the full transcript. Two candidates the issue proposed
+// did NOT survive measurement and are deliberately NOT adopted here:
+//
+//   - DateTime64(9) scrape/sample timestamps (metrics TimeUnix, span
+//     Timestamp): the issue's premise was that a near-constant scrape
+//     interval leaves second-order regularity DoubleDelta captures and
+//     Delta alone misses. Measured against three real metrics tables
+//     (gauge/sum/histogram), DoubleDelta+ZSTD(1) was 43%-166% LARGER than
+//     the current Delta+ZSTD(1) — a regression — because a near-constant
+//     Delta stream is already maximally redundant (the same interval
+//     repeated for most of a series' run), which ZSTD(1) alone already
+//     exploits about as well as physically possible (232x-443x measured);
+//     DoubleDelta's own per-value framing bytes break up that redundancy
+//     more than they remove. GCD+Delta measured a small, INCONSISTENT
+//     effect across the three real tables (-3.5% to -6.9% on sum/histogram,
+//     but +9.2% on gauge) — not a safe blanket win across every metrics
+//     table sharing one codec declaration. Bare GCD (no Delta) measured
+//     catastrophically worse (+650% to +3515%). None of the three
+//     candidates clears the bar, so TimeUnix / Timestamp keep their
+//     current Delta, ZSTD(1) — unchanged by this issue.
+//   - Value (gauge/sum) / Sum (histogram/summary/exp_histogram) Float64:
+//     the issue gated Gorilla/FPC adoption on beating ZSTD(1) on real
+//     gauge-shaped data. Measured against the same three tables, BOTH
+//     regressed — Gorilla 27%-2182% larger, FPC 84%-2662% larger — so
+//     neither is adopted; Value / Sum keep ZSTD(1), unchanged.
+//
+// Two candidates DID measure a real, safe win and are adopted below:
+//
+//   - Logs Body (String): ZSTD(3) measured ~1.3%-1.8% smaller than ZSTD(1)
+//     on a representative leveled-log-line corpus, consistently across
+//     repeated runs, at only the modest extra write-side CPU a higher ZSTD
+//     level costs (ZSTD decode cost is level-independent, so read-side
+//     query latency is unaffected).
+//   - Span Duration (UInt64 nanoseconds): the issue's own rationale — a
+//     ns-precision column whose real values carry coarser precision is
+//     GCD's exact case — measured true ONLY for the codec's designed
+//     shape, `GCD, ZSTD(1)` (no Delta stage): Duration values are
+//     independent per-span measurements, not a running sequence, so
+//     chaining a Delta stage ahead of ZSTD (`Delta, ZSTD(1)` or
+//     `GCD, Delta, ZSTD(1)`, the issue's own proposed pairing) measured
+//     3%-10% LARGER — against synthetic data spanning both a genuinely
+//     nanosecond-precision scenario and a millisecond-rounded one (no real
+//     trace sample data exists in this repo to benchmark against — traces
+//     are outside the #2411 sample set's scope). Bare `GCD, ZSTD(1)`
+//     measured a real 3.5% win on the coarse-precision scenario and was
+//     statistically a no-op (+0.02%, measurement noise) on the
+//     fine-precision one: GCD finds no common divisor when there genuinely
+//     isn't one, so it costs nothing on a deployment whose real Duration
+//     values don't carry the coarse-precision pattern this codec targets.
+//
+// All codecs used above — Delta, GCD, Gorilla, FPC (the last two named here
+// only because the reasoning above needs to identify exactly what was
+// rejected) — are supported at ClickHouse >= 22.9, well under this repo's
+// 24.8 version floor (docs/toolchain.md), so — like ADD PROJECTION / ADD
+// INDEX above, and unlike ADD STATISTICS's chopt-gated column_statistics
+// feature below — this registry renders UNCONDITIONALLY: no Config flag, no
+// chopt feature gate.
+//
+// A MODIFY COLUMN codec change is metadata-only for NEW parts; existing
+// parts keep their prior codec until a background merge (or an
+// operator-run `OPTIMIZE ... FINAL`) rewrites them — see
+// docs/operations.md. Re-running the identical statement is a no-op:
+// ClickHouse only schedules work when the declared codec actually differs
+// from the column's current one, so applying this on every boot never
+// re-triggers a conversion once converged — see
+// chsql.ModifyColumnCodecBuilder's doc comment for why that (not any
+// `IF EXISTS`-shaped guard) is what makes re-applying this safe.
+const (
+	// bodyColumn is the logs table's fixed OTel-CH exporter text column the
+	// curated Body codec ALTER targets.
+	bodyColumn = "Body"
+
+	// zstdLevelLogsBody is the curated ZSTD level for the logs Body column —
+	// see the package doc comment above for the measured win over the
+	// upstream ZSTD(1) default.
+	zstdLevelLogsBody = 3
+
+	// zstdLevelDefault mirrors the upstream ZSTD(1) baseline level the span
+	// Duration codec below keeps as its final compression stage — not
+	// itself a curated change, just the existing level reused verbatim
+	// alongside the new GCD stage.
+	zstdLevelDefault = 1
+)
+
+// logsBodyCodec returns the curated logs Body codec: CODEC(ZSTD(3)).
+func logsBodyCodec() chsql.Frag {
+	return chsql.Codec(chsql.Call("ZSTD", chsql.InlineLit(zstdLevelLogsBody)))
+}
+
+// spanDurationCodec returns the curated span Duration codec:
+// CODEC(GCD, ZSTD(1)) — deliberately no Delta stage; see the package doc
+// comment above for why chaining Delta ahead of ZSTD measured worse on this
+// column than GCD alone.
+func spanDurationCodec() chsql.Frag {
+	return chsql.Codec(chsql.BareIdent("GCD"), chsql.Call("ZSTD", chsql.InlineLit(zstdLevelDefault)))
+}
+
+// renderLogsCodecs returns the curated codec ALTER for the logs table's
+// Body column (issue #2768).
+func renderLogsCodecs(cfg Config) []string {
+	return []string{renderModifyColumnCodec(cfg, cfg.Tables.Logs, bodyColumn, logsBodyCodec())}
+}
+
+// renderTracesCodecs returns the curated codec ALTER for the traces spans
+// table's Duration column (issue #2768).
+func renderTracesCodecs(cfg Config) []string {
+	return []string{renderModifyColumnCodec(cfg, cfg.Tables.Traces, durationColumn, spanDurationCodec())}
+}
+
+// renderModifyColumnCodec builds one idempotent MODIFY COLUMN CODEC ALTER —
+// see chsql.AlterTableModifyColumnCodec's doc comment for the exact
+// idempotency contract (re-apply is a no-op once the codec has converged,
+// not guard-based). ON CLUSTER is threaded so the ALTER replicates the same
+// way the CREATE statements do.
+func renderModifyColumnCodec(cfg Config, table, column string, codec chsql.Frag) string {
+	stmt := chsql.AlterTableModifyColumnCodec(cfg.Database, table, column, codec)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
 }
 
 // --- Column statistics (cerberus issue #2766) ---

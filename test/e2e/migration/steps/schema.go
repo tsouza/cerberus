@@ -44,12 +44,23 @@ var leadingVerbRe = regexp.MustCompile(`(?is)^([A-Za-z]+)`)
 
 // idempotentAdditiveAlterRe matches the non-CREATE shapes the renderer
 // emits: an idempotent PROJECTION or INDEX addition on a table it just
-// declared — both are metadata-only ADD ... IF NOT EXISTS statements that
-// never rewrite or destroy existing data (see internal/schema/ddl's curated
-// projection registry and, since issue #2458, its AggregationTemporality
-// skip index). Any other ALTER would be a schema mutation the operator did
-// not ask to review.
-var idempotentAdditiveAlterRe = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+\S+\s+ADD\s+(?:PROJECTION|INDEX)\s+IF\s+NOT\s+EXISTS\s+`)
+// declared (both metadata-only ADD ... IF NOT EXISTS statements — see
+// internal/schema/ddl's curated projection registry and, since issue
+// #2458, its AggregationTemporality skip index), or a curated column
+// compression codec retune (issue #2768) — a MODIFY COLUMN ... CODEC(...)
+// statement that changes only how NEW parts are compressed and rewrites
+// nothing existing (see internal/schema/ddl's renderMetricsCodecs /
+// renderLogsCodecs / renderTracesCodecs and chsql.ModifyColumnCodecBuilder's
+// doc comment for why it carries IF EXISTS rather than IF NOT EXISTS). Any
+// other ALTER would be a schema mutation the operator did not ask to
+// review.
+var idempotentAdditiveAlterRe = regexp.MustCompile(
+	`(?is)^ALTER\s+TABLE\s+\S+\s+(?:` +
+		`ADD\s+(?:PROJECTION|INDEX)\s+IF\s+NOT\s+EXISTS` +
+		`|` +
+		`MODIFY\s+COLUMN\s+IF\s+EXISTS\s+\S+\s+CODEC\(` +
+		`)`,
+)
 
 // destructiveRe matches a statement that would destroy or rewrite data. The
 // rendered schema is a provisioning preview an operator pipes into a client by

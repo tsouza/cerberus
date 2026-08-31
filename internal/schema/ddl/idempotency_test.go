@@ -9,12 +9,20 @@ import (
 )
 
 // TestRenderSignal_AllTablesCarryIfNotExists is the rendering-layer
-// equivalent of the Apply-twice integration test: every CREATE
-// statement under every signal must carry an IF NOT EXISTS clause so a
-// second Apply against an already-populated CH is a no-op. The
-// integration test asserts the end-to-end behavior; this test pins the
-// contract at the template-render boundary so a future template bump
-// can't silently drop the clause.
+// equivalent of the Apply-twice integration test: every CREATE statement
+// (and every idempotent ALTER — ADD PROJECTION / ADD INDEX / ADD
+// STATISTICS) under every signal must carry an IF NOT EXISTS clause so a
+// second Apply against an already-populated CH is a no-op. The curated
+// codec ALTERs (issue #2768) are the one deliberate exception: MODIFY
+// COLUMN has no `IF NOT EXISTS`-shaped guard at all — only `IF EXISTS`,
+// which guards a different case (an absent column, e.g. a signal not yet
+// auto-created). Their re-apply safety comes from ClickHouse itself
+// treating an unchanged codec declaration as a no-op — see
+// chsql.ModifyColumnCodecBuilder's doc comment — not from a guard clause,
+// so they are asserted on separately below rather than against this loop's
+// IF NOT EXISTS check. The integration test asserts the end-to-end
+// behavior; this test pins the contract at the template-render boundary so
+// a future template bump can't silently drop a clause.
 func TestRenderSignal_AllTablesCarryIfNotExists(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	for _, sig := range All {
@@ -23,9 +31,43 @@ func TestRenderSignal_AllTablesCarryIfNotExists(t *testing.T) {
 			t.Fatalf("renderSignal(%s): %v", sig, err)
 		}
 		for i, stmt := range stmts {
+			if strings.Contains(stmt, "MODIFY COLUMN IF EXISTS") {
+				continue
+			}
 			if !strings.Contains(stmt, "IF NOT EXISTS") {
 				t.Errorf("%s[%d]: missing IF NOT EXISTS — re-apply would fail:\n%s", sig, i, stmt)
 			}
+		}
+	}
+}
+
+// TestRenderSignal_CodecAltersCarryIfExists pins that every curated codec
+// ALTER (issue #2768) carries MODIFY COLUMN's own guard, `IF EXISTS` — the
+// counterpart TestRenderSignal_AllTablesCarryIfNotExists exempts them from
+// checking, so this test is what actually pins their guard clause.
+func TestRenderSignal_CodecAltersCarryIfExists(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	for _, sig := range []Signal{Logs, Traces} {
+		stmts, err := renderSignal(cfg, sig)
+		if err != nil {
+			t.Fatalf("renderSignal(%s): %v", sig, err)
+		}
+		found := false
+		for _, stmt := range stmts {
+			// Match the ALTER's own MODIFY COLUMN clause specifically —
+			// every CREATE TABLE statement in these signals also contains
+			// literal " CODEC(" text on its OTHER columns, which a bare
+			// substring match on "CODEC(" alone would false-positive on.
+			if !strings.Contains(stmt, "MODIFY COLUMN") {
+				continue
+			}
+			found = true
+			if !strings.Contains(stmt, "MODIFY COLUMN IF EXISTS") {
+				t.Errorf("%s: codec ALTER missing IF EXISTS guard:\n%s", sig, stmt)
+			}
+		}
+		if !found {
+			t.Errorf("%s: expected a curated codec ALTER, found none in:\n%v", sig, stmts)
 		}
 	}
 }
@@ -224,18 +266,18 @@ func TestRenderSignal_TTLZeroWithReplicatedEngine(t *testing.T) {
 }
 
 // TestRenderSignal_LogsOnlySubset emulates a deployment that only wants
-// the logs signal. The render layer must produce the single logs
-// statement and nothing else — Apply iterates per-signal so any
-// "metrics tables leak when only Logs requested" regression surfaces
-// here.
+// the logs signal. The render layer must produce the CREATE statement plus
+// the curated Body codec ALTER (issue #2768) and nothing else — Apply
+// iterates per-signal so any "metrics tables leak when only Logs requested"
+// regression surfaces here.
 func TestRenderSignal_LogsOnlySubset(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Logs)
 	if err != nil {
 		t.Fatalf("renderSignal(Logs): %v", err)
 	}
-	if len(stmts) != 1 {
-		t.Fatalf("logs subset: got %d statements; want 1", len(stmts))
+	if len(stmts) != 2 {
+		t.Fatalf("logs subset: got %d statements; want 2", len(stmts))
 	}
 	if !strings.Contains(stmts[0], "otel_logs") {
 		t.Errorf("logs subset[0]: missing otel_logs table name")
@@ -243,23 +285,28 @@ func TestRenderSignal_LogsOnlySubset(t *testing.T) {
 	if strings.Contains(stmts[0], "otel_metrics") || strings.Contains(stmts[0], "otel_traces") {
 		t.Errorf("logs subset[0]: leaked unrelated tables:\n%s", stmts[0])
 	}
+	if !strings.Contains(stmts[1], "otel_logs") {
+		t.Errorf("logs subset[1]: missing otel_logs table name in codec ALTER:\n%s", stmts[1])
+	}
 }
 
-// TestRenderSignal_TracesOnlySubset confirms the three traces statements
-// (spans table, lookup table, MV) render together and nothing else.
-// Order matters because the MV references the lookup table.
+// TestRenderSignal_TracesOnlySubset confirms the four traces statements
+// (spans table, lookup table, MV, and the curated Duration codec ALTER —
+// issue #2768) render together and nothing else. Order matters because the
+// MV references the lookup table.
 func TestRenderSignal_TracesOnlySubset(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Traces)
 	if err != nil {
 		t.Fatalf("renderSignal(Traces): %v", err)
 	}
-	if len(stmts) != 3 {
-		t.Fatalf("traces subset: got %d statements; want 3", len(stmts))
+	if len(stmts) != 4 {
+		t.Fatalf("traces subset: got %d statements; want 4", len(stmts))
 	}
 	// Statement order is load-bearing: the MV (stmts[2]) selects FROM
 	// the spans table (stmts[0]) and writes INTO the lookup table
-	// (stmts[1]). Reverse order would error on CH.
+	// (stmts[1]). Reverse order would error on CH. The codec ALTER
+	// (stmts[3]) targets the spans table stmts[0] already created.
 	if !strings.Contains(stmts[0], "CREATE TABLE IF NOT EXISTS") {
 		t.Errorf("traces[0] should be the spans table CREATE")
 	}
@@ -268,6 +315,9 @@ func TestRenderSignal_TracesOnlySubset(t *testing.T) {
 	}
 	if !strings.Contains(stmts[2], "CREATE MATERIALIZED VIEW IF NOT EXISTS") {
 		t.Errorf("traces[2] should be the MV CREATE")
+	}
+	if !strings.Contains(stmts[3], "otel_traces") || !strings.Contains(stmts[3], "CODEC(") {
+		t.Errorf("traces[3] should be the Duration codec ALTER:\n%s", stmts[3])
 	}
 }
 

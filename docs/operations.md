@@ -1211,6 +1211,108 @@ maintenance window, not the boot path. Track progress in `system.mutations`
 (the `is_done` / `parts_to_do` columns), same as the projection and index
 runbooks above.
 
+### Curated column compression codecs (cerberus issue #2768)
+
+Auto-create also installs two curated `MODIFY COLUMN` codec ALTERs, retuning
+the upstream OTel-CH exporter template's own compression codec choice on two
+columns benchmarked against real production-shaped data:
+
+```sql
+ALTER TABLE <db>.otel_logs   MODIFY COLUMN IF EXISTS Body     CODEC(ZSTD(3))
+ALTER TABLE <db>.otel_traces MODIFY COLUMN IF EXISTS Duration CODEC(GCD, ZSTD(1))
+```
+
+Unlike `ADD PROJECTION` / `ADD INDEX` / `ADD STATISTICS` above, `MODIFY
+COLUMN` has no `IF NOT EXISTS`-shaped guard — only `IF EXISTS`, which is a
+no-op on an absent column (e.g. a signal not yet auto-created), not on an
+unchanged one. Re-running the identical statement is still safe to do on
+every boot: ClickHouse compares the declared codec against the column's
+current one and only schedules work when they actually differ, so applying
+this repeatedly never re-triggers a conversion once the codec has converged
+— verified directly against a live server (both a 24.8 floor container and
+the auto-create integration test's 25.9 container): re-issuing the same
+`MODIFY COLUMN ... CODEC(...)` statement twice in a row produces no error
+and no additional mutation.
+
+**Only two of the issue's proposed candidates survived measurement.** Every
+candidate was benchmarked — not just reasoned about — against real
+production-shaped sample data (`test/perf/nightly/testdata/samples/`,
+issue #2411) or, where no real sample exists (span Duration — traces are
+outside that sample set's scope), representative synthetic data, via a real
+MergeTree engine (chDB), comparing whole-table compressed bytes before/after
+the codec swap:
+
+- **Adopted — Logs Body:** `ZSTD(3)` measured ~1.3%-1.8% smaller than the
+  upstream `ZSTD(1)` default on a representative leveled-log-line corpus,
+  consistently across repeated runs. ZSTD's decode cost is level-independent,
+  so this costs write-side CPU only — no read-side query latency impact.
+- **Adopted — Span Duration:** `GCD, ZSTD(1)` (no Delta stage) measured a
+  real ~3.5% win when real precision is coarser than the column's declared
+  nanosecond resolution (the issue's own stated GCD rationale), and was a
+  statistical no-op (+0.02%, measurement noise) when precision is genuinely
+  fine-grained — GCD finds no common divisor when there isn't one, so it
+  costs nothing on a deployment whose real Duration values don't carry the
+  coarse-precision pattern this codec targets. Chaining a `Delta` stage
+  ahead of ZSTD — either `Delta, ZSTD(1)` alone or the issue's own proposed
+  `GCD, Delta, ZSTD(1)` pairing — measured 3%-10% LARGER instead: Duration
+  values are independent per-span measurements, not a running sequence, so
+  delta-encoding them adds entropy rather than removing it.
+- **NOT adopted — metrics TimeUnix / span Timestamp (`DateTime64(9)`):** the
+  issue proposed `DoubleDelta, ZSTD(1)`, reasoning that a near-constant
+  scrape interval leaves second-order regularity DoubleDelta captures and
+  Delta alone misses. Measured against three real metrics tables
+  (gauge/sum/histogram) it was 43%-166% LARGER than the current
+  `Delta, ZSTD(1)` — a regression: a near-constant Delta stream is already
+  maximally redundant (the same interval repeated for most of a series'
+  run), which `ZSTD(1)` alone already exploits about as well as physically
+  possible (232x-443x compression measured); DoubleDelta's own per-value
+  framing bytes break up that redundancy more than they remove. `GCD, Delta,
+  ZSTD(1)` measured a small, INCONSISTENT effect across the three tables
+  (-3.5% to -6.9% on sum/histogram, +9.2% on gauge) — not a safe blanket win
+  across every metrics table sharing one codec declaration. Bare `GCD,
+  ZSTD(1)` measured catastrophically worse (+650% to +3515%). TimeUnix and
+  Timestamp keep their current `Delta, ZSTD(1)`, unchanged by this issue.
+- **NOT adopted — Value (gauge/sum) / Sum (histogram/summary/exp_histogram)
+  Float64:** the issue gated Gorilla/FPC adoption on beating `ZSTD(1)` on
+  real gauge-shaped data. Measured against the same three tables, BOTH
+  regressed — Gorilla 27%-2182% larger, FPC 84%-2662% larger — so neither is
+  adopted; Value / Sum keep `ZSTD(1)`, unchanged.
+
+See the codec-tuning PR (cerberus issue #2768) for the full benchmark
+transcript and measured numbers. Cerberus issue #2822 tracks the one
+candidate the issue explicitly deferred rather than benchmarked here:
+experimental ALP for Value/Sum, earmarked for a future `>= 26.8` version
+floor (its 26.8 Float32 arithmetic change is a live on-disk decode-compat
+risk below that floor).
+
+All codecs used above are supported at ClickHouse >= 22.9, well under this
+repo's 24.8 version floor (`docs/toolchain.md`), so — like `ADD PROJECTION`
+/ `ADD INDEX` above, and unlike `ADD STATISTICS`'s chopt-gated
+`column_statistics` feature — this registry renders **unconditionally**: no
+config flag, no chopt feature gate.
+
+A codec change is metadata-only for **new parts only**; existing parts keep
+their prior codec until a background merge (or an operator-run `OPTIMIZE
+... FINAL`) rewrites them.
+
+#### One-time `OPTIMIZE ... FINAL` back-fill
+
+Unlike the projection / index / statistics ALTERs above, ClickHouse has no
+dedicated `MATERIALIZE`-style mutation for a codec change — the general
+mechanism is a full part rewrite:
+
+```sql
+OPTIMIZE TABLE <db>.otel_logs   FINAL;
+OPTIMIZE TABLE <db>.otel_traces FINAL;
+```
+
+**Cost / caveat.** Unlike `MATERIALIZE PROJECTION` / `MATERIALIZE INDEX` /
+`MATERIALIZE STATISTICS`, which each touch only their own narrow slice of a
+part, `OPTIMIZE ... FINAL` reads and rewrites the **entire table**, not just
+the recoded column — budget accordingly on a large table, and prefer letting
+normal background merges converge new codecs onto old parts over time rather
+than forcing an immediate rewrite unless the storage win is needed sooner.
+
 ### DELTA-prefix aggregate table + backfill (cerberus issue #2389)
 
 Auto-create can also provision an **opt-in, cerberus-owned** table + materialized

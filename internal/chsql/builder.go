@@ -2083,6 +2083,18 @@ func Call(name string, args ...Frag) Frag {
 	}
 }
 
+// Codec returns a Frag rendering "CODEC(<stage0>, <stage1>, ...)" — a
+// ClickHouse column compression codec clause. Each stage is a codec
+// identifier: BareIdent("DoubleDelta") for a no-argument codec
+// (Delta / DoubleDelta / GCD / Gorilla / FPC without an explicit level),
+// or Call("ZSTD", InlineLit(1)) for a parameterized one — so
+// Codec(BareIdent("DoubleDelta"), Call("ZSTD", InlineLit(1))) renders
+// "CODEC(DoubleDelta, ZSTD(1))". Used by
+// chsql.AlterTableModifyColumnCodec (cerberus issue #2768).
+func Codec(stages ...Frag) Frag {
+	return Call("CODEC", stages...)
+}
+
 // Parametric returns a Frag rendering a CH parametric aggregate
 // "<name>(<p0>, <p1>, ...)(<a0>, <a1>, ...)" — e.g. quantile(0.5)(col).
 // name is a trusted literal (same trust contract as Call / Cast).
