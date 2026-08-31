@@ -330,7 +330,7 @@ func lowerHistogramQuantileClassicAggRange(
 	userGroupBy, userAliases, attrsRebuild := histogramAggGroupBy(
 		shape.agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s,
 	)
-	shaping := classicBucketMergeShaping(shape.classicFold, s)
+	shaping := ctx.lowerers.ClassicBucketMerge.LowerClassicBucketMerge(shape.classicFold, shape.classicFoldIsSum, s)
 	collapse := &chplan.Aggregate{
 		Input:              perSeries,
 		GroupBy:            append([]chplan.Expr{anchorRef}, userGroupBy...),

@@ -63,6 +63,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnArrayZip:          {Name: "arrayZip"},
 	chplan.FnEmptyArrayFloat64: {Name: "emptyArrayFloat64"},
 	chplan.FnArrayHas:          {Name: "has"},
+	chplan.FnIndexOf:           {Name: "indexOf"},
 	chplan.FnRange:             {Name: "range"},
 	chplan.FnTransform:         {Name: "transform"},
 	chplan.FnTuple:             {Name: "tuple"},
@@ -206,6 +207,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnStddevPop:  {Name: "stddevPop"},
 	chplan.FnSum:        {Name: "sum"},
 	chplan.FnSumForEach: {Name: "sumForEach"},
+	chplan.FnSumMap:     {Name: "sumMap"},
 	chplan.FnUniqExact:  {Name: "uniqExact"},
 	chplan.FnVarPop:     {Name: "varPop"},
 }

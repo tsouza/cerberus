@@ -9,6 +9,7 @@ All notable changes to cerberus will be documented in this file. The format roug
 - **chsql,promql,chopt:** opt query_range changes()/resets()/irate()/idelta() onto a lagInFrame annotation pass with fixed-size per-anchor accumulators, retiring the array-fold fan-out for those shapes (#2759)
 - **chsql,promql,chopt:** opt query_range rate()/increase()/delta() onto a fixed-size per-anchor accumulator decomposition (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out for those shapes (#2760)
 - **chsql,promql,chopt:** opt query_range sum_over_time()/avg_over_time() onto a per-series sorted slab sliced once per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup for those shapes (#2761)
+- **promql,chplan,chsql,chopt:** opt the classic-histogram-quantile cross-series SUM-fold merge onto sumMap(bounds, counts) + arrayCumSum, retiring the groupArray + per-rung arrayFilter-rescan fold for that shape (#2756)
 
 ## [v1.19.0] — 2026-08-30
 

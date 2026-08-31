@@ -643,6 +643,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureTSGridLastOverTime:           {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureColumnStatistics:             {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureClassicBucketMergeSumMap:     {ID: FeatureClassicBucketMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureArgAndMaxFusion:              {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureResultCache:                  {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},
