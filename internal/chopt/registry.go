@@ -1083,6 +1083,61 @@ const (
 	// opt-out condition_cache and every other AutoSelect feature already give
 	// an operator — no separate dedicated flag is needed.
 	FeatureResultCache = "result_cache"
+
+	// FeatureLazyMaterialization stamps query_plan_optimize_lazy_materialization=1
+	// + query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT> on
+	// a Tempo `ORDER BY Timestamp DESC LIMIT N` search shape (internal/api/tempo
+	// handler.go's /search/recent and boundNewestTraces, structural_two_phase.go's
+	// phase-A ranking) — see internal/engine.eligibleForLazyMaterialization.
+	// ClickHouse defers fetching every non-sort-key column (SpanAttributes,
+	// ResourceAttributes, Events, Links — the wide OTel span payload) until
+	// AFTER the ORDER BY + LIMIT has picked the surviving rows, instead of
+	// reading them for the whole scanned window and discarding most of it.
+	//
+	// This replaces cerberus's own hand-rolled late-materialisation rewrite
+	// (formerly internal/chsql/late_mat.go, deleted alongside this feature —
+	// cerberus issue #2782): that structural Project(Limit(Filter?(Scan)))
+	// matcher never fired on any production query path, because every
+	// production Limit construction wraps an OrderBy directly (the matcher's
+	// switch only accepted Filter/Scan under Limit), and the Loki line path
+	// builds no SQL Limit at all (the request limit is applied Go-side). The
+	// server-side setting handles the shape the hand-rolled JOIN-back never
+	// could: no second read, no RowKey registry, no degenerate all-zero
+	// TraceId JOIN key.
+	//
+	// The knob is sized to the REQUEST's own LIMIT, never a fixed ceiling:
+	// verified on a live chDB 26.5 probe that a max-limit knob BELOW the
+	// query's actual LIMIT silently falls back to eager reads (no
+	// LazilyReadFromMergeTree step in EXPLAIN PLAN) — a fixed constant would
+	// silently stop helping the instant a caller's limit grew past it.
+	//
+	// VERSION FLOOR: query_plan_optimize_lazy_materialization ships in
+	// ClickHouse 25.11 (https://clickhouse.com/docs/whats-new/changelog/2025#2511).
+	// Stability is Experimental — the same "very new capability, no fielded
+	// deployment history yet" reasoning arg_and_max_fusion's own 25.11-floor
+	// entry uses — despite AutoSelect being true.
+	//
+	// AutoSelect is true: verified on a live chDB 26.5.1.1 probe (EXPLAIN PLAN
+	// actions=1 against a seeded otel_traces-shaped table) that stamping both
+	// settings is RESULT-EQUIVALENT — identical row count and column set with
+	// and without the stamp, byte-identical rows, only the read order/IO
+	// pattern changes (a LazilyReadFromMergeTree + JoinLazyColumnsStep pair
+	// replaces the eager Expression/Filter/Sort/Limit chain reading every
+	// column up front). ClickHouse's own top-N PREWHERE promotion
+	// (`__topKFilter` on the sort column) fires independently of this
+	// setting — confirmed present in EXPLAIN PLAN even with lazy
+	// materialisation forced off (enable_analyzer=0) — so there is no
+	// negative PREWHERE interaction to weigh.
+	//
+	// query_plan_optimize_lazy_materialization is gated behind the analyzer
+	// exactly like use_query_condition_cache: forcing enable_analyzer=0 on the
+	// same chDB probe made the LazilyReadFromMergeTree step disappear entirely
+	// (plain eager ReadFromMergeTree instead), so internal/engine co-stamps
+	// enable_analyzer=1 alongside this feature's two settings, mirroring
+	// ConditionCache's settingEnableAnalyzer co-stamp — safe because the
+	// analyzer is GA on every server this feature's 25.11 floor reaches (well
+	// past condition_cache's own 25.3 GA baseline).
+	FeatureLazyMaterialization = "lazy_materialization"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -1381,6 +1436,13 @@ var registry = []Feature{
 		RequiresResultCacheCapability: true,
 		Doc:                           "stamp use_query_cache=1 + query_cache_ttl on cerberus-eligible fully-closed read paths (result cache, boot-probed knob availability, server >= 24.8)",
 	},
+	{
+		ID:         FeatureLazyMaterialization,
+		MinVersion: Version{Major: 25, Minor: 11},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on Tempo's ORDER BY Timestamp DESC LIMIT N search shapes (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1392,9 +1454,9 @@ var registry = []Feature{
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, join_spill,
 // trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
-// result_cache). The copy keeps the canonical entries immutable from the
-// caller's side. Exposed so tests can enumerate the gates and the docs
-// generator can render the table.
+// result_cache, lazy_materialization). The copy keeps the canonical entries
+// immutable from the caller's side. Exposed so tests can enumerate the
+// gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

@@ -43,6 +43,21 @@ const settingEnableAnalyzer = "enable_analyzer"
 // so stamping it is version-safe and result-neutral.
 const settingLogComment = "log_comment"
 
+// settingQueryPlanOptimizeLazyMaterialization is the ClickHouse setting that
+// defers reading every non-sort-key column until after an ORDER BY + LIMIT
+// has picked the surviving rows, instead of reading them for the whole
+// scanned window and discarding most of it. It is RESULT-EQUIVALENT (only
+// the read order changes, never the rows) and ships in ClickHouse 25.11.
+const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_materialization"
+
+// settingQueryPlanMaxLimitForLazyMaterialization caps the LIMIT a query may
+// carry for settingQueryPlanOptimizeLazyMaterialization to still engage —
+// verified on a live chDB 26.5 probe (EXPLAIN PLAN) that a query whose LIMIT
+// exceeds this knob silently falls back to eager reads, so
+// eligibleForLazyMaterialization sizes it to the query's OWN LIMIT rather
+// than a fixed ceiling, guaranteeing it never under-shoots.
+const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for_lazy_materialization"
+
 // settingMinTableRowsToUseProjectionIndex is the ClickHouse setting (>= 25.11,
 // upstream PR #81021) that gates whether the optimizer will even CONSIDER a
 // lightweight (`_part_offset`-only) projection as a secondary index for
@@ -160,6 +175,21 @@ type SettingsRules struct {
 	// fixed clock so the closed/live-edge boundary can be pinned exactly.
 	Now func() time.Time
 
+	// LazyMaterialization, when true, stamps
+	// query_plan_optimize_lazy_materialization=1 +
+	// query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT>
+	// on a plan carrying exactly one Limit(OrderBy(...)) shape (see
+	// eligibleForLazyMaterialization) — the Tempo `ORDER BY Timestamp DESC
+	// LIMIT N` search shapes (/search/recent, boundNewestTraces, structural
+	// two-phase's phase-A ranking). Driven by the lazy_materialization
+	// registry feature, which only resolves in on server >= 25.11; below
+	// that the feature is absent from the resolved set, so this flag is
+	// false and nothing is stamped (a no-op on every older server). The
+	// setting is result-equivalent (IO order only), so the eligibility
+	// check exists purely to size the max-limit knob to the request's own
+	// LIMIT rather than to guard correctness — see chopt.FeatureLazyMaterialization.
+	LazyMaterialization bool
+
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
 	// the aggregation-in-order eligibility check reads to map a scanned table
 	// name to its bare-column sort-key prefix. They mirror the same schema the
@@ -192,6 +222,9 @@ func (r SettingsRules) enabledOpts() []string {
 	}
 	if r.ResultCache {
 		opts = append(opts, "result_cache")
+	}
+	if r.LazyMaterialization {
+		opts = append(opts, "lazy_materialization")
 	}
 	return opts
 }
@@ -230,6 +263,17 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 	}
 	if r.ResultCache && eligibleForResultCache(plan, r.now(), r.ResultCacheIngestLag) {
 		ctx = chclient.WithResultCacheSetting(ctx, int64(r.ResultCacheTTL.Seconds()))
+	}
+	if r.LazyMaterialization {
+		if limit, ok := eligibleForLazyMaterialization(plan); ok {
+			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanOptimizeLazyMaterialization, 1)
+			ctx = chclient.WithQuerySetting(ctx, settingQueryPlanMaxLimitForLazyMaterialization, limit)
+			// Gated behind the analyzer, exactly like the condition cache above
+			// (verified on a live chDB probe: enable_analyzer=0 drops the
+			// LazilyReadFromMergeTree step entirely) — co-stamp so the setting
+			// is honored even if an operator disabled the analyzer.
+			ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
+		}
 	}
 	return ctx
 }
@@ -402,6 +446,50 @@ func planHasNativeHistogramMerge(plan chplan.Node) bool {
 		return true
 	})
 	return found
+}
+
+// eligibleForLazyMaterialization reports whether plan carries exactly one
+// Limit node whose Input is a bare *chplan.OrderBy — the top-N-by-sort shape
+// ClickHouse's lazy-materialization optimizer targets — with a positive
+// Count, returning that Count so the caller can size
+// query_plan_max_limit_for_lazy_materialization to the REQUEST's own limit.
+//
+// Sizing the knob to the request's own limit (rather than a fixed ceiling)
+// matters because a knob BELOW the query's actual LIMIT silently falls back
+// to eager reads — verified on a live chDB probe (see
+// chopt.FeatureLazyMaterialization) — so tracking the exact value is the
+// only sizing that never under-shoots as a caller's limit varies (Tempo's
+// own maxSearchRecentLimit / SearchTraceLimit callers already cap the
+// UPPER bound; this just carries whatever they resolved).
+//
+// The sweep is chplan.WalkDeep, matching planHasMetricsCompare /
+// planHasNativeHistogramMerge, so a Limit(OrderBy(...)) nested inside a
+// scalar subquery's Expr slot is still found.
+//
+// Zero or more than one match returns ok=false: with none there is nothing
+// to stamp, and with more than one there is no single Count to size the
+// knob to (a plan this rule does not attempt to reason about) — the setting
+// is result-equivalent regardless, so under-matching only costs a missed
+// win, never correctness.
+func eligibleForLazyMaterialization(plan chplan.Node) (limit int64, ok bool) {
+	count := 0
+	var found int64
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		lim, isLimit := n.(*chplan.Limit)
+		if !isLimit || lim.Count <= 0 {
+			return true
+		}
+		if _, isOrderBy := lim.Input.(*chplan.OrderBy); !isOrderBy {
+			return true
+		}
+		count++
+		found = lim.Count
+		return true
+	})
+	if count != 1 {
+		return 0, false
+	}
+	return found, true
 }
 
 // eligibleForAggregationInOrder reports whether plan's single Aggregate has a

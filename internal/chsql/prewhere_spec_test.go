@@ -13,9 +13,7 @@ import (
 
 // prewhereFixtureDir is the spec directory for the PREWHERE / sort-
 // key-ordering fixtures. Lives outside test/spec/chsql/ so the chsql
-// emitter golden set and the codegen-rule golden set stay separable —
-// late-materialisation fixtures land under test/spec/codegen/late_mat/
-// on the same pattern.
+// emitter golden set and the codegen-rule golden set stay separable.
 var prewhereFixtureDir = filepath.Join("..", "..", "test", "spec", "codegen", "prewhere")
 
 // prewherePlans are the chplan trees the PREWHERE fixtures pin. The trees

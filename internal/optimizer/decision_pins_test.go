@@ -10,8 +10,10 @@ package optimizer_test
 //
 // PREWHERE promotion lives in the chsql emitter rather than a named
 // optimizer rule; FilterRangeWindowTranspose can expose a predicate to
-// that emitter path. ProjectionPushdown is late materialisation's
-// plan-side deputy. Pin those two optimizer decisions here.
+// that emitter path. ProjectionPushdown narrows a Scan's column list to
+// what the enclosing Project/Filter/Aggregate/RangeWindow actually reads,
+// avoiding wide-column IO on its own account. Pin those two optimizer
+// decisions here.
 //
 // Each test asserts on the *plan shape* the rule produces — not on
 // raw SQL — so a future emitter tweak (changing inner aliases, for

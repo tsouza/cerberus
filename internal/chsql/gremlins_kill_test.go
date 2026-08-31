@@ -1284,59 +1284,6 @@ func TestEmitVectorJoin_LogicalOr(t *testing.T) {
 	}
 }
 
-// TestEmitLateMat_FilterNil kills the negation at late_mat.go:281 (`m.filter !=
-// nil`). With the mutant `m.filter == nil`, the non-nil case would
-// pre-flight a nil predicate (panic) and the nil case would silently
-// pass through. By driving the public emit path with and without a
-// Filter we cover both arms.
-func TestEmitLateMat_FilterNil(t *testing.T) {
-	t.Parallel()
-
-	wide := &chplan.Project{
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: "Body"}, Alias: "body"},
-			{Expr: &chplan.ColumnRef{Name: "TraceId"}, Alias: "trace_id"},
-			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "ts"},
-		},
-		Input: &chplan.Limit{
-			Count: 10,
-			Input: &chplan.Scan{Table: "otel_logs"},
-		},
-	}
-
-	withFilter := &chplan.Project{
-		Projections: []chplan.Projection{
-			{Expr: &chplan.ColumnRef{Name: "Body"}, Alias: "body"},
-			{Expr: &chplan.ColumnRef{Name: "TraceId"}, Alias: "trace_id"},
-			{Expr: &chplan.ColumnRef{Name: "Timestamp"}, Alias: "ts"},
-		},
-		Input: &chplan.Limit{
-			Count: 10,
-			Input: &chplan.Filter{
-				Predicate: &chplan.Binary{Op: chplan.OpEq, Left: &chplan.ColumnRef{Name: "ServiceName"}, Right: &chplan.LitString{V: "api"}},
-				Input:     &chplan.Scan{Table: "otel_logs"},
-			},
-		},
-	}
-
-	for _, c := range []struct {
-		name string
-		plan chplan.Node
-	}{
-		{"no filter (Project(Limit(Scan)))", wide},
-		{"with filter (Project(Limit(Filter(Scan))))", withFilter},
-	} {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			_, _, err := Emit(context.Background(), c.plan)
-			if err != nil {
-				t.Fatalf("Emit: %v", err)
-			}
-		})
-	}
-}
-
 // TestEmitScan_NoColumnsBoundary kills the boundary at emit_node.go:66
 // (`len(s.Columns) > 0`). Without explicit Columns, the SELECT must be
 // the bare `SELECT *`; the mutant `>= 0` would emit an empty SELECT

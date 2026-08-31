@@ -1142,12 +1142,13 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 
 // settingsRules builds the per-query ClickHouse settings rules from the
 // resolved optimization EnabledSet plus the CERBERUS_* config. The
-// aggregation-in-order, condition-cache, join-spill, trace-id-bitmap-filter
-// and result-cache rules are all driven by the frozen EnabledSet (set.Has(...)),
-// not raw env flags:
-// under the default `auto` the stable 24.8-safe aggregation_in_order is on,
-// condition_cache is on when the probed server is >= 25.3, join_spill is on
-// when the probed server is >= 26.4, and result_cache is on when the boot
+// aggregation-in-order, condition-cache, join-spill, trace-id-bitmap-filter,
+// lazy-materialization and result-cache rules are all driven by the frozen
+// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
+// stable 24.8-safe aggregation_in_order is on, condition_cache is on when the
+// probed server is >= 25.3, join_spill is on when the probed server is >=
+// 26.4, trace_id_bitmap_filter and lazy_materialization are on when the
+// probed server is >= 25.11, and result_cache is on when the boot
 // result-cache capability probe came back Available (its setting family
 // predates cerberus's own 24.8 floor, so unlike the others it carries no
 // version gate — see chopt.FeatureResultCache). log_comment shape stays its
@@ -1169,6 +1170,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 		ResultCache:                set.Has(chopt.FeatureResultCache),
 		ResultCacheIngestLag:       cfg.ResultCacheIngestLag,
 		ResultCacheTTL:             cfg.ResultCacheTTL,
+		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
 		Metrics:                    cfg.Schema,
 		Traces:                     cfg.Traces,
 		Logs:                       cfg.Logs,

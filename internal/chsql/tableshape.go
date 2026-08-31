@@ -145,11 +145,10 @@ func buildDefaultTableShapes() map[string]TableShape {
 	// leads with MetricName so the common metric-name-first query (no
 	// service.name matcher) binary-searches the PK instead of falling to a
 	// generic-exclusion granule scan (measured 8-17x fewer granules). The
-	// schema package doesn't carry a Metrics.WideColumns field yet, so the
-	// wide set is supplied inline — ResourceAttributes and ScopeAttributes
-	// are the large maps; Exemplars is a Nested column. A future refactor
-	// can extend schema.Metrics with WideColumns + RowKey and move this
-	// list there.
+	// schema package carries no per-signal WideColumns notion (chsql's own
+	// TableShape.WideColumns above is the only registry of "fat" columns),
+	// so the wide set is supplied inline — ResourceAttributes and
+	// ScopeAttributes are the large maps; Exemplars is a Nested column.
 	metricsShape := TableShape{
 		SortColumns: []string{
 			metrics.MetricNameColumn,

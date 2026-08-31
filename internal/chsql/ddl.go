@@ -219,10 +219,11 @@ func TableTTLTiered(column string, retention, moveAfter time.Duration, volume st
 // it composes only builder.go primitives — no raw token is written here.
 //
 // The KV data type lives in internal/schema (schema.KV), not here: chsql
-// already imports internal/schema (late_mat.go reads the default OTel schema),
-// so a chsql-owned KV that schema's env parser had to reference would form an
-// import cycle. The token-emitting Frag stays in chsql (the sanctioned
-// primitive zone); only the plain value-carrier struct sits one layer down.
+// already imports internal/schema (tableshape.go reads the default OTel
+// schema), so a chsql-owned KV that schema's env parser had to reference
+// would form an import cycle. The token-emitting Frag stays in chsql (the
+// sanctioned primitive zone); only the plain value-carrier struct sits one
+// layer down.
 func TableSettings(kv ...schema.KV) Frag {
 	if len(kv) == 0 {
 		return nil

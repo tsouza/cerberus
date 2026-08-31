@@ -649,6 +649,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTraceIDBitmapFilter:          {ID: FeatureTraceIDBitmapFilter, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureArgAndMaxFusion:              {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureResultCache:                  {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},
+		FeatureLazyMaterialization:          {ID: FeatureLazyMaterialization, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))

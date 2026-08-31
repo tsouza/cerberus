@@ -27,28 +27,6 @@ func TestLang_Name(t *testing.T) {
 	}
 }
 
-func TestLang_LateMatShape_ReportsTheResolvedTableNotTheDefault(t *testing.T) {
-	s := schema.DefaultOTelLogs()
-	s.LogsTable = "custom_logs"
-	l := &Lang{Schema: s}
-
-	table, wide, rowKey := l.LateMatShape()
-	if table != "custom_logs" {
-		t.Fatalf("LateMatShape table = %q, want the overridden table", table)
-	}
-	if len(wide) != len(s.WideColumns) {
-		t.Fatalf("wide columns = %v, want %v", wide, s.WideColumns)
-	}
-	for i := range wide {
-		if wide[i] != s.WideColumns[i] {
-			t.Fatalf("wide[%d] = %q, want %q", i, wide[i], s.WideColumns[i])
-		}
-	}
-	if len(rowKey) != len(s.RowKey) {
-		t.Fatalf("row key = %v, want %v", rowKey, s.RowKey)
-	}
-}
-
 func TestLang_Parse_LogStreamQuery(t *testing.T) {
 	l := &Lang{Schema: schema.DefaultOTelLogs()}
 	plan, meta, err := l.Parse(context.Background(), `{service_name="api"}`)
