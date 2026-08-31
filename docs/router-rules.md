@@ -262,7 +262,8 @@ scalar) — context, never a gate, so no inline tolerance number is needed.
 `decision_reason` is the shadow-header value the solver records to explain each
 routing decision (`routed`, `below-threshold`, `anchor-grid-indivisible`,
 `not-sliceable`, `instant`, `instant-join`, `high-D`, `now64`, `grid-mismatch`,
-`incommensurate`, `scalar-heavy`, `routing-disabled`, `extraction-failed`; see
+`incommensurate`, `scalar-heavy`, `routing-disabled`, `estimate-near-empty`,
+`extraction-failed`; see
 [`internal/solver/decision.go`](../internal/solver/decision.go)), plus one
 corpus-only token the solver never emits: `non-promql`, stamped by the engine on
 a LogQL / TraceQL row to say the head never entered `Solver.Classify` at all (see

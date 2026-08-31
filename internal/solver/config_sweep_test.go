@@ -14,9 +14,14 @@ import (
 // The table-driven planner_test.go pins the Planner against the DefaultConfig
 // thresholds; this file asserts the structural invariants hold across the
 // WHOLE valid config space — every combination of Mode / MinFanout /
-// MinAnchorPairs / MaxK / MinAnchorsPerSlice the operator could dial in — and
-// across random grids + random eligible/ineligible plans. rapid generates the
-// config + grid + plan; the invariants below must hold for every draw.
+// MinAnchorPairs / MaxK / MinAnchorsPerSlice / the issue #2787 advisory
+// EXPLAIN ESTIMATE thresholds the operator could dial in — and across random
+// grids + random eligible/ineligible plans. rapid generates the config +
+// grid + plan; the invariants below must hold for every draw. Every draw
+// below leaves RequestMeta.Estimate nil (drawGrid/the plan generators never
+// populate it), so these invariants exercise the pre-#2787 geometry-only
+// path exclusively; planner_estimate_test.go covers the non-nil Estimate
+// behavior directly.
 //
 // The generators emit ONLY configs that pass Config.Validate (an invalid
 // config is a fail-fast misconfiguration the engine adapter rejects before the
@@ -27,15 +32,23 @@ import (
 // straddle the DefaultConfig values in both directions so the monotonicity and
 // mode invariants are exercised across the realistic operator-tuning surface.
 func drawValidConfig(t *rapid.T) Config {
+	maxK := rapid.IntRange(2, 32).Draw(t, "maxK")
 	c := Config{
 		Mode:               rapid.SampledFrom([]string{ModeAuto, ModeSingle, ModeSharded}).Draw(t, "mode"),
 		MinFanout:          rapid.IntRange(1, 64).Draw(t, "minFanout"),
 		MinAnchorPairs:     rapid.IntRange(1, 20000).Draw(t, "minAnchorPairs"),
-		MaxK:               rapid.IntRange(2, 32).Draw(t, "maxK"),
+		MaxK:               maxK,
 		MinAnchorsPerSlice: rapid.IntRange(2, 64).Draw(t, "minAnchorsPerSlice"),
 		Parallel:           rapid.IntRange(1, 8).Draw(t, "parallel"),
 		Timeout:            time.Duration(rapid.IntRange(1, 600).Draw(t, "timeoutSec")) * time.Second,
 		MaxOutputRows:      int64(rapid.IntRange(1, 10_000_000).Draw(t, "maxOutputRows")),
+		// Issue #2787's advisory EXPLAIN ESTIMATE thresholds. MaxKWithEstimate
+		// must be >= MaxK (Validate enforces it); drawing it from [maxK, 64]
+		// keeps every generated config in the valid space by construction, the
+		// same contract every other field above already follows.
+		EstimateNearEmptyRowFloor:         int64(rapid.IntRange(0, 100_000).Draw(t, "estimateNearEmptyRowFloor")),
+		MaxKWithEstimate:                  rapid.IntRange(maxK, 64).Draw(t, "maxKWithEstimate"),
+		EstimateMinRowsPerAdditionalShard: int64(rapid.IntRange(1, 1_000_000).Draw(t, "estimateMinRowsPerAdditionalShard")),
 	}
 	// The ranges above are bounded to the valid space by construction, so every
 	// draw must validate. A failure here means a range edit widened past the

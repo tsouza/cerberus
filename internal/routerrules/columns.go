@@ -219,6 +219,12 @@ var enumDomains = map[string]map[string]struct{}{
 		// MinFanout / MinAnchorPairs must exclude this population rather than
 		// read it as a row the thresholds turned away.
 		"anchor-grid-indivisible",
+		// Cost-model refusal from real DATA rather than plan geometry: an
+		// advisory EXPLAIN ESTIMATE (issue #2787) showed the window is
+		// near-empty. Like anchor-grid-indivisible this is a cost verdict, not
+		// evidence about where the geometry-only MinFanout/MinAnchorPairs
+		// thresholds sit -- a rule tuning those must exclude this population.
+		"estimate-near-empty",
 		// Routed: eligible and sharded.
 		"routed",
 		// Structurally refused: route B cannot take the plan at any threshold.

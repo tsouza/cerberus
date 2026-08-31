@@ -122,8 +122,15 @@ func (l *PerRungAdmissionLearner) Observe(key routememo.Key, outputRows, nAnchor
 	if nAnchors <= 0 {
 		return
 	}
-	cheap := outputRows < nAnchors*perRungCheapRowsPerAnchor
+	l.record(key, outputRows < nAnchors*perRungCheapRowsPerAnchor)
+}
 
+// record is the single critical-section body shared by Observe and
+// SeedPriorFromEstimate: both ultimately reduce to one boolean verdict
+// ("was this evidence cheap") over key's rolling state, and diverge only in
+// where that verdict came from — a real drained row count for Observe, an
+// advisory EXPLAIN ESTIMATE comparison for SeedPriorFromEstimate.
+func (l *PerRungAdmissionLearner) record(key routememo.Key, cheap bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	st, ok := l.states[key]
@@ -145,6 +152,37 @@ func (l *PerRungAdmissionLearner) Observe(key routememo.Key, outputRows, nAnchor
 	st.lastObserved = time.Now()
 }
 
+// SeedPriorFromEstimate records an advisory EXPLAIN ESTIMATE verdict (issue
+// #2787) for key's shape as if it were ONE clean observation, in the SAME
+// direction Observe's own cheap/not-cheap classification already uses —
+// never a distinct code path a reviewer has to separately trust. This is
+// what lets a shape decline the per-rung bypass on its FIRST request instead
+// of waiting for perRungEvidenceMinObservations real production dispatches
+// to drain cleanly and cheaply, which is exactly the "seed... with priors
+// instead of waiting for two real production failures" case issue #2787
+// asks for — for THIS learner specifically, because it can only ever
+// DOWNGRADE an already-PerRungPredictive route back to route A
+// (refinePerRungAdmission's own doc), never promote or block one: a wrong
+// prior costs one shape an unnecessary shard for perRungEvidenceTTL, the
+// same always-safe direction a wrong REAL observation already costs.
+//
+// cheap accepts either value for the same reason Observe does (this method
+// is a general building block, not itself the policy), but the ONE caller
+// (explain_estimate_wiring.go's maybeSeedPerRungPrior) only ever passes
+// true: a scan-side estimate is safe evidence FOR near-empty (an aggregate
+// cannot emit a meaningful value from samples it never read) but not
+// reliable evidence AGAINST it (dense raw data can still collapse to a
+// small composed result) — see that call site's own doc for why treating a
+// large estimate as cheap=false would risk resetting real accumulated
+// evidence on an imprecise proxy. A single seed only ever advances
+// consecutiveCheap by one observation's worth (never jumps straight past
+// perRungEvidenceMinObservations), so a shape whose estimate is wrong once
+// is not permanently mis-seeded — the next REAL Observe call, clean or not,
+// corrects it exactly as it would a real first observation.
+func (l *PerRungAdmissionLearner) SeedPriorFromEstimate(key routememo.Key, cheap bool) {
+	l.record(key, cheap)
+}
+
 // ShouldDeclineBypass reports whether key's shape has accumulated enough
 // FRESH, consecutive cheap observations to decline the anchor-only per-rung
 // bypass on its next request. Returns false (the always-safe default: keep
@@ -161,6 +199,24 @@ func (l *PerRungAdmissionLearner) ShouldDeclineBypass(key routememo.Key) bool {
 		return false
 	}
 	return st.consecutiveCheap >= perRungEvidenceMinObservations
+}
+
+// hasFreshEntry reports whether key has ANY unexpired entry at all —
+// unlike ShouldDeclineBypass, which also answers false for a fresh entry
+// that has not yet accumulated perRungEvidenceMinObservations. Used only by
+// explain_estimate_wiring.go's ScanEstimateAdvisor to decide whether this
+// learner already holds SOME verdict for key (of either polarity) before
+// spending an advisory EXPLAIN ESTIMATE round trip on it — issue #2787's own
+// "skip when the memo or admission system already holds a verdict"
+// constraint, applied to this learner specifically.
+func (l *PerRungAdmissionLearner) hasFreshEntry(key routememo.Key) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.states[key]
+	if !ok {
+		return false
+	}
+	return time.Since(st.lastObserved) <= perRungEvidenceTTL
 }
 
 // perRungAdmissionKey computes the routememo.Key for decision's own grid

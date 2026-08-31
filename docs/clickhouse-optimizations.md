@@ -148,6 +148,7 @@ table.
 | `arg_and_max_fusion`             | 25.11      | experimental | yes        |
 | `result_cache`                   | 24.8       | stable       | yes        |
 | `lazy_materialization`           | 25.11      | experimental | yes        |
+| `explain_estimate`               | none       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they
@@ -182,6 +183,7 @@ reference Prometheus on NaN-adjacent windows, tracked as
 | `join_spill`                 | (none)                                               | stamps `max_bytes_before_external_join=cap/2` (the SAME cap-relative arithmetic the unconditional `max_bytes_before_external_group_by`/`sort` stamps use) on join-bearing plans: PromQL vector matching (one-to-one, `group_left`/`group_right`, mixed), `info()`, TraceQL structural joins, cross joins, and the delta-prefix LEFT JOIN. Result-equivalent and auto-enabled on server >= 26.4 — an OOM abort is an availability bug, not an optimization opportunity, mirroring the group_by/sort stamps' own posture. Explicit stamp, not the 26.5+ `max_bytes_ratio_before_external_join` default, which is silently ignored with no server/user memory limit configured.                                                                                                      |
 | `result_cache`               | (none)                                               | stamps `use_query_cache=1` + `query_cache_ttl` (`CERBERUS_RESULT_CACHE_TTL`, default 5m) on a query whose evaluated window is fully CLOSED — every range-mode window End strictly before now minus `CERBERUS_RESULT_CACHE_INGEST_LAG` (default 5m), no zero-time "resolve at emit time" sentinel anywhere, and no literal `now()`/`now64()` expression anywhere in the plan (issue [#2781](https://github.com/tsouza/cerberus/issues/2781)). No version floor above the 24.8 baseline — the setting family predates it — but gated on a boot capability probe (`ProbeResultCacheCapability`) since a hardened profile can pin/forbid `use_query_cache` even on a version-capable server.                                                                                          |
 | `lazy_materialization`       | (none)                                               | stamps `query_plan_optimize_lazy_materialization=1` + `query_plan_max_limit_for_lazy_materialization=<request LIMIT>` (+`enable_analyzer=1`, analyzer-gated) on a plan carrying exactly one `Limit(OrderBy(...))` shape — Tempo's `/search/recent`, `boundNewestTraces`, and structural two-phase's phase-A ranking. Result-equivalent (IO order only); the knob is sized to the request's own LIMIT rather than a fixed ceiling because a knob below the actual LIMIT silently falls back to eager reads. Auto-enabled on server >= 25.11. Replaces the hand-rolled `late_mat.go` JOIN-back rewrite, deleted alongside this feature (issue [#2782](https://github.com/tsouza/cerberus/issues/2782)) after confirming it never fired on any production query path.                |
+| `explain_estimate`           | (none)                                               | runs `EXPLAIN ESTIMATE` (no execution) over a ModeAuto-eligible candidate's inner scan as an ADVISORY input to the solver's fan-out factor `K` and the per-rung admission learner's priors — see `docs/solver.md` §"Advisory EXPLAIN ESTIMATE (issue #2787)". Never a correctness gate; the fan-out remains the permanent fallback. Opt-in only (never auto): real-world value against production traffic is still uncalibrated.                                                                                                                                                                                                                                                                                                                                                  |
 
 Notes:
 
@@ -635,6 +637,17 @@ Notes:
   below the ratio-10 threshold, or whose fold is anything other than
   `sum_over_time` (`increase`, `delta`, `irate`, `idelta`), continues to lower
   through the existing array-expression fan-out unchanged.
+- **`explain_estimate`** carries no version floor (available since ClickHouse
+  21.9, well below cerberus's own 24.8 floor) and the registry entry exists
+  purely as a rollout / kill switch, not a real capability gate. Unlike every
+  other feature in this table it touches no ClickHouse SETTING and rewrites no
+  SQL — it runs a SECOND statement (`EXPLAIN ESTIMATE <the same statement
+  chsql.Emit already rendered>`) against a ModeAuto-eligible candidate, caches
+  the parts/rows/marks result per plan shape, and feeds it to the solver as an
+  advisory bias on the fan-out factor `K`. See `docs/solver.md` §"Advisory
+  EXPLAIN ESTIMATE (issue #2787)" for the full mechanism, the cost bound that
+  keeps it off the hot per-rung-admission path, and the calibrated
+  thresholds.
 
 ## Audited, not adopted
 

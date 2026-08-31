@@ -705,6 +705,32 @@ const (
 	// the fan-out unconditionally.
 	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
 
+	// FeatureExplainEstimate gates using ClickHouse's own `EXPLAIN ESTIMATE`
+	// (cerberus issue #2787) as an ADVISORY input to the solver's fan-out
+	// factor K and to the per-rung admission learner's priors — a NO-EXECUTION
+	// scan estimator (parts / marks / rows after index analysis, available
+	// since ClickHouse 21.9) run once per distinct plan SHAPE for a
+	// ModeAuto-eligible candidate, never on every request (internal/engine's
+	// explain_estimate_wiring.go caches the result per shape and skips the
+	// round trip entirely once the route memo or the per-rung admission
+	// learner already holds a verdict for that shape — the exact "no new live
+	// round-trip on every per-rung request" constraint per_rung_admission.go
+	// itself was built to avoid).
+	//
+	// VERSION FLOOR: registered AlwaysAvailable, purely for rollout / kill
+	// switch — not a real version gate. EXPLAIN ESTIMATE has been part of
+	// ClickHouse's EXPLAIN grammar since 21.9, well below cerberus's own 24.8
+	// floor (docs/toolchain.md), so every server this codebase supports
+	// already answers it.
+	//
+	// NOT auto-selected (AutoSelect=false), mirroring FeatureColumnStatistics'
+	// own posture: the signal is advisory (never a correctness gate — see
+	// planner.go's own doc on how it clamps K) and its real-world value on
+	// cerberus's own production query mix is a calibration question this
+	// feature alone cannot answer, so enabling it is a deliberate operator
+	// choice pending that evidence, not a version-gated pure win.
+	FeatureExplainEstimate = "explain_estimate"
+
 	// FeatureColumnStatistics gates the curated `ADD STATISTICS IF NOT
 	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
 	// column statistics on the metrics/logs/traces fact tables' highest-value
@@ -1443,6 +1469,13 @@ var registry = []Feature{
 		AutoSelect: true,
 		Doc:        "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on Tempo's ORDER BY Timestamp DESC LIMIT N search shapes (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
 	},
+	{
+		ID:         FeatureExplainEstimate,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "advisory EXPLAIN ESTIMATE pre-flight for solver K clamping and per-rung admission priors (no version floor — available since 21.9 — opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1454,9 +1487,9 @@ var registry = []Feature{
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, join_spill,
 // trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
-// result_cache, lazy_materialization). The copy keeps the canonical entries
-// immutable from the caller's side. Exposed so tests can enumerate the
-// gates and the docs generator can render the table.
+// result_cache, lazy_materialization, explain_estimate). The copy keeps the
+// canonical entries immutable from the caller's side. Exposed so tests can
+// enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

@@ -974,6 +974,17 @@ type Engine struct {
 	// per_rung_admission.go's own package doc for the full mechanism and
 	// why anchor count alone cannot express this.
 	PerRungAdmission *PerRungAdmissionLearner
+
+	// ScanEstimateAdvisor is the OPTIONAL advisory EXPLAIN ESTIMATE pre-flight
+	// (issue #2787, explain_estimate_wiring.go). Nil unless wired from
+	// cmd/cerberus (buildScanEstimateAdvisor, gated on the chopt
+	// FeatureExplainEstimate feature AND evalSolver.Cfg.Mode ==
+	// solver.ModeAuto), so the default path is byte-unchanged. When non-nil,
+	// classify probes a ModeAuto-eligible candidate's inner scan — subject to
+	// every narrowing explain_estimate_wiring.go's own doc describes — and
+	// threads the result onto solver.RequestMeta.Estimate as an advisory
+	// input to the K clamp (internal/solver/planner.go).
+	ScanEstimateAdvisor *ScanEstimateAdvisor
 }
 
 // SetSettings installs rules as the per-query settings the engine evaluates
@@ -1443,7 +1454,7 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 	// ROUTE A below, byte-unchanged. The routed branch (Mode=sharded /
 	// test-only force) drains the Executor's composed cursor instead — it is
 	// wired but dormant at the default config.
-	decision, routed := e.classify(plan, lang)
+	decision, routed := e.classify(ctx, plan, lang)
 	// See QueryPlanCursor's own call site for what this does (DARK when
 	// PerRungAdmission is nil).
 	decision, routed = e.refinePerRungAdmission(plan, decision, routed)
@@ -1508,7 +1519,17 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 // classify. The returned Decision is nil (and routed false) when the Solver
 // is off OR the head is not PromQL — both cases make the engine omit the
 // shadow header and stay byte-identical to the pre-solver path.
-func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) {
+//
+// When e.ScanEstimateAdvisor is wired AND the deployment routes in
+// solver.ModeAuto, classify runs a first, no-estimate classification pass
+// (pure, no I/O — see the Advise call site's own comment on why redoing it
+// is free) purely to hand ScanEstimateAdvisor.Advise a baseline Decision and
+// let it decide, per explain_estimate_wiring.go's own doc, whether the
+// request is worth an advisory EXPLAIN ESTIMATE round trip. A nil
+// ScanEstimateAdvisor (the default) or a non-auto Mode skips this
+// entirely — the single Classify call below is byte-identical to the
+// pre-#2787 path.
+func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*solver.Decision, bool) {
 	if e.Solver == nil {
 		return nil, false
 	}
@@ -1518,6 +1539,18 @@ func (e *Engine) classify(plan chplan.Node, lang Lang) (*solver.Decision, bool) 
 		Start: start,
 		End:   end,
 		Step:  step,
+	}
+	if e.ScanEstimateAdvisor != nil && e.Solver.Cfg.Mode == solver.ModeAuto {
+		baseline, _ := e.Solver.Classify(plan, rm)
+		emit := func(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
+			return emitForHead(
+				ctx, lang, plan,
+				e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+				e.resourceBoundOverrides(),
+				e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits,
+			)
+		}
+		rm.Estimate = e.ScanEstimateAdvisor.Advise(ctx, e.RouteMemo, plan, lang, baseline, emit)
 	}
 	return e.Solver.Classify(plan, rm)
 }
@@ -1906,7 +1939,7 @@ func (e *Engine) QueryPlanCursor(ctx context.Context, lang Lang, plan chplan.Nod
 	// byte-unchanged; the Decision is read only for the additive shadow
 	// header. The routed branch returns the Executor's composed cursor
 	// instead — wired but dormant at the default config.
-	decision, routed := e.classify(plan, lang)
+	decision, routed := e.classify(ctx, plan, lang)
 	// Evidence-based refinement of the per-rung predictive bypass (DARK —
 	// nil PerRungAdmission is a no-op, byte-unchanged below). Only ever
 	// downgrades a PerRungPredictive route to route A; every other route or

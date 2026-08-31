@@ -211,7 +211,7 @@ const fixtureShardCount = 8
 // the engine's own route-B paths take.
 func routedDecision(t *testing.T, eng *Engine, plan chplan.Node) *solver.Decision {
 	t.Helper()
-	d, routed := eng.classify(plan, routedCorpusLang{})
+	d, routed := eng.classify(context.Background(), plan, routedCorpusLang{})
 	if !routed || d == nil {
 		t.Fatalf("fixture must classify as ROUTED under ModeSharded; got routed=%v decision=%+v", routed, d)
 	}
