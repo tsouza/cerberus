@@ -32,6 +32,41 @@ type RequestMeta struct {
 	// Step is the request resolution. Step == 0 is an instant query, never
 	// time-slice routed.
 	Step time.Duration
+
+	// Estimate is the OPTIONAL advisory EXPLAIN ESTIMATE read-out for this
+	// plan's inner scan (issue #2787), or nil when no estimate was fetched —
+	// the overwhelmingly common case: internal/engine's
+	// explain_estimate_wiring.go only probes a ModeAuto-eligible candidate,
+	// caches the result per plan shape, and skips the round trip entirely
+	// once the route memo or the per-rung admission learner already holds a
+	// verdict for that shape. A nil Estimate leaves classify's K derivation
+	// byte-identical to the pre-#2787 pure-geometry formula — see
+	// planner.go's own doc on where and how a non-nil Estimate is consulted.
+	//
+	// Keeping Planner pure (its own doc: "no per-request mutable state, no
+	// RNG... a pure function of (plan, meta, Cfg)") is exactly why this rides
+	// in as a value on RequestMeta instead of the Planner performing the
+	// round trip itself: the I/O already happened, by the caller, before
+	// Plan/Classify/Eligible ever runs.
+	Estimate *ScanEstimate
+}
+
+// ScanEstimate is the package-local advisory read-out of a ClickHouse
+// EXPLAIN ESTIMATE probe (internal/chclient.ScanEstimate is the transport
+// counterpart internal/engine converts from — see RequestMeta.Estimate's own
+// doc for why solver does not import chclient's type directly, mirroring
+// this whole struct's "package-local stand-in for engine.Meta" convention).
+//
+// Every field is a GRANULE-RESOLUTION UPPER BOUND (marks times the table's
+// granule size, typically 8192), not selectivity-aware — never a count of
+// rows that actually match the query's predicates. classify() therefore
+// consumes it only as a bias input to the K clamp, never as a threshold a
+// plan must clear to be eligible at all: every structural/correctness gate
+// above runs unconditionally, with or without an Estimate.
+type ScanEstimate struct {
+	Parts uint64
+	Rows  uint64
+	Marks uint64
 }
 
 // Decision is the routing output. Slices are ordered oldest-first
@@ -179,6 +214,18 @@ const (
 	// join, which step-aligns on the real per-anchor timestamp, routes B.
 	ReasonInstantJoin = "instant-join"
 
+	// ReasonEstimateNearEmpty: eligible and above every pure-geometry cost
+	// threshold, but an advisory EXPLAIN ESTIMATE (issue #2787,
+	// RequestMeta.Estimate) showed the window's total scan is at or below
+	// Config.EstimateNearEmptyRowFloor — real DATA, not grid geometry, says
+	// sharding this window would pay K concurrent round trips for
+	// negligible work. Like ReasonAnchorGridIndivisible this is a cost
+	// verdict ABOVE the geometry thresholds, not evidence about where
+	// MinFanout / MinAnchorPairs themselves sit. Only set when
+	// meta.Estimate is non-nil — the overwhelmingly common nil case leaves
+	// this reason unreachable and every other Reason's meaning unchanged.
+	ReasonEstimateNearEmpty = "estimate-near-empty"
+
 	// ReasonExtractionFailed: the plan walk found no [chplan.GridCarrier] it
 	// could measure, so the Decision's cost grid is all zeros because NOTHING
 	// WAS MEASURED — not because the plan is cheap. Every other refusal
@@ -213,6 +260,7 @@ var Reasons = []string{
 	ReasonScalarHeavy,
 	ReasonRoutingDisabled,
 	ReasonInstantJoin,
+	ReasonEstimateNearEmpty,
 	ReasonExtractionFailed,
 }
 

@@ -31,6 +31,13 @@ const (
 	EnvLegacyRouteMemoEnabled = "CERBERUS_SOLVER_ROUTE_MEMO_ENABLED"
 	EnvRouteMemoEntryTTL      = "CERBERUS_SOLVER_ROUTE_MEMO_ENTRY_TTL"
 	EnvRouteMemoRevalFrac     = "CERBERUS_SOLVER_ROUTE_MEMO_REVALIDATION_FRACTION"
+
+	// EnvEstimateNearEmptyRowFloor, EnvMaxKWithEstimate and
+	// EnvEstimateMinRowsPerAdditionalShard map onto Config's issue #2787
+	// advisory EXPLAIN ESTIMATE thresholds — see each field's own doc.
+	EnvEstimateNearEmptyRowFloor         = "CERBERUS_SHARD_ESTIMATE_NEAR_EMPTY_ROW_FLOOR"
+	EnvMaxKWithEstimate                  = "CERBERUS_SHARD_MAX_K_WITH_ESTIMATE"
+	EnvEstimateMinRowsPerAdditionalShard = "CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD"
 )
 
 // DeprecatedEnvWarnings returns a one-line notice for every soft-deprecated
@@ -116,6 +123,15 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.RouteMemoReValidationFraction, err = envInt(EnvRouteMemoRevalFrac, cfg.RouteMemoReValidationFraction); err != nil {
+		return Config{}, err
+	}
+	if cfg.EstimateNearEmptyRowFloor, err = envInt64(EnvEstimateNearEmptyRowFloor, cfg.EstimateNearEmptyRowFloor); err != nil {
+		return Config{}, err
+	}
+	if cfg.MaxKWithEstimate, err = envInt(EnvMaxKWithEstimate, cfg.MaxKWithEstimate); err != nil {
+		return Config{}, err
+	}
+	if cfg.EstimateMinRowsPerAdditionalShard, err = envInt64(EnvEstimateMinRowsPerAdditionalShard, cfg.EstimateMinRowsPerAdditionalShard); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

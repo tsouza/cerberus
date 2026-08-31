@@ -301,13 +301,46 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	d := sig.cumulativeD         // D = cumulative spine lookback
 	step := meta.Step            // the grid step
 
+	// Advisory EXPLAIN ESTIMATE near-empty check (issue #2787), ahead of the
+	// K clamp: a window the estimate shows is near-empty is refused BEFORE
+	// any K arithmetic runs, the same fail-safe-first ordering the other
+	// structural gates above already follow. This is additive to — never a
+	// replacement for — the existing MinFanout / MinAnchorPairs geometry
+	// checks in Plan's ModeAuto branch: a nil meta.Estimate (the
+	// overwhelmingly common case — feature off, non-auto mode, or the memo /
+	// admission learner already holds a verdict for this shape) leaves this
+	// branch dead and the rest of classify byte-identical to before #2787.
+	if meta.Estimate != nil && int64(meta.Estimate.Rows) <= p.Cfg.EstimateNearEmptyRowFloor {
+		return sig, notRouted(ReasonEstimateNearEmpty).withGrid(sig, meta), 0, false
+	}
+
 	// K = clamp(floor(N/minAnchorsPerSlice), 2, min(MaxK, floor(OuterRange/max(D,Step)))).
+	//
+	// The MaxK half of the ceiling is advisory-RAISED to MaxKWithEstimate
+	// (issue #2787) exactly when meta.Estimate shows the window carries
+	// enough real data to back the extra shards: each shard above the
+	// structural MaxK backstop must be justified by
+	// EstimateMinRowsPerAdditionalShard rows of the granule-resolution upper
+	// bound, so a plan the estimate cannot back is left on the original MaxK
+	// ceiling regardless of how much the grid geometry alone would have
+	// asked for. See defaultMaxKWithEstimate's own doc for why this directly
+	// answers the #2685 trade defaultMaxK's doc names.
+	maxK := int64(p.Cfg.MaxK)
+	if meta.Estimate != nil && p.Cfg.MaxKWithEstimate > p.Cfg.MaxK {
+		estimateK := int64(meta.Estimate.Rows) / p.Cfg.EstimateMinRowsPerAdditionalShard
+		if estimateK > int64(p.Cfg.MaxKWithEstimate) {
+			estimateK = int64(p.Cfg.MaxKWithEstimate)
+		}
+		if estimateK > maxK {
+			maxK = estimateK
+		}
+	}
 	denom := d
 	if step > denom {
 		denom = step
 	}
 	highBound := int64(outerRange / denom) // floor(OuterRange / max(D, Step))
-	upper := int64(p.Cfg.MaxK)
+	upper := maxK
 	if highBound < upper {
 		upper = highBound
 	}

@@ -689,6 +689,145 @@ route-A-cheap can still end up on route B for that specific shape once it
 has actually failed enough times to prove the classification wrong — no
 threshold anywhere has to change for that to happen.
 
+## Advisory EXPLAIN ESTIMATE (issue #2787)
+
+Every mechanism above — the K clamp, the failure-driven route memo, per-rung
+admission — reasons from either pure PLAN geometry (`N`, `F`, `D`) or
+FAILURE-DRIVEN evidence (a real route-A resource exhaustion). Neither one
+ever asks ClickHouse what its own index analysis already knows about the
+window before routing decides anything. Issue #2787 closes that gap with one
+more input, strictly advisory: `EXPLAIN ESTIMATE`, ClickHouse's no-execution
+scan estimator (parts / rows / marks after index analysis, available since
+21.9 — well below cerberus's own 24.8 floor).
+
+**Granule-resolution upper bound, not selectivity.** `EXPLAIN ESTIMATE`
+reports how many marks the index analysis could not prune, times the table's
+granule size (typically 8192) — an upper bound on matching rows, never an
+exact count and never selectivity-aware. Every consumer below treats it as a
+bias input to a COST decision, never as a correctness gate: it can only ever
+make the solver more conservative (skip a route the pure-geometry thresholds
+would have taken) or less conservative WITHIN the same cost-decision
+machinery (raise the `K` ceiling) — it never changes which rows a query
+returns, and the pre-#2787 pure-geometry path remains the permanent,
+fully-supported fallback (a nil estimate — the default, until the chopt
+`explain_estimate` feature is explicitly enabled — reproduces it exactly).
+
+### What it feeds
+
+1. **K clamping (`internal/solver/planner.go`).** `classify()`'s cost-grid
+   section gains two advisory checks once `RequestMeta.Estimate` is non-nil:
+   - **Near-empty skip.** A window whose total `Estimate.Rows` is at or below
+     `Config.EstimateNearEmptyRowFloor` is refused outright
+     (`ReasonEstimateNearEmpty`), independent of what the pure geometry
+     thresholds would have decided — this is issue #2709's own case: a
+     wide-window panel over a table with almost nothing in it clears every
+     geometric threshold and pays `K` concurrent round trips for negligible
+     work, and only DATA (never geometry) can see that in advance.
+   - **K-ceiling raise.** The structural `MaxK` backstop is raised to
+     `Config.MaxKWithEstimate` exactly when the estimate shows enough data to
+     back it: each shard above `MaxK` must be justified by
+     `Config.EstimateMinRowsPerAdditionalShard` rows of the granule-resolution
+     upper bound. This is issue #2685's own case reopened safely: a
+     production-cardinality panel whose own grid asks for more shards than the
+     structural backstop allows, now granted the extra sharding once real data
+     volume — not geometry alone — supports it.
+2. **Per-rung admission priors (`internal/engine/per_rung_admission.go`'s
+   `PerRungAdmissionLearner.SeedPriorFromEstimate`).** A near-empty advisory
+   estimate seeds ONE observation into the SAME rolling evidence the learner
+   already accumulates from real clean drains, so a shape can decline the
+   per-rung bypass on its first request instead of waiting for
+   `perRungEvidenceMinObservations` real dispatches. Only this learner is
+   seeded this way — see "Why the failure-driven route memo is NOT seeded"
+   below.
+
+### Cost bound (the constraint this issue states as VERIFIED)
+
+`per_rung_admission.go`'s own doc already rejected "a new live round-trip on
+every per-rung request" once. `internal/engine/explain_estimate_wiring.go`'s
+`ScanEstimateAdvisor` exists specifically not to reintroduce that, through
+three independent narrowings — see that file's own doc for the exact
+mechanics, and `TestScanEstimateAdvisor_SkipsSecondProbeForSameShape` for the
+pinned proof that a second identical-shape request never re-issues the round
+trip:
+
+1. **ModeAuto only, and only a plan that reached the cost-grid section** of a
+   baseline (no-estimate) classification — a structurally-refused plan
+   (`now64`, an instant query, ...) cannot be affected by an estimate at all,
+   so probing one is pure waste.
+2. **Cached per plan shape** (the SAME literal-free `routememo.Key`
+   fingerprint the route memo and the per-rung learner already key on), TTL-
+   and capacity-bounded exactly like `PerRungAdmissionLearner`'s own cache.
+3. **Skipped entirely once the route memo OR the per-rung admission learner
+   already holds a verdict** for the shape — either mechanism having already
+   resolved the shape makes an additional advisory signal worthless.
+
+A probe failure (breaker-open, transport error, emission error) is treated as
+"no estimate" and never surfaces as a query failure: advisory-only, fail-open
+by construction.
+
+### Why the failure-driven route memo is NOT seeded
+
+The issue's proposal names both the route memo and per-rung admission as
+seeding targets. Only per-rung admission is seeded. The route memo's
+`minCorroboratingFailures = 2` and its cluster-wide pressure damper (both
+documented above) exist specifically to reject exactly the kind of single-
+shot, non-corroborated evidence a granule-resolution upper bound is: seeding
+`PreferB` from an estimate would let one advisory signal — not selectivity-
+aware, never re-confirmed by a real dispatch — route real production traffic
+onto route B without the two independent real resource failures the whole
+mechanism is built to require before trusting anything. Per-rung admission's
+own contract is the opposite shape and is safe to seed: it can only ever
+DOWNGRADE an already-`PerRungPredictive` route back to route A
+(`refinePerRungAdmission`'s own doc), so a wrong prior costs one shape one
+unnecessary shard for `perRungEvidenceTTL` — the same always-safe direction a
+wrong REAL observation already costs there. This is a deliberate scope
+narrowing from the issue's own proposal, not an oversight.
+
+### Calibration
+
+Measured against `test/perf/smoke/testdata/samples/svc_http_requests_total.parquet`
+(real, scrubbed production Sum-metric sample, ~18.6M rows over a real 14-day
+span — see that directory's own `README.md`), loaded into a real MergeTree
+table (`ORDER BY (MetricName, TimeUnix)`, matching the production sorting
+key) and probed with `EXPLAIN ESTIMATE` directly:
+
+| window                                               | rows    | marks | parts |
+| ---------------------------------------------------- | ------- | ----- | ----- |
+| 1h over the sample's single densest real hour        | 598,016 | 73    | 1     |
+| 6h spanning that hour (real data, mixed density)     | 895,858 | 110   | 1     |
+| 6h a year outside the sample's captured span (empty) | 0       | 0     | 0     |
+
+This confirms both advisory checks against real data rather than assumption:
+a genuinely empty window reports EXACTLY zero — `EstimateNearEmptyRowFloor`'s
+default of 1,000 sits comfortably above ClickHouse's own noise floor for a
+truly empty scan and comfortably below any window carrying real samples — and
+a real, single-metric dense window already reports rows in the hundreds of
+thousands, an order of magnitude with room to justify multiple shards above
+`MaxK` at `EstimateMinRowsPerAdditionalShard`'s default of 50,000 (895,858
+rows / 50,000 = 17 additional shards' worth of headroom, the same order of
+magnitude as the #2685 incident's own K=22 grid-derived ask). `defaultMaxKWithEstimate`
+(32) reinstates the exact ceiling #2685 raised and #2709 reverted, now gated
+on this real-data justification instead of geometry alone.
+
+This measurement validates the MECHANISM (a genuinely empty window and a
+genuinely dense window are cleanly distinguishable by `EXPLAIN ESTIMATE`, at
+real production row counts) rather than reproducing the exact #2685/#2709
+production incidents byte-for-byte, which this repository does not have
+access to. The router corpus (`internal/optcorpus`, "Routing-decision
+calibration corpus" below) is the intended mechanism for refining these
+constants further against real production traffic once the feature is opted
+into a live deployment — exactly the same measurement-only feedback loop that
+governs `MinFanout` / `MinAnchorPairs` today.
+
+### Configuration
+
+| Variable                                                 | Type  | Default | Description                                                                                                              |
+| -------------------------------------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `CERBERUS_CH_OPTIMIZATIONS=explain_estimate`             | flag  | off     | Enables the chopt `explain_estimate` feature (opt-in only, `AutoSelect=false` — see `docs/clickhouse-optimizations.md`). |
+| `CERBERUS_SHARD_ESTIMATE_NEAR_EMPTY_ROW_FLOOR`           | int64 | 1,000   | `Config.EstimateNearEmptyRowFloor`.                                                                                      |
+| `CERBERUS_SHARD_MAX_K_WITH_ESTIMATE`                     | int   | 32      | `Config.MaxKWithEstimate`. Must be `>= CERBERUS_SHARD_MAX_K`.                                                            |
+| `CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD`  | int64 | 50,000  | `Config.EstimateMinRowsPerAdditionalShard`.                                                                              |
+
 ## Routing-decision calibration corpus (measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single

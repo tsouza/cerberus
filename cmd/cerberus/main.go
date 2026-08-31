@@ -760,14 +760,19 @@ const gracefulShutdownTimeout = 10 * time.Second
 func newPromHandler(client *chclient.Client, cfg config.Config, optSet chopt.EnabledSet, evalSolver *solver.Solver, limiter *admit.Limiter, logger *slog.Logger, resourceBounds engine.ResourceBoundOverrides, promResourceBounds promql.ResourceBounds) *prom.Handler {
 	h := prom.New(client, cfg.Schema, logger.With("api", "prom"))
 	h.ResourceBounds = promResourceBounds
+	// Constructed once and threaded into BOTH Engine fields below —
+	// buildScanEstimateAdvisor's own doc explains why a near-empty advisory
+	// estimate must seed THIS SAME instance rather than a second one.
+	perRungAdmission := buildPerRungAdmission(evalSolver)
 	h.Engine = &engine.Engine{
-		Optimizer:        h.Optimizer,
-		Client:           client,
-		Solver:           evalSolver,
-		Settings:         settingsRules(cfg, optSet),
-		MaxQuerySamples:  client.MaxQuerySamples(),
-		RouteMemo:        buildRouteMemo(evalSolver, logger),
-		PerRungAdmission: buildPerRungAdmission(evalSolver),
+		Optimizer:           h.Optimizer,
+		Client:              client,
+		Solver:              evalSolver,
+		Settings:            settingsRules(cfg, optSet),
+		MaxQuerySamples:     client.MaxQuerySamples(),
+		RouteMemo:           buildRouteMemo(evalSolver, logger),
+		PerRungAdmission:    perRungAdmission,
+		ScanEstimateAdvisor: buildScanEstimateAdvisor(client, optSet, evalSolver, perRungAdmission),
 		// PromQL-only: TraceQL / LogQL plans never carry a
 		// chplan.RangeWindow.TemporalityColumn (the OTel Sum
 		// AggregationTemporality concept), so this is inert for the other
@@ -854,6 +859,39 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 		return nil
 	}
 	return engine.NewPerRungAdmissionLearner()
+}
+
+// buildScanEstimateAdvisor wires the advisory EXPLAIN ESTIMATE pre-flight
+// (internal/engine/explain_estimate_wiring.go, issue #2787), gated on the
+// chopt FeatureExplainEstimate feature — an operator-opt-in rollout / kill
+// switch (that feature's own registry doc: AlwaysAvailable, AutoSelect=false,
+// pending real-world calibration), not a real ClickHouse version floor.
+// Returns nil (the engine's byte-unchanged, feature-off default) when the
+// feature is not listed in CERBERUS_CH_OPTIMIZATIONS or evalSolver is nil —
+// Engine.classify's own runtime check additionally gates every request on
+// solver.ModeAuto, so a deployment that flips CERBERUS_EVAL_ROUTE away from
+// "auto" after boot still runs the pre-#2787 path with no restart needed.
+//
+// perRungAdmission is threaded straight through so a near-empty advisory
+// estimate can seed that learner's own priors (PerRungAdmissionLearner.
+// SeedPriorFromEstimate) — the SAME instance buildPerRungAdmission
+// constructed, never a second one, so the two mechanisms' state cannot
+// diverge. Unlike newPromHandler's other Engine fields, this constructor
+// needs no config surface of its own: Engine.classify builds the probe's
+// emit closure from the SAME Engine fields (DeltaPrefixLookback,
+// ResourceBoundOverrides, RangeBucketGridNativeMaxRows/…MaxDensityUnits)
+// route A already emits with, at the call site, rather than this function
+// threading a second copy of them in.
+func buildScanEstimateAdvisor(
+	client *chclient.Client,
+	optSet chopt.EnabledSet,
+	evalSolver *solver.Solver,
+	perRungAdmission *engine.PerRungAdmissionLearner,
+) *engine.ScanEstimateAdvisor {
+	if evalSolver == nil || !optSet.Has(chopt.FeatureExplainEstimate) {
+		return nil
+	}
+	return engine.NewScanEstimateAdvisor(client, perRungAdmission)
 }
 
 // nativeRangeLowerers builds the BOOT-WIRED polymorphic lowering dispatch table

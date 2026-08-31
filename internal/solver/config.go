@@ -137,6 +137,49 @@ type Config struct {
 	// routememo's own SetReValidationFraction no-ops on a non-positive
 	// input.
 	RouteMemoReValidationFraction int
+
+	// EstimateNearEmptyRowFloor (CERBERUS_SHARD_ESTIMATE_NEAR_EMPTY_ROW_FLOOR,
+	// issue #2787) is the advisory ADD-ON to the K clamp: when a
+	// RequestMeta.Estimate is present and its total Rows falls at or below
+	// this floor, classify treats the plan as advisory-near-empty and skips
+	// sharding outright (ReasonEstimateNearEmpty), independent of what the
+	// pure grid-geometry thresholds (MinFanout, MinAnchorPairs) would
+	// otherwise have decided. This is the #2709 case named in defaultMaxK's
+	// own doc: a wide-window panel over a table with almost nothing in it
+	// clears every geometric threshold and pays K concurrent round trips for
+	// no benefit — geometry alone cannot see this, only data can. See
+	// planner.go's own doc for the exact comparison and
+	// docs/solver.md's calibration numbers for why this default was chosen.
+	//
+	// A zero Estimate.Rows on a plan the index CAN prune fully (a disjoint
+	// time range, an unmatched label) is expected and correctly near-empty;
+	// this floor is deliberately small and additive so it never overrides
+	// the existing cost thresholds for a genuinely dense plan — it only ever
+	// REFUSES a route the geometry-only path would otherwise have taken, the
+	// same fail-safe direction ReasonAnchorGridIndivisible already uses.
+	EstimateNearEmptyRowFloor int64
+
+	// MaxKWithEstimate (CERBERUS_SHARD_MAX_K_WITH_ESTIMATE, issue #2787) is
+	// the ADVISORY ceiling K may reach when a RequestMeta.Estimate shows the
+	// window is dense enough to justify it (EstimateMinRowsPerAdditionalShard
+	// below) — the #2685 case named in defaultMaxK's own doc: a
+	// production-cardinality panel whose OWN grid geometry asks for more
+	// shards than the structural MaxK backstop allows, and whose real data
+	// volume genuinely supports the extra sharding. It must be >= MaxK
+	// (Validate enforces this); MaxK alone remains the ceiling whenever no
+	// Estimate is present, so a deployment that never wires the chopt
+	// FeatureExplainEstimate feature is byte-unchanged.
+	MaxKWithEstimate int
+
+	// EstimateMinRowsPerAdditionalShard
+	// (CERBERUS_SHARD_ESTIMATE_MIN_ROWS_PER_ADDITIONAL_SHARD, issue #2787) is
+	// the density floor each shard ABOVE MaxK must clear before the estimate
+	// is allowed to raise K past the structural backstop: classify only
+	// raises the ceiling to floor(Estimate.Rows / EstimateMinRowsPerAdditionalShard),
+	// clamped to MaxKWithEstimate, so a shard the estimate cannot back with
+	// real scan volume is never minted just because the grid geometry alone
+	// would have asked for it. See docs/solver.md's calibration numbers.
+	EstimateMinRowsPerAdditionalShard int64
 }
 
 // Default tuning constants (docs/solver.md).
@@ -179,6 +222,43 @@ const (
 	defaultParallel           = 3
 	defaultTimeout            = 60 * time.Second
 	defaultMaxOutputRows      = 2_000_000
+
+	// defaultEstimateNearEmptyRowFloor, defaultMaxKWithEstimate and
+	// defaultEstimateMinRowsPerAdditionalShard are issue #2787's advisory
+	// EXPLAIN ESTIMATE thresholds. Calibrated against
+	// test/perf/nightly/sentinels.go's real-shaped near-empty and dense
+	// fixtures (docs/solver.md §"Advisory EXPLAIN ESTIMATE calibration") —
+	// see that section for the measured before/after query counts these
+	// values were chosen from, mirroring how defaultMaxK's own doc pins its
+	// value to a measured density-ceiling table rather than a guess.
+	//
+	// A near-empty floor of 1,000 rows is two orders of magnitude below the
+	// smallest MinAnchorPairs-clearing production shape measured
+	// (docs/solver.md, ~4,820 anchor-pairs) — small enough that no
+	// legitimately worthwhile fan-out is ever mistaken for empty, and large
+	// enough to catch the #2709 case (a panel whose table has "almost
+	// nothing" in it) outright rather than only after it has already scanned
+	// a few hundred rows across K shards.
+	defaultEstimateNearEmptyRowFloor = 1_000
+
+	// defaultMaxKWithEstimate raises the structural MaxK=8 backstop to 32 —
+	// exactly the #2685 ceiling that was reverted to 8 for #2709 (defaultMaxK's
+	// own doc) — but ONLY when EstimateMinRowsPerAdditionalShard is also
+	// cleared, so the #2685 win is available again without reopening #2709's
+	// regression: geometry alone can no longer ask for it, only geometry
+	// PLUS a real, measured data volume can.
+	defaultMaxKWithEstimate = 32
+
+	// defaultEstimateMinRowsPerAdditionalShard: each shard above MaxK must be
+	// backed by at least 50,000 estimated rows (a granule-resolution UPPER
+	// bound, so the real figure is typically lower). At the #2685 incident's
+	// own measured shape (K=22 asked for by geometry, clipped to 8, each
+	// shard's widened scan landing at 53.8M density cost units against a 54M
+	// ceiling — defaultMaxK's own doc), the total estimated scan comfortably
+	// clears 22 x 50,000 = 1,100,000 rows, so this floor raises K for
+	// exactly that incident's shape while still refusing to mint a shard for
+	// a window whose estimate cannot back even one more.
+	defaultEstimateMinRowsPerAdditionalShard = 50_000
 )
 
 // DefaultConfig returns the conservative library defaults. Mode defaults to
@@ -195,6 +275,10 @@ func DefaultConfig() Config {
 		Timeout:            defaultTimeout,
 		MaxOutputRows:      defaultMaxOutputRows,
 		AdaptiveEnabled:    true,
+
+		EstimateNearEmptyRowFloor:         defaultEstimateNearEmptyRowFloor,
+		MaxKWithEstimate:                  defaultMaxKWithEstimate,
+		EstimateMinRowsPerAdditionalShard: defaultEstimateMinRowsPerAdditionalShard,
 	}
 }
 
@@ -232,6 +316,15 @@ func (c Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("solver: Timeout must be > 0, got %s", c.Timeout)
+	}
+	if c.MaxKWithEstimate < c.MaxK {
+		return fmt.Errorf("solver: MaxKWithEstimate (%d) must be >= MaxK (%d)", c.MaxKWithEstimate, c.MaxK)
+	}
+	if c.EstimateNearEmptyRowFloor < 0 {
+		return fmt.Errorf("solver: EstimateNearEmptyRowFloor must be >= 0, got %d", c.EstimateNearEmptyRowFloor)
+	}
+	if c.EstimateMinRowsPerAdditionalShard < 1 {
+		return fmt.Errorf("solver: EstimateMinRowsPerAdditionalShard must be >= 1, got %d", c.EstimateMinRowsPerAdditionalShard)
 	}
 	return nil
 }
