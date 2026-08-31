@@ -61,6 +61,13 @@ import (
 // timestamp of the sample argMax selected, which the collapse otherwise
 // discards. The four canonical columns are untouched: TimeUnix remains the
 // step anchor.
+//
+// When SampleTimestamp AND ArgAndMaxFusion are both set (chopt.
+// FeatureArgAndMaxFusion, cerberus issue #2764), the collapse fuses that
+// pair into ONE `argAndMax(Value, TimeUnix)` call instead — see
+// rangeLWRCollapseFrag — and this outer SELECT destructures the resulting
+// tuple via `tupleElement` rather than re-aliasing two separately-named
+// collapse columns.
 func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	collapse, err := e.rangeLWRCollapseFrag(r)
 	if err != nil {
@@ -75,6 +82,16 @@ func (e *emitter) emitRangeLWR(r *chplan.RangeLWR) error {
 	outer.Select(As(Col(r.MetricNameCol), r.MetricNameCol))
 	outer.Select(As(Col(r.AttributesCol), r.AttributesCol))
 	outer.Select(As(verbatim(rangeLWRAnchorColumn), r.TimestampCol))
+	if r.SampleTimestamp && r.ArgAndMaxFusion {
+		// argAndMax(arg, val) returns Tuple(arg, val) — element 1 is the
+		// picked Value, element 2 is the max(TimeUnix) that selected it.
+		outer.Select(As(tupleElemFrag(Col(rangeLWRArgAndMaxAlias), 1), r.ValueCol))
+		outer.Select(As(
+			tupleElemFrag(Col(rangeLWRArgAndMaxAlias), 2),
+			chplan.RangeLWRSampleTimestampColumn,
+		))
+		return e.emitSelect(outer)
+	}
 	outer.Select(As(verbatim(rangeLWRValueAlias), r.ValueCol))
 	// The requested fifth column rides through under its own name — it is
 	// NOT re-aliased over TimestampCol, which stays the step anchor.
@@ -102,6 +119,14 @@ const rangeLWRAnchorColumn = "anchor_ts"
 // value column — see rangeLWRAnchorColumn's doc for why this is a named
 // package constant rather than a repeated literal.
 const rangeLWRValueAlias = "lwr_value"
+
+// rangeLWRArgAndMaxAlias is the collapse stage's synthetic argAndMax-picked
+// (Value, TimeUnix) tuple column, emitted in place of the separate
+// rangeLWRValueAlias / chplan.RangeLWRSampleTimestampColumn columns when
+// [chplan.RangeLWR.ArgAndMaxFusion] is set (chopt.FeatureArgAndMaxFusion,
+// cerberus issue #2764). emitRangeLWR's outer SELECT destructures it via
+// tupleElemFrag.
+const rangeLWRArgAndMaxAlias = "lwr_argandmax"
 
 // rangeLWRFanoutFrag renders RangeLWR's sample-side fan-out stage ONLY —
 // the SELECT that projects the series-identity columns plus the raw
@@ -229,33 +254,47 @@ func (e *emitter) rangeLWRCollapseFrag(r *chplan.RangeLWR) (Frag, error) {
 	collapse.Select(Col(r.MetricNameCol))
 	collapse.Select(Col(r.AttributesCol))
 	collapse.Select(Col(rangeLWRAnchorColumn))
-	collapse.Select(RawAs(
-		aggFuncFrag(chplan.AggFunc{
-			Fn: chplan.FnArgMax,
-			Args: []chplan.Expr{
-				&chplan.ColumnRef{Name: r.ValueCol},
-				&chplan.ColumnRef{Name: r.TimestampCol},
-			},
-		}),
-		rangeLWRValueAlias,
-	))
-	// The selecting sample's OWN timestamp, on request. `argMax(Value,
-	// TimeUnix)` above keeps the value and throws the timestamp that picked
-	// it away, so it has to be aggregated separately or it is unrecoverable
-	// once this SELECT closes. `max(TimeUnix)` over the bucket IS that
-	// timestamp: every fanned row in a (series, anchor) bucket is in the same
-	// staleness window and argMax picks the newest of them, so the newest
-	// timestamp and the argMax-selecting timestamp are the same value.
-	// Its own alias keeps it clear of the inner TimeUnix column that
-	// argMax's second argument must resolve to (see the note above).
-	if r.SampleTimestamp {
+	if r.SampleTimestamp && r.ArgAndMaxFusion {
+		// Fused form (chopt.FeatureArgAndMaxFusion, cerberus issue #2764):
+		// one argAndMax(Value, TimeUnix) state replaces the argMax(Value,
+		// TimeUnix) + max(TimeUnix) pair below. The tuple carries both
+		// values emitRangeLWR's outer SELECT needs, so there is nothing
+		// left for a SampleTimestamp-less fused call to add — the fusion
+		// only fires when SampleTimestamp is requested (see
+		// [chplan.RangeLWR.ArgAndMaxFusion]'s own doc).
+		collapse.Select(RawAs(
+			Call("argAndMax", Col(r.ValueCol), Col(r.TimestampCol)),
+			rangeLWRArgAndMaxAlias,
+		))
+	} else {
 		collapse.Select(RawAs(
 			aggFuncFrag(chplan.AggFunc{
-				Fn:   chplan.FnMax,
-				Args: []chplan.Expr{&chplan.ColumnRef{Name: r.TimestampCol}},
+				Fn: chplan.FnArgMax,
+				Args: []chplan.Expr{
+					&chplan.ColumnRef{Name: r.ValueCol},
+					&chplan.ColumnRef{Name: r.TimestampCol},
+				},
 			}),
-			chplan.RangeLWRSampleTimestampColumn,
+			rangeLWRValueAlias,
 		))
+		// The selecting sample's OWN timestamp, on request. `argMax(Value,
+		// TimeUnix)` above keeps the value and throws the timestamp that picked
+		// it away, so it has to be aggregated separately or it is unrecoverable
+		// once this SELECT closes. `max(TimeUnix)` over the bucket IS that
+		// timestamp: every fanned row in a (series, anchor) bucket is in the same
+		// staleness window and argMax picks the newest of them, so the newest
+		// timestamp and the argMax-selecting timestamp are the same value.
+		// Its own alias keeps it clear of the inner TimeUnix column that
+		// argMax's second argument must resolve to (see the note above).
+		if r.SampleTimestamp {
+			collapse.Select(RawAs(
+				aggFuncFrag(chplan.AggFunc{
+					Fn:   chplan.FnMax,
+					Args: []chplan.Expr{&chplan.ColumnRef{Name: r.TimestampCol}},
+				}),
+				chplan.RangeLWRSampleTimestampColumn,
+			))
+		}
 	}
 	collapse.GroupBy(Col(r.MetricNameCol), Col(r.AttributesCol), Col(rangeLWRAnchorColumn))
 

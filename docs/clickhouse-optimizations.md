@@ -139,8 +139,12 @@ table.
 | `fixed_accumulator_extrapolated` | none       | experimental | no         |
 | `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
+| `ts_grid_last_over_time`         | 26.6       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
 | `classic_bucket_merge_summap`    | none       | experimental | no         |
+| `join_spill`                     | 26.4       | experimental | yes        |
+| `arg_and_max_fusion`             | 25.11      | experimental | yes        |
+| `result_cache`                   | 24.8       | stable       | yes        |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they

@@ -173,7 +173,7 @@ func vectorJoinRoles(j *chplan.VectorJoin) (sideRole, sideRole) {
 // and outer SELECT continue to reference `L.Attributes` / `R.Value`
 // naturally.
 func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role sideRole) (Frag, error) {
-	return e.joinSideFrag(j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, n, role)
+	return e.joinSideFrag(j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, j.ArgAndMaxFusion, n, role)
 }
 
 // joinSideFrag is vectorJoinSideFrag's body, generalised to plain
@@ -186,10 +186,17 @@ func (e *emitter) vectorJoinSideFrag(j *chplan.VectorJoin, n chplan.Node, role s
 // silently drift from this one. See vectorJoinSideFrag's own former
 // doc (now here) for why the `_join_*`-alias-then-outer-rename dance
 // exists.
-func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol, tsCol, valCol string, stepAligned bool, n chplan.Node, role sideRole) (Frag, error) {
+//
+// argAndMaxFusion is [chplan.VectorJoin.ArgAndMaxFusion] (cerberus issue
+// #2764); histogram_float_vector_join.go's caller always passes false —
+// [chplan.HistogramFloatVectorJoin] carries no such field, so its
+// float-valued side stays on the pre-fusion shape, unchanged by this
+// feature.
+func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol, tsCol, valCol string, stepAligned, argAndMaxFusion bool, n chplan.Node, role sideRole) (Frag, error) {
 	j := &chplan.VectorJoin{
 		Match:            match,
 		StepAligned:      stepAligned,
+		ArgAndMaxFusion:  argAndMaxFusion,
 		MetricNameColumn: metricNameCol,
 		AttributesColumn: attrsCol,
 		TimestampColumn:  tsCol,
@@ -214,6 +221,23 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 	// matrix-shape operand that surfaces anchor_ts AS TimeUnix, so they
 	// keep the real-timestamp path.
 	derived := !j.StepAligned && !vectorJoinOperandCarriesTimestamp(n, j.TimestampColumn)
+	// fuseValueTimestamp gates the argMax(Value, TimeUnix) + max(TimeUnix)
+	// -> argAndMax(Value, TimeUnix) collapse (chopt.FeatureArgAndMaxFusion,
+	// cerberus issue #2764) onto exactly the non-derived, non-StepAligned
+	// "latest sample" shape: roleMany's default switch arm below and
+	// roleOne's non-derived else arm are the only two that pair the two
+	// aggregates over identical (Value, TimeUnix) arguments today.
+	//
+	// roleOne's else arm ALSO runs when j.StepAligned is true (its
+	// aggMaxAs/argMaxAs pairing is unconditional there — only `derived`
+	// branches away from it) and pairs the identical two aggregates, so it
+	// is technically fusable too; it is deliberately excluded here to keep
+	// this change scoped to the "instant-mode latest-sample" shape the
+	// issue names, matching roleMany's StepAligned arm (a separate switch
+	// case with no argMax/max pairing at all) rather than reading
+	// roleOne's broader StepAligned reach as in-scope. Tracked as a
+	// follow-up: https://github.com/tsouza/cerberus/issues/2818.
+	fuseValueTimestamp := j.ArgAndMaxFusion && !derived && !j.StepAligned
 	inner := NewQuery().From(sub)
 	if role == roleMany {
 		// Step-aligned ("range mode") joins keep TimeUnix in the
@@ -250,6 +274,14 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 				armAttrs,
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
+			).GroupBy(
+				armKey,
+			)
+		case fuseValueTimestamp:
+			inner.Select(
+				joinMetricNameFrag(j),
+				armAttrs,
+				argAndMaxAs(j.ValueColumn, j.TimestampColumn, joinArgAndMaxAlias),
 			).GroupBy(
 				armKey,
 			)
@@ -291,6 +323,12 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 				joinTimestampFrag(j),
 				aggAnyAs(j.ValueColumn, joinAlias(j.ValueColumn)),
 			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
+		} else if fuseValueTimestamp {
+			inner.Select(
+				joinMetricNameFrag(j),
+				As(Call("argMax", canonicalMatchKeyFrag(Col(j.AttributesColumn)), Col(j.TimestampColumn)), joinAlias(j.AttributesColumn)),
+				argAndMaxAs(j.ValueColumn, j.TimestampColumn, joinArgAndMaxAlias),
+			).GroupBy(groupFrags...).Having(matchCheckGuardFrag(j.AttributesColumn))
 		} else {
 			inner.Select(
 				joinMetricNameFrag(j),
@@ -307,12 +345,26 @@ func (e *emitter) joinSideFrag(match chplan.VectorMatch, metricNameCol, attrsCol
 	// roleOne's uniqueness guard, which is exactly why the guard is a
 	// HAVING predicate rather than an extra SELECT-list column — see
 	// matchCheckGuardFrag.
+	//
+	// When fuseValueTimestamp fused the per-side TimeUnix/Value pair into
+	// one argAndMax tuple (joinArgAndMaxAlias), TimestampColumn/ValueColumn
+	// are destructured back out via tupleElement instead of renamed
+	// directly — argAndMax(arg, val) returns Tuple(arg, val), so element 1
+	// is the picked Value and element 2 is the max(TimeUnix) that selected
+	// it (see rangeLWRArgAndMaxAlias's identical destructuring in
+	// range_lwr.go).
+	timestampCol := As(Col(joinAlias(j.TimestampColumn)), j.TimestampColumn)
+	valueCol := As(Col(joinAlias(j.ValueColumn)), j.ValueColumn)
+	if fuseValueTimestamp {
+		valueCol = As(tupleElemFrag(Col(joinArgAndMaxAlias), 1), j.ValueColumn)
+		timestampCol = As(tupleElemFrag(Col(joinArgAndMaxAlias), 2), j.TimestampColumn)
+	}
 	outer := NewQuery().
 		Select(
 			As(Col(joinAlias(j.MetricNameColumn)), j.MetricNameColumn),
 			As(Col(joinAlias(j.AttributesColumn)), j.AttributesColumn),
-			As(Col(joinAlias(j.TimestampColumn)), j.TimestampColumn),
-			As(Col(joinAlias(j.ValueColumn)), j.ValueColumn),
+			timestampCol,
+			valueCol,
 		).
 		From(inner.Frag())
 	return outer.Frag(), nil
@@ -424,6 +476,23 @@ func vectorJoinOperandCarriesTimestamp(n chplan.Node, tsCol string) bool {
 // argMaxAs returns a Frag for `argMax(<valCol>, <byCol>) AS <alias>`.
 func argMaxAs(valCol, byCol, alias string) Frag {
 	return As(Call("argMax", Col(valCol), Col(byCol)), alias)
+}
+
+// joinArgAndMaxAlias is the per-side aggregation's internal alias for the
+// fused argAndMax(Value, TimeUnix) tuple column, emitted in place of the
+// separate joinAlias(TimestampColumn) / joinAlias(ValueColumn) columns when
+// fuseValueTimestamp is set (chopt.FeatureArgAndMaxFusion, cerberus issue
+// #2764). A single package-level constant is sufficient — unlike joinAlias,
+// which is per-column, only one side ever needs at most one fused tuple.
+const joinArgAndMaxAlias = "_join_argandmax"
+
+// argAndMaxAs returns a Frag for `argAndMax(<valCol>, <byCol>) AS <alias>` —
+// the fused form of argMaxAs(valCol, byCol, ...) paired with
+// aggMaxAs(byCol, ...), collapsing one aggregate state into two fewer
+// per-row comparisons (cerberus issue #2764). argAndMax(arg, val) returns
+// Tuple(arg, val); the caller destructures it via tupleElemFrag.
+func argAndMaxAs(valCol, byCol, alias string) Frag {
+	return As(Call("argAndMax", Col(valCol), Col(byCol)), alias)
 }
 
 // matchCheckGuardFrag returns the runtime uniqueness guard as a HAVING

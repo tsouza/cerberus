@@ -1,0 +1,84 @@
+# Native timeSeriesResampleToGridWithStaleness lowering for query_range
+# matrix-mode `last_over_time(<v>[<range>])` — the SAME native aggregate
+# FeatureTSGridResample's bare-selector staleness shape already rides, with the
+# matrix [range] supplying the staleness parameter (Lookback) in place of the
+# bare-selector shape's fixed 5m instantLookback. The
+# `experimental_ts_grid_last_over_time:` section opts the fixture into
+# RangeLowerers.LastOverTime = NativeLastOverTimeLowerer, so the lowering emits
+# a chplan.RangeWindowStaleResample directly instead of the windowed-array
+# `window_vals[length(window_vals)]` fan-out (overTimeArrayValueFrag's
+# lastWindowValOrNaNFrag).
+#
+# No wrapping name-preservation Project: the native node's GROUP BY reads the
+# real per-row MetricName column, so `__name__` rides through natively (see
+# nativeLastOverTimeNode's own doc) — unlike the fan-out path, which has no
+# MetricName column of its own and needs wrapRangeWindowPreserveName to
+# synthesize one.
+#
+# Window (2m) >= step (1m) DELIBERATELY, every sample placed with a wide
+# (>= 20s) margin from any window/bucket edge. This repo's chdb_substrate
+# (versions.yaml, ClickHouse 26.5) sits one minor below this feature's own
+# 26.6 floor, and window < step is exactly the shape
+# ClickHouse/ClickHouse#106577 ("Fix timeSeriesLastToGrid() for out-of-window
+# timestamps") fixed at 26.6 — a sample landing in grid bucket i's coarse
+# span could be carried into bucket i's own answer uncorrected even when
+# stale for bucket i's precise window (see
+# chopt.FeatureTSGridLastOverTime's own doc). This always-on shape golden
+# stays clear of that gap by construction, so it is correct on the pre-26.6
+# substrate it actually runs on. The window-narrower-than-step regression
+# shape is instead pinned against a real ClickHouse >= 26.6 by the
+# `integration`-tagged
+# TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH
+# (internal/chsql/range_window_last_over_time_realch_integration_test.go).
+-- query.promql --
+last_over_time(disk_used_bytes[2m])
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+1m
+-- experimental_ts_grid_last_over_time --
+on
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+  MetricName String,
+  Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
+  TimeUnix DateTime64(9),
+  Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:20', 9), 100.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:40', 9), 200.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:03:10', 9), 300.0);
+-- expected_rows --
+[
+  ["disk_used_bytes", {"host": "a"}, "2026-01-01T00:01:00Z", 100],
+  ["disk_used_bytes", {"host": "a"}, "2026-01-01T00:02:00Z", 200],
+  ["disk_used_bytes", {"host": "a"}, "2026-01-01T00:03:00Z", 200],
+  ["disk_used_bytes", {"host": "a"}, "2026-01-01T00:04:00Z", 300],
+  ["disk_used_bytes", {"host": "a"}, "2026-01-01T00:05:00Z", 300]
+]
+-- args --
+[0] string = "service_name"
+[1] string = "service.name"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = ""
+[6] string = "service_name"
+[7] string = "disk_used_bytes"
+[8] string = "disk.used.bytes"
+[9] string = "disk.used/bytes"
+[10] string = "disk.used_bytes"
+[11] string = "disk/used/bytes"
+[12] string = "disk/used_bytes"
+[13] string = "disk_used.bytes"
+-- chplan --
+RangeWindowStaleResample step=1m0s lookback=2m0s ts=TimeUnix value=Value start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+  Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+    Filter predicate=(MetricName IN ("disk_used_bytes", "disk.used.bytes", "disk.used/bytes", "disk.used_bytes", "disk/used/bytes", "disk/used_bytes", "disk_used.bytes"))
+      Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT `MetricName`, `Attributes`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `MetricName`, `Attributes`, timeSeriesResampleToGridWithStaleness(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 60, 120)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 60) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(120000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `MetricName`, `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL

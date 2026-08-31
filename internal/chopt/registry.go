@@ -661,6 +661,50 @@ const (
 	// FeatureQuantilePromHistogram and FeatureColumnarResultDecode.
 	FeatureMapBucketedSerialization = "map_bucketed_serialization"
 
+	// FeatureTSGridLastOverTime opts eligible query_range matrix-mode
+	// last_over_time(<v>[<range>]) shapes onto the SAME native
+	// timeSeriesResampleToGridWithStaleness aggregate FeatureTSGridResample
+	// already rides (also spelled timeSeriesLastToGrid) — its contract, "most
+	// recent sample within the staleness window per grid point, NULL when
+	// none", IS last_over_time's contract, with the matrix [range] supplying
+	// the staleness parameter (chplan.RangeWindowStaleResample.Lookback) in
+	// place of the bare-selector shape's fixed 5m instantLookback.
+	//
+	// IMPORTANT — the floor is 26.6, NOT the family's 25.9. Two real
+	// correctness fixes to timeSeriesResampleToGridWithStaleness /
+	// timeSeriesLastToGrid landed after 25.9: ClickHouse/ClickHouse#106504
+	// ("Fix timeSeriesLastToGrid() for timestamps before start") and #106577
+	// ("Fix timeSeriesLastToGrid() for out-of-window timestamps"), both
+	// merged into 26.6.1. #106577 is the binding one for this shape
+	// specifically: its own regression fixture is
+	// `last_over_time(test[10s])[120s:15s]` — a staleness window (10s)
+	// SMALLER than the grid step (15s). Pre-fix, the sparse resample
+	// carry-forward only re-checked staleness for a grid cell that started
+	// NULL (AggregateFunctionTimeseriesToGridSparse.h); a cell that already
+	// held a direct sample skipped the check entirely, so a sample landing
+	// inside grid bucket i's coarse span but stale for bucket i's own
+	// [current-window, current] membership was still emitted uncorrected.
+	// ts_grid_resample's own default instantLookback (5m) comfortably
+	// dominates the request step in the overwhelming majority of
+	// deployments, so #106577 rarely bites that shape; last_over_time's
+	// staleness parameter is the caller's OWN [range] literal, which is
+	// routinely smaller than or comparable to the query step — exactly the
+	// regime #106577 fixes. A 25.9 floor here would auto-enable a path that
+	// silently emits a wrong value on that common shape.
+	//
+	// AutoSelect is false: 26.6 is a brand-new floor with no fielded
+	// validation yet, the same conservative posture
+	// FeatureQuantilePromHistogram's 25.10 bump and
+	// FeatureMapBucketedSerialization's 26.4 one took — opt-in only via
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_last_over_time until the floor earns
+	// auto promotion. Shares the family's RequiresExperimentalTSGrid gate
+	// (allow_experimental_time_series_aggregate_functions).
+	//
+	// first_over_time has no native sibling: the aggregate carries the
+	// LATEST in-window sample forward, never the earliest, so it stays on
+	// the fan-out unconditionally.
+	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
+
 	// FeatureColumnStatistics gates the curated `ADD STATISTICS IF NOT
 	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
 	// column statistics on the metrics/logs/traces fact tables' highest-value
@@ -786,6 +830,163 @@ const (
 	// the rungs a NaN row's own layout carries — pinned by
 	// TestClassicBucketMergeSumMapDifferential's NaN case, not glossed over.
 	FeatureClassicBucketMergeSumMap = "classic_bucket_merge_summap"
+
+	// FeatureJoinSpill stamps max_bytes_before_external_join = cap/2 (the
+	// SAME cap-relative arithmetic internal/engine/spill.go's unconditional
+	// group_by/sort stamps use, keyed off CERBERUS_CH_QUERY_MAX_MEMORY) on
+	// join-bearing query plans (cerberus issue #2779). Join memory today is
+	// protected only by throwIf cardinality guards (VectorJoin's own
+	// ManyToManyMatchMessage) and structural shape restrictions — neither is
+	// a memory backstop — so a big hash build (PromQL many-to-many vector
+	// matching, a group_left skew, the delta-prefix LEFT JOIN, a TraceQL
+	// structural join) can still hit the destructive MEMORY_LIMIT_EXCEEDED
+	// (code 241) abort the group_by/sort stamps were added to prevent for
+	// aggregation and sort.
+	//
+	// EXPLICIT stamp, not the ClickHouse-native ratio default: ClickHouse
+	// 26.5+ ships max_bytes_ratio_before_external_join=0.5, but a ratio
+	// setting is silently ignored when no server/user memory limit is
+	// configured — the exact failure mode ClickHouse#76740 documents for the
+	// analogous max_bytes_ratio_before_external_group_by. cerberus does not
+	// control whether an operator's ClickHouse profile sets a server-side
+	// limit, so the ratio default cannot be relied on at any floor this
+	// feature supports; the explicit byte stamp is unconditional the way the
+	// group_by/sort stamps already are.
+	//
+	// VERSION FLOOR: max_bytes_before_external_join itself carries an
+	// EXPERIMENTAL marker at its 26.4 introduction (the release
+	// presentations.clickhouse.com/2026-release-26.4 covers it; the
+	// changelog #264 anchor does not surface the entry) and is treated as
+	// production-grade from 26.5, where the ratio-default sibling setting
+	// ships alongside it. This registry entry pins the floor to 26.4 —
+	// where the setting is FIRST available to stamp, regardless of its own
+	// maturity label — and separately marks the registry Stability as
+	// Experimental to keep that honestly reflected in operator-facing docs,
+	// mirroring how the timeSeries*ToGrid family stays Experimental in
+	// maturity while still being version-gated AutoSelect (Stability and
+	// AutoSelect are deliberately decoupled — see the Feature.AutoSelect
+	// doc below).
+	//
+	// AutoSelect is true: like the group_by/sort stamps this narrows, the
+	// setting is RESULT-EQUIVALENT (spill changes only execution strategy,
+	// never the rows) and strictly protective — an operation whose join
+	// build stays under spillThreshold(cap) never spills, so a normal query
+	// is byte-for-byte unaffected, and only a join approaching the cap
+	// spills-and-completes instead of aborting. There is no downside to
+	// auto-enabling a pure availability win on every server that supports
+	// the setting.
+	//
+	// Known cost (from the issue, verified): on 26.4-26.7 configuring join
+	// spill loses some post-build join optimisations (tryRerangeRightTableData,
+	// FixedHashMap conversion, shared runtime filters) — a cost the
+	// ratio-default path pays too, so it is not specific to the explicit
+	// stamp. The fix ships in 26.8 (upstream PR #111972), NOT 26.7. This is
+	// the same trade the group_by/sort spill stamps already accept — an
+	// OOM abort is an availability bug, not an optimisation opportunity — so
+	// it does not change the AutoSelect posture.
+	FeatureJoinSpill = "join_spill"
+
+	// FeatureArgAndMaxFusion opts two narrow chsql emission sites off the
+	// `argMax(Value, TimeUnix)` + separate `max(TimeUnix)` two-aggregate
+	// pairing onto ClickHouse's fused `argAndMax(Value, TimeUnix)` (a
+	// single Tuple(Value, TimeUnix)-returning aggregate), destructured back
+	// into the two columns via `tupleElement` in the outer SELECT (cerberus
+	// issue #2764): chplan.RangeLWR.SampleTimestamp's collapse (the
+	// `timestamp(<selector>)` carve-out native ToGrid can't serve —
+	// internal/chsql/range_lwr.go, the pairing exists ONLY when
+	// SampleTimestamp is requested) and internal/chsql/vector_join.go's
+	// non-derived, non-StepAligned "latest sample" per-side join
+	// aggregation. StepAligned (range-mode) and derived (range-vector-
+	// operand) join arms are untouched — the StepAligned arm never pairs
+	// the two aggregates at all (TimestampColumn is a plain GROUP BY key
+	// there), and the derived arm has no real TimestampColumn to argMax by.
+	//
+	// VERSION FLOOR: 25.11, NOT the docs page's "Introduced in: v1.1.0"
+	// badge — that badge is a docs-tooling artifact unrelated to any real
+	// ClickHouse product release (product releases run 24.x/25.x; nothing
+	// in ClickHouse versions as "1.1.0"). Verified against two independent
+	// authoritative sources instead: upstream PR
+	// https://github.com/ClickHouse/ClickHouse/pull/89884 ("Implement
+	// argAndMin, argAndMax functions"), merged 2025-11-17, and the official
+	// ClickHouse 25.11 release blog
+	// (https://clickhouse.com/blog/clickhouse-release-25-11), whose
+	// "argAndMin and argAndMax" section states outright "ClickHouse 25.11
+	// introduces the argAndMax and argAndMin functions" — both naming the
+	// same author/PR. argAndMax needs no allow_experimental_* setting: it
+	// shipped as a plain new aggregate function, not behind an experimental
+	// gate, so RequiresExperimentalTSGrid is false.
+	//
+	// EQUIVALENCE (verified, not merely assumed the way the issue's own
+	// risk section flagged it): downstream code never reads WHICH row
+	// argMax(Value, TimeUnix) picked among ties on TimeUnix, only the
+	// selected Value and the max(TimeUnix) value itself — see
+	// chplan.RangeLWRSampleTimestampColumn's consumers
+	// (internal/promql/date_fns.go's timestamp() lowering,
+	// internal/promql/duplicate_labelset_guard.go). max(TimeUnix) is a
+	// PLAIN deterministic aggregate with no tie-break ambiguity of its own
+	// — the tie-break only affects which Value argMax happens to pair with
+	// a TIED max(TimeUnix), and that ambiguity is identical whether the
+	// picking is done by two separate aggregates or by one fused
+	// argAndMax, because ClickHouse's argAndMax is documented to compute
+	// the identical "value corresponding to max(val)" selection argMax
+	// does — it is a packaging of the same underlying mechanism, not a
+	// different one. So fusion introduces no NEW divergence in either the
+	// timestamp component (never ambiguous, tie or no tie) or the value
+	// component (equally ambiguous either way).
+	//
+	// EXPECTED WIN (the issue's own honest accounting): ClickHouse keeps
+	// ONE hash-table entry per GROUP BY key regardless of aggregate count,
+	// and per-group memory is dominated by the Attributes-Map group key —
+	// so fusion saves one fewer aggregate state (create/update/merge/
+	// serialize) and one fewer per-row comparison, roughly a third of the
+	// two states' payload, NOT a halving. Small but essentially free, most
+	// visible on high-cardinality instant queries and timestamp()
+	// carve-outs — the fixed-size-accumulator shape
+	// internal/chsql/lwr_fanout_bound.go already optimizes for.
+	//
+	// AutoSelect is true: a pure, version-gated, tie-invariant win with no
+	// operator tradeoff to weigh (unlike FeatureColumnarResultDecode /
+	// FeatureMapBucketedSerialization / FeatureColumnStatistics), so auto
+	// picks it on any server that meets the 25.11 floor — mirroring the
+	// timeSeries*ToGrid family's own AutoSelect posture for a
+	// proven-equivalent, version-gated substitution. Stability is
+	// Experimental purely on account of the underlying ClickHouse function
+	// being very new (25.11, no fielded deployment history yet), the same
+	// reasoning the ts_grid family's own Experimental marking uses despite
+	// also being AutoSelect true.
+	FeatureArgAndMaxFusion = "arg_and_max_fusion"
+
+	// FeatureResultCache stamps use_query_cache=1 + query_cache_ttl on a
+	// cerberus-eligible read path — a query whose evaluated window has fully
+	// CLOSED (every range-mode window End lies before now minus the
+	// deployment's configured ingest-lag horizon, and no now()/now64()
+	// expression reaches the emitted SQL; see
+	// internal/engine.eligibleForResultCache) — so ClickHouse's query result
+	// cache can answer a dashboard's byte-identical re-issue of the same
+	// query_range without re-scanning.
+	//
+	// The setting family (use_query_cache, query_cache_ttl) is long-stable —
+	// ClickHouse shipped the query cache in 23.2, well before cerberus's own
+	// 24.8 floor — so unlike condition_cache there is no version floor above
+	// the supported baseline to gate on. What a version floor CANNOT catch is
+	// a deployment that runs a hardened/constrained profile pinning or
+	// forbidding use_query_cache, or a server whose query cache is disabled
+	// entirely (query_cache_max_size_in_bytes=0): the resolver instead gates
+	// on a boot capability probe (ProbeResultCacheCapability,
+	// RequiresResultCacheCapability below), mirroring how
+	// RequiresExperimentalTSGrid gates the native timeSeries*ToGrid family on
+	// a SEPARATE probed capability rather than trusting the version floor
+	// alone.
+	//
+	// AutoSelect is true: the eligibility gate is cerberus's own correctness
+	// guard (never ClickHouse's query_cache_nondeterministic_function_handling
+	// alone — that is defense in depth), so a query the gate marks eligible is
+	// safe to cache on any capable server, with no operator tradeoff to weigh.
+	// A deployment that wants the result cache off entirely omits it from an
+	// explicit CERBERUS_CH_OPTIMIZATIONS list (or sets "off"), exactly the
+	// opt-out condition_cache and every other AutoSelect feature already give
+	// an operator — no separate dedicated flag is needed.
+	FeatureResultCache = "result_cache"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -843,6 +1044,14 @@ const (
 // version floor AND permits the experimental setting. Features that touch no
 // experimental setting (aggregation_in_order, condition_cache,
 // columnar_result_decode) leave it false and are never capability-gated.
+//
+// RequiresResultCacheCapability is the SAME kind of second axis for the
+// result_cache feature, but gated on a DIFFERENT boot probe
+// (ProbeResultCacheCapability, verifying use_query_cache/query_cache_ttl
+// rather than the ts-grid experimental setting) and a DIFFERENT
+// Config.ResultCacheCapability field — the two axes are independent
+// verdicts about independent settings, so a server can permit one and
+// forbid the other.
 type Feature struct {
 	ID         string
 	MinVersion Version
@@ -854,7 +1063,12 @@ type Feature struct {
 	// forbids the setting (constrained profile / readonly user) drops it to the
 	// fan-out path even when the version floor is met.
 	RequiresExperimentalTSGrid bool
-	Doc                        string
+	// RequiresResultCacheCapability marks a feature (only result_cache today)
+	// whose settings the engine stamps must be verified against the boot
+	// query-result-cache capability probe rather than assumed available just
+	// because the version floor is met — see the type doc above.
+	RequiresResultCacheCapability bool
+	Doc                           string
 }
 
 // registry is the seeded feature table. It is value data (no init-time
@@ -1014,6 +1228,14 @@ var registry = []Feature{
 		Doc:        "stamp map_serialization_version='with_buckets' on new logs/traces tables only, never metrics (server >= 26.4, opt-in only via CERBERUS_CH_OPTIMIZATIONS — read side is transparent, but full-map reads get ~2x slower, so auto never picks it)",
 	},
 	{
+		ID:                         FeatureTSGridLastOverTime,
+		MinVersion:                 Version{Major: 26, Minor: 6},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)",
+	},
+	{
 		ID:         FeatureColumnStatistics,
 		MinVersion: Version{Major: 26, Minor: 3},
 		Stability:  Experimental,
@@ -1027,6 +1249,28 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap(bounds, counts) + arrayCumSum, retiring the groupArray + per-rung arrayFilter-rescan fold (no version floor, opt-in only via CERBERUS_CH_OPTIMIZATIONS — a chDB probe found a real divergence from the existing merge on heterogeneous bucket layouts, #2817)",
 	},
+	{
+		ID:         FeatureJoinSpill,
+		MinVersion: Version{Major: 26, Minor: 4},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
+	},
+	{
+		ID:         FeatureArgAndMaxFusion,
+		MinVersion: Version{Major: 25, Minor: 11},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "fuse RangeLWR.SampleTimestamp's and vector_join's non-derived instant-mode argMax(Value, TimeUnix) + max(TimeUnix) pair into one argAndMax(Value, TimeUnix) (server >= 25.11, auto-enabled — tie-invariant, proven-equivalent substitution)",
+	},
+	{
+		ID:                            FeatureResultCache,
+		MinVersion:                    Version{Major: 24, Minor: 8},
+		Stability:                     Stable,
+		AutoSelect:                    true,
+		RequiresResultCacheCapability: true,
+		Doc:                           "stamp use_query_cache=1 + query_cache_ttl on cerberus-eligible fully-closed read paths (result cache, boot-probed knob availability, server >= 24.8)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1035,8 +1279,9 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
-// sorted_slab_over_time, map_bucketed_serialization, column_statistics,
-// classic_bucket_merge_summap). The copy keeps the canonical entries
+// sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
+// column_statistics, classic_bucket_merge_summap, join_spill,
+// arg_and_max_fusion, result_cache). The copy keeps the canonical entries
 // immutable from the caller's side. Exposed so tests can enumerate the gates
 // and the docs generator can render the table.
 func Registry() []Feature {

@@ -143,3 +143,89 @@ func TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne(t *testing.T) {
 		}
 	}
 }
+
+// rangeLWRArgAndMaxFusionTestPlan builds a minimal RangeLWR, varying
+// exactly the axes that decide whether
+// chplan.RangeLWR.ArgAndMaxFusion (cerberus issue #2764) fires:
+// SampleTimestamp (the fusion is inert without it — there is no second
+// aggregate to fuse with) and the fusion flag itself.
+func rangeLWRArgAndMaxFusionTestPlan(sampleTimestamp, fused bool) *chplan.RangeLWR {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return &chplan.RangeLWR{
+		Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+		Start:           start,
+		End:             start.Add(5 * time.Minute),
+		Step:            30 * time.Second,
+		Lookback:        5 * time.Minute,
+		SampleTimestamp: sampleTimestamp,
+		ArgAndMaxFusion: fused,
+		MetricNameCol:   "MetricName",
+		AttributesCol:   "Attributes",
+		TimestampCol:    "TimeUnix",
+		ValueCol:        "Value",
+	}
+}
+
+// TestEmitRangeLWR_ArgAndMaxFusion pins the fused vs. unfused SQL shape
+// when SampleTimestamp is requested: the flag collapses the
+// argMax(Value, TimeUnix) + max(TimeUnix) pair into one
+// argAndMax(Value, TimeUnix) tuple, destructured back into Value and
+// lwr_sample_ts via tupleElement in the outer SELECT.
+func TestEmitRangeLWR_ArgAndMaxFusion(t *testing.T) {
+	t.Parallel()
+
+	fusedSQL, _, err := chsql.Emit(context.Background(), rangeLWRArgAndMaxFusionTestPlan(true, true))
+	if err != nil {
+		t.Fatalf("Emit fused: %v", err)
+	}
+	for _, want := range []string{
+		"argAndMax(`Value`, `TimeUnix`)",
+		"tupleElement(",
+	} {
+		if !strings.Contains(fusedSQL, want) {
+			t.Errorf("fused emit missing %q; got:\n%s", want, fusedSQL)
+		}
+	}
+	if strings.Contains(fusedSQL, "max(`TimeUnix`)") {
+		t.Errorf("fused emit must NOT contain a separate max(TimeUnix); got:\n%s", fusedSQL)
+	}
+
+	unfusedSQL, _, err := chsql.Emit(context.Background(), rangeLWRArgAndMaxFusionTestPlan(true, false))
+	if err != nil {
+		t.Fatalf("Emit unfused: %v", err)
+	}
+	for _, want := range []string{
+		"argMax(`Value`, `TimeUnix`)",
+		"max(`TimeUnix`) AS lwr_sample_ts",
+	} {
+		if !strings.Contains(unfusedSQL, want) {
+			t.Errorf("unfused emit missing %q; got:\n%s", want, unfusedSQL)
+		}
+	}
+	if strings.Contains(unfusedSQL, "argAndMax") {
+		t.Errorf("unfused emit must NOT contain argAndMax; got:\n%s", unfusedSQL)
+	}
+}
+
+// TestEmitRangeLWR_ArgAndMaxFusion_InertWithoutSampleTimestamp pins that
+// ArgAndMaxFusion has NO effect when SampleTimestamp is unset — the plain
+// argMax(Value, TimeUnix) collapse (no companion max) is unaffected either
+// way, and the emitted SQL is byte-identical.
+func TestEmitRangeLWR_ArgAndMaxFusion_InertWithoutSampleTimestamp(t *testing.T) {
+	t.Parallel()
+
+	fusedSQL, _, err := chsql.Emit(context.Background(), rangeLWRArgAndMaxFusionTestPlan(false, true))
+	if err != nil {
+		t.Fatalf("Emit fused: %v", err)
+	}
+	unfusedSQL, _, err := chsql.Emit(context.Background(), rangeLWRArgAndMaxFusionTestPlan(false, false))
+	if err != nil {
+		t.Fatalf("Emit unfused: %v", err)
+	}
+	if fusedSQL != unfusedSQL {
+		t.Errorf("emit must be byte-identical when SampleTimestamp is unset, regardless of ArgAndMaxFusion:\nfused:\n%s\nunfused:\n%s", fusedSQL, unfusedSQL)
+	}
+	if strings.Contains(fusedSQL, "argAndMax") {
+		t.Errorf("emit must never contain argAndMax without SampleTimestamp; got:\n%s", fusedSQL)
+	}
+}

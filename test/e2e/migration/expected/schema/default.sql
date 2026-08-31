@@ -256,6 +256,8 @@ ORDER BY (toStartOfFiveMinutes(Timestamp), ServiceName, Timestamp)
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
 ;
 
+ALTER TABLE default.otel_logs MODIFY COLUMN IF EXISTS `Body` CODEC(ZSTD(3));
+
 CREATE TABLE IF NOT EXISTS "default"."otel_traces"  (
     Timestamp DateTime64(9) CODEC(Delta, ZSTD(1)),
     TraceId String CODEC(ZSTD(1)),
@@ -317,3 +319,5 @@ AS SELECT
    WHERE TraceId != ''
    GROUP BY TraceId
 ;
+
+ALTER TABLE default.otel_traces MODIFY COLUMN IF EXISTS `Duration` CODEC(GCD, ZSTD(1));

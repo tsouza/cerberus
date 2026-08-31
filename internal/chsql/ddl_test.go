@@ -312,6 +312,49 @@ func TestAlterTableModifyColumn(t *testing.T) {
 	}
 }
 
+// TestAlterTableModifyColumnCodec pins the codec-only MODIFY COLUMN statement
+// (cerberus issue #2768): the optional <db>. qualifier, the idempotent IF
+// EXISTS guard, the quoted column name, NO type (deliberately, unlike
+// TestAlterTableModifyColumn's retyping shape), the CODEC(...) clause, and
+// the optional ON CLUSTER clause. The statement carries no positional args,
+// so RenderDDL accepts it.
+func TestAlterTableModifyColumnCodec(t *testing.T) {
+	doubleDeltaZSTD1 := Codec(BareIdent("DoubleDelta"), Call("ZSTD", InlineLit(1)))
+	cases := []struct {
+		name string
+		stmt *ModifyColumnCodecBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableModifyColumnCodec("", "otel_metrics_gauge", "TimeUnix", doubleDeltaZSTD1),
+			"ALTER TABLE otel_metrics_gauge MODIFY COLUMN IF EXISTS `TimeUnix` CODEC(DoubleDelta, ZSTD(1))",
+		},
+		{
+			"qualified_table",
+			AlterTableModifyColumnCodec("otel", "otel_metrics_gauge", "TimeUnix", doubleDeltaZSTD1),
+			"ALTER TABLE otel.otel_metrics_gauge MODIFY COLUMN IF EXISTS `TimeUnix` CODEC(DoubleDelta, ZSTD(1))",
+		},
+		{
+			"on_cluster",
+			AlterTableModifyColumnCodec("otel", "otel_metrics_gauge", "TimeUnix", doubleDeltaZSTD1).OnCluster("prod"),
+			"ALTER TABLE otel.otel_metrics_gauge ON CLUSTER `prod` MODIFY COLUMN IF EXISTS `TimeUnix` CODEC(DoubleDelta, ZSTD(1))",
+		},
+		{
+			"single_stage_no_args",
+			AlterTableModifyColumnCodec("otel", "otel_logs", "Body", Codec(Call("ZSTD", InlineLit(3)))),
+			"ALTER TABLE otel.otel_logs MODIFY COLUMN IF EXISTS `Body` CODEC(ZSTD(3))",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAlterTableAddColumn pins the ADD COLUMN statement: the optional <db>.
 // qualifier, the idempotent IF NOT EXISTS guard, the quoted column name, the
 // caller's type fragment, and the optional ON CLUSTER clause. The guard is IF

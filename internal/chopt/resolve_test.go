@@ -121,15 +121,17 @@ func TestResolve_Auto_EnablesAutoSelectByVersion(t *testing.T) {
 	// ts_grid_changes diverges from reference Prometheus on NaN-adjacent windows
 	// (#1721) and is opt-in only via CERBERUS_CH_OPTIMIZATIONS=ts_grid_changes.
 	// Capability=Available is the happy-path boot verdict (the server permits
-	// the experimental setting).
-	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(25, 9))
+	// the experimental setting); ResultCacheCapability=Available is the same
+	// happy-path verdict for the SEPARATE result-cache probe, so result_cache
+	// (MinVersion 24.8, met here) also joins the auto set.
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
-		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta)
+		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
 	if set.Has(FeatureColumnarResultDecode) {
 		t.Errorf("auto on 25.9 enabled %q; want it off (opt-in only)", FeatureColumnarResultDecode)
 	}
@@ -142,11 +144,11 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 	// On 25.8 (the compose / prod-floor substrate) NONE of the native
 	// timeSeries*ToGrid aggregates auto-enable: the family floor is 25.9 (the
 	// left-open window fix, PR #86588). Only the stable features remain.
-	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(25, 8))
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, v(25, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, off := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -159,14 +161,14 @@ func TestResolve_Auto_NativeAggregatesOffBelow259(t *testing.T) {
 }
 
 func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
-	set, _, err := Resolve(Config{Optimizations: "", Capability: CapabilityAvailable}, v(25, 9))
+	set, _, err := Resolve(Config{Optimizations: "", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
-		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta)
+		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache)
 	if set.Has(FeatureTSGridChanges) {
 		t.Errorf("empty-selection-defaults-to-auto enabled %q; want it off (opt-in only, #1721)", FeatureTSGridChanges)
 	}
@@ -174,13 +176,15 @@ func TestResolve_Auto_EmptySelectionDefaultsToAuto(t *testing.T) {
 
 func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	// The auto-selection matrix as the probed server version crosses each floor,
-	// with the boot capability verdict = Available (the server permits the
-	// experimental setting) so the version floor is the only gate in play.
+	// with the boot capability verdict = Available on BOTH probed axes (the
+	// server permits the experimental ts-grid setting AND the result-cache
+	// settings) so the version floor is the only gate in play.
 	// columnar_result_decode and ts_grid_changes (both AutoSelect=false) are
 	// absent from every row: columnar_result_decode carries no version floor at
 	// all, and ts_grid_changes never auto-selects regardless of version because
 	// the native builtin diverges from reference Prometheus on NaN-adjacent
-	// windows (#1721) — auto must never select either.
+	// windows (#1721) — auto must never select either. result_cache's own
+	// 24.8 floor is met by every row here, so it is present in all of them.
 	cases := []struct {
 		name   string
 		server Version
@@ -189,22 +193,22 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 		{
 			name:   "24.8 only aggregation_in_order",
 			server: v(24, 8),
-			want:   []string{FeatureAggregationInOrder, FeatureLagInFrameAdjacency},
+			want:   []string{FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.3 adds condition_cache, no native aggregates",
 			server: v(25, 3),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency},
+			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.6 below the 25.9 native floor (closed-window aggregates)",
 			server: v(25, 6),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency},
+			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.8 still below the 25.9 native floor",
 			server: v(25, 8),
-			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency},
+			want:   []string{FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache},
 		},
 		{
 			name:   "25.9 adds eleven ts_grid_* features (left-open window; ts_grid_changes stays opt-in)",
@@ -213,13 +217,13 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 				FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 				FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 				FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
-				FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta,
+				FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, tc.server)
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, tc.server)
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
@@ -237,14 +241,49 @@ func TestResolve_Auto_VersionBoundaries(t *testing.T) {
 	}
 }
 
+// TestResolve_Auto_JoinSpill_VersionBoundaries pins join_spill's own 26.4
+// floor across below/at/above, independent of TestResolve_Auto_VersionBoundaries
+// above (which stops at 25.9 and would otherwise need every AutoSelect=true
+// feature re-enumerated up to 26.4 just to add this one row). AutoSelect=true
+// like the ts_grid_* family, so `auto` alone — no explicit listing needed —
+// is enough to pick it up once the server clears the floor.
+func TestResolve_Auto_JoinSpill_VersionBoundaries(t *testing.T) {
+	cases := []struct {
+		name   string
+		server Version
+		want   bool
+	}{
+		{"26.3 below the 26.4 floor", v(26, 3), false},
+		{"26.4 at the floor (setting first exists to stamp)", v(26, 4), true},
+		{"26.5 above the floor (ratio-default sibling ships here too)", v(26, 5), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, tc.server)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got := set.Has(FeatureJoinSpill); got != tc.want {
+				t.Errorf("server %v: join_spill enabled = %v; want %v", tc.server, got, tc.want)
+			}
+			if len(warns) != 0 {
+				t.Errorf("auto emitted warnings %v; want none (auto is silent on version skips)", warns)
+			}
+		})
+	}
+}
+
 func TestResolve_Auto_OldServerExcludesUnsupportedStable(t *testing.T) {
 	// On 24.8 only aggregation_in_order (24.8) is supported; condition_cache
 	// (25.3) is silently excluded under auto (no warning, "best available").
-	set, warns, err := Resolve(Config{Optimizations: "auto"}, v(24, 8))
+	// ResultCacheCapability=Available keeps result_cache's own capability axis
+	// clean (its 24.8 floor is met here), so this stays a pure version-floor
+	// test for condition_cache.
+	set, warns, err := Resolve(Config{Optimizations: "auto", ResultCacheCapability: CapabilityAvailable}, v(24, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureResultCache)
 	if set.Has(FeatureConditionCache) {
 		t.Error("auto enabled condition_cache on 24.8; needs 25.3")
 	}
@@ -316,6 +355,47 @@ func TestResolve_ExplicitTSGrid_Supported(t *testing.T) {
 	assertSet(t, set, FeatureTSGridRange)
 }
 
+func TestResolve_TSGridLastOverTime_ExplicitSupported(t *testing.T) {
+	// ts_grid_last_over_time IS reachable by explicit listing (26.6+) when the
+	// server also permits the experimental setting.
+	set, _, err := Resolve(Config{Optimizations: "ts_grid_last_over_time", Capability: CapabilityAvailable}, v(26, 6))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureTSGridLastOverTime)
+}
+
+func TestResolve_TSGridLastOverTime_BelowFloorEnforcingFatal(t *testing.T) {
+	// 26.5 (this repo's own chdb_substrate, versions.yaml) sits one minor below
+	// the 26.6 floor — the two upstream correctness fixes
+	// (ClickHouse/ClickHouse#106504, #106577) this feature's own registry doc
+	// names are absent there, so explicit + enforcing must refuse to run.
+	_, _, err := Resolve(Config{
+		Optimizations: "ts_grid_last_over_time",
+		Mode:          Enforcing,
+		Capability:    CapabilityAvailable,
+	}, v(26, 5))
+	if err == nil {
+		t.Fatal("explicit ts_grid_last_over_time on 26.5 under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "ts_grid_last_over_time") || !strings.Contains(err.Error(), "26.6") {
+		t.Errorf("err = %v; want it to name ts_grid_last_over_time + 26.6", err)
+	}
+}
+
+func TestResolve_TSGridLastOverTime_OptInOnly(t *testing.T) {
+	// AutoSelect is false (a brand-new floor with no fielded validation yet,
+	// mirroring quantile_prom_histogram / map_bucketed_serialization): auto
+	// must not enable it even on a server well past its 26.6 floor.
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(26, 6))
+	if err != nil {
+		t.Fatalf("Resolve(auto): %v", err)
+	}
+	if set.Has(FeatureTSGridLastOverTime) {
+		t.Error("auto enabled ts_grid_last_over_time; it is opt-in only (AutoSelect=false, new 26.6 floor)")
+	}
+}
+
 func TestResolve_ColumnarResultDecode_OptInOnly(t *testing.T) {
 	// columnar_result_decode is opt-in only: auto must NOT enable it, even on a
 	// brand-new server, since it is a perf tradeoff (a second ch-go dial).
@@ -349,7 +429,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 	// half includes eleven of the twelve 25.9-floored ts_grid_* features
 	// (ts_grid_changes stays opt-in-only, #1721, and is absent even from the
 	// explicit union here since it was not itself listed).
-	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode", Capability: CapabilityAvailable}, v(25, 9))
+	set, _, err := Resolve(Config{Optimizations: "auto,columnar_result_decode", Capability: CapabilityAvailable, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve(auto,columnar_result_decode): %v", err)
 	}
@@ -357,7 +437,7 @@ func TestResolve_AutoPlusOptIn_UnionsBoth(t *testing.T) {
 		FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency,
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridResets, FeatureTSGridDelta,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
-		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta,
+		FeatureTSGridHistogram, FeatureTSGridIrate, FeatureTSGridIdelta, FeatureResultCache,
 		FeatureColumnarResultDecode)
 }
 
@@ -365,11 +445,14 @@ func TestResolve_AutoPlusOptIn_AutoSetStillVersionGated(t *testing.T) {
 	// On 24.8 the auto half drops condition_cache (needs 25.3) but keeps
 	// aggregation_in_order; the opt-in (no floor) still enables. Auto stays
 	// silent about its own version skips even when composed.
-	set, warns, err := Resolve(Config{Optimizations: "auto,columnar_result_decode"}, v(24, 8))
+	// ResultCacheCapability=Available keeps result_cache's own capability axis
+	// clean, so it resolves in on its 24.8 floor rather than adding a spurious
+	// capability-block warning to this version-skip test.
+	set, warns, err := Resolve(Config{Optimizations: "auto,columnar_result_decode", ResultCacheCapability: CapabilityAvailable}, v(24, 8))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode)
+	assertSet(t, set, FeatureAggregationInOrder, FeatureLagInFrameAdjacency, FeatureColumnarResultDecode, FeatureResultCache)
 	if len(warns) != 0 {
 		t.Errorf("auto-skip in a composed selection emitted warnings %v; want none", warns)
 	}
@@ -535,6 +618,8 @@ func TestRegistry_SeededEntries(t *testing.T) {
 	// resets, deriv, predict_linear, delta, irate, idelta — plus the
 	// ts_grid_recollapse shape knob that rides on the rate one and
 	// ts_grid_histogram); the stable/client-side features leave it false.
+	// RequiresResultCacheCapability marks only result_cache, gated on its OWN
+	// boot probe (see capability.go / resolve.go).
 	want := map[string]Feature{
 		FeatureAggregationInOrder:           {ID: FeatureAggregationInOrder, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureConditionCache:               {ID: FeatureConditionCache, MinVersion: v(25, 3), Stability: Stable, AutoSelect: true, RequiresExperimentalTSGrid: false},
@@ -556,8 +641,12 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureFixedAccumulatorExtrapolated: {ID: FeatureFixedAccumulatorExtrapolated, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureSortedSlabOverTime:           {ID: FeatureSortedSlabOverTime, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridLastOverTime:           {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureColumnStatistics:             {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureClassicBucketMergeSumMap:     {ID: FeatureClassicBucketMergeSumMap, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureJoinSpill:                    {ID: FeatureJoinSpill, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureArgAndMaxFusion:              {ID: FeatureArgAndMaxFusion, MinVersion: v(25, 11), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
+		FeatureResultCache:                  {ID: FeatureResultCache, MinVersion: v(24, 8), Stability: Stable, AutoSelect: true, RequiresResultCacheCapability: true},
 	}
 	if len(reg) != len(want) {
 		t.Fatalf("registry has %d entries; want %d", len(reg), len(want))
@@ -568,8 +657,9 @@ func TestRegistry_SeededEntries(t *testing.T) {
 			t.Errorf("unexpected feature %q", f.ID)
 			continue
 		}
-		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect || f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid {
-			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/requiresExperimentalTSGrid %+v", f.ID, f, w)
+		if f.MinVersion != w.MinVersion || f.Stability != w.Stability || f.AutoSelect != w.AutoSelect ||
+			f.RequiresExperimentalTSGrid != w.RequiresExperimentalTSGrid || f.RequiresResultCacheCapability != w.RequiresResultCacheCapability {
+			t.Errorf("feature %q = %+v; want minVersion/stability/autoSelect/requiresExperimentalTSGrid/requiresResultCacheCapability %+v", f.ID, f, w)
 		}
 	}
 }
@@ -585,12 +675,16 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 	// twelfth: it is AutoSelect=false (opt-in only, #1721), so auto never
 	// even considers it — it is absent from the resolved set for that reason
 	// alone, independent of the capability verdict, and produces no WARN of
-	// its own.
-	set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityForbidden}, v(25, 9))
+	// its own. ResultCacheCapability=Available keeps the SEPARATE result-cache
+	// probe clean — this test is about the ts-grid axis alone, and the two
+	// axes are independent (a server can forbid one setting while permitting
+	// the other) — so result_cache resolves in normally alongside the other
+	// non-experimental stable features.
+	set, warns, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityForbidden, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{
 		FeatureTSGridRange, FeatureTSGridIncrease, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets,
 		FeatureTSGridDeriv, FeatureTSGridPredictLinear, FeatureTSGridRecollapse,
@@ -613,11 +707,12 @@ func TestResolve_Auto_CapabilityForbidden_DropsNativeKeepsStable(t *testing.T) {
 func TestResolve_Auto_CapabilityUnreachable_DropsNative(t *testing.T) {
 	// An inconclusive (UNREACHABLE) verdict is conservative — identical to
 	// FORBIDDEN for selection: auto drops the native family and keeps stable.
-	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityUnreachable}, v(25, 9))
+	// ResultCacheCapability=Available isolates this to the ts-grid axis alone.
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityUnreachable, ResultCacheCapability: CapabilityAvailable}, v(25, 9))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency)
+	assertSet(t, set, FeatureAggregationInOrder, FeatureConditionCache, FeatureLagInFrameAdjacency, FeatureResultCache)
 	for _, native := range []string{FeatureTSGridRange, FeatureTSGridResample, FeatureTSGridChanges, FeatureTSGridResets} {
 		if set.Has(native) {
 			t.Errorf("auto enabled %q on an unreachable-capability server; want it dropped", native)
@@ -766,6 +861,98 @@ func TestResolve_ExplicitNonExperimental_CapabilityForbidden_StillEnabled(t *tes
 		t.Fatalf("Resolve: %v", err)
 	}
 	assertSet(t, set, FeatureConditionCache)
+}
+
+// TestResolve_ResultCache_AutoDropsOnForbiddenCapability_KeepsTSGridAxisIndependent
+// pins result_cache's own capability axis: a server whose result-cache probe
+// comes back FORBIDDEN drops result_cache from the auto set while the
+// UNRELATED ts-grid axis (here left Available) resolves in its own features
+// normally — the two axes never leak into each other.
+func TestResolve_ResultCache_AutoDropsOnForbiddenCapability_KeepsTSGridAxisIndependent(t *testing.T) {
+	set, warns, err := Resolve(Config{
+		Optimizations:         "auto",
+		Capability:            CapabilityAvailable,
+		ResultCacheCapability: CapabilityForbidden,
+	}, v(25, 9))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if set.Has(FeatureResultCache) {
+		t.Error("auto enabled result_cache on a capability-forbidden server; want it dropped")
+	}
+	if !set.Has(FeatureTSGridRange) || !set.Has(FeatureConditionCache) {
+		t.Errorf("result_cache's own forbidden capability leaked into the ts-grid/stable axes; set = %v", set.IDs())
+	}
+	if !anyContains(warns, "use_query_cache") {
+		t.Errorf("warns = %v; want one naming use_query_cache", warns)
+	}
+}
+
+// TestResolve_ResultCache_AutoDropsOnUnreachableOrUnknownCapability pins the
+// conservative treatment of an inconclusive result-cache probe verdict,
+// mirroring the ts-grid axis's own Unreachable/Unknown handling.
+func TestResolve_ResultCache_AutoDropsOnUnreachableOrUnknownCapability(t *testing.T) {
+	for _, capability := range []Capability{CapabilityUnreachable, CapabilityUnknown} {
+		t.Run(capability.String(), func(t *testing.T) {
+			set, _, err := Resolve(Config{Optimizations: "auto", ResultCacheCapability: capability}, v(25, 9))
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if set.Has(FeatureResultCache) {
+				t.Errorf("auto enabled result_cache on capability=%v; want it dropped (conservative)", capability)
+			}
+		})
+	}
+}
+
+// TestResolve_ExplicitResultCache_Supported pins the explicit-list path: a
+// server that meets the 24.8 floor and permits the setting enables
+// result_cache when it is listed explicitly (not just under auto).
+func TestResolve_ExplicitResultCache_Supported(t *testing.T) {
+	set, _, err := Resolve(Config{Optimizations: "result_cache", ResultCacheCapability: CapabilityAvailable}, v(24, 8))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureResultCache)
+}
+
+// TestResolve_ExplicitResultCache_CapabilityForbidden_EnforcingFatal mirrors
+// TestResolve_ExplicitTSGrid_CapabilityForbidden_EnforcingFatal for the
+// result-cache axis: a definitive Forbidden verdict on an explicitly
+// requested feature is fatal under enforcing.
+func TestResolve_ExplicitResultCache_CapabilityForbidden_EnforcingFatal(t *testing.T) {
+	_, _, err := Resolve(Config{
+		Optimizations:         "result_cache",
+		Mode:                  Enforcing,
+		ResultCacheCapability: CapabilityForbidden,
+	}, v(25, 9))
+	if err == nil {
+		t.Fatal("explicit result_cache on a capability-forbidden server under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "result_cache") || !strings.Contains(err.Error(), "use_query_cache") {
+		t.Errorf("err = %v; want it to name result_cache + use_query_cache", err)
+	}
+}
+
+// TestResolve_ExplicitResultCache_CapabilityUnreachable_EnforcingDegradesNotFatal
+// mirrors the ts-grid axis's own inconclusive-is-not-fatal rule: an explicit
+// request whose probe could not reach a verdict degrades with a WARN under
+// enforcing instead of crashing boot.
+func TestResolve_ExplicitResultCache_CapabilityUnreachable_EnforcingDegradesNotFatal(t *testing.T) {
+	set, warns, err := Resolve(Config{
+		Optimizations:         "result_cache",
+		Mode:                  Enforcing,
+		ResultCacheCapability: CapabilityUnreachable,
+	}, v(25, 9))
+	if err != nil {
+		t.Fatalf("explicit result_cache + Unreachable under enforcing must degrade, not fatal; got err %v", err)
+	}
+	if set.Has(FeatureResultCache) {
+		t.Error("inconclusive verdict must drop result_cache, not enable it")
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "result_cache") || !strings.Contains(warns[0], "inconclusive") {
+		t.Errorf("warns = %v; want one naming result_cache + the inconclusive probe", warns)
+	}
 }
 
 func TestResolve_LegacyTrue_CapabilityForbidden_EnforcingFatal(t *testing.T) {

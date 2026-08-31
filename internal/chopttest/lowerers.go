@@ -153,6 +153,18 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
 	}
 
+	// ts_grid_last_over_time is NOT part of AllNativeOptimizations (floor
+	// 26.6, above the 25.9-alpine substrate most callers of this function
+	// probe against under Enforcing mode — listing it there would fail every
+	// such caller loudly rather than silently degrading). Callers that want
+	// it activated resolve it explicitly against a >= 26.6 server and pass
+	// the resulting set here; this branch only ever fires for those callers.
+	if set.Has(chopt.FeatureTSGridLastOverTime) {
+		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
+	} else {
+		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
+	}
+
 	return l
 }
 

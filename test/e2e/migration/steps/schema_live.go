@@ -62,6 +62,18 @@ var alterIndexRe = regexp.MustCompile(
 	`(?is)^ALTER\s+TABLE\s+(\S+)\s+ADD\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\S+)`,
 )
 
+// alterModifyColumnCodecRe is alterProjectionRe's sibling for the third
+// non-CREATE shape the renderer emits (cerberus issue #2768): a curated,
+// codec-only `MODIFY COLUMN IF EXISTS <col> CODEC(...)` retune. Unlike a
+// projection or index name, the trailing CODEC(...) body carries the exact
+// upstream template codec cerberus's own benchmark superseded, which is a
+// fact this parser has no need to hold onto — only the ALTER's target
+// (table, column) is diffable against a collector-provisioned stack, for the
+// same reason renderedProjection / renderedIndex only diff their target.
+var alterModifyColumnCodecRe = regexp.MustCompile(
+	`(?is)^ALTER\s+TABLE\s+(\S+)\s+MODIFY\s+COLUMN\s+IF\s+EXISTS\s+(\S+)\s+CODEC\(`,
+)
+
 // renderedColumn is one column a rendered CREATE TABLE declares.
 type renderedColumn struct {
 	// name is the column the live table must carry.
@@ -115,6 +127,20 @@ type renderedIndex struct {
 	name     string
 }
 
+// renderedCodecAlter is one `ALTER TABLE … MODIFY COLUMN IF EXISTS … CODEC(…)`
+// the renderer emits (cerberus issue #2768's curated codec registry). Unlike
+// renderedProjection / renderedIndex, the column this ALTER targets is one
+// the upstream OTel exporter's own CREATE TABLE already declares — it is not
+// a cerberus-only addition — but what IS asserted here is the same claim
+// those two make: the ALTER targets the live tenant database and names a
+// table that is really there, so an operator piping the render into a
+// client cannot hit a missing target.
+type renderedCodecAlter struct {
+	database string
+	table    string
+	column   string
+}
+
 // renderedSchema is everything the render declares, split by what each half
 // can be diffed against. Keeping the projections rather than dropping them is
 // what stops a parser change from silently shrinking the diff's input.
@@ -122,6 +148,7 @@ type renderedSchema struct {
 	objects     []renderedObject
 	projections []renderedProjection
 	indexes     []renderedIndex
+	codecAlters []renderedCodecAlter
 }
 
 // readColumn is one column cerberus's read-side schema config addresses on one
@@ -175,6 +202,9 @@ type schemaLiveDiff struct {
 	// indexes is projections' sibling for the ADD INDEX ALTERs the diff
 	// reached (issue #2458's AggregationTemporality skip index today).
 	indexes int
+	// codecAlters is projections' sibling for the MODIFY COLUMN CODEC ALTERs
+	// the diff reached (issue #2768's curated codec registry).
+	codecAlters int
 	// readMissing names, per table cerberus reads, the columns its
 	// env-resolved READ-side schema config addresses that the live table does
 	// not carry. The rendered diff above covers what the DDL declares; this
@@ -268,6 +298,11 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 			"skip index on the sum and histogram tables, so an empty set means the parse stopped reading them " +
 			"and their targets go unchecked")
 	}
+	if len(rendered.codecAlters) == 0 {
+		return fmt.Errorf("the rendered schema retunes no column codec at all; the renderer emits one curated " +
+			"MODIFY COLUMN CODEC ALTER each on the logs and traces tables, so an empty set means the parse " +
+			"stopped reading them and their targets go unchecked")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), livePollBudget)
 	defer cancel()
@@ -285,6 +320,7 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 		unresolvedColumns: map[string][]string{},
 		projections:       len(rendered.projections),
 		indexes:           len(rendered.indexes),
+		codecAlters:       len(rendered.codecAlters),
 	}
 	// liveCols caches one system.columns read per table, so the read-side leg
 	// below reuses what the rendered leg already fetched.
@@ -320,36 +356,32 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 	}
 
 	for _, proj := range rendered.projections {
-		if proj.database != w.live.CHDatabase {
-			diff.misqualified = append(diff.misqualified,
-				fmt.Sprintf("%s.%s's projection %s (live tenant database is %s)",
-					proj.database, proj.table, proj.name, w.live.CHDatabase))
-			continue
-		}
-		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, proj.table)
-		if err != nil {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, proj.database, proj.table,
+			fmt.Sprintf("%s.%s's projection %s", proj.database, proj.table, proj.name),
+			fmt.Sprintf("%s (target of projection %s)", proj.table, proj.name),
+		); err != nil {
 			return err
-		}
-		if !exists {
-			diff.missingTables = append(diff.missingTables,
-				fmt.Sprintf("%s (target of projection %s)", proj.table, proj.name))
 		}
 	}
 
 	for _, idx := range rendered.indexes {
-		if idx.database != w.live.CHDatabase {
-			diff.misqualified = append(diff.misqualified,
-				fmt.Sprintf("%s.%s's index %s (live tenant database is %s)",
-					idx.database, idx.table, idx.name, w.live.CHDatabase))
-			continue
-		}
-		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, idx.table)
-		if err != nil {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, idx.database, idx.table,
+			fmt.Sprintf("%s.%s's index %s", idx.database, idx.table, idx.name),
+			fmt.Sprintf("%s (target of index %s)", idx.table, idx.name),
+		); err != nil {
 			return err
 		}
-		if !exists {
-			diff.missingTables = append(diff.missingTables,
-				fmt.Sprintf("%s (target of index %s)", idx.table, idx.name))
+	}
+
+	for _, alt := range rendered.codecAlters {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, alt.database, alt.table,
+			fmt.Sprintf("%s.%s's codec ALTER on %s", alt.database, alt.table, alt.column),
+			fmt.Sprintf("%s (target of codec ALTER on %s)", alt.table, alt.column),
+		); err != nil {
+			return err
 		}
 	}
 
@@ -375,6 +407,32 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 	sort.Strings(diff.missingTables)
 	sort.Strings(diff.unresolvedTables)
 	w.schemaLive = diff
+	return nil
+}
+
+// diffAlterTarget records one non-CREATE ALTER's misqualified/missing-table
+// verdict against the live database — the shared body the ADD PROJECTION /
+// ADD INDEX / MODIFY COLUMN CODEC loops in whenDiffSchemaAgainstLive each
+// call, since the three differ only in what kind of ALTER they are checking
+// and the wording that names it. misqualifiedLabel / missingLabel carry that
+// per-call-site wording; the database-mismatch and missing-table checks
+// themselves are identical across all three ALTER kinds.
+func (w *World) diffAlterTarget(
+	ctx context.Context, conn driver.Conn, diff *schemaLiveDiff,
+	database, table, misqualifiedLabel, missingLabel string,
+) error {
+	if database != w.live.CHDatabase {
+		diff.misqualified = append(diff.misqualified,
+			fmt.Sprintf("%s (live tenant database is %s)", misqualifiedLabel, w.live.CHDatabase))
+		return nil
+	}
+	exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, table)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		diff.missingTables = append(diff.missingTables, missingLabel)
+	}
 	return nil
 }
 
@@ -500,10 +558,10 @@ func (w *World) thenDiffCoversEveryReadTable() error {
 // thenNoTableMissingLive asserts every object the render declares exists in
 // the live, collector-created database — and that the render targeted that
 // database in the first place, since DDL aimed elsewhere provisions a stack
-// other than the one under test. Each ADD PROJECTION / ADD INDEX ALTER is
-// held to the same two claims about its target table; its projection BODY /
-// index expression is deliberately out of scope (see renderedProjection /
-// renderedIndex).
+// other than the one under test. Each ADD PROJECTION / ADD INDEX / MODIFY
+// COLUMN CODEC ALTER is held to the same two claims about its target table;
+// its projection BODY / index expression / codec clause is deliberately out
+// of scope (see renderedProjection / renderedIndex / renderedCodecAlter).
 func (w *World) thenNoTableMissingLive() error {
 	if !w.schemaLive.ran {
 		return fmt.Errorf("the schema has not been diffed against the live database")
@@ -513,6 +571,9 @@ func (w *World) thenNoTableMissingLive() error {
 	}
 	if w.schemaLive.indexes == 0 {
 		return fmt.Errorf("the diff reached no ADD INDEX ALTER, so no index target was checked")
+	}
+	if w.schemaLive.codecAlters == 0 {
+		return fmt.Errorf("the diff reached no MODIFY COLUMN CODEC ALTER, so no codec-retune target was checked")
 	}
 	if len(w.schemaLive.misqualified) > 0 {
 		return fmt.Errorf("the rendered schema targets objects outside the live tenant database: %v",
@@ -814,10 +875,16 @@ func parseRenderedSchema(stmts []string) (renderedSchema, error) {
 					return renderedSchema{}, err
 				}
 				out.indexes = append(out.indexes, idx)
+			case alterModifyColumnCodecRe.MatchString(stmt):
+				alt, err := parseModifyColumnCodec(stmt)
+				if err != nil {
+					return renderedSchema{}, err
+				}
+				out.codecAlters = append(out.codecAlters, alt)
 			default:
 				return renderedSchema{}, fmt.Errorf(
-					"the rendered schema carries a statement that is neither a CREATE nor an ADD PROJECTION/INDEX, "+
-						"so the diff would pass over it unchecked: %s", firstLine(stmt),
+					"the rendered schema carries a statement that is neither a CREATE nor an ADD PROJECTION/INDEX "+
+						"nor a MODIFY COLUMN CODEC, so the diff would pass over it unchecked: %s", firstLine(stmt),
 				)
 			}
 			continue
@@ -884,6 +951,23 @@ func parseAddIndex(stmt string) (renderedIndex, error) {
 		return renderedIndex{}, fmt.Errorf("the rendered index ALTER %s: %w", firstLine(stmt), err)
 	}
 	return renderedIndex{database: database, table: table, name: strings.Trim(m[2], "`\"")}, nil
+}
+
+// parseModifyColumnCodec is parseAddProjection's sibling for
+// `ALTER TABLE … MODIFY COLUMN IF EXISTS … CODEC(…)` (cerberus issue #2768).
+// Callers match alterModifyColumnCodecRe first, so a non-match here would be
+// a caller bug rather than a genuinely different statement shape.
+func parseModifyColumnCodec(stmt string) (renderedCodecAlter, error) {
+	m := alterModifyColumnCodecRe.FindStringSubmatch(stmt)
+	if m == nil {
+		return renderedCodecAlter{}, fmt.Errorf("parseModifyColumnCodec called on a statement alterModifyColumnCodecRe does not match: %s",
+			firstLine(stmt))
+	}
+	database, table, err := splitQualifiedName(m[1])
+	if err != nil {
+		return renderedCodecAlter{}, fmt.Errorf("the rendered codec ALTER %s: %w", firstLine(stmt), err)
+	}
+	return renderedCodecAlter{database: database, table: table, column: strings.Trim(m[2], "`\"")}, nil
 }
 
 // splitQualifiedName unquotes a rendered `"db"."table"` / “ `db`.`table` “

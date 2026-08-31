@@ -307,3 +307,19 @@ jobs:
       # internal/chsql/histogram_quantile_rankwalk_native_realch_integration_test.go.
       - name: Run quantile_prom_histogram rank-walk differential (real ClickHouse)
         run: just quantile-prom-histogram-rankwalk-integration
+
+      # The ts_grid_last_over_time real-CH regression pin (#2747): reproduces
+      # upstream's own ClickHouse/ClickHouse#106577 regression fixture shape
+      # (a staleness window narrower than the query_range grid step) through
+      # cerberus's own lowering + emitter, and asserts the native
+      # timeSeriesResampleToGridWithStaleness path agrees with the fan-out —
+      # absent on the sample the pre-#106577 bug wrongly carried forward,
+      # present on a control sample placed inside a real window. This is
+      # what chopt.FeatureTSGridLastOverTime's 26.6 floor (ABOVE the
+      # family's usual 25.9) and AutoSelect: false decision rest on. Boots
+      # its own fresh testcontainer at this job's CH_STRICT_SCAN_IMAGE tag
+      # rather than pinning a dedicated image variable — see the Justfile
+      # recipe's own doc for why that pin is shared, not the container. See
+      # internal/chsql/range_window_last_over_time_realch_integration_test.go.
+      - name: Run ts_grid_last_over_time window-narrower-than-step regression (real ClickHouse)
+        run: just ts-grid-last-over-time-integration

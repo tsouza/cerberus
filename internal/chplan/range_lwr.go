@@ -112,6 +112,25 @@ type RangeLWR struct {
 	// everywhere else, which keeps every other range query's SQL unchanged.
 	SampleTimestamp bool
 
+	// ArgAndMaxFusion asks the emitter to collapse the `argMax(ValueCol,
+	// TimestampCol)` + `max(TimestampCol)` pair — which the collapse only
+	// emits as a PAIR when SampleTimestamp is set — into a single
+	// `argAndMax(ValueCol, TimestampCol)` call, destructured back into the
+	// two columns via `tupleElement` in the outer SELECT (cerberus issue
+	// #2764). One aggregate state replaces two; the tie-break semantics are
+	// unchanged (see chopt.FeatureArgAndMaxFusion's own doc for the
+	// equivalence argument). It is INERT when SampleTimestamp is false —
+	// there is no second aggregate to fuse with, so a bare argMax collapse
+	// is unaffected either way.
+	//
+	// Set from the boot-resolved chopt.FeatureArgAndMaxFusion verdict
+	// (promql.FanoutStalenessLowerer.ArgAndMaxFusion, cmd/cerberus's
+	// nativeRangeLowerers) — never read directly by chplan or promql, which
+	// cannot import chopt (the dependency-cone rule). False everywhere below
+	// the feature's version floor, which keeps every such deployment's SQL
+	// byte-unchanged.
+	ArgAndMaxFusion bool
+
 	// Column names on Input (canonical OTel-CH: MetricName / Attributes /
 	// TimeUnix / Value).
 	MetricNameCol string
@@ -146,6 +165,9 @@ func (r *RangeLWR) Equal(other Node) bool {
 		return false
 	}
 	if r.StepAlign != o.StepAlign || r.SampleTimestamp != o.SampleTimestamp {
+		return false
+	}
+	if r.ArgAndMaxFusion != o.ArgAndMaxFusion {
 		return false
 	}
 	if r.MetricNameCol != o.MetricNameCol || r.AttributesCol != o.AttributesCol {

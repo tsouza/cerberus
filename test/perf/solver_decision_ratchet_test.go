@@ -201,6 +201,8 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	recollapse := false
 	lagAdjacency := false
+	resample := false
+	argAndMaxFusion := false
 	for _, f := range chopt.Registry() {
 		if !f.AutoSelect {
 			continue // not wired on any server — chopt.FeatureTSGridChanges today.
@@ -210,7 +212,17 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below, once FeatureTSGridRecollapse (which narrows it)
 			// is known — Recollapse is a modifier on Rate, not its own field.
 		case chopt.FeatureTSGridResample:
-			l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+			// Composed below, once FeatureArgAndMaxFusion (which sets
+			// FanoutStalenessLowerer's own field) is known — mirrors
+			// cmd/cerberus/main.go's nativeRangeLowerers exactly.
+			resample = true
+		case chopt.FeatureArgAndMaxFusion:
+			// A plain bool, not a Lowerer — see
+			// promql.RangeLowerers.ArgAndMaxFusion's own doc. Composed below
+			// into both l.ArgAndMaxFusion (read directly by
+			// internal/promql/binary.go for VectorJoin) and the Staleness
+			// Fallback's own copy (RangeLWR).
+			argAndMaxFusion = true
 		case chopt.FeatureTSGridIncrease:
 			l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
 		case chopt.FeatureTSGridResets:
@@ -237,9 +249,19 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below: it narrows Changes/Resets/Irate/Idelta's
 			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
+			// FeatureJoinSpill mirrors the other two exactly: it stamps
+			// max_bytes_before_external_join via internal/engine/spill.go's
+			// applyJoinSpillSettings, gated on plan shape (planHasJoin), not on
+			// which RangeLowerers strategy a query_range matrix lowering picks.
+			// FeatureResultCache (cerberus issue #2781) is the same shape again:
+			// internal/engine/query_settings_rules.go's apply stamps
+			// use_query_cache=1 + query_cache_ttl based on
+			// eligibleForResultCache (the plan's evaluated windows, not which
+			// lowering strategy produced them), so it likewise has zero effect
+			// on RangeLowerers.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
 				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
@@ -268,6 +290,18 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 	l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback}
 	l.Irate = promql.NativeIrateLowerer{Fallback: irateFallback}
 	l.Idelta = promql.NativeIdeltaLowerer{Fallback: ideltaFallback}
+	// arg_and_max_fusion (issue #2764) — mirrors cmd/cerberus/main.go's
+	// nativeRangeLowerers exactly: the top-level bool feeds VectorJoin
+	// directly, and FanoutStalenessLowerer carries its own copy for
+	// RangeLWR (see that field's own doc for why it needs a separate
+	// copy).
+	l.ArgAndMaxFusion = argAndMaxFusion
+	staleFallback := promql.StalenessLowerer(promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion})
+	if resample {
+		l.Staleness = promql.NativeStalenessLowerer{Fallback: staleFallback}
+	} else {
+		l.Staleness = staleFallback
+	}
 	return l
 }
 

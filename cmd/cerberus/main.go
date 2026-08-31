@@ -879,6 +879,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
+//	lastOverTime = enabled ? NativeLastOverTimeLowerer{Fallback: FanoutLastOverTimeLowerer{}} : FanoutLastOverTimeLowerer{}
 //	overTime  = sortedSlabEnabled ? SortedSlabOverTimeLowerer{Fallback: FanoutOverTimeLowerer{}} : FanoutOverTimeLowerer{}
 //
 // rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
@@ -935,6 +936,14 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // the fallback, never competes with the native arm" shape.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
+	// arg_and_max_fusion (issue #2764) is a plain emission-detail bit, not
+	// a swappable strategy — see RangeLowerers.ArgAndMaxFusion's own doc.
+	// It feeds BOTH the VectorJoin site (read directly off this table by
+	// internal/promql/binary.go) and the RangeLWR site (its own copy on
+	// FanoutStalenessLowerer below, threaded either directly or as the
+	// native staleness lowerer's embedded Fallback).
+	argAndMaxFusion := optSet.Has(chopt.FeatureArgAndMaxFusion)
+	l.ArgAndMaxFusion = argAndMaxFusion
 	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
 	// rate/increase/delta's own native ts_grid strategy, exactly like
 	// laginframe_adjacency layers inside changes/resets below: it is the
@@ -962,9 +971,9 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Increase = increaseFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
-		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}}
 	} else {
-		l.Staleness = promql.FanoutStalenessLowerer{}
+		l.Staleness = promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}
 	}
 	// laginframe_adjacency (issue #2759) layers BENEATH changes/resets' own
 	// native ts_grid strategy, exactly like ts_grid_recollapse layers inside
@@ -1058,6 +1067,15 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
 	}
+	// ts_grid_last_over_time rides the SAME native strategy shape as every
+	// other independent family member (Native{Fallback: Fanout{}}) — it has
+	// no narrowing/narrowed sibling knob of its own (no recollapse-style
+	// dependent, no laginframe/fixed-accumulator-style improved fallback).
+	if optSet.Has(chopt.FeatureTSGridLastOverTime) {
+		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
+	} else {
+		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
+	}
 	// sorted_slab_over_time (issue #2761) has no native timeSeries*ToGrid
 	// competitor: sum_over_time/avg_over_time's only non-fan-out arm is the
 	// sorted-slab decomposition itself, so it is wired directly with no
@@ -1124,19 +1142,31 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 
 // settingsRules builds the per-query ClickHouse settings rules from the
 // resolved optimization EnabledSet plus the CERBERUS_* config. The
-// aggregation-in-order and condition-cache rules are now driven by the frozen
-// EnabledSet (set.Has(...)), not raw env flags: under the default `auto` the
-// stable 24.8-safe aggregation_in_order is on, and condition_cache is on when
-// the probed server is >= 25.3. log_comment shape stays its own dark flag
-// (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus reconciler. The
-// schema instances are always supplied so the eligibility checks can map ANY
-// scanned signal table to its sort-key prefix regardless of which head runs
-// the query. Shared by all three heads' engines so the rules flip uniformly.
+// aggregation-in-order, condition-cache, join-spill and result-cache rules
+// are all driven by the frozen EnabledSet (set.Has(...)), not raw env flags:
+// under the default `auto` the stable 24.8-safe aggregation_in_order is on,
+// condition_cache is on when the probed server is >= 25.3, join_spill is on
+// when the probed server is >= 26.4, and result_cache is on when the boot
+// result-cache capability probe came back Available (its setting family
+// predates cerberus's own 24.8 floor, so unlike the others it carries no
+// version gate — see chopt.FeatureResultCache). log_comment shape stays its
+// own dark flag (CERBERUS_LOG_COMMENT_SHAPE), wired alongside the corpus
+// reconciler; the result-cache ingest-lag horizon and ttl are their own
+// CERBERUS_RESULT_CACHE_* knobs (cfg.ResultCacheIngestLag / ResultCacheTTL),
+// threaded straight through regardless of whether the feature itself
+// resolved in. The schema instances are always supplied so the eligibility
+// checks can map ANY scanned signal table to its sort-key prefix regardless
+// of which head runs the query. Shared by all three heads' engines so the
+// rules flip uniformly.
 func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules {
 	return engine.SettingsRules{
 		OptimizeAggregationInOrder: set.Has(chopt.FeatureAggregationInOrder),
 		ConditionCache:             set.Has(chopt.FeatureConditionCache),
+		JoinSpill:                  set.Has(chopt.FeatureJoinSpill),
 		LogCommentShape:            cfg.LogCommentShape,
+		ResultCache:                set.Has(chopt.FeatureResultCache),
+		ResultCacheIngestLag:       cfg.ResultCacheIngestLag,
+		ResultCacheTTL:             cfg.ResultCacheTTL,
 		Metrics:                    cfg.Schema,
 		Traces:                     cfg.Traces,
 		Logs:                       cfg.Logs,
@@ -1188,10 +1218,17 @@ func infoOptions(
 			OptMode:      cfg.CHOptimizationsMode.String(),
 		},
 		Optimizations: live.infoState,
-		StartTime:     startTime,
-		Reachable:     func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
-		Breaker:       probe.PeekBreakerState,
-		SchemaReady:   schemaReadyNow,
+		// ResultCacheStats is process-wide (cerberus issue #2781), not
+		// per-client, so it is read directly off the chclient package rather
+		// than through client — see internal/chclient/result_cache_metrics.go.
+		ResultCache: func() info.ResultCacheState {
+			hits, misses := chclient.ResultCacheStats()
+			return info.ResultCacheState{Hits: hits, Misses: misses}
+		},
+		StartTime:   startTime,
+		Reachable:   func(ctx context.Context) bool { return probe.Ping(ctx) == nil },
+		Breaker:     probe.PeekBreakerState,
+		SchemaReady: schemaReadyNow,
 		Ready: func(ctx context.Context) bool {
 			return probe.Ping(ctx) == nil && schemaPresentNow() && schemaReadyNow()
 		},
@@ -1290,11 +1327,21 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// stays off), never fatal here.
 	capability := probeTSGridCapabilityOverBootstrap(ctx, cfg.ClickHouse)
 
+	// A SECOND, independent capability canary for the result_cache feature
+	// (cerberus issue #2781): the query-result-cache setting family predates
+	// cerberus's own 24.8 floor, so there is no version gate to check here —
+	// what this catches is a hardened/constrained profile that pins or
+	// forbids use_query_cache, or a server whose query cache is disabled
+	// entirely. Probed unconditionally alongside the ts-grid canary, over the
+	// same bootstrap/default-DB connection, never fatal here.
+	resultCacheCapability := probeResultCacheCapabilityOverBootstrap(ctx, cfg.ClickHouse)
+
 	set, warnings, err := chopt.Resolve(chopt.Config{
-		Optimizations: cfg.CHOptimizations,
-		Mode:          cfg.CHOptimizationsMode,
-		LegacyTSGrid:  cfg.LegacyTSGridFlag,
-		Capability:    capability,
+		Optimizations:         cfg.CHOptimizations,
+		Mode:                  cfg.CHOptimizationsMode,
+		LegacyTSGrid:          cfg.LegacyTSGridFlag,
+		Capability:            capability,
+		ResultCacheCapability: resultCacheCapability,
 	}, resolvedVersion)
 	if err != nil {
 		return chOptResolution{}, fmt.Errorf("resolve clickhouse optimizations: %w", err)
@@ -1336,6 +1383,7 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"mode", cfg.CHOptimizationsMode.String(),
 		"server_version", resolvedVersion.String(),
 		"server_ts_grid_capability", capability.String(),
+		"server_result_cache_capability", resultCacheCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 	)
 	return chOptResolution{
@@ -1387,6 +1435,24 @@ func probeTSGridCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Conf
 		_ = bootClient.Close()
 	}()
 	return bootClient.ProbeTSGridCapability(ctx)
+}
+
+// probeResultCacheCapabilityOverBootstrap runs the query-result-cache
+// capability canary over a short-lived client bound to ClickHouse's
+// always-present `default` database, exactly like
+// probeTSGridCapabilityOverBootstrap — same reasoning for binding to
+// `default` (the canary must not depend on the configured otel database
+// existing yet). A failure to even open the client is itself an unreachable
+// verdict (conservative: result_cache stays off), never fatal.
+func probeResultCacheCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config) chopt.Capability {
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, resultCacheProbePool))
+	if err != nil {
+		return chopt.CapabilityUnreachable
+	}
+	defer func() {
+		_ = bootClient.Close()
+	}()
+	return bootClient.ProbeResultCacheCapability(ctx)
 }
 
 // maxOptCorpusSourceTimeout caps the per-scan wall-clock bound derived from
@@ -1688,9 +1754,10 @@ func bootstrapClickHouseConfig(chCfg chclient.Config, pool string) chclient.Conf
 
 // Bootstrap pool names, one per short-lived startup connection.
 const (
-	versionProbePool = "version-probe"
-	tsGridProbePool  = "tsgrid-probe"
-	schemaApplyPool  = "schema-apply"
+	versionProbePool     = "version-probe"
+	tsGridProbePool      = "tsgrid-probe"
+	resultCacheProbePool = "result-cache-probe"
+	schemaApplyPool      = "schema-apply"
 )
 
 // runRequirementsCheck runs the boot-time requirements check (gated ON by

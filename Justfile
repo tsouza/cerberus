@@ -520,6 +520,23 @@ quantile-prom-histogram-rankwalk-integration:
     @just _pull-retry {{CH_QUANTILE_PROM_HISTOGRAM_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestHistogramQuantile_RankWalkNative_DifferentialRealCH ./internal/chsql/...
 
+# Run the ts_grid_last_over_time real-CH regression pin (#2747): reproduces
+# upstream's own #106577 regression fixture shape (a staleness window
+# narrower than the query_range grid step) end to end through cerberus's
+# lowering + emitter, and asserts the native timeSeriesResampleToGridWithStaleness
+# path agrees with the fan-out on both a sample that must come back absent
+# (the pre-#106577 bug) and one that must be included (a control). Needs a
+# real ClickHouse >= 26.6 — chopt.FeatureTSGridLastOverTime's own floor,
+# ABOVE the family's usual 25.9 (see that registry entry) — so this lane
+# reuses CH_STRICT_SCAN_IMAGE rather than pinning its own dedicated image:
+# both now floor at exactly 26.6. Requires Docker; gated behind the
+# `integration` build tag. See
+# internal/chsql/range_window_last_over_time_realch_integration_test.go and
+# strict-scan.yml.
+ts-grid-last-over-time-integration:
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH ./internal/chsql/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
@@ -1224,10 +1241,12 @@ CH_TEST_IMAGE_PRIOR := "clickhouse/clickhouse-server:24.8-alpine"
 # the other integration lanes (which pin 25.8 to reproduce a specific
 # strict-scan divergence), this lane must EXECUTE every shape the emitter can
 # produce — including the native timeSeries*ToGrid family whose chopt floor is
-# 25.9. A pin below that floor does not go red; the server rejects the query
-# before a row decodes and the shape silently drops out of scope. Kept at or
-# above the highest chopt MinVersion by TestStrictScanImageClearsChoptFloors.
-CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.5-alpine"
+# 25.9, and chopt.FeatureTSGridLastOverTime's own 26.6 floor (the highest in
+# the registry as of that feature). A pin below that floor does not go red;
+# the server rejects the query before a row decodes and the shape silently
+# drops out of scope. Kept at or above the highest chopt MinVersion by
+# TestStrictScanImageClearsChoptFloors.
+CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 
 # CH_QUANTILE_PROM_HISTOGRAM_IMAGE is the server the quantile_prom_histogram
 # real-CH differential boots (internal/chsql's
