@@ -145,6 +145,21 @@ type SettingsRules struct {
 	// enabled can cluster by normalized_query_hash + log_comment.
 	LogCommentShape bool
 
+	// QueryWorkload, when non-empty, stamps `workload=<QueryWorkload>` on
+	// EVERY query (no plan-shape eligibility check — unlike every other rule
+	// in this struct, ClickHouse workload scheduling is a policy about WHICH
+	// CPU/IO budget a query's connection draws from, not about the query's
+	// shape). It is the deployment's configured CERBERUS_CH_QUERY_WORKLOAD,
+	// carried through only when cmd/cerberus's boot capability probe
+	// (chclient.ProbeQueryWorkloadCapability) found the connected server
+	// accepts the `workload` setting; a Forbidden/Unreachable verdict leaves
+	// this empty (permissive/auto fallback — see docs/operations.md
+	// #workload-scheduling), so the byte-identical-by-default guarantee
+	// holds whether the knob is simply unset or the probe found it
+	// unusable. cerberus never creates the named WORKLOAD itself — see
+	// SettingWorkload's own doc.
+	QueryWorkload string
+
 	// ResultCache, when true, stamps use_query_cache=1 + query_cache_ttl on a
 	// query whose evaluated windows have all fully CLOSED (see
 	// eligibleForResultCache) so ClickHouse's query result cache can answer a
@@ -226,6 +241,9 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.LazyMaterialization {
 		opts = append(opts, "lazy_materialization")
 	}
+	if r.QueryWorkload != "" {
+		opts = append(opts, "query_workload")
+	}
 	return opts
 }
 
@@ -274,6 +292,9 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 			// is honored even if an operator disabled the analyzer.
 			ctx = chclient.WithQuerySetting(ctx, settingEnableAnalyzer, 1)
 		}
+	}
+	if r.QueryWorkload != "" {
+		ctx = chclient.WithWorkloadSetting(ctx, r.QueryWorkload)
 	}
 	return ctx
 }

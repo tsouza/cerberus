@@ -493,6 +493,14 @@ func run() error {
 	// rolling ClickHouse upgrade that crosses a feature floor moves the answer
 	// under a running pod, and reprobeCHOptimizations (started once the heads
 	// are mounted) swaps the new one into the query path.
+	// Captured BEFORE resolveCHOptimizations mutates cfg.CHQueryWorkload
+	// in place (down to "" on a rejected/unreachable boot probe): the raw
+	// operator-configured CERBERUS_CH_QUERY_WORKLOAD, threaded into
+	// reprobeCHOptimizations below so a later re-probe re-evaluates the
+	// ORIGINAL request against a possibly-upgraded server, rather than
+	// being permanently pinned to whatever boot's own probe found (see
+	// resolveQueryWorkload's own doc).
+	rawQueryWorkload := cfg.CHQueryWorkload
 	optRes, err := resolveCHOptimizations(ctx, logger, client, &cfg)
 	if err != nil {
 		return err
@@ -582,7 +590,7 @@ func run() error {
 	// connected server and swaps a changed result into the heads mounted above,
 	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
 	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval)
+	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, rawQueryWorkload)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1250,6 +1258,7 @@ func settingsRules(cfg config.Config, set chopt.EnabledSet) engine.SettingsRules
 		ResultCacheIngestLag:       cfg.ResultCacheIngestLag,
 		ResultCacheTTL:             cfg.ResultCacheTTL,
 		LazyMaterialization:        set.Has(chopt.FeatureLazyMaterialization),
+		QueryWorkload:              cfg.CHQueryWorkload,
 		Metrics:                    cfg.Schema,
 		Traces:                     cfg.Traces,
 		Logs:                       cfg.Logs,
@@ -1378,6 +1387,14 @@ type chOptResolution struct {
 	Set             chopt.EnabledSet
 	ResolvedVersion chopt.Version
 	VersionFallback bool
+	// QueryWorkload is the EFFECTIVE CERBERUS_CH_QUERY_WORKLOAD (cerberus
+	// issue #2785): the configured name when the capability probe found the
+	// server accepts it, else "" (unconfigured, or a rejected/unreachable
+	// probe). Unlike Set it is not a chopt registry feature — see
+	// resolveQueryWorkload's own doc — but it rides this same struct so
+	// reprobeCHOptimizations can swap it live alongside Set on a capability
+	// change, exactly like every other field here.
+	QueryWorkload string
 }
 
 // supportedFloorVersion is the oldest ClickHouse cerberus supports, and the
@@ -1393,7 +1410,11 @@ var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
 // consumers (the PromQL lowering, the engine native gate, the preflight version
 // floor) read a single source of truth, and logs the resolved set + the server
 // version + any warnings (permissive skips and the legacy-alias deprecation).
+// It ALSO probes and back-fills cfg.CHQueryWorkload (issue #2785): a
+// configured-but-rejected workload name is cleared (permissive/auto
+// fallback) or fatal (enforcing) — see the probe call's own comment below.
 //
+
 // The version probe is best-effort with respect to CONNECTIVITY: cerberus is
 // designed to boot even when ClickHouse is briefly unreachable (the
 // cerberus + collector startup race, where the background re-probe flips
@@ -1454,6 +1475,18 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		logger.Warn("ch_opt: " + w)
 	}
 
+	// A THIRD, independent capability canary — for the operator-configured
+	// CERBERUS_CH_QUERY_WORKLOAD (cerberus issue #2785). See
+	// resolveQueryWorkload's own doc for the full fatal-vs-skip contract;
+	// boot is the ONE caller allowed to fail startup (fatalOnReject=true).
+	resolvedQueryWorkload, queryWorkloadCapability, err := resolveQueryWorkload(
+		ctx, logger, cfg.ClickHouse, cfg.CHQueryWorkload, cfg.CHOptimizationsMode, true,
+	)
+	if err != nil {
+		return chOptResolution{}, err
+	}
+	cfg.CHQueryWorkload = resolvedQueryWorkload
+
 	// Single source of truth: the legacy ts-grid bool is now derived from the
 	// resolved set, not the raw env.
 	cfg.ExperimentalTSGridRange = set.Has(chopt.FeatureTSGridRange)
@@ -1493,13 +1526,83 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"server_version", resolvedVersion.String(),
 		"server_ts_grid_capability", capability.String(),
 		"server_result_cache_capability", resultCacheCapability.String(),
+		"query_workload", cfg.CHQueryWorkload,
+		"server_query_workload_capability", queryWorkloadCapability.String(),
 		"enabled", strings.Join(set.IDs(), ","),
 	)
 	return chOptResolution{
 		Set:             set,
 		ResolvedVersion: resolvedVersion,
 		VersionFallback: versionFallback,
+		QueryWorkload:   resolvedQueryWorkload,
 	}, nil
+}
+
+// resolveQueryWorkload decides the EFFECTIVE ClickHouse `workload` name to
+// stamp on cerberus's own queries (cerberus issue #2785): "" when configured
+// is empty (the default — no probe runs, no extra boot/reprobe round trip),
+// else the boot-time capability canary's verdict on configured.
+//
+// fatalOnReject distinguishes boot (true) from a live reprobe (false):
+// boot is allowed to fail startup on a definitive Forbidden verdict under
+// mode==Enforcing (an operator config error — the same treatment an
+// explicitly-requested-but-unsupported chopt registry feature gets), while
+// reprobeCHOptimizations never repeats boot's fatal-on-config-fault
+// behaviour (see its own doc) — a Forbidden verdict there is logged and the
+// workload is dropped from the live rules, exactly like a Set feature that
+// regresses across a live server change. Unreachable (inconclusive, a
+// transient connectivity failure rather than a verdict from the server) is
+// NEVER fatal in either caller, mirroring blockIsInconclusive's treatment
+// of Unreachable elsewhere in the chopt resolver.
+func resolveQueryWorkload(
+	ctx context.Context,
+	logger *slog.Logger,
+	chCfg chclient.Config,
+	configured string,
+	mode chopt.Mode,
+	fatalOnReject bool,
+) (resolved string, capability chopt.Capability, err error) {
+	if configured == "" {
+		return "", chopt.CapabilityUnknown, nil
+	}
+	capability = probeQueryWorkloadCapabilityOverBootstrap(ctx, chCfg, configured)
+	resolved, err = decideQueryWorkload(configured, capability, mode, fatalOnReject)
+	if err != nil {
+		return "", capability, err
+	}
+	if resolved == "" {
+		if capability == chopt.CapabilityForbidden {
+			logger.Warn("ch_opt: CERBERUS_CH_QUERY_WORKLOAD rejected by server, skipping", "workload", configured, "mode", mode.String())
+		} else {
+			logger.Warn("ch_opt: CERBERUS_CH_QUERY_WORKLOAD capability probe unreachable, skipping", "workload", configured)
+		}
+	}
+	return resolved, capability, nil
+}
+
+// decideQueryWorkload is resolveQueryWorkload's pure decision core, split out
+// so the fatal-vs-skip branching is unit-testable without a live ClickHouse
+// connection (the probe itself, in resolveQueryWorkload, cannot be). Given
+// the ALREADY-PROBED capability verdict, it returns the effective workload
+// name ("" meaning: don't stamp it) or a fatal error — see
+// resolveQueryWorkload's own doc for the full fatalOnReject contract.
+// configured is assumed non-empty; resolveQueryWorkload never calls this
+// with an empty one (it short-circuits before probing).
+func decideQueryWorkload(configured string, capability chopt.Capability, mode chopt.Mode, fatalOnReject bool) (string, error) {
+	switch capability {
+	case chopt.CapabilityAvailable:
+		return configured, nil
+	case chopt.CapabilityForbidden:
+		if fatalOnReject && mode == chopt.Enforcing {
+			return "", fmt.Errorf(
+				"clickhouse server rejected CERBERUS_CH_QUERY_WORKLOAD=%q (the `workload` setting, or the named workload itself under throw_on_unknown_workload, was refused) under CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing",
+				configured,
+			)
+		}
+		return "", nil
+	default: // chopt.CapabilityUnreachable
+		return "", nil
+	}
 }
 
 // probeVersionOverBootstrap issues the SELECT version() probe over a
@@ -1562,6 +1665,27 @@ func probeResultCacheCapabilityOverBootstrap(ctx context.Context, chCfg chclient
 		_ = bootClient.Close()
 	}()
 	return bootClient.ProbeResultCacheCapability(ctx)
+}
+
+// probeQueryWorkloadCapabilityOverBootstrap runs the `workload` setting
+// capability canary over a short-lived client bound to ClickHouse's
+// always-present `default` database, exactly like
+// probeResultCacheCapabilityOverBootstrap — same reasoning for binding to
+// `default`. Unlike the other two canaries it stamps the OPERATOR'S OWN
+// configured workload name (workloadName), not a fixed sentinel — see
+// ProbeQueryWorkloadCapability's own doc for why. A failure to even open the
+// client is itself an unreachable verdict (conservative: the knob is
+// dropped, never fatal from this function alone — resolveCHOptimizations
+// decides fatal-vs-skip from the verdict plus CHOptimizationsMode).
+func probeQueryWorkloadCapabilityOverBootstrap(ctx context.Context, chCfg chclient.Config, workloadName string) chopt.Capability {
+	bootClient, err := chclient.New(bootstrapClickHouseConfig(chCfg, queryWorkloadProbePool))
+	if err != nil {
+		return chopt.CapabilityUnreachable
+	}
+	defer func() {
+		_ = bootClient.Close()
+	}()
+	return bootClient.ProbeQueryWorkloadCapability(ctx, workloadName)
 }
 
 // maxOptCorpusSourceTimeout caps the per-scan wall-clock bound derived from
@@ -1863,10 +1987,11 @@ func bootstrapClickHouseConfig(chCfg chclient.Config, pool string) chclient.Conf
 
 // Bootstrap pool names, one per short-lived startup connection.
 const (
-	versionProbePool     = "version-probe"
-	tsGridProbePool      = "tsgrid-probe"
-	resultCacheProbePool = "result-cache-probe"
-	schemaApplyPool      = "schema-apply"
+	versionProbePool       = "version-probe"
+	tsGridProbePool        = "tsgrid-probe"
+	resultCacheProbePool   = "result-cache-probe"
+	queryWorkloadProbePool = "query-workload-probe"
+	schemaApplyPool        = "schema-apply"
 )
 
 // runRequirementsCheck runs the boot-time requirements check (gated ON by

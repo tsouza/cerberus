@@ -73,6 +73,17 @@ type OptState struct {
 	// the headline field: it makes plain whether cerberus is running the
 	// optimizations it should.
 	Enabled []string
+	// QueryWorkload is the EFFECTIVE ClickHouse `workload` name cerberus is
+	// CURRENTLY stamping on its own queries (cerberus issue #2785), or ""
+	// when CERBERUS_CH_QUERY_WORKLOAD is unset, or was configured but the
+	// live capability probe found the connected server rejects the
+	// `workload` setting (or, under throw_on_unknown_workload, rejects the
+	// named workload itself). Like ServerVersion/Enabled and unlike
+	// Snapshot, this is read from the LIVE re-probed resolution: a workload
+	// name entered CERBERUS_CH_QUERY_WORKLOAD reports "" here until (and
+	// unless) the boot or a later re-probe finds the connected server
+	// actually accepts it — see docs/operations.md#workload-scheduling.
+	QueryWorkload string
 }
 
 const (
@@ -248,6 +259,10 @@ type optimizationsInfo struct {
 	Mode                   string   `json:"mode"`
 	ResolvedAgainstVersion string   `json:"resolvedAgainstVersion"`
 	Enabled                []string `json:"enabled"`
+	// QueryWorkload mirrors [OptState.QueryWorkload] — the effective,
+	// live-re-probed ClickHouse `workload` name (cerberus issue #2785), or
+	// "" when unconfigured or rejected by the connected server.
+	QueryWorkload string `json:"queryWorkload"`
 }
 
 // resultCacheInfo is the nested "resultCache" object of the /info body
@@ -326,6 +341,7 @@ func (h *Handler) snapshotResponse(ctx context.Context) infoResponse {
 			// under both keys because each sub-object is read on its own.
 			ResolvedAgainstVersion: opts.ServerVersion,
 			Enabled:                opts.Enabled,
+			QueryWorkload:          opts.QueryWorkload,
 		},
 		ResultCache:     h.resultCacheInfoNow(),
 		FilesystemCache: h.filesystemCacheInfoNow(pingCtx),

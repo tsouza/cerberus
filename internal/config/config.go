@@ -336,6 +336,25 @@ type Config struct {
 	// under auto/off.
 	CHOptimizationsMode chopt.Mode
 
+	// CHQueryWorkload is CERBERUS_CH_QUERY_WORKLOAD: the ClickHouse WORKLOAD
+	// name to stamp as the `workload` setting on every outgoing query when
+	// non-empty (default empty — no setting stamped, byte-identical to
+	// before this knob existed). It names a workload the OPERATOR has
+	// already created server-side (`CREATE RESOURCE` / `CREATE WORKLOAD`,
+	// see docs/operations.md#workload-scheduling); cerberus never creates or
+	// alters WORKLOAD/RESOURCE objects itself — that DDL runs against a
+	// cluster cerberus does not own in the common (bring-your-own-ClickHouse)
+	// deployment. cmd/cerberus probes at boot (ProbeQueryWorkloadCapability)
+	// whether the connected server accepts the `workload` setting at all;
+	// on a server that refuses it (too old, or a hardened profile that pins
+	// the setting) the probe verdict — combined with CHOptimizationsMode —
+	// decides whether boot is FATAL (enforcing) or the knob is silently
+	// dropped with a WARN (permissive/auto), the same enforcing/permissive
+	// contract CHOptimizationsMode already gives the chopt registry
+	// features, applied here directly since this is an operator-supplied
+	// policy value rather than an auto-selectable SQL-emission optimization.
+	CHQueryWorkload string
+
 	// LegacyTSGridFlag carries the tri-state deprecated
 	// CERBERUS_EXPERIMENTAL_TS_GRID_RANGE alias (unset vs explicit true/false).
 	// cmd/cerberus passes it into chopt.Resolve so the legacy flag is re-routed
@@ -880,6 +899,7 @@ const (
 	envCHOptCorpusSinkPath      = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
 	envCHOptCorpusRing          = "CERBERUS_CH_OPT_CORPUS_RING"
 	envCHOptCorpusSinkMode      = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
+	envCHQueryWorkload          = "CERBERUS_CH_QUERY_WORKLOAD"
 	envLogFormat                = "CERBERUS_LOG_FORMAT"
 	envLogLevel                 = "CERBERUS_LOG_LEVEL"
 	envOTLPEndpoint             = "CERBERUS_OTLP_ENDPOINT"
@@ -1116,6 +1136,13 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// CERBERUS_CH_QUERY_WORKLOAD is a plain WORKLOAD name (or empty — the
+	// default, meaning off). No validation beyond the string parse itself:
+	// cerberus does not (and, against a cluster it does not own, cannot
+	// safely) verify the named workload exists — the boot capability probe
+	// in cmd/cerberus checks only whether the server accepts the `workload`
+	// setting at all.
+	chQueryWorkload := getString(v, envCHQueryWorkload)
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -1223,6 +1250,7 @@ func FromEnv() (Config, error) {
 		ResultCacheTTL:          resultCacheTTL,
 		CHOptimizations:         flags.CHOptimizations,
 		CHOptimizationsMode:     flags.CHOptimizationsMode,
+		CHQueryWorkload:         chQueryWorkload,
 		LegacyTSGridFlag:        flags.TSGrid,
 		CHOptCorpus:             flags.CHOptCorpus,
 		Log:                     logCfg,
@@ -1321,6 +1349,7 @@ var allEnvKeys = []string{
 	envCHOptCorpusSinkPath,
 	envCHOptCorpusRing,
 	envCHOptCorpusSinkMode,
+	envCHQueryWorkload,
 	envLogFormat,
 	envLogLevel,
 	envOTLPEndpoint,
@@ -1533,6 +1562,7 @@ func setCHOptDefaults(v *viper.Viper) {
 	v.SetDefault(envCHOptCorpusSinkPath, defaultCHOptCorpusSinkPath)
 	v.SetDefault(envCHOptCorpusRing, defaultCHOptCorpusRing)
 	v.SetDefault(envCHOptCorpusSinkMode, defaultCHOptCorpusSinkMode)
+	v.SetDefault(envCHQueryWorkload, defaultCHQueryWorkload)
 }
 
 // setAdmitDefaults seeds the CERBERUS_ADMIT_* defaults: the master
@@ -1597,6 +1627,9 @@ const (
 	// defaultCHOptCorpusSinkPath is empty: no JSONL sink unless an operator
 	// supplies a path.
 	defaultCHOptCorpusSinkPath = ""
+	// defaultCHQueryWorkload is empty: no `workload` setting is stamped on
+	// any query unless an operator names one — the knob is off by default.
+	defaultCHQueryWorkload = ""
 	// defaultCHOptCorpusSinkMode is the JSONL file sink; "chtable" selects the
 	// cerberus_router_corpus MergeTree instead.
 	defaultCHOptCorpusSinkMode = "jsonl"

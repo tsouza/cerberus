@@ -195,11 +195,11 @@ func mountedConsumers(t *testing.T, enabledHeads string) chOptConsumers {
 func TestCHOptConsumers_ApplyToleratesAHeadThatIsNotServed(t *testing.T) {
 	t.Parallel()
 
-	set := resolutionAt(t, chopt.Version{Major: 25, Minor: 9}, chopt.FeatureAggregationInOrder).Set
+	res := resolutionAt(t, chopt.Version{Major: 25, Minor: 9}, chopt.FeatureAggregationInOrder)
 	cfg := config.Config{Schema: schema.DefaultOTelMetrics()}
 
-	chOptConsumers{engines: []*engine.Engine{{}}}.apply(cfg, set)
-	chOptConsumers{}.apply(cfg, set)
+	chOptConsumers{engines: []*engine.Engine{{}}}.apply(cfg, res)
+	chOptConsumers{}.apply(cfg, res)
 }
 
 // TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges — the loop's whole job.
@@ -231,7 +231,7 @@ func TestReprobeCHOptimizations_SwapsWhenTheAnswerChanges(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), cfg, live,
-			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond)
+			chOptConsumers{engines: []*engine.Engine{e}}, time.Millisecond, "")
 	}()
 
 	deadline := time.Now().Add(20 * time.Second)
@@ -266,7 +266,7 @@ func TestReprobeCHOptimizations_StopsOnContextCancel(t *testing.T) {
 	go func() {
 		defer close(done)
 		reprobeCHOptimizations(ctx, quietLogger(), config.Config{}, newCHOptLive(chOptResolution{}),
-			chOptConsumers{}, time.Hour)
+			chOptConsumers{}, time.Hour, "")
 	}()
 
 	select {

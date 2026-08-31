@@ -683,6 +683,125 @@ rejection has to live at the WebSocket layer to be actionable
 every budget at once — useful for local development where artificial caps
 mask real concurrency bugs.
 
+### Workload scheduling (cerberus issue #2785)
+
+Everything above this line is **client-side** admission: cerberus bounding
+its own concurrency, its own per-query memory, its own per-query wall clock.
+None of it can stop a heavy read burst from starving ClickHouse's OWN
+background merge/mutation threads at the CPU/IO level on a node that also
+takes OTel-collector ingest writes — or the reverse, an ingest spike starving
+concurrent dashboard queries — because both traffic classes are, by default,
+just threads competing for the same cores and the same disk with no
+scheduler between them. That is a **server-side** resource-scheduling
+problem, and ClickHouse's own answer is `CREATE WORKLOAD` / `CREATE
+RESOURCE` (the [workload scheduling](https://clickhouse.com/docs/operations/workload-scheduling)
+feature family: weighted fair-share CPU-slot and IO-byte scheduling across
+named workload trees).
+
+**Verified directly against a real ClickHouse 26.6** (not merely cited from
+docs — this repo's session found more than one ClickHouse doc claim not hold
+up against the actually-deployed version): `CREATE RESOURCE cpu (MASTER
+THREAD, WORKER THREAD)`, `CREATE RESOURCE io_default (READ DISK default,
+WRITE DISK default)`, and a `CREATE WORKLOAD` hierarchy with per-child
+`weight` all worked exactly as documented, and `system.scheduler` showed the
+resulting weighted fair-share nodes live and active for both resources. This
+is production-quality, GA machinery on the deployed version, not an
+experimental flag.
+
+**The recipe** (run by the ClickHouse operator, against the operator's own
+cluster — see "Ownership" below for why cerberus does not run this itself):
+
+```sql
+-- One resource per scheduled dimension. WORKER THREAD/MASTER THREAD cover
+-- CPU slot scheduling; READ/WRITE DISK covers IO-byte scheduling for a
+-- named disk (substitute the deployment's real disk name, e.g. an S3 disk).
+CREATE RESOURCE cpu (MASTER THREAD, WORKER THREAD);
+CREATE RESOURCE io_default (READ DISK default, WRITE DISK default);
+
+-- A root that bounds total CPU slots, then two children under it.
+CREATE WORKLOAD all SETTINGS max_concurrent_threads = 16 FOR cpu;
+
+-- Naming this workload literally `default` is deliberate, not cosmetic:
+-- ClickHouse's `merge_workload` / `mutation_workload` server settings both
+-- default to the literal string "default", so every background merge and
+-- mutation is automatically scheduled through a workload named `default`
+-- the moment one exists — no config.xml edit, no server restart required.
+CREATE WORKLOAD `default` IN `all` SETTINGS weight = 6;
+
+-- cerberus's own read traffic. weight is RELATIVE to its siblings under the
+-- same parent (fair-share, not a percentage): 6:1 here means merges/
+-- mutations get roughly 6x the CPU slots and IO bytes of cerberus's own
+-- queries whenever both are actually contending for capacity.
+CREATE WORKLOAD cerberus_queries IN `all` SETTINGS weight = 1;
+```
+
+Then tell cerberus to tag its own query traffic with the workload it should
+ride: `CERBERUS_CH_QUERY_WORKLOAD=cerberus_queries` (see
+[`configuration.md`](configuration.md)). Cerberus stamps the ClickHouse
+`workload` per-query setting on every dispatched query when this is set —
+boot-probed against the connected server (a server too old to know the
+`workload` setting, or a hardened profile that pins/forbids it, degrades to
+FATAL under the default `CERBERUS_CH_OPTIMIZATIONS_MODE=enforcing`, or a
+`WARN` + no-op under `permissive`; the knob's mere absence is already a full,
+byte-identical-to-before no-op).
+
+**The weighting footgun** (the issue's own risk note: "misconfigured shares
+can starve merges" — this is the concrete shape of that). Stock ClickHouse,
+with NO workload objects defined at all, already runs background merges
+through their own dedicated thread pool (`background_pool_size`) entirely
+separate from the query-concurrency-control thread pool queries draw from —
+so out of the box, merges are not queued behind queries in any scheduler,
+they just time-slice at the OS level. The moment an operator creates a
+workload literally named `default`, merges are pulled OUT of that separate
+pool and INTO the SAME weighted CPU/IO scheduler queries now use — which is
+a NET REGRESSION for merges if that `default` workload is left at an
+unweighted or low-weighted default alongside a heavier query workload.
+Standing up workload scheduling for the query side only earns the intended
+protection when the merge-side workload is weighted (or bounded) to actually
+win contention against the query side — never assume enabling the machinery
+alone is protective; a naive or forgotten weight is worse than not enabling
+it at all.
+
+**Measured under combined load** (real measurement against the local
+`clickhouse/clickhouse-server:26.6` compose service, not an estimate): a
+synthetic OTel-collector-style ingest loop — continuous small (500-row)
+batched `INSERT`s into a MergeTree table seeded to 3M rows / dozens of active
+parts — ran for 60s concurrently with 16 parallel heavy `GROUP BY` +
+`quantiles()` read queries (`max_threads=8` each), with and without the
+recipe above (`max_concurrent_threads=8` on `all`, `default` weight 6 vs
+`cerberus_queries` weight 1). With isolation configured, ingest p95/p99
+latency improved (~135ms → ~124ms p95, ~160ms → ~149ms p99) and insert
+throughput rose slightly (~9.7/s → ~10.1/s), at the cost of ~26% fewer
+completed read queries in the same window (476 → 352) — the intended
+tradeoff, reads yielding CPU/IO share to protect ingest. The effect size was
+modest on this single 8-core dev box with local disk: stock ClickHouse's
+separate merge thread pool (above) already absorbs a fair amount of
+contention before any scheduling is configured, so the gap only widens under
+genuinely saturated CPU/IO — the production case this feature targets (a
+shared node under real dashboard-storm + ingest-spike load, or S3-backed
+merge IO competing with query S3 reads) is harder to reproduce on a
+lightly-loaded local box and is where the isolation is expected to matter
+most.
+
+**Ownership: this is a documented operator recipe, not cerberus-provisioned
+DDL.** `WORKLOAD` / `RESOURCE` are server objects, and in cerberus's common
+deployment shape it is a stateless gateway pointed at a
+bring-your-own ClickHouse cluster the operator owns and may already run
+other, non-cerberus workloads against — auto-issuing `CREATE
+WORKLOAD`/`CREATE RESOURCE` DDL, or `ALTER USER`/`CREATE SETTINGS PROFILE`
+against that cluster, from inside cerberus would be a real ownership and
+blast-radius overreach (and `merge_workload`/`mutation_workload` affect
+EVERY table on the cluster, not just cerberus's own). Note also that a
+ClickHouse user provisioned via `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD`
+env-var (XML `users.xml`) config — as the demo compose stack's `clickhouse`
+service is — lives in a read-only access storage from SQL's own
+perspective: `ALTER USER ... SETTINGS PROFILE ...` fails with
+`ACCESS_STORAGE_READONLY` against it, so a settings-profile-based wiring is
+NOT reliable in general. `CERBERUS_CH_QUERY_WORKLOAD` sidesteps this
+entirely: it rides the SAME per-query settings-stamping path cerberus
+already uses for `ts_grid_range` and the query result cache, needing no
+ClickHouse RBAC privilege at all on the connection cerberus uses.
+
 ### Kubernetes HorizontalPodAutoscaler
 
 The chart's `autoscaling` block ships a working HPA: the e2e values
