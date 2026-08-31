@@ -146,21 +146,23 @@ type ResetsLowerer interface {
 }
 
 // IrateLowerer lowers a range-mode irate(<counter>[range]) RangeWindow to a
-// chplan node. Unlike Changes/Resets there is no ClickHouse-native
-// timeSeries*ToGrid member for irate — the only alternative to the fan-out
-// (window_pairs[length]/[length-1]) is the lagInFrame annotation shape
-// (cerberus issue #2759), so this interface has exactly one non-fan-out impl.
-// It ALWAYS returns a valid lowering: the lag-adjacency impl emits
-// RangeWindow{LagAdjacency: true} for a shape-eligible window and delegates to
-// its embedded fan-out fallback otherwise; the fan-out impl returns rw
-// unchanged. Never nil.
+// chplan node, mirroring [ChangesLowerer]: the native impl emits a
+// RangeWindowGridNative (Func="irate" -> timeSeriesInstantRateToGrid, the
+// trailing-pair counter-reset-corrected instantaneous rate) for an eligible
+// window, layered above the lagInFrame annotation shape (cerberus issue
+// #2759, chplan.RangeWindow.LagAdjacency) as its own fallback's fallback, and
+// the array-fold fan-out (window_pairs[length]/[length-1]) beneath that. It
+// ALWAYS returns a valid lowering — every impl in the chain delegates to its
+// embedded fallback for a shape it cannot handle, and the fan-out impl
+// returns rw unchanged. Never nil.
 type IrateLowerer interface {
 	// LowerIrate returns the chplan node for rw. Never nil.
 	LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
-// IdeltaLowerer is IrateLowerer's sibling for idelta(<gauge>[range]). Never
-// nil.
+// IdeltaLowerer is IrateLowerer's sibling for idelta(<gauge>[range]) (native
+// timeSeriesInstantDeltaToGrid — the trailing-pair difference, NO
+// counter-reset correction). Never nil.
 type IdeltaLowerer interface {
 	// LowerIdelta returns the chplan node for rw. Never nil.
 	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
@@ -273,13 +275,17 @@ type RangeLowerers struct {
 	// path.
 	QuantileRankWalk QuantileRankWalkLowerer
 
-	// Irate handles range-mode irate(...) shapes (lagInFrame annotation,
-	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
-	// feature is off; never nil on the lowering path.
+	// Irate handles range-mode irate(...) shapes (native
+	// timeSeriesInstantRateToGrid, server >= 25.9, layered above the
+	// lagInFrame annotation, laginframe_adjacency — no version floor).
+	// Concrete fan-out impl when both features are off; never nil on the
+	// lowering path.
 	Irate IrateLowerer
-	// Idelta handles range-mode idelta(...) shapes (lagInFrame annotation,
-	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
-	// feature is off; never nil on the lowering path.
+	// Idelta handles range-mode idelta(...) shapes (native
+	// timeSeriesInstantDeltaToGrid, server >= 25.9, layered above the
+	// lagInFrame annotation, laginframe_adjacency — no version floor).
+	// Concrete fan-out impl when both features are off; never nil on the
+	// lowering path.
 	Idelta IdeltaLowerer
 }
 
@@ -926,11 +932,14 @@ func (n NativeDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schema.Metrics)
 // irate / idelta. Unlike the timeSeries*ToGrid family above it needs no
 // server-version floor or experimental setting — see chopt.
 // FeatureLagInFrameAdjacency — so cmd/cerberus wires it purely off the
-// resolved EnabledSet with no capability probe involved. changes/resets
-// layer it BENEATH their existing native ts_grid strategy (Native{Fallback:
-// LagAdjacency{Fallback: Fanout{}}}), same embed pattern as every strategy
-// above; irate/idelta have no native competitor, so their strategy is the
-// two-tier LagAdjacency{Fallback: Fanout{}} directly.
+// resolved EnabledSet with no capability probe involved. All four functions
+// layer it BENEATH their own native ts_grid strategy (Native{Fallback:
+// LagAdjacency{Fallback: Fanout{}}}), same embed pattern throughout this
+// file: irate/idelta gained their own native timeSeriesInstantRateToGrid /
+// timeSeriesInstantDeltaToGrid competitor (cerberus issue #2746), so as of
+// that feature all four of changes / resets / irate / idelta share the
+// identical three-tier composition (see NativeIrateLowerer /
+// NativeIdeltaLowerer below).
 
 // FanoutIrateLowerer is the concrete DEFAULT IrateLowerer: it returns the
 // generic fan-out RangeWindow (window_pairs[length]/[length-1]) unchanged.
@@ -1060,4 +1069,80 @@ func lagAdjacencyEligible(rw *chplan.RangeWindow) bool {
 		return false
 	}
 	return len(rw.Variants) == 0
+}
+
+// This section wires the native timeSeriesInstantRateToGrid /
+// timeSeriesInstantDeltaToGrid aggregates for irate()/idelta() (cerberus
+// issue #2746), completing the family: irate/idelta previously had no
+// timeSeries*ToGrid member and their only non-fan-out strategy was the
+// lagInFrame annotation above. Both aggregates shipped in the same v25.6
+// release as timeSeriesRateToGrid/timeSeriesDeltaToGrid and share the
+// family's 25.9 floor (RequiresExperimentalTSGrid, the left-open window
+// fix) — see chopt.FeatureTSGridIrate / chopt.FeatureTSGridIdelta.
+//
+// A chDB differential sweep against a real 26.5.1.1 substrate (cerberus
+// issue #2746) settled the two open questions the issue named: irate DOES
+// counter-reset-correct the trailing pair, exactly like the fan-out's
+// CounterOrDeltaPairDelta CUMULATIVE branch (a strictly-decreasing pair
+// 100 -> 10, 60s apart, returned the REPAIRED 10/60 = 0.1(6), never the raw
+// -1.5); idelta applies NO correction (the identical pair returned the raw
+// -90). See internal/chsql.nativeTSGridFn's own "irate"/"idelta" entries for
+// the full sweep, including the duplicate-timestamp / window-membership
+// findings and the pre-existing #2798 gap they reproduce.
+
+// NativeIrateLowerer is the boot-wired IrateLowerer that emits the native
+// timeSeriesInstantRateToGrid lowering (a chplan.RangeWindowGridNative with
+// Func="irate") for shape-eligible irate range-windows. cmd/cerberus wires it
+// ONLY when chopt resolved the ts_grid_irate feature (server >= 25.9) at
+// boot. It embeds a concrete Fallback for shapes it cannot handle, so the
+// interface method always yields a valid lowering and the dispatch site
+// stays branch-free.
+type NativeIrateLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to LagAdjacencyIrateLowerer{Fallback:
+	// FanoutIrateLowerer{}} when laginframe_adjacency is also enabled,
+	// FanoutIrateLowerer{} otherwise — mirroring NativeChangesLowerer's own
+	// embed of the improved fan-out.
+	Fallback IrateLowerer
+}
+
+// LowerIrate returns a RangeWindowGridNative for an eligible range-mode
+// irate shape, or delegates to the embedded Fallback otherwise. Same
+// intrinsic SHAPE check as delta (irate func, materialised grid, plain
+// Scan/Filter input). irate needs no dedicated DELTA/CUMULATIVE union split
+// of its own — nativeTSGridMatrixNode's existing TemporalityColumn guard
+// already sends any DELTA-temporality counter to the Fallback
+// unconditionally, exactly like every other native ts_grid member, so the
+// counter-reset correction the trailing-pair aggregate applies is only ever
+// reached for a CUMULATIVE (or temporality-less) counter. irate takes no
+// scalar and carries no -State/-Merge combinator pair, so
+// nativeTSGridMatrixNode is always called with noRecollapse.
+func (n NativeIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "irate", s, noRecollapse); native != nil {
+		return native
+	}
+	return n.Fallback.LowerIrate(rw, s)
+}
+
+// NativeIdeltaLowerer mirrors [NativeIrateLowerer] for idelta, emitting
+// timeSeriesInstantDeltaToGrid (Func="idelta") — the trailing-pair
+// difference with NO counter-reset correction, matching PromQL's
+// funcIdelta.
+type NativeIdeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to LagAdjacencyIdeltaLowerer{Fallback:
+	// FanoutIdeltaLowerer{}} when laginframe_adjacency is also enabled,
+	// FanoutIdeltaLowerer{} otherwise.
+	Fallback IdeltaLowerer
+}
+
+// LowerIdelta returns a RangeWindowGridNative for an eligible range-mode
+// idelta shape, or delegates to the embedded Fallback otherwise. Same
+// intrinsic SHAPE check as irate; idelta takes no scalar and carries no
+// -State/-Merge combinator pair.
+func (n NativeIdeltaLowerer) LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "idelta", s, noRecollapse); native != nil {
+		return native
+	}
+	return n.Fallback.LowerIdelta(rw, s)
 }

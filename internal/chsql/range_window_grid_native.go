@@ -83,6 +83,10 @@ type nativeTSGridAgg struct {
 //   - predict_linear -> timeSeriesPredictLinearToGrid (v25.8 — PR #84328, >= 2 samples/window, +predict_offset)
 //   - delta          -> timeSeriesDeltaToGrid         (shipped v25.6, >= 2 samples/window, NO
 //     counter-reset correction — see this map's own "delta" entry doc)
+//   - irate          -> timeSeriesInstantRateToGrid   (shipped v25.6, >= 2 samples/window, trailing-pair
+//     counter-reset correction — see this map's own "irate" entry doc)
+//   - idelta         -> timeSeriesInstantDeltaToGrid  (shipped v25.6, >= 2 samples/window, NO
+//     counter-reset correction — see this map's own "idelta" entry doc)
 //
 // changes/resets are COUNT functions (Array(Nullable(Float64)) one count per
 // grid point, NULL where no in-window sample); rate/deriv/predict_linear return
@@ -149,6 +153,45 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 	// mistakenly attach rather than silently re-collapsing a function this
 	// cut never validated the merge for.
 	"delta": {Fn: "timeSeriesDeltaToGrid"},
+	// irate/idelta reduce every window to its TRAILING PAIR only — unlike
+	// the rest of the family they never fold the whole window. A chDB
+	// differential sweep (cerberus issue #2746) against a real
+	// 26.5.1.1 substrate settled the two open questions from the issue:
+	//
+	//   - irate DOES counter-reset-correct the trailing pair, exactly like
+	//     the fan-out's CounterOrDeltaPairDelta CUMULATIVE branch
+	//     (internal/promql's LagAdjacencyIrateLowerer /
+	//     emitRangeWindowIRate): a strictly-decreasing pair (100 -> 10, 60s
+	//     apart) returned 10/60 = 0.1(6), the REPAIRED rate, never the raw
+	//     -1.5 — matching PromQL's funcIrate exactly.
+	//   - idelta applies NO correction: the identical decreasing pair
+	//     returned the raw -90, matching PromQL's funcIdelta (which never
+	//     counter-repairs, same as delta above).
+	//
+	// Both aggregates additionally proved: only the last two (deduplicated)
+	// in-window samples matter regardless of how many earlier samples the
+	// window also holds (a 3-sample probe with a large outlier first sample
+	// reproduced the last-pair-only answer exactly, matching the fan-out's
+	// own window_pairs[length]/[length-1] selection); a window with fewer
+	// than 2 samples returns NULL; and the family's left-open/right-closed
+	// window-membership fix (the shared 25.9 floor) applies identically — a
+	// sample sitting exactly on the window's trailing edge is excluded.
+	//
+	// Both carry the SAME duplicate-timestamp "greatest value wins, NaN
+	// loses" dedup layer as the rest of the family, including the same
+	// order-dependent violation of that contract for a real-vs-NaN
+	// duplicate pair that cerberus issue #2798 already tracks as
+	// family-wide (confirmed to reproduce identically for irate/idelta).
+	// The fan-out has no dedup layer of its own for a duplicate-timestamp
+	// trailing pair either — it resolves by whatever order arraySort's
+	// stable tie-break happens to produce, itself unspecified — so the
+	// native path's deterministic-but-order-dependent dedup is not a
+	// regression against a well-defined fan-out contract, just the same
+	// #2798 gap surfacing through a different function. StateFn/MergeFn are
+	// deliberately left empty for the same reason delta's are: neither
+	// Native*Lowerer sets Recollapse for irate/idelta.
+	"irate":  {Fn: "timeSeriesInstantRateToGrid"},
+	"idelta": {Fn: "timeSeriesInstantDeltaToGrid"},
 }
 
 // nativeGridTsAxisFrag renders the timestamp axis fed as the FIRST aggregate
@@ -336,7 +379,7 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	}
 	agg, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear, delta)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear, delta, irate, idelta)", ErrUnsupported, r.Func)
 	}
 	// predict_linear threads its future-offset horizon t (whole seconds) as the
 	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering

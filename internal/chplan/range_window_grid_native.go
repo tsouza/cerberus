@@ -20,14 +20,21 @@ import (
 //     RangeLowerers strategy — never read per query). Default off.
 //   - Func names a member of the timeSeries*ToGrid family a Native*Lowerer
 //     is wired for: "rate", "increase", "changes", "resets", "deriv",
-//     "predict_linear", "delta" (see internal/chsql.nativeTSGridFn).
-//     "increase" reuses rate's own timeSeriesRateToGrid aggregate,
-//     multiplied back by the window seconds at emit time — Prometheus's
-//     `increase()` IS `extrapolatedRate()` without the final `/range`
-//     divide. "delta" rides its own timeSeriesDeltaToGrid aggregate; a chDB
-//     differential sweep proved it applies NO counter-reset correction
-//     (matching PromQL's extrapolatedRate(isCounter=false, isRate=false) —
-//     see chopt.FeatureTSGridDelta's own doc for the sweep's findings).
+//     "predict_linear", "delta", "irate", "idelta" (see
+//     internal/chsql.nativeTSGridFn). "increase" reuses rate's own
+//     timeSeriesRateToGrid aggregate, multiplied back by the window seconds
+//     at emit time — Prometheus's `increase()` IS `extrapolatedRate()`
+//     without the final `/range` divide. "delta" rides its own
+//     timeSeriesDeltaToGrid aggregate; a chDB differential sweep proved it
+//     applies NO counter-reset correction (matching PromQL's
+//     extrapolatedRate(isCounter=false, isRate=false) — see
+//     chopt.FeatureTSGridDelta's own doc for the sweep's findings). "irate"
+//     / "idelta" ride timeSeriesInstantRateToGrid /
+//     timeSeriesInstantDeltaToGrid, reducing every window to its trailing
+//     pair only; a chDB differential sweep proved irate DOES counter-reset-
+//     correct that pair (matching PromQL's funcIrate) while idelta does NOT
+//     (matching funcIdelta) — see chopt.FeatureTSGridIrate's own doc for the
+//     sweep's findings.
 //   - The query is in range mode: Step > 0 and both Start and End are
 //     pinned (the materialised query_range grid). Instant queries
 //     (Step == 0) have no grid and are never eligible.
@@ -68,8 +75,8 @@ type RangeWindowGridNative struct {
 	Input Node
 
 	// Func is the PromQL range function ("rate", "increase", "changes",
-	// "resets", "deriv", "predict_linear", or "delta" today — see
-	// internal/chsql.nativeTSGridFn); the field is retained (rather than
+	// "resets", "deriv", "predict_linear", "delta", "irate", or "idelta"
+	// today — see internal/chsql.nativeTSGridFn); the field is retained (rather than
 	// implied) so the emitter's per-Func aggregate-name map can generalise
 	// to the rest of the timeSeries*ToGrid family behind its own sibling
 	// feature without an IR change.

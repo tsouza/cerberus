@@ -367,6 +367,81 @@ const (
 	// treat delta differently from them.
 	FeatureTSGridDelta = "ts_grid_delta"
 
+	// FeatureTSGridIrate opts eligible irate(<counter>[<range>]) query_range
+	// shapes onto the native timeSeriesInstantRateToGrid aggregate, retiring
+	// the window_pairs[length]/[length-1] trailing-pair fan-out
+	// (internal/chsql.emitRangeWindowIRate) for the shapes that reach it —
+	// changes/resets/irate/idelta ALSO fall back to the lagInFrame annotation
+	// (FeatureLagInFrameAdjacency) before the array-fold fan-out, so this
+	// feature narrows an already-improved fallback rather than the raw
+	// array-fold directly. Same 25.9 floor as the rest of the family:
+	// timeSeriesInstantRateToGrid shipped in the same 25.6 release as
+	// timeSeriesRateToGrid and inherits the identical left-open/right-closed
+	// membership-window fix (PR #86588, ClickHouse 25.9).
+	//
+	// cerberus issue #2746 ran the differential sweep the issue named as its
+	// precondition: a battery of chDB probes against
+	// timeSeriesInstantRateToGrid directly on a real 26.5.1.1 substrate
+	// (well above the 25.9 floor), isolating each rule the doc
+	// (https://clickhouse.com/docs/sql-reference/aggregate-functions/reference/timeSeriesInstantRateToGrid)
+	// leaves underspecified.
+	//
+	//   - DECISIVE counter-reset probe: a strictly-decreasing trailing pair
+	//     (100 -> 10, 60 seconds apart). Prometheus's funcIrate DOES
+	//     counter-repair the trailing pair (unlike delta/idelta) — the
+	//     REPAIRED answer is the raw last value over the interval,
+	//     10 / 60 = 0.1(6); the un-repaired raw answer would be
+	//     (10-100)/60 = -1.5. ClickHouse returned exactly 0.16666666666666666
+	//     — proof the aggregate DOES counter-correct, matching PromQL's
+	//     funcIrate (CounterOrDeltaPairDelta's CUMULATIVE branch) exactly,
+	//     the central risk the issue named.
+	//   - Trailing-pair-only selection: a 3-sample window (1000, 10, 40)
+	//     returned the rate implied by ONLY the last two samples (10 -> 40),
+	//     ignoring the much larger first sample entirely — matching the
+	//     fan-out's own window_pairs[length]/[length-1] selection, not a
+	//     whole-window fold.
+	//   - The >= 2 samples NULL rule and the left-open window-membership fix
+	//     were probed directly: a sample sitting exactly on the window's
+	//     trailing edge (anchor - staleness) is excluded, matching
+	//     FeatureTSGridRange's own left-open fix.
+	//   - The doc's duplicate-timestamp "highest value wins, NaN loses"
+	//     rule reproduces the SAME order-dependence for a real-vs-NaN
+	//     duplicate pair that cerberus issue #2798 already tracks as
+	//     family-wide (NaN loses when inserted before the real sample, wins
+	//     when inserted after). Unlike rate/delta, irate reduces every
+	//     window to its trailing pair, so a duplicate-timestamp trailing
+	//     pair is not a rare edge of a summed window but the whole answer —
+	//     but the fan-out has no dedup layer of its own for this shape
+	//     either (a duplicate-ts trailing pair there resolves by whatever
+	//     order arraySort's stable tie-break happens to produce, itself
+	//     unspecified), so this is not a regression against a well-defined
+	//     fan-out contract, just the same #2798 gap surfacing through a
+	//     different function.
+	//
+	// AutoSelect is true: the sweep found no irate-specific divergence from
+	// PromQL — the one real gap it surfaced is the same pre-existing,
+	// family-wide ClickHouse tie-break bug already accepted for the
+	// auto-selected rate/increase/resets/deriv/predict_linear/delta
+	// siblings, not a reason to treat irate differently from them.
+	FeatureTSGridIrate = "ts_grid_irate"
+
+	// FeatureTSGridIdelta is FeatureTSGridIrate's sibling for
+	// idelta(<gauge>[<range>]), mapping onto native
+	// timeSeriesInstantDeltaToGrid (internal/chsql.emitRangeWindowIDelta's
+	// native competitor). Same 25.9 floor, same lagInFrame-then-fan-out
+	// fallback chain, same family-wide #2798 duplicate-timestamp gap.
+	//
+	// The same cerberus issue #2746 sweep found idelta applies NO
+	// counter-reset correction: the identical strictly-decreasing trailing
+	// pair (100 -> 10) returned the raw -90, matching PromQL's funcIdelta
+	// (which — unlike irate — never counter-repairs, the same posture as
+	// delta() versus rate()/increase()). The trailing-pair-only selection,
+	// >= 2 samples NULL rule, and left-open window-membership fix all
+	// reproduced identically to irate's own probes.
+	//
+	// AutoSelect is true, for the same reason FeatureTSGridIrate's is.
+	FeatureTSGridIdelta = "ts_grid_idelta"
+
 	// FeatureLagInFrameAdjacency opts eligible query_range
 	// changes()/resets()/irate()/idelta() matrix shapes onto a single sorted
 	// lagInFrame/leadInFrame annotation pass with fixed-size per-anchor
@@ -395,9 +470,12 @@ const (
 	// proven bit-identical against the fan-out by dual-emit parity
 	// (internal/chsql/range_window_lag_adjacency_chdb_test.go), not merely
 	// asserted. It complements FeatureTSGridChanges (permanently opt-in,
-	// #1721) and FeatureTSGridResets (25.9+ only): irate/idelta have no
-	// native timeSeries*ToGrid member at all, and changes/resets fall back to
-	// this improved fan-out on any server the native path does not cover.
+	// #1721), FeatureTSGridResets, FeatureTSGridIrate, and FeatureTSGridIdelta
+	// (all 25.9+ only): all four functions fall back to this improved fan-out
+	// on any server their own native path does not cover — irate/idelta
+	// gained their native timeSeries*ToGrid member (timeSeriesInstantRateToGrid
+	// / timeSeriesInstantDeltaToGrid) in cerberus issue #2746; before that
+	// this annotation pass was their ONLY non-fan-out strategy.
 	FeatureLagInFrameAdjacency = "laginframe_adjacency"
 
 	// FeatureFixedAccumulatorExtrapolated opts eligible query_range
@@ -729,6 +807,22 @@ var registry = []Feature{
 		Doc:                        "opt eligible delta(<gauge>[<range>]) shapes onto native timeSeriesDeltaToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved no counter-reset correction, matching PromQL)",
 	},
 	{
+		ID:                         FeatureTSGridIrate,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible irate(<counter>[<range>]) shapes onto native timeSeriesInstantRateToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB sweep proved trailing-pair counter-reset correction, matching PromQL)",
+	},
+	{
+		ID:                         FeatureTSGridIdelta,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible idelta(<gauge>[<range>]) shapes onto native timeSeriesInstantDeltaToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved no counter-reset correction, matching PromQL)",
+	},
+	{
 		ID:         FeatureLagInFrameAdjacency,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
@@ -755,8 +849,8 @@ var registry = []Feature{
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
-// ts_grid_histogram, quantile_prom_histogram, ts_grid_delta,
-// laginframe_adjacency, fixed_accumulator_extrapolated,
+// ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
+// ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // map_bucketed_serialization). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the table.
