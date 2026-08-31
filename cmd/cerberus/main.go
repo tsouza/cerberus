@@ -1294,6 +1294,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// line reports.
 	cfg.SchemaMapBucketedSerialization = set.Has(chopt.FeatureMapBucketedSerialization)
 
+	// Same back-fill for column_statistics (cerberus issue #2766) — see the
+	// map_bucketed_serialization comment immediately above for why this runs
+	// here rather than being threaded as an EnabledSet parameter.
+	cfg.SchemaColumnStatistics = set.Has(chopt.FeatureColumnStatistics)
+
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never
 	// auto), so its enable decision flows through the EnabledSet exactly like

@@ -327,6 +327,16 @@ type Config struct {
 	// feature's registry doc comment for why they're excluded).
 	SchemaMapBucketedSerialization bool
 
+	// SchemaColumnStatistics is the resolved chopt column_statistics verdict
+	// (cerberus issue #2766), back-filled the SAME way as
+	// SchemaMapBucketedSerialization immediately above — including the
+	// offline `migrate schema` preview's chopt.ExplicitlyRequested fallback,
+	// since column_statistics is also AutoSelect=false.
+	// internal/schemaboot.DDLConfig is the only reader: true adds the curated
+	// `ADD STATISTICS IF NOT EXISTS` ALTER registry to the metrics/logs/
+	// traces tables (see internal/schema/ddl.Config.ColumnStatisticsEnabled).
+	SchemaColumnStatistics bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).

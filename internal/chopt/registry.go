@@ -667,6 +667,79 @@ const (
 	// LATEST in-window sample forward, never the earliest, so it stays on
 	// the fan-out unconditionally.
 	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
+
+	// FeatureColumnStatistics gates the curated `ADD STATISTICS IF NOT
+	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
+	// column statistics on the metrics/logs/traces fact tables' highest-value
+	// filter and join columns. Statistics give the query planner real
+	// cardinality/selectivity estimates for PREWHERE-pushdown and
+	// join-ordering, in place of cerberus's own hand-rolled static heuristic
+	// (internal/chsql/prewhere.go) — zero statistics usage exists in
+	// production before this feature.
+	//
+	// STATISTICS TYPE PER COLUMN TYPE — verified against a live ClickHouse
+	// 26.5 server, NOT assumed from the issue's proposal text: `minmax` and
+	// `tdigest` are numeric-only, and ClickHouse rejects ADD STATISTICS
+	// outright (code 708, ILLEGAL_STATISTICS) for either on a String /
+	// LowCardinality(String) column. So the String-family identity columns —
+	// ServiceName, MetricName, SpanName, TraceId — carry `uniq` only (which is
+	// also the semantically right stat for an equality-filtered column;
+	// `minmax` exists for RANGE predicates a string equality never issues).
+	// The numeric columns — AggregationTemporality (Int32), SeverityNumber
+	// (UInt8) — carry `minmax, uniq`. Duration (UInt64) additionally carries
+	// `tdigest` (a range predicate — a latency threshold — needs a
+	// distribution estimate `minmax`/`uniq` alone cannot give). See
+	// internal/schema/ddl's renderMetricsColumnStatistics /
+	// renderLogsColumnStatistics / renderTracesColumnStatistics for the exact
+	// per-table ALTER split this forces (a string column and a numeric column
+	// can never share one ADD STATISTICS statement, since ClickHouse applies
+	// one TYPE list to every listed column).
+	//
+	// VERSION FLOOR: 26.3, and unlike FeatureMapBucketedSerialization this one
+	// needs no "round up to the next minor" caution — upstream PR #97487
+	// ("Make statistics GA & automatically create minmax + uniq statistics
+	// for new columns") merged as 26.3.1.276, the FIRST patch of the 26.3
+	// release, so every 26.3 server carries it. The PR also renames
+	// `allow_experimental_statistics` (default false) to `allow_statistics`
+	// (default TRUE) and promotes `allow_statistics_optimize` — the setting
+	// that actually feeds PREWHERE/join-ordering decisions — from beta to GA,
+	// still defaulting on. Neither setting needs a client-side stamp the way
+	// the timeSeries*ToGrid family needs
+	// allow_experimental_time_series_aggregate_functions: both already
+	// default to enabled on a >= 26.3 server, so this feature (like
+	// map_bucketed_serialization) carries no RequiresExperimentalTSGrid-style
+	// gate and no engine co-stamp.
+	//
+	// INSERT-OVERHEAD MITIGATION (verified, not merely assumed): the SAME PR
+	// disables `materialize_statistics_on_insert` by default specifically to
+	// avoid slower INSERTs — new parts do NOT compute statistics inline on
+	// every insert; the values are populated by background MERGES instead.
+	// This directly answers the issue's own "insert/merge overhead" risk
+	// note: the overhead lands on the existing merge background pool, not the
+	// synchronous insert path.
+	//
+	// PREWHERE REORDERING IS VERIFIED, not merely claimed: the issue itself
+	// flagged as unverified "whether statistics-based condition reordering
+	// hooks into cerberus's explicitly written PREWHERE clause (vs only the
+	// WHERE->PREWHERE move optimizer)". Upstream RFC ClickHouse#53240 ("use
+	// statistic to order prewhere conditions better") confirms
+	// allow_statistics_optimize reorders an ALREADY-multi-condition PREWHERE
+	// clause's own conjuncts by statistics-derived selectivity — exactly
+	// cerberus's own emission shape, not only the WHERE->PREWHERE promotion
+	// decision.
+	//
+	// NOT auto-selected (AutoSelect=false) regardless: statistics are
+	// UNSUPPORTED on ClickHouse Cloud (the apply path tolerates that refusal
+	// — see internal/schema/ddl.isColumnStatisticsUnsupported), and even with
+	// the PREWHERE-reorder mechanism confirmed to fire, its real-world
+	// MAGNITUDE on cerberus's own production query shapes is not yet
+	// measured — nor is whether a resulting plan-shape change (a different
+	// join build side, say) interacts with the solver's calibrated
+	// fanout-guard constants the way spill settings did in #2665. Each is a
+	// real-world calibration question this feature alone cannot answer, so
+	// enabling it is a deliberate operator choice pending that evidence, not
+	// a version-gated pure win the auto-picker can assume.
+	FeatureColumnStatistics = "column_statistics"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -895,6 +968,13 @@ var registry = []Feature{
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)",
 	},
+	{
+		ID:         FeatureColumnStatistics,
+		MinVersion: Version{Major: 26, Minor: 3},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "curated ADD STATISTICS registry on metrics/logs/traces filter+join columns for PREWHERE/join-ordering (server >= 26.3, opt-in via CERBERUS_CH_OPTIMIZATIONS — unsupported on ClickHouse Cloud, tolerated; auto never picks it pending real-world calibration)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -903,7 +983,7 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
-// map_bucketed_serialization, ts_grid_last_over_time). The copy
+// map_bucketed_serialization, ts_grid_last_over_time, column_statistics). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

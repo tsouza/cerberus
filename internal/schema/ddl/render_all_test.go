@@ -72,6 +72,33 @@ func TestRenderAll_NoSignals(t *testing.T) {
 	}
 }
 
+// TestRenderAll_MatchesApply_ColumnStatistics extends the core contract to
+// ColumnStatisticsEnabled=true (issue #2766): the offline preview must
+// include the same ADD STATISTICS ALTERs, in the same order, that
+// ApplyWithConfig executes against a live (non-refusing) connection.
+func TestRenderAll_MatchesApply_ColumnStatistics(t *testing.T) {
+	cfg := Config{Database: "otel", ColumnStatisticsEnabled: true}
+
+	rc := &recordingConn{}
+	if err := ApplyWithConfig(context.Background(), rc, cfg, All); err != nil {
+		t.Fatalf("ApplyWithConfig: %v", err)
+	}
+
+	rendered, err := RenderAll(cfg, All)
+	if err != nil {
+		t.Fatalf("RenderAll: %v", err)
+	}
+
+	if len(rendered) != len(rc.execs) {
+		t.Fatalf("RenderAll returned %d statements, ApplyWithConfig executed %d", len(rendered), len(rc.execs))
+	}
+	for i := range rendered {
+		if rendered[i] != rc.execs[i] {
+			t.Errorf("statement %d differs:\n  render: %s\n  apply:  %s", i, rendered[i], rc.execs[i])
+		}
+	}
+}
+
 // TestRenderAll_ReplicatedRequiresZooPath pins that the Replicated-engine
 // validation fires at render time exactly as it does at apply time, so the
 // preview surfaces the misconfiguration before the operator ever dials CH.

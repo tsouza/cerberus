@@ -133,7 +133,7 @@ func TestNumericAttrCoercion(t *testing.T) {
 		{
 			name:       "quantile_over_time_span_attr_wraps_aggregate_input",
 			query:      `{} | quantile_over_time(span.latency_ms, 0.95)`,
-			wantSubstr: "quantile(toFloat64(?))(toFloat64OrZero(`SpanAttributes`[?]))",
+			wantSubstr: "quantileExactInclusive(toFloat64(?))(toFloat64OrZero(`SpanAttributes`[?]))",
 		},
 	}
 
