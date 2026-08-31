@@ -414,6 +414,67 @@ func TestAlterTableAddIndex_RejectsNonPositiveGranularity(t *testing.T) {
 	}
 }
 
+// TestAlterTableAddStatistics pins the ADD STATISTICS statement: the
+// fully-qualified (or bare) <db>.<table>, the idempotent IF NOT EXISTS
+// guard, the bare (no-parens) comma-separated column and TYPE lists, and the
+// optional ON CLUSTER clause. The statement carries no positional args.
+func TestAlterTableAddStatistics(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *AddStatisticsBuilder
+		want string
+	}{
+		{
+			"unqualified_table_single_column_single_type",
+			AlterTableAddStatistics("", "otel_traces", []string{"Duration"}, []string{"minmax"}),
+			"ALTER TABLE otel_traces ADD STATISTICS IF NOT EXISTS `Duration` TYPE minmax",
+		},
+		{
+			"qualified_table_multi_column_multi_type",
+			AlterTableAddStatistics("otel", "otel_metrics_sum", []string{"ServiceName", "MetricName"}, []string{"minmax", "uniq"}),
+			"ALTER TABLE otel.otel_metrics_sum ADD STATISTICS IF NOT EXISTS `ServiceName`, `MetricName` TYPE minmax, uniq",
+		},
+		{
+			"on_cluster",
+			AlterTableAddStatistics("otel", "otel_traces", []string{"Duration"}, []string{"minmax", "uniq", "tdigest"}).OnCluster("prod"),
+			"ALTER TABLE otel.otel_traces ON CLUSTER `prod` " +
+				"ADD STATISTICS IF NOT EXISTS `Duration` TYPE minmax, uniq, tdigest",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAlterTableAddStatistics_RejectsEmptyLists pins the construction-time
+// guard: ClickHouse's grammar requires both the column list and the TYPE
+// list non-empty, so AlterTableAddStatistics must panic rather than let a
+// caller render DDL ClickHouse would reject at apply time.
+func TestAlterTableAddStatistics_RejectsEmptyLists(t *testing.T) {
+	cases := []struct {
+		name    string
+		columns []string
+		types   []string
+	}{
+		{"empty_columns", nil, []string{"minmax"}},
+		{"empty_types", []string{"Duration"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("AlterTableAddStatistics(columns=%v, types=%v) did not panic", tc.columns, tc.types)
+				}
+			}()
+			AlterTableAddStatistics("", "otel_traces", tc.columns, tc.types)
+		})
+	}
+}
+
 // TestQueryBuilderHaving pins the HAVING clause render: it follows GROUP BY,
 // precedes ORDER BY, and AND-joins multiple conditions. HAVING (not WHERE) is
 // what lets the metric-name enumeration route to the aggregating projection.

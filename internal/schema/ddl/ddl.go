@@ -35,6 +35,7 @@ package ddl
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -155,6 +156,25 @@ type Config struct {
 	// "BucketStart" / "PartialSum" (see withDefaults).
 	DeltaPrefixBucketColumn string
 	DeltaPrefixSumColumn    string
+
+	// ColumnStatisticsEnabled gates the curated `ADD STATISTICS IF NOT
+	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
+	// column statistics on the metrics/logs/traces fact tables' highest-value
+	// filter and join columns — real cardinality/selectivity estimates for
+	// PREWHERE-pushdown and join-ordering, in place of cerberus's own
+	// hand-rolled static heuristic (internal/chsql/prewhere.go). False (the
+	// default) renders no statistics statements at all — an operator on
+	// today's schema sees byte-identical DDL. The chopt column_statistics
+	// feature (version-gated at ClickHouse >= 26.3, the first release with
+	// the GA'd statistics optimizer) resolves this bit at boot — see
+	// internal/schemaboot.DDLConfig — mirroring how DeltaPrefixEnabled and
+	// SchemaMapBucketedSerialization are threaded from their own chopt/config
+	// verdicts. Unlike every other statement this package renders, an ADD
+	// STATISTICS ALTER can be REFUSED by the connected server — ClickHouse
+	// Cloud does not support column statistics at all — so applySignal
+	// tolerates that specific refusal instead of failing the whole apply; see
+	// isColumnStatisticsUnsupported.
+	ColumnStatisticsEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -613,6 +633,24 @@ func applySignal(ctx context.Context, conn driver.Conn, cfg Config, s Signal) er
 	}
 	for _, stmt := range stmts {
 		if err := conn.Exec(ctx, stmt); err != nil {
+			// A column-statistics ALTER (issue #2766) can be legitimately
+			// REFUSED by the connected server — ClickHouse Cloud supports no
+			// statistics at all — and that refusal must not fail the whole
+			// signal's apply (nor, via setupSchema's retry loop, wedge
+			// /readyz "pending" forever on a Cloud deployment). Every other
+			// statement in this slice is either a CREATE the boot path
+			// genuinely cannot proceed without, or an idempotent ALTER
+			// ClickHouse Cloud DOES support (ADD PROJECTION / ADD INDEX), so
+			// this check is scoped tightly enough that it can run
+			// unconditionally over every exec error rather than needing to
+			// know in advance which statement produced it.
+			if isColumnStatisticsUnsupported(err) {
+				slog.Default().Warn(
+					"ddl: column statistics ALTER rejected by server; skipping (unsupported on ClickHouse Cloud — cerberus issue #2766)",
+					"signal", s, "err", err,
+				)
+				continue
+			}
 			return fmt.Errorf("ddl: exec %s: %w", s, err)
 		}
 	}
@@ -670,19 +708,35 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 				renderDeltaPrefixView(cfg),
 			)
 		}
+		// Column statistics (issue #2766) trail every other metrics
+		// statement — CREATE, then projections, then the temporality index,
+		// then the DELTA-prefix pair — for the same reason the temporality
+		// index trails the projections: each ALTER targets a table a
+		// preceding statement in this slice already created.
+		if cfg.ColumnStatisticsEnabled {
+			stmts = append(stmts, renderMetricsColumnStatistics(cfg)...)
+		}
 		return stmts, nil
 	case Logs:
 		logs, err := renderLogsTable(cfg)
 		if err != nil {
 			return nil, err
 		}
-		return []string{logs}, nil
+		stmts := []string{logs}
+		if cfg.ColumnStatisticsEnabled {
+			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
+		}
+		return stmts, nil
 	case Traces:
-		return []string{
+		stmts := []string{
 			renderTracesTable(cfg),
 			renderTracesCreateTsTable(cfg),
 			renderTracesCreateTsView(cfg),
-		}, nil
+		}
+		if cfg.ColumnStatisticsEnabled {
+			stmts = append(stmts, renderTracesColumnStatistics(cfg)...)
+		}
+		return stmts, nil
 	default:
 		return nil, fmt.Errorf("ddl: unknown signal: %d", int(s))
 	}
@@ -1039,4 +1093,174 @@ func renderTracesCreateTsView(cfg Config) string {
 		cfg.Database, cfg.Tables.Traces,
 		cfg.Database, cfg.Tables.Traces,
 	)
+}
+
+// --- Column statistics (cerberus issue #2766) ---
+//
+// Zero statistics usage existed anywhere in production before this: PREWHERE
+// conjunct ordering (internal/chsql/prewhere.go) is a hand-rolled static
+// heuristic ("cheap and references no wide column"), and TraceQL structural
+// joins pick a build side with no cardinality estimate at all. ClickHouse
+// column statistics give the query planner real minmax/uniq/tdigest estimates
+// to drive both — a substrate cerberus never asks the server for today. A
+// live probe against ClickHouse 26.5 (via chDB) confirms `allow_statistics_
+// optimize` DOES reorder an explicitly multi-condition PREWHERE clause by
+// statistics-derived selectivity rather than only column byte-size (upstream
+// RFC https://github.com/ClickHouse/ClickHouse/pull/53240), resolving the
+// issue's own flagged uncertainty in this feature's favor.
+//
+// Column choice mirrors the issue's own curated list: the columns cerberus's
+// OWN query patterns filter or join on most, not a blanket "every column"
+// sweep that would only tax every insert and merge for no read-side benefit.
+//
+// STATISTICS-TYPE-PER-COLUMN-TYPE (verified against a live server, NOT
+// assumed from the issue's text): `minmax` and `tdigest` are numeric-only —
+// ClickHouse rejects ADD STATISTICS outright (code 708, ILLEGAL_STATISTICS)
+// for either type on a String or LowCardinality(String) column. Only `uniq`
+// applies to a string-typed column. So ServiceName/MetricName/SpanName/
+// TraceId (all String or LowCardinality(String) in the upstream OTel-CH
+// schema) carry `uniq` ONLY — which is also the semantically right stat for
+// an equality-filtered identity column: `minmax` exists for RANGE predicates
+// a string equality never issues anyway. AggregationTemporality (Int32) and
+// SeverityNumber (UInt8) are numeric, so they carry `minmax, uniq`. Duration
+// (UInt64) additionally carries `tdigest`, since Duration is filtered by
+// RANGE (a latency threshold) far more than by equality, and tdigest is what
+// lets the planner estimate a range predicate's selectivity rather than just
+// its bounds.
+const (
+	statTypeMinMax  = "minmax"
+	statTypeUniq    = "uniq"
+	statTypeTDigest = "tdigest"
+
+	// spanNameColumn / durationColumn / traceIdColumn / severityNumberColumn
+	// name fixed OTel-CH exporter columns outside the metrics tables that the
+	// statistics registry below targets — SpanName and Duration on the traces
+	// spans table, TraceId on both the spans and logs tables, SeverityNumber
+	// on the logs table. ServiceName is common to all three signals' base
+	// OTel-CH tables, so metricServiceNameColumn's value ("ServiceName") is
+	// reused directly for logs/traces rather than duplicated under a second
+	// name.
+	spanNameColumn       = "SpanName"
+	durationColumn       = "Duration"
+	traceIdColumn        = "TraceId"
+	severityNumberColumn = "SeverityNumber"
+)
+
+// stringStatTypes is the TYPE list for every String / LowCardinality(String)
+// statistics column below (ServiceName, MetricName, SpanName, TraceId) — see
+// the package doc comment above for why `minmax`/`tdigest` are excluded
+// (ClickHouse rejects them outright on a string-typed column).
+var stringStatTypes = []string{statTypeUniq}
+
+// numericMinMaxUniqStatTypes is the TYPE list for the numeric non-Duration
+// statistics columns (AggregationTemporality, SeverityNumber).
+var numericMinMaxUniqStatTypes = []string{statTypeMinMax, statTypeUniq}
+
+// durationStatTypes additionally carries tdigest — see the package doc
+// comment above for why Duration alone gets a third statistics type.
+var durationStatTypes = []string{statTypeMinMax, statTypeUniq, statTypeTDigest}
+
+// renderAddColumnStatistics builds one idempotent ADD STATISTICS ALTER
+// installing every entry of types on every entry of columns of one table. ON
+// CLUSTER is threaded so the ALTER replicates the same way the CREATE
+// statements do. ADD STATISTICS IF NOT EXISTS is metadata-only and
+// idempotent, so the same Apply path covers both freshly-created and
+// pre-existing tables — mirroring renderAddMetricProjection /
+// renderAddTemporalityIndex.
+func renderAddColumnStatistics(cfg Config, table string, columns, types []string) string {
+	stmt := chsql.AlterTableAddStatistics(cfg.Database, table, columns, types)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// renderMetricsColumnStatistics returns the curated ADD STATISTICS ALTERs for
+// all five metrics fact tables: ServiceName + MetricName (`uniq` — both are
+// String-family) everywhere, plus AggregationTemporality (`minmax, uniq` — an
+// Int32 column, its own separate ALTER) on the SAME sum/histogram pair
+// renderAddTemporalityIndex already indexes — the two tables a
+// rate()/increase() range window can route natively onto (see that
+// function's doc comment); gauge never carries the column at all, and
+// exp_histogram carries it but sits outside every temporality-aware routing
+// path, so statistics on it would only tax writes for a column no read path
+// ever filters.
+func renderMetricsColumnStatistics(cfg Config) []string {
+	tables := []string{
+		cfg.Tables.MetricsGauge,
+		cfg.Tables.MetricsSum,
+		cfg.Tables.MetricsHistogram,
+		cfg.Tables.MetricsExpHistogram,
+		cfg.Tables.MetricsSummary,
+	}
+	stmts := make([]string, 0, len(tables)+2)
+	for _, table := range tables {
+		stmts = append(stmts, renderAddColumnStatistics(cfg, table,
+			[]string{metricServiceNameColumn, metricNameColumn}, stringStatTypes))
+	}
+	for _, table := range []string{cfg.Tables.MetricsSum, cfg.Tables.MetricsHistogram} {
+		stmts = append(stmts, renderAddColumnStatistics(cfg, table,
+			[]string{aggregationTemporalityColumn}, numericMinMaxUniqStatTypes))
+	}
+	return stmts
+}
+
+// renderLogsColumnStatistics returns the curated ADD STATISTICS ALTERs for
+// the logs table: ServiceName + TraceId (`uniq` — both String-family; the
+// highest-selectivity equality filter on almost every LogQL query, and the
+// trace-to-logs correlation join key, respectively), and SeverityNumber
+// (`minmax, uniq` — a UInt8 column) in its own separate ALTER.
+func renderLogsColumnStatistics(cfg Config) []string {
+	return []string{
+		renderAddColumnStatistics(cfg, cfg.Tables.Logs,
+			[]string{metricServiceNameColumn, traceIdColumn},
+			stringStatTypes),
+		renderAddColumnStatistics(cfg, cfg.Tables.Logs,
+			[]string{severityNumberColumn},
+			numericMinMaxUniqStatTypes),
+	}
+}
+
+// renderTracesColumnStatistics returns the curated ADD STATISTICS ALTERs for
+// the traces spans table: ServiceName + SpanName + TraceId in one ALTER
+// (`uniq` — all three are String-family: ServiceName and SpanName are the
+// structural query's own ORDER BY prefix, TraceId is the join key TraceQL
+// structural queries and the logs/traces correlation both key on), and
+// Duration in a second ALTER (`minmax, uniq, tdigest` — a UInt64 column; see
+// the package doc comment for why it alone gets the extra tdigest type).
+func renderTracesColumnStatistics(cfg Config) []string {
+	return []string{
+		renderAddColumnStatistics(cfg, cfg.Tables.Traces,
+			[]string{metricServiceNameColumn, spanNameColumn, traceIdColumn},
+			stringStatTypes),
+		renderAddColumnStatistics(cfg, cfg.Tables.Traces,
+			[]string{durationColumn},
+			durationStatTypes),
+	}
+}
+
+// isColumnStatisticsUnsupported reports whether err looks like ClickHouse
+// refusing an ADD STATISTICS ALTER because column statistics are not
+// supported on the connected server — most notably ClickHouse Cloud, which
+// the upstream docs state does not support statistics at all
+// (https://clickhouse.com/docs/sql-reference/statements/alter/statistics).
+// cerberus could not pin ClickHouse's exact error code for that specific
+// rejection (unlike, say, chclient.IsUnknownTable's typed code-60 check), so
+// detection here is a narrow phrase match rather than a typed
+// *clickhouse.Exception check: it requires "statist" together with a refusal
+// word ("not supported" / "not implemented" / "disabled" / "cloud"), so a
+// genuine connectivity or syntax error on an unrelated statement is never
+// misclassified as this tolerable case.
+func isColumnStatisticsUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "statist") {
+		return false
+	}
+	return strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "not implemented") ||
+		strings.Contains(msg, "disabled") ||
+		strings.Contains(msg, "cloud")
 }

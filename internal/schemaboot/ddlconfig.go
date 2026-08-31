@@ -125,6 +125,13 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		DeltaPrefixEnabled:      p.DeltaPrefixEnabled,
 		DeltaPrefixBucketColumn: cfg.Schema.DeltaPrefixBucketColumn,
 		DeltaPrefixSumColumn:    cfg.Schema.DeltaPrefixSumColumn,
+		// ColumnStatisticsEnabled (cerberus issue #2766) is the resolved
+		// chopt column_statistics verdict, back-filled by cmd/cerberus's boot
+		// resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the same threading
+		// SchemaMapBucketedSerialization above uses for the logs/traces
+		// SETTINGS tail.
+		ColumnStatisticsEnabled: cfg.SchemaColumnStatistics,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

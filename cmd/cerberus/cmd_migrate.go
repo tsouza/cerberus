@@ -211,6 +211,10 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// remains the actual authority: it enforces the version floor before
 			// ever applying this DDL for real.
 			cfg.SchemaMapBucketedSerialization = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureMapBucketedSerialization)
+			// Same best-effort preview for column_statistics (cerberus issue
+			// #2766) — also AutoSelect=false, so the same explicit-listing-only
+			// reasoning applies.
+			cfg.SchemaColumnStatistics = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureColumnStatistics)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}
