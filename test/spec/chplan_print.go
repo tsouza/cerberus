@@ -982,6 +982,7 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnSumForEach:                      "FnSumForEach",
 	chplan.FnSumMap:                          "FnSumMap",
 	chplan.FnUniqExact:                       "FnUniqExact",
+	chplan.FnUniqUpTo:                        "FnUniqUpTo",
 	chplan.FnVarPop:                          "FnVarPop",
 }
 
