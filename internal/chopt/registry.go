@@ -450,6 +450,46 @@ const (
 	// at https://github.com/tsouza/cerberus/issues/2797.
 	FeatureFixedAccumulatorExtrapolated = "fixed_accumulator_extrapolated"
 
+	// FeatureSortedSlabOverTime opts eligible query_range sum_over_time() /
+	// avg_over_time() matrix shapes onto a per-series sorted slab (one
+	// groupArray per series), with each anchor's window resolved by
+	// arrayLastIndex index math over that sorted array and cut out with
+	// arraySlice in one allocation — never an arrayFilter re-scan of the
+	// whole slab per anchor — retiring the arrayJoin fan-out +
+	// GROUP BY (series, anchor) regroup
+	// (internal/chsql.emitWindowedArrayMatrix) for those two shapes
+	// (cerberus issue #2761). The regroup's per-(series, anchor) window
+	// array is an UNGUARDED fan-out axis — unlike rate/increase/delta
+	// (#2429) it carries no size guard at all — so peak memory scales with
+	// samples * anchors; the sorted-slab shape bounds it to samples per
+	// series, independent of anchor count.
+	//
+	// Scoped to sum_over_time / avg_over_time only, deliberately narrower
+	// than the issue's own full *_over_time proposal (which also names
+	// first/last/stddev/stdvar/mad_over_time): these two are the ones whose
+	// byte-identical contract with the array-fold is the SIMPLEST to state
+	// and verify (arraySum / arrayAvg over the sliced window fold in the
+	// same left-to-right float order the array-fold's identical reducers
+	// already use — see chplan.RangeWindow.SortedSlabOverTime's own doc),
+	// so this cut ships the mandatory arraySlice-preserving-order form the
+	// issue calls out first. min/max/count/present_over_time already skip
+	// the array-fold entirely (overTimeDirectAggFrag's direct CH group
+	// aggregate); first/last/stddev/stdvar/mad_over_time extending to the
+	// same slab shape is tracked at
+	// https://github.com/tsouza/cerberus/issues/2802.
+	//
+	// Like fixed_accumulator_extrapolated this is a pure SQL-SHAPE
+	// optimization — groupArray/arraySort/arrayLastIndex/arraySlice/
+	// arraySum/arrayAvg are all long-standing ClickHouse primitives — so it
+	// carries NO version gate (AlwaysAvailable) and no
+	// allow_experimental_* setting.
+	//
+	// AutoSelect is false, mirroring fixed_accumulator_extrapolated: pending
+	// an optcorpus A/B pass before promoting to auto-selected. Reachable
+	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=sorted_slab_over_time
+	// listing.
+	FeatureSortedSlabOverTime = "sorted_slab_over_time"
+
 	// FeatureMapBucketedSerialization stamps
 	// map_serialization_version='with_buckets' on the logs table and the
 	// traces spans table's CREATE TABLE SETTINGS tail (cerberus issue #2774).
@@ -743,6 +783,13 @@ var registry = []Feature{
 		Doc:        "opt eligible query_range rate/increase/delta shapes onto per-(series, anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf), retiring the array-fold fan-out (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
 	},
 	{
+		ID:         FeatureSortedSlabOverTime,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced once per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+	},
+	{
 		ID:         FeatureMapBucketedSerialization,
 		MinVersion: Version{Major: 26, Minor: 4},
 		Stability:  Experimental,
@@ -757,7 +804,7 @@ var registry = []Feature{
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta,
 // laginframe_adjacency, fixed_accumulator_extrapolated,
-// map_bucketed_serialization). The copy
+// sorted_slab_over_time, map_bucketed_serialization). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

@@ -551,6 +551,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSGridDelta:                  {ID: FeatureTSGridDelta, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureLagInFrameAdjacency:          {ID: FeatureLagInFrameAdjacency, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: false},
 		FeatureFixedAccumulatorExtrapolated: {ID: FeatureFixedAccumulatorExtrapolated, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureSortedSlabOverTime:           {ID: FeatureSortedSlabOverTime, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {

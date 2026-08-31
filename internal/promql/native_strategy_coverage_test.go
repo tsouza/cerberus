@@ -155,6 +155,18 @@ var nativeStrategies = []nativeStrategy{
 			l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
 		},
 	},
+	{
+		field:   "OverTime",
+		section: "experimental_sorted_slab_over_time",
+		// Unlike fixed_accumulator_extrapolated (deliberately NOT a row here
+		// — see wireNativeStrategies' own comment — because Rate/Increase/
+		// Delta already have a row each), sum_over_time/avg_over_time have
+		// no OTHER row that ever sets l.OverTime, so the sorted-slab
+		// strategy needs its own row to be reachable from a fixture at all.
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

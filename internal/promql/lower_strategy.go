@@ -166,6 +166,23 @@ type IdeltaLowerer interface {
 	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// OverTimeLowerer lowers a range-mode sum_over_time(...) / avg_over_time(...)
+// RangeWindow to a chplan node (cerberus issue #2761). Like IrateLowerer there
+// is no ClickHouse-native timeSeries*ToGrid member for the *_over_time
+// family — the only alternative to the array-fold fan-out
+// (emitWindowedArrayMatrix) is the sorted-slab shape (a single per-series
+// groupArray, each anchor's window cut out by arrayLastIndex + arraySlice
+// index math, see chsql/range_window_sorted_slab.go), so this interface has
+// exactly one
+// non-fan-out impl. It ALWAYS returns a valid lowering: the sorted-slab impl
+// emits RangeWindow{SortedSlabOverTime: true} for a shape-eligible window and
+// delegates to its embedded fan-out fallback otherwise; the fan-out impl
+// returns rw unchanged. Never nil.
+type OverTimeLowerer interface {
+	// LowerOverTime returns the chplan node for rw. Never nil.
+	LowerOverTime(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
 // RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
@@ -281,6 +298,12 @@ type RangeLowerers struct {
 	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
 	// feature is off; never nil on the lowering path.
 	Idelta IdeltaLowerer
+
+	// OverTime handles range-mode sum_over_time(...) / avg_over_time(...)
+	// shapes (sorted-slab groupArray, index-math-sliced per anchor,
+	// sorted_slab_over_time — no version floor). Concrete fan-out impl when
+	// the feature is off; never nil on the lowering path.
+	OverTime OverTimeLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -325,6 +348,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Idelta == nil {
 		l.Idelta = FanoutIdeltaLowerer{}
+	}
+	if l.OverTime == nil {
+		l.OverTime = FanoutOverTimeLowerer{}
 	}
 	return l
 }
@@ -648,6 +674,63 @@ func fixedAccumulatorEligible(rw *chplan.RangeWindow) bool {
 		return false
 	}
 	if rw.DeltaPrefixAggregateInput != nil {
+		return false
+	}
+	return len(rw.Variants) == 0
+}
+
+// FanoutOverTimeLowerer is the concrete DEFAULT OverTimeLowerer: it returns
+// the generic fan-out RangeWindow (emitWindowedArrayMatrix's array-fold
+// fan-out) unchanged. It is the fallback the sorted-slab impl embeds AND the
+// strategy a fan-out-only deployment wires directly.
+type FanoutOverTimeLowerer struct{}
+
+// LowerOverTime returns the fan-out RangeWindow rw unchanged.
+func (FanoutOverTimeLowerer) LowerOverTime(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// SortedSlabOverTimeLowerer is the boot-wired OverTimeLowerer that emits
+// RangeWindow{SortedSlabOverTime: true} for a shape-eligible sum_over_time /
+// avg_over_time range-window (cerberus issue #2761). cmd/cerberus wires it
+// ONLY when chopt resolved sorted_slab_over_time at boot.
+type SortedSlabOverTimeLowerer struct {
+	// Fallback is the concrete lowerer for shapes the sorted-slab path
+	// cannot handle. Boot wires it to FanoutOverTimeLowerer{}.
+	Fallback OverTimeLowerer
+}
+
+// LowerOverTime returns rw with SortedSlabOverTime set for an eligible
+// window, or delegates to the embedded Fallback otherwise.
+func (l SortedSlabOverTimeLowerer) LowerOverTime(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if sortedSlabOverTimeEligible(rw) {
+		out := *rw
+		out.SortedSlabOverTime = true
+		return &out
+	}
+	return l.Fallback.LowerOverTime(rw, s)
+}
+
+// sortedSlabOverTimeEligible is the intrinsic query-SHAPE eligibility
+// predicate for the sorted-slab decomposition — reads NO feature flag or
+// server version, mirroring fixedAccumulatorEligible's shape clauses (there
+// is no DeltaPrefixAggregateInput concern here: that field is populated only
+// by the rate/increase/delta DELTA-prefix lowering, never by *_over_time).
+// Every clause that fails sends the query down the unchanged fan-out path:
+//
+//   - rw.Identity must be false — the bare-vector subquery no-op path is not
+//     a reducer.
+//   - The window must be the materialised MATRIX grid: OuterRange > 0,
+//     Step > 0, and both Start and End pinned — the sorted-slab emitter's
+//     per-series groupArray needs the same scan-prune bound
+//     fixedAccumulatorEligible's identical clause exists for.
+//   - rw.Variants must be empty: the fused multi-arm shape has its own
+//     emitter and does not participate in this decomposition.
+func sortedSlabOverTimeEligible(rw *chplan.RangeWindow) bool {
+	if rw.Identity {
+		return false
+	}
+	if rw.OuterRange <= 0 || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
 		return false
 	}
 	return len(rw.Variants) == 0

@@ -325,6 +325,30 @@ type RangeWindow struct {
 	// permanent, always-available fallback the
 	// FeatureFixedAccumulatorExtrapolated chopt kill-switch resolves to.
 	FixedAccumulatorExtrapolated bool
+
+	// SortedSlabOverTime asks the matrix-shape (OuterRange > 0) emitter to
+	// render sum_over_time() / avg_over_time() via a single per-series
+	// groupArray (the "slab"), with each anchor's window cut out of it by
+	// arrayLastIndex index math + arraySlice, instead of the sample-side
+	// arrayJoin fan-out +
+	// GROUP BY (series, anchor) regroup (cerberus issue #2761). Peak memory
+	// tracks one sorted array per series rather than one per (series,
+	// anchor) group. Set only by the boot-wired
+	// promql.SortedSlabOverTimeLowerer strategy — never read as a per-query
+	// feature flag.
+	//
+	// Scoped to sum_over_time / avg_over_time only: their reducers
+	// (arraySum / arrayAvg) fold left-to-right over the sliced window, the
+	// SAME float-addition order the array-fold's arraySum/arrayAvg over
+	// window_vals uses, so the two paths are byte-identical. See
+	// chsql/range_window_sorted_slab.go for the emit side and
+	// internal/chplan/sliceinvariant.go's RangeWindow entry for why this
+	// remains slice-invariant.
+	//
+	// false (the default) keeps the unchanged array-fold emission — the
+	// permanent, always-available fallback the FeatureSortedSlabOverTime
+	// chopt kill-switch resolves to.
+	SortedSlabOverTime bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -466,6 +490,9 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 	}
 	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||
 		r.FixedAccumulatorExtrapolated != o.FixedAccumulatorExtrapolated {
+		return false
+	}
+	if r.SortedSlabOverTime != o.SortedSlabOverTime {
 		return false
 	}
 	return r.VariantColumn == o.VariantColumn

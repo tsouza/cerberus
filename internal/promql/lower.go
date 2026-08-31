@@ -3200,34 +3200,38 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // substrate; see test/spec/promql/native_rate_range_step.txtar and the
 // dual-emit parity tests).
 //
-// For a window with no dedicated strategy (the *_over_time family and
-// friends) the Rate strategy's fan-out fallback returns rw unchanged, so the
-// caller's node stays rw and the last/first_over_time name-preservation wrap
-// applies exactly as before. For rate / increase / delta the returned node IS
-// the lowering (native, fixed-accumulator, or fan-out RangeWindow); all three
-// drop `__name__`, so they never match the name-preservation wrap and flow
-// through as-is.
+// For a window with no dedicated strategy (every *_over_time member other
+// than sum_over_time/avg_over_time, and friends) the Rate strategy's fan-out
+// fallback returns rw unchanged, so the caller's node stays rw and the
+// last/first_over_time name-preservation wrap applies exactly as before. For
+// rate / increase / delta / sum_over_time / avg_over_time the returned node
+// IS the lowering (native, fixed-accumulator, sorted-slab, or fan-out
+// RangeWindow); all five drop `__name__`, so they never match the
+// name-preservation wrap and flow through as-is.
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
-// impl. rate / increase / delta / changes / resets / deriv / irate / idelta
-// each route to their own boot-wired strategy (changes/resets/irate/idelta
-// may resolve to the lagInFrame annotation shape,
-// chplan.RangeWindow.LagAdjacency, layered beneath changes/resets' own native
-// ts_grid strategy; increase reuses rate's timeSeriesRateToGrid aggregate,
-// multiplied back by the window seconds; rate/increase/delta may ADDITIONALLY
-// resolve to the fixed-accumulator decomposition,
+// impl. rate / increase / delta / changes / resets / deriv / irate / idelta /
+// sum_over_time / avg_over_time each route to their own boot-wired strategy
+// (changes/resets/irate/idelta may resolve to the lagInFrame annotation
+// shape, chplan.RangeWindow.LagAdjacency, layered beneath changes/resets' own
+// native ts_grid strategy; increase reuses rate's timeSeriesRateToGrid
+// aggregate, multiplied back by the window seconds; rate/increase/delta may
+// ADDITIONALLY resolve to the fixed-accumulator decomposition,
 // chplan.RangeWindow.FixedAccumulatorExtrapolated, layered beneath each
 // function's own native ts_grid strategy — delta gained its own native
 // ts_grid_delta competitor (cerberus issue #2745), so all three of rate /
 // increase / delta now share the same three-tier Native{Fallback:
-// FixedAccumulator{Fallback: Fanout{}}} shape); every other range fn (the
-// *_over_time family and friends) keeps the fan-out rw via the rate
-// strategy's pass-through (those funcs have no native timeSeries*ToGrid
-// aggregate, lagInFrame annotation, or fixed-accumulator decomposition proven
-// equivalent yet).
+// FixedAccumulator{Fallback: Fanout{}}} shape; sum_over_time/avg_over_time
+// have no native ts_grid competitor at all — their only non-fan-out arm is
+// the sorted-slab decomposition, chplan.RangeWindow.SortedSlabOverTime,
+// cerberus issue #2761); every OTHER range fn (the rest of the *_over_time
+// family and friends) keeps the fan-out rw via the rate strategy's
+// pass-through (those funcs have no native timeSeries*ToGrid aggregate,
+// lagInFrame annotation, fixed-accumulator, or sorted-slab decomposition
+// proven equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
 	switch c.Func.Name {
@@ -3245,6 +3249,8 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
+	case "sum_over_time", "avg_over_time":
+		return ctx.lowerers.OverTime.LowerOverTime(rw, s)
 	default:
 		return ctx.lowerers.Rate.LowerRate(rw, s)
 	}
