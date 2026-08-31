@@ -1124,25 +1124,10 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// Both accept 0 (see their own doc: 0 disables the respective margin/ttl
-	// rather than being "use the default" — v.SetDefault below already
-	// resolves an UNSET env var to the non-zero default), so
-	// getNonNegativeDuration's only job here is rejecting a negative value.
-	resultCacheIngestLag, err := getNonNegativeDuration(v, envResultCacheIngestLag)
+	resultCacheIngestLag, resultCacheTTL, err := resultCacheDurationsFromEnv(v)
 	if err != nil {
 		return Config{}, err
 	}
-	resultCacheTTL, err := getNonNegativeDuration(v, envResultCacheTTL)
-	if err != nil {
-		return Config{}, err
-	}
-	// CERBERUS_CH_QUERY_WORKLOAD is a plain WORKLOAD name (or empty — the
-	// default, meaning off). No validation beyond the string parse itself:
-	// cerberus does not (and, against a cluster it does not own, cannot
-	// safely) verify the named workload exists — the boot capability probe
-	// in cmd/cerberus checks only whether the server accepts the `workload`
-	// setting at all.
-	chQueryWorkload := getString(v, envCHQueryWorkload)
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -1250,7 +1235,7 @@ func FromEnv() (Config, error) {
 		ResultCacheTTL:          resultCacheTTL,
 		CHOptimizations:         flags.CHOptimizations,
 		CHOptimizationsMode:     flags.CHOptimizationsMode,
-		CHQueryWorkload:         chQueryWorkload,
+		CHQueryWorkload:         flags.CHQueryWorkload,
 		LegacyTSGridFlag:        flags.TSGrid,
 		CHOptCorpus:             flags.CHOptCorpus,
 		Log:                     logCfg,
@@ -2569,6 +2554,9 @@ type bootFlags struct {
 	CHOptimizations     string
 	CHOptimizationsMode chopt.Mode
 	CHOptCorpus         CHOptCorpusConfig
+	// CHQueryWorkload mirrors chOptParsed.QueryWorkload — see that field's
+	// own doc.
+	CHQueryWorkload string
 }
 
 // bootFlagsFromEnv parses the boolean boot toggles, failing fast on a
@@ -2631,6 +2619,7 @@ func bootFlagsFromEnv(v *viper.Viper) (bootFlags, error) {
 		CHOptimizations:         chOpt.Optimizations,
 		CHOptimizationsMode:     chOpt.Mode,
 		CHOptCorpus:             chOpt.Corpus,
+		CHQueryWorkload:         chOpt.QueryWorkload,
 	}, nil
 }
 
@@ -2642,13 +2631,20 @@ type chOptParsed struct {
 	Optimizations string
 	Mode          chopt.Mode
 	Corpus        CHOptCorpusConfig
+	// QueryWorkload is CERBERUS_CH_QUERY_WORKLOAD, carried verbatim (no
+	// validation beyond the string parse — see Config.CHQueryWorkload's own
+	// doc for the boot-probe contract). Grouped here, rather than a separate
+	// parse in FromEnv, for the same statement-count reason every other
+	// field on this struct is.
+	QueryWorkload string
 }
 
 // chOptFromEnv parses the CERBERUS_CH_OPTIMIZATIONS, CERBERUS_CH_OPTIMIZATIONS_
-// MODE, and CERBERUS_CH_OPT_CORPUS_* knobs. The mode fails fast on an invalid
-// value; the raw optimizations string is carried verbatim (it is resolved
-// against the probed server version in cmd/cerberus, not here). Extracted from
-// FromEnv so the parses live in one place.
+// MODE, CERBERUS_CH_OPT_CORPUS_*, and CERBERUS_CH_QUERY_WORKLOAD knobs. The
+// mode fails fast on an invalid value; the raw optimizations string and the
+// query-workload name are carried verbatim (both are resolved/probed against
+// the connected server in cmd/cerberus, not here). Extracted from FromEnv so
+// the parses live in one place.
 func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 	mode, err := chopt.ParseMode(getString(v, envCHOptimizationsMode))
 	if err != nil {
@@ -2662,7 +2658,27 @@ func chOptFromEnv(v *viper.Viper) (chOptParsed, error) {
 		Optimizations: getString(v, envCHOptimizations),
 		Mode:          mode,
 		Corpus:        corpus,
+		QueryWorkload: getString(v, envCHQueryWorkload),
 	}, nil
+}
+
+// resultCacheDurationsFromEnv parses CERBERUS_RESULT_CACHE_INGEST_LAG and
+// CERBERUS_RESULT_CACHE_TTL. Both accept 0 (see their own field doc: 0
+// disables the respective margin/ttl rather than meaning "use the default"
+// — v.SetDefault elsewhere already resolves an UNSET env var to the
+// non-zero default), so getNonNegativeDuration's only job here is rejecting
+// a negative value. Extracted from FromEnv so the two parses live in one
+// place, the same statement-count reason chOptFromEnv exists.
+func resultCacheDurationsFromEnv(v *viper.Viper) (ingestLag, ttl time.Duration, err error) {
+	ingestLag, err = getNonNegativeDuration(v, envResultCacheIngestLag)
+	if err != nil {
+		return 0, 0, err
+	}
+	ttl, err = getNonNegativeDuration(v, envResultCacheTTL)
+	if err != nil {
+		return 0, 0, err
+	}
+	return ingestLag, ttl, nil
 }
 
 // chOptCorpusFromEnv parses the CERBERUS_CH_OPT_CORPUS_* knobs into a

@@ -493,20 +493,10 @@ func run() error {
 	// rolling ClickHouse upgrade that crosses a feature floor moves the answer
 	// under a running pod, and reprobeCHOptimizations (started once the heads
 	// are mounted) swaps the new one into the query path.
-	// Captured BEFORE resolveCHOptimizations mutates cfg.CHQueryWorkload
-	// in place (down to "" on a rejected/unreachable boot probe): the raw
-	// operator-configured CERBERUS_CH_QUERY_WORKLOAD, threaded into
-	// reprobeCHOptimizations below so a later re-probe re-evaluates the
-	// ORIGINAL request against a possibly-upgraded server, rather than
-	// being permanently pinned to whatever boot's own probe found (see
-	// resolveQueryWorkload's own doc).
-	rawQueryWorkload := cfg.CHQueryWorkload
-	optRes, err := resolveCHOptimizations(ctx, logger, client, &cfg)
+	optSet, chOpts, optRes, err := startCHOptimizations(ctx, logger, client, &cfg)
 	if err != nil {
 		return err
 	}
-	optSet := optRes.Set
-	chOpts := newCHOptLive(optRes)
 
 	// schemaReady reports whether the auto-create-schema startup hook
 	// has finished at least once; /readyz consults it on every probe.
@@ -590,7 +580,7 @@ func run() error {
 	// connected server and swaps a changed result into the heads mounted above,
 	// so an upgraded ClickHouse is picked up without restarting cerberus. Bound
 	// to the run ctx, so SIGTERM stops it.
-	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, rawQueryWorkload)
+	go reprobeCHOptimizations(ctx, logger, cfg, chOpts, heads.consumers, chOptReprobeInterval, optRes.RawQueryWorkload)
 
 	tracedAPI := wrapWithOTel(traceMux, "cerberus")
 
@@ -1395,6 +1385,15 @@ type chOptResolution struct {
 	// reprobeCHOptimizations can swap it live alongside Set on a capability
 	// change, exactly like every other field here.
 	QueryWorkload string
+	// RawQueryWorkload is the ORIGINAL, un-resolved CERBERUS_CH_QUERY_
+	// WORKLOAD (config.Config.CHQueryWorkload, read BEFORE
+	// resolveCHOptimizations mutates its own *config.Config copy's field
+	// down to "" on a rejected/unreachable boot probe). run() threads this
+	// into reprobeCHOptimizations so a later re-probe re-evaluates the
+	// ORIGINAL request against a possibly-upgraded server rather than
+	// being permanently pinned to whatever boot's own probe found — see
+	// reprobeCHOptimizations's own doc.
+	RawQueryWorkload string
 }
 
 // supportedFloorVersion is the oldest ClickHouse cerberus supports, and the
@@ -1402,6 +1401,20 @@ type chOptResolution struct {
 // keeps every floor-safe optimization on while holding back anything newer, so
 // a failed probe degrades the feature set rather than the process.
 var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
+
+// startCHOptimizations wraps resolveCHOptimizations's boot call for run():
+// it runs the ONE-TIME resolution and derives the two forms every later
+// caller in run() needs from it (the plain EnabledSet, and the resolution
+// wrapped in a live holder for reprobeCHOptimizations / the /info handler),
+// collapsing what would otherwise be five separate statements in run() into
+// one call + the mandatory error check.
+func startCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chopt.EnabledSet, *chOptLive, chOptResolution, error) {
+	optRes, err := resolveCHOptimizations(ctx, logger, client, cfg)
+	if err != nil {
+		return chopt.EnabledSet{}, nil, chOptResolution{}, err
+	}
+	return optRes.Set, newCHOptLive(optRes), optRes, nil
+}
 
 // resolveCHOptimizations probes the connected ClickHouse server version and
 // resolves the CERBERUS_CH_OPTIMIZATIONS auto-picker against it at boot,
@@ -1414,7 +1427,6 @@ var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
 // configured-but-rejected workload name is cleared (permissive/auto
 // fallback) or fatal (enforcing) — see the probe call's own comment below.
 //
-
 // The version probe is best-effort with respect to CONNECTIVITY: cerberus is
 // designed to boot even when ClickHouse is briefly unreachable (the
 // cerberus + collector startup race, where the background re-probe flips
@@ -1426,6 +1438,7 @@ var supportedFloorVersion = chopt.Version{Major: 24, Minor: 8}
 // (unknown feature id, or an unsupported explicit id under enforcing) is still
 // fatal — that is a typo/operator error, independent of connectivity.
 func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *chclient.Client, cfg *config.Config) (chOptResolution, error) {
+	rawQueryWorkload := cfg.CHQueryWorkload
 	resolvedVersion, err := probeVersionOverBootstrap(ctx, cfg.ClickHouse)
 	versionFallback := err != nil
 	if err != nil {
@@ -1531,10 +1544,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 		"enabled", strings.Join(set.IDs(), ","),
 	)
 	return chOptResolution{
-		Set:             set,
-		ResolvedVersion: resolvedVersion,
-		VersionFallback: versionFallback,
-		QueryWorkload:   resolvedQueryWorkload,
+		Set:              set,
+		ResolvedVersion:  resolvedVersion,
+		VersionFallback:  versionFallback,
+		QueryWorkload:    resolvedQueryWorkload,
+		RawQueryWorkload: rawQueryWorkload,
 	}, nil
 }
 
