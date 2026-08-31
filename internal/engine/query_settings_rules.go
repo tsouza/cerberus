@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -90,6 +91,36 @@ type SettingsRules struct {
 	// enabled can cluster by normalized_query_hash + log_comment.
 	LogCommentShape bool
 
+	// ResultCache, when true, stamps use_query_cache=1 + query_cache_ttl on a
+	// query whose evaluated windows have all fully CLOSED (see
+	// eligibleForResultCache) so ClickHouse's query result cache can answer a
+	// dashboard's byte-identical re-issue of the same query_range without
+	// re-scanning. Driven by the result_cache registry feature, which is
+	// AutoSelect but gated on the boot result-cache capability probe (a
+	// hardened/constrained profile, or a server-disabled query cache, drops
+	// this to false regardless of version — see chopt.FeatureResultCache).
+	// The eligibility check is cerberus's own correctness guard, not merely a
+	// convenience: it is the ONLY thing standing between "cache a fully-closed
+	// historical panel" and "cache a live-edge tail forever" — see the doc on
+	// eligibleForResultCache for exactly what it verifies.
+	ResultCache bool
+
+	// ResultCacheIngestLag is the deployment's configured
+	// CERBERUS_RESULT_CACHE_INGEST_LAG: how far behind wall-clock now the
+	// ingest pipeline may still be writing rows for. eligibleForResultCache
+	// requires a query's window End to be strictly before now minus this
+	// horizon before ResultCache is ever stamped.
+	ResultCacheIngestLag time.Duration
+
+	// ResultCacheTTL is the deployment's configured CERBERUS_RESULT_CACHE_TTL,
+	// stamped as query_cache_ttl (seconds) alongside use_query_cache=1.
+	ResultCacheTTL time.Duration
+
+	// Now returns the current time for eligibleForResultCache's window-closed
+	// check. Nil (the production default) uses time.Now(); tests inject a
+	// fixed clock so the closed/live-edge boundary can be pinned exactly.
+	Now func() time.Time
+
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix
 	// the aggregation-in-order eligibility check reads to map a scanned table
 	// name to its bare-column sort-key prefix. They mirror the same schema the
@@ -117,7 +148,18 @@ func (r SettingsRules) enabledOpts() []string {
 	if r.JoinSpill {
 		opts = append(opts, "join_spill")
 	}
+	if r.ResultCache {
+		opts = append(opts, "result_cache")
+	}
 	return opts
+}
+
+// now returns r.Now() when set, else time.Now() — see the Now field's doc.
+func (r SettingsRules) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // apply layers the enabled settings rules onto ctx for plan. Each rule that
@@ -140,6 +182,9 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 		if id := planShapeID(plan); id != "" {
 			ctx = chclient.WithQuerySetting(ctx, settingLogComment, id)
 		}
+	}
+	if r.ResultCache && eligibleForResultCache(plan, r.now(), r.ResultCacheIngestLag) {
+		ctx = chclient.WithResultCacheSetting(ctx, int64(r.ResultCacheTTL.Seconds()))
 	}
 	return ctx
 }
@@ -461,6 +506,118 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 	default:
 		return nil
 	}
+}
+
+// eligibleForResultCache reports whether plan's evaluated windows have ALL
+// fully CLOSED as of now, so ClickHouse's query result cache
+// (use_query_cache) can safely serve a cached answer for it without ever
+// risking a stale live-edge tail. This is cerberus's OWN correctness guard —
+// not merely a convenience layered on top of ClickHouse's own
+// query_cache_nondeterministic_function_handling, which the issue this
+// implements (#2781) explicitly calls out as defense-in-depth rather than the
+// primary gate.
+//
+// Eligibility requires ALL of:
+//
+//   - at least one range-mode (Step > 0) chplan.GridCarrier anywhere in the
+//     plan — the query_range shape the result cache targets. A plan with
+//     none (an instant query, or a metadata-only plan with no eval grid at
+//     all — internal/api/prom's /api/v1/labels, /api/v1/series, and similar
+//     metadata routes dispatch straight through chclient.Client.Query /
+//     QueryStrings, never through the engine's execute seam this rule lives
+//     on, so they never even reach this function) is conservatively NOT
+//     eligible: there is no window to prove closed.
+//   - EVERY range-mode carrier's Start and End are concrete, non-zero
+//     timestamps. The zero time.Time is the codebase-wide sentinel for
+//     "resolve at emit time" (chplan.checkPredictedGrid and siblings in
+//     reanchor.go all test Start.IsZero() && End.IsZero() the same way) —
+//     nativeGridTimeBoundFrag and timeOrNowFrag
+//     (internal/chsql/range_window.go) both render a bare `now()` /
+//     `now64(9)` SQL call for a zero Start/End, so a zero-time carrier's
+//     window is NOT fixed at all: it resolves to whenever ClickHouse happens
+//     to execute the query, which is exactly the live-edge case this gate
+//     exists to exclude.
+//   - EVERY range-mode carrier's End is strictly before now minus ingestLag:
+//     the window has fully closed and the deployment's own ingest pipeline
+//     has had time to land every row for it.
+//
+// Defense in depth, verifying EXHAUSTIVELY rather than assuming: even after
+// the above, planHasNowExpr additionally rejects a plan carrying a literal
+// now()/now64() FuncCall ANYWHERE in its Expr tree. PromQL's time() builtin
+// lowers to exactly that shape (internal/promql/synthetic.go's lowerTime)
+// before the range-mode synthetic-vector rewrite (rewriteAnchorRefs)
+// replaces it with an anchor_ts column reference — so this second,
+// independent leg catches any residual non-deterministic expression the grid
+// check above cannot see, rather than trusting that every lowering path
+// already runs that rewrite.
+func eligibleForResultCache(plan chplan.Node, now time.Time, ingestLag time.Duration) bool {
+	threshold := now.Add(-ingestLag)
+	foundRangeCarrier := false
+	closed := true
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		gc, ok := n.(chplan.GridCarrier)
+		if !ok {
+			return true
+		}
+		start, end, step := gc.EvalGrid()
+		if step <= 0 {
+			// Instant-mode carrier: Start/End carry no request-grid meaning
+			// (chplan.GridCarrier's own doc), so it says nothing about
+			// whether the query's window is closed.
+			return true
+		}
+		foundRangeCarrier = true
+		if start.IsZero() || end.IsZero() || !end.Before(threshold) {
+			closed = false
+			return false
+		}
+		return true
+	})
+	if !foundRangeCarrier || !closed {
+		return false
+	}
+	return !planHasNowExpr(plan)
+}
+
+// planHasNowExpr reports whether plan carries a literal now()/now64()
+// FuncCall anywhere in ANY node's Expr tree — the two chplan function ids
+// (chplan.FnNow, chplan.FnNow64) that ever render a non-deterministic
+// ClickHouse call. internal/chplan/fn.go has no other nondeterministic
+// entry point reachable from PromQL/LogQL/TraceQL lowering (no rand/uuid/…
+// function id exists in the registry at all), so these two exhaust the
+// search — verified by inspection of chplan's Fn constant table, not merely
+// assumed.
+//
+// The walk composes chplan.WalkDeep (every Node reachable through Children()
+// AND every plan subtree embedded in an Expr slot, e.g. a ScalarSubquery)
+// with chplan.InspectNodeExprs + chplan.InspectExpr (every sub-expression of
+// each node's own Expr-typed fields), so it is exhaustive over every
+// expression anywhere in the plan — not just the ones the GridCarrier check
+// in eligibleForResultCache happens to visit.
+func planHasNowExpr(plan chplan.Node) bool {
+	found := false
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if found {
+			return false
+		}
+		chplan.InspectNodeExprs(n, func(e chplan.Expr) {
+			if found {
+				return
+			}
+			chplan.InspectExpr(e, func(sub chplan.Expr) bool {
+				if found {
+					return false
+				}
+				if fc, ok := sub.(*chplan.FuncCall); ok && (fc.Fn == chplan.FnNow || fc.Fn == chplan.FnNow64) {
+					found = true
+					return false
+				}
+				return true
+			})
+		})
+		return true
+	})
+	return found
 }
 
 // isOrderedPrefix reports whether group is a non-empty ordered prefix of

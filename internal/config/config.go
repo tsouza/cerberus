@@ -291,6 +291,37 @@ type Config struct {
 	// Default false: it ships DARK behind CERBERUS_LOG_COMMENT_SHAPE.
 	LogCommentShape bool
 
+	// ResultCacheIngestLag is CERBERUS_RESULT_CACHE_INGEST_LAG: how far behind
+	// wall-clock now the deployment's ingest pipeline may still be writing
+	// rows for. The chopt result_cache feature (chopt.FeatureResultCache)
+	// stamps use_query_cache=1 ONLY on a query whose evaluated window END is
+	// strictly before now minus this horizon — see
+	// engine.eligibleForResultCache. A window that reaches inside the horizon
+	// is a LIVE-EDGE window: rows for it may still be arriving, so caching its
+	// answer would serve a stale tail forever once the true value changes.
+	//
+	// Default 5 minutes: a conservative OTel-collector-batching + network +
+	// processing margin. Raise it for a deployment whose ingest pipeline lags
+	// further behind wall clock; lower it (never to 0 unless the pipeline is
+	// genuinely synchronous) for a tighter one. 0 disables the margin
+	// entirely — only "now" itself is excluded from eligibility, which is
+	// unsafe for almost every real ingest pipeline and should be set only
+	// after verifying the deployment's actual lag is zero.
+	ResultCacheIngestLag time.Duration
+
+	// ResultCacheTTL is CERBERUS_RESULT_CACHE_TTL: the query_cache_ttl
+	// (seconds) stamped alongside use_query_cache=1 on an eligible query — how
+	// long ClickHouse keeps the cached result before a later identical query
+	// recomputes it. Eligible windows are already fully closed (see
+	// ResultCacheIngestLag), so a LONGER ttl only earns more dashboard-refresh
+	// cache hits, never staler data than the eligibility gate already
+	// accepted; the residual correctness caveat — late/out-of-order ingest
+	// arriving after the window closed — is what ResultCacheIngestLag
+	// mitigates, not this TTL. Default 5 minutes, well above ClickHouse's own
+	// built-in default of 60s, so a dashboard on a typical 30s-5m refresh
+	// cadence hits the cache on most re-issues of a closed panel.
+	ResultCacheTTL time.Duration
+
 	// CHOptimizations is the raw CERBERUS_CH_OPTIMIZATIONS value ("auto" |
 	// "off" | comma-separated feature ids). It is the auto-picker's selection;
 	// the actual EnabledSet is resolved ONCE in cmd/cerberus AFTER the runtime
@@ -830,6 +861,8 @@ const (
 	envRequirementsCheck        = "CERBERUS_REQUIREMENTS_CHECK"
 	envExperimentalTSGrid       = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
 	envLogCommentShape          = "CERBERUS_LOG_COMMENT_SHAPE"
+	envResultCacheIngestLag     = "CERBERUS_RESULT_CACHE_INGEST_LAG"
+	envResultCacheTTL           = "CERBERUS_RESULT_CACHE_TTL"
 	envCHOptimizations          = "CERBERUS_CH_OPTIMIZATIONS"
 	envCHOptimizationsMode      = "CERBERUS_CH_OPTIMIZATIONS_MODE"
 	envCHOptCorpusEnabled       = "CERBERUS_CH_OPT_CORPUS_ENABLED"
@@ -1061,6 +1094,18 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// Both accept 0 (see their own doc: 0 disables the respective margin/ttl
+	// rather than being "use the default" — v.SetDefault below already
+	// resolves an UNSET env var to the non-zero default), so
+	// getNonNegativeDuration's only job here is rejecting a negative value.
+	resultCacheIngestLag, err := getNonNegativeDuration(v, envResultCacheIngestLag)
+	if err != nil {
+		return Config{}, err
+	}
+	resultCacheTTL, err := getNonNegativeDuration(v, envResultCacheTTL)
+	if err != nil {
+		return Config{}, err
+	}
 	// CERBERUS_CH_QUERY_MAX_MEMORY is a byte size: it accepts BOTH the
 	// historical raw-integer-of-bytes form (exact BWC) AND a humanized
 	// Kubernetes-style size like 2Gi / 500Mi / 1G. getByteSize already rejects
@@ -1164,6 +1209,8 @@ func FromEnv() (Config, error) {
 		DebugPProf:              flags.DebugPProf,
 		TempoStructuralTwoPhase: flags.TempoStructuralTwoPhase,
 		LogCommentShape:         flags.LogCommentShape,
+		ResultCacheIngestLag:    resultCacheIngestLag,
+		ResultCacheTTL:          resultCacheTTL,
 		CHOptimizations:         flags.CHOptimizations,
 		CHOptimizationsMode:     flags.CHOptimizationsMode,
 		LegacyTSGridFlag:        flags.TSGrid,
@@ -1255,6 +1302,8 @@ var allEnvKeys = []string{
 	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogCommentShape,
+	envResultCacheIngestLag,
+	envResultCacheTTL,
 	envCHOptimizations,
 	envCHOptimizationsMode,
 	envCHOptCorpusEnabled,
@@ -1418,6 +1467,10 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
+	// Grouped for the same reason setDeltaPrefixAndRBGNDefaults is: keeping
+	// newDefaults under golangci-lint's funlen cap. The two result-cache
+	// defaults have no relationship to each other beyond being set here.
+	setResultCacheDefaults(v)
 	setCHOptDefaults(v)
 	v.SetDefault(envLogFormat, defaultLogFormat)
 	v.SetDefault(envLogLevel, defaultLogLevel)
@@ -1448,6 +1501,14 @@ func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
 	// 0 is the SENTINEL for "derive from CERBERUS_CH_QUERY_MAX_MEMORY" — see
 	// rbgnDensityUnitsForMemory for why this bound cannot be a fixed constant.
 	v.SetDefault(envRBGNMaxDensityUnits, 0)
+}
+
+// setResultCacheDefaults seeds CERBERUS_RESULT_CACHE_INGEST_LAG /
+// CERBERUS_RESULT_CACHE_TTL. Extracted purely to keep newDefaults under
+// golangci-lint's funlen cap, mirroring setDeltaPrefixAndRBGNDefaults above.
+func setResultCacheDefaults(v *viper.Viper) {
+	v.SetDefault(envResultCacheIngestLag, defaultResultCacheIngestLag.String())
+	v.SetDefault(envResultCacheTTL, defaultResultCacheTTL.String())
 }
 
 // setCHOptDefaults seeds the CERBERUS_CH_OPTIMIZATIONS* and
@@ -1501,6 +1562,11 @@ const (
 	defaultRequirementsCheck      = true
 	defaultExperimentalTSGrid     = false
 	defaultLogCommentShape        = false
+	// defaultResultCacheIngestLag / defaultResultCacheTTL back
+	// Config.ResultCacheIngestLag / Config.ResultCacheTTL — see their own doc
+	// comments for the reasoning behind each five-minute default.
+	defaultResultCacheIngestLag = 5 * time.Minute
+	defaultResultCacheTTL       = 5 * time.Minute
 	// defaultCHOptimizations is "auto": enable every auto-eligible feature the
 	// connected server supports. Auto-eligibility (Feature.AutoSelect) is a
 	// separate axis from maturity (Feature.Stability) — `auto` turns on the

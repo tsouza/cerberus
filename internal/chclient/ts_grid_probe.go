@@ -63,16 +63,29 @@ func (c *Client) ProbeTSGridCapability(ctx context.Context) chopt.Capability {
 	return classifyTSGridCapability(err)
 }
 
-// classifyTSGridCapability maps the canary's error into the tri-state verdict.
-// A nil error is Available. A typed *clickhouse.Exception means the server
-// ANSWERED with a rejection -- since the probe body is a trivial `SELECT 1`
-// that cannot fail on its own, a server-side exception means it refused the
-// stamped experimental setting, so it is Forbidden (the constraint 452 /
-// readonly 164 codes are the expected shapes, and any other typed answer is
-// treated the same: the server will not run the setting). Anything else is a
-// transport failure with no server verdict -- Unreachable, the conservative
-// state that leaves native off until a later re-probe gets a verdict.
+// classifyTSGridCapability maps the ts-grid canary's error into the
+// tri-state verdict. It is a thin, name-pinned wrapper over
+// classifyCapabilityFromProbeErr (shared with ProbeResultCacheCapability's
+// own classifier) — kept as its own function so
+// TestClassifyTSGridCapability_AllStates keeps pinning the exact TSGrid
+// entry point regardless of how the shared logic is factored.
 func classifyTSGridCapability(err error) chopt.Capability {
+	return classifyCapabilityFromProbeErr(err)
+}
+
+// classifyCapabilityFromProbeErr maps ANY boot capability canary's error into
+// the tri-state chopt.Capability verdict shared by every probe in this
+// package (ProbeTSGridCapability, ProbeResultCacheCapability): a nil error is
+// Available. A typed *clickhouse.Exception means the server ANSWERED with a
+// rejection -- since every canary body is a trivial `SELECT '1'` that cannot
+// fail on its own, a server-side exception means it refused the stamped
+// setting, so it is Forbidden (the ts-grid canary's constraint 452 / readonly
+// 164 codes are the expected shapes, and any other typed answer is treated
+// the same: the server will not run the setting). Anything else is a
+// transport failure with no server verdict -- Unreachable, the conservative
+// state that leaves the gated feature off until a later re-probe gets a
+// verdict.
+func classifyCapabilityFromProbeErr(err error) chopt.Capability {
 	if err == nil {
 		return chopt.CapabilityAvailable
 	}

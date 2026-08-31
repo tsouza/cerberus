@@ -902,6 +902,38 @@ const (
 	// reasoning the ts_grid family's own Experimental marking uses despite
 	// also being AutoSelect true.
 	FeatureArgAndMaxFusion = "arg_and_max_fusion"
+
+	// FeatureResultCache stamps use_query_cache=1 + query_cache_ttl on a
+	// cerberus-eligible read path — a query whose evaluated window has fully
+	// CLOSED (every range-mode window End lies before now minus the
+	// deployment's configured ingest-lag horizon, and no now()/now64()
+	// expression reaches the emitted SQL; see
+	// internal/engine.eligibleForResultCache) — so ClickHouse's query result
+	// cache can answer a dashboard's byte-identical re-issue of the same
+	// query_range without re-scanning.
+	//
+	// The setting family (use_query_cache, query_cache_ttl) is long-stable —
+	// ClickHouse shipped the query cache in 23.2, well before cerberus's own
+	// 24.8 floor — so unlike condition_cache there is no version floor above
+	// the supported baseline to gate on. What a version floor CANNOT catch is
+	// a deployment that runs a hardened/constrained profile pinning or
+	// forbidding use_query_cache, or a server whose query cache is disabled
+	// entirely (query_cache_max_size_in_bytes=0): the resolver instead gates
+	// on a boot capability probe (ProbeResultCacheCapability,
+	// RequiresResultCacheCapability below), mirroring how
+	// RequiresExperimentalTSGrid gates the native timeSeries*ToGrid family on
+	// a SEPARATE probed capability rather than trusting the version floor
+	// alone.
+	//
+	// AutoSelect is true: the eligibility gate is cerberus's own correctness
+	// guard (never ClickHouse's query_cache_nondeterministic_function_handling
+	// alone — that is defense in depth), so a query the gate marks eligible is
+	// safe to cache on any capable server, with no operator tradeoff to weigh.
+	// A deployment that wants the result cache off entirely omits it from an
+	// explicit CERBERUS_CH_OPTIMIZATIONS list (or sets "off"), exactly the
+	// opt-out condition_cache and every other AutoSelect feature already give
+	// an operator — no separate dedicated flag is needed.
+	FeatureResultCache = "result_cache"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -959,6 +991,14 @@ const (
 // version floor AND permits the experimental setting. Features that touch no
 // experimental setting (aggregation_in_order, condition_cache,
 // columnar_result_decode) leave it false and are never capability-gated.
+//
+// RequiresResultCacheCapability is the SAME kind of second axis for the
+// result_cache feature, but gated on a DIFFERENT boot probe
+// (ProbeResultCacheCapability, verifying use_query_cache/query_cache_ttl
+// rather than the ts-grid experimental setting) and a DIFFERENT
+// Config.ResultCacheCapability field — the two axes are independent
+// verdicts about independent settings, so a server can permit one and
+// forbid the other.
 type Feature struct {
 	ID         string
 	MinVersion Version
@@ -970,7 +1010,12 @@ type Feature struct {
 	// forbids the setting (constrained profile / readonly user) drops it to the
 	// fan-out path even when the version floor is met.
 	RequiresExperimentalTSGrid bool
-	Doc                        string
+	// RequiresResultCacheCapability marks a feature (only result_cache today)
+	// whose settings the engine stamps must be verified against the boot
+	// query-result-cache capability probe rather than assumed available just
+	// because the version floor is met — see the type doc above.
+	RequiresResultCacheCapability bool
+	Doc                           string
 }
 
 // registry is the seeded feature table. It is value data (no init-time
@@ -1157,6 +1202,14 @@ var registry = []Feature{
 		Stability:  Experimental,
 		AutoSelect: true,
 		Doc:        "fuse RangeLWR.SampleTimestamp's and vector_join's non-derived instant-mode argMax(Value, TimeUnix) + max(TimeUnix) pair into one argAndMax(Value, TimeUnix) (server >= 25.11, auto-enabled — tie-invariant, proven-equivalent substitution)",
+	},
+	{
+		ID:                            FeatureResultCache,
+		MinVersion:                    Version{Major: 24, Minor: 8},
+		Stability:                     Stable,
+		AutoSelect:                    true,
+		RequiresResultCacheCapability: true,
+		Doc:                           "stamp use_query_cache=1 + query_cache_ttl on cerberus-eligible fully-closed read paths (result cache, boot-probed knob availability, server >= 24.8)",
 	},
 }
 
