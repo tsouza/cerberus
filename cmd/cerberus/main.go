@@ -871,6 +871,14 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
+//	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
+//
+// rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
+// wraps ClickHouse's separate quantilePrometheusHistogram aggregate (floor
+// 25.10) — and carries no embedded Fallback because it has no shape-based
+// fallback to embed (see promql.QuantileRankWalkLowerer's own doc); it is
+// resolved here, in this same table, only because RangeLowerers is the one
+// seam every classic-histogram-quantile lowering already threads.
 //
 // The fan-out impl is the concrete DEFAULT (never nil), and the native impl
 // embeds it as the fallback for shapes it cannot handle. The features are
@@ -982,6 +990,14 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		}
 	} else {
 		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
+	}
+	// quantile_prom_histogram has no shape-based fallback (see
+	// promql.QuantileRankWalkLowerer's own doc), so the native strategy is
+	// wired directly with no embedded Fallback field.
+	if optSet.Has(chopt.FeatureQuantilePromHistogram) {
+		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
+	} else {
+		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
 	}
 	return l
 }

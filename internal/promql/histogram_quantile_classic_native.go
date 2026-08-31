@@ -296,3 +296,48 @@ func (n NativeClassicHistogramWindowLowerer) lowerDeltaComplement(delta classicH
 	}
 	return n.Fallback.LowerClassicHistogramWindow(delta)
 }
+
+// QuantileRankWalkLowerer decides how a chplan.HistogramQuantile node
+// computes the classic-histogram rank walk itself — the arrayCumSum /
+// arrayFirstIndex / linear-interpolation chain chsql.emitHistogramQuantile
+// renders, or the ClickHouse-native quantilePrometheusHistogram(phi)(le, cum)
+// aggregate (server >= 25.10, chopt.FeatureQuantilePromHistogram).
+//
+// It is a NARROWER seam than [ClassicHistogramWindowLowerer]: that strategy
+// picks how the range-mode per-series `rate` WINDOW stage is computed (the
+// input feeding a HistogramQuantile node); this one picks how the quantile
+// node ITSELF is computed, and applies uniformly to every classic-histogram-
+// quantile shape this codebase builds — instant bare selector, instant
+// cross-series merge, range-mode bare and aggregated, and the float-array
+// variant. Unlike every other Lowerer in this file there is no per-shape
+// fallback: the native aggregate reproduces reference Prometheus's
+// bucketQuantile (including its edge cases) for any (BucketCounts,
+// ExplicitBounds) row this node's IR contract accepts, so
+// [NativeQuantileRankWalkLowerer] carries no embedded Fallback field — it
+// always marks the node native.
+type QuantileRankWalkLowerer interface {
+	// LowerQuantileRankWalk returns hq, with UseNativeQuantileAggregate set
+	// according to the strategy. It never returns nil.
+	LowerQuantileRankWalk(hq *chplan.HistogramQuantile) *chplan.HistogramQuantile
+}
+
+// FanoutQuantileRankWalkLowerer is the concrete DEFAULT
+// QuantileRankWalkLowerer: it returns hq unchanged, so
+// chsql.emitHistogramQuantile renders the hand-rolled rank walk.
+type FanoutQuantileRankWalkLowerer struct{}
+
+// LowerQuantileRankWalk returns hq unchanged.
+func (FanoutQuantileRankWalkLowerer) LowerQuantileRankWalk(hq *chplan.HistogramQuantile) *chplan.HistogramQuantile {
+	return hq
+}
+
+// NativeQuantileRankWalkLowerer is the boot-wired QuantileRankWalkLowerer
+// that marks every HistogramQuantile node native. cmd/cerberus wires it ONLY
+// when chopt resolved the quantile_prom_histogram feature at boot.
+type NativeQuantileRankWalkLowerer struct{}
+
+// LowerQuantileRankWalk sets hq.UseNativeQuantileAggregate and returns hq.
+func (NativeQuantileRankWalkLowerer) LowerQuantileRankWalk(hq *chplan.HistogramQuantile) *chplan.HistogramQuantile {
+	hq.UseNativeQuantileAggregate = true
+	return hq
+}

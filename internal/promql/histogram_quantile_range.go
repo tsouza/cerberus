@@ -349,7 +349,7 @@ func lowerHistogramQuantileClassicAggRange(
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
-	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
+	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s, ctx)
 }
 
 // buildHistogramRangeTree assembles the shared range-mode plan tree
@@ -396,7 +396,7 @@ func buildHistogramRangeTree(
 		{Expr: anchorRef, Alias: stepGridAnchorColumn},
 		{Expr: attrsRebuild, Alias: s.AttributesColumn},
 	}, s)
-	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s)
+	return histogramRangeQuantileTree(rebuilt, cumulative, phi, s, ctx)
 }
 
 // histogramRangeQuantileTree caps a range-mode classic-histogram collapse
@@ -419,6 +419,7 @@ func histogramRangeQuantileTree(
 	cumulative bool,
 	phi phiArg,
 	s schema.Metrics,
+	ctx lowerCtx,
 ) chplan.Node {
 	anchorRef := &chplan.ColumnRef{Name: stepGridAnchorColumn}
 	hq := &chplan.HistogramQuantile{
@@ -437,6 +438,7 @@ func histogramRangeQuantileTree(
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
 	}
+	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
 	return &chplan.Project{
 		Input: hq,

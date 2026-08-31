@@ -237,6 +237,14 @@ type RangeLowerers struct {
 	// never nil on the lowering path.
 	ClassicHistogram ClassicHistogramWindowLowerer
 
+	// QuantileRankWalk handles the classic-histogram-quantile rank walk
+	// itself (native quantilePrometheusHistogram aggregate, server >= 25.10)
+	// — distinct from ClassicHistogram, which handles only the range-mode
+	// per-series rate WINDOW stage that feeds this one's Input. Concrete
+	// fan-out impl when the native path is off; never nil on the lowering
+	// path.
+	QuantileRankWalk QuantileRankWalkLowerer
+
 	// Irate handles range-mode irate(...) shapes (lagInFrame annotation,
 	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
 	// feature is off; never nil on the lowering path.
@@ -277,6 +285,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.ClassicHistogram == nil {
 		l.ClassicHistogram = FanoutClassicHistogramWindowLowerer{}
+	}
+	if l.QuantileRankWalk == nil {
+		l.QuantileRankWalk = FanoutQuantileRankWalkLowerer{}
 	}
 	if l.Irate == nil {
 		l.Irate = FanoutIrateLowerer{}

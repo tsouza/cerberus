@@ -137,6 +137,17 @@ var nativeStrategies = []nativeStrategy{
 			}
 		},
 	},
+	{
+		field:   "QuantileRankWalk",
+		section: "experimental_quantile_prom_histogram",
+		// No embedded Fallback: promql.QuantileRankWalkLowerer's own doc
+		// explains why — every classic-histogram-quantile shape this
+		// codebase builds is native-eligible, unlike every other row in
+		// this table.
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

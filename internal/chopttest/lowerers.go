@@ -116,6 +116,18 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.ClassicHistogram = promql.FanoutClassicHistogramWindowLowerer{}
 	}
 
+	// quantile_prom_histogram is NOT part of AllNativeOptimizations (floor
+	// 25.10, above the 25.9-alpine substrate most callers of this function
+	// probe against under Enforcing mode — listing it there would fail every
+	// such caller loudly rather than silently degrading). Callers that want
+	// it activated resolve it explicitly against a >= 25.10 server and pass
+	// the resulting set here; this branch only ever fires for those callers.
+	if set.Has(chopt.FeatureQuantilePromHistogram) {
+		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
+	} else {
+		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
+	}
+
 	return l
 }
 

@@ -86,6 +86,13 @@ type hqClassicHelperColumns struct {
 // GroupByAliases, then the interpolated quantile as the `Value` column,
 // matching the Sample contract the lowering's wrapping Project consumes.
 func (e *emitter) emitHistogramQuantile(h *chplan.HistogramQuantile) error {
+	// UseNativeQuantileAggregate is set exactly once, at lowering time, by
+	// the boot-wired promql.QuantileRankWalkLowerer strategy — see
+	// chplan.HistogramQuantile's own doc. This dispatch is the ONLY reader:
+	// no feature-flag or server-version conditional lives in the emitter.
+	if h.UseNativeQuantileAggregate {
+		return e.emitHistogramQuantileRankWalkNative(h)
+	}
 	if h.Input == nil {
 		return fmt.Errorf("%w: HistogramQuantile.Input is nil", ErrUnsupported)
 	}

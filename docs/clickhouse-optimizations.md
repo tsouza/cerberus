@@ -117,21 +117,22 @@ registry therefore lands here automatically; it can never go missing from the
 table.
 
 <!-- BEGIN GENERATED: chopt-feature-table (do not edit; regenerate with `just gen-opt-docs`) -->
-| id                       | minVersion | stability    | autoSelect |
-| ------------------------ | ---------- | ------------ | ---------- |
-| `aggregation_in_order`   | 24.8       | stable       | yes        |
-| `condition_cache`        | 25.3       | stable       | yes        |
-| `ts_grid_range`          | 25.9       | experimental | yes        |
-| `ts_grid_resample`       | 25.9       | experimental | yes        |
-| `columnar_result_decode` | none       | experimental | no         |
-| `ts_grid_changes`        | 25.9       | experimental | no         |
-| `ts_grid_resets`         | 25.9       | experimental | yes        |
-| `ts_grid_deriv`          | 25.9       | experimental | yes        |
-| `ts_grid_predict_linear` | 25.9       | experimental | yes        |
-| `ts_grid_recollapse`     | 25.9       | experimental | yes        |
-| `ts_grid_increase`       | 25.9       | experimental | yes        |
-| `ts_grid_histogram`      | 25.9       | experimental | yes        |
-| `laginframe_adjacency`   | none       | experimental | yes        |
+| id                        | minVersion | stability    | autoSelect |
+| ------------------------- | ---------- | ------------ | ---------- |
+| `aggregation_in_order`    | 24.8       | stable       | yes        |
+| `condition_cache`         | 25.3       | stable       | yes        |
+| `ts_grid_range`           | 25.9       | experimental | yes        |
+| `ts_grid_resample`        | 25.9       | experimental | yes        |
+| `columnar_result_decode`  | none       | experimental | no         |
+| `ts_grid_changes`         | 25.9       | experimental | no         |
+| `ts_grid_resets`          | 25.9       | experimental | yes        |
+| `ts_grid_deriv`           | 25.9       | experimental | yes        |
+| `ts_grid_predict_linear`  | 25.9       | experimental | yes        |
+| `ts_grid_recollapse`      | 25.9       | experimental | yes        |
+| `ts_grid_increase`        | 25.9       | experimental | yes        |
+| `ts_grid_histogram`       | 25.9       | experimental | yes        |
+| `quantile_prom_histogram` | 25.10      | experimental | no         |
+| `laginframe_adjacency`    | none       | experimental | yes        |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they
@@ -146,19 +147,20 @@ the feature was reached via `auto` or by explicit listing. Two features are
 reference Prometheus on NaN-adjacent windows, tracked as
 [#1721](https://github.com/tsouza/cerberus/issues/1721)).
 
-| id                       | experimental setting                                 | effect                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregation_in_order`   | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                                                                                                                                                                                  |
-| `condition_cache`        | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                                                                                                                                                                                    |
-| `ts_grid_range`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.9 (experimental maturity).                                                                                                                                                                                       |
-| `ts_grid_resample`       | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                          |
-| `columnar_result_decode` | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).                                                                                                                                                                 |
-| `ts_grid_changes`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Opt-in only (never auto) — the builtin diverges from reference Prometheus on NaN-adjacent windows, [#1721](https://github.com/tsouza/cerberus/issues/1721); server still needs >= 25.9.  |
-| `ts_grid_resets`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                      |
-| `ts_grid_deriv`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `deriv(<gauge>[<range>])` query_range shapes onto the native `timeSeriesDerivToGrid` aggregate (per-window least-squares slope), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                 |
-| `ts_grid_predict_linear` | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                        |
-| `ts_grid_recollapse`     | `allow_experimental_time_series_aggregate_functions` | defers the OTel -> Prometheus label-shaping tower PAST an eligible `ts_grid_range` rate grid, splitting it into `timeSeriesRateToGridState` over the raw keys and `timeSeriesRateToGridMerge` over the shaped ones, so the reshape runs once per raw series instead of once per raw row. Narrows `ts_grid_range`. Auto-enabled on server >= 25.9.           |
-| `ts_grid_increase`       | `allow_experimental_time_series_aggregate_functions` | opts eligible `increase(<counter>[<range>])` query_range shapes onto the SAME native `timeSeriesRateToGrid` aggregate `ts_grid_range` uses, multiplied back by the window seconds at emit time (`increase()` is `extrapolatedRate()` without the final `/range` divide). Retires the `arrayJoin` sample-per-anchor fan-out. Auto-enabled on server >= 25.9. |
+| id                        | experimental setting                                 | effect                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregation_in_order`    | (none)                                               | stamps `optimize_aggregation_in_order=1` when the plan's Aggregate GROUP BY is a bare-column prefix of the scanned table's sorting key. Result-equivalent.                                                                                                                                                                                                                                                                          |
+| `condition_cache`         | (none)                                               | stamps `use_query_condition_cache=1` (+`enable_analyzer=1`, analyzer-gated) on predicate-stable read paths. Result-equivalent (a cache).                                                                                                                                                                                                                                                                                            |
+| `ts_grid_range`           | `allow_experimental_time_series_aggregate_functions` | opts eligible `rate(<counter>[<range>])` query_range shapes onto the native `timeSeriesRateToGrid` aggregate. Auto-enabled on server >= 25.9 (experimental maturity).                                                                                                                                                                                                                                                               |
+| `ts_grid_resample`        | `allow_experimental_time_series_aggregate_functions` | opts the range-mode instant-vector staleness shape onto the native `timeSeriesResampleToGridWithStaleness` aggregate, retiring the argMax fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                                                  |
+| `columnar_result_decode`  | (none)                                               | client-side: decodes the `query_range` matrix shape via the ch-go columnar path (label map built once per run, not per row). No server setting, no version floor. Opt-in only (never auto).                                                                                                                                                                                                                                         |
+| `ts_grid_changes`         | `allow_experimental_time_series_aggregate_functions` | opts eligible `changes(<v>[<range>])` query_range shapes onto the native `timeSeriesChangesToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Opt-in only (never auto) — the builtin diverges from reference Prometheus on NaN-adjacent windows, [#1721](https://github.com/tsouza/cerberus/issues/1721); server still needs >= 25.9.                                                                          |
+| `ts_grid_resets`          | `allow_experimental_time_series_aggregate_functions` | opts eligible `resets(<counter>[<range>])` query_range shapes onto the native `timeSeriesResetsToGrid` aggregate, retiring the `arrayPopBack`/`arrayPopFront` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                                                              |
+| `ts_grid_deriv`           | `allow_experimental_time_series_aggregate_functions` | opts eligible `deriv(<gauge>[<range>])` query_range shapes onto the native `timeSeriesDerivToGrid` aggregate (per-window least-squares slope), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                                                                         |
+| `ts_grid_predict_linear`  | `allow_experimental_time_series_aggregate_functions` | opts eligible `predict_linear(<gauge>[<range>], t)` query_range shapes (whole-second literal `t`) onto the native `timeSeriesPredictLinearToGrid` aggregate (per-window slope\*t + intercept forecast), retiring the `simpleLinearRegression`/`arrayReduce` fan-out. Auto-enabled on server >= 25.9.                                                                                                                                |
+| `ts_grid_recollapse`      | `allow_experimental_time_series_aggregate_functions` | defers the OTel -> Prometheus label-shaping tower PAST an eligible `ts_grid_range` rate grid, splitting it into `timeSeriesRateToGridState` over the raw keys and `timeSeriesRateToGridMerge` over the shaped ones, so the reshape runs once per raw series instead of once per raw row. Narrows `ts_grid_range`. Auto-enabled on server >= 25.9.                                                                                   |
+| `ts_grid_increase`        | `allow_experimental_time_series_aggregate_functions` | opts eligible `increase(<counter>[<range>])` query_range shapes onto the SAME native `timeSeriesRateToGrid` aggregate `ts_grid_range` uses, multiplied back by the window seconds at emit time (`increase()` is `extrapolatedRate()` without the final `/range` divide). Retires the `arrayJoin` sample-per-anchor fan-out. Auto-enabled on server >= 25.9.                                                                         |
+| `quantile_prom_histogram` | (none)                                               | opts the classic `histogram_quantile(phi, ...)` rank walk onto the native `quantilePrometheusHistogram(phi)(le, cum)` aggregate, retiring the `arrayCumSum`/`arrayFirstIndex`/interpolation chain. Opt-in only (never auto): faster at real-world series counts but costs ~3.3x memory at high cardinality ([#2790](https://github.com/tsouza/cerberus/issues/2790)), on top of the new 25.10 floor still lacking fielded evidence. |
 
 Notes:
 
@@ -348,6 +350,56 @@ Notes:
   right-closed membership window, upstream PR #86588). The presence aggregate
   is a `ts_grid_resets` sibling from PR #86010, released in the same 25.9, so
   the floor is unchanged either way.
+- **`quantile_prom_histogram`** replaces the classic-histogram
+  `histogram_quantile(phi, <classic-selector>)` rank walk — steps 3-5 of the
+  hand-rolled emitter (the observation total, the `arrayFirstIndex` rank-walk
+  index, and the linear interpolation with all its edge-case branches) — with
+  one `quantilePrometheusHistogram(phi)(le, cum)` call over an `ARRAY JOIN`
+  unnest of the row's (coalesced ExplicitBounds, coalesced cumulative ladder)
+  pair. It is a DIFFERENT node from `ts_grid_histogram` above: that feature
+  picks how the range-mode per-series `rate` WINDOW stage is computed (the
+  input feeding a `HistogramQuantile` node); this one picks how the quantile
+  node ITSELF is computed, uniformly, for every shape that node handles
+  (instant bare selector, instant cross-series merge, range-mode bare and
+  aggregated, and the float-array variant) — unlike every other feature in
+  this registry there is no per-shape fallback, because the native aggregate
+  reproduces reference Prometheus's `bucketQuantile` (including its edge
+  cases) for any row this node's IR contract accepts.
+  Floor **25.10**: confirmed via a direct `system.functions` probe (the
+  aggregate is undocumented as of this writing) — it is NOT part of the
+  `timeSeries*ToGrid` family and shares none of that family's 25.9 floor or
+  experimental setting. The emission still has to work around two input-
+  contract quirks the probe also surfaced: the aggregate answers `nan`
+  whenever no row carries `le = +Inf` (an unconditional terminal pair is
+  appended — the genuine overflow rung when the row has one, a synthetic
+  tie-cum entry when it does not), and its parametric phi argument must be a
+  compile-time-constant value in `[0, 1]` — passing it a NaN or out-of-range
+  value throws `PARAMETER_OUT_OF_BOUND` and fails the whole query, since an
+  aggregate's parametric argument is evaluated once regardless of which
+  branch of an enclosing scalar `if()` would select its result, so the
+  argument is clamped unconditionally and reference Prometheus's `-inf` /
+  `inf` / `nan` contract is answered in an outer branch that never lets an
+  out-of-domain phi reach the aggregate. A real-CH differential
+  (`internal/chsql`'s `TestHistogramQuantile_RankWalkNative_DifferentialRealCH`)
+  confirmed exact agreement with the legacy walk across representative
+  bucket layouts (a normal crossing, a duplicate-bound layout, the
+  equal-length/no-overflow-rung shape, an empty histogram, a first-bucket
+  non-positive upper bound, and an all-zero-count histogram) and the full
+  phi domain (below range, the two saturating edges, interior crossings,
+  above range, and a runtime NaN phi). `AutoSelect` is `false`: correctness
+  parity is proven, but a real-scale measurement (25.10.7.6, a real OTel
+  classic-histogram export) found a genuine performance TRADEOFF, not just
+  an unproven new floor — the emission's `ARRAY JOIN` multiplies row count
+  by the bucket-ladder length before `GROUP BY` collapses it back down,
+  which the legacy walk never does. At real-world dashboard scale (3,677
+  series) the native path was ~2x faster at equal memory; at high series
+  cardinality (73,540 series, ~880k post-unnest rows) wall time stayed
+  roughly even but memory grew ~3.3x. See
+  [#2790](https://github.com/tsouza/cerberus/issues/2790) for the full
+  numbers and the mitigation options left for future investigation. The
+  feature is opt-in only (`CERBERUS_CH_OPTIMIZATIONS=quantile_prom_histogram`)
+  pending that investigation and broader fielded evidence on the very new
+  25.10 floor.
 - **Window-slide anchor injection** is a second ClickHouse-native lowering of
   the per-series window stage under
   `histogram_quantile(phi, <agg> by(le) (sum_over_time(<bucket>[range])))` in

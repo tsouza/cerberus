@@ -189,6 +189,7 @@ func lowerHistogramQuantileClassicFloat(
 		AttributesColumn: s.AttributesColumn,
 		TimestampColumn:  s.TimestampColumn,
 	}
+	hq = ctx.lowerers.QuantileRankWalk.LowerQuantileRankWalk(hq)
 
 	// Sample-row wrapping. The timestamp is the one the argument's own
 	// rows carried rather than a fresh evaluation anchor: the grouping
