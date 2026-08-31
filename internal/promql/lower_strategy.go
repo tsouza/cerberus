@@ -178,6 +178,23 @@ type DerivLowerer interface {
 	LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
+// DeltaLowerer lowers a range-mode delta(<gauge>[range]) RangeWindow to a
+// chplan node, mirroring [ChangesLowerer]: the native impl emits a
+// RangeWindowGridNative (Func="delta" -> timeSeriesDeltaToGrid, the per-window
+// non-counter-corrected extrapolated difference) for an eligible window, the
+// fan-out fallback otherwise. Unlike Rate/Increase there is no
+// AggregationTemporality union-split: delta() is gauge-only in PromQL (it
+// never counter-repairs, matching Prom's extrapolatedRate(isCounter=false,
+// isRate=false) — see chsql.emitRangeWindowDelta / extrapolationKindDelta),
+// so the DELTA-vs-CUMULATIVE runtime branch rate/increase need never applies
+// here. It never returns nil.
+type DeltaLowerer interface {
+	// LowerDelta returns the chplan node for rw — the native RangeWindowGridNative
+	// for a shape the impl handles, or the fan-out lowering otherwise. It never
+	// returns nil.
+	LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
 // PredictLinearLowerer lowers a range-mode predict_linear(<gauge>[range], t)
 // RangeWindow to a chplan node, mirroring [ChangesLowerer]: the native impl
 // emits a RangeWindowGridNative (Func="predict_linear" ->
@@ -230,6 +247,10 @@ type RangeLowerers struct {
 	// timeSeriesPredictLinearToGrid, server >= 25.9). Concrete fan-out impl when
 	// the native path is off; never nil on the lowering path.
 	PredictLinear PredictLinearLowerer
+	// Delta handles range-mode delta(...) shapes (native timeSeriesDeltaToGrid,
+	// server >= 25.9). Concrete fan-out impl when the native path is off; never
+	// nil on the lowering path.
+	Delta DeltaLowerer
 
 	// ClassicHistogram handles the per-series `rate` window stage under the
 	// range-mode classic-histogram quantile idiom (native ladder aggregate,
@@ -282,6 +303,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.PredictLinear == nil {
 		l.PredictLinear = FanoutPredictLinearLowerer{}
+	}
+	if l.Delta == nil {
+		l.Delta = FanoutDeltaLowerer{}
 	}
 	if l.ClassicHistogram == nil {
 		l.ClassicHistogram = FanoutClassicHistogramWindowLowerer{}
@@ -717,6 +741,44 @@ func nativePredictLinearHorizonEligible(rw *chplan.RangeWindow) bool {
 	}
 	t := rw.Scalars[0]
 	return t >= 0 && t == math.Trunc(t)
+}
+
+// FanoutDeltaLowerer is the concrete DEFAULT DeltaLowerer: it returns the
+// generic fan-out RangeWindow (emitWindowedArrayExtrapolated's non-counter-
+// corrected extrapolated difference) unchanged. It is the fallback the native
+// impl embeds AND the strategy a fan-out-only deployment wires directly.
+type FanoutDeltaLowerer struct{}
+
+// LowerDelta returns the fan-out RangeWindow rw unchanged.
+func (FanoutDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeDeltaLowerer is the boot-wired DeltaLowerer that emits the native
+// timeSeriesDeltaToGrid lowering (a chplan.RangeWindowGridNative with
+// Func="delta") for shape-eligible delta range-windows. cmd/cerberus wires it
+// ONLY when chopt resolved the ts_grid_delta feature (server >= 25.9) at
+// boot. It embeds a concrete Fallback for shapes it cannot handle, so the
+// interface method always yields a valid lowering and the dispatch site
+// stays branch-free.
+type NativeDeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutDeltaLowerer{}.
+	Fallback DeltaLowerer
+}
+
+// LowerDelta returns a RangeWindowGridNative for an eligible range-mode delta
+// shape, or delegates to the embedded Fallback otherwise. Same intrinsic
+// SHAPE check as changes/resets/deriv (delta func, materialised grid, plain
+// Scan/Filter input) — delta takes no scalar, so no extra parameter gate
+// applies, and (like changes/resets/deriv) it carries no -State/-Merge
+// combinator pair, so nativeTSGridMatrixNode is always called with
+// noRecollapse.
+func (n NativeDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "delta", s, noRecollapse); native != nil {
+		return native
+	}
+	return n.Fallback.LowerDelta(rw, s)
 }
 
 // This section wires the lagInFrame annotation shape (cerberus issue #2759):

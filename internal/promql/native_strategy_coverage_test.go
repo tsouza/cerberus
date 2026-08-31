@@ -109,6 +109,13 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "Delta",
+		section: "experimental_ts_grid_delta",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+		},
+	},
+	{
 		field:   "Irate",
 		section: "experimental_lag_adjacency_irate",
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {

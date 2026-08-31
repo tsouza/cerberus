@@ -311,6 +311,62 @@ const (
 	// memory-vs-cardinality one).
 	FeatureQuantilePromHistogram = "quantile_prom_histogram"
 
+	// FeatureTSGridDelta opts eligible delta(<gauge>[<range>]) query_range
+	// shapes onto the native timeSeriesDeltaToGrid aggregate, retiring the
+	// arrayPopBack/arrayPopFront extrapolated-difference fan-out
+	// (internal/chsql.emitRangeWindowDelta, extrapolationKindDelta). The
+	// floor is 25.9, shared with the rest of the family: timeSeriesDeltaToGrid
+	// shipped in the same 25.6 release as timeSeriesRateToGrid and inherits
+	// the identical left-open/right-closed membership-window fix (PR #86588,
+	// ClickHouse 25.9) FeatureTSGridRange's own doc explains.
+	//
+	// cerberus issue #2745 ran the differential sweep #2744's own delta()
+	// TODO deferred (internal/promql/lower.go and internal/config/config.go
+	// both used to record it verbatim): a battery of chDB probes against
+	// timeSeriesDeltaToGrid directly, isolating each rule the doc
+	// (https://clickhouse.com/docs/sql-reference/aggregate-functions/reference/timeSeriesDeltaToGrid)
+	// leaves underspecified.
+	//
+	//   - DECISIVE counter-reset probe: two samples strictly inside the
+	//     window whose value DECREASES (100 -> 10). A counter-repairing
+	//     implementation (rate/increase's own extrapolatedRate(isCounter=true))
+	//     would add the pre-drop value back, yielding +30 after
+	//     extrapolation; the raw, non-repairing PromQL delta() answer is
+	//     -270. ClickHouse returned exactly -270 — proof the aggregate does
+	//     NOT counter-correct, matching PromQL's
+	//     extrapolatedRate(isCounter=false, isRate=false) exactly, the
+	//     central risk the issue named.
+	//   - Left-open window membership, the >= 2 samples NULL rule, and the
+	//     full Prometheus extrapolation formula INCLUDING the
+	//     averageDurationBetweenSamples/2 clamp branch (not just the common
+	//     "extrapolate fully" branch) were probed with hand-computed
+	//     reference values and matched exactly, to the same floating-point
+	//     bit pattern the closed-form arithmetic predicts.
+	//   - The doc's duplicate-timestamp "highest value wins, NaN loses
+	//     unless all NaN" rule matches for two real values. For a real-vs-NaN
+	//     duplicate pair it is ORDER-DEPENDENT: NaN loses when it is
+	//     inserted before the real sample, but WINS (propagates) when
+	//     inserted after — traced to ClickHouse's own greatest() being
+	//     asymmetric on NaN (greatest(nan, x) = x but greatest(x, nan) =
+	//     nan) and the aggregate's internal dedup folding pairwise in
+	//     encounter order. This is a genuine, reproducible divergence from
+	//     the documented contract, filed as
+	//     https://github.com/tsouza/cerberus/issues/2798 — but it is
+	//     FAMILY-WIDE, not delta-specific: the identical probe against the
+	//     already-shipped, auto-selected timeSeriesRateToGrid reproduces the
+	//     same order-dependence. It therefore does not single out delta()
+	//     for a different AutoSelect posture than its already-auto-selected
+	//     siblings; the narrow, pre-existing gap (a real sample and a NaN
+	//     sample sharing one series' exact timestamp) is tracked, not
+	//     hidden.
+	//
+	// AutoSelect is true: the sweep found no delta-specific divergence from
+	// PromQL — the one real gap it surfaced is a pre-existing, family-wide
+	// ClickHouse tie-break bug already accepted for the auto-selected
+	// rate/increase/resets/deriv/predict_linear siblings, not a reason to
+	// treat delta differently from them.
+	FeatureTSGridDelta = "ts_grid_delta"
+
 	// FeatureLagInFrameAdjacency opts eligible query_range
 	// changes()/resets()/irate()/idelta() matrix shapes onto a single sorted
 	// lagInFrame/leadInFrame annotation pass with fixed-size per-anchor
@@ -615,6 +671,14 @@ var registry = []Feature{
 		Doc:        "opt the classic histogram_quantile rank walk onto the native quantilePrometheusHistogram(phi)(le, cum) aggregate (server >= 25.10, opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
 	},
 	{
+		ID:                         FeatureTSGridDelta,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 true,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "opt eligible delta(<gauge>[<range>]) shapes onto native timeSeriesDeltaToGrid (experimental maturity, auto-enabled on server >= 25.9 — the left-open window fix; a chDB differential sweep proved no counter-reset correction, matching PromQL)",
+	},
+	{
 		ID:         FeatureLagInFrameAdjacency,
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
@@ -634,8 +698,8 @@ var registry = []Feature{
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
 // ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
-// ts_grid_histogram, quantile_prom_histogram, laginframe_adjacency,
-// map_bucketed_serialization). The copy
+// ts_grid_histogram, quantile_prom_histogram, ts_grid_delta,
+// laginframe_adjacency, map_bucketed_serialization). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {

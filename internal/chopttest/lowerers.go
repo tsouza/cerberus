@@ -105,6 +105,11 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
+	if set.Has(chopt.FeatureTSGridDelta) {
+		l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+	} else {
+		l.Delta = promql.FanoutDeltaLowerer{}
+	}
 
 	// The anchor-injection window-slide mechanism was removed by #2511's
 	// root-cause investigation (structural over-read, see main.go's
