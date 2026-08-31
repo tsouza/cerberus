@@ -150,6 +150,7 @@ table.
 | `result_cache`                   | 24.8       | stable       | yes        |
 | `lazy_materialization`           | 25.11      | experimental | yes        |
 | `explain_estimate`               | none       | experimental | no         |
+| `cardinality_probe`              | none       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they

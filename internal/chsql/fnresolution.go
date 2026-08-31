@@ -209,6 +209,7 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnSumForEach: {Name: "sumForEach"},
 	chplan.FnSumMap:     {Name: "sumMap"},
 	chplan.FnUniqExact:  {Name: "uniqExact"},
+	chplan.FnUniqUpTo:   {Name: "uniqUpTo"},
 	chplan.FnVarPop:     {Name: "varPop"},
 }
 

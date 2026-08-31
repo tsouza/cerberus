@@ -609,6 +609,16 @@ const (
 	// (no sketch approximation).
 	FnUniqExact Fn = "uniqExact"
 
+	// uniqUpTo(N)(x) aggregate — the exact count of distinct x values in the
+	// group, up to N; returns N+1 once the group holds more than N distinct
+	// values rather than continuing to count exactly. N is a compile-time
+	// parameter capped at 100 by ClickHouse itself (issue #2788: a K above 100
+	// throws, not saturates) — cerberus's own cardinality pre-probe is the only
+	// caller and always parameterises with exactly 100, so a probed group's
+	// distinct-value count above that many is reported as "101", a deliberate,
+	// documented saturation rather than an exact count past the cap.
+	FnUniqUpTo Fn = "uniqUpTo"
+
 	// varPop(x) aggregate — the population variance of x in the group.
 	FnVarPop Fn = "varPop"
 )

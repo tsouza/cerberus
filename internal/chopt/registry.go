@@ -731,6 +731,33 @@ const (
 	// choice pending that evidence, not a version-gated pure win.
 	FeatureExplainEstimate = "explain_estimate"
 
+	// FeatureCardinalityProbe gates a SECOND, independent advisory pre-flight
+	// (cerberus issue #2788) that complements FeatureExplainEstimate: a
+	// bounded REAL aggregate — `count()`, `uniqUpTo(100)(...)` — over a
+	// ModeAuto RangeWindow candidate's already-pruned scan window, answering
+	// the distinct-series fan-out question EXPLAIN ESTIMATE's marks-level
+	// upper bound cannot. Gated identically to FeatureExplainEstimate: once
+	// per distinct (plan shape, metric) pair for a candidate whose baseline
+	// classification reached the cost-grid section, never on every request
+	// (internal/engine's cardinality_probe_wiring.go — same round-trip
+	// constraint per_rung_admission.go's own doc requires, and the same
+	// route-memo / per-rung-admission skip narrowing
+	// explain_estimate_wiring.go established first).
+	//
+	// VERSION FLOOR: registered AlwaysAvailable — uniqUpTo / uniqCombined are
+	// old, universally-available ClickHouse aggregate functions (unlike
+	// EXPLAIN ESTIMATE, this is not even a metadata-analysis feature; it is
+	// an ordinary bounded aggregate query), so there is no real version gate
+	// to express.
+	//
+	// NOT auto-selected (AutoSelect=false), same posture and same reasoning
+	// as FeatureExplainEstimate: advisory only, real-world value on
+	// cerberus's own production query mix is a calibration question pending
+	// operator opt-in evidence — and unlike EXPLAIN ESTIMATE this probe DOES
+	// execute against real data, so enabling it by default would add
+	// unmeasured query volume without an operator's explicit choice.
+	FeatureCardinalityProbe = "cardinality_probe"
+
 	// FeatureColumnStatistics gates the curated `ADD STATISTICS IF NOT
 	// EXISTS` ALTER registry (cerberus issue #2766) that installs ClickHouse
 	// column statistics on the metrics/logs/traces fact tables' highest-value
@@ -1521,6 +1548,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "advisory EXPLAIN ESTIMATE pre-flight for solver K clamping and per-rung admission priors (no version floor — available since 21.9 — opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
 	},
+	{
+		ID:         FeatureCardinalityProbe,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "advisory bounded count()/uniqUpTo(100) cardinality pre-probe complementing explain_estimate's marks-level estimate with real distinct-series fan-out (no version floor; opt-in via CERBERUS_CH_OPTIMIZATIONS; auto never picks it pending real-world calibration)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1532,9 +1566,10 @@ var registry = []Feature{
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
 // join_spill, trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
-// result_cache, lazy_materialization, explain_estimate). The copy keeps the
-// canonical entries immutable from the caller's side. Exposed so tests can
-// enumerate the gates and the docs generator can render the table.
+// result_cache, lazy_materialization, explain_estimate, cardinality_probe).
+// The copy keeps the canonical entries immutable from the caller's side.
+// Exposed so tests can enumerate the gates and the docs generator can
+// render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

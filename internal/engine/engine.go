@@ -985,6 +985,17 @@ type Engine struct {
 	// threads the result onto solver.RequestMeta.Estimate as an advisory
 	// input to the K clamp (internal/solver/planner.go).
 	ScanEstimateAdvisor *ScanEstimateAdvisor
+
+	// CardinalityProbeAdvisor is the OPTIONAL advisory bounded cardinality
+	// pre-probe (issue #2788, cardinality_probe_wiring.go). Nil unless wired
+	// from cmd/cerberus (buildCardinalityProbeAdvisor, gated on the chopt
+	// FeatureCardinalityProbe feature AND evalSolver.Cfg.Mode ==
+	// solver.ModeAuto), so the default path is byte-unchanged. When non-nil,
+	// classify runs it AFTER ScanEstimateAdvisor (if that is also wired) and
+	// folds its result on top — see cardinality_probe_wiring.go's own doc
+	// for why the two are kept as independent advisors sharing one merge
+	// point rather than one combined mechanism.
+	CardinalityProbeAdvisor *CardinalityProbeAdvisor
 }
 
 // SetSettings installs rules as the per-query settings the engine evaluates
@@ -1520,13 +1531,17 @@ func (e *Engine) QueryPlan(ctx context.Context, lang Lang, plan chplan.Node, met
 // is off OR the head is not PromQL — both cases make the engine omit the
 // shadow header and stay byte-identical to the pre-solver path.
 //
-// When e.ScanEstimateAdvisor is wired AND the deployment routes in
-// solver.ModeAuto, classify runs a first, no-estimate classification pass
-// (pure, no I/O — see the Advise call site's own comment on why redoing it
-// is free) purely to hand ScanEstimateAdvisor.Advise a baseline Decision and
-// let it decide, per explain_estimate_wiring.go's own doc, whether the
-// request is worth an advisory EXPLAIN ESTIMATE round trip. A nil
-// ScanEstimateAdvisor (the default) or a non-auto Mode skips this
+// When e.ScanEstimateAdvisor and/or e.CardinalityProbeAdvisor are wired AND
+// the deployment routes in solver.ModeAuto, classify runs a first,
+// no-estimate classification pass (pure, no I/O — see the Advise call
+// sites' own comments on why redoing it is free) purely to hand each
+// advisor a baseline Decision and let it decide, per its own doc, whether
+// the request is worth its advisory round trip. Both advisors are threaded
+// through the SAME rm.Estimate value — CardinalityProbeAdvisor.Advise folds
+// its own result on top of whatever ScanEstimateAdvisor.Advise already
+// produced (nil when that one is unwired or itself skipped) — so a shape
+// needing both signals gets one merged solver.ScanEstimate, never two
+// competing ones. Neither wired (the default) or a non-auto Mode skips this
 // entirely — the single Classify call below is byte-identical to the
 // pre-#2787 path.
 func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*solver.Decision, bool) {
@@ -1540,17 +1555,22 @@ func (e *Engine) classify(ctx context.Context, plan chplan.Node, lang Lang) (*so
 		End:   end,
 		Step:  step,
 	}
-	if e.ScanEstimateAdvisor != nil && e.Solver.Cfg.Mode == solver.ModeAuto {
+	if (e.ScanEstimateAdvisor != nil || e.CardinalityProbeAdvisor != nil) && e.Solver.Cfg.Mode == solver.ModeAuto {
 		baseline, _ := e.Solver.Classify(plan, rm)
-		emit := func(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
-			return emitForHead(
-				ctx, lang, plan,
-				e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
-				e.resourceBoundOverrides(),
-				e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits,
-			)
+		if e.ScanEstimateAdvisor != nil {
+			emit := func(ctx context.Context, lang Lang, plan chplan.Node) (string, []any, error) {
+				return emitForHead(
+					ctx, lang, plan,
+					e.DeltaPrefixLookback, e.DeltaPrefixReadEnabled,
+					e.resourceBoundOverrides(),
+					e.RangeBucketGridNativeMaxRows, e.RangeBucketGridNativeMaxDensityUnits,
+				)
+			}
+			rm.Estimate = e.ScanEstimateAdvisor.Advise(ctx, e.RouteMemo, plan, lang, baseline, emit)
 		}
-		rm.Estimate = e.ScanEstimateAdvisor.Advise(ctx, e.RouteMemo, plan, lang, baseline, emit)
+		if e.CardinalityProbeAdvisor != nil {
+			rm.Estimate = e.CardinalityProbeAdvisor.Advise(ctx, e.RouteMemo, plan, baseline, rm.Estimate)
+		}
 	}
 	return e.Solver.Classify(plan, rm)
 }

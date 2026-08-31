@@ -33,15 +33,17 @@ type RequestMeta struct {
 	// time-slice routed.
 	Step time.Duration
 
-	// Estimate is the OPTIONAL advisory EXPLAIN ESTIMATE read-out for this
-	// plan's inner scan (issue #2787), or nil when no estimate was fetched —
-	// the overwhelmingly common case: internal/engine's
-	// explain_estimate_wiring.go only probes a ModeAuto-eligible candidate,
-	// caches the result per plan shape, and skips the round trip entirely
-	// once the route memo or the per-rung admission learner already holds a
-	// verdict for that shape. A nil Estimate leaves classify's K derivation
-	// byte-identical to the pre-#2787 pure-geometry formula — see
-	// planner.go's own doc on where and how a non-nil Estimate is consulted.
+	// Estimate is the OPTIONAL advisory scan read-out for this plan's inner
+	// scan, or nil when no estimate was fetched — the overwhelmingly common
+	// case: internal/engine's explain_estimate_wiring.go and
+	// cardinality_probe_wiring.go each only probe a ModeAuto-eligible
+	// candidate, cache the result per plan shape (the cardinality probe keyed
+	// additionally on metric — see that file's own doc), and skip their round
+	// trip entirely once the route memo or the per-rung admission learner
+	// already holds a verdict for that shape. A nil Estimate leaves
+	// classify's K derivation byte-identical to the pre-#2787 pure-geometry
+	// formula — see planner.go's own doc on where and how a non-nil Estimate
+	// is consulted.
 	//
 	// Keeping Planner pure (its own doc: "no per-request mutable state, no
 	// RNG... a pure function of (plan, meta, Cfg)") is exactly why this rides
@@ -51,22 +53,47 @@ type RequestMeta struct {
 	Estimate *ScanEstimate
 }
 
-// ScanEstimate is the package-local advisory read-out of a ClickHouse
-// EXPLAIN ESTIMATE probe (internal/chclient.ScanEstimate is the transport
-// counterpart internal/engine converts from — see RequestMeta.Estimate's own
-// doc for why solver does not import chclient's type directly, mirroring
-// this whole struct's "package-local stand-in for engine.Meta" convention).
-//
-// Every field is a GRANULE-RESOLUTION UPPER BOUND (marks times the table's
-// granule size, typically 8192), not selectivity-aware — never a count of
-// rows that actually match the query's predicates. classify() therefore
-// consumes it only as a bias input to the K clamp, never as a threshold a
-// plan must clear to be eligible at all: every structural/correctness gate
-// above runs unconditionally, with or without an Estimate.
+// ScanEstimate is the package-local advisory read-out of a ClickHouse scan
+// probe — EXPLAIN ESTIMATE (issue #2787, internal/chclient.ScanEstimate) or
+// the bounded cardinality pre-probe (issue #2788,
+// internal/chclient.CardinalityEstimate) — the transport counterparts
+// internal/engine converts from (see RequestMeta.Estimate's own doc for why
+// solver does not import chclient's types directly, mirroring this whole
+// struct's "package-local stand-in for engine.Meta" convention). classify()
+// consumes every field only as a bias input to the K clamp, never as a
+// threshold a plan must clear to be eligible at all: every structural/
+// correctness gate above runs unconditionally, with or without an Estimate.
 type ScanEstimate struct {
+	// Parts / Marks are EXPLAIN ESTIMATE-only: the number of parts / granules
+	// the index analysis selected. Left zero when only the cardinality
+	// pre-probe populated this Estimate — classify() never reads either
+	// field, so a zero here changes no routing outcome; they exist for
+	// telemetry/corpus readers.
 	Parts uint64
-	Rows  uint64
 	Marks uint64
+
+	// Rows is a row-count bias input to the K clamp (planner.go's own doc).
+	// EXPLAIN ESTIMATE populates it as a GRANULE-RESOLUTION UPPER BOUND
+	// (selected marks times the table's granule size, typically 8192), never
+	// selectivity-aware. The cardinality pre-probe populates it with a REAL
+	// count() over the plan's already-pruned scan window instead — strictly
+	// more precise for the same K-clamp arithmetic — and internal/engine's
+	// cardinality_probe_wiring.go prefers that real count whenever both
+	// probes ran for the same request (see its own mergeCardinalityEstimate
+	// doc).
+	Rows uint64
+
+	// DistinctSeries is the cardinality pre-probe's uniqUpTo(100)(...)
+	// read-out (issue #2788) — the number of distinct series backing the
+	// scan window, up to the uniqUpTo(100) cap (see chplan.FnUniqUpTo's own
+	// doc for the saturation behaviour above it). Zero when the cardinality
+	// pre-probe did not run (EXPLAIN ESTIMATE alone never populates this
+	// field — it has no comparable per-series signal). classify() does not
+	// read this field at all: it exists solely for
+	// internal/engine/cardinality_probe_wiring.go's own per-rung admission
+	// seeding, which needs the fan-out signal EXPLAIN ESTIMATE's row-only
+	// upper bound cannot provide.
+	DistinctSeries uint64
 }
 
 // Decision is the routing output. Slices are ordered oldest-first
