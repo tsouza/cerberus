@@ -447,28 +447,39 @@ func (r *RangeWindow) InputWindow(start, end time.Time) (time.Time, time.Time) {
 	return start.Add(-r.Offset - r.Range), end
 }
 
+// rangeWindowScalarFieldsEqual compares every flat scalar/bool/string field
+// Equal must agree on, split out so Equal's own cyclomatic complexity stays
+// under the linter's ceiling (cyclop) — each field this repo adds to
+// RangeWindow costs Equal one more branch, and this repo has been adding
+// them steadily (LagAdjacency, FixedAccumulatorExtrapolated, ...), so the
+// split is the durable fix rather than a one-off dodge.
+func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
+	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
+		return false
+	}
+	if r.OuterRange != o.OuterRange || r.Identity != o.Identity || r.StepAlign != o.StepAlign {
+		return false
+	}
+	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TemporalityColumn != o.TemporalityColumn {
+		return false
+	}
+	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||
+		r.FixedAccumulatorExtrapolated != o.FixedAccumulatorExtrapolated {
+		return false
+	}
+	return r.VariantColumn == o.VariantColumn
+}
+
 func (r *RangeWindow) Equal(other Node) bool {
 	o, ok := other.(*RangeWindow)
 	if !ok {
 		return false
 	}
-	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
-		return false
-	}
-	if r.OuterRange != o.OuterRange || r.Identity != o.Identity {
-		return false
-	}
-	if r.StepAlign != o.StepAlign {
+	if !rangeWindowScalarFieldsEqual(r, o) {
 		return false
 	}
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
-		return false
-	}
-	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
-		return false
-	}
-	if r.TemporalityColumn != o.TemporalityColumn {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) {
@@ -495,16 +506,7 @@ func (r *RangeWindow) Equal(other Node) bool {
 			return false
 		}
 	}
-	if r.InstantScanBounded != o.InstantScanBounded {
-		return false
-	}
-	if r.LagAdjacency != o.LagAdjacency {
-		return false
-	}
-	if r.FixedAccumulatorExtrapolated != o.FixedAccumulatorExtrapolated {
-		return false
-	}
-	if r.VariantColumn != o.VariantColumn || len(r.Variants) != len(o.Variants) {
+	if len(r.Variants) != len(o.Variants) {
 		return false
 	}
 	for i := range r.Variants {

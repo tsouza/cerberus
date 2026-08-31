@@ -361,57 +361,16 @@ func fixedAccumDeltaLevelSource(regroupSource Frag, groupFrags []Frag, passthrou
 	return levels.Frag()
 }
 
-// emitFixedAccumulatorExtrapolatedMatrix is the fixed-accumulator sibling of
-// emitWindowedArrayExtrapolatedMatrix (cerberus issue #2760): rate() /
-// increase() / delta() over a query_range matrix window (OuterRange > 0),
-// with every per-(series, anchor) quantity read as a ClickHouse aggregate
-// (count/min/max/argMin/argMax/sum/sumIf, plus their -If forms for a
-// temporality-bearing window) instead of a materialized
-// groupArray + arraySort + arrayFilter array. See this file's own doc
-// comment for the full design (duplicate-timestamp handling, the
-// counter-reset telescoping-sum proof, the temporality-bearing extension,
-// and this cut's scope).
-//
-// Unlike emitWindowedArrayExtrapolatedMatrix's fan-out this emitter does NOT
-// wrap its sample-anchor fan-out in rateWindowFanoutBoundedSourceFrag's
-// row-count guard: that guard bounds groupArray-CLASS memory (the fold's
-// per-group array state grows with the fan-out row count), which does not
-// apply here — every per-(series, anchor) reduction below is a fixed-size
-// aggregate state regardless of how many rows feed it. Issue #2759's own
-// lagInFrame adjacency shape (range_window_lag_adjacency.go) established this
-// same precedent: neither emitLagAdjacencyChangesResets nor
-// emitLagAdjacencyPairs applies the guard either.
-func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
-	if err := fixedAccumulatorMatrixShapeCheck(r); err != nil {
-		return err
-	}
-
-	end := endExprFrag(r)
-	rangeNS := r.Range.Nanoseconds()
-	stepNS := r.Step.Nanoseconds()
-	rangeSeconds := r.Range.Seconds()
-	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
-	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
-	anchor := verbatim("anchor_ts")
-	rangeStart := rangeStartFrag(anchor, rangeNS)
-	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
-	if err != nil {
-		return err
-	}
-
-	innerSub, err := e.subqueryFrag(r.Input)
-	if err != nil {
-		return err
-	}
-	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
-
-	hasTemporality := windowTemporalityProjected(r)
-	needsResetTerm := kind.isCounter()
-	// needsDeltaFirstLevel mirrors emitWindowedArrayExtrapolatedMatrix's own
-	// flag exactly: a temporality-bearing counter window (delta() never
-	// carries TemporalityColumn, so this is always false for that kind).
-	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
-
+// fixedAccumRegroupLayer builds the dedup -> [lag] -> fan-out -> regroup ->
+// [delta-level] pipeline and returns the per-(series, anchor) source the
+// caller's extrap/outer layers read from. Split out of
+// emitFixedAccumulatorExtrapolatedMatrix to keep that function under
+// golangci-lint's funlen ceiling — mirrors range_window.go's own
+// windowedMatrixFanoutAnchorTsFrag split for the identical reason.
+func (e *emitter) fixedAccumRegroupLayer(
+	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string, end Frag,
+	stepNS, rangeNS, numAnchors int64, hasTemporality, needsResetTerm, needsDeltaFirstLevel bool,
+) Frag {
 	dedupSource := e.fixedAccumDedupLayer(r, innerSub, groupFrags, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel).Frag()
 
 	preFanoutSource := dedupSource
@@ -498,6 +457,62 @@ func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, 
 		}
 		regroupSource = fixedAccumDeltaLevelSource(regroupSource, groupFrags, passthrough)
 	}
+	return regroupSource
+}
+
+// emitFixedAccumulatorExtrapolatedMatrix is the fixed-accumulator sibling of
+// emitWindowedArrayExtrapolatedMatrix (cerberus issue #2760): rate() /
+// increase() / delta() over a query_range matrix window (OuterRange > 0),
+// with every per-(series, anchor) quantity read as a ClickHouse aggregate
+// (count/min/max/argMin/argMax/sum/sumIf, plus their -If forms for a
+// temporality-bearing window) instead of a materialized
+// groupArray + arraySort + arrayFilter array. See this file's own doc
+// comment for the full design (duplicate-timestamp handling, the
+// counter-reset telescoping-sum proof, the temporality-bearing extension,
+// and this cut's scope).
+//
+// Unlike emitWindowedArrayExtrapolatedMatrix's fan-out this emitter does NOT
+// wrap its sample-anchor fan-out in rateWindowFanoutBoundedSourceFrag's
+// row-count guard: that guard bounds groupArray-CLASS memory (the fold's
+// per-group array state grows with the fan-out row count), which does not
+// apply here — every per-(series, anchor) reduction below is a fixed-size
+// aggregate state regardless of how many rows feed it. Issue #2759's own
+// lagInFrame adjacency shape (range_window_lag_adjacency.go) established this
+// same precedent: neither emitLagAdjacencyChangesResets nor
+// emitLagAdjacencyPairs applies the guard either.
+func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, kind extrapolationKind) error {
+	if err := fixedAccumulatorMatrixShapeCheck(r); err != nil {
+		return err
+	}
+
+	end := endExprFrag(r)
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	rangeSeconds := r.Range.Seconds()
+	numAnchors := r.OuterRange.Nanoseconds()/stepNS + 1
+	end, numAnchors = stepAlignGrid(r, end, stepNS, numAnchors)
+	anchor := verbatim("anchor_ts")
+	rangeStart := rangeStartFrag(anchor, rangeNS)
+	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
+	if err != nil {
+		return err
+	}
+
+	innerSub, err := e.subqueryFrag(r.Input)
+	if err != nil {
+		return err
+	}
+	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
+
+	hasTemporality := windowTemporalityProjected(r)
+	needsResetTerm := kind.isCounter()
+	// needsDeltaFirstLevel mirrors emitWindowedArrayExtrapolatedMatrix's own
+	// flag exactly: a temporality-bearing counter window (delta() never
+	// carries TemporalityColumn, so this is always false for that kind).
+	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
+
+	regroupSource := e.fixedAccumRegroupLayer(r, innerSub, groupFrags, srcTs, end,
+		stepNS, rangeNS, numAnchors, hasTemporality, needsResetTerm, needsDeltaFirstLevel)
 
 	extrap := NewQuery().From(regroupSource)
 	extrap.Select(groupFrags...)
