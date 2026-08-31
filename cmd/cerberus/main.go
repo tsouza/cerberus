@@ -1212,6 +1212,12 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	h.Lang.TextIndexLineFilter = h.TextIndexLineFilter
 	h.QueryTimeout = cfg.ClickHouse.QueryTimeout
 	h.TailWriteTimeout = cfg.LokiTailWriteTimeout
+	// LabelCatalogEnabled (cerberus issue #2770) is the resolved chopt
+	// loki_catalog_mv verdict — the SAME cfg.SchemaLokiCatalogMV DDLConfig
+	// threads to gate provisioning the catalog table in the first place, so
+	// the read path only ever attempts the catalog query on a deployment
+	// where the DDL side actually created it.
+	h.LabelCatalogEnabled = cfg.SchemaLokiCatalogMV
 	h.Engine.Settings = settingsRules(cfg, optSet)
 	// The prom head wires this (line ~713 above); the Loki head never did,
 	// so requireSubquerySampleBudget's plan-time anchor-grid gate
@@ -1338,6 +1344,30 @@ func infoOptions(
 				MaxSizeBytes:     state.MaxSizeBytes,
 				CurrentSizeBytes: state.CurrentSizeBytes,
 				CurrentElements:  state.CurrentElements,
+			}
+		},
+		// LokiCatalogViewRefresh reports system.view_refreshes' status for
+		// the loki label-catalog view (cerberus issue #2770), read over the
+		// SAME probe head as FilesystemCache. Reported unconditionally —
+		// not gated behind cfg.SchemaLokiCatalogMV — because
+		// QueryViewRefreshState itself already degrades to Found=false on a
+		// deployment where the view was never provisioned (UNKNOWN_TABLE,
+		// or simply no matching row), the same honest "not configured"
+		// answer FilesystemCache reports for an unconfigured cache; a query
+		// error beyond that degrades the same way rather than surfacing a
+		// transient error on a metadata endpoint that always returns 200.
+		LokiCatalogViewRefresh: func(ctx context.Context) info.ViewRefreshState {
+			state, err := probe.QueryViewRefreshState(ctx, cfg.ClickHouse.Database, cfg.Logs.LabelCatalogTable+schema.LabelCatalogViewSuffix)
+			if err != nil || !state.Found {
+				return info.ViewRefreshState{}
+			}
+			return info.ViewRefreshState{
+				Configured:      true,
+				Status:          state.Status,
+				Exception:       state.Exception,
+				LastSuccessTime: state.LastSuccessTime,
+				LastRefreshTime: state.LastRefreshTime,
+				Retry:           state.Retry,
 			}
 		},
 		StartTime:   startTime,
@@ -1496,6 +1526,11 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// trace_id_bitmap_filter — it is read straight off the EnabledSet at
 	// newLokiHandler's construction site instead of being back-filled here.
 	cfg.SchemaFullTextIndex = set.Has(chopt.FeatureFullTextIndex)
+
+	// Same back-fill for loki_catalog_mv (cerberus issue #2770) — see the
+	// map_bucketed_serialization comment above for why this runs here
+	// rather than being threaded as an EnabledSet parameter.
+	cfg.SchemaLokiCatalogMV = set.Has(chopt.FeatureLokiCatalogMV)
 
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never

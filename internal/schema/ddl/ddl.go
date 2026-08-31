@@ -209,6 +209,21 @@ type Config struct {
 	// bit at boot — see internal/schemaboot.DDLConfig — mirroring exactly
 	// how TraceIDProjectionEnabled is threaded from its own chopt verdict.
 	TextIndexEnabled bool
+
+	// LokiLabelCatalogEnabled gates the curated `CREATE TABLE
+	// loki_label_catalog` + `CREATE MATERIALIZED VIEW ... REFRESH EVERY 5
+	// MINUTE ... TO loki_label_catalog` pair (cerberus issue #2770) that
+	// maintains a per-label-key cardinality catalog on top of the logs
+	// table, refreshed on a schedule instead of computed per request by
+	// `/loki/api/v1/detected_labels` (internal/api/loki/detected_labels.go).
+	// False (the default) renders neither statement at all — an operator on
+	// today's schema sees byte-identical DDL. The chopt loki_catalog_mv
+	// feature (version-gated at ClickHouse >= 24.10, the first release
+	// carrying refreshable materialized views GA — upstream PR #70550)
+	// resolves this bit at boot — see internal/schemaboot.DDLConfig —
+	// mirroring exactly how TraceIDProjectionEnabled is threaded from its
+	// own chopt verdict.
+	LokiLabelCatalogEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -315,6 +330,13 @@ type Tables struct {
 	// aggregate table (cerberus issue #2389). Unlike every other field on
 	// this struct it has no upstream template — see DeltaPrefixEnabled.
 	MetricsDeltaPrefix string
+	// LokiLabelCatalog names the refreshable-materialized-view-backed
+	// per-label-key cardinality catalog table (cerberus issue #2770). Like
+	// MetricsDeltaPrefix it has no upstream template — see
+	// LokiLabelCatalogEnabled. Empty falls back to
+	// schema.DefaultOTelLogs().LabelCatalogTable's default
+	// ("loki_label_catalog") via withDefaults.
+	LokiLabelCatalog string
 }
 
 // Defaults mirror the upstream OTel ClickHouse Exporter's table names. They
@@ -347,6 +369,11 @@ const (
 	defaultMetricsDeltaPrefixTable = "otel_metrics_sum_delta_prefix"
 	defaultDeltaPrefixBucketColumn = "BucketStart"
 	defaultDeltaPrefixSumColumn    = "PartialSum"
+
+	// defaultLokiLabelCatalogTable mirrors
+	// schema.DefaultOTelLogs().LabelCatalogTable's default (cerberus issue
+	// #2770) — kept in lockstep by TestLokiLabelCatalogDefaultMatchesSchemaPackage.
+	defaultLokiLabelCatalogTable = "loki_label_catalog"
 )
 
 // withDefaults returns a copy of cfg with empty string fields filled in
@@ -382,6 +409,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Tables.MetricsDeltaPrefix == "" {
 		c.Tables.MetricsDeltaPrefix = defaultMetricsDeltaPrefixTable
+	}
+	if c.Tables.LokiLabelCatalog == "" {
+		c.Tables.LokiLabelCatalog = defaultLokiLabelCatalogTable
 	}
 	if c.DeltaPrefixBucketColumn == "" {
 		c.DeltaPrefixBucketColumn = defaultDeltaPrefixBucketColumn
@@ -778,6 +808,18 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
 		}
+		// The loki label-cardinality catalog table + its refreshable MV
+		// (issue #2770) trail every other logs statement, mirroring the
+		// DELTA-prefix pair's CREATE-then-MV order on the metrics
+		// signal — the catalog table must exist before the MV's TO clause
+		// can reference it.
+		if cfg.LokiLabelCatalogEnabled {
+			stmts = append(
+				stmts,
+				renderLokiLabelCatalogTable(cfg),
+				renderLokiLabelCatalogView(cfg),
+			)
+		}
 		return stmts, nil
 	case Traces:
 		stmts := []string{
@@ -1103,11 +1145,16 @@ func renderAddTemporalityIndex(cfg Config, table string) string {
 	return stmt.SQL()
 }
 
-// deltaPrefixViewSuffix is appended to Tables.MetricsDeltaPrefix to name its
-// materialized view — matches the upstream traces lookup table's own
-// `<table>_mv` convention (renderTracesCreateTsView), even though this MV
-// is entirely cerberus-authored.
-const deltaPrefixViewSuffix = "_mv"
+// cerberusOwnedViewSuffix is appended to a cerberus-owned target table's
+// name to name its materialized view — matches the upstream traces lookup
+// table's own `<table>_mv` convention (renderTracesCreateTsView), even
+// though these MVs are entirely cerberus-authored. Used by the DELTA-prefix
+// aggregate view; the loki label-catalog view uses the equivalent
+// schema.LabelCatalogViewSuffix instead of this package-local constant
+// because, unlike the DELTA-prefix view's name, its exact name is also
+// needed OUTSIDE this package (internal/api/info, to query
+// system.view_refreshes) — see that constant's own doc comment.
+const cerberusOwnedViewSuffix = "_mv"
 
 // renderDeltaPrefixTable renders the CREATE TABLE for the DELTA-temporality
 // prefix-reconstruction aggregate table (cerberus issue #2389, plan §4.1,
@@ -1181,10 +1228,128 @@ func renderDeltaPrefixView(cfg Config) string {
 			chsql.Col(metricServiceNameColumn),
 			bucket,
 		)
-	stmt := chsql.CreateMaterializedView(cfg.Tables.MetricsDeltaPrefix+deltaPrefixViewSuffix).
+	stmt := chsql.CreateMaterializedView(cfg.Tables.MetricsDeltaPrefix+cerberusOwnedViewSuffix).
 		Database(cfg.Database).
 		IfNotExists().
 		To(cfg.Database, cfg.Tables.MetricsDeltaPrefix).
+		As(body)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// --- Loki label-cardinality catalog (cerberus issue #2770) ---
+//
+// The catalog table's own two column names (schema.LabelCatalogKeyColumn /
+// schema.LabelCatalogCardinalityStateColumn) live in internal/schema, NOT
+// here — see that package's doc comment for why: both this package (which
+// creates the table) and internal/api/loki (which queries it) need the
+// SAME literal, and schema is the one leaf package both already import.
+//
+// labelValueColumn names the second column the catalog view's ARRAY JOIN
+// explodes ResourceAttributes into (see renderLokiLabelCatalogView) — it
+// exists only inside this view's own body, so unlike the two schema.*
+// columns above it has no read-side consumer and stays local.
+//
+// logsTimestampColumnName is the logs table's fixed OTel-CH exporter
+// timestamp column — the same literal renderLogsTable's own ttlExpr calls
+// pass inline; named here (rather than repeated inline) because this
+// package's magic-constant convention (invariant 13) applies to a column
+// name referenced from typed chsql builder code the same way it applies to
+// a numeric literal.
+const (
+	labelValueColumn        = "LabelValue"
+	logsTimestampColumnName = "Timestamp"
+
+	// lokiLabelCatalogRefreshMinutes is the REFRESH EVERY interval for the
+	// catalog view — cerberus issue #2770's proposed cadence: frequent
+	// enough that a freshly-appearing label surfaces within one Grafana
+	// logs-explorer session, infrequent enough that the refresh's own scan
+	// cost (bounded by lokiLabelCatalogWindow below) stays a small fraction
+	// of a 5-minute period even against a busy logs table.
+	lokiLabelCatalogRefreshMinutes = 5
+
+	// lokiLabelCatalogWindowHours bounds the catalog's aggregation window
+	// to the most recent N hours (cerberus issue #2770's "keep the refresh
+	// itself cheap" requirement) — a full-table scan on every refresh would
+	// make the cadence above unaffordable on a retention-sized logs table.
+	// 24h mirrors the issue's own proposed window: long enough that a
+	// label used anywhere in a typical day's traffic pattern is caught,
+	// short enough that the per-refresh scan is bounded by roughly one
+	// day's ingest rather than the table's full retention.
+	lokiLabelCatalogWindowHours = 24
+)
+
+// renderLokiLabelCatalogTable renders the CREATE TABLE for the
+// label-cardinality catalog: one row per label key, carrying a uniqState
+// sketch of the distinct values observed for that key in the catalog
+// view's aggregation window. AggregatingMergeTree (not
+// SimpleAggregateFunction, unlike the DELTA-prefix table's PartialSum
+// column) because uniq's combinator is a genuine two-state merge, not an
+// idempotent max/sum — see chsql's AggregateFunction usage here versus
+// SimpleAggregateFunction in renderDeltaPrefixTable. ORDER BY LabelKey
+// alone: the refreshable view's own atomic swap (not incremental
+// MergeTree merges) is what keeps this table's content current, so the
+// sort key only needs to make a per-key uniqMerge query
+// (internal/api/loki's catalog read path) efficient, not express any
+// retention/uniqueness contract.
+func renderLokiLabelCatalogTable(cfg Config) string {
+	engine := chsql.EngineAggregatingMergeTree()
+	if cfg.DatabaseEngine.Replicated {
+		engine = chsql.EngineReplicatedAggregatingMergeTree()
+	}
+	return chsql.CreateTable(cfg.Tables.LokiLabelCatalog).
+		Database(cfg.Database).
+		IfNotExists().
+		Columns(
+			chsql.ColumnDef{Name: schema.LabelCatalogKeyColumn, Type: chsql.TypeRaw("String")},
+			chsql.ColumnDef{
+				Name: schema.LabelCatalogCardinalityStateColumn,
+				Type: chsql.Call("AggregateFunction", chsql.BareIdent("uniq"), chsql.TypeRaw("String")),
+			},
+		).
+		Engine(engine).
+		OrderBy(schema.LabelCatalogKeyColumn).
+		SQL()
+}
+
+// renderLokiLabelCatalogView renders the REFRESH-scheduled CREATE
+// MATERIALIZED VIEW feeding renderLokiLabelCatalogTable from the logs
+// table: for every (key, value) pair in each row's ResourceAttributes map
+// (mirroring buildDetectedLabelsSQL's own label-set shape — see
+// internal/api/loki/detected_labels.go), a per-key uniqState of the
+// observed values, over the trailing lokiLabelCatalogWindowHours. Empty
+// values are excluded — an unset attribute reads as "" off the Map, the
+// same convention summariseDetectedLabels applies Go-side on the fallback
+// path — so this catalog and that path agree on what counts as "the label
+// carries a value" even though their AGGREGATE numbers otherwise diverge
+// by design (see FeatureLokiCatalogMV's doc comment).
+//
+// Unlike renderDeltaPrefixView this uses RefreshEveryMinutes rather than
+// the on-insert trigger: the window bound (`now() - INTERVAL <N> HOUR`)
+// must be re-evaluated at EACH refresh to stay "the trailing N hours", not
+// frozen at the row's insert time the way an on-insert MV would freeze it.
+func renderLokiLabelCatalogView(cfg Config) string {
+	windowStart := chsql.Sub(chsql.Call("now"), chsql.Call("toIntervalHour", chsql.InlineLit(int64(lokiLabelCatalogWindowHours))))
+	body := chsql.NewQuery().
+		Select(
+			chsql.Col(schema.LabelCatalogKeyColumn),
+			chsql.As(chsql.Call("uniqState", chsql.Col(labelValueColumn)), schema.LabelCatalogCardinalityStateColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.Logs)).
+		ArrayJoin(
+			chsql.As(chsql.Call("mapKeys", chsql.Col(metricResourceAttributesColumn)), schema.LabelCatalogKeyColumn),
+			chsql.As(chsql.Call("mapValues", chsql.Col(metricResourceAttributesColumn)), labelValueColumn),
+		).
+		Where(chsql.Gte(chsql.Col(logsTimestampColumnName), windowStart)).
+		Where(chsql.Neq(chsql.Col(labelValueColumn), chsql.InlineLit(""))).
+		GroupBy(chsql.Col(schema.LabelCatalogKeyColumn))
+	stmt := chsql.CreateMaterializedView(cfg.Tables.LokiLabelCatalog+schema.LabelCatalogViewSuffix).
+		Database(cfg.Database).
+		IfNotExists().
+		RefreshEveryMinutes(lokiLabelCatalogRefreshMinutes).
+		To(cfg.Database, cfg.Tables.LokiLabelCatalog).
 		As(body)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)

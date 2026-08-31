@@ -1397,6 +1397,103 @@ floor, the same way `aggregation_in_order` / `condition_cache` do for their
 own floors. It is harmless (a no-op) on a table that carries no
 `proj_trace_id` projection at all.
 
+### Loki label-cardinality catalog (cerberus issue #2770)
+
+`GET /loki/api/v1/detected_labels` normally answers every request with a
+server-side `GROUP BY` over the matched window's distinct
+`ResourceAttributes` label sets, deriving per-key cardinality client-side —
+real work re-paid on every Grafana logs-explorer open, even the plain
+datasource-probe open that carries no stream selector at all.
+
+Auto-create can install a **refreshable materialized view** that maintains a
+small label-cardinality catalog, an opt-in feature gated behind
+`CERBERUS_CH_OPTIMIZATIONS=loki_catalog_mv` (server `>= 24.10`, upstream PR
+[#70550](https://github.com/ClickHouse/ClickHouse/pull/70550), which dropped
+the `allow_experimental_refreshable_materialized_view` flag requirement and
+made refreshable views GA; see `docs/clickhouse-optimizations.md`'s
+`loki_catalog_mv` entry). Enabled, it appends two curated statements after
+the logs table's other DDL:
+
+```sql
+CREATE TABLE <db>.loki_label_catalog (LabelKey String, CardinalityState AggregateFunction(uniq, String))
+ENGINE = AggregatingMergeTree ORDER BY (LabelKey)
+
+CREATE MATERIALIZED VIEW <db>.loki_label_catalog_mv REFRESH EVERY 5 MINUTE
+TO <db>.loki_label_catalog AS
+SELECT LabelKey, uniqState(LabelValue) AS CardinalityState
+FROM <db>.otel_logs
+ARRAY JOIN mapKeys(ResourceAttributes) AS LabelKey, mapValues(ResourceAttributes) AS LabelValue
+WHERE Timestamp >= now() - toIntervalHour(24) AND LabelValue != ''
+GROUP BY LabelKey
+```
+
+Every five minutes the view re-aggregates the **trailing 24 hours** of
+`otel_logs` (a bounded window, so the refresh's own scan cost stays
+predictable regardless of table retention) and, on success, **atomically
+swaps** the result into `loki_label_catalog` — ClickHouse's own refreshable
+materialized-view mechanism, not a cerberus-built one. A refresh that
+errors (a transient ClickHouse restart, a schema hiccup) leaves the target
+holding whatever the LAST successful swap produced; it never serves a
+partial or empty result. This was verified against a real ClickHouse
+server, not assumed from the upstream design doc — see
+`internal/schema/ddl.TestLokiLabelCatalog_RefreshAndFailureMode`, which
+renames the source table away mid-run to force a real failure and confirms
+the catalog table's data is byte-for-byte unchanged afterward, then restores
+the source and confirms the next refresh picks back up normally.
+
+**Eligibility is deliberately narrow.** `/detected_labels` (and its sibling
+`/detected_fields`, unchanged by this feature — see below) accept a LogQL
+stream selector, and Grafana Logs Drilldown's per-service views pass one;
+the catalog above is unkeyed by stream, so it can only answer a
+SELECTOR-LESS request (an empty `query` param, or one that parses to zero
+matchers, e.g. `{}`) — exactly the datasource-open-probe shape. Any request
+carrying a real selector stays on the existing per-request `GROUP BY` path
+unconditionally — that path is untouched and permanent, not a transitional
+shim; nothing about it changes whether this feature is on or off. A
+catalog-eligible request that finds the table not yet provisioned, or not
+yet successfully refreshed since creation (an empty snapshot), degrades to
+the same fallback path rather than erroring.
+
+**`/detected_fields` is intentionally out of scope for this feature.**
+Unlike `/detected_labels`' label-set shape, `/detected_fields` derives
+fields by re-running the query path's own `| logfmt` / `| json` parser-stage
+extractions over a row peek — replicating that inside a materialized view
+would mean embedding the parser cascade in SQL and maintaining a second
+declaration of it, a substantially larger and riskier change than the
+label-key catalog above. See cerberus issue
+[#2844](https://github.com/tsouza/cerberus/issues/2844) for tracking a
+dedicated design pass on that, independent of this feature.
+
+**Cardinality numbers diverge from the peek-based path by design.** Every
+OTHER estimate `/detected_labels` and `/detected_fields` emit is
+deliberately matched to upstream Loki's own peek-based HyperLogLog sketches
+(same library, same sampling shape) so the compat harness diffs clean
+against a reference Loki. The catalog computes a full-window server-side
+`uniq` aggregate over 24h of real data instead — a different computation
+over a different (larger, unsampled) window — so its numbers do NOT
+reproduce the peek path's bit-for-bit, and are not expected to. The compat
+harness only ever exercises selector-bearing requests (matching real Loki
+usage), which always stay on the peek path regardless of this feature's
+state, so the divergence never surfaces there.
+
+**Measured before/after cost** (2M synthetic `otel_logs` rows spread across
+a 24h window, `service.name`/`k8s.pod.name`/`deployment.environment.name`/
+`k8s.namespace.name`/region attributes, ClickHouse 25.9 in Docker): the
+existing per-request path over the full 24h window reads all 2,000,000 rows
+(171 MiB) in 325ms; the SAME window's catalog read reads 5 rows (555 B, one
+row per label key) in 2–3ms — roughly 400,000x fewer rows and ~130x less
+wall-clock time. Even against a cheaper 1-hour window (1.6M rows, 50ms), the
+catalog read is still ~17x faster.
+
+`system.view_refreshes`' live status for this view is surfaced on `GET
+/info` under `lokiCatalogViewRefresh` — `status`, `exception`,
+`lastSuccessTime`, `lastRefreshTime`, `retry`, reported verbatim with no
+cerberus-side healthy/unhealthy verdict layered on. Note that
+`system.view_refreshes` carries no "last refresh result" enum and no
+refresh-count column (verified live against a 25.9 server) — a failed
+refresh reads as a non-empty `exception` plus `lastRefreshTime` having
+advanced past `lastSuccessTime`, not a distinct status value.
+
 ### Curated column compression codecs (cerberus issue #2768)
 
 Auto-create also installs two curated `MODIFY COLUMN` codec ALTERs, retuning

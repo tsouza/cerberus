@@ -658,6 +658,44 @@ func TestCreateMaterializedView(t *testing.T) {
 	}
 }
 
+// TestCreateMaterializedView_RefreshEveryMinutes pins the `REFRESH EVERY
+// <n> MINUTE` clause's exact position in the statement — between the
+// optional ON CLUSTER clause and the TO target, matching ClickHouse's own
+// grammar (cerberus issue #2770) — and that a non-positive n panics rather
+// than silently omitting the clause.
+func TestCreateMaterializedView_RefreshEveryMinutes(t *testing.T) {
+	got := CreateMaterializedView("loki_label_catalog_mv").
+		Database("otel").
+		IfNotExists().
+		RefreshEveryMinutes(5).
+		To("otel", "loki_label_catalog").
+		As(NewQuery().Select(Col("LabelKey")).From(Col("otel_logs"))).
+		SQL()
+	want := "CREATE MATERIALIZED VIEW IF NOT EXISTS otel.loki_label_catalog_mv REFRESH EVERY 5 MINUTE " +
+		"TO otel.loki_label_catalog AS SELECT `LabelKey` FROM `otel_logs`"
+	if got != want {
+		t.Errorf("SQL() = %q; want %q", got, want)
+	}
+
+	gotCluster := CreateMaterializedView("v").
+		OnCluster("prod").
+		RefreshEveryMinutes(10).
+		To("", "t").
+		As(NewQuery().Select(Col("a")).From(Col("t"))).
+		SQL()
+	wantCluster := "CREATE MATERIALIZED VIEW v ON CLUSTER `prod` REFRESH EVERY 10 MINUTE TO t AS SELECT `a` FROM `t`"
+	if gotCluster != wantCluster {
+		t.Errorf("clustered SQL() = %q; want %q", gotCluster, wantCluster)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("RefreshEveryMinutes(0) did not panic")
+		}
+	}()
+	CreateMaterializedView("v").RefreshEveryMinutes(0)
+}
+
 // TestCreateMaterializedView_PanicsWithoutToOrAs pins the fail-fast guard:
 // calling SQL() without To(...) or without As(...) must panic naming the
 // missing call, rather than silently rendering a `TO  AS ...` statement

@@ -1926,6 +1926,30 @@ type NameTypePair struct {
 // Guarded by the circuit breaker: returns ErrCircuitOpen instantly when
 // the breaker is OPEN, no execute span opened.
 func (c *Client) QueryNameTypePairs(ctx context.Context, sql string, args ...any) ([]NameTypePair, error) {
+	return queryScanRows(ctx, c, sql, args, func(rows driver.Rows) (NameTypePair, error) {
+		var p NameTypePair
+		err := rows.Scan(&p.Name, &p.Type)
+		return p, err
+	})
+}
+
+// queryScanRows runs sql through the standard query pipeline (circuit
+// breaker gate, execute span, breaker recording) and decodes each returned
+// row via scan into a flat slice of T — the shared body behind every
+// chclient method whose whole job is "run this query, Scan each row into a
+// small typed struct, return the slice" (QueryNameTypePairs,
+// QueryLabelCardinalities, and any future one of this shape). Extracted
+// because golangci-lint's dupl check (190-token threshold, see
+// .golangci.yml) flagged QueryLabelCardinalities as a near-exact clone of
+// QueryNameTypePairs — the two differed only in T and the Scan call, the
+// same shape constant_fold.go's foldNumeric collapses for arithmetic
+// folding.
+//
+// Unlike QueryLabelSets/QueryTimestampedLines and friends this has no
+// drainBudgetExceeded check: every current caller's result is a small,
+// bounded catalog/introspection projection (one row per column, or one row
+// per label key), not a row-budget-relevant data-plane result set.
+func queryScanRows[T any](ctx context.Context, c *Client, sql string, args []any, scan func(driver.Rows) (T, error)) ([]T, error) {
 	if !c.br.allow() {
 		return nil, c.br.openErr("chclient: query")
 	}
@@ -1943,13 +1967,13 @@ func (c *Client) QueryNameTypePairs(ctx context.Context, sql string, args ...any
 		_ = rows.Close()
 	}()
 
-	var out []NameTypePair
+	var out []T
 	for rows.Next() {
-		var p NameTypePair
-		if err := rows.Scan(&p.Name, &p.Type); err != nil {
+		v, err := scan(rows)
+		if err != nil {
 			return nil, fmt.Errorf("chclient: scan: %w", err)
 		}
-		out = append(out, p)
+		out = append(out, v)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("chclient: rows.Err: %w", c.classifyDriverErr(ctx, err))

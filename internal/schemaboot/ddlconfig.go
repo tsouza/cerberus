@@ -112,6 +112,7 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			MetricsExpHistogram: cfg.Schema.ExpHistogramTable,
 			MetricsSummary:      cfg.Schema.SummaryTable,
 			MetricsDeltaPrefix:  cfg.Schema.DeltaPrefixTable,
+			LokiLabelCatalog:    cfg.Logs.LabelCatalogTable,
 		},
 		Settings:       settings,
 		LogsSettings:   logsSettings,
@@ -144,6 +145,12 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// chopt.ExplicitlyRequested) — the SAME threading
 		// TraceIDProjectionEnabled above uses for its own chopt verdict.
 		TextIndexEnabled: cfg.SchemaFullTextIndex,
+		// LokiLabelCatalogEnabled (cerberus issue #2770) is the resolved
+		// chopt loki_catalog_mv verdict, back-filled by cmd/cerberus's boot
+		// resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the SAME threading
+		// TraceIDProjectionEnabled above uses for its own chopt verdict.
+		LokiLabelCatalogEnabled: cfg.SchemaLokiCatalogMV,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

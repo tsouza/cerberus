@@ -599,6 +599,33 @@ func (c *Client) QueryLabelSets(ctx context.Context, query string, args ...any) 
 	return out, nil
 }
 
+// QueryLabelCardinalities runs sql expecting a (LabelKey, cardinality)
+// string/uint64 pair per row — the loki label-catalog read path (cerberus
+// issue #2770).
+func (c *Client) QueryLabelCardinalities(ctx context.Context, query string, args ...any) ([]chclient.LabelCardinalityRow, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	rows, err := c.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chclienttest: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []chclient.LabelCardinalityRow
+	for rows.Next() {
+		var r chclient.LabelCardinalityRow
+		if err := rows.Scan(&r.LabelKey, &r.Cardinality); err != nil {
+			return nil, fmt.Errorf("chclienttest: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := testsql.TolerantRowsErr(rows.Err()); err != nil {
+		return nil, fmt.Errorf("chclienttest: rows.Err: %w", err)
+	}
+	return out, nil
+}
+
 // QueryMetricMeta runs sql expecting (name, description, unit) string
 // triples per row. metricType is stamped onto every returned row, the
 // same convention chclient.Client.QueryMetricMeta uses (the metric

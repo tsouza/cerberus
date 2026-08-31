@@ -57,6 +57,11 @@ type stubQuerier struct {
 	// as the peek-window training set.
 	tsLines    []chclient.TimestampedLine
 	tsLinesErr error
+
+	// /detected_labels catalog-eligible read path (cerberus issue #2770)
+	// canned response.
+	labelCardinalities    []chclient.LabelCardinalityRow
+	labelCardinalitiesErr error
 }
 
 func (s *stubQuerier) Query(_ context.Context, sql string, args ...any) ([]chclient.Sample, error) {
@@ -129,6 +134,15 @@ func (s *stubQuerier) QueryTimestampedLines(_ context.Context, sql string, args 
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (s *stubQuerier) QueryLabelCardinalities(_ context.Context, sql string, args ...any) ([]chclient.LabelCardinalityRow, error) {
+	s.mu.Lock()
+	s.lastSQL = sql
+	s.lastArgs = args
+	rows, err := s.labelCardinalities, s.labelCardinalitiesErr
+	s.mu.Unlock()
+	return rows, err
 }
 
 func (s *stubQuerier) QueryLabelSets(_ context.Context, sql string, args ...any) ([]map[string]string, error) {

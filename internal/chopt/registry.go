@@ -933,6 +933,52 @@ const (
 	// map_bucketed_serialization already took on their own new floors.
 	FeatureTraceIDProjection = "trace_id_projection"
 
+	// FeatureLokiCatalogMV gates the curated `CREATE MATERIALIZED VIEW ...
+	// REFRESH EVERY 5 MINUTE ... TO loki_label_catalog AS SELECT ...` DDL
+	// (cerberus issue #2770) that maintains a small per-label-key
+	// cardinality catalog table on top of the logs table, refreshed on a
+	// schedule instead of computed per request.
+	// `/loki/api/v1/detected_labels` (internal/api/loki/detected_labels.go)
+	// serves from the catalog when eligible — a request that carries no
+	// LogQL selector, i.e. a datasource-open probe — and falls back to its
+	// existing per-request server-side GROUP BY otherwise; the fallback
+	// path is untouched and permanent, not a transitional shim. A selector
+	// is left on the fallback path deliberately: the catalog is unkeyed by
+	// stream, so a selector-scoped request (Grafana Logs Drilldown's
+	// per-service view) cannot be answered from it without either
+	// service-keying the catalog or narrowing eligibility further — the
+	// issue calls for the SIMPLER, more conservative rule, which this is.
+	//
+	// VERSION FLOOR: 24.10 — upstream PR #70550 ("Refreshable materialized
+	// views: minor fixes + GA") removed the
+	// `allow_experimental_refreshable_materialized_view` flag requirement
+	// in the 24.10 release, making `CREATE MATERIALIZED VIEW ... REFRESH
+	// EVERY ...` a plain, unflagged DDL statement. Below 24.10 the CREATE is
+	// rejected outright (or requires the experimental flag cerberus never
+	// sets), so — like FeatureTraceIDProjection and FeatureColumnStatistics
+	// on their own newer floors — this needs the version-conditional DDL
+	// gate in internal/schema/ddl.Config (LokiLabelCatalogEnabled) rather
+	// than rendering unconditionally.
+	//
+	// The catalog is DELIBERATELY a full-window aggregate (last 24h,
+	// bounding the per-refresh scan cost), computed server-side over every
+	// row in that window — NOT a sampled peek. Its cardinality estimates
+	// therefore do NOT reproduce the peek-based path's numbers bit-for-bit,
+	// which is intentional: unlike every OTHER estimate this endpoint
+	// family emits (deliberately matched to upstream Loki's peek-based HLL
+	// sketches so the compat harness diffs clean), the catalog path is a
+	// different computation over a different, larger data window by
+	// design — exempted from that parity requirement, not merely
+	// undertested against it.
+	//
+	// NOT auto-selected (AutoSelect=false), mirroring FeatureTraceIDProjection's
+	// posture on its own fresh floor-raising DDL feature: the refresh's
+	// steady-state scan cost against a real 24h window of production log
+	// volume is unmeasured beyond this feature's own synthetic benchmark, so
+	// enabling it is an operator opt-in via
+	// CERBERUS_CH_OPTIMIZATIONS=loki_catalog_mv pending that evidence.
+	FeatureLokiCatalogMV = "loki_catalog_mv"
+
 	// FeatureExpHistogramMergeSumMap opts the across-series exponential
 	// (native) histogram merge stage (histogram_native_sum.go's
 	// expHistogramGroupMergedInstant, the ONLY eligible call site) onto a
@@ -1589,6 +1635,13 @@ var registry = []Feature{
 		Doc:        "curated ADD PROJECTION proj_trace_id (TraceId, _part_offset) on otel_traces/otel_logs for exact-row trace lookups (server >= 25.5, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/merge cost unmeasured at production volume pending real-world calibration)",
 	},
 	{
+		ID:         FeatureLokiCatalogMV,
+		MinVersion: Version{Major: 24, Minor: 10},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "REFRESH EVERY 5 MINUTE materialized view for /detected_labels' selector-less requests (server >= 24.10, opt-in via CERBERUS_CH_OPTIMIZATIONS — refresh scan cost unmeasured at production volume pending real-world calibration)",
+	},
+	{
 		ID:         FeatureTraceIDBitmapFilter,
 		MinVersion: Version{Major: 25, Minor: 11},
 		Stability:  Experimental,
@@ -1655,11 +1708,12 @@ var registry = []Feature{
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
 // column_statistics, classic_bucket_merge_summap, exp_histogram_merge_summap,
-// join_spill, trace_id_projection, trace_id_bitmap_filter, arg_and_max_fusion,
-// result_cache, lazy_materialization, explain_estimate, cardinality_probe,
-// full_text_index, text_index_line_filter). The copy keeps the canonical
-// entries immutable from the caller's side. Exposed so tests can enumerate
-// the gates and the docs generator can render the table.
+// join_spill, trace_id_projection, loki_catalog_mv, trace_id_bitmap_filter,
+// arg_and_max_fusion, result_cache, lazy_materialization, explain_estimate,
+// cardinality_probe, full_text_index, text_index_line_filter). The copy
+// keeps the canonical entries immutable from the caller's side. Exposed so
+// tests can enumerate the gates and the docs generator can render the
+// table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)

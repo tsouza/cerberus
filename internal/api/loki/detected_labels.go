@@ -1,6 +1,7 @@
 package loki
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
@@ -39,10 +40,12 @@ type DetectedLabelsData struct {
 //     empty selector means "all streams in the time window".
 //   - start / end (optional): time range, defaults to last hour / now.
 //
-// The handler walks the distinct ResourceAttributes label sets matched in
-// the window (the same shape /series fetches) and counts the cardinality
-// of each key client-side. This reuses QueryLabelSets so no new Querier
-// method is needed.
+// A selector-less request eligible for the loki_catalog_mv refreshable-view
+// catalog (cerberus issue #2770 — see labelCatalogEligible) is served from
+// there when h.LabelCatalogEnabled; every other request — and any catalog
+// miss — walks the distinct ResourceAttributes label sets matched in the
+// window (the same shape /series fetches) and counts the cardinality of
+// each key client-side, reusing QueryLabelSets.
 func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 	start, end, err := parseStartEnd(r)
 	if err != nil {
@@ -55,6 +58,22 @@ func (h *Handler) handleDetectedLabels(w http.ResponseWriter, r *http.Request) {
 		matchers, err = selectorMatchers(q)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, ErrBadData, err)
+			return
+		}
+	}
+
+	// Catalog-eligible fast path (cerberus issue #2770): a selector-less
+	// (or trivially empty, e.g. `{}`) request is exactly the
+	// datasource-open-probe shape the refreshable-MV catalog answers — see
+	// labelCatalogEligible's doc comment for why this is the whole
+	// eligibility rule. detectedLabelsFromCatalog only returns ok=true on a
+	// genuine catalog hit; any miss (feature off, table not yet
+	// provisioned, catalog query error, or an empty/not-yet-refreshed
+	// snapshot) falls straight through to the SAME per-request path every
+	// other request already takes — that path is untouched below.
+	if h.LabelCatalogEnabled && labelCatalogEligible(matchers) {
+		if out, ok := h.detectedLabelsFromCatalog(r.Context()); ok {
+			writeJSON(w, http.StatusOK, DetectedLabelsData{DetectedLabels: out})
 			return
 		}
 	}
@@ -153,4 +172,79 @@ func summariseDetectedLabels(rows []map[string]string) []DetectedLabel {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
+}
+
+// --- Catalog-eligible fast path (cerberus issue #2770) ---
+//
+// labelCatalogEligible reports whether a /detected_labels request may be
+// served from the refreshable-MV label catalog instead of the per-request
+// GROUP BY above. The rule is deliberately the SIMPLEST, most conservative
+// one the issue names: eligible only when the request carries NO stream
+// matchers at all — an empty `query` param, or one that parses to zero
+// matchers (e.g. `{}`) — i.e. a datasource-open probe asking "what labels
+// exist across every stream". The catalog itself is unkeyed by stream (see
+// FeatureLokiCatalogMV's doc comment), so it has no way to answer a
+// SELECTOR-scoped request (Grafana Logs Drilldown's per-service view)
+// correctly; those stay on the fallback path unconditionally, forever —
+// not a gap this rule tries to paper over.
+func labelCatalogEligible(matchers []*labels.Matcher) bool {
+	return len(matchers) == 0
+}
+
+// detectedLabelsFromCatalog attempts the catalog read: it queries
+// h.Schema.LabelCatalogTable and returns ok=true only on a genuine hit — a
+// successful query that returned at least one row. Both failure shapes
+// (a query error — most commonly the table not yet existing, on a
+// deployment where LabelCatalogEnabled predates a successful DDL apply, or
+// UNKNOWN_TABLE on a server that never got the DDL at all — and a
+// zero-row result — the table exists but no refresh has EVER succeeded
+// since creation, so it holds no snapshot yet) degrade to ok=false rather
+// than erroring the request: the caller's contract is "fall through to the
+// existing path on anything short of a real answer", exactly the same
+// posture isColumnStatisticsUnsupported and QueryViewRefreshState's
+// UNKNOWN_TABLE handling take elsewhere in this codebase. A logged 24h
+// window that genuinely has zero labelled streams is the one legitimate
+// case this conflates with "never refreshed" — an operationally
+// negligible edge (an otherwise-idle deployment) traded for not having to
+// distinguish the two via a second query (system.view_refreshes) on every
+// request.
+func (h *Handler) detectedLabelsFromCatalog(ctx context.Context) ([]DetectedLabel, bool) {
+	sqlStr, args := buildLabelCatalogSQL(h.Schema)
+	rows, err := h.Client.QueryLabelCardinalities(ctx, sqlStr, args...)
+	if err != nil {
+		h.Logger.Debug("cerberus loki detected_labels catalog query failed; falling back to per-request path", "err", err, "sql", sqlStr)
+		return nil, false
+	}
+	if len(rows) == 0 {
+		return nil, false
+	}
+	out := make([]DetectedLabel, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, DetectedLabel{Label: r.LabelKey, Cardinality: r.Cardinality})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return out, true
+}
+
+// buildLabelCatalogSQL renders:
+//
+//	SELECT LabelKey, uniqMerge(CardinalityState) AS cardinality
+//	FROM <loki_label_catalog>
+//	GROUP BY LabelKey
+//
+// uniqMerge finalises the per-key uniqState sketch
+// internal/schema/ddl.renderLokiLabelCatalogView's refresh maintains — the
+// GROUP BY is required even though LabelKey is the table's whole ORDER BY,
+// because AggregatingMergeTree only guarantees per-key states are
+// EVENTUALLY merged by background merges, not that every part has already
+// been merged into one row per key at read time.
+func buildLabelCatalogSQL(s schema.Logs) (string, []any) {
+	sb := chsql.NewQuery().
+		Select(
+			chsql.Col(schema.LabelCatalogKeyColumn),
+			chsql.As(chsql.Call("uniqMerge", chsql.Col(schema.LabelCatalogCardinalityStateColumn)), "cardinality"),
+		).
+		From(chsql.Col(s.LabelCatalogTable)).
+		GroupBy(chsql.Col(schema.LabelCatalogKeyColumn))
+	return sb.Build()
 }
