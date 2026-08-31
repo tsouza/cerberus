@@ -226,6 +226,9 @@ exp_histogram_sum_over_ts_of_last_over_time.txtar
 exp_histogram_sum_range.txtar
 exp_metric.txtar
 first_over_time.txtar
+fixed_accumulator_delta_range_step.txtar
+fixed_accumulator_increase_range_step.txtar
+fixed_accumulator_rate_range_step.txtar
 floor_metric.txtar
 group_basic.txtar
 group_by_job.txtar

@@ -117,24 +117,25 @@ registry therefore lands here automatically; it can never go missing from the
 table.
 
 <!-- BEGIN GENERATED: chopt-feature-table (do not edit; regenerate with `just gen-opt-docs`) -->
-| id                           | minVersion | stability    | autoSelect |
-| ---------------------------- | ---------- | ------------ | ---------- |
-| `aggregation_in_order`       | 24.8       | stable       | yes        |
-| `condition_cache`            | 25.3       | stable       | yes        |
-| `ts_grid_range`              | 25.9       | experimental | yes        |
-| `ts_grid_resample`           | 25.9       | experimental | yes        |
-| `columnar_result_decode`     | none       | experimental | no         |
-| `ts_grid_changes`            | 25.9       | experimental | no         |
-| `ts_grid_resets`             | 25.9       | experimental | yes        |
-| `ts_grid_deriv`              | 25.9       | experimental | yes        |
-| `ts_grid_predict_linear`     | 25.9       | experimental | yes        |
-| `ts_grid_recollapse`         | 25.9       | experimental | yes        |
-| `ts_grid_increase`           | 25.9       | experimental | yes        |
-| `ts_grid_histogram`          | 25.9       | experimental | yes        |
-| `quantile_prom_histogram`    | 25.10      | experimental | no         |
-| `ts_grid_delta`              | 25.9       | experimental | yes        |
-| `laginframe_adjacency`       | none       | experimental | yes        |
-| `map_bucketed_serialization` | 26.4       | experimental | no         |
+| id                               | minVersion | stability    | autoSelect |
+| -------------------------------- | ---------- | ------------ | ---------- |
+| `aggregation_in_order`           | 24.8       | stable       | yes        |
+| `condition_cache`                | 25.3       | stable       | yes        |
+| `ts_grid_range`                  | 25.9       | experimental | yes        |
+| `ts_grid_resample`               | 25.9       | experimental | yes        |
+| `columnar_result_decode`         | none       | experimental | no         |
+| `ts_grid_changes`                | 25.9       | experimental | no         |
+| `ts_grid_resets`                 | 25.9       | experimental | yes        |
+| `ts_grid_deriv`                  | 25.9       | experimental | yes        |
+| `ts_grid_predict_linear`         | 25.9       | experimental | yes        |
+| `ts_grid_recollapse`             | 25.9       | experimental | yes        |
+| `ts_grid_increase`               | 25.9       | experimental | yes        |
+| `ts_grid_histogram`              | 25.9       | experimental | yes        |
+| `quantile_prom_histogram`        | 25.10      | experimental | no         |
+| `ts_grid_delta`                  | 25.9       | experimental | yes        |
+| `laginframe_adjacency`           | none       | experimental | yes        |
+| `fixed_accumulator_extrapolated` | none       | experimental | no         |
+| `map_bucketed_serialization`     | 26.4       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they

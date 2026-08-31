@@ -3203,29 +3203,38 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // For a window with no dedicated strategy (the *_over_time family and
 // friends) the Rate strategy's fan-out fallback returns rw unchanged, so the
 // caller's node stays rw and the last/first_over_time name-preservation wrap
-// applies exactly as before. For rate / increase / delta the returned node
-// IS the lowering (native or fan-out RangeWindow); all three drop
-// `__name__`, so they never match the name-preservation wrap and flow
+// applies exactly as before. For rate / increase / delta the returned node IS
+// the lowering (native, fixed-accumulator, or fan-out RangeWindow); all three
+// drop `__name__`, so they never match the name-preservation wrap and flow
 // through as-is.
 //
 // The function family is selected by c.Func.Name — pure AST/func dispatch,
 // NOT a feature/version branch (that decision is baked into WHICH concrete
 // strategy boot wired into each field). Each strategy is always non-nil
 // (withDefaults) and keeps its own intrinsic shape-eligibility inside the
-// impl. rate / increase / changes / resets / deriv / delta / irate / idelta
+// impl. rate / increase / delta / changes / resets / deriv / irate / idelta
 // each route to their own boot-wired strategy (changes/resets/irate/idelta
 // may resolve to the lagInFrame annotation shape,
-// chplan.RangeWindow.LagAdjacency, layered beneath changes/resets' own
-// native ts_grid strategy; increase reuses rate's timeSeriesRateToGrid
-// aggregate, multiplied back by the window seconds); every other range fn
-// (the *_over_time family and friends) keeps the fan-out rw via the rate
+// chplan.RangeWindow.LagAdjacency, layered beneath changes/resets' own native
+// ts_grid strategy; increase reuses rate's timeSeriesRateToGrid aggregate,
+// multiplied back by the window seconds; rate/increase/delta may ADDITIONALLY
+// resolve to the fixed-accumulator decomposition,
+// chplan.RangeWindow.FixedAccumulatorExtrapolated, layered beneath each
+// function's own native ts_grid strategy — delta gained its own native
+// ts_grid_delta competitor (cerberus issue #2745), so all three of rate /
+// increase / delta now share the same three-tier Native{Fallback:
+// FixedAccumulator{Fallback: Fanout{}}} shape); every other range fn (the
+// *_over_time family and friends) keeps the fan-out rw via the rate
 // strategy's pass-through (those funcs have no native timeSeries*ToGrid
-// aggregate or lagInFrame annotation proven equivalent yet).
+// aggregate, lagInFrame annotation, or fixed-accumulator decomposition proven
+// equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
 	switch c.Func.Name {
 	case "increase":
 		return ctx.lowerers.Increase.LowerIncrease(rw, s)
+	case "delta":
+		return ctx.lowerers.Delta.LowerDelta(rw, s)
 	case "changes":
 		return ctx.lowerers.Changes.LowerChanges(rw, s)
 	case "resets":
@@ -3236,8 +3245,6 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 		return ctx.lowerers.Irate.LowerIrate(rw, s)
 	case "idelta":
 		return ctx.lowerers.Idelta.LowerIdelta(rw, s)
-	case "delta":
-		return ctx.lowerers.Delta.LowerDelta(rw, s)
 	default:
 		return ctx.lowerers.Rate.LowerRate(rw, s)
 	}

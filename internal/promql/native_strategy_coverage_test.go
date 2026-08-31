@@ -188,6 +188,25 @@ func wireNativeStrategies(has func(section string) bool) promql.RangeLowerers {
 	if has("experimental_lag_adjacency_resets") {
 		l.Resets = promql.LagAdjacencyResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
 	}
+	// fixed_accumulator_extrapolated (issue #2760) is Rate/Increase/Delta's
+	// improved FALLBACK, not a competitor to their native ts_grid strategy
+	// above — mirroring the laginframe_adjacency block just above (and
+	// cmd/cerberus's own nativeRangeLowerers composition). Deliberately NOT a
+	// nativeStrategies row for the same reason: Rate/Increase/Delta already
+	// have a row gated on their own ts_grid section (Delta's own native
+	// competitor, ts_grid_delta, landed via cerberus issue #2745). A fixture
+	// opts into the fixed-accumulator SQL shape ALONE (unshadowed by the
+	// native path) by carrying ONLY this section, never alongside
+	// experimental_ts_grid_range/increase/delta.
+	if has("experimental_fixed_accumulator_rate") {
+		l.Rate = promql.FixedAccumulatorRateLowerer{Fallback: promql.FanoutRateLowerer{}}
+	}
+	if has("experimental_fixed_accumulator_increase") {
+		l.Increase = promql.FixedAccumulatorIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+	}
+	if has("experimental_fixed_accumulator_delta") {
+		l.Delta = promql.FixedAccumulatorDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+	}
 	return l
 }
 

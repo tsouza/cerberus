@@ -863,14 +863,16 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // resolveCHOptimizations) and is the ONLY place the feature is read: each field
 // is wired to a CONCRETE non-nil strategy —
 //
-//	rate      = enabled ? NativeRateLowerer{Fallback: FanoutRateLowerer{}} : FanoutRateLowerer{}
-//	increase  = enabled ? NativeIncreaseLowerer{Fallback: FanoutIncreaseLowerer{}} : FanoutIncreaseLowerer{}
+//	rate      = enabled ? NativeRateLowerer{Fallback: rateFallback} : rateFallback
+//	increase  = enabled ? NativeIncreaseLowerer{Fallback: increaseFallback} : increaseFallback
+//	delta     = enabled ? NativeDeltaLowerer{Fallback: deltaFallback} : deltaFallback
+//	  // where rateFallback/increaseFallback/deltaFallback are each
+//	  // fixedAccumEnabled ? FixedAccumulator*Lowerer{Fallback: Fanout*Lowerer{}} : Fanout*Lowerer{}
 //	staleness = enabled ? NativeStalenessLowerer{Fallback: FanoutStalenessLowerer{}} : FanoutStalenessLowerer{}
 //	changes   = enabled ? NativeChangesLowerer{Fallback: FanoutChangesLowerer{}} : FanoutChangesLowerer{}
 //	resets    = enabled ? NativeResetsLowerer{Fallback: FanoutResetsLowerer{}} : FanoutResetsLowerer{}
 //	deriv     = enabled ? NativeDerivLowerer{Fallback: FanoutDerivLowerer{}} : FanoutDerivLowerer{}
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
-//	delta     = enabled ? NativeDeltaLowerer{Fallback: FanoutDeltaLowerer{}} : FanoutDeltaLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
 //
@@ -906,20 +908,42 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // no version floor (chopt.AlwaysAvailable) and no experimental-setting gate, so
 // it composes with the version-gated native features purely via which
 // Fallback each Native*Lowerer embeds.
+//
+// fixed_accumulator_extrapolated (issue #2760) is laginframe_adjacency's own
+// sibling for the extrapolated family: it narrows rate/increase/delta's
+// FALLBACK the same way — delta gained its own native ts_grid_delta
+// competitor (issue #2745), so as of that feature all three of rate /
+// increase / delta share the identical three-tier
+// Native{Fallback: FixedAccumulator{Fallback: Fanout{}}} composition. Same
+// AlwaysAvailable floor, same no-experimental-setting posture, same "narrows
+// the fallback, never competes with the native arm" shape.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
+	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
+	// rate/increase/delta's own native ts_grid strategy, exactly like
+	// laginframe_adjacency layers inside changes/resets below: it is the
+	// improved fan-out a shape-ineligible, sub-25.9, or temporality-bearing
+	// window falls back to, never a competitor to the native path.
+	var rateFallback promql.RateLowerer = promql.FanoutRateLowerer{}
+	var increaseFallback promql.IncreaseLowerer = promql.FanoutIncreaseLowerer{}
+	var deltaFallback promql.DeltaLowerer = promql.FanoutDeltaLowerer{}
+	if optSet.Has(chopt.FeatureFixedAccumulatorExtrapolated) {
+		rateFallback = promql.FixedAccumulatorRateLowerer{Fallback: rateFallback}
+		increaseFallback = promql.FixedAccumulatorIncreaseLowerer{Fallback: increaseFallback}
+		deltaFallback = promql.FixedAccumulatorDeltaLowerer{Fallback: deltaFallback}
+	}
 	if optSet.Has(chopt.FeatureTSGridRange) {
 		l.Rate = promql.NativeRateLowerer{
-			Fallback:   promql.FanoutRateLowerer{},
+			Fallback:   rateFallback,
 			Recollapse: optSet.Has(chopt.FeatureTSGridRecollapse),
 		}
 	} else {
-		l.Rate = promql.FanoutRateLowerer{}
+		l.Rate = rateFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridIncrease) {
-		l.Increase = promql.NativeIncreaseLowerer{Fallback: promql.FanoutIncreaseLowerer{}}
+		l.Increase = promql.NativeIncreaseLowerer{Fallback: increaseFallback}
 	} else {
-		l.Increase = promql.FanoutIncreaseLowerer{}
+		l.Increase = increaseFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
 		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
@@ -966,9 +990,9 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}
 	if optSet.Has(chopt.FeatureTSGridDelta) {
-		l.Delta = promql.NativeDeltaLowerer{Fallback: promql.FanoutDeltaLowerer{}}
+		l.Delta = promql.NativeDeltaLowerer{Fallback: deltaFallback}
 	} else {
-		l.Delta = promql.FanoutDeltaLowerer{}
+		l.Delta = deltaFallback
 	}
 	// The anchor-injection window-slide mechanism (#2408 follow-up, #2493)
 	// was removed by #2511's root-cause investigation: its anchor-injection

@@ -79,6 +79,26 @@ func IsSliceInvariant(n Node) bool {
 //     range_window_lag_adjacency_chdb_test.go) across duplicate-timestamp,
 //     all-NaN, and DELTA-temporality-reset windows — not merely asserted.
 //
+//     RangeWindow.FixedAccumulatorExtrapolated=true (issue #2760, rate() /
+//     increase() / delta()) rests on the SAME criterion, extended to its own
+//     two window-function passes (chsql/range_window_fixed_accumulator.go).
+//     Its reset-correction term reuses lagInFrame exactly as LagAdjacency
+//     does — same lagAdjacencyValidPrevFrag admission check, same argument.
+//     Its FIRST pass (fixedAccumDedupLayer's forward-looking leadInFrame,
+//     collapsing duplicate timestamps) carries no analogous hazard for a
+//     different reason: leadInFrame there only ever looks past rows sharing
+//     the CURRENT row's own timestamp, and two rows sharing one exact
+//     timestamp can never be split across a shard boundary in the first
+//     place (a shard's own boundary is itself a `ts <= X` / `ts > X` cut, so
+//     equal-ts rows compare equal and always land on the same side) —
+//     whichever shard a duplicate-timestamp run reaches, the WHOLE run
+//     reaches it together, so the forward look never needs to see past the
+//     shard's own scan to find its answer. Verified by dual-emit parity
+//     (FixedAccumulatorExtrapolated=false vs =true,
+//     range_window_fixed_accumulator_chdb_test.go) across duplicate-timestamp,
+//     single-sample, exactly-two-samples-at-the-boundary, and
+//     counter-reset windows.
+//
 //   - RangeWindowGridNative — the ClickHouse-native timeSeries<fn>ToGrid lowering
 //     of the SAME window semantics. The aggregate is handed (start, end, step,
 //     window) and evaluates grid point i from exactly the samples inside

@@ -303,6 +303,28 @@ type RangeWindow struct {
 	// permanent, always-available fallback the FeatureLagInFrameAdjacency
 	// chopt kill-switch resolves to.
 	LagAdjacency bool
+
+	// FixedAccumulatorExtrapolated asks the matrix-shape (OuterRange > 0)
+	// emitter to render rate() / increase() / delta() via per-(series,
+	// anchor) fixed-size aggregates (count/min/max/argMin/argMax/sumIf)
+	// instead of the groupArray + arraySort + arrayFilter array fold
+	// (cerberus issue #2760). Set only by the boot-wired
+	// promql.FixedAccumulator{Rate,Increase,Delta}Lowerer strategies — never
+	// read as a per-query feature flag.
+	//
+	// The array-fold path this narrows needs the FIRST and LAST sample of
+	// each anchor's window (Prom's extrapolatedRate boundary correction), not
+	// merely adjacent pairs, so it cannot reuse LagAdjacency's shape
+	// directly. See chsql/range_window_fixed_accumulator.go for the emit
+	// side (including the duplicate-timestamp dedup this shape needs that
+	// LagAdjacency's own targets never did) and
+	// internal/chplan/sliceinvariant.go's RangeWindow entry for why this
+	// remains slice-invariant despite reading window functions.
+	//
+	// false (the default) keeps the unchanged array-fold emission — the
+	// permanent, always-available fallback the
+	// FeatureFixedAccumulatorExtrapolated chopt kill-switch resolves to.
+	FixedAccumulatorExtrapolated bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -425,28 +447,39 @@ func (r *RangeWindow) InputWindow(start, end time.Time) (time.Time, time.Time) {
 	return start.Add(-r.Offset - r.Range), end
 }
 
+// rangeWindowScalarFieldsEqual compares every flat scalar/bool/string field
+// Equal must agree on, split out so Equal's own cyclomatic complexity stays
+// under the linter's ceiling (cyclop) — each field this repo adds to
+// RangeWindow costs Equal one more branch, and this repo has been adding
+// them steadily (LagAdjacency, FixedAccumulatorExtrapolated, ...), so the
+// split is the durable fix rather than a one-off dodge.
+func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
+	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
+		return false
+	}
+	if r.OuterRange != o.OuterRange || r.Identity != o.Identity || r.StepAlign != o.StepAlign {
+		return false
+	}
+	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
+		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn || r.TemporalityColumn != o.TemporalityColumn {
+		return false
+	}
+	if r.InstantScanBounded != o.InstantScanBounded || r.LagAdjacency != o.LagAdjacency ||
+		r.FixedAccumulatorExtrapolated != o.FixedAccumulatorExtrapolated {
+		return false
+	}
+	return r.VariantColumn == o.VariantColumn
+}
+
 func (r *RangeWindow) Equal(other Node) bool {
 	o, ok := other.(*RangeWindow)
 	if !ok {
 		return false
 	}
-	if r.Func != o.Func || r.Range != o.Range || r.Step != o.Step || r.Offset != o.Offset {
-		return false
-	}
-	if r.OuterRange != o.OuterRange || r.Identity != o.Identity {
-		return false
-	}
-	if r.StepAlign != o.StepAlign {
+	if !rangeWindowScalarFieldsEqual(r, o) {
 		return false
 	}
 	if !r.Start.Equal(o.Start) || !r.End.Equal(o.End) {
-		return false
-	}
-	if r.TimestampColumn != o.TimestampColumn || r.ValueColumn != o.ValueColumn ||
-		r.PredictLinearSlopeColumn != o.PredictLinearSlopeColumn {
-		return false
-	}
-	if r.TemporalityColumn != o.TemporalityColumn {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) {
@@ -473,13 +506,7 @@ func (r *RangeWindow) Equal(other Node) bool {
 			return false
 		}
 	}
-	if r.InstantScanBounded != o.InstantScanBounded {
-		return false
-	}
-	if r.LagAdjacency != o.LagAdjacency {
-		return false
-	}
-	if r.VariantColumn != o.VariantColumn || len(r.Variants) != len(o.Variants) {
+	if len(r.Variants) != len(o.Variants) {
 		return false
 	}
 	for i := range r.Variants {
