@@ -2,6 +2,7 @@ package ddl
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -83,5 +84,64 @@ func TestApplyWithConfig_SkipDatabaseCreate_NoReplicatedValidation(t *testing.T)
 	}
 	if err := ApplyWithConfig(context.Background(), rc, cfg, All); err != nil {
 		t.Fatalf("SkipDatabaseCreate should bypass the Replicated zoo-path check: %v", err)
+	}
+}
+
+// cloudRefusingStatisticsConn is a driver.Conn that mimics ClickHouse Cloud:
+// every ADD STATISTICS statement fails with a "not supported ... Cloud"
+// refusal, every other statement succeeds. It exercises applySignal's
+// tolerance path end to end (issue #2766) — the goal is that a Cloud
+// deployment with column_statistics enabled still boots successfully, with
+// every non-statistics statement (CREATE, projections, skip index) still
+// applied for real.
+type cloudRefusingStatisticsConn struct {
+	driver.Conn
+	execs   []string
+	skipped []string
+}
+
+func (c *cloudRefusingStatisticsConn) Exec(_ context.Context, query string, _ ...any) error {
+	if strings.Contains(query, "ADD STATISTICS") {
+		c.skipped = append(c.skipped, query)
+		return errors.New("Code: 48. DB::Exception: Statistics is not supported in ClickHouse Cloud")
+	}
+	c.execs = append(c.execs, query)
+	return nil
+}
+
+// TestApplyWithConfig_ColumnStatisticsUnsupported_Tolerated pins the
+// end-to-end contract behind isColumnStatisticsUnsupported: on a server that
+// refuses every ADD STATISTICS ALTER (ClickHouse Cloud), ApplyWithConfig
+// still succeeds as a whole, still executes every other statement for real
+// (CREATE tables, ADD PROJECTION, ADD INDEX), and the refused statements are
+// the ones — and only the ones — that were skipped.
+func TestApplyWithConfig_ColumnStatisticsUnsupported_Tolerated(t *testing.T) {
+	rc := &cloudRefusingStatisticsConn{}
+	cfg := Config{Database: "otel", ColumnStatisticsEnabled: true}
+	if err := ApplyWithConfig(context.Background(), rc, cfg, All); err != nil {
+		t.Fatalf("ApplyWithConfig should tolerate a Cloud ADD STATISTICS refusal, got: %v", err)
+	}
+	if len(rc.skipped) == 0 {
+		t.Fatal("expected at least one ADD STATISTICS statement to be attempted and skipped")
+	}
+	for _, s := range rc.skipped {
+		if !strings.Contains(s, "ADD STATISTICS") {
+			t.Errorf("skipped a non-statistics statement: %s", s)
+		}
+	}
+	var sawCreate, sawProjection, sawIndex bool
+	for _, s := range rc.execs {
+		switch {
+		case strings.Contains(s, "CREATE TABLE"):
+			sawCreate = true
+		case strings.Contains(s, "ADD PROJECTION"):
+			sawProjection = true
+		case strings.Contains(s, "ADD INDEX"):
+			sawIndex = true
+		}
+	}
+	if !sawCreate || !sawProjection || !sawIndex {
+		t.Errorf("expected CREATE/PROJECTION/INDEX statements to still apply for real: creates=%v projections=%v indexes=%v",
+			sawCreate, sawProjection, sawIndex)
 	}
 }

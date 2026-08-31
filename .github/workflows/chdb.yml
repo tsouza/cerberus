@@ -224,7 +224,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -259,7 +259,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -346,7 +346,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.run_heavy == 'true'
         with:
           tool: just
@@ -485,7 +485,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -660,7 +660,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -750,7 +750,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -786,7 +786,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 
@@ -822,7 +822,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go
 
-      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518  # v2.86.5
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d  # v2.87.0
         with:
           tool: just
 

@@ -110,11 +110,11 @@ func (e *emitter) emitMetricsAggregate(m *chplan.MetricsAggregate) error {
 // rate / count_over_time → `count(1)` (the rate-specific per-bucket
 // division by seconds lives on the matrix-path emitter, not here).
 // *_over_time(attr) → the matching CH aggregate over Attr.
-// quantile_over_time(attr, q) → `quantile(q)(Attr)` for the single-phi
-// case; `quantiles(q1, q2, ...)(Attr)` (returns Array(Float64)) for the
-// multi-phi case — the per-phi fanout into individual output series
-// happens in the wrapping emitter (emitMetricsAggregate /
-// emitRangeWindowMetrics), not here.
+// quantile_over_time(attr, q) → `quantileExactInclusive(q)(Attr)` for the
+// single-phi case; `quantilesExactInclusive(q1, q2, ...)(Attr)` (returns
+// Array(Float64)) for the multi-phi case — the per-phi fanout into
+// individual output series happens in the wrapping emitter
+// (emitMetricsAggregate / emitRangeWindowMetrics), not here.
 func metricsAggregateCH(m *chplan.MetricsAggregate) (
 	fn chplan.Fn,
 	params []chplan.Expr,
@@ -2614,12 +2614,11 @@ func overTimeArrayValueFrag(fn string, vals Frag) (Frag, error) {
 	case "mad_over_time":
 		// PromQL mad_over_time(v[range]) = median(|x - median(x)|)
 		// (prometheus/promql/functions.go::funcMadOverTime). Prometheus's
-		// median is the linear-interpolation quantile(0.5) over the SORTED
-		// values, so we mirror it with the same lower/upper blend the
-		// computed-phi quantile_over_time path uses (phi=0.5), applied
-		// twice: once over window_vals for the inner median, once over the
-		// absolute deviations. Empty windows are dropped by the shared
-		// outer WHERE length(window_vals) >= 1 below.
+		// median is the exact linear-interpolation quantile(0.5), which
+		// medianOverArrayFrag renders via CH's quantileExactInclusive(0.5),
+		// applied twice: once over window_vals for the inner median, once
+		// over the absolute deviations. Empty windows are dropped by the
+		// shared outer WHERE length(window_vals) >= 1 below.
 		med := medianOverArrayFrag(vals)
 		devs := Call(
 			"arrayMap",
@@ -2695,44 +2694,23 @@ func varPopTwoPassFrag(vals Frag) Frag {
 }
 
 // medianOverArrayFrag renders Prometheus's `quantile(0.5, values)`
-// (prometheus/promql/quantile.go) — a linear-interpolation median over
-// the SORTED array `arr`:
+// (prometheus/promql/quantile.go) — the exact type-7/PERCENTILE.INC
+// linear-interpolation median — via CH's `quantileExactInclusive(0.5)`
+// parameterised aggregate applied to the array literal `arr` through
+// `arrayReduce`, the same spelling emitRangeWindowQuantileOverTime's
+// literal-phi arm uses. `arr` is any Array(Float64) expression; CH sorts
+// internally, so callers pass the raw values (the absolute-deviation
+// array for the outer median) unsorted.
 //
-//	rank   = 0.5 * (N - 1)
-//	lower  = sorted[floor(rank) + 1]            (1-based CH index)
-//	upper  = sorted[least(N-1, floor(rank)+1) + 1]
-//	median = lower*(1-weight) + upper*weight,   weight = rank - floor(rank)
-//
-// Mirrors the computed-phi quantile_over_time interpolation
-// (emitRangeWindowQuantileOverTime) specialised to phi=0.5, so
-// mad_over_time's inner/outer medians match Prom bit-for-bit on finite
-// windows. `arr` is any Array(Float64) expression; it is sorted here, so
-// callers pass the raw values (the absolute-deviation array for the
-// outer median) without pre-sorting.
-//
-// The result is PARENTHESISED. `lower*(1-w) + upper*w` is a sum and
-// binOp emits no parens of its own, so an unwrapped return standing as
-// the right operand of mad_over_time's `x - median` rebinds to
-// `x - lower*(1-w) + upper*w` — the deviation array comes out shifted by
-// `2*w*upper` and, when the two middle samples are equal, degenerates to
-// the value array outright. An odd-length window has weight 0 and hides
-// this entirely; an even-length one returns a wrong number, never an
-// error. mad_over_time_even_window.txtar pins the difference.
+// `arrayReduce(...)` is a function call, so the result is syntactically
+// atomic and needs no wrapping parens as an operand of mad_over_time's
+// `x - median` subtraction — unlike the hand-rolled lower/upper blend
+// this replaced, whose unwrapped sum silently rebound into the
+// subtraction (mad_over_time_even_window.txtar pins the correct
+// result).
 func medianOverArrayFrag(arr Frag) Frag {
 	const medianPhi = 0.5
-	sorted := Call("arraySort", arr)
-	nMinus := Call("toFloat64", Sub(Call("length", arr), InlineLit(int64(1))))
-	rank := func() Frag { return Paren(Mul(InlineLit(medianPhi), nMinus)) }
-	floorRank := func() Frag { return Call("floor", rank()) }
-	lowerIdx := Add(Call("toUInt32", floorRank()), InlineLit(int64(1)))
-	upperIdx := Add(
-		Call("toUInt32", Call("least", nMinus, Add(floorRank(), InlineLit(int64(1))))),
-		InlineLit(int64(1)),
-	)
-	weight := func() Frag { return Paren(Sub(rank(), floorRank())) }
-	lowerTerm := Mul(Subscript(sorted, lowerIdx), Paren(Sub(InlineLit(int64(1)), weight())))
-	upperTerm := Mul(Subscript(sorted, upperIdx), weight())
-	return Paren(Add(lowerTerm, upperTerm))
+	return Call("arrayReduce", InlineLit("quantileExactInclusive("+formatFloat(medianPhi)+")"), arr)
 }
 
 // emitRangeWindowTsOfOverTime emits SQL for the experimental timestamp
@@ -3317,10 +3295,13 @@ func irateValueFrag(temporality Frag) Frag {
 // `quantile_over_time(phi, v[range])`.
 //
 // Literal phi (RangeWindow.Scalars[0]) feeds CH's parameterised
-// `quantile(<phi>)(<arg>)` aggregate via `arrayReduce` — the only
-// way to apply a parameterised aggregate to an array literal inside
-// a SELECT expression without re-introducing an outer GROUP BY. Phi
-// is rendered inline as a CH literal (query shape, not user data).
+// `quantileExactInclusive(<phi>)(<arg>)` aggregate via `arrayReduce` —
+// the only way to apply a parameterised aggregate to an array literal
+// inside a SELECT expression without re-introducing an outer GROUP BY.
+// Phi is rendered inline as a CH literal (query shape, not user data).
+// quantileExactInclusive is CH's exact type-7/PERCENTILE.INC
+// interpolation — the same algorithm as the computed-phi tower below —
+// so the literal and computed arms agree by construction.
 //
 // Computed phi (RangeWindow.ScalarExprs[0] — `quantile_over_time(
 // scalar(x), v[r])`) cannot ride arrayReduce's string-typed aggregate
@@ -3378,14 +3359,15 @@ func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 		return fmt.Errorf("%w: quantile_over_time requires 1 scalar (phi), got %d", ErrUnsupported, len(r.Scalars))
 	}
 	phi := r.Scalars[0]
-	// arrayReduce('quantile(<phi>)', window_vals) — the literal-phi path;
-	// the aggregate name carries phi inline (formatFloat keeps it stable
-	// across driver float formatting), so it rides InlineLit as a single
-	// quoted string. Empty window drops the series (nan).
+	// arrayReduce('quantileExactInclusive(<phi>)', window_vals) — the
+	// literal-phi path; the aggregate name carries phi inline (formatFloat
+	// keeps it stable across driver float formatting), so it rides
+	// InlineLit as a single quoted string. Empty window drops the series
+	// (nan).
 	frag := Call(
 		"if",
 		Gt(Call("length", BareIdent("window_vals")), InlineLit(int64(0))),
-		Call("arrayReduce", InlineLit("quantile("+formatFloat(phi)+")"), BareIdent("window_vals")),
+		Call("arrayReduce", InlineLit("quantileExactInclusive("+formatFloat(phi)+")"), BareIdent("window_vals")),
 		BareIdent("nan"),
 	)
 	return e.emitWindowedArray(r, frag, 1)
