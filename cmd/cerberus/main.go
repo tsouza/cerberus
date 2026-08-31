@@ -879,6 +879,7 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 //	predict   = enabled ? NativePredictLinearLowerer{Fallback: FanoutPredictLinearLowerer{}} : FanoutPredictLinearLowerer{}
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
+//	overTime  = sortedSlabEnabled ? SortedSlabOverTimeLowerer{Fallback: FanoutOverTimeLowerer{}} : FanoutOverTimeLowerer{}
 //
 // rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
 // wraps ClickHouse's separate quantilePrometheusHistogram aggregate (floor
@@ -886,6 +887,14 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // fallback to embed (see promql.QuantileRankWalkLowerer's own doc); it is
 // resolved here, in this same table, only because RangeLowerers is the one
 // seam every classic-histogram-quantile lowering already threads.
+//
+// overTime (sum_over_time/avg_over_time, issue #2761) is likewise not a
+// timeSeries*ToGrid member and carries no native competitor, but unlike
+// rankWalk it DOES embed a Fallback (the plain fan-out) — its sorted-slab
+// decomposition is a shape-gated SQL rewrite with its own eligibility guard
+// (sortedSlabOverTimeEligible), the same posture fixed_accumulator_extrapolated
+// has for rate/increase/delta, not an always-applicable aggregate swap like
+// rankWalk's.
 //
 // The fan-out impl is the concrete DEFAULT (never nil), and the native impl
 // embeds it as the fallback for shapes it cannot handle. The features are
@@ -1048,6 +1057,18 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.QuantileRankWalk = promql.NativeQuantileRankWalkLowerer{}
 	} else {
 		l.QuantileRankWalk = promql.FanoutQuantileRankWalkLowerer{}
+	}
+	// sorted_slab_over_time (issue #2761) has no native timeSeries*ToGrid
+	// competitor: sum_over_time/avg_over_time's only non-fan-out arm is the
+	// sorted-slab decomposition itself, so it is wired directly with no
+	// embedded native layer above it (mirroring quantile_prom_histogram's
+	// posture just above, though this strategy DOES still embed its own
+	// Fallback — the plain fan-out — the way fixed_accumulator_extrapolated
+	// does for rate/increase/delta).
+	if optSet.Has(chopt.FeatureSortedSlabOverTime) {
+		l.OverTime = promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}}
+	} else {
+		l.OverTime = promql.FanoutOverTimeLowerer{}
 	}
 	return l
 }
