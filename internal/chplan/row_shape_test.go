@@ -30,6 +30,11 @@ var rowShapeVerdicts = map[string]chplan.RowShape{
 	"RangeWindow":           chplan.GridWindowRowShape,
 	"RangeWindowGridNative": chplan.GridWindowRowShape,
 
+	// The instant-mode native lowering: one row per series already reduced
+	// to a single point, mirroring the fan-out's own instant RangeWindow
+	// (OuterRange == 0) shape rather than its matrix sibling above.
+	"RangeWindowGridNativeInstant": chplan.ReducedWindowRowShape,
+
 	// Everything else republishes the canonical four names, whether by
 	// passing its input's through or by projecting them itself.
 	"AbsentOverTime":           chplan.SampleRowShape,

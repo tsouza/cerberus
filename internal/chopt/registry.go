@@ -136,6 +136,69 @@ const (
 	// from PR #84328).
 	FeatureTSGridPredictLinear = "ts_grid_predict_linear"
 
+	// FeatureTSGridInstant opts each of rate() / changes() / resets() /
+	// deriv() / predict_linear()'s ALREADY-ENABLED native MATRIX strategy
+	// (ts_grid_range / ts_grid_changes / ts_grid_resets / ts_grid_deriv /
+	// ts_grid_predict_linear) to ALSO cover the INSTANT (single-anchor, Step
+	// == 0) query shape — the alerting/recording-rule path, which today
+	// always falls back to emitWindowedArrayExtrapolated's per-series
+	// groupArray, unbounded on this axis for a wide lookback (`rate(m[1d])`,
+	// `rate(m[30d])`; cerberus issue #2748). The emitter feeds the SAME
+	// timeSeries*ToGrid aggregate a DEGENERATE one-point grid (start == end
+	// == the query's single eval instant), so the flat-memory native
+	// aggregation applies to the instant shape exactly as it already does to
+	// the matrix one.
+	//
+	// It is a pure NARROWING of each function's own matrix feature, mirroring
+	// FeatureTSGridRecollapse's own relationship to ts_grid_range: with a
+	// function's matrix feature off there is no native strategy to extend, so
+	// cmd/cerberus only consults ts_grid_instant INSIDE that function's own
+	// "matrix feature enabled" branch (nativeRangeLowerers sets a
+	// Native*Lowerer's Instant field to `optSet.Has(FeatureTSGridInstant)`
+	// only when it is ALSO building that lowerer). This is deliberately a
+	// SINGLE feature governing all five functions together — cerberus issue
+	// #2748 scoped it that way — rather than five per-function siblings the
+	// way changes/resets/deriv/predict_linear split out from ts_grid_range:
+	// the instant arm's SQL shape and eligibility contract are identical
+	// across all five (nativeTSGridInstantNode), so there is no per-function
+	// divergence for a split to encode. changes() nonetheless keeps ITS OWN
+	// #1721 carve-out intact: ts_grid_changes stays AutoSelect=false, and the
+	// instant arm only fires when ts_grid_changes is ALSO present in
+	// EnabledSet (the AND-composition above), so an operator who has not
+	// opted into the buggy matrix changes() path never gets the identical
+	// bug through the instant one either — the NaN-adjacent overcount lives
+	// in timeSeriesChangesToGrid itself, the SAME aggregate the instant arm
+	// reads.
+	//
+	// IMPORTANT — the floor is 26.5, HIGHER than the matrix family's shared
+	// 25.9. A degenerate one-point (start == end) grid is exactly the
+	// "extreme parameter" shape ClickHouse/ClickHouse#103223 (an overflow in
+	// timeSeries*ToGrid's internal grid-index arithmetic for boundary
+	// parameter combinations, fixed in 26.5) and #105319 (a staleness-window
+	// overflow, backported through 25.8 and 26.3-26.5) both describe; a 25.9
+	// floor — correct for the LEFT-OPEN WINDOW fix the matrix family rests
+	// on — would auto-reach a server that still carries either overflow.
+	// 26.5 is the first release verified to carry BOTH fixes. The boot
+	// version probe resolves at (Major, Minor) granularity fine enough to
+	// express this floor precisely (see chopt.FeatureTSGridLastOverTime's own
+	// 26.6 floor for the identical mechanism), so there is no probe-precision
+	// reason to fall back to a coarser number here.
+	//
+	// AutoSelect is false: 26.5 is a brand-new floor with no fielded
+	// validation yet, the same conservative posture
+	// FeatureTSGridLastOverTime's own 26.6 bump took — opt-in only via
+	// CERBERUS_CH_OPTIMIZATIONS=ts_grid_instant until the floor earns auto
+	// promotion. Shares the family's RequiresExperimentalTSGrid gate
+	// (allow_experimental_time_series_aggregate_functions).
+	//
+	// increase() and delta() are OUT OF SCOPE for this feature even though
+	// their own native matrix features (ts_grid_increase, ts_grid_delta)
+	// already exist: cerberus issue #2748 explicitly defers their instant
+	// coverage to a follow-up once each has separately earned it — a scope
+	// decision, not a technical gap. No Native{Increase,Delta}Lowerer carries
+	// an Instant field.
+	FeatureTSGridInstant = "ts_grid_instant"
+
 	// FeatureTSGridRecollapse defers the OTel -> Prometheus label-shaping tower
 	// (the mapSort/mapConcat/mapUpdate reshape of the Attributes map) PAST an
 	// eligible native rate grid aggregate, so it evaluates once per raw series
@@ -1368,6 +1431,14 @@ var registry = []Feature{
 		Doc:                        "defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)",
 	},
 	{
+		ID:                         FeatureTSGridInstant,
+		MinVersion:                 Version{Major: 26, Minor: 5},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "extend each of rate/changes/resets/deriv/predict_linear's already-enabled native MATRIX strategy to also cover the instant (single-anchor) shape via a degenerate one-point grid (narrows ts_grid_range/ts_grid_changes/ts_grid_resets/ts_grid_deriv/ts_grid_predict_linear; experimental maturity, server >= 26.5 — the extreme-parameter and staleness overflow fixes, #103223/#105319 — opt-in only via CERBERUS_CH_OPTIMIZATIONS pending fielded validation of the new floor)",
+	},
+	{
 		ID:                         FeatureTSGridIncrease,
 		MinVersion:                 Version{Major: 25, Minor: 9},
 		Stability:                  Experimental,
@@ -1526,7 +1597,7 @@ var registry = []Feature{
 // Registry returns a copy of the seeded feature registry
 // (aggregation_in_order, condition_cache, ts_grid_range, ts_grid_resample,
 // columnar_result_decode, ts_grid_changes, ts_grid_resets, ts_grid_deriv,
-// ts_grid_predict_linear, ts_grid_recollapse, ts_grid_increase,
+// ts_grid_predict_linear, ts_grid_instant, ts_grid_recollapse, ts_grid_increase,
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,

@@ -142,6 +142,12 @@ func cloneRangeNode(n Node) Node {
 		c := *v
 		c.Input = CloneNode(v.Input)
 		return &c
+	case *RangeWindowGridNativeInstant:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		c.Scalars = cloneFloats(v.Scalars)
+		return &c
 	case *RangeBucketFanout:
 		c := *v
 		c.Input = CloneNode(v.Input)

@@ -1561,6 +1561,35 @@
       "accountable_owner": "query-quality"
     },
     {
+      "id": "perf-nightly.ts-grid-instant-memory",
+      "description": "#2748 ts_grid_instant real-data memory measurement: loads the real, trimmed production sample into a SECOND dedicated (>= 26.5) ClickHouse and compares real peak memory_usage for an instant rate() between the fan-out and the new native instant lowering.",
+      "owner": {
+        "workflow": ".github/workflows/perf-nightly.yml",
+        "jobs": ["perf-nightly"],
+        "producer_jobs": [],
+        "context_job": "perf-nightly"
+      },
+      "executions": ["default"],
+      "context": { "match": "exact", "name": "perf-nightly", "protected": false },
+      "purpose": "performance",
+      "layers": ["11"],
+      "oracle_class": "performance",
+      "recipes": ["ts-grid-instant-memory-integration"],
+      "command": "go test -v -timeout 15m -tags=integration -count=1 -run TestTSGridInstantMemory_RealCH_Integration ./test/perf/nightly/...",
+      "build_tags": ["integration"],
+      "package_globs": ["test/perf/nightly/**", "internal/chplan/range_window_grid_native_instant.go", "internal/chsql/range_window_grid_native_instant.go", "internal/promql/lower.go", "internal/promql/lower_strategy.go"],
+      "substrate": "real-clickhouse",
+      "risk_domains": ["performance"],
+      "merge_posture": "never",
+      "main_posture": "coalesced",
+      "release_posture": "required",
+      "determinism": "deterministic",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 20,
+      "slo_minutes": 20,
+      "accountable_owner": "query-quality"
+    },
+    {
       "id": "perf-nightly.perf-nightly-health-notify",
       "description": "Roll up the perf-nightly schedule run and file/refresh a tracking issue on any non-success (#1861's mechanism, second consumer).",
       "owner": {

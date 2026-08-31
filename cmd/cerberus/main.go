@@ -972,6 +972,15 @@ func buildScanEstimateAdvisor(
 // Native{Fallback: FixedAccumulator{Fallback: Fanout{}}} composition. Same
 // AlwaysAvailable floor, same no-experimental-setting posture, same "narrows
 // the fallback, never competes with the native arm" shape.
+//
+// ts_grid_instant (issue #2748) narrows the NATIVE arm itself rather than the
+// fallback — the opposite direction from recollapse/laginframe/fixed-
+// accumulator above. Each of rate/changes/resets/deriv/predict_linear's
+// Native*Lowerer gains an Instant field, set to tsGridInstant ONLY inside
+// that same function's own "matrix feature enabled" branch, so the instant
+// arm can never fire for a function whose matrix arm is off. increase() and
+// delta() are out of scope (see chopt.FeatureTSGridInstant's own doc) and
+// carry no Instant field.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	// arg_and_max_fusion (issue #2764) is a plain emission-detail bit, not
@@ -982,6 +991,13 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	// native staleness lowerer's embedded Fallback).
 	argAndMaxFusion := optSet.Has(chopt.FeatureArgAndMaxFusion)
 	l.ArgAndMaxFusion = argAndMaxFusion
+	// ts_grid_instant (issue #2748) is a pure narrowing of each of
+	// rate/changes/resets/deriv/predict_linear's own matrix feature — it is
+	// consulted ONLY inside each function's own "matrix feature enabled"
+	// branch below, exactly like ts_grid_recollapse narrows ts_grid_range,
+	// so it can never make a Native*Lowerer's instant arm reachable on its
+	// own.
+	tsGridInstant := optSet.Has(chopt.FeatureTSGridInstant)
 	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
 	// rate/increase/delta's own native ts_grid strategy, exactly like
 	// laginframe_adjacency layers inside changes/resets below: it is the
@@ -999,6 +1015,7 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Rate = promql.NativeRateLowerer{
 			Fallback:   rateFallback,
 			Recollapse: optSet.Has(chopt.FeatureTSGridRecollapse),
+			Instant:    tsGridInstant,
 		}
 	} else {
 		l.Rate = rateFallback
@@ -1024,12 +1041,12 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		resetsFallback = promql.LagAdjacencyResetsLowerer{Fallback: resetsFallback}
 	}
 	if optSet.Has(chopt.FeatureTSGridChanges) {
-		l.Changes = promql.NativeChangesLowerer{Fallback: changesFallback}
+		l.Changes = promql.NativeChangesLowerer{Fallback: changesFallback, Instant: tsGridInstant}
 	} else {
 		l.Changes = changesFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResets) {
-		l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback}
+		l.Resets = promql.NativeResetsLowerer{Fallback: resetsFallback, Instant: tsGridInstant}
 	} else {
 		l.Resets = resetsFallback
 	}
@@ -1056,12 +1073,12 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Idelta = ideltaFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridDeriv) {
-		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
+		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.Deriv = promql.FanoutDerivLowerer{}
 	}
 	if optSet.Has(chopt.FeatureTSGridPredictLinear) {
-		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}

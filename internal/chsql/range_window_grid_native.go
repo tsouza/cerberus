@@ -567,11 +567,24 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 // already filtered to absent rows by the caller's own `WHERE grid_val IS NOT
 // NULL`, so nativeGridValueExpr never multiplies a NULL.
 func nativeGridValueExpr(r *chplan.RangeWindowGridNative) Frag {
+	return nativeGridValueExprFor(r.Func, r.Range.Seconds())
+}
+
+// nativeGridValueExprFor is nativeGridValueExpr's func/range-only core,
+// factored out so [emitRangeWindowGridNativeInstant] (the instant-mode
+// sibling emitter) can render the IDENTICAL exploded-cell expression without
+// depending on the matrix-only chplan.RangeWindowGridNative type. increase()
+// is the only func that reaches the multiply branch on either emitter today,
+// but the instant emitter never builds an "increase" node (see
+// chplan.RangeWindowGridNativeInstant's own doc for the scope exclusion) —
+// the shared core is nonetheless func-agnostic so a future instant "increase"
+// arm would not have to duplicate this rule.
+func nativeGridValueExprFor(fn string, rangeSeconds float64) Frag {
 	v := Call("toFloat64", Call("assumeNotNull", Col(nativeGridValAlias)))
-	if r.Func != "increase" {
+	if fn != "increase" {
 		return v
 	}
-	return Mul(v, InlineLit(r.Range.Seconds()))
+	return Mul(v, InlineLit(rangeSeconds))
 }
 
 // requireRecollapseEmittable rejects every deferred-shaping node the emitter

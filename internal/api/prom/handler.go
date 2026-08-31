@@ -904,8 +904,18 @@ func (h *Handler) executeRangeStreaming(
 // threaded into the Lang adapter so `@ start()` / `@ end()` modifiers
 // resolve against them. For instant queries the caller passes
 // start == end == ts.
+//
+// Lowerers is threaded exactly like [Handler.executeRangeStreaming] does —
+// h.lowerers() rather than a bare zero value. Every native ts_grid_* MATRIX
+// family member is Step > 0-gated, so this thread made no observable
+// difference to any of them (a zero Lowerers already resolves to all-fan-out
+// via RangeLowerers.withDefaults, and the matrix arm would decline an
+// instant window regardless). cerberus issue #2748's ts_grid_instant is the
+// first feature whose native arm actually fires on THIS path — without this
+// thread it is unreachable from the real HTTP API, dead code behind its own
+// chopt feature.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, ResourceBounds: h.ResourceBounds}
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Lowerers: h.lowerers(), ResourceBounds: h.ResourceBounds}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {
 		return nil, nil, classifyEngineError(err)

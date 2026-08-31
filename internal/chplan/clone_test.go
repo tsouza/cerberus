@@ -59,6 +59,12 @@ func allNodeKinds() []chplan.Node {
 				Alias: "Attributes",
 			}},
 		},
+		&chplan.RangeWindowGridNativeInstant{
+			Input: leaf, Func: "rate", Range: 5 * time.Minute,
+			Anchor: time.Unix(4600, 0).UTC(), Offset: time.Minute,
+			TimestampColumn: "TimeUnix", ValueColumn: "Value",
+			GroupBy: []chplan.Expr{expr}, Scalars: []float64{1},
+		},
 		&chplan.RangeLWR{Input: leaf, Lookback: 5 * time.Minute, ValueCol: "Value"},
 		&chplan.RangeBucketFanout{
 			Input: leaf, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},
