@@ -316,6 +316,47 @@ func TestResolve_ExplicitTSGrid_Supported(t *testing.T) {
 	assertSet(t, set, FeatureTSGridRange)
 }
 
+func TestResolve_TSGridLastOverTime_ExplicitSupported(t *testing.T) {
+	// ts_grid_last_over_time IS reachable by explicit listing (26.6+) when the
+	// server also permits the experimental setting.
+	set, _, err := Resolve(Config{Optimizations: "ts_grid_last_over_time", Capability: CapabilityAvailable}, v(26, 6))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertSet(t, set, FeatureTSGridLastOverTime)
+}
+
+func TestResolve_TSGridLastOverTime_BelowFloorEnforcingFatal(t *testing.T) {
+	// 26.5 (this repo's own chdb_substrate, versions.yaml) sits one minor below
+	// the 26.6 floor — the two upstream correctness fixes
+	// (ClickHouse/ClickHouse#106504, #106577) this feature's own registry doc
+	// names are absent there, so explicit + enforcing must refuse to run.
+	_, _, err := Resolve(Config{
+		Optimizations: "ts_grid_last_over_time",
+		Mode:          Enforcing,
+		Capability:    CapabilityAvailable,
+	}, v(26, 5))
+	if err == nil {
+		t.Fatal("explicit ts_grid_last_over_time on 26.5 under enforcing: want fatal, got nil")
+	}
+	if !strings.Contains(err.Error(), "ts_grid_last_over_time") || !strings.Contains(err.Error(), "26.6") {
+		t.Errorf("err = %v; want it to name ts_grid_last_over_time + 26.6", err)
+	}
+}
+
+func TestResolve_TSGridLastOverTime_OptInOnly(t *testing.T) {
+	// AutoSelect is false (a brand-new floor with no fielded validation yet,
+	// mirroring quantile_prom_histogram / map_bucketed_serialization): auto
+	// must not enable it even on a server well past its 26.6 floor.
+	set, _, err := Resolve(Config{Optimizations: "auto", Capability: CapabilityAvailable}, v(26, 6))
+	if err != nil {
+		t.Fatalf("Resolve(auto): %v", err)
+	}
+	if set.Has(FeatureTSGridLastOverTime) {
+		t.Error("auto enabled ts_grid_last_over_time; it is opt-in only (AutoSelect=false, new 26.6 floor)")
+	}
+}
+
 func TestResolve_ColumnarResultDecode_OptInOnly(t *testing.T) {
 	// columnar_result_decode is opt-in only: auto must NOT enable it, even on a
 	// brand-new server, since it is a perf tradeoff (a second ch-go dial).
@@ -556,6 +597,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureFixedAccumulatorExtrapolated: {ID: FeatureFixedAccumulatorExtrapolated, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureSortedSlabOverTime:           {ID: FeatureSortedSlabOverTime, MinVersion: AlwaysAvailable, Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 		FeatureMapBucketedSerialization:     {ID: FeatureMapBucketedSerialization, MinVersion: v(26, 4), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
+		FeatureTSGridLastOverTime:           {ID: FeatureTSGridLastOverTime, MinVersion: v(26, 6), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureColumnStatistics:             {ID: FeatureColumnStatistics, MinVersion: v(26, 3), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},
 	}
 	if len(reg) != len(want) {

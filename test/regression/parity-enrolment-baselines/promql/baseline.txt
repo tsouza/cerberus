@@ -449,6 +449,7 @@ native_deriv_range_step.txtar
 native_idelta_range_step.txtar
 native_increase_range_step.txtar
 native_irate_range_step.txtar
+native_last_over_time_range_step.txtar
 native_predict_linear_negative_horizon_fanout.txtar
 native_predict_linear_range_step.txtar
 native_rate_join_range_step.txtar

@@ -410,7 +410,8 @@
         "solver-memory-apportion-integration",
         "strict-scan-test",
         "traces-scan-bound-integration",
-        "traces-scan-window-integration"
+        "traces-scan-window-integration",
+        "ts-grid-last-over-time-integration"
       ],
       "command": "strict-scan and real-ClickHouse integration recipes",
       "build_tags": ["integration"],
