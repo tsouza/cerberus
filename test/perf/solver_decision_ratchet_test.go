@@ -249,13 +249,19 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// Composed below: it narrows Changes/Resets/Irate/Idelta's
 			// Fallback — see cmd/cerberus/main.go's nativeRangeLowerers.
 			lagAdjacency = true
-		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill:
+		case chopt.FeatureAggregationInOrder, chopt.FeatureConditionCache, chopt.FeatureJoinSpill, chopt.FeatureResultCache:
 			// CH SETTINGS stamped at emit time, not a RangeLowerers dispatch
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
 			// max_bytes_before_external_join via internal/engine/spill.go's
 			// applyJoinSpillSettings, gated on plan shape (planHasJoin), not on
 			// which RangeLowerers strategy a query_range matrix lowering picks.
+			// FeatureResultCache (cerberus issue #2781) is the same shape again:
+			// internal/engine/query_settings_rules.go's apply stamps
+			// use_query_cache=1 + query_cache_ttl based on
+			// eligibleForResultCache (the plan's evaluated windows, not which
+			// lowering strategy produced them), so it likewise has zero effect
+			// on RangeLowerers.
 		default:
 			t.Fatalf("chopt feature %q is AutoSelect but nativeLowerers does not know how to wire it "+
 				"into promql.RangeLowerers — update this helper (see issue #2120)", f.ID)
