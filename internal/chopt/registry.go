@@ -1636,14 +1636,14 @@ var registry = []Feature{
 		MinVersion: Version{Major: 26, Minor: 2},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "swap the logs table's idx_lower_body skip index from tokenbf_v1 to TYPE text(tokenizer='splitByNonAlpha') on CREATE, plus an additive idx_body_text ADD INDEX on existing tables (server >= 26.2 — verified GA floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/maintenance cost unmeasured at production volume)",
+		Doc:        "swap idx_lower_body from tokenbf_v1 to TYPE text on CREATE, plus an additive idx_body_text on existing tables (server >= 26.2 — verified GA floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — backfill/maintenance cost unmeasured at production volume)",
 	},
 	{
 		ID:         FeatureTextIndexLineFilter,
 		MinVersion: Version{Major: 26, Minor: 4},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "prepend an ANDed per-token lower(Body) LIKE '%tok%' strict-superset prefilter ahead of the unchanged position()/match() row predicate for non-negated LogQL line filters (server >= 26.4 — verified LIKE-via-text-index floor, opt-in via CERBERUS_CH_OPTIMIZATIONS, independent of full_text_index but inert without it)",
+		Doc:        "prepend an ANDed per-token LIKE strict-superset prefilter ahead of the unchanged row predicate for non-negated LogQL line filters (server >= 26.4 — verified LIKE-via-text-index floor, opt-in via CERBERUS_CH_OPTIMIZATIONS, inert without full_text_index)",
 	},
 }
 
