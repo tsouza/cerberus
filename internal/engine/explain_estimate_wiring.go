@@ -258,7 +258,8 @@ func (a *ScanEstimateAdvisor) maybeSeedPerRungPrior(key routememo.Key, est chcli
 	if a.perRungAdmission == nil || baseline.NAnchors <= 0 {
 		return
 	}
-	if int64(est.Rows) >= int64(baseline.NAnchors)*perRungCheapRowsPerAnchor {
+	// Real EXPLAIN ESTIMATE row counts never approach int64 overflow (~9.2e18).
+	if int64(est.Rows) >= int64(baseline.NAnchors)*perRungCheapRowsPerAnchor { //nolint:gosec // G115
 		return
 	}
 	a.perRungAdmission.SeedPriorFromEstimate(key, true)

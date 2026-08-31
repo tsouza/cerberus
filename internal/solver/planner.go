@@ -310,7 +310,8 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	// overwhelmingly common case — feature off, non-auto mode, or the memo /
 	// admission learner already holds a verdict for this shape) leaves this
 	// branch dead and the rest of classify byte-identical to before #2787.
-	if meta.Estimate != nil && int64(meta.Estimate.Rows) <= p.Cfg.EstimateNearEmptyRowFloor {
+	// Real EXPLAIN ESTIMATE row counts never approach int64 overflow (~9.2e18).
+	if meta.Estimate != nil && int64(meta.Estimate.Rows) <= p.Cfg.EstimateNearEmptyRowFloor { //nolint:gosec // G115
 		return sig, notRouted(ReasonEstimateNearEmpty).withGrid(sig, meta), 0, false
 	}
 
@@ -327,7 +328,8 @@ func (p *Planner) classify(plan chplan.Node, meta RequestMeta) (sig signals, dec
 	// answers the #2685 trade defaultMaxK's doc names.
 	maxK := int64(p.Cfg.MaxK)
 	if meta.Estimate != nil && p.Cfg.MaxKWithEstimate > p.Cfg.MaxK {
-		estimateK := int64(meta.Estimate.Rows) / p.Cfg.EstimateMinRowsPerAdditionalShard
+		// Real EXPLAIN ESTIMATE row counts never approach int64 overflow (~9.2e18).
+		estimateK := int64(meta.Estimate.Rows) / p.Cfg.EstimateMinRowsPerAdditionalShard //nolint:gosec // G115
 		if estimateK > int64(p.Cfg.MaxKWithEstimate) {
 			estimateK = int64(p.Cfg.MaxKWithEstimate)
 		}
