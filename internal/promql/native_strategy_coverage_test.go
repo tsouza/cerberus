@@ -59,10 +59,14 @@ var nativeStrategies = []nativeStrategy{
 			// section (mirroring the boot wiring in cmd/cerberus): the
 			// two-stage label-shaping (-State/-Merge) shape only exists
 			// on top of a native rate grid, so it is read only where one
-			// is being built.
+			// is being built. `experimental_ts_grid_instant:` nests the
+			// same way (cerberus issue #2748): the degenerate one-point
+			// grid only exists on top of an already-eligible native rate
+			// strategy.
 			l.Rate = promql.NativeRateLowerer{
 				Fallback:   promql.FanoutRateLowerer{},
 				Recollapse: has("experimental_ts_grid_recollapse"),
+				Instant:    has("experimental_ts_grid_instant"),
 			}
 		},
 	},
@@ -83,29 +87,43 @@ var nativeStrategies = []nativeStrategy{
 	{
 		field:   "Changes",
 		section: "experimental_ts_grid_changes",
-		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+		wire: func(l *promql.RangeLowerers, has func(string) bool) {
+			// `experimental_ts_grid_instant:` nests INSIDE this section —
+			// see the Rate row's own comment (cerberus issue #2748).
+			l.Changes = promql.NativeChangesLowerer{
+				Fallback: promql.FanoutChangesLowerer{},
+				Instant:  has("experimental_ts_grid_instant"),
+			}
 		},
 	},
 	{
 		field:   "Resets",
 		section: "experimental_ts_grid_resets",
-		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+		wire: func(l *promql.RangeLowerers, has func(string) bool) {
+			l.Resets = promql.NativeResetsLowerer{
+				Fallback: promql.FanoutResetsLowerer{},
+				Instant:  has("experimental_ts_grid_instant"),
+			}
 		},
 	},
 	{
 		field:   "Deriv",
 		section: "experimental_ts_grid_deriv",
-		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
+		wire: func(l *promql.RangeLowerers, has func(string) bool) {
+			l.Deriv = promql.NativeDerivLowerer{
+				Fallback: promql.FanoutDerivLowerer{},
+				Instant:  has("experimental_ts_grid_instant"),
+			}
 		},
 	},
 	{
 		field:   "PredictLinear",
 		section: "experimental_ts_grid_predict_linear",
-		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
-			l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		wire: func(l *promql.RangeLowerers, has func(string) bool) {
+			l.PredictLinear = promql.NativePredictLinearLowerer{
+				Fallback: promql.FanoutPredictLinearLowerer{},
+				Instant:  has("experimental_ts_grid_instant"),
+			}
 		},
 	},
 	{

@@ -215,6 +215,8 @@ func seriesIdentityKeys(n Node) []Expr {
 			return recollapseIdentityKeys(v)
 		}
 		return v.GroupBy
+	case *RangeWindowGridNativeInstant:
+		return v.GroupBy
 	case *RangeBucketFanout:
 		return v.GroupBy
 	case *RangeBucketGridNative:

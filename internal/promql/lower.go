@@ -3131,6 +3131,10 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		// budget as changes/resets/irate/idelta strategies were added).
 		node = lowerRangeVectorCallFanout(c, s, ctx, rw)
 	case gridSingleAnchor:
+		// Route the instant (single-anchor) shape through the SAME
+		// boot-wired strategy table the matrix shape uses above — see
+		// lowerRangeVectorCallInstant's own doc (cerberus issue #2748).
+		node = lowerRangeVectorCallInstant(c, s, ctx, rw)
 	}
 	// `last_over_time` and `first_over_time` preserve `__name__`
 	// per Prometheus semantics — they're position-shift reducers that
@@ -3298,6 +3302,51 @@ func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, 
 	}
 }
 
+// lowerRangeVectorCallInstant builds the gridSingleAnchor (instant) lowering
+// for lowerRangeVectorCall's generic range-vector dispatch: rate / changes /
+// resets / deriv (cerberus issue #2748 — predict_linear has its own top-level
+// lowering, range_fns.go's lowerPredictLinear, which already routes every
+// grid shape including gridSingleAnchor through ctx.lowerers.PredictLinear).
+// Split out to keep lowerRangeVectorCall's own cyclomatic complexity down,
+// mirroring why lowerRangeVectorCallFanout was split out for the matrix
+// shape.
+//
+// Unlike the fanout dispatcher this does NOT call applyStepGridFanout: rw
+// already carries the instant shape it was built with (Step == 0, End
+// pinned, Start zero) and must stay that way — fanning would turn it into
+// the matrix shape this switch is not for.
+//
+// BOOT-WIRED native dispatch, mirroring lowerRangeVectorCallFanout exactly:
+// no feature-flag or version read here. Each of the four explicit cases
+// (changes/resets/deriv) — and rate via the shared default — hands rw to its
+// OWN boot-wired strategy; the strategy's Instant field (set only when BOTH
+// that function's matrix feature and ts_grid_instant resolved at boot)
+// decides internally whether an eligible instant window gets the native
+// RangeWindowGridNativeInstant lowering or the unchanged fan-out rw.
+//
+// Every OTHER function this generic path can reach (last_over_time,
+// sum_over_time/avg_over_time, irate/idelta, increase/delta, and the
+// first_over_time / *_over_time siblings with no dedicated strategy at all)
+// falls to the shared `default: … Rate.LowerRate(rw, s)` branch exactly like
+// the fanout dispatcher's own default does. That is safe rather than a
+// mis-dispatch: nativeTSGridInstantNode (like nativeTSGridMatrixNode) gates
+// on `rw.Func == "rate"`, so calling Rate for a non-rate rw always falls
+// through to FanoutRateLowerer, which returns rw unchanged — byte-identical
+// to this shape's behaviour before this dispatcher existed, when
+// gridSingleAnchor called no strategy at all.
+func lowerRangeVectorCallInstant(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
+	switch c.Func.Name {
+	case "changes":
+		return ctx.lowerers.Changes.LowerChanges(rw, s)
+	case "resets":
+		return ctx.lowerers.Resets.LowerResets(rw, s)
+	case "deriv":
+		return ctx.lowerers.Deriv.LowerDeriv(rw, s)
+	default:
+		return ctx.lowerers.Rate.LowerRate(rw, s)
+	}
+}
+
 // nativeTSGridRateNode returns a chplan.RangeWindowGridNative when rw is a
 // SHAPE-eligible `rate(<counter>[<range>])` query_range RangeWindow; otherwise
 // nil (the NativeRateLowerer then delegates to its embedded fan-out fallback).
@@ -3434,6 +3483,79 @@ func nativeTSGridMatrixNode(rw *chplan.RangeWindow, wantFunc string, s schema.Me
 		// timeSeriesPredictLinearToGrid's 5th parametric arg; the caller
 		// (NativePredictLinearLowerer) gates eligibility to a whole-second
 		// literal before reaching here, so any element present is native-safe.
+		Scalars: rw.Scalars,
+	}
+}
+
+// nativeTSGridInstantNode returns a chplan.RangeWindowGridNativeInstant when rw
+// is a SHAPE-eligible INSTANT `rate(<counter>[<range>])` (or changes / resets /
+// deriv / predict_linear) RangeWindow; otherwise nil (the calling
+// Native*Lowerer then delegates to its embedded Fallback). It is the
+// single-anchor sibling of [nativeTSGridMatrixNode] — the same eligibility
+// contract, with the grid-shape clause inverted (instant rather than
+// materialised range grid) and no Recollapse: the deferred label-shaping
+// hoist exists to amortise the aggregate's cost across many grid points, a
+// concern that does not apply to a query with exactly one.
+//
+// Like nativeTSGridMatrixNode it reads NO feature flag or server version —
+// the boot decision of whether the instant arm is active lives in whether
+// cmd/cerberus set the calling Native*Lowerer's own Instant field (true only
+// when BOTH that function's matrix feature — ts_grid_range / ts_grid_changes
+// / ts_grid_resets / ts_grid_deriv / ts_grid_predict_linear — AND
+// ts_grid_instant resolved at boot; see chopt.FeatureTSGridInstant's own
+// doc). This function is a pure shape classifier called only from inside a
+// Native*Lowerer whose Instant field is already true. The clauses, every one
+// of which sends the query down the unchanged fan-out path on failure:
+//
+//   - rw.Func must equal wantFunc, and wantFunc must be one of "rate",
+//     "changes", "resets", "deriv", "predict_linear" — the exact set cerberus
+//     issue #2748 scoped instant coverage to. "increase" and "delta" are
+//     deliberately excluded (see chplan.RangeWindowGridNativeInstant's own
+//     doc); no caller passes them here today, but the guard is explicit
+//     rather than assumed.
+//   - The window must be genuinely instant: Step == 0 and End pinned (the
+//     gridSingleAnchor shape — see rangeGridShapeFor). A materialised range
+//     grid (Step > 0) is nativeTSGridMatrixNode's own territory.
+//   - rw.Identity must be false and rw.Input must be a plain Scan / Filter,
+//     optionally wrapped in the canonical selector-attributes Project — the
+//     same row-shape relation nativeTSGridMatrixNode requires
+//     (isNativeRateInput).
+//   - rw.TemporalityColumn must be empty — mirrors nativeTSGridMatrixNode's
+//     identical guard: the native aggregate has no DELTA-temporality runtime
+//     branch (issue #1628), so a temporality-bearing window stays on the
+//     fan-out unconditionally rather than risk the CUMULATIVE-only answer.
+//     Unlike the matrix arm's NativeRateLowerer, this clause is NOT (yet)
+//     narrowed by a CUMULATIVE/DELTA union split for rate() — tracked as
+//     cerberus issue #2843; changes/resets/deriv/predict_linear are never
+//     temporality-gated at all (counterTemporalityRangeFn), so only an
+//     instant rate() on a schema with AggregationTemporalityColumn set is
+//     affected.
+func nativeTSGridInstantNode(rw *chplan.RangeWindow, wantFunc string, s schema.Metrics) *chplan.RangeWindowGridNativeInstant {
+	if rw.Func != wantFunc {
+		return nil
+	}
+	if rw.Identity || rw.Step > 0 || rw.End.IsZero() {
+		return nil
+	}
+	if !isNativeRateInput(rw.Input, s) {
+		return nil
+	}
+	if rw.TemporalityColumn != "" {
+		return nil
+	}
+	return &chplan.RangeWindowGridNativeInstant{
+		Input:           rw.Input,
+		Func:            rw.Func,
+		Range:           rw.Range,
+		Anchor:          rw.End,
+		Offset:          rw.Offset,
+		TimestampColumn: rw.TimestampColumn,
+		ValueColumn:     rw.ValueColumn,
+		GroupBy:         rw.GroupBy,
+		// Scalars carries predict_linear's whole-second literal horizon t
+		// (empty for rate/changes/resets/deriv); the caller
+		// (NativePredictLinearLowerer) gates eligibility to that literal
+		// domain before reaching here, mirroring nativeTSGridMatrixNode.
 		Scalars: rw.Scalars,
 	}
 }

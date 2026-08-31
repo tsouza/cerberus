@@ -90,6 +90,7 @@ func allNodeCases() []nodeExhaustivenessCase {
 		{"SearchTraceLimit", &SearchTraceLimit{Input: sentinelChild(), TraceLimit: 20}, false},
 		{"Aggregate", &Aggregate{Input: sentinelChild()}, false},
 		{"RangeWindowGridNative", &RangeWindowGridNative{Input: sentinelChild(), Func: "rate"}, false},
+		{"RangeWindowGridNativeInstant", &RangeWindowGridNativeInstant{Input: sentinelChild(), Func: "rate", GroupBy: []Expr{&ColumnRef{Name: "Attributes"}}}, false},
 		{"RangeWindowStaleResample", &RangeWindowStaleResample{Input: sentinelChild()}, false},
 		{"AbsentOverTime", &AbsentOverTime{Input: sentinelChild()}, false},
 		{"Limit", &Limit{Input: sentinelChild(), Count: 1}, false},

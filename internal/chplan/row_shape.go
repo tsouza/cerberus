@@ -178,7 +178,11 @@ func (s RowShape) String() string {
 // an instant one has already reduced each series to a single row.
 // [RangeWindowGridNative] is ALWAYS the matrix case — the lowering builds it
 // only in range mode, with `Step > 0` and both `Start` and `End` pinned
-// (see its doc comment), so it has no instant form to distinguish.
+// (see its doc comment), so it has no instant form to distinguish. Its
+// instant sibling, [RangeWindowGridNativeInstant], is a SEPARATE node type
+// for exactly that reason — reusing this one for the single-anchor shape
+// would have made this classifier (and the several other consumers that key
+// off RangeWindowGridNative meaning "matrix") silently wrong.
 //
 // Every other node publishes all four canonical names, either by passing
 // its input's through or by re-projecting them, so [SampleRowShape] is
@@ -216,6 +220,13 @@ func RowShapeOf(n Node) RowShape {
 		return ReducedWindowRowShape
 	case *RangeWindowGridNative:
 		return GridWindowRowShape
+	case *RangeWindowGridNativeInstant:
+		// The instant-shaped native lowering publishes one row per series
+		// with no per-row anchor timestamp at all — the query's single eval
+		// instant is reported externally, not as a SQL column — exactly the
+		// [ReducedWindowRowShape] contract the fan-out's own instant emit
+		// (RangeWindow with OuterRange == 0) already publishes.
+		return ReducedWindowRowShape
 	case *HistogramProjection:
 		return HistogramRowShape
 	case *VectorSetOp:

@@ -180,6 +180,12 @@ func rewriteUnaryNode(n Node, fn func(Node) (Node, bool)) (out Node, changed, ha
 			cp.Input = in
 			return &cp
 		})
+	case *RangeWindowGridNativeInstant:
+		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
+			cp := *v
+			cp.Input = in
+			return &cp
+		})
 	case *RangeBucketFanout:
 		out, changed = rewriteSingleInput(v, v.Input, fn, func(in Node) Node {
 			cp := *v

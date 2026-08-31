@@ -631,6 +631,7 @@ func TestRegistry_SeededEntries(t *testing.T) {
 		FeatureTSGridResets:                 {ID: FeatureTSGridResets, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridDeriv:                  {ID: FeatureTSGridDeriv, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridPredictLinear:          {ID: FeatureTSGridPredictLinear, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
+		FeatureTSGridInstant:                {ID: FeatureTSGridInstant, MinVersion: v(26, 5), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: true},
 		FeatureTSGridRecollapse:             {ID: FeatureTSGridRecollapse, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureTSGridHistogram:              {ID: FeatureTSGridHistogram, MinVersion: v(25, 9), Stability: Experimental, AutoSelect: true, RequiresExperimentalTSGrid: true},
 		FeatureQuantilePromHistogram:        {ID: FeatureQuantilePromHistogram, MinVersion: v(25, 10), Stability: Experimental, AutoSelect: false, RequiresExperimentalTSGrid: false},

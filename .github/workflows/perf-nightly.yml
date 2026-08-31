@@ -45,8 +45,10 @@ jobs:
     name: perf-nightly
     runs-on: ubuntu-latest
     # Generous: pulls one ClickHouse image, loads ~4.3M real rows across 3
-    # tables, and issues 4 sentinel queries.
-    timeout-minutes: 20
+    # tables, and issues 4 sentinel queries, plus a second dedicated
+    # ClickHouse container + one more real-data load for the ts_grid_instant
+    # memory measurement below (#2748).
+    timeout-minutes: 30
     env:
       # Read by results.go's writeResultsJSON (the test step) and by
       # perf-nightly-step-summary.mjs (the summary step below) — same
@@ -79,6 +81,22 @@ jobs:
 
       - name: "Run the #2370 nightly measurement harness (real ClickHouse)"
         run: just perf-nightly-integration
+
+      # The ts_grid_instant real-data memory measurement (#2748): reuses
+      # THIS package's own real, trimmed production sample
+      # (testdata/samples/svc_http_requests_total.parquet) in a SECOND,
+      # dedicated ClickHouse container (>= the 26.5 ts_grid_instant floor,
+      # above this job's own 25.9-alpine), issuing the SAME instant
+      # `rate(m[1d])` query once through the fan-out
+      # (emitWindowedArrayExtrapolated's per-series groupArray) and once
+      # through the new instant native lowering
+      # (chplan.RangeWindowGridNativeInstant, a degenerate one-point grid),
+      # and reading real peak memory_usage back from system.query_log for
+      # both — the actual, measured memory win this feature exists to
+      # deliver, not a synthetic estimate. See
+      # realch_ts_grid_instant_memory_integration_test.go.
+      - name: "Run the ts_grid_instant real-data memory measurement (real ClickHouse)"
+        run: just ts-grid-instant-memory-integration
 
       # Renders the per-sentinel verdict as a clear table in the job's
       # Summary tab BEFORE the raw log — see perf-nightly-step-summary.mjs's

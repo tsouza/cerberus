@@ -38,6 +38,9 @@ var derivedShapeVerdicts = map[string]bool{
 	"MetricsHistogramOverTime": true,
 	"RangeWindow":              true,
 	"RangeWindowGridNative":    true,
+	// Its instant-mode sibling drops __name__ for the same five functions
+	// (rate/changes/resets/deriv/predict_linear), so it is derived too.
+	"RangeWindowGridNativeInstant": true,
 	// HistogramVectorJoin's own SELECT exposes `_hq_L_*`/`_hq_R_*`
 	// aliases — no bare MetricName column, unlike HistogramProjection
 	// below (which still names a real MetricName output, placeholder

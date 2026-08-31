@@ -129,6 +129,7 @@ table.
 | `ts_grid_deriv`                  | 25.9       | experimental | yes        |
 | `ts_grid_predict_linear`         | 25.9       | experimental | yes        |
 | `ts_grid_recollapse`             | 25.9       | experimental | yes        |
+| `ts_grid_instant`                | 26.5       | experimental | no         |
 | `ts_grid_increase`               | 25.9       | experimental | yes        |
 | `ts_grid_histogram`              | 25.9       | experimental | yes        |
 | `quantile_prom_histogram`        | 25.10      | experimental | no         |

@@ -69,6 +69,7 @@ func IsDerivedShape(n Node, cols SampleColumns) bool {
 	switch v := n.(type) {
 	case *RangeWindow,
 		*RangeWindowGridNative,
+		*RangeWindowGridNativeInstant,
 		*Aggregate,
 		*MetricsAggregate,
 		*MetricsHistogramOverTime,

@@ -390,6 +390,22 @@ perf-nightly-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -v -timeout 15m -tags=integration -count=1 -run TestPerfNightlyRealCH ./test/perf/nightly/...
 
+# Run the ts_grid_instant real-data memory measurement (#2748): reuses this
+# package's own real, trimmed production sample
+# (test/perf/nightly/testdata/samples/svc_http_requests_total.parquet) in a
+# SECOND, dedicated ClickHouse container (CH_STRICT_SCAN_IMAGE, 26.6-alpine —
+# ts_grid_instant floors at 26.5, ABOVE this package's own 25.9-alpine
+# perfNightlyCHImage), issuing the SAME instant `rate(m[1d])` query once
+# through the fan-out and once through the new instant native lowering
+# (chplan.RangeWindowGridNativeInstant), reading real peak memory_usage back
+# from system.query_log for both. Requires Docker; gated behind the
+# `integration` build tag. See
+# test/perf/nightly/realch_ts_grid_instant_memory_integration_test.go and
+# .github/workflows/perf-nightly.yml.
+ts-grid-instant-memory-integration:
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    go test -v -timeout 15m -tags=integration -count=1 -run TestTSGridInstantMemory_RealCH_Integration ./test/perf/nightly/...
+
 # Regenerate nightly-baseline.json: for each #2370 nightly sentinel the
 # calibration-time max-of-N peak memory_usage plus the headroom-multiplied
 # ceiling (nightlyBaselineHeadroom) the gate actually asserts against, and

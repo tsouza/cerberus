@@ -309,11 +309,20 @@ the SQL array machinery leaves at high cardinality. See
   force-enable) on a forbidden server is FATAL under `enforcing` and WARN+skip
   under `permissive` — exactly the version-floor semantics. See
   [`clickhouse-optimizations.md`](clickhouse-optimizations.md#capability-probe-experimental-ts_grid-setting).
-- **Scope: `rate` only.** `increase` / `delta` / `deriv` / `predict_linear`
-  stay on the fan-out — there is no `timeSeriesIncreaseToGrid`, and the
-  `timeSeriesDeltaToGrid` mapping is not yet differentially proven against
-  Prometheus. Those functions, instant queries, and every non-PromQL head are
-  unaffected by the flag.
+- **Scope: `rate` (this section) plus its later query_range siblings.**
+  `increase` / `delta` / `changes` / `resets` / `deriv` / `predict_linear` /
+  `irate` / `idelta` each gained their own native `ts_grid_*` feature under
+  the same 25.9 floor (see `clickhouse-optimizations.md` for the full table);
+  every non-PromQL head stays unaffected by any of them. **Instant queries**
+  (bare `rate(m[5m])` with no `query_range`) were unaffected by the WHOLE
+  family until `ts_grid_instant` (floor 26.5, opt-in — cerberus issue #2748):
+  with it enabled, an eligible instant `rate` / `changes` / `resets` / `deriv`
+  / `predict_linear` query ALSO rides the native aggregate, fed a degenerate
+  one-point grid instead of query_range's materialised one — the same flat
+  per-series memory the matrix shape gets, in place of the alerting/
+  recording-rule path's unbounded `groupArray` over the lookback window.
+  `increase` / `delta` stay fan-out-only in instant mode (their own instant
+  coverage is a deferred follow-up, not a technical gap).
 - **The fan-out remains byte-for-byte available.** Pinning `ts_grid_range` off
   (an explicit list omitting it, or the legacy `=false`) restores the
   established fan-out exactly; on a < 25.9 server it is the only path. Every

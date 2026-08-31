@@ -67,10 +67,21 @@ func ResolveEnabledSet(ctx context.Context, t testing.TB, client *chclient.Clien
 func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 
+	// ts_grid_instant is NOT part of AllNativeOptimizations (new 26.5 floor,
+	// AutoSelect=false — see chopt.FeatureTSGridInstant's own doc), the same
+	// posture quantile_prom_histogram / ts_grid_last_over_time already take
+	// below: callers who want it activated resolve it explicitly against a
+	// >= 26.5 server and pass the resulting set here. It is a pure narrowing
+	// of each of rate/changes/resets/deriv/predict_linear's own matrix
+	// feature (never independently reachable), mirroring
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly.
+	tsGridInstant := set.Has(chopt.FeatureTSGridInstant)
+
 	if set.Has(chopt.FeatureTSGridRange) {
 		l.Rate = promql.NativeRateLowerer{
 			Fallback:   promql.FanoutRateLowerer{},
 			Recollapse: set.Has(chopt.FeatureTSGridRecollapse),
+			Instant:    tsGridInstant,
 		}
 	} else {
 		l.Rate = promql.FanoutRateLowerer{}
@@ -86,22 +97,22 @@ func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 		l.Staleness = promql.FanoutStalenessLowerer{}
 	}
 	if set.Has(chopt.FeatureTSGridChanges) {
-		l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}}
+		l.Changes = promql.NativeChangesLowerer{Fallback: promql.FanoutChangesLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.Changes = promql.FanoutChangesLowerer{}
 	}
 	if set.Has(chopt.FeatureTSGridResets) {
-		l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}}
+		l.Resets = promql.NativeResetsLowerer{Fallback: promql.FanoutResetsLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.Resets = promql.FanoutResetsLowerer{}
 	}
 	if set.Has(chopt.FeatureTSGridDeriv) {
-		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}}
+		l.Deriv = promql.NativeDerivLowerer{Fallback: promql.FanoutDerivLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.Deriv = promql.FanoutDerivLowerer{}
 	}
 	if set.Has(chopt.FeatureTSGridPredictLinear) {
-		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}}
+		l.PredictLinear = promql.NativePredictLinearLowerer{Fallback: promql.FanoutPredictLinearLowerer{}, Instant: tsGridInstant}
 	} else {
 		l.PredictLinear = promql.FanoutPredictLinearLowerer{}
 	}

@@ -473,6 +473,16 @@ type NativeRateLowerer struct {
 	// does not apply to keeps the unchanged two-level shape — this never
 	// changes WHETHER the native lowering fires, only which shape it emits.
 	Recollapse bool
+
+	// Instant additionally opts an eligible INSTANT (gridSingleAnchor, Step ==
+	// 0) rate window onto chplan.RangeWindowGridNativeInstant — the degenerate
+	// one-point-grid sibling of the matrix RangeWindowGridNative above (cerberus
+	// issue #2748). cmd/cerberus sets it ONLY when chopt ALSO resolved
+	// ts_grid_instant at boot, inside this SAME "ts_grid_range enabled" branch:
+	// it is a pure narrowing of ts_grid_range (mirrors how Recollapse narrows
+	// it), never independently reachable. False keeps every instant rate()
+	// query on the unchanged fan-out, exactly like before this field existed.
+	Instant bool
 }
 
 // LowerRate returns a RangeWindowGridNative for an eligible range-mode rate shape,
@@ -481,6 +491,20 @@ type NativeRateLowerer struct {
 // native aggregate has no DELTA semantics, while the fan-out emitter does.
 // The eligibility predicate is the intrinsic SHAPE check (rate func,
 // materialised grid, plain Scan/Filter input) — see nativeTSGridRateNode.
+//
+// For an INSTANT window (gridSingleAnchor) the matrix check above always
+// misses (nativeTSGridRateNode requires Step > 0), so — when n.Instant is set
+// — this additionally tries nativeTSGridInstantNode before falling to
+// Fallback. The temporality union split does NOT (yet) extend to the instant
+// arm: nativeTSGridInstantNode carries the same TemporalityColumn guard
+// nativeTSGridMatrixNode does, so a temporality-bearing instant window stays
+// on the fan-out unconditionally — a real, deliberate scope narrowing (not an
+// oversight), tracked as cerberus issue #2843: on the real default schema
+// (schema.DefaultOTelMetrics always sets AggregationTemporalityColumn), an
+// instant rate() query therefore does not yet reach the native path at all.
+// Every OTHER combination this feature covers (a schema without that column,
+// or any of changes/resets/deriv/predict_linear, none of which is ever
+// temporality-gated — see counterTemporalityRangeFn) is unaffected.
 func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if rw.TemporalityColumn != "" {
 		cumulative := *rw
@@ -498,6 +522,11 @@ func (n NativeRateLowerer) LowerRate(rw *chplan.RangeWindow, s schema.Metrics) c
 	}
 	if native := nativeTSGridRateNode(rw, s, n.Recollapse); native != nil {
 		return native
+	}
+	if n.Instant {
+		if native := nativeTSGridInstantNode(rw, "rate", s); native != nil {
+			return native
+		}
 	}
 	return n.Fallback.LowerRate(rw, s)
 }
@@ -928,15 +957,33 @@ type NativeChangesLowerer struct {
 	// Fallback is the concrete lowerer for shapes the native path cannot
 	// handle. Boot wires it to FanoutChangesLowerer{}.
 	Fallback ChangesLowerer
+
+	// Instant additionally opts an eligible INSTANT (gridSingleAnchor) changes
+	// window onto chplan.RangeWindowGridNativeInstant (cerberus issue #2748).
+	// cmd/cerberus sets it ONLY when chopt ALSO resolved ts_grid_instant at
+	// boot, inside this SAME "ts_grid_changes enabled" branch — a pure
+	// narrowing, never independently reachable. Since ts_grid_changes itself
+	// is opt-in-only (#1721, the NaN-adjacent-window overcount), an operator
+	// who has not explicitly listed ts_grid_changes never reaches this field
+	// at all, so the instant arm inherits that same explicit-opt-in posture
+	// automatically rather than needing its own carve-out.
+	Instant bool
 }
 
 // LowerChanges returns a RangeWindowGridNative for an eligible range-mode changes
 // shape, or delegates to the embedded Fallback otherwise. The eligibility
 // predicate is the intrinsic SHAPE check (changes func, materialised grid,
-// plain Scan/Filter input) — see nativeTSGridMatrixNode.
+// plain Scan/Filter input) — see nativeTSGridMatrixNode. When n.Instant is
+// set, an eligible INSTANT window (nativeTSGridInstantNode) is tried next,
+// before Fallback.
 func (n NativeChangesLowerer) LowerChanges(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if native := nativeTSGridMatrixNode(rw, "changes", s, noRecollapse); native != nil {
 		return native
+	}
+	if n.Instant {
+		if native := nativeTSGridInstantNode(rw, "changes", s); native != nil {
+			return native
+		}
 	}
 	return n.Fallback.LowerChanges(rw, s)
 }
@@ -962,14 +1009,28 @@ type NativeResetsLowerer struct {
 	// Fallback is the concrete lowerer for shapes the native path cannot
 	// handle. Boot wires it to FanoutResetsLowerer{}.
 	Fallback ResetsLowerer
+
+	// Instant additionally opts an eligible INSTANT (gridSingleAnchor) resets
+	// window onto chplan.RangeWindowGridNativeInstant (cerberus issue #2748).
+	// cmd/cerberus sets it ONLY when chopt ALSO resolved ts_grid_instant at
+	// boot, inside this SAME "ts_grid_resets enabled" branch — a pure
+	// narrowing, mirroring NativeChangesLowerer.Instant.
+	Instant bool
 }
 
 // LowerResets returns a RangeWindowGridNative for an eligible range-mode resets
 // shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
 // check as changes (resets func, materialised grid, plain Scan/Filter input).
+// When n.Instant is set, an eligible INSTANT window is tried next, before
+// Fallback.
 func (n NativeResetsLowerer) LowerResets(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if native := nativeTSGridMatrixNode(rw, "resets", s, noRecollapse); native != nil {
 		return native
+	}
+	if n.Instant {
+		if native := nativeTSGridInstantNode(rw, "resets", s); native != nil {
+			return native
+		}
 	}
 	return n.Fallback.LowerResets(rw, s)
 }
@@ -995,15 +1056,29 @@ type NativeDerivLowerer struct {
 	// Fallback is the concrete lowerer for shapes the native path cannot
 	// handle. Boot wires it to FanoutDerivLowerer{}.
 	Fallback DerivLowerer
+
+	// Instant additionally opts an eligible INSTANT (gridSingleAnchor) deriv
+	// window onto chplan.RangeWindowGridNativeInstant (cerberus issue #2748).
+	// cmd/cerberus sets it ONLY when chopt ALSO resolved ts_grid_instant at
+	// boot, inside this SAME "ts_grid_deriv enabled" branch — a pure
+	// narrowing, mirroring NativeChangesLowerer.Instant.
+	Instant bool
 }
 
 // LowerDeriv returns a RangeWindowGridNative for an eligible range-mode deriv
 // shape, or delegates to the embedded Fallback otherwise. Same intrinsic SHAPE
 // check as changes/resets (deriv func, materialised grid, plain Scan/Filter
-// input) — deriv takes no scalar, so no extra parameter gate applies.
+// input) — deriv takes no scalar, so no extra parameter gate applies. When
+// n.Instant is set, an eligible INSTANT window is tried next, before
+// Fallback.
 func (n NativeDerivLowerer) LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if native := nativeTSGridMatrixNode(rw, "deriv", s, noRecollapse); native != nil {
 		return native
+	}
+	if n.Instant {
+		if native := nativeTSGridInstantNode(rw, "deriv", s); native != nil {
+			return native
+		}
 	}
 	return n.Fallback.LowerDeriv(rw, s)
 }
@@ -1030,6 +1105,16 @@ type NativePredictLinearLowerer struct {
 	// Fallback is the concrete lowerer for shapes the native path cannot
 	// handle. Boot wires it to FanoutPredictLinearLowerer{}.
 	Fallback PredictLinearLowerer
+
+	// Instant additionally opts an eligible INSTANT (gridSingleAnchor)
+	// predict_linear window onto chplan.RangeWindowGridNativeInstant
+	// (cerberus issue #2748). cmd/cerberus sets it ONLY when chopt ALSO
+	// resolved ts_grid_instant at boot, inside this SAME
+	// "ts_grid_predict_linear enabled" branch — a pure narrowing, mirroring
+	// NativeChangesLowerer.Instant. The horizon-literal eligibility gate
+	// (nativePredictLinearHorizonEligible) applies identically to the instant
+	// arm: it is a statement about the SCALAR shape, not the grid shape.
+	Instant bool
 }
 
 // LowerPredictLinear returns a RangeWindowGridNative for an eligible range-mode
@@ -1039,10 +1124,20 @@ type NativePredictLinearLowerer struct {
 // timeSeriesPredictLinearToGrid takes the offset as its 5th parametric arg (a
 // constant), so a computed horizon (ScalarExprs) or a fractional t cannot ride
 // the native aggregate and stays on the exact fan-out arithmetic.
+//
+// For an INSTANT window (gridSingleAnchor) the matrix check always misses
+// (nativeTSGridMatrixNode requires Step > 0), so — when n.Instant is set and
+// the horizon is still eligible — this additionally tries
+// nativeTSGridInstantNode before falling to Fallback.
 func (n NativePredictLinearLowerer) LowerPredictLinear(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
 	if nativePredictLinearHorizonEligible(rw) {
 		if native := nativeTSGridMatrixNode(rw, "predict_linear", s, noRecollapse); native != nil {
 			return native
+		}
+		if n.Instant {
+			if native := nativeTSGridInstantNode(rw, "predict_linear", s); native != nil {
+				return native
+			}
 		}
 	}
 	return n.Fallback.LowerPredictLinear(rw, s)

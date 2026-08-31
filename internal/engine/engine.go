@@ -702,7 +702,9 @@ func clampU8(v int64) uint8 {
 // chplan.RangeWindowGridNative (timeSeriesRateToGrid for Func="rate",
 // timeSeriesChangesToGrid for Func="changes", timeSeriesResetsToGrid for
 // Func="resets", timeSeriesDerivToGrid for Func="deriv",
-// timeSeriesPredictLinearToGrid for Func="predict_linear") or a
+// timeSeriesPredictLinearToGrid for Func="predict_linear"), its instant-mode
+// sibling chplan.RangeWindowGridNativeInstant (the SAME five aggregates fed a
+// degenerate one-point grid, cerberus issue #2748), a
 // chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness), or a
 // chplan.RangeBucketGridNative (the classic-histogram ladder, which reads
 // timeSeriesRateToGrid AND timeSeriesResetsToGrid). All share
@@ -721,8 +723,8 @@ func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
 		switch n.(type) {
-		case *chplan.RangeWindowGridNative, *chplan.RangeWindowStaleResample,
-			*chplan.RangeBucketGridNative:
+		case *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
+			*chplan.RangeWindowStaleResample, *chplan.RangeBucketGridNative:
 			found = true
 			return false // stop descending this branch
 		}
