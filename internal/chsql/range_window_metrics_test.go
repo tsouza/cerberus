@@ -247,7 +247,7 @@ func TestMetricsAggregateMultiQuantileBare(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	wantSubstrings := []string{
-		"quantiles(toFloat64(?), toFloat64(?), toFloat64(?))(`Duration`)",
+		"quantilesExactInclusive(toFloat64(?), toFloat64(?), toFloat64(?))(`Duration`)",
 		"AS qs_array",
 		"['0.5', '0.9', '0.99']",
 		"AS phi_val",
