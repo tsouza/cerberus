@@ -60,7 +60,11 @@ func (e *emitter) emitHistogramFloatVectorJoin(j *chplan.HistogramFloatVectorJoi
 		return err
 	}
 	rightFrag, err := e.joinSideFrag(
-		j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, j.Right, rightRole,
+		// argAndMaxFusion is always false: chplan.HistogramFloatVectorJoin
+		// carries no ArgAndMaxFusion field (cerberus issue #2764 scoped the
+		// fusion to chplan.VectorJoin only), so this side stays on the
+		// pre-fusion shape.
+		j.Match, j.MetricNameColumn, j.AttributesColumn, j.TimestampColumn, j.ValueColumn, j.StepAligned, false, j.Right, rightRole,
 	)
 	if err != nil {
 		return err

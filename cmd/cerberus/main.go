@@ -936,6 +936,14 @@ func buildPerRungAdmission(evalSolver *solver.Solver) *engine.PerRungAdmissionLe
 // the fallback, never competes with the native arm" shape.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
+	// arg_and_max_fusion (issue #2764) is a plain emission-detail bit, not
+	// a swappable strategy — see RangeLowerers.ArgAndMaxFusion's own doc.
+	// It feeds BOTH the VectorJoin site (read directly off this table by
+	// internal/promql/binary.go) and the RangeLWR site (its own copy on
+	// FanoutStalenessLowerer below, threaded either directly or as the
+	// native staleness lowerer's embedded Fallback).
+	argAndMaxFusion := optSet.Has(chopt.FeatureArgAndMaxFusion)
+	l.ArgAndMaxFusion = argAndMaxFusion
 	// fixed_accumulator_extrapolated (issue #2760) layers BENEATH
 	// rate/increase/delta's own native ts_grid strategy, exactly like
 	// laginframe_adjacency layers inside changes/resets below: it is the
@@ -963,9 +971,9 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.Increase = increaseFallback
 	}
 	if optSet.Has(chopt.FeatureTSGridResample) {
-		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{}}
+		l.Staleness = promql.NativeStalenessLowerer{Fallback: promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}}
 	} else {
-		l.Staleness = promql.FanoutStalenessLowerer{}
+		l.Staleness = promql.FanoutStalenessLowerer{ArgAndMaxFusion: argAndMaxFusion}
 	}
 	// laginframe_adjacency (issue #2759) layers BENEATH changes/resets' own
 	// native ts_grid strategy, exactly like ts_grid_recollapse layers inside

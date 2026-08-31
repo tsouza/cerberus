@@ -344,6 +344,26 @@ type RangeLowerers struct {
 	// sorted_slab_over_time — no version floor). Concrete fan-out impl when
 	// the feature is off; never nil on the lowering path.
 	OverTime OverTimeLowerer
+
+	// ArgAndMaxFusion is the resolved chopt.FeatureArgAndMaxFusion verdict
+	// (server >= 25.11, cerberus issue #2764), threaded to
+	// internal/promql/binary.go's vector-vector join lowering so it can set
+	// chplan.VectorJoin.ArgAndMaxFusion. Unlike every other field on this
+	// struct it is a plain bool, not a swappable Lowerer: there is no
+	// alternate NODE shape to select between (RangeWindow's own
+	// SortedSlabOverTime / FixedAccumulator strategies pick between
+	// genuinely different SQL SHAPES), only a single emission-detail bit
+	// the chsql emitter reads directly off the SAME node — so a Lowerer
+	// interface would add indirection with nothing to dispatch on.
+	// cmd/cerberus's nativeRangeLowerers sets it from the same
+	// optSet.Has(chopt.FeatureArgAndMaxFusion) read it also threads into
+	// FanoutStalenessLowerer.ArgAndMaxFusion for the RangeLWR site (see
+	// that field's own doc for why RangeLWR needs its own copy rather than
+	// reading this one: FanoutStalenessLowerer.LowerStaleness has no
+	// access to the enclosing RangeLowerers value). False (the default)
+	// keeps every deployment below the version floor on the pre-fusion
+	// SQL, byte-unchanged.
+	ArgAndMaxFusion bool
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -783,10 +803,24 @@ func sortedSlabOverTimeEligible(rw *chplan.RangeWindow) bool {
 // generic fan-out RangeLWR from the resolved staleness input. It is the
 // fallback the native impl embeds AND the strategy a fan-out-only deployment
 // wires directly.
-type FanoutStalenessLowerer struct{}
+type FanoutStalenessLowerer struct {
+	// ArgAndMaxFusion is the resolved chopt.FeatureArgAndMaxFusion verdict
+	// (server >= 25.11, cerberus issue #2764), set onto every RangeLWR this
+	// lowerer builds. It is INERT unless the built node also has
+	// SampleTimestamp set — the fusion collapses the argMax(Value,
+	// TimeUnix) + max(TimeUnix) pair that pairing exists ONLY under, see
+	// [chplan.RangeLWR.ArgAndMaxFusion]'s own doc. cmd/cerberus's
+	// nativeRangeLowerers sets this from the same
+	// optSet.Has(chopt.FeatureArgAndMaxFusion) read that feeds
+	// RangeLowerers.ArgAndMaxFusion (VectorJoin's copy of the same
+	// verdict) — this lowerer carries its own copy because it has no
+	// access to the enclosing RangeLowerers value LowerStaleness is called
+	// through.
+	ArgAndMaxFusion bool
+}
 
 // LowerStaleness builds the fan-out RangeLWR node from in.
-func (FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
+func (l FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node {
 	return &chplan.RangeLWR{
 		Input:           in.input,
 		Start:           in.start,
@@ -796,6 +830,7 @@ func (FanoutStalenessLowerer) LowerStaleness(in stalenessLowerInput) chplan.Node
 		Offset:          in.offset,
 		StepAlign:       in.stepAligned,
 		SampleTimestamp: in.sampleTimestamp,
+		ArgAndMaxFusion: l.ArgAndMaxFusion,
 
 		MetricNameCol: in.metricNameCol,
 		AttributesCol: in.attributesCol,

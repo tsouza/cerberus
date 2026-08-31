@@ -128,6 +128,28 @@ type VectorJoin struct {
 	// V-V fixtures stay byte-stable.
 	StepAligned bool
 
+	// ArgAndMaxFusion asks the emitter to collapse each per-side
+	// aggregation's `argMax(ValueColumn, TimestampColumn)` +
+	// `max(TimestampColumn)` pair into a single
+	// `argAndMax(ValueColumn, TimestampColumn)` call, destructured back via
+	// `tupleElement` (cerberus issue #2764). It applies ONLY to the
+	// non-derived, non-StepAligned "latest sample" arms — the StepAligned
+	// (range-mode) arm never pairs the two (TimestampColumn is a plain
+	// GROUP BY key there, not a second aggregate), and the derived
+	// (range-vector-operand) arm has no real TimestampColumn to argMax by
+	// at all — so the emitter reads this flag only inside the arms that
+	// already pair the two aggregates today; it is otherwise inert.
+	//
+	// Set from the boot-resolved chopt.FeatureArgAndMaxFusion verdict
+	// (promql.RangeLowerers.ArgAndMaxFusion) — never read directly by
+	// chplan or promql, which cannot import chopt (the dependency-cone
+	// rule). False everywhere below the feature's version floor, which
+	// keeps every such deployment's SQL byte-unchanged. LogQL's own
+	// VectorJoin lowering (internal/logql/binary.go) does not participate
+	// in the chopt optimization suite at all and never sets this, so it
+	// always stays on the pre-fusion shape.
+	ArgAndMaxFusion bool
+
 	MetricNameColumn string
 	AttributesColumn string
 	TimestampColumn  string
@@ -152,7 +174,7 @@ func (v *VectorJoin) Equal(other Node) bool {
 	if v.ReturnBool != o.ReturnBool {
 		return false
 	}
-	if v.StepAligned != o.StepAligned {
+	if v.StepAligned != o.StepAligned || v.ArgAndMaxFusion != o.ArgAndMaxFusion {
 		return false
 	}
 	if v.MetricNameColumn != o.MetricNameColumn ||

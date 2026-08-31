@@ -832,6 +832,76 @@ const (
 	// OOM abort is an availability bug, not an optimisation opportunity — so
 	// it does not change the AutoSelect posture.
 	FeatureJoinSpill = "join_spill"
+
+	// FeatureArgAndMaxFusion opts two narrow chsql emission sites off the
+	// `argMax(Value, TimeUnix)` + separate `max(TimeUnix)` two-aggregate
+	// pairing onto ClickHouse's fused `argAndMax(Value, TimeUnix)` (a
+	// single Tuple(Value, TimeUnix)-returning aggregate), destructured back
+	// into the two columns via `tupleElement` in the outer SELECT (cerberus
+	// issue #2764): chplan.RangeLWR.SampleTimestamp's collapse (the
+	// `timestamp(<selector>)` carve-out native ToGrid can't serve —
+	// internal/chsql/range_lwr.go, the pairing exists ONLY when
+	// SampleTimestamp is requested) and internal/chsql/vector_join.go's
+	// non-derived, non-StepAligned "latest sample" per-side join
+	// aggregation. StepAligned (range-mode) and derived (range-vector-
+	// operand) join arms are untouched — the StepAligned arm never pairs
+	// the two aggregates at all (TimestampColumn is a plain GROUP BY key
+	// there), and the derived arm has no real TimestampColumn to argMax by.
+	//
+	// VERSION FLOOR: 25.11, NOT the docs page's "Introduced in: v1.1.0"
+	// badge — that badge is a docs-tooling artifact unrelated to any real
+	// ClickHouse product release (product releases run 24.x/25.x; nothing
+	// in ClickHouse versions as "1.1.0"). Verified against two independent
+	// authoritative sources instead: upstream PR
+	// https://github.com/ClickHouse/ClickHouse/pull/89884 ("Implement
+	// argAndMin, argAndMax functions"), merged 2025-11-17, and the official
+	// ClickHouse 25.11 release blog
+	// (https://clickhouse.com/blog/clickhouse-release-25-11), whose
+	// "argAndMin and argAndMax" section states outright "ClickHouse 25.11
+	// introduces the argAndMax and argAndMin functions" — both naming the
+	// same author/PR. argAndMax needs no allow_experimental_* setting: it
+	// shipped as a plain new aggregate function, not behind an experimental
+	// gate, so RequiresExperimentalTSGrid is false.
+	//
+	// EQUIVALENCE (verified, not merely assumed the way the issue's own
+	// risk section flagged it): downstream code never reads WHICH row
+	// argMax(Value, TimeUnix) picked among ties on TimeUnix, only the
+	// selected Value and the max(TimeUnix) value itself — see
+	// chplan.RangeLWRSampleTimestampColumn's consumers
+	// (internal/promql/date_fns.go's timestamp() lowering,
+	// internal/promql/duplicate_labelset_guard.go). max(TimeUnix) is a
+	// PLAIN deterministic aggregate with no tie-break ambiguity of its own
+	// — the tie-break only affects which Value argMax happens to pair with
+	// a TIED max(TimeUnix), and that ambiguity is identical whether the
+	// picking is done by two separate aggregates or by one fused
+	// argAndMax, because ClickHouse's argAndMax is documented to compute
+	// the identical "value corresponding to max(val)" selection argMax
+	// does — it is a packaging of the same underlying mechanism, not a
+	// different one. So fusion introduces no NEW divergence in either the
+	// timestamp component (never ambiguous, tie or no tie) or the value
+	// component (equally ambiguous either way).
+	//
+	// EXPECTED WIN (the issue's own honest accounting): ClickHouse keeps
+	// ONE hash-table entry per GROUP BY key regardless of aggregate count,
+	// and per-group memory is dominated by the Attributes-Map group key —
+	// so fusion saves one fewer aggregate state (create/update/merge/
+	// serialize) and one fewer per-row comparison, roughly a third of the
+	// two states' payload, NOT a halving. Small but essentially free, most
+	// visible on high-cardinality instant queries and timestamp()
+	// carve-outs — the fixed-size-accumulator shape
+	// internal/chsql/lwr_fanout_bound.go already optimizes for.
+	//
+	// AutoSelect is true: a pure, version-gated, tie-invariant win with no
+	// operator tradeoff to weigh (unlike FeatureColumnarResultDecode /
+	// FeatureMapBucketedSerialization / FeatureColumnStatistics), so auto
+	// picks it on any server that meets the 25.11 floor — mirroring the
+	// timeSeries*ToGrid family's own AutoSelect posture for a
+	// proven-equivalent, version-gated substitution. Stability is
+	// Experimental purely on account of the underlying ClickHouse function
+	// being very new (25.11, no fielded deployment history yet), the same
+	// reasoning the ts_grid family's own Experimental marking uses despite
+	// also being AutoSelect true.
+	FeatureArgAndMaxFusion = "arg_and_max_fusion"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -1081,6 +1151,13 @@ var registry = []Feature{
 		AutoSelect: true,
 		Doc:        "stamp max_bytes_before_external_join=cap/2 on join-bearing plans (server >= 26.4, auto-enabled) — mirrors the group_by/sort spill stamps; explicit, not the 26.5+ ratio default, silently ignored with no memory limit configured (cf. ClickHouse#76740)",
 	},
+	{
+		ID:         FeatureArgAndMaxFusion,
+		MinVersion: Version{Major: 25, Minor: 11},
+		Stability:  Experimental,
+		AutoSelect: true,
+		Doc:        "fuse RangeLWR.SampleTimestamp's and vector_join's non-derived instant-mode argMax(Value, TimeUnix) + max(TimeUnix) pair into one argAndMax(Value, TimeUnix) (server >= 25.11, auto-enabled — tie-invariant, proven-equivalent substitution)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1090,9 +1167,9 @@ var registry = []Feature{
 // ts_grid_histogram, quantile_prom_histogram, ts_grid_delta, ts_grid_irate,
 // ts_grid_idelta, laginframe_adjacency, fixed_accumulator_extrapolated,
 // sorted_slab_over_time, map_bucketed_serialization, ts_grid_last_over_time,
-// column_statistics, join_spill). The copy keeps the canonical entries
-// immutable from the caller's side. Exposed so tests can enumerate the gates
-// and the docs generator can render the table.
+// column_statistics, join_spill, arg_and_max_fusion). The copy keeps the
+// canonical entries immutable from the caller's side. Exposed so tests can
+// enumerate the gates and the docs generator can render the table.
 func Registry() []Feature {
 	out := make([]Feature, len(registry))
 	copy(out, registry)
