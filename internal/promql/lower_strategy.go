@@ -166,20 +166,6 @@ type IdeltaLowerer interface {
 	LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
-// DeltaLowerer lowers a range-mode delta(<gauge>[range]) RangeWindow to a
-// chplan node. Unlike Rate/Increase there is no ClickHouse-native
-// timeSeries*ToGrid member for delta — the only alternative to the fan-out
-// (groupArray + arraySort + arrayFilter) is the fixed-accumulator shape
-// (cerberus issue #2760), so this interface has exactly one non-fan-out impl.
-// It ALWAYS returns a valid lowering: the fixed-accumulator impl emits
-// RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible window
-// and delegates to its embedded fan-out fallback otherwise; the fan-out impl
-// returns rw unchanged. Never nil.
-type DeltaLowerer interface {
-	// LowerDelta returns the chplan node for rw. Never nil.
-	LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
-}
-
 // DerivLowerer lowers a range-mode deriv(<gauge>[range]) RangeWindow to a
 // chplan node, mirroring [ChangesLowerer]: the native impl emits a
 // RangeWindowGridNative (Func="deriv" -> timeSeriesDerivToGrid, the per-window
@@ -190,6 +176,28 @@ type DerivLowerer interface {
 	// for a shape the impl handles, or the fan-out lowering otherwise. It never
 	// returns nil.
 	LowerDeriv(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
+}
+
+// DeltaLowerer lowers a range-mode delta(<gauge>[range]) RangeWindow to a
+// chplan node. TWO non-fan-out impls layer beneath the fan-out, mirroring
+// how Rate/Increase layer native ts_grid beneath fixed-accumulator: the
+// native impl emits a RangeWindowGridNative (Func="delta" ->
+// timeSeriesDeltaToGrid, the per-window non-counter-corrected extrapolated
+// difference, server >= 25.9) for a shape-eligible window, falling back to
+// the fixed-accumulator impl (RangeWindow{FixedAccumulatorExtrapolated:
+// true}, cerberus issue #2760, no version floor) for a shape the native
+// aggregate cannot serve, which itself falls back to the plain fan-out.
+// Unlike Rate/Increase there is no AggregationTemporality union-split:
+// delta() is gauge-only in PromQL (it never counter-repairs, matching Prom's
+// extrapolatedRate(isCounter=false, isRate=false) — see
+// chsql.emitRangeWindowDelta / extrapolationKindDelta), so the
+// DELTA-vs-CUMULATIVE runtime branch rate/increase need never applies here.
+// It never returns nil.
+type DeltaLowerer interface {
+	// LowerDelta returns the chplan node for rw — the native RangeWindowGridNative
+	// for a shape the impl handles, or the fan-out lowering otherwise. It never
+	// returns nil.
+	LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node
 }
 
 // PredictLinearLowerer lowers a range-mode predict_linear(<gauge>[range], t)
@@ -244,6 +252,12 @@ type RangeLowerers struct {
 	// timeSeriesPredictLinearToGrid, server >= 25.9). Concrete fan-out impl when
 	// the native path is off; never nil on the lowering path.
 	PredictLinear PredictLinearLowerer
+	// Delta handles range-mode delta(...) shapes: native timeSeriesDeltaToGrid
+	// (server >= 25.9) falling back to the fixed-accumulator decomposition
+	// (fixed_accumulator_extrapolated, no version floor), falling back to the
+	// plain fan-out. Concrete fan-out impl when neither feature is on; never
+	// nil on the lowering path.
+	Delta DeltaLowerer
 
 	// ClassicHistogram handles the per-series `rate` window stage under the
 	// range-mode classic-histogram quantile idiom (native ladder aggregate,
@@ -267,12 +281,6 @@ type RangeLowerers struct {
 	// laginframe_adjacency — no version floor). Concrete fan-out impl when the
 	// feature is off; never nil on the lowering path.
 	Idelta IdeltaLowerer
-
-	// Delta handles range-mode delta(...) shapes (fixed-accumulator
-	// decomposition, fixed_accumulator_extrapolated — no version floor).
-	// Concrete fan-out impl when the feature is off; never nil on the
-	// lowering path.
-	Delta DeltaLowerer
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its
@@ -303,6 +311,9 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	if l.PredictLinear == nil {
 		l.PredictLinear = FanoutPredictLinearLowerer{}
 	}
+	if l.Delta == nil {
+		l.Delta = FanoutDeltaLowerer{}
+	}
 	if l.ClassicHistogram == nil {
 		l.ClassicHistogram = FanoutClassicHistogramWindowLowerer{}
 	}
@@ -314,9 +325,6 @@ func (l RangeLowerers) withDefaults() RangeLowerers {
 	}
 	if l.Idelta == nil {
 		l.Idelta = FanoutIdeltaLowerer{}
-	}
-	if l.Delta == nil {
-		l.Delta = FanoutDeltaLowerer{}
 	}
 	return l
 }
@@ -519,11 +527,12 @@ func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Me
 // rate() / increase() / delta(). Unlike the timeSeries*ToGrid family it needs
 // no server-version floor or experimental setting — see
 // chopt.FeatureFixedAccumulatorExtrapolated — so cmd/cerberus wires it purely
-// off the resolved EnabledSet. rate/increase layer it BENEATH their existing
-// native ts_grid strategy (Native{Fallback: FixedAccumulator{Fallback:
-// Fanout{}}}), same embed pattern laginframe_adjacency uses for
-// changes/resets; delta has no native competitor, so its strategy is the
-// two-tier FixedAccumulator{Fallback: Fanout{}} directly.
+// off the resolved EnabledSet. Every one of the three functions layers it
+// BENEATH their existing native ts_grid strategy (Native{Fallback:
+// FixedAccumulator{Fallback: Fanout{}}}), same embed pattern
+// laginframe_adjacency uses for changes/resets — delta gained its own native
+// ts_grid_delta competitor (cerberus issue #2745), so it is no longer the
+// exception PredictLinearLowerer's siblings are.
 //
 // Scope: a temporality-bearing rate()/increase() window IS eligible — see
 // chsql/range_window_fixed_accumulator.go's own doc comment
@@ -534,16 +543,6 @@ func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Me
 // rw.DeltaPrefixAggregateInput != nil) — a narrower opt-in-only population
 // needing its own separate re-plumbing; see
 // https://github.com/tsouza/cerberus/issues/2797.
-
-// FanoutDeltaLowerer is the concrete DEFAULT DeltaLowerer: it returns the
-// generic fan-out RangeWindow (the array-fold emitWindowedArrayExtrapolated)
-// unchanged.
-type FanoutDeltaLowerer struct{}
-
-// LowerDelta returns the fan-out RangeWindow rw unchanged.
-func (FanoutDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
-	return rw
-}
 
 // FixedAccumulatorRateLowerer is the boot-wired RateLowerer that emits
 // RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible rate
@@ -589,9 +588,12 @@ func (l FixedAccumulatorIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s
 	return l.Fallback.LowerIncrease(rw, s)
 }
 
-// FixedAccumulatorDeltaLowerer is the boot-wired (and only non-fan-out)
-// DeltaLowerer. cmd/cerberus wires it ONLY when chopt resolved
-// fixed_accumulator_extrapolated at boot.
+// FixedAccumulatorDeltaLowerer is the boot-wired DeltaLowerer that emits
+// RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible delta
+// range-window. cmd/cerberus wires it ONLY when chopt resolved
+// fixed_accumulator_extrapolated at boot, embedded beneath NativeDeltaLowerer
+// so ts_grid_delta (when also enabled) still takes priority — mirroring
+// [FixedAccumulatorRateLowerer] / [FixedAccumulatorIncreaseLowerer] exactly.
 type FixedAccumulatorDeltaLowerer struct {
 	// Fallback is the concrete lowerer for shapes the fixed-accumulator path
 	// cannot handle. Boot wires it to FanoutDeltaLowerer{}.
@@ -878,6 +880,44 @@ func nativePredictLinearHorizonEligible(rw *chplan.RangeWindow) bool {
 	}
 	t := rw.Scalars[0]
 	return t >= 0 && t == math.Trunc(t)
+}
+
+// FanoutDeltaLowerer is the concrete DEFAULT DeltaLowerer: it returns the
+// generic fan-out RangeWindow (emitWindowedArrayExtrapolated's non-counter-
+// corrected extrapolated difference) unchanged. It is the fallback the native
+// impl embeds AND the strategy a fan-out-only deployment wires directly.
+type FanoutDeltaLowerer struct{}
+
+// LowerDelta returns the fan-out RangeWindow rw unchanged.
+func (FanoutDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, _ schema.Metrics) chplan.Node {
+	return rw
+}
+
+// NativeDeltaLowerer is the boot-wired DeltaLowerer that emits the native
+// timeSeriesDeltaToGrid lowering (a chplan.RangeWindowGridNative with
+// Func="delta") for shape-eligible delta range-windows. cmd/cerberus wires it
+// ONLY when chopt resolved the ts_grid_delta feature (server >= 25.9) at
+// boot. It embeds a concrete Fallback for shapes it cannot handle, so the
+// interface method always yields a valid lowering and the dispatch site
+// stays branch-free.
+type NativeDeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes the native path cannot
+	// handle. Boot wires it to FanoutDeltaLowerer{}.
+	Fallback DeltaLowerer
+}
+
+// LowerDelta returns a RangeWindowGridNative for an eligible range-mode delta
+// shape, or delegates to the embedded Fallback otherwise. Same intrinsic
+// SHAPE check as changes/resets/deriv (delta func, materialised grid, plain
+// Scan/Filter input) — delta takes no scalar, so no extra parameter gate
+// applies, and (like changes/resets/deriv) it carries no -State/-Merge
+// combinator pair, so nativeTSGridMatrixNode is always called with
+// noRecollapse.
+func (n NativeDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if native := nativeTSGridMatrixNode(rw, "delta", s, noRecollapse); native != nil {
+		return native
+	}
+	return n.Fallback.LowerDelta(rw, s)
 }
 
 // This section wires the lagInFrame annotation shape (cerberus issue #2759):

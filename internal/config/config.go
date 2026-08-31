@@ -274,9 +274,10 @@ type Config struct {
 	// auto-selected ts_grid_increase feature (reusing timeSeriesRateToGrid,
 	// multiplied back by the window seconds — see
 	// docs/clickhouse-optimizations.md), reachable only via
-	// CERBERUS_CH_OPTIMIZATIONS / auto, not this flag. delta stays on the
-	// fan-out until a dedicated chDB differential sweep proves the
-	// timeSeriesDeltaToGrid mapping.
+	// CERBERUS_CH_OPTIMIZATIONS / auto, not this flag. delta() likewise has
+	// its own auto-selected ts_grid_delta feature (timeSeriesDeltaToGrid,
+	// proven by a chDB differential sweep to apply no counter-reset
+	// correction — see chopt.FeatureTSGridDelta), reachable the same way.
 	ExperimentalTSGridRange bool
 
 	// LogCommentShape, when true, lets the engine stamp ClickHouse

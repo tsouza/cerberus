@@ -132,6 +132,7 @@ table.
 | `ts_grid_increase`               | 25.9       | experimental | yes        |
 | `ts_grid_histogram`              | 25.9       | experimental | yes        |
 | `quantile_prom_histogram`        | 25.10      | experimental | no         |
+| `ts_grid_delta`                  | 25.9       | experimental | yes        |
 | `laginframe_adjacency`           | none       | experimental | yes        |
 | `fixed_accumulator_extrapolated` | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |

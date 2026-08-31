@@ -81,6 +81,8 @@ type nativeTSGridAgg struct {
 //   - resets         -> timeSeriesResetsToGrid        (v25.9 — PR #86010, >= 1 sample/window)
 //   - deriv          -> timeSeriesDerivToGrid         (v25.8 — PR #84328, >= 2 samples/window)
 //   - predict_linear -> timeSeriesPredictLinearToGrid (v25.8 — PR #84328, >= 2 samples/window, +predict_offset)
+//   - delta          -> timeSeriesDeltaToGrid         (shipped v25.6, >= 2 samples/window, NO
+//     counter-reset correction — see this map's own "delta" entry doc)
 //
 // changes/resets are COUNT functions (Array(Nullable(Float64)) one count per
 // grid point, NULL where no in-window sample); rate/deriv/predict_linear return
@@ -129,6 +131,24 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 	"resets":         {Fn: "timeSeriesResetsToGrid"},
 	"deriv":          {Fn: "timeSeriesDerivToGrid"},
 	"predict_linear": {Fn: "timeSeriesPredictLinearToGrid"},
+	// delta rides its own dedicated aggregate — unlike increase, there IS a
+	// dedicated timeSeriesDeltaToGrid upstream. A chDB differential sweep
+	// (cerberus issue #2745) proved it applies the SAME extrapolation
+	// arithmetic as rate/increase (left-open window membership, the >= 2
+	// samples rule, the Prometheus extrapolatedRate boundary-clamp formula)
+	// but — decisively — NO counter-reset correction: a two-sample window
+	// whose value strictly decreases within the (already window-filtered)
+	// pair returns the raw negative extrapolated difference, never a
+	// reset-repaired positive one, matching PromQL's
+	// extrapolatedRate(isCounter=false, isRate=false) exactly (see
+	// chopt.FeatureTSGridDelta's own doc for the full sweep). StateFn/MergeFn
+	// are deliberately left empty for the same reason increase's are: no
+	// Native*Lowerer sets Recollapse for delta (NativeDeltaLowerer always
+	// calls nativeTSGridMatrixNode with noRecollapse), so
+	// requireRecollapseEmittable rejects any Recollapse a future caller might
+	// mistakenly attach rather than silently re-collapsing a function this
+	// cut never validated the merge for.
+	"delta": {Fn: "timeSeriesDeltaToGrid"},
 }
 
 // nativeGridTsAxisFrag renders the timestamp axis fed as the FIRST aggregate
@@ -316,7 +336,7 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	}
 	agg, ok := nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear)", ErrUnsupported, r.Func)
+		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear, delta)", ErrUnsupported, r.Func)
 	}
 	// predict_linear threads its future-offset horizon t (whole seconds) as the
 	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering
