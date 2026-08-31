@@ -30,7 +30,15 @@ func mergeTreeStmts(t *testing.T, cfg Config) []string {
 	if err != nil {
 		t.Fatalf("renderSignal(Logs): %v", err)
 	}
-	out = append(out, l...)
+	// The Body codec ALTER (issue #2768) carries no SETTINGS tail either
+	// (it inherits the table's settings, like the metrics ALTERs above);
+	// only the CREATE TABLE statement does.
+	for _, stmt := range l {
+		if strings.HasPrefix(stmt, "ALTER TABLE") {
+			continue
+		}
+		out = append(out, stmt)
+	}
 	tr, err := renderSignal(cfg, Traces)
 	if err != nil {
 		t.Fatalf("renderSignal(Traces): %v", err)

@@ -659,6 +659,93 @@ func (a *ModifyColumnBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
 
+// --- ALTER TABLE ... MODIFY COLUMN ... CODEC surface (cerberus issue #2768) ---
+//
+// ModifyColumnCodecBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] MODIFY COLUMN IF EXISTS <col>
+// CODEC(...)` — retuning ONLY a column's compression codec, deliberately
+// WITHOUT re-declaring its type: ClickHouse's MODIFY COLUMN grammar treats
+// [type] as optional (https://clickhouse.com/docs/sql-reference/statements/alter/column#modify-column),
+// so a codec-only change never needs to duplicate a type fact the upstream
+// OTel-CH exporter template already owns (see this package's doc comment) —
+// unlike ModifyColumnBuilder above, which exists specifically to retype a
+// column and so must carry one.
+//
+// A codec change is legal on a sorting-key column and applies to NEW parts
+// only; existing parts keep their original codec until a background merge
+// (or an operator-run `OPTIMIZE ... FINAL`) rewrites them — see
+// docs/operations.md. Re-running the identical MODIFY COLUMN CODEC
+// statement is a no-op: ClickHouse compares the declared codec against the
+// column's current one and only schedules work when they actually differ,
+// so applying this on every boot never re-triggers a conversion once the
+// codec has converged. IF EXISTS is the only guard the statement itself
+// carries — it makes MODIFY a no-op on a column that doesn't exist (e.g. a
+// signal not yet auto-created); the safety of re-running it against an
+// ALREADY-CONVERGED column comes entirely from ClickHouse's own
+// no-op-on-unchanged behavior above, not from any guard clause cerberus
+// writes — there is no `IF NOT EXISTS`-shaped guard for MODIFY COLUMN.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// ModifyColumnCodecBuilder builds an ALTER TABLE MODIFY COLUMN CODEC
+// statement.
+type ModifyColumnCodecBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	column   string
+	cluster  string // "" => no ON CLUSTER clause
+	codec    Frag
+}
+
+// AlterTableModifyColumnCodec starts a MODIFY COLUMN CODEC builder retuning
+// the compression codec of <column> on [<database>.]<table> to codec — a
+// Frag built via Codec, e.g. Codec(BareIdent("DoubleDelta"),
+// Call("ZSTD", InlineLit(1))). An empty database emits no qualifier, so a
+// table the connection's own database owns is referenced bare.
+func AlterTableModifyColumnCodec(database, table, column string, codec Frag) *ModifyColumnCodecBuilder {
+	return &ModifyColumnCodecBuilder{database: database, table: table, column: column, codec: codec}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *ModifyColumnCodecBuilder) OnCluster(name string) *ModifyColumnCodecBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table identifiers via BareIdent, the quoted
+// column via Col, the optional ON CLUSTER clause via the typed constructor,
+// and the codec via the caller's Frag (built via Codec) — no raw token is
+// written here, and no type is emitted (see the package doc comment above).
+func (a *ModifyColumnCodecBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" MODIFY COLUMN IF EXISTS ")(b)
+		Col(a.column)(b)
+		ddlToken(" ")(b)
+		a.codec(b)
+	}
+}
+
+// SQL renders the ALTER TABLE MODIFY COLUMN CODEC statement to ClickHouse
+// text via RenderDDL (which asserts the no-positional-bindings DDL
+// invariant).
+func (a *ModifyColumnCodecBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
+
 // --- ALTER TABLE ... ADD COLUMN surface ---
 //
 // AddColumnBuilder renders

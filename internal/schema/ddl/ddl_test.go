@@ -143,8 +143,13 @@ func TestRenderSignal_Logs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderSignal(Logs): %v", err)
 	}
-	if got, want := len(stmts), 1; got != want {
+	// CREATE TABLE + the curated Body codec ALTER (issue #2768).
+	if got, want := len(stmts), 2; got != want {
 		t.Fatalf("logs: got %d statements, want %d", got, want)
+	}
+	wantCodec := "ALTER TABLE default.otel_logs MODIFY COLUMN IF EXISTS `Body` CODEC(ZSTD(3))"
+	if stmts[1] != wantCodec {
+		t.Errorf("logs Body codec:\ngot  %s\nwant %s", stmts[1], wantCodec)
 	}
 	logs := stmts[0]
 	if !strings.Contains(logs, "otel_logs") {
@@ -193,15 +198,16 @@ func TestRenderSignal_Logs(t *testing.T) {
 	}
 }
 
-// TestRenderSignal_Traces checks the three traces statements render — the
-// spans table, the trace_id_ts lookup table, and its materialized view.
+// TestRenderSignal_Traces checks the four traces statements render — the
+// spans table, the trace_id_ts lookup table, its materialized view, and the
+// curated Duration codec ALTER (issue #2768).
 func TestRenderSignal_Traces(t *testing.T) {
 	cfg := Config{}.withDefaults()
 	stmts, err := renderSignal(cfg, Traces)
 	if err != nil {
 		t.Fatalf("renderSignal(Traces): %v", err)
 	}
-	if got, want := len(stmts), 3; got != want {
+	if got, want := len(stmts), 4; got != want {
 		t.Fatalf("traces: got %d statements, want %d", got, want)
 	}
 	if !strings.Contains(stmts[0], "CREATE TABLE IF NOT EXISTS") || !strings.Contains(stmts[0], "otel_traces") {
@@ -219,6 +225,10 @@ func TestRenderSignal_Traces(t *testing.T) {
 	// The MV body should reference the spans table in its FROM clause.
 	if !strings.Contains(stmts[2], `FROM "default"."otel_traces"`) {
 		t.Errorf("traces[2]: MV should select FROM the spans table:\n%s", stmts[2])
+	}
+	wantCodec := "ALTER TABLE default.otel_traces MODIFY COLUMN IF EXISTS `Duration` CODEC(GCD, ZSTD(1))"
+	if stmts[3] != wantCodec {
+		t.Errorf("traces Duration codec:\ngot  %s\nwant %s", stmts[3], wantCodec)
 	}
 }
 
@@ -893,46 +903,48 @@ func TestRenderSignal_MetricsColumnStatistics(t *testing.T) {
 
 // TestRenderSignal_LogsColumnStatistics pins the two logs ALTERs:
 // ServiceName+TraceId `uniq` (String-family), then SeverityNumber
-// `minmax, uniq` (a UInt8 column) in its own ALTER.
+// `minmax, uniq` (a UInt8 column) in its own ALTER — trailing the curated
+// Body codec ALTER (issue #2768), which itself trails the CREATE.
 func TestRenderSignal_LogsColumnStatistics(t *testing.T) {
 	cfg := Config{ColumnStatisticsEnabled: true}.withDefaults()
 	stmts, err := renderSignal(cfg, Logs)
 	if err != nil {
 		t.Fatalf("renderSignal(Logs): %v", err)
 	}
-	if len(stmts) != 3 {
-		t.Fatalf("logs: got %d statements, want 3 (CREATE + 2 statistics ALTERs): %v", len(stmts), stmts)
+	if len(stmts) != 4 {
+		t.Fatalf("logs: got %d statements, want 4 (CREATE + Body codec ALTER + 2 statistics ALTERs): %v", len(stmts), stmts)
 	}
 	wantIdentity := "ALTER TABLE default.otel_logs ADD STATISTICS IF NOT EXISTS `ServiceName`, `TraceId` TYPE uniq"
-	if stmts[1] != wantIdentity {
-		t.Errorf("logs identity column statistics:\ngot  %s\nwant %s", stmts[1], wantIdentity)
+	if stmts[2] != wantIdentity {
+		t.Errorf("logs identity column statistics:\ngot  %s\nwant %s", stmts[2], wantIdentity)
 	}
 	wantSeverity := "ALTER TABLE default.otel_logs ADD STATISTICS IF NOT EXISTS `SeverityNumber` TYPE minmax, uniq"
-	if stmts[2] != wantSeverity {
-		t.Errorf("logs SeverityNumber column statistics:\ngot  %s\nwant %s", stmts[2], wantSeverity)
+	if stmts[3] != wantSeverity {
+		t.Errorf("logs SeverityNumber column statistics:\ngot  %s\nwant %s", stmts[3], wantSeverity)
 	}
 }
 
 // TestRenderSignal_TracesColumnStatistics pins the two traces ALTERs: the
 // shared `uniq` statement over ServiceName/SpanName/TraceId (String-family),
 // and the separate Duration statement (`minmax, uniq, tdigest` — a UInt64
-// column).
+// column) — trailing the curated Duration codec ALTER (issue #2768), which
+// itself trails the three CREATEs.
 func TestRenderSignal_TracesColumnStatistics(t *testing.T) {
 	cfg := Config{ColumnStatisticsEnabled: true}.withDefaults()
 	stmts, err := renderSignal(cfg, Traces)
 	if err != nil {
 		t.Fatalf("renderSignal(Traces): %v", err)
 	}
-	if len(stmts) != 5 {
-		t.Fatalf("traces: got %d statements, want 5 (3 CREATEs + 2 statistics ALTERs): %v", len(stmts), stmts)
+	if len(stmts) != 6 {
+		t.Fatalf("traces: got %d statements, want 6 (3 CREATEs + Duration codec ALTER + 2 statistics ALTERs): %v", len(stmts), stmts)
 	}
 	wantIdentity := "ALTER TABLE default.otel_traces ADD STATISTICS IF NOT EXISTS `ServiceName`, `SpanName`, `TraceId` TYPE uniq"
-	if stmts[3] != wantIdentity {
-		t.Errorf("traces identity column statistics:\ngot  %s\nwant %s", stmts[3], wantIdentity)
+	if stmts[4] != wantIdentity {
+		t.Errorf("traces identity column statistics:\ngot  %s\nwant %s", stmts[4], wantIdentity)
 	}
 	wantDuration := "ALTER TABLE default.otel_traces ADD STATISTICS IF NOT EXISTS `Duration` TYPE minmax, uniq, tdigest"
-	if stmts[4] != wantDuration {
-		t.Errorf("traces Duration column statistics:\ngot  %s\nwant %s", stmts[4], wantDuration)
+	if stmts[5] != wantDuration {
+		t.Errorf("traces Duration column statistics:\ngot  %s\nwant %s", stmts[5], wantDuration)
 	}
 }
 
@@ -946,8 +958,8 @@ func TestRenderSignal_ColumnStatisticsOnCluster(t *testing.T) {
 		t.Fatalf("renderSignal(Logs): %v", err)
 	}
 	want := "ALTER TABLE default.otel_logs ON CLUSTER `prod` ADD STATISTICS IF NOT EXISTS `ServiceName`, `TraceId` TYPE uniq"
-	if stmts[1] != want {
-		t.Errorf("logs column statistics with cluster:\ngot  %s\nwant %s", stmts[1], want)
+	if stmts[2] != want {
+		t.Errorf("logs column statistics with cluster:\ngot  %s\nwant %s", stmts[2], want)
 	}
 }
 
