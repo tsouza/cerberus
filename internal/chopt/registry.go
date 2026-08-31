@@ -452,12 +452,10 @@ const (
 
 	// FeatureSortedSlabOverTime opts eligible query_range sum_over_time() /
 	// avg_over_time() matrix shapes onto a per-series sorted slab (one
-	// groupArray per series), with each anchor's window resolved by
-	// arrayLastIndex index math over that sorted array and cut out with
-	// arraySlice in one allocation — never an arrayFilter re-scan of the
-	// whole slab per anchor — retiring the arrayJoin fan-out +
-	// GROUP BY (series, anchor) regroup
-	// (internal/chsql.emitWindowedArrayMatrix) for those two shapes
+	// groupArray per series), with each anchor's window sliced out of that
+	// ONE array via arrayFilter instead of a fresh per-(series, anchor)
+	// regroup, retiring the arrayJoin fan-out + GROUP BY (series, anchor)
+	// regroup (internal/chsql.emitWindowedArrayMatrix) for those two shapes
 	// (cerberus issue #2761). The regroup's per-(series, anchor) window
 	// array is an UNGUARDED fan-out axis — unlike rate/increase/delta
 	// (#2429) it carries no size guard at all — so peak memory scales with
@@ -476,13 +474,12 @@ const (
 	// the array-fold entirely (overTimeDirectAggFrag's direct CH group
 	// aggregate); first/last/stddev/stdvar/mad_over_time extending to the
 	// same slab shape is tracked at
-	// https://github.com/tsouza/cerberus/issues/2802.
+	// https://github.com/tsouza/cerberus/issues/2804.
 	//
 	// Like fixed_accumulator_extrapolated this is a pure SQL-SHAPE
-	// optimization — groupArray/arraySort/arrayLastIndex/arraySlice/
-	// arraySum/arrayAvg are all long-standing ClickHouse primitives — so it
-	// carries NO version gate (AlwaysAvailable) and no
-	// allow_experimental_* setting.
+	// optimization — groupArray/arraySort/arrayFilter/arraySum/arrayAvg are
+	// all long-standing ClickHouse primitives — so it carries NO version gate
+	// (AlwaysAvailable) and no allow_experimental_* setting.
 	//
 	// AutoSelect is false, mirroring fixed_accumulator_extrapolated: pending
 	// an optcorpus A/B pass before promoting to auto-selected. Reachable

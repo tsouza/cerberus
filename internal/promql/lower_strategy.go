@@ -171,9 +171,8 @@ type IdeltaLowerer interface {
 // is no ClickHouse-native timeSeries*ToGrid member for the *_over_time
 // family — the only alternative to the array-fold fan-out
 // (emitWindowedArrayMatrix) is the sorted-slab shape (a single per-series
-// groupArray, each anchor's window cut out by arrayLastIndex + arraySlice
-// index math, see chsql/range_window_sorted_slab.go), so this interface has
-// exactly one
+// groupArray sliced once per anchor with arrayFilter, see
+// chsql/range_window_sorted_slab.go), so this interface has exactly one
 // non-fan-out impl. It ALWAYS returns a valid lowering: the sorted-slab impl
 // emits RangeWindow{SortedSlabOverTime: true} for a shape-eligible window and
 // delegates to its embedded fan-out fallback otherwise; the fan-out impl

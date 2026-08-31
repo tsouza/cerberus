@@ -54,7 +54,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // range_window_fused.go's coveredValuesFrag uses for two co-aligned anchor
 // grids. Locating (lo, hi) via such a lookup was not verified against this
 // codebase's pinned chDB substrate in this change, so it stays a documented
-// follow-up (issue #2802) rather than shipping unverified; arrayFilter is
+// follow-up (issue #2804) rather than shipping unverified; arrayFilter is
 // the proven-safe idiom (byte-for-byte range_window_fused.go's own sliceOf)
 // that already delivers this issue's actual goal — O(samples-in-range) peak
 // memory per series, independent of anchor count — without it.
@@ -62,7 +62,7 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // Scope: sum_over_time / avg_over_time only — chopt.FeatureSortedSlabOverTime
 // documents why the remaining array-path *_over_time members
 // (first/last/stddev/stdvar/mad_over_time) are tracked as a follow-up
-// (issue #2802) rather than included here.
+// (issue #2804) rather than included here.
 
 // emitRangeWindowSortedSlabOverTime renders the sorted-slab SQL skeleton for
 // a shape-eligible matrix sum_over_time / avg_over_time RangeWindow:

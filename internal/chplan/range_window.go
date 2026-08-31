@@ -328,9 +328,8 @@ type RangeWindow struct {
 
 	// SortedSlabOverTime asks the matrix-shape (OuterRange > 0) emitter to
 	// render sum_over_time() / avg_over_time() via a single per-series
-	// groupArray (the "slab"), with each anchor's window cut out of it by
-	// arrayLastIndex index math + arraySlice, instead of the sample-side
-	// arrayJoin fan-out +
+	// groupArray (the "slab") sliced once per anchor with arrayFilter,
+	// instead of the sample-side arrayJoin fan-out +
 	// GROUP BY (series, anchor) regroup (cerberus issue #2761). Peak memory
 	// tracks one sorted array per series rather than one per (series,
 	// anchor) group. Set only by the boot-wired
