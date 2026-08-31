@@ -356,53 +356,32 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 	}
 
 	for _, proj := range rendered.projections {
-		if proj.database != w.live.CHDatabase {
-			diff.misqualified = append(diff.misqualified,
-				fmt.Sprintf("%s.%s's projection %s (live tenant database is %s)",
-					proj.database, proj.table, proj.name, w.live.CHDatabase))
-			continue
-		}
-		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, proj.table)
-		if err != nil {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, proj.database, proj.table,
+			fmt.Sprintf("%s.%s's projection %s", proj.database, proj.table, proj.name),
+			fmt.Sprintf("%s (target of projection %s)", proj.table, proj.name),
+		); err != nil {
 			return err
-		}
-		if !exists {
-			diff.missingTables = append(diff.missingTables,
-				fmt.Sprintf("%s (target of projection %s)", proj.table, proj.name))
 		}
 	}
 
 	for _, idx := range rendered.indexes {
-		if idx.database != w.live.CHDatabase {
-			diff.misqualified = append(diff.misqualified,
-				fmt.Sprintf("%s.%s's index %s (live tenant database is %s)",
-					idx.database, idx.table, idx.name, w.live.CHDatabase))
-			continue
-		}
-		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, idx.table)
-		if err != nil {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, idx.database, idx.table,
+			fmt.Sprintf("%s.%s's index %s", idx.database, idx.table, idx.name),
+			fmt.Sprintf("%s (target of index %s)", idx.table, idx.name),
+		); err != nil {
 			return err
-		}
-		if !exists {
-			diff.missingTables = append(diff.missingTables,
-				fmt.Sprintf("%s (target of index %s)", idx.table, idx.name))
 		}
 	}
 
 	for _, alt := range rendered.codecAlters {
-		if alt.database != w.live.CHDatabase {
-			diff.misqualified = append(diff.misqualified,
-				fmt.Sprintf("%s.%s's codec ALTER on %s (live tenant database is %s)",
-					alt.database, alt.table, alt.column, w.live.CHDatabase))
-			continue
-		}
-		exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, alt.table)
-		if err != nil {
+		if err := w.diffAlterTarget(
+			ctx, conn, &diff, alt.database, alt.table,
+			fmt.Sprintf("%s.%s's codec ALTER on %s", alt.database, alt.table, alt.column),
+			fmt.Sprintf("%s (target of codec ALTER on %s)", alt.table, alt.column),
+		); err != nil {
 			return err
-		}
-		if !exists {
-			diff.missingTables = append(diff.missingTables,
-				fmt.Sprintf("%s (target of codec ALTER on %s)", alt.table, alt.column))
 		}
 	}
 
@@ -428,6 +407,32 @@ func (w *World) whenDiffSchemaAgainstLive() error {
 	sort.Strings(diff.missingTables)
 	sort.Strings(diff.unresolvedTables)
 	w.schemaLive = diff
+	return nil
+}
+
+// diffAlterTarget records one non-CREATE ALTER's misqualified/missing-table
+// verdict against the live database — the shared body the ADD PROJECTION /
+// ADD INDEX / MODIFY COLUMN CODEC loops in whenDiffSchemaAgainstLive each
+// call, since the three differ only in what kind of ALTER they are checking
+// and the wording that names it. misqualifiedLabel / missingLabel carry that
+// per-call-site wording; the database-mismatch and missing-table checks
+// themselves are identical across all three ALTER kinds.
+func (w *World) diffAlterTarget(
+	ctx context.Context, conn driver.Conn, diff *schemaLiveDiff,
+	database, table, misqualifiedLabel, missingLabel string,
+) error {
+	if database != w.live.CHDatabase {
+		diff.misqualified = append(diff.misqualified,
+			fmt.Sprintf("%s (live tenant database is %s)", misqualifiedLabel, w.live.CHDatabase))
+		return nil
+	}
+	exists, err := tableExistsLive(ctx, conn, w.live.CHDatabase, table)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		diff.missingTables = append(diff.missingTables, missingLabel)
+	}
 	return nil
 }
 
