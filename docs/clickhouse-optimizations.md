@@ -135,6 +135,7 @@ table.
 | `ts_grid_delta`                  | 25.9       | experimental | yes        |
 | `laginframe_adjacency`           | none       | experimental | yes        |
 | `fixed_accumulator_extrapolated` | none       | experimental | no         |
+| `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
