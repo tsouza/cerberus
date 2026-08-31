@@ -310,6 +310,22 @@ type Config struct {
 	// through the resolver rather than read directly by the lowering/engine.
 	LegacyTSGridFlag chopt.LegacyFlag
 
+	// SchemaMapBucketedSerialization is the resolved chopt
+	// map_bucketed_serialization verdict (cerberus issue #2774), back-filled
+	// the same way resolveCHOptimizations back-fills ExperimentalTSGridRange:
+	// FromEnv leaves it false (no live connection to resolve a version-gated
+	// feature against), cmd/cerberus's boot resolver sets it from the
+	// EnabledSet right after the runtime version probe, and the offline
+	// `migrate schema` preview sets it from chopt.ExplicitlyRequested against
+	// the raw CHOptimizations string (best-effort — the feature is
+	// AutoSelect=false, so the only way it is ever on is an explicit listing,
+	// and the preview has no server to check the version floor against).
+	// internal/schemaboot.DDLConfig is the only reader: true adds
+	// `map_serialization_version='with_buckets'` to the logs and traces
+	// tables' CREATE TABLE SETTINGS tail (never the metrics tables — see the
+	// feature's registry doc comment for why they're excluded).
+	SchemaMapBucketedSerialization bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).
