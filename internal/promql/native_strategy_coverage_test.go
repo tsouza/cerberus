@@ -184,6 +184,15 @@ var nativeStrategies = []nativeStrategy{
 		},
 	},
 	{
+		field:   "ExpHistogramMerge",
+		section: "experimental_exp_histogram_merge_summap",
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.ExpHistogramMerge = promql.NativeExpHistogramMergeLowerer{
+				Fallback: promql.FanoutExpHistogramMergeLowerer{},
+			}
+		},
+	},
+	{
 		field:   "ArgAndMaxFusion",
 		section: "experimental_arg_and_max_fusion",
 		// Unlike every other row, this sets a plain bool, not a Lowerer —

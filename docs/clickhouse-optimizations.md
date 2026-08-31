@@ -142,6 +142,7 @@ table.
 | `ts_grid_last_over_time`         | 26.6       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
 | `classic_bucket_merge_summap`    | none       | experimental | no         |
+| `exp_histogram_merge_summap`     | none       | experimental | no         |
 | `join_spill`                     | 26.4       | experimental | yes        |
 | `trace_id_projection`            | 25.5       | experimental | no         |
 | `trace_id_bitmap_filter`         | 25.11      | experimental | yes        |

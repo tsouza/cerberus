@@ -295,7 +295,7 @@ func mergeTwoHistogramProjections(hpL, hpR chplan.Node, s schema.Metrics, ctx lo
 		// publishes the per-step grid anchor under the canonical
 		// TimestampColumn (see nativeHistogramProjection), so grouping
 		// by it keeps each anchor's merge independent — the same
-		// prepend [expHistogramGroupMerge] applies for its own anchor
+		// prepend [expHistogramGroupMergeFanout] applies for its own anchor
 		// parameter.
 		anchor := &chplan.ColumnRef{Name: histSchema.TimestampColumn}
 		groupBy = append([]chplan.Expr{anchor}, groupBy...)
