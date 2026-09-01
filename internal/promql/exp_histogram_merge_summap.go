@@ -18,11 +18,14 @@ import (
 // # Scope (deliberately narrow — see "Why single-group only" below)
 //
 // Only the INSTANT, SINGLE-GROUP shape — `sum(<native-histogram
-// selector>)` with no `by(...)`/`without(...)` clause — is eligible.
-// avg(), any `by`/`without` grouping, and range/query_range mode all stay
-// on the existing fold unconditionally; see NativeExpHistogramMergeLowerer
-// and cerberus issue #2834 for why those need a genuinely different
-// (per-group JOIN) mechanism this file does not build.
+// selector>)` or its `avg()` twin, with no `by(...)`/`without(...)` clause
+// — is eligible (cerberus issue #2866 widened the original SUM-only v1,
+// #2757, to include AVG: identical merge, plus the same division
+// histogram_native_avg.go's fold path already applies). Any `by`/`without`
+// grouping and range/query_range mode still stay on the existing fold
+// unconditionally; see NativeExpHistogramMergeLowerer and cerberus issue
+// #2834 for why those need a genuinely different (per-group JOIN)
+// mechanism this file does not build.
 //
 // # The two-pass restructure (issue #2757's own "known hard part",
 // # verified here)
@@ -293,9 +296,9 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 }
 
 // expHistogramGroupMergeSumMap builds the full two-pass merge node for the
-// eligible shape (instant, single-group, SUM fold — see this file's
-// header): pass 1's ScalarSubquery, pass 2's Aggregate (wrapped in this
-// design's OWN rows-independent budget guard,
+// eligible shape (instant, single-group, SUM or AVG fold — see this
+// file's header): pass 1's ScalarSubquery, pass 2's Aggregate (wrapped in
+// this design's OWN rows-independent budget guard,
 // [wrapExpHistogramMergeSumMapBudgetGuard] — see this file's header and
 // exp_histogram_merge_summap_bound.go for the calibration behind it), and
 // the reshape Project. No [expHistogramMergeSortStage] call: that stage
@@ -308,17 +311,32 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 // — this file touches only the bucket-ladder scale/offset/counts fields,
 // mirroring how PR #2826's classic-bucket sumMap change left every
 // non-bucket field alone.
-func expHistogramGroupMergeSumMap(perSeries chplan.Node, s schema.Metrics, maxCostUnits int64) chplan.Node {
+//
+// avg() reuses this SAME merge — its own division is a projection rewrite
+// on top, mirroring how [expHistogramGroupMergeFanout] applies
+// [expHistogramAvgScaleProjections] to the fold path's output (cerberus
+// issue #2866): when agg is avg, this function also collects the group's
+// series count ([expHistogramGroupSeriesCountAgg], the divisor) and
+// divides the five count-bearing fields of projs by it before capping the
+// Project. Both steps are conditional on expHistogramGroupIsAvg(agg)
+// exactly like the fold path's own, so sum() emits byte-identical SQL to
+// before this file learned about avg.
+func expHistogramGroupMergeSumMap(perSeries chplan.Node, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node {
 	mergedScale := expHistogramMergeScaleScalarSubquery(perSeries, s)
+	aggFuncs := append(
+		[]chplan.AggFunc{
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
+			{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
+		},
+		expHistogramGroupMergeAggsSumMap(mergedScale, s)...,
+	)
+	isAvg := expHistogramGroupIsAvg(agg)
+	if isAvg {
+		aggFuncs = append(aggFuncs, expHistogramGroupSeriesCountAgg())
+	}
 	merged := &chplan.Aggregate{
-		Input: perSeries,
-		AggFuncs: append(
-			[]chplan.AggFunc{
-				{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.CountColumn}}, Alias: hqMergeCountsArrayAlias},
-				{Fn: chplan.FnGroupArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.SumColumn}}, Alias: hqMergeSumsArrayAlias},
-			},
-			expHistogramGroupMergeAggsSumMap(mergedScale, s)...,
-		),
+		Input:              perSeries,
+		AggFuncs:           aggFuncs,
 		DropEmptyOnNoGroup: true,
 	}
 	guarded := wrapExpHistogramMergeSumMapBudgetGuard(merged, maxCostUnits)
@@ -330,6 +348,9 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, s schema.Metrics, maxCo
 		},
 		expHistogramGroupMergeProjectionsSumMap(s)...,
 	)
+	if isAvg {
+		projs = expHistogramAvgScaleProjections(projs, s)
+	}
 	return &chplan.Project{Input: guarded, Projections: projs}
 }
 
@@ -339,7 +360,7 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, s schema.Metrics, maxCo
 // lowerExpHistogramSumOrAvgRange) collects and merges every contributing
 // row's distribution: the existing groupArray + arrayReduce/arraySlice
 // picker fold (every shape), or this file's two-pass sumMap reshape
-// (instant + single-group + SUM fold only,
+// (instant + single-group, SUM or AVG fold only,
 // chopt.FeatureExpHistogramMergeSumMap). It never returns nil.
 type ExpHistogramMergeLowerer interface {
 	// LowerExpHistogramMerge returns the merged chplan.Node. anchor is nil
@@ -362,10 +383,10 @@ func (FanoutExpHistogramMergeLowerer) LowerExpHistogramMerge(
 
 // NativeExpHistogramMergeLowerer is the boot-wired ExpHistogramMergeLowerer
 // that routes the eligible shape (anchor == nil, no by()/without()
-// grouping, SUM fold — never avg) onto expHistogramGroupMergeSumMap.
-// cmd/cerberus wires it ONLY when chopt resolved
-// exp_histogram_merge_summap at boot. Every other shape delegates to the
-// embedded Fallback, unconditionally.
+// grouping — SUM or AVG fold, cerberus issue #2866) onto
+// expHistogramGroupMergeSumMap. cmd/cerberus wires it ONLY when chopt
+// resolved exp_histogram_merge_summap at boot. Every other shape delegates
+// to the embedded Fallback, unconditionally.
 type NativeExpHistogramMergeLowerer struct {
 	// Fallback is the concrete lowerer for every ineligible shape. Boot
 	// wires it to FanoutExpHistogramMergeLowerer{}.
@@ -377,10 +398,10 @@ type NativeExpHistogramMergeLowerer struct {
 func (n NativeExpHistogramMergeLowerer) LowerExpHistogramMerge(
 	perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64,
 ) chplan.Node {
-	if anchor == nil && !expHistogramGroupIsAvg(agg) {
+	if anchor == nil {
 		groupBy, _, _ := histogramAggGroupBy(agg, &chplan.ColumnRef{Name: s.AttributesColumn}, s)
 		if len(groupBy) == 0 {
-			return expHistogramGroupMergeSumMap(perSeries, s, maxCostUnits)
+			return expHistogramGroupMergeSumMap(perSeries, agg, s, maxCostUnits)
 		}
 	}
 	return n.Fallback.LowerExpHistogramMerge(perSeries, anchor, agg, s, maxCostUnits)

@@ -122,6 +122,25 @@ import (
 // sumMapMergeCostMultiplier is chosen so this SAME width ceiling falls out
 // of the SHARED maxCostUnits default (60,000,000, unchanged) without
 // introducing a second operator knob — see that constant's own doc.
+//
+// # avg() confirmation (cerberus issue #2866)
+//
+// This guard's cost formula reads only the groupArray columns
+// [expHistogramGroupMergeAggsSumMap] collects — unaffected by whether the
+// caller is sum() or avg(), since avg()'s own extra work
+// (expHistogramGroupSeriesCountAgg's plain count() aggregate, plus
+// expHistogramAvgScaleProjections' division of the ALREADY-reconstructed
+// dense arrays) touches neither. A real ClickHouse 26.6 measurement (same
+// methodology as this file's own table above: a throwaway harness, deleted
+// before #2866 merged, `sum()` and `avg()` run back-to-back over the SAME
+// seed through [NativeExpHistogramMergeLowerer], real peak memory read from
+// `system.query_log`) at four shapes spanning both cost axes — {1, 160}
+// (parity baseline), {3741, 160} (rows-dominated, issue #2490's own repro),
+// {1, 3000} (width-dominated, a single wide series), {4096, 1280} (both
+// axes near their admitted limits) — measured avg()'s real peak memory at
+// 1.00x-1.02x sum()'s at every point (max divergence 2.37%, at {3741,
+// 160}), confirming this issue's own expectation empirically rather than by
+// assumption: no guard recalibration for avg() is needed.
 const (
 	// sumMapMergeCostMultiplier converts [maxHistogramMergeCostUnits]'s
 	// existing 60,000,000-unit default into this design's OWN, higher,

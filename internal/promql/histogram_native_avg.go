@@ -23,10 +23,12 @@ import (
 // only that division: [sumOrAvgOverExpHistogram] recognises both
 // aggregations and both route through the SAME
 // [ExpHistogramMergeLowerer.LowerExpHistogramMerge] call, so the two can
-// never drift apart in the arithmetic that reconciles bucket ladders. avg
-// is never eligible for the sumMap alternate shape
-// (exp_histogram_merge_summap.go) — it always resolves to
-// [expHistogramGroupMergeFanout] — but sharing the ONE dispatch call is
+// never drift apart in the arithmetic that reconciles bucket ladders.
+// Eligible for the SAME instant, single-group shape sum() is (cerberus
+// issue #2866), avg() resolves through
+// [expHistogramGroupMergeSumMap]'s own division
+// (exp_histogram_merge_summap.go); every other shape still resolves to
+// [expHistogramGroupMergeFanout]'s. Sharing the ONE dispatch call is
 // still the whole point of the split: a second, parallel merge call site
 // would be a second place for the scale-fold to go wrong.
 //
@@ -74,8 +76,10 @@ const expHistogramGroupSeriesCountAlias = "_hq_group_series_count"
 // across-series merge, i.e. the number of series contributing a sample
 // to the group.
 //
-// It is collected for `avg()` only — see [expHistogramGroupMergeAggs].
-// `sum()` never reads it, and emitting it there would change a shipped
+// It is collected for `avg()` only, by both merge shapes — the fold path's
+// [expHistogramGroupMergeAggs] and the sumMap path's
+// [expHistogramGroupMergeSumMap] (cerberus issue #2866). `sum()` never
+// reads it in either shape, and emitting it there would change a shipped
 // lowering's SQL to carry a column nothing consumes.
 func expHistogramGroupSeriesCountAgg() chplan.AggFunc {
 	return chplan.AggFunc{

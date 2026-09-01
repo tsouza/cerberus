@@ -135,6 +135,7 @@ exp_histogram_absent_missing.txtar
 exp_histogram_absent_present.txtar
 exp_histogram_avg.txtar
 exp_histogram_avg_by.txtar
+exp_histogram_avg_merge_summap.txtar
 exp_histogram_avg_over_avg_over_time.txtar
 exp_histogram_avg_over_time.txtar
 exp_histogram_bare_selector.txtar
