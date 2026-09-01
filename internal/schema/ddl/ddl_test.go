@@ -989,3 +989,132 @@ func TestIsColumnStatisticsUnsupported(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderSignal_ColumnTTLDisabledByDefault pins that the zero-value
+// ColumnTTL (the default) renders no MODIFY COLUMN TTL statement anywhere —
+// an operator on today's schema sees byte-identical DDL (cerberus issue
+// #2769).
+func TestRenderSignal_ColumnTTLDisabledByDefault(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	for _, s := range []Signal{Metrics, Logs, Traces} {
+		stmts, err := renderSignal(cfg, s)
+		if err != nil {
+			t.Fatalf("renderSignal(%s): %v", s, err)
+		}
+		for i, stmt := range stmts {
+			if strings.Contains(stmt, "TTL toDateTime(Timestamp)") && strings.Contains(stmt, "MODIFY COLUMN") {
+				t.Errorf("%s[%d]: MODIFY COLUMN TTL rendered despite ColumnTTL being unset:\n%s", s, i, stmt)
+			}
+		}
+	}
+}
+
+// TestRenderSignal_LogsBodyTTL pins the curated Body column TTL ALTER
+// (issue #2769): it trails the CREATE + Body codec ALTER, re-declares
+// Body's exact String type (MODIFY COLUMN TTL cannot omit it — see
+// chsql.ModifyColumnTTLBuilder), and keys the age expression on the same
+// Timestamp column the table's own row-level TTL uses.
+func TestRenderSignal_LogsBodyTTL(t *testing.T) {
+	cfg := Config{ColumnTTL: ColumnTTL{LogsBody: 7 * 24 * time.Hour}}.withDefaults()
+	stmts, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	if len(stmts) != 3 {
+		t.Fatalf("logs: got %d statements, want 3 (CREATE + Body codec ALTER + Body TTL ALTER): %v", len(stmts), stmts)
+	}
+	want := "ALTER TABLE default.otel_logs MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalWeek(1)"
+	if stmts[2] != want {
+		t.Errorf("logs Body TTL:\ngot  %s\nwant %s", stmts[2], want)
+	}
+}
+
+// TestRenderSignal_TracesEventsLinksTTL pins the two curated traces ALTERs
+// (issue #2769): Events.Attributes then Links.Attributes, both re-declaring
+// the Nested-subcolumn's materialized Array(...) type and sharing the one
+// TracesEventsLinks duration, trailing the Duration codec ALTER.
+func TestRenderSignal_TracesEventsLinksTTL(t *testing.T) {
+	cfg := Config{ColumnTTL: ColumnTTL{TracesEventsLinks: 3 * 24 * time.Hour}}.withDefaults()
+	stmts, err := renderSignal(cfg, Traces)
+	if err != nil {
+		t.Fatalf("renderSignal(Traces): %v", err)
+	}
+	if len(stmts) != 6 {
+		t.Fatalf("traces: got %d statements, want 6 (3 CREATEs + Duration codec ALTER + 2 TTL ALTERs): %v", len(stmts), stmts)
+	}
+	wantEvents := "ALTER TABLE default.otel_traces MODIFY COLUMN IF EXISTS `Events.Attributes` Array(Map(LowCardinality(String), String)) TTL toDateTime(Timestamp) + toIntervalDay(3)"
+	if stmts[4] != wantEvents {
+		t.Errorf("traces Events.Attributes TTL:\ngot  %s\nwant %s", stmts[4], wantEvents)
+	}
+	wantLinks := "ALTER TABLE default.otel_traces MODIFY COLUMN IF EXISTS `Links.Attributes` Array(Map(LowCardinality(String), String)) TTL toDateTime(Timestamp) + toIntervalDay(3)"
+	if stmts[5] != wantLinks {
+		t.Errorf("traces Links.Attributes TTL:\ngot  %s\nwant %s", stmts[5], wantLinks)
+	}
+}
+
+// TestRenderSignal_ColumnTTLOnCluster pins that a column TTL ALTER carries
+// the same ON CLUSTER clause as every other curated ALTER when a cluster is
+// configured.
+func TestRenderSignal_ColumnTTLOnCluster(t *testing.T) {
+	cfg := Config{ColumnTTL: ColumnTTL{LogsBody: 7 * 24 * time.Hour}, Cluster: "prod"}.withDefaults()
+	stmts, err := renderSignal(cfg, Logs)
+	if err != nil {
+		t.Fatalf("renderSignal(Logs): %v", err)
+	}
+	want := "ALTER TABLE default.otel_logs ON CLUSTER `prod` MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalWeek(1)"
+	if stmts[len(stmts)-1] != want {
+		t.Errorf("logs Body TTL with cluster:\ngot  %s\nwant %s", stmts[len(stmts)-1], want)
+	}
+}
+
+// TestConfigValidate_ColumnTTLNotShorterThanRowTTL pins the "accepted but
+// inert" guard (issue #2769): a column TTL that is not strictly shorter
+// than the signal's own row-level retention TTL is rejected, mirroring the
+// existing Tiering-vs-retention check — the row would be deleted before the
+// column ever has a chance to empty on its own.
+func TestConfigValidate_ColumnTTLNotShorterThanRowTTL(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name:    "logs column TTL shorter than row TTL: ok",
+			cfg:     Config{TTL: TTL{Logs: 30 * 24 * time.Hour}, ColumnTTL: ColumnTTL{LogsBody: 7 * 24 * time.Hour}},
+			wantErr: false,
+		},
+		{
+			name:    "logs column TTL equal to row TTL: rejected",
+			cfg:     Config{TTL: TTL{Logs: 7 * 24 * time.Hour}, ColumnTTL: ColumnTTL{LogsBody: 7 * 24 * time.Hour}},
+			wantErr: true,
+		},
+		{
+			name:    "logs column TTL longer than row TTL: rejected",
+			cfg:     Config{TTL: TTL{Logs: 7 * 24 * time.Hour}, ColumnTTL: ColumnTTL{LogsBody: 30 * 24 * time.Hour}},
+			wantErr: true,
+		},
+		{
+			name:    "logs column TTL with no row TTL configured: ok (operator-managed row retention)",
+			cfg:     Config{ColumnTTL: ColumnTTL{LogsBody: 7 * 24 * time.Hour}},
+			wantErr: false,
+		},
+		{
+			name:    "traces column TTL longer than row TTL: rejected",
+			cfg:     Config{TTL: TTL{Traces: 7 * 24 * time.Hour}, ColumnTTL: ColumnTTL{TracesEventsLinks: 30 * 24 * time.Hour}},
+			wantErr: true,
+		},
+		{
+			name:    "traces column TTL shorter than row TTL: ok",
+			cfg:     Config{TTL: TTL{Traces: 30 * 24 * time.Hour}, ColumnTTL: ColumnTTL{TracesEventsLinks: 7 * 24 * time.Hour}},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}

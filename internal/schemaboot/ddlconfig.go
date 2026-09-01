@@ -91,6 +91,19 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 			Logs:    signalTTL(p.TTLLogs),
 			Traces:  signalTTL(p.TTLTraces),
 		},
+		// ColumnTTL (cerberus issue #2769) threads straight from
+		// SchemaProvisioning's own LogsBodyTTL / TracesEventsLinksTTL —
+		// unlike TTL/Tiering above, these carry no global-plus-override
+		// inherit rule (there is exactly one column each targets, so
+		// there is nothing to inherit from): a zero value is simply "no
+		// column TTL", the same posture DeltaPrefixEnabled's plain
+		// config-bool gate uses rather than a chopt verdict, because this
+		// capability (like DeltaPrefixEnabled's) has no ClickHouse
+		// version floor to probe.
+		ColumnTTL: ddl.ColumnTTL{
+			LogsBody:          p.LogsBodyTTL,
+			TracesEventsLinks: p.TracesEventsLinksTTL,
+		},
 		Tiering: ddl.Tiering{
 			Volume:  p.TierVolume,
 			Metrics: tierAfter(p.TierAfterMetrics),

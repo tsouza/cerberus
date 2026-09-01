@@ -747,6 +747,150 @@ func (a *ModifyColumnCodecBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
 
+// --- ALTER TABLE ... MODIFY COLUMN ... TTL surface (cerberus issue #2769) ---
+//
+// ModifyColumnTTLBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] MODIFY COLUMN IF EXISTS <col>
+// <type> TTL <age-expr>` — an operator-opt-in COLUMN-level TTL that expires
+// ONE column (or Nested subcolumn) earlier than the row itself: the row
+// (severity, attributes, materialized k8s columns, trace correlation)
+// survives the signal's own retention TTL while a single heavy payload
+// column (the logs table's Body; the traces table's Events.Attributes /
+// Links.Attributes Nested subcolumns) empties sooner — see
+// internal/schema/ddl's ColumnTTL doc comment for the column choices.
+//
+// UNLIKE ModifyColumnCodecBuilder, colType is REQUIRED, not optional —
+// verified empirically against a real ClickHouse 25.9 server:
+// `ALTER TABLE t MODIFY COLUMN Body TTL <expr>` with no type is a syntax
+// error, while `ALTER TABLE t MODIFY COLUMN Body String TTL <expr>`
+// succeeds and SHOW CREATE TABLE confirms the column's existing CODEC
+// clause is preserved untouched (MODIFY COLUMN only overwrites the
+// attributes it names). ClickHouse's MODIFY COLUMN grammar only treats
+// [type] as optional when no TTL clause follows — the one place this
+// package's MODIFY COLUMN family cannot omit it. colType must therefore
+// reproduce the column's ACTUAL declared type exactly, or ClickHouse
+// silently RETYPES the column instead of just adding a TTL.
+//
+// A column TTL is legal on a column carrying a data-skipping index —
+// verified empirically with idx_lower_body (tokenbf_v1 over lower(Body))
+// in place on the target column: the ALTER succeeds, SHOW CREATE TABLE
+// keeps the index declaration unchanged, `ALTER TABLE ... MATERIALIZE
+// INDEX` still succeeds after the TTL has expired data, and a query
+// filtering through the index returns the same (correct, now-empty)
+// result a query against the bare column would — no index drop/recreate
+// is needed to TTL an indexed column, so cerberus's curated ALTER never
+// touches idx_lower_body / idx_body_text.
+//
+// A Nested column's subcolumns (materialized by ClickHouse as ordinary
+// Array(...) columns, e.g. `Events.Attributes Array(Map(...))`) accept a
+// TTL the same way ordinary columns do — verified empirically that
+// `ALTER TABLE ... MATERIALIZE TTL` clears an expired row's Nested
+// subcolumn to its default (empty array) independently of a fresh row
+// sharing the same part, while every other subcolumn (and the row itself)
+// is untouched.
+//
+// Like every column TTL, this materializes lazily: the ALTER is
+// metadata-only, and existing parts keep their current values until a
+// background merge — or an operator-run `ALTER TABLE ... MATERIALIZE TTL`
+// — rewrites them; see docs/operations.md's "Materializing a column TTL on
+// existing parts" for the full guidance, including why `OPTIMIZE ... FINAL`
+// (the codec back-fill's own recommended tool) is the WRONG statement here:
+// on a real ClickHouse 25.9 server it reliably raises a client-visible
+// `Code: 10. NOT_FOUND_COLUMN_IN_BLOCK` error against a table where a
+// data-skipping index depends on a column that also carries a column TTL
+// (idx_lower_body + a Body TTL is exactly this shape) — reproduced on a
+// minimal two-column table carrying only that combination, so it is not
+// specific to cerberus's own schema. The underlying data is unaffected (a
+// plain SELECT after the error still shows the correct post-TTL values,
+// and MATERIALIZE TTL on the identical table completes without error), but
+// it makes OPTIMIZE ... FINAL the wrong tool for a column TTL specifically.
+// A table's `ttl_only_drop_parts=1` setting governs ONLY the table-level
+// DELETE TTL (whether ClickHouse may drop a whole part without rewriting
+// it); it does NOT block or otherwise affect a column TTL, which
+// materializes via a normal merge or MATERIALIZE TTL regardless of that
+// setting — verified empirically against a table carrying
+// ttl_only_drop_parts=1 throughout every probe above.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// ModifyColumnTTLBuilder builds an ALTER TABLE MODIFY COLUMN TTL statement.
+type ModifyColumnTTLBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	column   string
+	cluster  string // "" => no ON CLUSTER clause
+	colType  Frag
+	age      Frag
+}
+
+// AlterTableModifyColumnTTL starts a MODIFY COLUMN TTL builder installing a
+// column-level TTL on <column> (an ordinary column or a `Parent.Child`
+// Nested subcolumn) of [<database>.]<table>, expiring it `toDateTime(<
+// tsColumn>) + toIntervalXxx(N)` after ttl — the same age-expression shape
+// TableTTL renders for the table's own row-level TTL. colType is the
+// column's exact currently-declared ClickHouse type (see the package doc
+// comment above for why MODIFY COLUMN TTL cannot omit it). ttl must be
+// positive — a zero or negative duration is "no column TTL", the caller's
+// job to not call this for, so an invalid value panics at construction
+// time rather than rendering DDL ClickHouse would reject at apply time.
+func AlterTableModifyColumnTTL(database, table, column string, colType Frag, tsColumn string, ttl time.Duration) *ModifyColumnTTLBuilder {
+	if ttl <= 0 {
+		panic("chsql: AlterTableModifyColumnTTL requires a positive ttl")
+	}
+	return &ModifyColumnTTLBuilder{
+		database: database,
+		table:    table,
+		column:   column,
+		colType:  colType,
+		age:      ttlAge(tsColumn, ttl),
+	}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *ModifyColumnTTLBuilder) OnCluster(name string) *ModifyColumnTTLBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table identifiers via BareIdent, the quoted
+// column via Col (which backtick-quotes a `Parent.Child` Nested subcolumn
+// name as the single identifier ClickHouse expects — NOT Qual, which would
+// wrongly split it into two separately-quoted parts), the caller's type
+// Frag, the optional ON CLUSTER clause via the typed constructor, and the
+// TTL age expression via the same ttlAge helper TableTTL uses — no raw
+// token is written here.
+func (a *ModifyColumnTTLBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" MODIFY COLUMN IF EXISTS ")(b)
+		Col(a.column)(b)
+		ddlToken(" ")(b)
+		a.colType(b)
+		ddlToken(" TTL ")(b)
+		a.age(b)
+	}
+}
+
+// SQL renders the ALTER TABLE MODIFY COLUMN TTL statement to ClickHouse
+// text via RenderDDL (which asserts the no-positional-bindings DDL
+// invariant).
+func (a *ModifyColumnTTLBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
+
 // --- ALTER TABLE ... ADD COLUMN surface ---
 //
 // AddColumnBuilder renders

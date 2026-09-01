@@ -1816,6 +1816,113 @@ the recoded column — budget accordingly on a large table, and prefer letting
 normal background merges converge new codecs onto old parts over time rather
 than forcing an immediate rewrite unless the storage win is needed sooner.
 
+### Operator-opt-in column TTL on heavy payload columns (cerberus issue #2769)
+
+Retention is otherwise all-or-nothing per signal: a row-level TTL DELETE
+drops the whole row once it ages out, so keeping N days of queryable log
+aggregates means storing N days of full `Body` text (and, on traces, the
+`Events` / `Links` Nested blocks' own attribute payload) even though the
+row's other columns — severity, attributes, materialized k8s columns, trace
+correlation — are a fraction of the size. `CERBERUS_SCHEMA_LOGS_BODY_TTL`
+and `CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL` (`SchemaProvisioning`, both
+`0` = off by default, the same opt-in posture as
+`CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED`) install a COLUMN-level TTL on just
+the heaviest column(s) instead:
+
+```sql
+ALTER TABLE <db>.otel_logs   MODIFY COLUMN IF EXISTS Body                String TTL toDateTime(Timestamp) + toIntervalDay(7)
+ALTER TABLE <db>.otel_traces MODIFY COLUMN IF EXISTS `Events.Attributes` Array(Map(LowCardinality(String), String)) TTL toDateTime(Timestamp) + toIntervalDay(7)
+ALTER TABLE <db>.otel_traces MODIFY COLUMN IF EXISTS `Links.Attributes`  Array(Map(LowCardinality(String), String)) TTL toDateTime(Timestamp) + toIntervalDay(7)
+```
+
+The row survives at the signal's own row-level TTL (`CERBERUS_SCHEMA_TTL_LOGS`
+/ `_TRACES`, or the global `CERBERUS_SCHEMA_TTL`) while the targeted column
+empties earlier — a retention shape neither a row TTL nor storage tiering can
+express. `internal/schema/ddl.Config.Validate` rejects a column TTL that is
+not strictly shorter than the effective row TTL (the "accepted but inert"
+shape every other TTL/tiering check in this document already guards).
+
+Unlike `ADD PROJECTION` / `ADD INDEX` / `ADD STATISTICS`, `MODIFY COLUMN` has
+no `IF NOT EXISTS`-shaped guard — only `IF EXISTS` (a no-op on an absent
+column, not an unchanged one) — the same idempotency contract the codec
+ALTERs above rely on: ClickHouse only schedules work when the declared TTL
+clause actually differs, so re-applying it on every boot never re-triggers a
+conversion once converged.
+
+**Two design questions the proposing issue explicitly left open, both
+resolved against a real ClickHouse 25.9 server before implementation:**
+
+- **TTL on an indexed column.** `Body` carries `idx_lower_body`
+  (`tokenbf_v1` over `lower(Body)`, and optionally `idx_body_text` — see
+  the text-index section below). A `MODIFY COLUMN ... TTL` ALTER on `Body`
+  is accepted with the index left completely unchanged in `SHOW CREATE
+  TABLE`, and a query filtering through the index after the TTL has fired
+  returns the correct (now-empty) result — no drop/recreate of the index
+  is needed or performed.
+- **TTL on a Nested subcolumn.** ClickHouse's own TTL docs carry only a
+  scalar-column example; `Events.Attributes` / `Links.Attributes` are
+  Nested members, materialized as ordinary `Array(Map(...))` columns.
+  Verified directly: the ALTER is accepted, and after materialization the
+  expired row's array is cleared to `[]` independently of a fresh row
+  sharing the same part — the other Nested subcolumns (`Events.Timestamp`,
+  `Events.Name`, `Links.TraceId`, `Links.SpanId`, `Links.TraceState`) carry
+  no TTL and are left at the row's own full retention, since they are small
+  bounded-width identifiers a real deployment gets negligible storage
+  benefit from expiring early.
+
+`ttl_only_drop_parts=1` (set on every auto-created table) governs only the
+table's own row-level DELETE TTL — whether ClickHouse may drop a whole part
+without rewriting it — and does **not** block a column TTL, confirmed
+directly: a column TTL materializes via a normal background merge or
+mutation on a table carrying that setting exactly as it would without it.
+
+#### Materializing a column TTL on existing parts
+
+A column TTL is metadata-only for **new parts**; existing parts keep their
+current values until a background merge — or an operator-run **`ALTER TABLE
+... MATERIALIZE TTL`** — rewrites them:
+
+```sql
+ALTER TABLE <db>.otel_logs   MATERIALIZE TTL;
+ALTER TABLE <db>.otel_traces MATERIALIZE TTL;
+```
+
+**Use `MATERIALIZE TTL`, not `OPTIMIZE ... FINAL`, to force an immediate
+back-fill of a column TTL.** This is the opposite of the codec back-fill
+guidance above, and the difference is deliberate: `OPTIMIZE TABLE ... FINAL`
+against a table where a data-skipping index depends on a column that ALSO
+carries a column TTL (`idx_lower_body` + the `Body` TTL above is exactly
+this shape) reliably raises a client-visible `Code: 10.
+NOT_FOUND_COLUMN_IN_BLOCK` error on that server version — reproduced
+independently of any cerberus-specific schema shape (a minimal two-column
+table with the same index + TTL combination reproduces it) and independent
+of whether the affected partition genuinely needs a merge. The underlying
+data is unaffected — a plain `SELECT` still shows the correct post-TTL
+values, and the equivalent `ALTER TABLE ... MATERIALIZE TTL` on the exact
+same table completes cleanly with no error — so this is a rough edge in how
+`OPTIMIZE ... FINAL` reports itself on this specific index+TTL combination,
+not a data-correctness bug, but it makes `OPTIMIZE ... FINAL` the wrong tool
+here: `MATERIALIZE TTL` is both the semantically correct statement (it
+targets exactly the TTL rules, not a general part rewrite) and the one that
+does not carry this error.
+
+#### LogQL query-parity tradeoff (`Body` TTL only)
+
+A LogQL `|=` / `!=` / `|~` / `!~` line filter and `line_format` both read
+`Body` directly; `bytes_over_time` sums its byte length. Over a query window
+that crosses the `Body` TTL boundary, cerberus's results silently diverge
+from an equal-retention real Loki: a line filter matches nothing against an
+aged-out row's now-empty `Body`, `line_format` renders against an empty
+string, and `bytes_over_time` changes value — because the row and its labels
+still exist (unlike real Loki, where the row itself would still carry the
+full line at the same retention). `/loki/api/v1/query` and `/query_range`
+surface this explicitly rather than silently: both stamp
+`X-Cerberus-Body-TTL-Window` on any response whose requested window's start
+is at or before `now - CERBERUS_SCHEMA_LOGS_BODY_TTL` (`internal/api/loki`'s
+`bodyTTLBoundaryCrossed`), regardless of whether the query actually uses a
+line filter — the header costs nothing on a deployment that leaves
+`CERBERUS_SCHEMA_LOGS_BODY_TTL` at its default `0` (off).
+
 ### Text index on logs Body + LogQL line-filter prefilter (cerberus issue #2773)
 
 The logs table's `idx_lower_body` skip index over `lower(Body)` shipped as a

@@ -158,6 +158,8 @@ var bindings = []binding{
 	{"schema.ttlMetrics", envSchemaTTLMetrics, bindScalar},
 	{"schema.ttlLogs", envSchemaTTLLogs, bindScalar},
 	{"schema.ttlTraces", envSchemaTTLTraces, bindScalar},
+	{"schema.logsBodyTTL", envSchemaLogsBodyTTL, bindScalar},
+	{"schema.tracesEventsLinksTTL", envSchemaTracesEvLinksTTL, bindScalar},
 	{"schema.storagePolicy", envSchemaStoragePolicy, bindScalar},
 	{"schema.tierVolume", envSchemaTierVolume, bindScalar},
 	{"schema.tierAfter", envSchemaTierAfter, bindScalar},

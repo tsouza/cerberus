@@ -144,6 +144,18 @@ type Handler struct {
 	// unconditionally, byte-identical to before this feature existed.
 	LabelCatalogEnabled bool
 
+	// BodyTTL is the resolved logs table Body column TTL (cerberus issue
+	// #2769), wired from Config.SchemaProvisioning.LogsBodyTTL in
+	// cmd/cerberus. Zero (the default, matching every un-wired Handler in
+	// tests) is "column TTL off" — /query and /query_range never stamp
+	// HeaderBodyTTLWindow, byte-identical to before this feature existed.
+	// When set, it is ALSO the boundary /query and /query_range compare
+	// the request's own window start against — see
+	// bodyTTLBoundaryCrossed and HeaderBodyTTLWindow's doc comments for
+	// why a real ClickHouse-side Body TTL needs an HTTP-visible signal at
+	// all.
+	BodyTTL time.Duration
+
 	// onQueryRangeDrain, when non-nil, is invoked once per
 	// /loki/api/v1/query_range request with the number of rows
 	// h.Engine.Query pulled from ClickHouse (res.Inspected) — the
@@ -318,6 +330,42 @@ func (h *Handler) handleBuildInfo(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// HeaderBodyTTLWindow warns a LogQL /query or /query_range response that
+// its window overlaps the portion of the logs table whose Body column has
+// already aged out under the operator-opt-in column TTL (cerberus issue
+// #2769, Handler.BodyTTL): the row itself (severity, labels, trace
+// correlation) survives at the signal's full row-level retention, but
+// Body is cleared to empty past this earlier boundary. This is a REAL
+// parity gap with upstream Loki at equal retention, not a cerberus bug —
+// a `|=` line filter or `line_format` template silently matches/renders
+// as though the line were empty, and both a raw returned line and
+// bytes_over_time read as empty too, exactly where real Loki would still
+// return the full text. Stamped ONLY when Handler.BodyTTL is configured
+// (0, the default, never stamps it — byte-identical to before this
+// feature existed) AND the request's own window start is at or before
+// the boundary — see bodyTTLBoundaryCrossed.
+const HeaderBodyTTLWindow = "X-Cerberus-Body-TTL-Window"
+
+// bodyTTLWindowWarning is HeaderBodyTTLWindow's fixed value — a short,
+// human-readable pointer to the tradeoff rather than a machine-parsed
+// code, since the header's only consumer today is an operator or a
+// Grafana panel surfacing response headers, not automation.
+const bodyTTLWindowWarning = "query window includes rows whose Body column has expired under the configured column TTL (cerberus issue #2769) — line filters, line_format, and bytes_over_time see an empty line there"
+
+// bodyTTLBoundaryCrossed reports whether a query window starting at start
+// includes any row old enough for its Body column to have already
+// expired under bodyTTL, evaluated against now. bodyTTL<=0 (the "column
+// TTL off" default) always returns false. now is threaded explicitly
+// rather than read via time.Now() here so the boundary comparison is a
+// pure, table-driven-testable function; the two handler call sites below
+// pass time.Now().
+func bodyTTLBoundaryCrossed(bodyTTL time.Duration, start, now time.Time) bool {
+	if bodyTTL <= 0 {
+		return false
+	}
+	return !start.After(now.Add(-bodyTTL))
+}
+
 func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// r.FormValue merges URL query params with a POST form-encoded body
 	// (auto-calling ParseForm). Grafana's Loki datasource POSTs queries as
@@ -369,6 +417,9 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httperr.WriteEngineHeaders(w, res.Headers)
+	if bodyTTLBoundaryCrossed(h.BodyTTL, ts.Add(-qlcommon.InstantLookback), time.Now()) {
+		w.Header().Set(HeaderBodyTTLWindow, bodyTTLWindowWarning)
+	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   data,
@@ -455,6 +506,9 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httperr.WriteEngineHeaders(w, res.Headers)
+	if bodyTTLBoundaryCrossed(h.BodyTTL, start, time.Now()) {
+		w.Header().Set(HeaderBodyTTLWindow, bodyTTLWindowWarning)
+	}
 	writeJSON(w, http.StatusOK, Response{
 		Status: "success",
 		Data:   data,

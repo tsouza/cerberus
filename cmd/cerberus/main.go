@@ -1240,6 +1240,15 @@ func newLokiHandler(client *chclient.Client, cfg config.Config, optSet chopt.Ena
 	// the read path only ever attempts the catalog query on a deployment
 	// where the DDL side actually created it.
 	h.LabelCatalogEnabled = cfg.SchemaLokiCatalogMV
+	// BodyTTL (cerberus issue #2769) is the SAME
+	// cfg.SchemaProvisioning.LogsBodyTTL DDLConfig threads into
+	// ddl.Config.ColumnTTL.LogsBody to gate the curated Body column TTL
+	// ALTER in the first place, so /query and /query_range only ever warn
+	// about an aged-Body window on a deployment where the DDL side
+	// actually applied it. A plain config duration, not a chopt verdict —
+	// see ddl.Config.ColumnTTL's doc comment for why this capability has
+	// no version floor to gate on.
+	h.BodyTTL = cfg.SchemaProvisioning.LogsBodyTTL
 	h.Engine.Settings = settingsRules(cfg, optSet)
 	// The prom head wires this (line ~713 above); the Loki head never did,
 	// so requireSubquerySampleBudget's plan-time anchor-grid gate
