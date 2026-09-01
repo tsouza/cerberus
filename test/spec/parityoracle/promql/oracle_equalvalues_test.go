@@ -30,13 +30,17 @@ func relativeDistance(a, b float64) float64 {
 // between the real Prometheus engine and cerberus, and asserts the single
 // comparator accepts all of them.
 //
-// Two things are asserted per pair, not one. That the comparator accepts
-// it, symmetrically — and that its relative distance is genuinely inside
-// [summationReorderRelativeTolerance] rather than merely landing there.
-// The second assertion is what makes the first evidence: a pair accepted
-// only because the tolerance is loose would show up here as a relative
-// distance near the bound, and every pair below is three to four orders of
-// magnitude inside it.
+// Three things are asserted per pair, not one: that the pair really is
+// the ULP distance the recorded evidence claims, that the comparator
+// accepts it symmetrically, and that its relative distance is strictly
+// inside [summationReorderRelativeTolerance]. The first is what keeps the
+// enrolled numbers honest — a transcription slip that changed a digit
+// would change the ULP distance and fail here rather than quietly
+// enlarging what the table appears to prove.
+//
+// Every pair below sits three to four orders of magnitude inside the
+// bound; the rejection side's required headroom is asserted separately, in
+// [TestEqualValuesRejectsRealDivergence].
 func TestEqualValuesAcceptsMeasuredDivergence(t *testing.T) {
 	t.Parallel()
 
