@@ -213,6 +213,21 @@ type lowerCtx struct {
 	// from an existing one via a plain struct copy (the `c := ctx; c.foo =
 	// ...` pattern this file's own with* helpers use) inherits it for free.
 	resourceBounds ResourceBounds
+
+	// tagGroups is the boot-wired on/off switch for chopt.FeatureTSGridTagGroups
+	// (cerberus issue #2750), resolved ONCE from [LowerOpts.TagGroups] at the
+	// same lowering-entry seam resourceBounds is — every ctx this package's
+	// entry points build carries a definite value, never an accidental
+	// version/capability check inside the guard itself. Read only by
+	// [guardNameDropCollision] (internal/promql/duplicate_labelset_guard.go):
+	// when true, the guard's collapsing Aggregate groups on
+	// timeSeriesTagsToGroup(Attributes) instead of the raw Attributes Map,
+	// rehydrating via timeSeriesGroupToTags in a wrapping Project. The zero
+	// value (false) reproduces the pre-#2750 Map-grouped shape byte-for-byte,
+	// so every caller that does not opt in (every path but the deployed prom
+	// handler, which threads chopt.EnabledSet's verdict from cmd/cerberus)
+	// keeps the established SQL.
+	tagGroups bool
 }
 
 // withSampleTimestamp returns a copy of c that asks the range-mode selector

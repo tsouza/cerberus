@@ -76,6 +76,9 @@ export const mirroredImages = [
   // 25.10 is the quantile_prom_histogram real-CH differential's own pin
   // (quantilePrometheusHistogram shipped in 25.10 — see CH_QUANTILE_PROM_HISTOGRAM_IMAGE).
   'clickhouse/clickhouse-server:25.10-alpine',
+  // 26.2 is the ts_tag_groups real-CH differential's own pin
+  // (timeSeriesThrowDuplicateSeriesIf shipped in 26.2 — see CH_TAG_GROUPS_IMAGE).
+  'clickhouse/clickhouse-server:26.2-alpine',
   'clickhouse/clickhouse-server:26.3',
   'clickhouse/clickhouse-server:26.5',
   'clickhouse/clickhouse-server:26.6',

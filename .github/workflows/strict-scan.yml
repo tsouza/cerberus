@@ -321,6 +321,20 @@ jobs:
       - name: Run quantile_prom_histogram rank-walk differential (real ClickHouse)
         run: just quantile-prom-histogram-rankwalk-integration
 
+      # The ts_tag_groups real-CH differential (#2750): the instant-mode
+      # duplicate-labelset guard's UInt64-group-id collapse
+      # (guardNameDropCollisionByTagGroup) answers byte-identical to the
+      # existing Map-grouped path it replaces, driven through the REAL
+      # production HTTP handler + emitter against a REAL ClickHouse. This is
+      # what chopt.FeatureTSGridTagGroups's registry entry rests its
+      # correctness claim on. timeSeriesThrowDuplicateSeriesIf's 26.2 floor
+      # is above every other integration lane's pin, so this step boots its
+      # own dedicated server (CH_TAG_GROUPS_IMAGE) rather than reusing this
+      # job's CH_STRICT_SCAN_IMAGE container. See
+      # internal/api/prom/handler_tag_groups_realch_integration_test.go.
+      - name: Run ts_tag_groups differential (real ClickHouse)
+        run: just tag-groups-differential-integration
+
       # The ts_grid_last_over_time real-CH regression pin (#2747): reproduces
       # upstream's own ClickHouse/ClickHouse#106577 regression fixture shape
       # (a staleness window narrower than the query_range grid step) through

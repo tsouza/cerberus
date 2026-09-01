@@ -115,6 +115,16 @@ type Handler struct {
 	// the histogram-merge budget guards apply to both.
 	ResourceBounds promql.ResourceBounds
 
+	// TagGroups carries chopt.FeatureTSGridTagGroups's resolved verdict
+	// (cerberus issue #2750), wired at boot in cmd/cerberus from the
+	// resolved chopt.EnabledSet. Unlike Lowerers, both the instant and the
+	// range-streaming query paths consult it: its only consumer, the
+	// instant-mode duplicate-labelset guard, is reached from the instant
+	// path. The zero value (false) keeps the pre-#2750 Map-grouped guard
+	// shape, so a Handler that never wires this (every test that builds one
+	// directly) is unaffected.
+	TagGroups bool
+
 	// QueryTimeout is the configured default per-query wall-clock cap
 	// (CERBERUS_QUERY_TIMEOUT). It is the ceiling the standard Prometheus
 	// `?timeout=<duration>` query param min's against per request
@@ -881,6 +891,7 @@ func (h *Handler) executeRangeStreaming(
 		Step:           step,
 		Lowerers:       h.lowerers(),
 		ResourceBounds: h.ResourceBounds,
+		TagGroups:      h.TagGroups,
 	}
 	// Time the entire QueryCursor entry so the cursor-open round-trip
 	// is billed to X-Cerberus-CH-Millis the same way timeCH did pre-
@@ -913,9 +924,13 @@ func (h *Handler) executeRangeStreaming(
 // instant window regardless). cerberus issue #2748's ts_grid_instant is the
 // first feature whose native arm actually fires on THIS path — without this
 // thread it is unreachable from the real HTTP API, dead code behind its own
-// chopt feature.
+// chopt feature. TagGroups (cerberus issue #2750) is threaded for the same
+// reason and is, in fact, the FIRST feature whose only consumer lives on the
+// instant path exclusively (the duplicate-labelset guard's name-drop half) —
+// omitting it here would make ts_tag_groups entirely unreachable, not merely
+// untested.
 func (h *Handler) executeInstant(ctx context.Context, query string, start, end time.Time) ([]chclient.Sample, map[string]string, error) {
-	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Lowerers: h.lowerers(), ResourceBounds: h.ResourceBounds}
+	l := &lang{Parser: h.parser, Schema: h.Schema, Start: start, End: end, Lowerers: h.lowerers(), ResourceBounds: h.ResourceBounds, TagGroups: h.TagGroups}
 	res, err := h.Engine.Query(h.withSampleDrainBudget(ctx), l, query)
 	if err != nil {
 		return nil, nil, classifyEngineError(err)

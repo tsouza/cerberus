@@ -70,11 +70,12 @@ func guardedValueProjection(
 	inner chplan.Node,
 	arg parser.Expr,
 	s schema.Metrics,
+	ctx lowerCtx,
 	newValue chplan.Expr,
 	carry ...string,
 ) chplan.Node {
 	inner = mixedRowsFloatOnly(inner)
-	return projectValueOverInner(guardNameDropCollision(inner, arg, s, carry...), s, newValue)
+	return projectValueOverInner(guardNameDropCollision(inner, arg, s, ctx, carry...), s, newValue)
 }
 
 // guardKeysOnTimestamp reports whether a collision guard over `inner` must
@@ -190,9 +191,13 @@ func isTimestampAlias(alias string, s schema.Metrics) bool {
 // The RangeWindow branch is never reached from here: a RangeWindow has
 // already grouped the name away, so [nodeCarriesMetricName] answers false
 // for it and the guard is a no-op by construction.
-func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics, carry ...string) chplan.Node {
+func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics, ctx lowerCtx, carry ...string) chplan.Node {
 	if !collidesOnNameDrop(arg, inner, s) {
 		return inner
+	}
+
+	if ctx.tagGroups {
+		return guardNameDropCollisionByTagGroup(inner, s, carry...)
 	}
 
 	// The surviving label set is Attributes alone — the name is what is
@@ -249,6 +254,125 @@ func guardNameDropCollision(inner chplan.Node, arg parser.Expr, s schema.Metrics
 		AggFuncs:       aggs,
 		Having:         duplicateLabelsetGuardExpr(s),
 	}
+}
+
+// tsTagGroupIDAlias names the internal UInt64 column
+// [guardNameDropCollisionByTagGroup]'s Aggregate groups on — a
+// timeSeriesTagsToGroup(Attributes) id, meaningful only within the single
+// query that produces it (chopt.FeatureTSGridTagGroups's own doc explains
+// why). It never appears in an HTTP response: the wrapping Project rehydrates
+// it back to s.AttributesColumn before this node's output reaches any
+// caller, so the name only has to avoid colliding with a real schema column
+// for the lifetime of one subquery.
+const tsTagGroupIDAlias = "__ts_tag_group_id"
+
+// rehydrateTagsExpr renders `CAST(timeSeriesGroupToTags(groupID) AS
+// Map(String,String))` — the inverse of timeSeriesTagsToGroup, only valid
+// within the same query that produced groupID. timeSeriesGroupToTags itself
+// returns Array(Tuple(String,String)); the CAST recovers the schema's
+// Map(String,String) Attributes type (verified lossless and
+// order-independent against a real ClickHouse server — see
+// chopt.FeatureTSGridTagGroups's own doc).
+func rehydrateTagsExpr(groupID chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{
+		Fn: chplan.FnCast,
+		Args: []chplan.Expr{
+			&chplan.FuncCall{Fn: chplan.FnTimeSeriesGroupToTags, Args: []chplan.Expr{groupID}},
+			&chplan.LitString{V: "Map(String,String)"},
+		},
+	}
+}
+
+// guardNameDropCollisionByTagGroup is [guardNameDropCollision]'s
+// chopt.FeatureTSGridTagGroups variant (cerberus issue #2750): the SAME
+// collapsing Aggregate and the SAME [duplicateLabelsetGuardExpr] HAVING gate,
+// but grouped on a deduplicated UInt64 timeSeriesTagsToGroup(Attributes) id
+// instead of the raw Attributes Map, with Attributes rehydrated via
+// timeSeriesGroupToTags only in a wrapping Project — "rehydrating Maps only
+// in the final output projection", the issue's own proposed shape.
+//
+// This is TWO query levels, not one flat Aggregate, because a flatter shape
+// does not work — both verified directly against a real ClickHouse server:
+//
+//   - Referencing the Aggregate's own GROUP BY alias from inside an
+//     AggFunc's argument in the SAME SELECT fails with UNKNOWN_IDENTIFIER —
+//     a GROUP BY alias is not in scope for a sibling aggregate function's
+//     argument list.
+//   - Re-deriving timeSeriesTagsToGroup(Attributes) a second time inside an
+//     AggFunc's argument (to avoid the alias reference) fails with
+//     ILLEGAL_AGGREGATION — ClickHouse's analyzer matches the repeated
+//     sub-expression against the GROUP BY key and misclassifies the whole
+//     aggregate call as itself appearing in GROUP BY.
+//
+// The only shape that measured correctly: an inner Aggregate that groups on
+// the group id and carries only that id plus the existing
+// any(Value)/any(Timestamp)/carry payload (Attributes itself is dropped, read
+// only once as the GROUP BY key's own input), and an outer Project that reads
+// the group id back as a REAL column of that subquery's result set and calls
+// timeSeriesGroupToTags on it — a plain column reference, not a same-level
+// alias, which resolves cleanly.
+//
+// duplicateLabelsetGuardExpr is UNCHANGED: it reads MetricName as a raw
+// aggregate-function argument off the Input subquery, independent of which
+// expression the group key is. Swapping the throw itself onto
+// timeSeriesThrowDuplicateSeriesIf (its collector-backed message, verified
+// present only on ClickHouse >= 26.2 — see chopt.FeatureTSGridTagGroups's own
+// doc) is deliberately deferred to follow-up work tracked at
+// https://github.com/tsouza/cerberus/issues/2880: it is an independent,
+// separately-verifiable change to the throw's error-message rendering, not a
+// correctness requirement of this grouping-key swap.
+func guardNameDropCollisionByTagGroup(inner chplan.Node, s schema.Metrics, carry ...string) chplan.Node {
+	groupIDCol := &chplan.ColumnRef{Name: tsTagGroupIDAlias}
+
+	groupBy := []chplan.Expr{
+		&chplan.FuncCall{Fn: chplan.FnTimeSeriesTagsToGroup, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.AttributesColumn}}},
+	}
+	aliases := []string{tsTagGroupIDAlias}
+	aggs := []chplan.AggFunc{
+		{Fn: chplan.FnAny, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: s.ValueColumn},
+	}
+
+	if guardKeysOnTimestamp(inner, s) {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
+		aliases = append(aliases, s.TimestampColumn)
+	} else {
+		aggs = append(aggs, chplan.AggFunc{
+			Fn:    chplan.FnAny,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.TimestampColumn}},
+			Alias: s.TimestampColumn,
+		})
+	}
+
+	for _, name := range carry {
+		aggs = append(aggs, chplan.AggFunc{
+			Fn:    chplan.FnAny,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: name}},
+			Alias: name,
+		})
+	}
+
+	aggregate := &chplan.Aggregate{
+		Input:          inner,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		AggFuncs:       aggs,
+		Having:         duplicateLabelsetGuardExpr(s),
+	}
+
+	// Either branch above leaves a column literally named s.TimestampColumn
+	// on the Aggregate's own output (a GroupBy alias or an AggFunc alias),
+	// so the rehydration Project reads it back the same way regardless of
+	// which branch ran.
+	projections := []chplan.Projection{
+		{Expr: rehydrateTagsExpr(groupIDCol), Alias: s.AttributesColumn},
+		{Expr: &chplan.ColumnRef{Name: s.ValueColumn}},
+		{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}},
+	}
+	for _, name := range carry {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: name}})
+	}
+
+	return &chplan.Project{Input: aggregate, Projections: projections}
 }
 
 // collidesOnNameDrop reports whether dropping `__name__` from `inner` can

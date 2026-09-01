@@ -160,6 +160,7 @@ table.
 | `full_text_index`                | 26.2       | experimental | no         |
 | `text_index_line_filter`         | 26.4       | experimental | no         |
 | `trace_id_external_table`        | none       | experimental | no         |
+| `ts_tag_groups`                  | 26.2       | experimental | no         |
 <!-- END GENERATED: chopt-feature-table -->
 
 The rich, hand-authored columns below stay OUTSIDE the generated block: they

@@ -89,7 +89,7 @@ func lowerInstantFn(c *parser.Call, s schema.Metrics, chFn chplan.Fn, ctx lowerC
 	}
 
 	newValue := mathFnValueExpr(chFn, &chplan.ColumnRef{Name: s.ValueColumn})
-	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
 }
 
 // mathFnValueExpr wraps valueExpr with the CH function instantFnCH maps
@@ -137,7 +137,7 @@ func lowerRoundToNearest(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan
 	}
 
 	newValue := roundToNearestValueExpr(&chplan.ColumnRef{Name: s.ValueColumn}, tn)
-	return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+	return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
 }
 
 // lowerRoundToNearestBound lowers round()'s second argument — the
@@ -229,7 +229,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					&chplan.LitFloat{V: bound},
 				},
 			}
-			return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+			return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
 		}
 		boundE, err := lowerScalarArg(c.Args[1], s, ctx)
 		if err != nil {
@@ -246,7 +246,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				boundE,
 			},
 		})
-		return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+		return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
 
 	case "clamp":
 		if len(c.Args) != 3 {
@@ -285,7 +285,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 					},
 				},
 			}
-			return guardedValueProjection(inner, c.Args[0], s, newValue), nil
+			return guardedValueProjection(inner, c.Args[0], s, ctx, newValue), nil
 		}
 
 		// At least one computed bound: bind both sides through
@@ -330,7 +330,7 @@ func lowerClamp(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, er
 				},
 			},
 		)
-		return guardedValueProjection(filtered, c.Args[0], s, newValue), nil
+		return guardedValueProjection(filtered, c.Args[0], s, ctx, newValue), nil
 	}
 	return nil, fmt.Errorf("promql: unknown clamp function %s", c.Func.Name)
 }

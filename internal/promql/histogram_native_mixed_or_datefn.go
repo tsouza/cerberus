@@ -78,5 +78,5 @@ func lowerDateFnOverMixedExpHistogramSetOp(c *parser.Call, b *parser.BinaryExpr,
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(floatForAgg, c.Args[0], s, asFloat64(newValue)), nil
+	return guardedValueProjection(floatForAgg, c.Args[0], s, ctx, asFloat64(newValue)), nil
 }

@@ -126,7 +126,7 @@ func lowerDateFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chplan.Node, e
 	if newValue == nil {
 		return nil, fmt.Errorf("promql: unknown date function %s", c.Func.Name)
 	}
-	return guardedValueProjection(inner, c.Args[0], s, asFloat64(newValue), carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...), nil
+	return guardedValueProjection(inner, c.Args[0], s, ctx, asFloat64(newValue), carriedSampleTimestampColumns(c.Func.Name, c.Args[0], ctx)...), nil
 }
 
 // dateFnArgCtx returns the ctx the date function's argument is lowered under.

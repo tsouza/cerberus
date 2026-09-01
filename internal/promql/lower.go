@@ -128,6 +128,18 @@ type LowerOpts struct {
 	// CERBERUS_PROMQL_*_MAX_COST_UNITS-resolved value from cmd/cerberus)
 	// keeps the shipped defaults.
 	ResourceBounds ResourceBounds
+
+	// TagGroups threads chopt.FeatureTSGridTagGroups's resolved verdict
+	// (cerberus issue #2750) into the instant-mode duplicate-labelset guard
+	// (internal/promql/duplicate_labelset_guard.go's guardNameDropCollision):
+	// when true, its collapsing Aggregate groups on a
+	// timeSeriesTagsToGroup(Attributes) UInt64 id instead of the raw
+	// Attributes Map, rehydrating via timeSeriesGroupToTags in a wrapping
+	// Project. The zero value (false) keeps the pre-#2750 Map-grouped SQL
+	// byte-identical, mirroring every other feature-gated field on this
+	// struct — every caller but the deployed prom handler (which threads
+	// chopt.EnabledSet's verdict from cmd/cerberus) leaves it unset.
+	TagGroups bool
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange].
@@ -145,6 +157,7 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		lowerers:       opts.Lowerers.withDefaults(),
 		guards:         opts.Guards,
 		resourceBounds: opts.ResourceBounds.withDefaults(),
+		tagGroups:      opts.TagGroups,
 	})
 	if err != nil {
 		span.RecordError(err)
