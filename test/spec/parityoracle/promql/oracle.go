@@ -355,277 +355,128 @@ func sortResults(rs []Result) {
 	})
 }
 
-// EqualValues reports whether two float samples agree.
+// float64UnitRoundoff is IEEE-754 binary64's unit roundoff u = 2^-53: the
+// largest relative error a SINGLE correctly-rounded arithmetic operation may
+// introduce. It is the atom [summationReorderRelativeTolerance] is built
+// from, not a tunable.
+const float64UnitRoundoff = 1.0 / (1 << 53)
+
+// maxReorderedSamplesPerOutputValue is the sample budget
+// [summationReorderRelativeTolerance] is derived for: the number of input
+// samples a single output value may be accumulated from before the tolerance
+// stops covering the reordering error.
+//
+// 4096 is chosen from the query shapes cerberus answers, not from any
+// fixture: it exceeds an hour of one-second-resolution samples (3600) folded
+// into one range-window value, which is already far past any resolution a
+// Prometheus deployment scrapes at. It is a budget, so naming it larger than
+// the corpus needs is the safe direction — the cost is a wider tolerance, and
+// the section below measures how much width that actually buys (three orders
+// of magnitude above the noise, ten below the smallest real divergence this
+// lane has ever produced).
+const maxReorderedSamplesPerOutputValue = 4096
+
+// summationReorderRelativeTolerance is the maximum RELATIVE difference
+// [EqualValues] accepts between the reference engine's answer and cerberus's.
+//
+// # Where the number comes from
+//
+// Summing n floats in floating point has the standard backward-error bound
+//
+//	|fl(Σxᵢ) − Σxᵢ| ≤ γ_{n−1} · Σ|xᵢ|,   γ_k = k·u / (1 − k·u),   u = 2^-53
+//
+// so two DIFFERENT summation orders of the same n terms — which is exactly
+// what cerberus and Prometheus do, neither being obliged to match the other —
+// differ from each other by at most twice that, 2·γ_{n−1}·Σ|xᵢ|. For the
+// non-negative terms a counter's per-window deltas produce, Σ|xᵢ| is the
+// answer itself, so the bound is a RELATIVE one of 2(n−1)·u, and this
+// constant is literally that expression evaluated at
+// [maxReorderedSamplesPerOutputValue]: 2 · 4095 · 2^-53 ≈ 9.09e-13.
+//
+// The bound is therefore derived from the arithmetic and a stated sample
+// budget. It is not fitted to any failing fixture — the observed divergences
+// it was adopted for sit three orders of magnitude BELOW it.
+//
+// # What it admits, and what it still rejects
+//
+// Adopted for issue #2909, where the native increase() grid path and
+// Prometheus fold the same window's samples in different orders:
+// native_increase_range_step answered 21.000000000000004 and
+// 42.00000000000001 against the reference's 21 and 42, and
+// native_increase_vector_agg_temporality_union answered 210.00000000000003
+// and 245.00000000000003 against 210 and 245. Every one of those four pairs
+// is exactly ONE ULP apart — a relative distance of ~1.2e-16 to ~1.7e-16,
+// about 3.7 orders of magnitude inside this tolerance.
+//
+// Real divergence on the same lane is not close. Issue #2905's
+// duplicate-timestamp fixtures answered 2.75 against a reference 2.6666666666666665
+// (3.03e-2 relative) and a constant +3 absolute on values of 8 to 22 (1.2e-1
+// to 2.7e-1 relative) — between ten and eleven orders of magnitude ABOVE this
+// tolerance, and rejected by it. TestEqualValuesRejectsRealDivergence pins
+// that, so the tolerance can never be widened into a rubber stamp without a
+// test going red.
+//
+// # Why relative, and why there is no absolute floor
+//
+// Relative is the only scale the reordering bound is stated in, and it is the
+// only scale available: the comparator sees two answers, not the n terms or
+// the Σ|xᵢ| they were accumulated from.
+//
+// A relative-only comparison does NOT go slack near zero — it TIGHTENS,
+// degenerating to exact equality at 0, because the tolerance is scaled by the
+// larger operand's magnitude. So it is strictly a relaxation of the exact
+// comparator it replaces: every pair the old comparator accepted, this one
+// accepts, and near zero the two agree exactly. That is why no absolute floor
+// is added. A floor would be the one change here that could START accepting a
+// divergence exact equality rejected, at magnitudes where nothing has ever
+// been measured to diverge, and it would have to be a bare number — the
+// comparator has no data magnitude to scale it against, so no honest
+// derivation exists for one. Cancellation (a sum of signed terms whose Σ|xᵢ|
+// dwarfs its result) is the shape that would motivate one; if it ever surfaces
+// it will surface as a concrete red pair, which is the evidence a floor would
+// need and does not have today.
+//
+// # Why this is uniform rather than per-function
+//
+// Every float cerberus reports was computed by ClickHouse and every float the
+// reference reports was computed by Go, so the reordering and rounding this
+// covers is a property of the COMPARISON, not of any one function. Earlier
+// revisions carried named per-function ULP tolerances for atan2 (#1985), pow
+// (#2598), native exponential-histogram interpolation (#2024, #2023) and
+// histogram_quantile over a rate()'d classic bucket ladder — measured at one
+// to five ULPs, i.e. at most ~1.1e-15 relative, all of them strictly inside
+// this bound. They were folded into it: keeping them would have left a query
+// that happens to mention atan2 held to a TIGHTER bound than the same
+// arithmetic without it. Their measured pairs survive as test cases on this
+// comparator, so none of that evidence is lost.
+//
+// This is one number applied to every comparison, with no per-fixture opt-in
+// and no exemption set — the distinction invariant 7 draws. A fixture cannot
+// reach it, widen it, or be excused by it.
+const summationReorderRelativeTolerance = 2 * (maxReorderedSamplesPerOutputValue - 1) * float64UnitRoundoff
+
+// EqualValues reports whether two float samples agree, within
+// [summationReorderRelativeTolerance].
 //
 // NaN==NaN is TRUE here. PromQL produces NaN as a legitimate answer
 // (0/0, quantile over an empty window, a stale marker's fold), and Go's
 // float comparison would call two such answers different, failing
-// fixtures that actually agree.
-//
-// Everything else is EXACT. The two named function-specific exceptions below
-// have independently demonstrated implementation-level rounding differences;
-// an unscoped epsilon would be a tolerance — the shape invariant 7 forbids —
-// dressed up as a numeric constant.
+// fixtures that actually agree. A NaN against a real number is still
+// unequal, and so is an infinity against anything it is not bit-identical
+// to — an engine that answered +Inf where the other answered a finite
+// number disagrees about the answer, at any tolerance.
 func EqualValues(a, b float64) bool {
 	if math.IsNaN(a) && math.IsNaN(b) {
 		return true
 	}
-	return a == b
-}
-
-// atan2ULPTolerance is the maximum ULP (unit-in-the-last-place) distance
-// permitted between cerberus's atan2 answer and the reference engine's. It
-// is the ONE relaxation this package makes to EqualValues's exact-equality
-// rule, and it exists for exactly one proven reason — see
-// [EqualAtan2Values].
-const atan2ULPTolerance = 1
-
-// exponentialHistogramInterpolationULPTolerance is the maximum measured ULP
-// distance between Prometheus's Go-math exponential-histogram interpolation
-// and Cerberus's ClickHouse-libm interpolation. Issue #2024 measured the
-// seven enrolled seeds at one through five ULPs; six is deliberately rejected
-// by TestEqualExponentialHistogramInterpolationValues_Boundary.
-const exponentialHistogramInterpolationULPTolerance = 5
-
-// nativeHistogramQuantileULPTolerance is the maximum ULP distance between
-// Prometheus's and ClickHouse's exponential-histogram interpolation results.
-// The engines use separate floating-point implementations for that operation.
-const nativeHistogramQuantileULPTolerance = 2
-
-// classicHistogramRateQuantileULPTolerance is the maximum measured ULP
-// distance between Prometheus's and cerberus's histogram_quantile answer
-// when the quantile's classic-bucket input passes through rate()/increase()
-// first. histogram_quantile_classic_{agg,bare}_rate_min_samples measured two
-// ULPs (0.29999999999999993 vs 0.30000000000000004) and one ULP
-// (0.06666666666666668 vs 0.06666666666666667); see
-// [EqualClassicHistogramRateQuantileValues] for why the divergence is
-// upstream of the interpolation arithmetic and not chaseable there.
-const classicHistogramRateQuantileULPTolerance = 2
-
-// powULPTolerance is the maximum ULP distance permitted between cerberus's
-// `^` (pow) answer and the reference engine's. It is the same class of
-// relaxation as [atan2ULPTolerance] — see [EqualPowValues]. Issue #2598's
-// own pinned pair (125061.4728613401 vs 125061.47286134012) measures TWO
-// ULPs apart, not the one the issue title's shorthand suggested; the ULP
-// count below is the one actually verified by ulpDistance on those two
-// values, not the issue's own characterization.
-const powULPTolerance = 2
-
-// EqualAtan2Values reports whether two float samples PRODUCED BY EVALUATING
-// PROMQL'S atan2 agree within [atan2ULPTolerance] ULPs. NaN==NaN is TRUE
-// here for the same reason it is in EqualValues.
-//
-// # Why atan2 gets a tolerance and nothing else in this package does
-//
-// invariant 7 forbids a tolerance dressed up as a numeric constant, so this
-// one earns its place by being the opposite: a NAMED exception for a SINGLE
-// function, adopted only after that function was independently proven to
-// diverge, not adopted speculatively for a class it might belong to.
-//
-// binop_atan2_scalar_vector.txtar (`2 atan2 up`) evaluates atan2 two
-// different ways: the reference engine calls Go's math.Atan2, and cerberus
-// lowers the vector-involving case to ClickHouse's own SQL atan2, evaluated
-// by ClickHouse's libm. Two of the fixture's four series disagree in the
-// last bit of the mantissa — e.g. reference 1.3734007669450157 versus
-// cerberus 1.373400766945016, and reference 1.2341215074081693 versus
-// cerberus 1.2341215074081695 — which is exactly what IEEE-754 permits: the
-// standard requires each implementation to be correctly rounded for its OWN
-// algorithm, but it does not require two independent libm implementations
-// to agree bit-for-bit on a transcendental function, only "faithfully
-// rounded" within a small ULP bound, typically 1. That is a fact about
-// floating-point arithmetic, not a lowering bug, and no amount of chasing it
-// in cerberus's SQL would close it — the fix would have to live in
-// ClickHouse's libm.
-//
-// This does NOT extend to any other PromQL function. sin, cos, tan, asin,
-// acos, atan, exp, ln, log2, log10 and sqrt are all named as candidates in
-// issue #1985, and NONE of them has been measured to diverge — for all this
-// package knows today, ClickHouse and Go's math package agree on every one
-// of them exactly. A future function earns this same treatment only the
-// same way atan2 did: enrol its fixture at ordinary EqualValues, run it, and
-// observe a genuine small-ULP disagreement. Until that proof exists for a
-// given function, a mismatch on it is a real bug and EqualValues — exact
-// equality — is the correct comparator. Do not widen atan2ULPTolerance's
-// scope, and do not add a second named tolerance without the same evidence
-// this one has (see the issue for the seed values and the exact diffs).
-//
-// Note that PromQL's pure scalar-scalar atan2 (`1 atan2 2`) is unaffected:
-// internal/promql/scalar.go constant-folds it with Go's own math.Atan2, so
-// it already matches the reference engine exactly and needs no tolerance.
-// Only the vector-involving shape, evaluated per-row in ClickHouse SQL,
-// diverges.
-func EqualAtan2Values(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	return ulpDistance(a, b) <= atan2ULPTolerance
-}
-
-// EqualPowValues reports whether two float samples PRODUCED BY EVALUATING
-// PROMQL'S `^` (pow) binary operator agree within [powULPTolerance] ULPs.
-// NaN==NaN is TRUE here for the same reason it is in EqualValues.
-//
-// # Why pow gets the same treatment as atan2
-//
-// This is the same class of divergence [EqualAtan2Values] documents, and
-// earns its place the same way: a NAMED exception for a SINGLE operator,
-// adopted only after independent proof, not adopted speculatively.
-//
-// exp_histogram_set_op_or_mixed_vector_vector_pow.txtar (issue #2598)
-// evaluates `(histogram_quantile(...) or ...) ^ (histogram_quantile(...) or
-// ...)`, where both operands resolve to plain floats before `^` is applied.
-// The reference engine calls Go's math.Pow; cerberus lowers the
-// vector-involving case to ClickHouse's own SQL pow(), evaluated by
-// ClickHouse's libm. The two disagree near the last bit of the mantissa —
-// reference 125061.4728613401 versus cerberus 125061.47286134012, measured
-// as [powULPTolerance] ULPs apart — which is exactly the same "faithfully
-// rounded, not bit-identical" behaviour permitted between two independent
-// libm implementations of a transcendental function that atan2ULPTolerance's
-// doc comment explains. That is a fact about floating-point arithmetic, not
-// a lowering bug.
-//
-// Do not widen powULPTolerance's scope, and do not add a second named
-// tolerance without the same measured evidence this one has.
-func EqualPowValues(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	return ulpDistance(a, b) <= powULPTolerance
-}
-
-// EqualExponentialHistogramInterpolationValues reports whether two float
-// samples produced by native exponential-histogram interpolation agree within
-// [exponentialHistogramInterpolationULPTolerance] ULPs.
-//
-// This is deliberately narrower than an epsilon comparison. It exists only
-// for histogram_fraction and native histogram_quantile evaluated through
-// ClickHouse's log2/pow implementation, where #2024 measured the documented
-// divergence from Prometheus's Go math implementation. The parity runner,
-// not fixture metadata, selects it only when that function class reads an
-// exponential-histogram seed table; all other values use EqualValues exactly.
-func EqualExponentialHistogramInterpolationValues(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	return ulpDistance(a, b) <= exponentialHistogramInterpolationULPTolerance
-}
-
-// EqualNativeHistogramQuantileValues reports whether native histogram
-// quantiles agree within [nativeHistogramQuantileULPTolerance] ULPs. The
-// reference engine evaluates the interpolation in Go while cerberus evaluates
-// it in ClickHouse; the two issue #2023 fixtures demonstrate a maximum
-// observed distance of two ULPs.
-func EqualNativeHistogramQuantileValues(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	return ulpDistance(a, b) <= nativeHistogramQuantileULPTolerance
-}
-
-// EqualClassicHistogramRateQuantileValues reports whether two float samples
-// produced by histogram_quantile over a rate()/increase()'d classic-bucket
-// selector agree within [classicHistogramRateQuantileULPTolerance] ULPs.
-//
-// # Why this is a separate, narrow comparator
-//
-// Cerberus evaluates the rate-derived bucket ladder and interpolation in
-// ClickHouse, while Prometheus evaluates both in Go. The two
-// histogram_quantile_classic_{agg,bare}_rate_min_samples fixtures measure a
-// one-or-two-ULP difference from those independent floating-point paths.
-// Classic quantiles without rate()/increase() remain exact, so the parity
-// runner selects this comparator only when an outer histogram_quantile reads
-// a rate()/increase() call whose selectors are classic `_bucket` series.
-//
-// This mirrors [EqualAtan2Values] and [EqualExponentialHistogramInterpolationValues]
-// exactly: a NAMED exception for a proven case, not a general tolerance.
-// Do not widen it beyond histogram_quantile over rate()/increase() of a
-// classic bucket selector, and do not add another one without the same
-// measured evidence.
-func EqualClassicHistogramRateQuantileValues(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return false
-	}
-	return ulpDistance(a, b) <= classicHistogramRateQuantileULPTolerance
-}
-
-// ulpDistance returns the number of math.Nextafter steps needed to walk
-// from a to b — the standard definition of ULP distance for IEEE-754
-// doubles, and exactly what "faithfully rounded within N ULPs" means. It is
-// 0 for equal values (including +0 and -0, which compare equal), 1 for
-// adjacent representable values, and so on.
-//
-// # How this works
-//
-// math.Float64bits gives each float's raw IEEE-754 bit pattern, which for
-// non-negative floats already increases monotonically with the value (a
-// deliberate property of the IEEE-754 encoding). monotonicUint64 extends
-// that monotonicity across the sign boundary too, so that once both values
-// are mapped, their ULP distance is simply the unsigned difference between
-// the two representations.
-//
-// This was verified against math.Nextafter itself — not just eyeballed —
-// by walking 5000 consecutive Nextafter steps across the positive/negative
-// boundary and checking ulpDistance agreed with the step count at every
-// one. That check matters because the naive version of this trick (flip
-// every bit for a negative value, flip only the sign bit for a
-// non-negative one — the form most references, including Google Test's
-// comparator, show) treats +0.0 and -0.0 as two DISTINCT adjacent slots.
-// They are not: math.Nextafter — and IEEE-754 equality — treat zero as a
-// single point, so that naive form overcounts by 1 for any pair straddling
-// zero. monotonicUint64 collapses them into one slot instead.
-func ulpDistance(a, b float64) uint64 {
+	// Identity first: it is the whole answer for ±Inf and for ±0, and it
+	// keeps a-b below from evaluating Inf-Inf.
 	if a == b {
-		return 0
+		return true
 	}
-	ua, ub := monotonicUint64(a), monotonicUint64(b)
-	if ua > ub {
-		ua, ub = ub, ua
+	if math.IsNaN(a) || math.IsNaN(b) || math.IsInf(a, 0) || math.IsInf(b, 0) {
+		return false
 	}
-	return ub - ua
-}
-
-// signBit64 is the sign bit of an IEEE-754 double's raw bit pattern.
-const signBit64 = uint64(1) << 63
-
-// monotonicUint64 maps a float64 onto a uint64 whose ordering agrees with
-// the float's own ordering across the whole range, sign boundary included,
-// with +0.0 and -0.0 mapped to the SAME value. See [ulpDistance] for why
-// that last part matters and how this was checked.
-//
-// The branch is on the float's VALUE (f < 0), not its bit pattern's sign
-// bit, which is what makes -0.0 — value-wise non-negative, despite its sign
-// bit being set — fall into the same branch as +0.0. bits(-0.0) is just the
-// sign bit with no magnitude bits, so ORing it with signBit64 is a no-op
-// and lands it on exactly the same slot as +0.0, with no special case
-// needed for it.
-//
-// For a genuinely negative float, the magnitude bits (its bit pattern with
-// the sign bit cleared) increase as the value gets more negative, so
-// subtracting them from signBit64 maps the value into a mirror range
-// immediately below zero's slot with no gap and no overlap: the smallest
-// magnitude (1, the negative value adjacent to zero) lands one below zero,
-// exactly where the non-negative side's smallest magnitude lands one
-// above it.
-func monotonicUint64(f float64) uint64 {
-	bits := math.Float64bits(f)
-	if f < 0 {
-		magnitude := bits &^ signBit64
-		return signBit64 - magnitude
-	}
-	return bits | signBit64
+	scale := math.Max(math.Abs(a), math.Abs(b))
+	return math.Abs(a-b) <= summationReorderRelativeTolerance*scale
 }

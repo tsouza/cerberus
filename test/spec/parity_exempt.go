@@ -11,8 +11,8 @@
 //
 // # Why a new section rather than a new value inside `parity:`
 //
-// parity.go's own atan2QueryPattern doc comment already rejected a new
-// required `parity:` key for a narrower reason (an ULP tolerance) because
+// compareSampleValue's own doc comment already rejected a new required
+// `parity:` key for a narrower reason (a float tolerance) because
 // LoadParity treats every key as required on every enrolled fixture, so
 // adding one would force an edit onto every already-enrolled fixture. The
 // same argument applies here with more force: an exemption fixture has no
