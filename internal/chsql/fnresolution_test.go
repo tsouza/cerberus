@@ -31,6 +31,20 @@ func TestExprFuncRejectsUndeclaredFn(t *testing.T) {
 	}
 }
 
+// TestExprWindowRejectsUndeclaredFn is exprWindow's sibling of
+// TestExprFuncRejectsUndeclaredFn: it resolves its Fn through the same
+// resolveFn call, so an undeclared symbol must fail closed there too
+// rather than emitting a raw or empty function identifier inside the
+// `... OVER (...)` shape.
+func TestExprWindowRejectsUndeclaredFn(t *testing.T) {
+	t.Parallel()
+
+	b := NewBuilder()
+	if err := b.Expr(&chplan.WindowExpr{Fn: chplan.Fn("not-a-declared-fn")}); err == nil {
+		t.Fatal("Expr: got nil error, want an unresolved-Fn error")
+	}
+}
+
 func TestAggFuncFragResolvesSealedFn(t *testing.T) {
 	t.Parallel()
 

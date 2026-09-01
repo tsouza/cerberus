@@ -744,6 +744,17 @@ func printExpr(e chplan.Expr) string {
 		flat := strings.TrimRight(sb.String(), "\n")
 		flat = strings.Join(strings.Fields(strings.ReplaceAll(flat, "\n", " ; ")), " ")
 		return fmt.Sprintf("(%s IN {%s})", printExpr(v.Left), flat)
+	case *chplan.WindowExpr:
+		args := make([]string, len(v.Args))
+		for i, a := range v.Args {
+			args[i] = printExpr(a)
+		}
+		partitionBy := make([]string, len(v.PartitionBy))
+		for i, p := range v.PartitionBy {
+			partitionBy[i] = printExpr(p)
+		}
+		return fmt.Sprintf("%s(%s) OVER (PARTITION BY [%s])",
+			fnDisplayName(v.Fn), strings.Join(args, ", "), strings.Join(partitionBy, ", "))
 	case *chplan.BoundedTraceScope:
 		// One-line greppable form: the gate shows on each leaf Filter of a
 		// bounded structure-tab row source so the IR snapshot proves the

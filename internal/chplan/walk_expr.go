@@ -80,5 +80,12 @@ func inspectExpr(e Expr, visit func(Expr) bool, nodeVisit func(Node)) {
 		if nodeVisit != nil && v.Subquery != nil {
 			nodeVisit(v.Subquery)
 		}
+	case *WindowExpr:
+		for _, a := range v.Args {
+			inspectExpr(a, visit, nodeVisit)
+		}
+		for _, p := range v.PartitionBy {
+			inspectExpr(p, visit, nodeVisit)
+		}
 	}
 }

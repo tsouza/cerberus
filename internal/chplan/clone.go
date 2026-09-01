@@ -453,6 +453,8 @@ func cloneExpr(e Expr) Expr {
 		// copy, like the literals above.
 		c := *v
 		return &c
+	case *WindowExpr:
+		return &WindowExpr{Fn: v.Fn, Args: cloneExprs(v.Args), PartitionBy: cloneExprs(v.PartitionBy)}
 	default:
 		panic(fmt.Sprintf("chplan.cloneExpr: unhandled Expr type %T — extend the switch in clone.go", e))
 	}

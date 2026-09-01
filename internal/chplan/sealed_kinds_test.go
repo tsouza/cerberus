@@ -57,6 +57,7 @@ func allExprKinds() []Expr {
 		&ScalarSubquery{},
 		&BoundedTraceScope{},
 		&InSubquery{},
+		&WindowExpr{},
 	}
 }
 
