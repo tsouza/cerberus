@@ -10,14 +10,18 @@
 // bar cerberus issue #2776 set for the single-scope routing (see that
 // issue's PR body / docs/operations.md).
 //
-// Every materialized column here is declared DEFAULT <map>[<key>], the
+// Every materialized column here is declared DEFAULT <map>[<key>] (or, for
+// http.status_code, DEFAULT toInt32OrNull(<map>[<key>]) into a
+// Nullable(Int32) column — cerberus issue #2869's numeric typing), the
 // exact DDL shape internal/schema/ddl.renderTraceMaterializedAttrColumns
 // issues in production (cerberus issue #2776's schema.Traces doc): the
 // column is therefore, by construction, value-identical to what the
-// map-only path reads for that key on every row, seeded or not — so a
-// divergence between the routed and unrouted result sets below can only
-// come from buildAutoScopeUnionAttributeValuesSQL's own union/dedup shape,
-// never from the seed data disagreeing with itself.
+// map-only path reads for that key on every row (modulo the numeric
+// column's own toString round-trip, which attrValueArmFrag applies
+// uniformly — see buildAutoScopeUnionAttributeValuesSQL's doc), seeded or
+// not — so a divergence between the routed and unrouted result sets below
+// can only come from buildAutoScopeUnionAttributeValuesSQL's own
+// union/dedup shape, never from the seed data disagreeing with itself.
 
 package tempo_test
 
@@ -44,11 +48,20 @@ var autoScopeWindowBase = time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
 // column per (scope, key) pair this file's four cases exercise. Engine =
 // Memory mirrors the loki chdb tests — none of these queries depends on
 // MergeTree ordering.
+//
+// __cerberus_materialized_http.status_code is declared Nullable(Int32)
+// DEFAULT toInt32OrNull(...) — production's real numeric shape for that
+// key (cerberus issue #2869) — rather than LowCardinality(String), so this
+// file's routed-vs-unrouted comparison exercises the SAME arm-type
+// mismatch (numeric materialized arm vs. String map arm) production's
+// auto-scope UNION ALL has to reconcile; see
+// search_tag_values_numeric_materialized_chdb_test.go for the dedicated,
+// narrower proof this is type-safe.
 const autoScopeSeedTable = "CREATE TABLE otel_traces (\n" +
 	"    Timestamp DateTime64(9),\n" +
 	"    SpanAttributes Map(String, String),\n" +
 	"    ResourceAttributes Map(String, String),\n" +
-	"    `__cerberus_materialized_http.status_code` LowCardinality(String) DEFAULT SpanAttributes['http.status_code'],\n" +
+	"    `__cerberus_materialized_http.status_code` Nullable(Int32) DEFAULT toInt32OrNull(SpanAttributes['http.status_code']),\n" +
 	"    `__cerberus_materialized_k8s.namespace.name` LowCardinality(String) DEFAULT ResourceAttributes['k8s.namespace.name'],\n" +
 	"    `__cerberus_materialized_span_both.key` LowCardinality(String) DEFAULT SpanAttributes['both.key'],\n" +
 	"    `__cerberus_materialized_resource_both.key` LowCardinality(String) DEFAULT ResourceAttributes['both.key']\n" +

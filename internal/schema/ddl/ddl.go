@@ -2442,10 +2442,19 @@ func renderTraceMaterializedAttrColumns(cfg Config) []string {
 }
 
 // renderAddMaterializedAttrColumns builds one ADD COLUMN ALTER per {key:
-// column} entry, reading DEFAULT `<mapColumn>['<key>']`. mapColumn is
-// tracesSpanAttributesColumn for the span-scoped registry or
-// metricResourceAttributesColumn (reused cross-signal, see that constant's
-// doc) for the resource-scoped one.
+// column} entry. mapColumn is tracesSpanAttributesColumn for the
+// span-scoped registry or metricResourceAttributesColumn (reused
+// cross-signal, see that constant's doc) for the resource-scoped one.
+//
+// Each key's type and DEFAULT expression come from
+// schema.MaterializedAttributeColumnKindFor (cerberus issue #2869): the
+// MaterializedColumnKindString default renders `LowCardinality(String)
+// DEFAULT <mapColumn>['<key>']`; a MaterializedColumnKindNumeric key (e.g.
+// http.status_code) renders `Nullable(Int32) DEFAULT
+// toInt32OrNull(<mapColumn>['<key>'])` instead — toInt32OrNull, not the
+// bare cast, so an absent key or a non-numeric map value resolves to NULL
+// rather than aborting the ALTER's lazy per-row DEFAULT evaluation (see
+// AddColumnBuilder.Default's doc for why that evaluation is lazy at all).
 func renderAddMaterializedAttrColumns(cfg Config, mapColumn string, keyToColumn map[string]string) []string {
 	if len(keyToColumn) == 0 {
 		return nil
@@ -2457,12 +2466,26 @@ func renderAddMaterializedAttrColumns(cfg Config, mapColumn string, keyToColumn 
 	slices.Sort(keys)
 	stmts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		// TypeLowCardinality(TypeRaw("String")) renders "LowCardinality(String)"
-		// — byte-identical to schema.MaterializedAttributeColumnType, the
-		// string preflight compares system.columns' reported type against.
-		colType := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+		mapAccess := chsql.Subscript(chsql.Col(mapColumn), chsql.InlineLit(key))
+		var colType, defaultExpr chsql.Frag
+		switch schema.MaterializedAttributeColumnKindFor(key) {
+		case schema.MaterializedColumnKindNumeric:
+			// TypeNullable(TypeRaw("Int32")) renders "Nullable(Int32)" —
+			// byte-identical to schema.NumericMaterializedAttributeColumnType,
+			// the string preflight compares system.columns' reported type
+			// against.
+			colType = chsql.TypeNullable(chsql.TypeRaw("Int32"))
+			defaultExpr = chsql.Call("toInt32OrNull", mapAccess)
+		default:
+			// TypeLowCardinality(TypeRaw("String")) renders
+			// "LowCardinality(String)" — byte-identical to
+			// schema.MaterializedAttributeColumnType, the string preflight
+			// compares system.columns' reported type against.
+			colType = chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+			defaultExpr = mapAccess
+		}
 		stmt := chsql.AlterTableAddColumn(cfg.Database, cfg.Tables.Traces, keyToColumn[key], colType).
-			Default(chsql.Subscript(chsql.Col(mapColumn), chsql.InlineLit(key)))
+			Default(defaultExpr)
 		if cfg.Cluster != "" {
 			stmt.OnCluster(cfg.Cluster)
 		}

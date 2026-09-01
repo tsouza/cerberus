@@ -659,12 +659,27 @@ type tableReq struct {
 	name    string
 	columns []string
 	attrMap []string
-	// lcStringColumns is the subset of columns that must be typed
-	// LowCardinality(String) rather than checked for mere existence — the
-	// materialized span/resource attribute columns an operator opted into
-	// (cerberus issue #2776). Empty unless schema.Traces.MaterializedSpanAttributeColumns
-	// / MaterializedResourceAttributeColumns carry entries.
-	lcStringColumns []string
+	// materializedColumns is the subset of columns that must be typed a
+	// SPECIFIC ClickHouse type rather than checked for mere existence —
+	// the materialized span/resource attribute columns an operator opted
+	// into (cerberus issue #2776). Empty unless
+	// schema.Traces.MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns carry entries. Each entry's
+	// expected type comes from schema.MaterializedAttributeColumnKindFor
+	// keyed per attribute key (cerberus issue #2869) — most columns
+	// expect schema.MaterializedAttributeColumnType
+	// (LowCardinality(String)), a numeric key like http.status_code
+	// expects schema.NumericMaterializedAttributeColumnType
+	// (Nullable(Int32)) instead.
+	materializedColumns []materializedColumnCheck
+}
+
+// materializedColumnCheck pairs one materialized attribute column with
+// the ClickHouse type it must report in system.columns — see
+// tableReq.materializedColumns.
+type materializedColumnCheck struct {
+	column       string
+	expectedType string
 }
 
 // requiredTables resolves the active config into the per-table shape
@@ -725,43 +740,61 @@ func requiredTables(req Requirements) []tableReq {
 
 	if signals.Traces {
 		tr := req.Traces
-		// materializedAttrColumns lists the operator-configured span +
-		// resource materialized attribute columns (cerberus issue #2776,
-		// nil unless CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED):
-		// essential-column existence AND LowCardinality(String) typing are
-		// both validated, exactly like the attribute maps above — a
+		// materializedChecks lists the operator-configured span + resource
+		// materialized attribute columns (cerberus issue #2776, nil unless
+		// CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED): essential-column
+		// existence AND per-key typing (cerberus issue #2869) are both
+		// validated, exactly like the attribute maps above — a
 		// configured-but-missing/wrong-type column is a genuine FATAL
 		// wrong-shape finding, since the operator's own config declared it
 		// should exist.
-		materializedAttrColumns := materializedAttributeColumnValues(tr.MaterializedSpanAttributeColumns, tr.MaterializedResourceAttributeColumns)
+		materializedChecks := materializedAttributeColumnChecks(tr.MaterializedSpanAttributeColumns, tr.MaterializedResourceAttributeColumns)
+		materializedCols := make([]string, len(materializedChecks))
+		for i, c := range materializedChecks {
+			materializedCols[i] = c.column
+		}
 		tables = append(tables, tableReq{
 			name: tr.SpansTable,
 			columns: append(nonEmpty(
 				tr.TraceIDColumn, tr.SpanIDColumn, tr.SpanNameColumn, tr.ServiceNameColumn,
 				tr.DurationColumn, tr.StartTimeColumn,
 				tr.AttributesColumn, tr.ResourceAttributesColumn,
-			), materializedAttrColumns...),
-			attrMap:         nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
-			lcStringColumns: materializedAttrColumns,
+			), materializedCols...),
+			attrMap:             nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
+			materializedColumns: materializedChecks,
 		})
 	}
 
 	return tables
 }
 
-// materializedAttributeColumnValues returns the deployed column names from
-// both materialized-attribute registries (cerberus issue #2776), sorted for
-// deterministic iteration/testing — the requirements check only cares which
-// COLUMNS must exist and be typed correctly, not which map key each came
-// from.
-func materializedAttributeColumnValues(registries ...map[string]string) []string {
-	var out []string
+// materializedAttributeColumnChecks returns the deployed {column: expected
+// type} checks across both materialized-attribute registries (cerberus
+// issue #2776), sorted by column name for deterministic iteration/testing.
+// The expected type comes from schema.MaterializedAttributeColumnKindFor,
+// looked up per KEY (the registries' map key, not the column name it
+// resolves to) since that is what carries the numeric-vs-string typing
+// decision (cerberus issue #2869).
+func materializedAttributeColumnChecks(registries ...map[string]string) []materializedColumnCheck {
+	byColumn := make(map[string]string)
 	for _, reg := range registries {
-		for _, col := range reg {
-			out = append(out, col)
+		for key, col := range reg {
+			expected := schema.MaterializedAttributeColumnType
+			if schema.MaterializedAttributeColumnKindFor(key) == schema.MaterializedColumnKindNumeric {
+				expected = schema.NumericMaterializedAttributeColumnType
+			}
+			byColumn[col] = expected
 		}
 	}
-	slices.Sort(out)
+	cols := make([]string, 0, len(byColumn))
+	for col := range byColumn {
+		cols = append(cols, col)
+	}
+	slices.Sort(cols)
+	out := make([]materializedColumnCheck, len(cols))
+	for i, col := range cols {
+		out[i] = materializedColumnCheck{column: col, expectedType: byColumn[col]}
+	}
 	return out
 }
 
@@ -876,8 +909,8 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	for _, col := range t.lcStringColumns {
-		got, ok := types[col]
+	for _, chk := range t.materializedColumns {
+		got, ok := types[chk.column]
 		if !ok {
 			// Same double-report guard as the attrMap loop above: a
 			// materialized attribute column is always in t.columns too, so
@@ -887,13 +920,14 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 		// A direct comparison, not normalizeType: that helper specifically
 		// unwraps a LowCardinality(String) map VALUE type down to "String"
 		// for the attrMapType check above, which would make a
-		// LowCardinality(String) TOP-LEVEL column — the exact type this
-		// check expects — compare unequal to itself. Whitespace is a
-		// non-issue here: schema.MaterializedAttributeColumnType has no
-		// nested comma-separated args for system.columns to space out.
-		if got != schema.MaterializedAttributeColumnType {
+		// LowCardinality(String) TOP-LEVEL column — one shape this check
+		// expects — compare unequal to itself. Whitespace is a non-issue
+		// here: neither schema.MaterializedAttributeColumnType nor
+		// schema.NumericMaterializedAttributeColumnType has nested
+		// comma-separated args for system.columns to space out.
+		if got != chk.expectedType {
 			problems = append(problems, fmt.Sprintf(
-				"table %s column %s: expected %s, found %s", t.name, col, schema.MaterializedAttributeColumnType, got,
+				"table %s column %s: expected %s, found %s", t.name, chk.column, chk.expectedType, got,
 			))
 		}
 	}

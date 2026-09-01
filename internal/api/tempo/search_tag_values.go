@@ -277,11 +277,11 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	switch scope {
 	case attrMapScopeResource:
 		if col, ok := s.MaterializedResourceAttributeColumns[name]; ok {
-			return buildMaterializedAttributeValuesSQL(s, col, filter, start, end)
+			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end)
 		}
 	case attrMapScopeSpan:
 		if col, ok := s.MaterializedSpanAttributeColumns[name]; ok {
-			return buildMaterializedAttributeValuesSQL(s, col, filter, start, end)
+			return buildMaterializedAttributeValuesSQL(s, col, materializedColumnNumeric(name), filter, start, end)
 		}
 	case attrMapScopeAny:
 		spanCol, spanMaterialized := s.MaterializedSpanAttributeColumns[name]
@@ -331,25 +331,58 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	return outer.Build()
 }
 
+// materializedColumnNumeric reports whether the materialized column for a
+// span/resource attribute key is a real ClickHouse numeric type
+// (schema.MaterializedColumnKindNumeric, e.g. http.status_code's
+// Nullable(Int32) — cerberus issue #2869) rather than the default
+// LowCardinality(String). The tag-values SQL builders below consult this
+// to project/filter a numeric materialized column correctly: `!= ”`
+// against a numeric column is a type error, and the V1/V2 response shapes
+// both want a STRING value regardless of the column's real CH type (see
+// distinctToStringFrag's doc and intrinsicType's "string" default).
+func materializedColumnNumeric(key string) bool {
+	return schema.MaterializedAttributeColumnKindFor(key) == schema.MaterializedColumnKindNumeric
+}
+
+// materializedColumnPresenceFrag emits the row-level pre-filter for a
+// materialized column: `<col> != ”` for the default String-typed column
+// (the empty string is the map's own absent-key value, carried through by
+// the column's DEFAULT), or `<col> IS NOT NULL` for a numeric column
+// (cerberus issue #2869) — toInt32OrNull's absent/non-numeric sentinel is
+// a real NULL, not an empty string, and comparing a numeric column to the
+// empty string literal is a ClickHouse type error rather than a false
+// filter.
+func materializedColumnPresenceFrag(col string, numeric bool) chsql.Frag {
+	if numeric {
+		return chsql.IsNotNull(chsql.Col(col))
+	}
+	return nonEmptyFrag(col)
+}
+
 // buildMaterializedAttributeValuesSQL builds the SELECT for a single-scope
 // dynamic-attribute values lookup whose key is materialized (cerberus
 // issue #2776):
 //
-//	SELECT DISTINCT `<col>` AS value
+//	SELECT DISTINCT toString(`<col>`) AS value
 //	FROM `otel_traces`
 //	WHERE `<col>` != '' [AND time bounds] [AND filter]
 //
-// col is already a plain LowCardinality(String) top-level column — value-
-// identical to the map subscript it was provisioned from (see
-// schema.Traces.MaterializedSpanAttributeColumns' doc) — so, unlike
+// col is either a plain LowCardinality(String) top-level column —
+// value-identical to the map subscript it was provisioned from (see
+// schema.Traces.MaterializedSpanAttributeColumns' doc) — or, for a
+// numeric key like http.status_code, a Nullable(Int32) one (cerberus
+// issue #2869); toString handles both uniformly (the same idiom
+// buildIntrinsicValuesSQL already relies on for Duration/StatusCode), so
+// the projection never needs to branch on the column's CH type, only its
+// presence filter does (see materializedColumnPresenceFrag). Unlike
 // buildAttributeValuesSQL's map-backed shape, this needs no arrayJoin
 // fan-out, no mapContains pre-filter, and no inner/outer query split: a
 // direct DISTINCT read is both the correct and the cheapest shape.
-func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time) (string, []any) {
+func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, numeric bool, filter chsql.Frag, start, end time.Time) (string, []any) {
 	sb := chsql.NewQuery().
-		Select(chsql.Distinct(chsql.Col(col))).
+		Select(distinctToStringFrag(col)).
 		From(chsql.Col(s.SpansTable)).
-		Where(nonEmptyFrag(col))
+		Where(materializedColumnPresenceFrag(col, numeric))
 	if !start.IsZero() {
 		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
 	}
@@ -395,21 +428,35 @@ func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, filter chs
 // own two-map arrayJoin already tolerates any per-key value-type drift
 // between the two source maps.
 //
+// A materialized arm always projects `toString(<col>)`, never the bare
+// column (see attrValueArmFrag) — load-bearing, not cosmetic, for a
+// numeric materialized key like http.status_code (cerberus issue #2869):
+// UNION ALL requires its arms to share one column type, and ClickHouse has
+// no common supertype between Int32 and the map arm's String projection,
+// so a bare Nullable(Int32) arm alongside a String arm fails the query
+// with NO_COMMON_TYPE. Casting every materialized arm to String up front
+// sidesteps the question for any key, numeric or not, rather than
+// special-casing the one combination http.status_code happens to hit
+// today. Verified against chDB in
+// search_tag_values_numeric_materialized_chdb_test.go.
+//
 // The outer DISTINCT + `v != ”` wrapper is identical to every other
-// branch of buildAttributeValuesSQL: a materialized arm's own `<col> !=
-// ”` filter and a map arm's `mapContains` filter both admit only
-// non-empty values already, so the outer filter is redundant on any
-// single arm — but it is exactly what dedupes the two arms' results
-// against EACH OTHER (a key present with the same value in both maps
-// contributes one row here, not two), which no single arm can do alone.
+// branch of buildAttributeValuesSQL: a materialized arm's own presence
+// filter (materializedColumnPresenceFrag) and a map arm's `mapContains`
+// filter both admit only non-empty values already, so the outer filter is
+// redundant on any single arm — but it is exactly what dedupes the two
+// arms' results against EACH OTHER (a key present with the same value in
+// both maps contributes one row here, not two), which no single arm can
+// do alone.
 func buildAutoScopeUnionAttributeValuesSQL(
 	s schema.Traces, name string,
 	spanCol string, spanMaterialized bool,
 	resCol string, resMaterialized bool,
 	filter chsql.Frag, start, end time.Time,
 ) (string, []any) {
-	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, name, filter, start, end)
-	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, name, filter, start, end)
+	numeric := materializedColumnNumeric(name)
+	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, numeric, name, filter, start, end)
+	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, numeric, name, filter, start, end)
 
 	outer := chsql.NewQuery().
 		Select(chsql.Distinct(chsql.Col("v"))).
@@ -425,16 +472,20 @@ func buildAutoScopeUnionAttributeValuesSQL(
 // time-bounds and `?q=` conjuncts.
 //
 // materialized selects between the two per-arm shapes: true reads
-// materializedCol directly (mirrors buildMaterializedAttributeValuesSQL's
-// projection/filter pair); false reads the map subscript mapCol[name]
-// gated by mapContains(mapCol, name) (mirrors buildAttributeValuesSQL's
-// single-scope map-backed branch). materializedCol is ignored when
+// materializedCol, always cast through toString (mirrors
+// buildMaterializedAttributeValuesSQL's projection, and see
+// buildAutoScopeUnionAttributeValuesSQL's doc for why the cast is
+// load-bearing) and gated by materializedColumnPresenceFrag rather than a
+// bare `!= ”` when numeric is true (cerberus issue #2869); false reads
+// the map subscript mapCol[name] gated by mapContains(mapCol, name)
+// (mirrors buildAttributeValuesSQL's single-scope map-backed branch,
+// already String). materializedCol and numeric are both ignored when
 // materialized is false.
-func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized bool, name string, filter chsql.Frag, start, end time.Time) chsql.Frag {
+func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized, numeric bool, name string, filter chsql.Frag, start, end time.Time) chsql.Frag {
 	arm := chsql.NewQuery().From(chsql.Col(s.SpansTable))
 	if materialized {
-		arm.Select(chsql.As(chsql.Col(materializedCol), "v")).
-			Where(nonEmptyFrag(materializedCol))
+		arm.Select(chsql.As(chsql.Call("toString", chsql.Col(materializedCol)), "v")).
+			Where(materializedColumnPresenceFrag(materializedCol, numeric))
 	} else {
 		arm.Select(chsql.As(mapAtFrag(mapCol, name), "v")).
 			Where(mapContainsFrag(mapCol, name))
