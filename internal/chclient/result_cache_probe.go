@@ -9,14 +9,25 @@ import (
 // resultCacheCapabilityProbeSQL is the canary body — see
 // tsGridCapabilityProbeSQL's own doc for why it is a trivial constant SELECT
 // rendered as a String column rather than a real query-cache round trip: the
-// canary only needs to learn whether the server ACCEPTS the
+// canary only needs to learn whether the server's SETTINGS POLICY accepts the
 // use_query_cache / query_cache_ttl settings cerberus stamps on an eligible
-// query, which ClickHouse decides when it applies the per-query settings map
-// — BEFORE the query body is analysed — so a trivial body isolates the
+// query, which ClickHouse decides (constraint / readonly enforcement) when it
+// applies the per-query settings map, so a trivial body isolates the
 // FORBIDDEN signal with zero dependence on any real query shape. Reusing the
 // SAME constant keeps the two canaries byte-identical on the one property
 // that actually matters here (a String-typed projection Client.QueryStrings
 // can decode); it is not a case of two probes needing the same setting.
+//
+// What this canary therefore CANNOT see, and was once wrongly documented as
+// covering: the query cache's BODY-dependent refusals, which ClickHouse
+// raises after analysing the statement — error 704 for a non-deterministic
+// function and 719 for a system table. A trivial constant SELECT triggers
+// neither by construction, so no choice of canary body short of every real
+// emitted shape could gate them. Those refusals are handled where they
+// belong instead — at the stamp, by co-sending
+// SettingQueryCacheNondeterministicFunctionHandling so a refusal costs a
+// cache miss rather than the query (see result_cache.go and cerberus issue
+// #2895). The probe keeps exactly the one job it can actually do.
 const resultCacheCapabilityProbeSQL = tsGridCapabilityProbeSQL
 
 // resultCacheProbeTTLSeconds is the query_cache_ttl the boot canary stamps

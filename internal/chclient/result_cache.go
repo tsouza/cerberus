@@ -25,14 +25,73 @@ const SettingUseQueryCache = "use_query_cache"
 // serving the cached rows.
 const SettingQueryCacheTTL = "query_cache_ttl"
 
+// SettingQueryCacheNondeterministicFunctionHandling is
+// query_cache_nondeterministic_function_handling: what ClickHouse does when a
+// query it was asked to cache contains a function its query cache classifies
+// as non-deterministic.
+//
+// Its server default is `throw`, and `throw` means the QUERY FAILS — error
+// 704 QUERY_CACHE_USED_WITH_NONDETERMINISTIC_FUNCTIONS, "The query result was
+// not cached because the query contains a non-deterministic function" — not
+// "the result was returned uncached". That distinction is the whole reason
+// this constant exists: stamping use_query_cache=1 on a statement ClickHouse
+// declines to cache turns a query that would have SUCCEEDED into one that
+// errors out.
+//
+// ClickHouse's non-determinism test is `IFunction::isDeterministic()`, which
+// is far broader than the now()/now64() family cerberus's own eligibility
+// gate reasons about. `arrayJoin` is classified non-deterministic (it changes
+// the row count), and arrayJoin is exactly how cerberus fans a range query's
+// samples out across its step grid — the `arrayJoin(arrayMap(i -> ...,
+// range(...)))` shape every non-native range lowering emits. So on the
+// DEFAULT server posture the result cache did not merely fail to help those
+// queries, it failed them: cerberus issue #2895, where 16 fully-closed-window
+// range queries were rejected outright and the resulting error rate tripped
+// the chclient circuit breaker, cascading into 144 diverged LogQL cases and
+// 871 diverged PromQL cases against the reference backends.
+//
+// Verified directly against clickhouse-server 24.8.14.39 (cerberus's supported
+// floor) and 26.5.7.64 (the compatibility harness's server): on both, the
+// setting exists, defaults to `throw`, `SELECT arrayJoin([1,2,3])` under
+// use_query_cache=1 raises 704, and the same statement under
+// queryCacheHandlingIgnore returns its rows normally.
+const SettingQueryCacheNondeterministicFunctionHandling = "query_cache_nondeterministic_function_handling"
+
+// queryCacheHandlingIgnore is the value cerberus stamps for
+// SettingQueryCacheNondeterministicFunctionHandling: ClickHouse SKIPS caching
+// the statement and returns its freshly computed rows, instead of refusing to
+// run it (`throw`, the server default) or caching it anyway (`save`).
+//
+// `ignore` is the only value that matches what cerberus is actually asking
+// for. A result cache is a performance optimization, and a performance
+// optimization must never be able to turn a successful query into a failed
+// one — so `throw` is wrong. `save` is wrong in the other direction: it would
+// override ClickHouse's own judgement and cache a result the server just said
+// it cannot vouch for, which is precisely the staleness risk
+// engine.eligibleForResultCache's closed-window gate exists to avoid. Under
+// `ignore` the two guards compose the way the feature always intended: cerberus
+// decides which windows are CLOSED enough to be cacheable at all, and
+// ClickHouse retains its veto over statements it cannot cache safely, with the
+// veto costing a cache miss rather than the query.
+const queryCacheHandlingIgnore = "ignore"
+
 // WithResultCacheSetting returns a ctx that signals the data-plane query
-// methods to add SettingUseQueryCache=1 and SettingQueryCacheTTL=ttlSeconds
+// methods to add SettingUseQueryCache=1, SettingQueryCacheTTL=ttlSeconds and
+// SettingQueryCacheNondeterministicFunctionHandling=queryCacheHandlingIgnore
 // to the per-request ClickHouse settings map. It mirrors WithTSGridSetting:
 // one writer into the generalised WithQuerySetting carrier, so a query that
 // is BOTH result-cache-eligible and, say, condition-cache-eligible carries
 // both settings on the one map rather than one wrap clobbering the other.
+//
+// The three settings ride TOGETHER, always, and that coupling is load-bearing
+// rather than incidental: use_query_cache=1 without the handling stamp is the
+// posture that fails a query ClickHouse declines to cache (see
+// SettingQueryCacheNondeterministicFunctionHandling for the mechanism and the
+// incident). Every caller therefore goes through this one wrapper — there is
+// no path that stamps use_query_cache on its own.
 func WithResultCacheSetting(ctx context.Context, ttlSeconds int64) context.Context {
 	ctx = WithQuerySetting(ctx, SettingUseQueryCache, 1)
+	ctx = WithQuerySetting(ctx, SettingQueryCacheNondeterministicFunctionHandling, queryCacheHandlingIgnore)
 	return WithQuerySetting(ctx, SettingQueryCacheTTL, ttlSeconds)
 }
 
