@@ -821,14 +821,16 @@ const (
 
 	// FeatureDownsampleTier opts eligible LONG-RANGE / low-resolution
 	// irate() / idelta() / last_over_time() query_range shapes (step >= the
-	// tier's fixed 5-minute bucket, range == bucket, grid aligned to the
-	// bucket boundary — see internal/promql/lower_strategy.go's eligibility
-	// check) onto the operator-provisioned downsampled long-range tier
+	// tier's fixed 5-minute bucket, range a positive integer multiple of the
+	// bucket, grid aligned to the bucket boundary — see
+	// internal/promql/lower_strategy.go's eligibility check) onto the
+	// operator-provisioned downsampled long-range tier
 	// (schema.DownsampleTierTable): a materialized view folding raw Sum-
 	// table samples into a persisted timeSeriesLastTwoSamples aggregate
 	// state per bucket, read back via timeSeriesLastTwoSamplesMerge +
 	// finalizeAggregation instead of scanning full-resolution raw rows
-	// (cerberus issue #2751).
+	// (cerberus issue #2751; a range spanning several buckets merges them
+	// and re-filters to the exact window — issue #2857).
 	//
 	// THIS IS A FUNDAMENTALLY DIFFERENT MECHANISM from the rest of the
 	// timeSeries*ToGrid family above: those are stateless read-time

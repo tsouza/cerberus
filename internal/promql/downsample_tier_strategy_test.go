@@ -138,18 +138,43 @@ func TestDownsampleTierIneligible_StepNotMultipleOfBucket(t *testing.T) {
 	}
 }
 
-func TestDownsampleTierIneligible_RangeNotEqualToBucket(t *testing.T) {
-	// range (15m) != the tier's fixed 5m bucket — even though step is a
-	// clean bucket multiple, v1 scope requires Range == bucket exactly (see
-	// downsampleTierEligible's own doc on why multi-bucket merge is out of
-	// scope).
+// TestDownsampleTierEligible_RangeMultipleOfBucket proves cerberus issue
+// #2857's headline extension: a range spanning several tier buckets (15m ==
+// 3x the 5m bucket) now routes, not just the exact-bucket N==1 case #2751
+// shipped.
+func TestDownsampleTierEligible_RangeMultipleOfBucket(t *testing.T) {
 	rw, ok := lowerDownsampleTierQuery(t, `irate(cpu_seconds_total[15m])`,
 		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
 	if !ok {
 		t.Fatal("expected a RangeWindow in the plan")
 	}
+	if !rw.DownsampleTier {
+		t.Error("a range that is an integer multiple of the bucket (15m == 3x5m) must route to the tier")
+	}
+}
+
+func TestDownsampleTierIneligible_RangeNotMultipleOfBucket(t *testing.T) {
+	// range (7m) is coarser than the 5m bucket but NOT an integer multiple
+	// of it, so it cannot be covered by a whole run of tier buckets.
+	rw, ok := lowerDownsampleTierQuery(t, `irate(cpu_seconds_total[7m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
 	if rw.DownsampleTier {
-		t.Error("range != the tier's fixed bucket must never route to the tier")
+		t.Error("range that is not an integer multiple of the bucket must never route to the tier")
+	}
+}
+
+func TestDownsampleTierIneligible_RangeNarrowerThanBucket(t *testing.T) {
+	// range (1m) is narrower than a single 5m bucket.
+	rw, ok := lowerDownsampleTierQuery(t, `irate(cpu_seconds_total[1m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if rw.DownsampleTier {
+		t.Error("range narrower than one bucket must never route to the tier")
 	}
 }
 

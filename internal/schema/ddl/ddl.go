@@ -1399,11 +1399,19 @@ func renderDeltaPrefixView(cfg Config) string {
 // off-by-one at BOTH edges against that PromQL window; the ceiling
 // convention here reproduces PromQL's half-open-left/closed-right window
 // exactly (verified empirically against a real ClickHouse boundary-exact
-// sample — see internal/chsql's downsample-tier chDB test), so the read
-// side (internal/chsql's emitRangeWindowDownsampleTier) can look up a
-// SINGLE bucket row per grid anchor with no multi-bucket merge or
-// arrayFilter re-narrowing — every raw sample in `(anchor-bucket, anchor]`
-// is guaranteed to land in exactly the row keyed `BucketEnd = anchor`.
+// sample — see internal/chsql's downsample-tier chDB test): every raw
+// sample is guaranteed to land in exactly the ONE bucket row whose
+// `(BucketStart, BucketEnd]` interval contains its timestamp, never split
+// or duplicated across two rows. That unambiguous per-sample assignment is
+// what makes the read side's bucket-to-anchor mapping exact — a query whose
+// range equals the bucket (internal/chsql's emitRangeWindowDownsampleTier,
+// cerberus issue #2751) looks up a SINGLE bucket row per grid anchor with
+// no merge or re-filter at all; a query spanning N buckets (the same
+// function, extended by issue #2857) merges exactly the N bucket rows whose
+// BucketEnd falls in the anchor's own window, with no gap or overlap
+// between them, and re-filters the merged result as a defensive check
+// against malformed data rather than a correctness requirement of this
+// boundary expression.
 //
 // Computed as `toStartOfInterval(t - toIntervalNanosecond(1), bucket) +
 // bucket`: subtracting one nanosecond (TimeUnix's own DateTime64(9)
