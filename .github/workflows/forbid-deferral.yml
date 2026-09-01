@@ -125,10 +125,26 @@ jobs:
       # waiver-in-the-body fix as it is for a deferral-marker one).
       - name: Assert the perf-sentinel obligation scanner matches
         run: node --test .github/scripts/perf-sentinel-obligation.test.mjs
-      - name: Reject a settings-file change with no sentinel coverage or waiver
+      - name: Reject a memory-bounding change with no sentinel coverage or waiver
         run: node .github/scripts/perf-sentinel-obligation.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # #2899's merge-risk gate: what this PR's green does NOT cover. It rides
+      # this job for the same reason the obligation gate above does — it needs
+      # the full history a `fetch-depth: 0` checkout gives and nothing else,
+      # and it is a required context on every PR without adding a new one to
+      # branch protection. `origin/main` is fetched explicitly first: a
+      # `pull_request` checkout populates the PR refs, not the target branch's
+      # remote-tracking ref, and the stale-base half compares against it.
+      - name: Fetch the merge target for the stale-base comparison
+        run: git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+      - name: Assert the merge-risk scanner matches, and does not over-match
+        run: node --test .github/scripts/merge-risk.test.mjs
+      - name: Reject a golden shard regenerated against a base main has moved past
+        run: node .github/scripts/merge-risk.mjs
+        env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

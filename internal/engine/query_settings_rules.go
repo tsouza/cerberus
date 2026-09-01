@@ -15,6 +15,10 @@ import (
 // RESULT-EQUIVALENT: it changes only the execution strategy, never the rows.
 // It has existed since well before cerberus's CH 24.8 floor, so stamping it
 // is version-safe.
+//
+// perf-sentinel: neutral — an execution-strategy choice. Consuming rows in sort
+// order REDUCES the aggregator's live state; it can never raise peak memory
+// versus the hash-table plan it replaces.
 const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 
 // settingUseQueryConditionCache is the ClickHouse setting that turns on the
@@ -26,6 +30,9 @@ const settingOptimizeAggregationInOrder = "optimize_aggregation_in_order"
 // in (server >= 25.3) AND the read path is predicate-stable; below 25.3 the
 // feature is absent from the resolved set, so ConditionCache is false and this
 // is never stamped (version-safe fallback to no-op).
+//
+// perf-sentinel: neutral — a server-side granule cache. It changes how much of
+// a predicate is re-evaluated, never how much state the query builds.
 const settingUseQueryConditionCache = "use_query_condition_cache"
 
 // settingEnableAnalyzer turns on ClickHouse's new query analyzer. The query
@@ -35,12 +42,18 @@ const settingUseQueryConditionCache = "use_query_condition_cache"
 // server/profile level. It is RESULT-EQUIVALENT (an execution-planner choice,
 // not a result rewrite) and the analyzer is GA on every server the
 // condition_cache feature resolves on (>= 25.3), so co-stamping is version-safe.
+//
+// perf-sentinel: neutral — selects which query planner runs. Its measured cost
+// (applyNativeHistogramAnalyzerFix) is CPU time before execution, not memory.
 const settingEnableAnalyzer = "enable_analyzer"
 
 // settingLogComment is ClickHouse's free-form per-query annotation. When set
 // it is copied verbatim into system.query_log.log_comment, letting operators
 // GROUP BY a cerberus-assigned shape id. Free-form and ignored by execution,
 // so stamping it is version-safe and result-neutral.
+//
+// perf-sentinel: neutral — a free-form annotation ClickHouse copies into
+// query_log and never reads during execution.
 const settingLogComment = "log_comment"
 
 // settingQueryPlanOptimizeLazyMaterialization is the ClickHouse setting that
@@ -48,6 +61,9 @@ const settingLogComment = "log_comment"
 // has picked the surviving rows, instead of reading them for the whole
 // scanned window and discarding most of it. It is RESULT-EQUIVALENT (only
 // the read order changes, never the rows) and ships in ClickHouse 25.11.
+//
+// perf-sentinel: neutral — deferring column reads until after ORDER BY + LIMIT
+// strictly REDUCES bytes read and held; it cannot raise peak memory.
 const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_materialization"
 
 // settingQueryPlanMaxLimitForLazyMaterialization caps the LIMIT a query may
@@ -56,6 +72,9 @@ const settingQueryPlanOptimizeLazyMaterialization = "query_plan_optimize_lazy_ma
 // exceeds this knob silently falls back to eager reads, so
 // eligibleForLazyMaterialization sizes it to the query's OWN LIMIT rather
 // than a fixed ceiling, guaranteeing it never under-shoots.
+//
+// perf-sentinel: neutral — an eligibility threshold for the lazy-materialisation
+// plan above. It gates which plan is picked, never a memory budget.
 const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for_lazy_materialization"
 
 // settingMinTableRowsToUseProjectionIndex is the ClickHouse setting (>= 25.11,
@@ -65,6 +84,10 @@ const settingQueryPlanMaxLimitForLazyMaterialization = "query_plan_max_limit_for
 // estimated row count clears this threshold. It is RESULT-EQUIVALENT — it
 // only widens which physical plan the optimizer is allowed to pick, never
 // which rows a query returns.
+//
+// perf-sentinel: neutral — an index-SELECTION threshold. It only widens which
+// physical plan the optimizer may pick, and the plan it unlocks reads strictly
+// fewer rows (this is the classification issue #2832 was minted to record).
 const settingMinTableRowsToUseProjectionIndex = "min_table_rows_to_use_projection_index"
 
 // traceIDBitmapFilterMinTableRows is the value cerberus stamps for
@@ -310,6 +333,11 @@ func (r SettingsRules) apply(ctx context.Context, plan chplan.Node) context.Cont
 // storage (large buffers) uncapped parallelism multiplies buffer RAM. It is
 // RESULT-EQUIVALENT: it changes only how many lanes run concurrently, never the
 // rows produced.
+//
+// perf-sentinel: memory-bounding — every read thread holds its own column read
+// buffer, so this caps how many of those buffers can be live at once. Raising
+// it multiplies buffer RAM; that is why compare() needs it (see
+// applyCompareMemoryBound).
 const settingMaxThreads = "max_threads"
 
 // compareMaxThreads bounds the read parallelism of a TraceQL compare() query to

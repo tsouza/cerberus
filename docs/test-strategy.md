@@ -169,6 +169,42 @@ for the rosters themselves and the procedure for moving one.
 | `link-check`                            | `ci.yml` (`link-check`)                                                                                                          | PR + queue + push                   | Required  | `lychee --offline --include-fragments`: every relative `[text](./other.md#anchor)` link resolves to a file that exists, and every `#fragment` resolves to a real heading/anchor. No network, so it cannot flake on a slow/blocked host; external `http(s)://` links are checked separately by the schedule-only `link-check-external.yml`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `schema-ddl`                            | `schema-integration.yml` (`schema-ddl`)                                                                                          | PR + queue + push + nightly         | Required  | `internal/schema/ddl`'s `integration`-tagged tests against a real ClickHouse (testcontainers-go): the `AUTO_CREATE_SCHEMA` DDL actually accepted by a live server, including that a Replicated database really replicates (`system.replicas`) — a class of bug the rendered-SQL unit tests and the chDB lanes cannot see (three production incidents shipped through that blind spot)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
+### What a green pull request does not cover
+
+Three gates ride the `forbid-deferral` job and share its required context,
+because each needs the same two things that workflow already provides: the
+`edited` trigger, so a fix made in the description re-runs the check, and a
+`fetch-depth: 0` checkout.
+
+`perf-sentinel-obligation.mjs` obligates new perf-sentinel coverage — or an
+open-issue `PERF-SENTINEL-WAIVER:` citation — when a change adds or alters a
+memory-bounding mechanism. The mechanism is derived, not declared here: every
+ClickHouse setting const in `internal/engine/query_settings_rules.go` and
+`internal/engine/spill.go` carries a `perf-sentinel:` doc classification of
+`memory-bounding` or `neutral`, and the gate closes over those files' own
+reference graph from the memory-bounding ones in both directions — what stamps
+a bound, and what computes or gates it. A change obligates only when one of its
+own changed lines, added or removed and with comments stripped, names something
+in that closure. A comment fix, a rename, or a result-equivalent optimizer knob
+living in the same file therefore owes nothing. An unclassified setting const,
+or a `WithQuerySetting` stamping a bare string literal, fails the gate rather
+than being assumed harmless.
+
+`merge-risk.mjs` answers the other half: what this pull request's green does not
+prove. It REJECTS a stale-base golden race — both the change and `main` writing
+under one shard's golden root while either side moves Go code — because a golden
+is a function of its corpus and its generator code, so whichever artefact lands
+second was written by the other side's generator. That is the targeted form of
+branch protection's `strict: true`, which stays off: it forces an update-branch
+only on the PRs that actually race a generated artefact instead of on all of
+them. Same-file races need no help here; git already reports those as conflicts.
+The gate also REPORTS, without blocking, the lanes that gate `main` yet declare
+`merge_posture: never` and so never run on a pull request — the compatibility
+harnesses, the chDB round-trip and perf-guard shards, `perf-nightly`, the e2e
+family — naming each one and the command that runs it, so a skipped lane is
+never read as a passing one. Attribution uses each lane's declared
+`package_globs` and is a floor rather than the whole risk.
+
 ### Test-fence enrollment contracts
 
 The lane registry describes ownership and policy, but registry metadata alone
