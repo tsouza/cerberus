@@ -104,31 +104,47 @@ func downsampleTierValueExprFrag(fn string) Frag {
 }
 
 // emitRangeWindowDownsampleTier renders SQL for an r with DownsampleTier set
-// (cerberus issue #2751): reads r.DownsampleTierInput's bucketed
-// timeSeriesLastTwoSamples state instead of windowing r.Input's raw rows.
-// r.Input is UNUSED here — the boot-wired DownsampleTier*Lowerer
-// (internal/promql/lower_strategy.go) only sets DownsampleTier when
-// r.DownsampleTierInput answers the query completely on its own.
+// (cerberus issue #2751, extended to cover N>1 covering buckets by issue
+// #2857): reads r.DownsampleTierInput's bucketed timeSeriesLastTwoSamples
+// state instead of windowing r.Input's raw rows. r.Input is UNUSED here —
+// the boot-wired DownsampleTier*Lowerer (internal/promql/lower_strategy.go)
+// only sets DownsampleTier when r.DownsampleTierInput answers the query
+// completely on its own.
 //
-// Because that Lowerer's eligibility check (downsampleTierEligible) only
-// ever fires when the query_range grid's own anchors are EXACTLY the tier's
-// bucket boundaries (r.Range equals the tier's fixed bucket, r.Step a
-// positive multiple of it, r.Start bucket-aligned), each grid anchor maps
-// to EXACTLY ONE tier row — this reads the tier table directly, bounded to
-// [r.Start, r.End] on its own bucket column, with no multi-bucket merge or
-// grid materialisation (unlike the native timeSeries*ToGrid family's own
-// timeSeriesRange grid axis in range_window_grid_native.go, which this
-// deliberately does not need — see the v1 scope note on
-// downsampleTierEligible).
+// downsampleTierEligible guarantees r.Range is a positive integer multiple
+// of schema.DownsampleTierBucket and every grid anchor (r.Start + k*r.Step)
+// is bucket-aligned, so each anchor's `(anchor-range, anchor]` window is
+// covered by an EXACT, non-overlapping, gap-free run of N =
+// r.Range/schema.DownsampleTierBucket whole tier buckets — the single-bucket
+// N==1 case #2751 shipped is this shape's degenerate case, not a special
+// one. This function answers the general N case directly (no separate N==1
+// fast path), so the two stay byte-identical on the exact-bucket shape by
+// construction rather than by parallel maintenance.
 //
-// SQL shape (three levels, mirroring RangeWindowGridNative's own
-// inner/outer split):
+// SQL shape (four levels):
 //
-//	merged: SELECT <group...>, BucketEnd,
-//	               timeSeriesLastTwoSamplesMerge(LastTwoSamples) AS merged
-//	        FROM (<r.DownsampleTierInput>)
-//	        WHERE BucketEnd >= r.Start AND BucketEnd <= r.End
-//	        GROUP BY <group...>, BucketEnd
+//	fan: SELECT <group...>, LastTwoSamples, Temporality,
+//	            arrayJoin(<covering anchors for this row's BucketEnd>) AS anchor_ts
+//	     FROM (<r.DownsampleTierInput>)
+//	     WHERE BucketEnd > r.Start - r.Range AND BucketEnd <= r.End
+//
+// The per-row covering-anchor set reuses sampleAnchorFanoutFrag — the SAME
+// bounded sample-side anchor fan-out every other matrix-shape RangeWindow
+// emitter fans raw sample timestamps through — treating each row's BucketEnd
+// as the "sample timestamp". That is sound because every raw sample the
+// write side ever folds into a bucket lands inside that bucket's OWN
+// `(BucketStart, BucketEnd]` half-open interval (downsampleTierBucketEndExpr
+// — internal/schema/ddl), so a bucket whose BucketEnd satisfies an anchor's
+// window test is, by construction, entirely covered by that anchor's
+// window: no bucket ever straddles an anchor boundary. At most
+// r.Range/r.Step + 1 anchors per bucket row, never the full [Start, End]
+// grid, mirroring sampleAnchorFanoutFrag's own doc.
+//
+//	merged: SELECT <group...>, anchor_ts,
+//	               timeSeriesLastTwoSamplesMerge(LastTwoSamples) AS merged,
+//	               any(Temporality) AS temporality
+//	        FROM fan
+//	        GROUP BY <group...>, anchor_ts
 //
 // GROUP BY + the -Merge combinator (never a bare per-row
 // finalizeAggregation) is load-bearing, not a style choice:
@@ -140,12 +156,22 @@ func downsampleTierValueExprFrag(fn string) Frag {
 // whichever part it happened to see FIRST, missing samples a DIFFERENT
 // part holds — verified empirically to diverge from the correct
 // GROUP BY + xMerge answer against a real ClickHouse instance (see this
-// package's downsample-tier chDB test).
+// package's downsample-tier chDB test). Grouping directly by anchor_ts
+// (rather than a separate per-bucket merge level feeding a second
+// per-anchor merge) folds that multi-part hazard and the cross-bucket
+// merge #2857 adds into ONE GROUP BY: -Merge is associative over however
+// many states — same bucket, different parts, or different buckets
+// entirely — a group holds.
 //
-//	sorted: SELECT <group...>, BucketEnd,
-//	               arraySort(x -> x.1, arrayZip(merged.1, merged.2)) AS sorted
+//	sorted: SELECT <group...>, anchor_ts, temporality,
+//	               arraySort(x -> x.1,
+//	                 arrayFilter(p -> p.1 > anchor_ts - range AND p.1 <= anchor_ts,
+//	                   arrayZip(merged.1, merged.2))) AS sorted
 //	        FROM merged
 //
+// The arrayFilter is downsampleTierExactWindowFilterFrag — see its own doc
+// for why a post-merge per-SAMPLE re-check is still required even though
+// the fan-out above is exact by construction over well-formed data.
 // finalizeAggregation / the -Merge combinator's own element order is NOT
 // documented as sorted — verified empirically to come back DESCENDING
 // (newest first) — so this explicitly re-sorts ASCENDING by timestamp
@@ -153,7 +179,7 @@ func downsampleTierValueExprFrag(fn string) Frag {
 // sorted[-2] always "second most recent" regardless of the engine's
 // internal representation.
 //
-//	outer: SELECT <group...>, BucketEnd AS anchor_ts[, r.TimestampColumn],
+//	outer: SELECT <group...>, anchor_ts[, r.TimestampColumn],
 //	              <downsampleTierValueExprFrag> AS r.ValueColumn
 //	       FROM sorted
 //	       WHERE length(sorted) >= downsampleTierMinSamples(r.Func)
@@ -189,45 +215,108 @@ func (e *emitter) emitRangeWindowDownsampleTier(r *chplan.RangeWindow) error {
 	}
 
 	bucketCol := Col(schema.DownsampleTierBucketColumn)
-	merged := NewQuery().From(tierSub)
+	rangeNS := r.Range.Nanoseconds()
+	stepNS := r.Step.Nanoseconds()
+	end := endExprFrag(r)
+	// End-inclusive anchor count over [r.Start, r.End] spaced by r.Step —
+	// r.Offset is always zero here (downsampleTierEligible), so this is the
+	// plain request grid, computed from Start/End directly rather than
+	// trusted from r.OuterRange (which downsampleTierEligible deliberately
+	// leaves unchecked — see that function's own doc).
+	numAnchors := r.End.Sub(r.Start).Nanoseconds()/stepNS + 1
+
+	// fan — one row per (tier row, covering grid anchor).
+	fan := NewQuery().From(tierSub)
+	fan.Select(groupFrags...)
+	fan.Select(Col(schema.DownsampleTierSamplesColumn))
+	fan.Select(Col(schema.DownsampleTierTemporalityColumn))
+	fan.Select(RawAs(sampleAnchorFanoutFrag(end, bucketCol, stepNS, rangeNS, numAnchors), RangeWindowAnchorAlias))
+	// Prune the scan to buckets that could feed ANY anchor in [r.Start,
+	// r.End]: the earliest anchor's own window reaches back to
+	// r.Start - r.Range. Shared with every other matrix-shape emitter's
+	// identical (Start - range, End] scan-prune bound.
+	maybePushInnerScanTimeBounds(fan, r, schema.DownsampleTierBucketColumn, rangeNS)
+
+	// merged — GROUP BY (series, anchor), -Merge across every covering
+	// bucket's state (and every unmerged part of each).
+	merged := NewQuery().From(fan.Frag())
 	merged.Select(groupFrags...)
-	merged.Select(bucketCol)
+	merged.Select(Col(RangeWindowAnchorAlias))
 	merged.Select(As(Call("timeSeriesLastTwoSamplesMerge", Col(schema.DownsampleTierSamplesColumn)), downsampleTierMergedAlias))
 	// any(Temporality) merges the SimpleAggregateFunction(any, Int32) column
-	// across however many unmerged parts the (series, bucket) key currently
-	// has — the SAME multi-part hazard timeSeriesLastTwoSamplesMerge guards
-	// against immediately above, see emitRangeWindowDownsampleTier's own
-	// doc. Selected unconditionally (idelta / last_over_time never read it
-	// — see downsampleTierValueExprFrag) rather than branching the query
-	// shape on r.Func, keeping this function's three-level skeleton
-	// identical for every eligible Func.
+	// across however many unmerged parts / covering buckets the (series,
+	// anchor) key currently has — the SAME multi-part hazard
+	// timeSeriesLastTwoSamplesMerge guards against immediately above, see
+	// emitRangeWindowDownsampleTier's own doc. Selected unconditionally
+	// (idelta / last_over_time never read it — see
+	// downsampleTierValueExprFrag) rather than branching the query shape on
+	// r.Func, keeping this function's skeleton identical for every eligible
+	// Func.
 	merged.Select(As(Call("any", Col(schema.DownsampleTierTemporalityColumn)), downsampleTierTemporalityAlias))
-	merged.Where(
-		Gte(bucketCol, Lit(r.Start)),
-		Lte(bucketCol, Lit(r.End)),
-	)
-	mergedGroupBy := append(append([]Frag{}, groupFrags...), bucketCol)
+	mergedGroupBy := append(append([]Frag{}, groupFrags...), Col(RangeWindowAnchorAlias))
 	merged.GroupBy(mergedGroupBy...)
 
 	sorted := NewQuery().From(merged.Frag())
 	sorted.Select(groupFrags...)
-	sorted.Select(bucketCol)
+	sorted.Select(Col(RangeWindowAnchorAlias))
 	sorted.Select(Col(downsampleTierTemporalityAlias))
 	sortedPairs := Call(
 		"arrayZip",
 		TupleIndex(Col(downsampleTierMergedAlias), 1),
 		TupleIndex(Col(downsampleTierMergedAlias), 2),
 	)
-	sorted.Select(As(Call("arraySort", Lambda1("x", TupleIndex(BareIdent("x"), 1)), sortedPairs), downsampleTierSortedAlias))
+	filteredPairs := downsampleTierExactWindowFilterFrag(sortedPairs, rangeNS)
+	sorted.Select(As(Call("arraySort", Lambda1("x", TupleIndex(BareIdent("x"), 1)), filteredPairs), downsampleTierSortedAlias))
 
 	outer := NewQuery().From(sorted.Frag())
 	outer.Select(groupFrags...)
-	outer.Select(As(bucketCol, RangeWindowAnchorAlias))
+	outer.Select(Col(RangeWindowAnchorAlias))
 	if r.TimestampColumn != RangeWindowAnchorAlias {
-		outer.Select(As(bucketCol, r.TimestampColumn))
+		outer.Select(As(Col(RangeWindowAnchorAlias), r.TimestampColumn))
 	}
 	outer.Select(As(downsampleTierValueExprFrag(r.Func), r.ValueColumn))
 	outer.Where(Gte(Call("length", Col(downsampleTierSortedAlias)), InlineLit(minSamples)))
 
 	return e.emitSelect(outer)
+}
+
+// downsampleTierExactWindowFilterFrag renders
+// `arrayFilter(p -> p.1 > anchor_ts - range AND p.1 <= anchor_ts, pairs)` —
+// the post-merge re-filter cerberus issue #2857 requires: every (timestamp,
+// value) pair the cross-bucket merge produced, re-checked against the
+// anchor's own exact `(anchor-range, anchor]` window before arraySort /
+// arraySlice pick the trailing pair.
+//
+// The upstream fan-out (sampleAnchorFanoutFrag over BucketEnd,
+// emitRangeWindowDownsampleTier's own doc) is exact BY CONSTRUCTION
+// whenever every retained sample's own timestamp genuinely falls inside its
+// OWN row's `(BucketStart, BucketEnd]` interval — which is what the write
+// side (renderDownsampleTierView's downsampleTierBucketEndExpr, and
+// internal/downsampletier's backfillBucketEndExpr, which MUST render the
+// identical expression) guarantees for every row either of them writes.
+// This filter is the READ side's own defense against that guarantee being
+// violated by data the read path did not itself write — a backfill bug, a
+// manual data correction, a replayed/mismatched insert — landing a state
+// whose retained sample timestamp sits outside its own row's canonical
+// bucket interval. Without this filter such a row would still be correctly
+// assigned to its covering anchors by BucketEnd, but could silently leak a
+// stale (or premature) sample into the merged trailing pair; with it, an
+// individual retained sample outside the anchor's own window is dropped
+// before the top-2 read regardless of why it ended up there. Verified
+// against exactly this scenario — a state manually written with a retained
+// sample timestamp outside its BucketEnd's canonical interval — by this
+// package's downsample-tier chDB test.
+//
+// Provably a no-op over every row either write path actually produces
+// (BucketEnd-exactness + bucket alignment together leave no room for a
+// bucket to partially overlap an anchor's window), so it costs nothing
+// correctness-relevant on the happy path — it is pure insurance against the
+// one input this function's OWN reasoning cannot verify: the data.
+func downsampleTierExactWindowFilterFrag(pairs Frag, rangeNS int64) Frag {
+	ts := func() Frag { return TupleIndex(BareIdent("p"), 1) }
+	inWindow := And(
+		Gt(ts(), rangeStartFrag(Col(RangeWindowAnchorAlias), rangeNS)),
+		Lte(ts(), Col(RangeWindowAnchorAlias)),
+	)
+	return Call("arrayFilter", Lambda1("p", inWindow), pairs)
 }

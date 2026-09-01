@@ -1520,15 +1520,19 @@ func (n NativeLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s s
 //     PromQL subquery `[range:step]` — so it carries no subquery-specific
 //     signal at this layer to exclude on.
 //   - rw.Offset must be zero — an offset shifts the window off the tier's
-//     own bucket grid; v1 does not attempt to re-derive an offset-shifted
-//     alignment.
-//   - rw.Range must equal EXACTLY schema.DownsampleTierBucket. A wider
-//     range spanning multiple buckets would need merging several tier rows
-//     (timeSeriesLastTwoSamplesMerge across buckets) PLUS an exact
-//     timestamp re-filter at the union's edges to stay byte-correct at
-//     bucket boundaries — deliberately out of v1 scope (see the PR
-//     description's follow-up note); a narrower range cannot be answered
-//     from one bucket-granularity row at all.
+//     own bucket grid; this mechanism does not attempt to re-derive an
+//     offset-shifted alignment.
+//   - rw.Range must be a POSITIVE INTEGER MULTIPLE of
+//     schema.DownsampleTierBucket (cerberus issue #2857 — the single-bucket
+//     rw.Range == bucket case #2751 shipped is the N==1 degenerate case of
+//     this same check). Every wider multiple merges the N covering tier
+//     rows via timeSeriesLastTwoSamplesMerge and re-filters the merged
+//     result to the exact `(anchor-range, anchor]` window — see
+//     internal/chsql's emitRangeWindowDownsampleTier, mirroring the
+//     reasoning internal/schema/ddl's downsampleTierBucketEndExpr doc
+//     comment lays out for the single-bucket case. A range narrower than
+//     one bucket, or not an integer multiple of it, cannot be answered from
+//     whole bucket-granularity rows at all.
 //   - rw.Step must be a POSITIVE INTEGER MULTIPLE of the bucket — this is
 //     the "step >= bucket" resolution-awareness the issue requires (a step
 //     smaller than the bucket can never divide it evenly, so the modulo
@@ -1553,10 +1557,10 @@ func downsampleTierEligible(rw *chplan.RangeWindow) bool {
 	if len(rw.Variants) > 0 {
 		return false
 	}
-	if rw.Range != schema.DownsampleTierBucket {
+	bucketNS := schema.DownsampleTierBucket.Nanoseconds()
+	if rw.Range <= 0 || rw.Range.Nanoseconds()%bucketNS != 0 {
 		return false
 	}
-	bucketNS := schema.DownsampleTierBucket.Nanoseconds()
 	if rw.Step.Nanoseconds()%bucketNS != 0 {
 		return false
 	}

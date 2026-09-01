@@ -2316,14 +2316,16 @@ high-cardinality DELTA metric — not `date-range × 1` — and belongs in
 capacity planning for any deployment enabling
 `CERBERUS_DELTA_PREFIX_READ_ENABLED` against such a metric.
 
-### Downsampled long-range tier (cerberus issue #2751)
+### Downsampled long-range tier (cerberus issue #2751, #2857)
 
 Auto-create can also provision an **opt-in, cerberus-owned** table + materialized
 view folding raw Sum-table samples into a persisted `timeSeriesLastTwoSamples`
 aggregate state per 5-minute bucket (`internal/schema/ddl`, table
 `otel_metrics_sum_downsample_tier`), read back by `irate()` / `idelta()` /
-`last_over_time()` `query_range` shapes whose window matches the bucket
-exactly. Unlike the DELTA-prefix table above, provisioning and query routing
+`last_over_time()` `query_range` shapes whose window is a positive integer
+multiple of the bucket (one bucket exactly, or several merged via
+`timeSeriesLastTwoSamplesMerge` and re-filtered to the exact window, per
+issue #2857). Unlike the DELTA-prefix table above, provisioning and query routing
 share a **single** flag: `CERBERUS_CH_OPTIMIZATIONS=downsample_tier` (a chopt
 feature, floor ClickHouse >= 25.9, `AutoSelect=false` — never picked by
 `auto`). A not-yet-backfilled or missing bucket degrades to an ABSENT series
