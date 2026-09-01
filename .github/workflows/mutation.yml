@@ -191,50 +191,65 @@ jobs:
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
       #
-      # MUTANT_TIMEOUT_MAX is the per-mutant budget, and — because
-      # mutation-run.mjs pins --timeout-coefficient to match it — it is the
-      # WHOLE budget, not merely a ceiling over some smaller derived value.
-      # That distinction is load-bearing. gremlins derives the timeout as
+      # The per-mutant budget is MEASURED, not declared. mutation-run.mjs times
+      # this leg's own recompile+link+run cycle on this runner — it edits a byte
+      # of the scope's production source and runs the scope's tests exactly as
+      # gremlins runs them for a mutant — and sizes the budget from what it
+      # measured. MUTANT_TIMEOUT_MIN and MUTANT_TIMEOUT_MAX are the bounds that
+      # measurement is clamped into, not the budget itself.
+      #
+      # Measuring is the fix for #2903. A flat declared budget bounds a
+      # quantity it does not describe: it wraps the WHOLE `go test` child, which
+      # is a recompile, a link, and only then a run. Per mutant on an 8-core
+      # machine, against the flat 15s that used to be declared here:
+      #
+      #   internal/chsql   compile+link 12.7-14.4s   test run 0.31s
+      #   internal/promql  compile+link  8.4-8.7s    test run 2.07s
+      #
+      # So the compiler was 80-98% of the budget, every contended runner pushed
+      # mutants over it, and gremlins recorded that as TIMED OUT — which the
+      # gate then scored as a detection, paying the leg efficacy points for
+      # being starved. gremlins-threshold.mjs no longer scores it that way, so
+      # an undersized budget is now visibly RED; this step is what keeps an
+      # honest leg from being red for the compiler's sake.
+      #
+      # MIN is the floor: a probe that cannot measure anything (no `go` on
+      # PATH, a build error) leaves the lane on exactly the 15s it ran on
+      # before. MAX is the ceiling: one pathological measurement cannot spend
+      # the job's whole wall-clock allowance on hung mutants. 120s is roughly
+      # the largest budget the derivation can ask for (internal/chsql's ~14.4s
+      # cycle x 4 concurrent mutants x2 headroom), so it bounds the outlier
+      # without clipping the legs it is sized for. The job's own
+      # `timeout-minutes` below is the backstop beyond it, and a leg that hits
+      # that reports cancelled, which the `mutation` aggregator fails.
+      #
+      # The coefficient is still pinned by mutation-run.mjs, for the reason it
+      # always was: gremlins derives the deadline as
       # `min(timeout-coefficient x the coverage run's wall time, timeout-max)`,
-      # which scales the leash by how long the package took to COMPILE for
-      # coverage — a quantity unrelated to how much damage a runaway mutant
-      # does in that time, and one that collapses to gremlins' 1s floor
+      # and the coverage run's wall time collapses to gremlins' 1s floor
       # whenever the Go build cache is already warm (as it is for
       # mutation-run.mjs's second, full-fallback invocation). Left alone, the
-      # ceiling therefore silently lowered itself to 5s on exactly the path a
-      # pull request takes, under internal/promql's real ~6.6s per-mutant
-      # recompile+link+run, and the leg reported 0.00% efficacy (#2692). With
-      # the coefficient pinned, both invocations get this declared value.
+      # budget silently lowered itself to 5s on exactly the path a pull request
+      # takes, under internal/promql's real per-mutant recompile+link+run, and
+      # the leg reported 0.00% efficacy (#2692).
       #
-      # This is deliberately NOT budget-neutral on the single-invocation path
-      # that was already green. Any leg whose COLD coverage pass ran under
-      # 3s was silently below this ceiling on every event too, and now gets the
-      # full declared value: phase6-spansscan 1.19s -> 5.97s becomes 15s,
-      # phase5-qlcommon 2.82s -> 14.1s becomes 15s. That is the point — the
-      # budget is now the number written here rather than an artefact of
-      # compile time — but it does lengthen the OOM leash the paragraph below
-      # governs, by up to 2.5x on the fastest-compiling legs. 15s is the
-      # analysed value and those legs report `Timed out: 0`, so the exposure is
-      # bounded; deriving the ceiling from measurement behind a memory cap is
-      # tracked in #2694.
-      #
-      # The budget bounds the whole `go test` child, and a bound is needed at
-      # all because a mutant that inverts a scanner's loop-advance
-      # (i++ -> i--) never terminates and allocates per iteration, so an
-      # unbounded leash lets it exhaust the runner's memory. The OOM killer
-      # then reaps the runner agent and the job dies with no verdict at all,
-      # which reads as flake rather than as a missing bound.
+      # A bound is needed at all because a mutant that inverts a scanner's
+      # loop-advance (i++ -> i--) never terminates and allocates per iteration,
+      # so an unbounded leash lets it exhaust the runner's memory. The OOM
+      # killer then reaps the runner agent and the job dies with no verdict at
+      # all, which reads as flake rather than as a missing bound.
       #
       # Do NOT "fix" a recurrence by excluding whichever file the log names:
       # that relocates the file's runaway mutants into whichever leg still owns
-      # it, and burns real mutation coverage. The ceiling is the fix.
+      # it, and burns real mutation coverage. The budget is the fix.
       # mutation-run.mjs owns the changed-line/full decision and validates that
       # the final report executed at least one mutant. Keeping the zero-mutant
       # fallback out of shell prevents a missing or malformed JSON field from
       # being read as a cheap successful phase.
       - name: gremlins unleash
         env:
-          MUTANT_TIMEOUT_MAX: 15s
+          MUTANT_TIMEOUT_MIN: 15s
+          MUTANT_TIMEOUT_MAX: 120s
           SCOPE: ${{ matrix.scope }}
           WORKERS: ${{ matrix.workers }}
           EXCLUDE_FILES: ${{ matrix.exclude_files }}
