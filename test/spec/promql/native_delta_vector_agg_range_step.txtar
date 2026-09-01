@@ -1,0 +1,85 @@
+# delta() sibling of native_changes_vector_agg_range_step.txtar. Cerberus
+# issue #2852 originally proposed extending ts_grid_vector_agg's eligibility
+# to a temporality-split UnionAll for "rate() / increase() / delta()" — but
+# delta() never actually reaches that shape: counterTemporalityRangeFn (see
+# its own doc, internal/promql/lower.go) excludes delta() because it is a
+# PromQL gauge function that applies no counter-reset rule, so
+# rangeVectorCounterTemporalityColumn never threads a TemporalityColumn onto
+# its RangeWindow, and NativeDeltaLowerer.LowerDelta (unlike LowerRate /
+# LowerIncrease) never splits into a union at all — see
+# native_delta_range_step.txtar's own doc for the same point pinned on the
+# bare-native lowering. delta() therefore ALREADY reaches the plain
+# bare-RangeWindowGridNative ts_grid_vector_agg branch unmodified, exactly
+# like changes()/resets() — this fixture is the missing dual-emit pin for
+# that combination (no corresponding fixture existed before #2852, only the
+# non-vector-agg native_delta_range_step.txtar), not a new code path.
+
+-- query.promql --
+sum(delta(disk_used_bytes[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_delta --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+  MetricName String,
+  Attributes Map(String, String),
+  ResourceAttributes Map(String, String) DEFAULT map(),
+  TimeUnix DateTime64(9),
+  Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+-- host=a dips (100 -> 200 -> 300 -> 150 -> 400); host=b climbs steadily.
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 100.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 200.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 300.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:01:30', 9), 150.0),
+  ('disk_used_bytes', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 400.0),
+  ('disk_used_bytes', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 50.0),
+  ('disk_used_bytes', map('host', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 60.0),
+  ('disk_used_bytes', map('host', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 70.0),
+  ('disk_used_bytes', map('host', 'b'), toDateTime64('2026-01-01 00:01:30', 9), 80.0),
+  ('disk_used_bytes', map('host', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 90.0);
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "disk_used_bytes"
+[10] string = "disk.used.bytes"
+[11] string = "disk.used/bytes"
+[12] string = "disk.used_bytes"
+[13] string = "disk/used/bytes"
+[14] string = "disk/used_bytes"
+[15] string = "disk_used.bytes"
+-- chplan --
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  RangeWindowGridNativeVectorAgg fn=sum groupBy=[] anchorAlias=bucket_ts
+    RangeWindowGridNative func=delta range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("disk_used_bytes", "disk.used.bytes", "disk.used/bytes", "disk.used_bytes", "disk/used/bytes", "disk/used_bytes", "disk_used.bytes"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `bucket_ts`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT sumForEach(`grid`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `Attributes`, timeSeriesDeltaToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`)) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL)
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:30Z", 165],
+  ["", {}, "2026-01-01T00:01:00Z", 275],
+  ["", {}, "2026-01-01T00:01:30Z", 93.33333333333334],
+  ["", {}, "2026-01-01T00:02:00Z", 382.5],
+  ["", {}, "2026-01-01T00:02:30Z", 467.5],
+  ["", {}, "2026-01-01T00:03:00Z", 425],
+  ["", {}, "2026-01-01T00:03:30Z", 425],
+  ["", {}, "2026-01-01T00:04:00Z", 425],
+  ["", {}, "2026-01-01T00:04:30Z", 467.5],
+  ["", {}, "2026-01-01T00:05:00Z", 345]
+]

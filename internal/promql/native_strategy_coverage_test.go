@@ -244,10 +244,13 @@ var nativeStrategies = []nativeStrategy{
 		// alternate strategy TYPE to select between. A fixture carrying
 		// ONLY this section is inert — lowerAggregate only consults it
 		// after its input already lowered to a *chplan.RangeWindowGridNative,
-		// so a fixture exercising the resulting SQL shape must ALSO carry
-		// one of the range-function sections above (e.g.
-		// experimental_ts_grid_changes) to build that native grid in the
-		// first place — cerberus issue #2763.
+		// or (rate()/increase() against a schema with an AggregationTemporality
+		// column — cerberus issue #2852) to the Project{UnionAll{
+		// RangeWindowGridNative, RangeWindow}} temporality-split shape, so a
+		// fixture exercising the resulting SQL shape must ALSO carry one of
+		// the range-function sections above (e.g. experimental_ts_grid_changes,
+		// or experimental_ts_grid_range for the temporality-union shape) to
+		// build that native grid in the first place — cerberus issue #2763.
 		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
 			l.VectorAgg = true
 		},

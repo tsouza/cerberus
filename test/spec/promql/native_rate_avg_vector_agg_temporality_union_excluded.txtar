@@ -1,0 +1,123 @@
+# Negative/scope-boundary counterpart of
+# native_rate_vector_agg_temporality_union.txtar (cerberus issue #2852):
+# avg() is EXCLUDED from [nativeGridVectorAggUnionFns] — re-applying `avg`
+# at the combining Aggregate would average the native arm's single
+# already-averaged row as one bare observation among the raw DELTA arm's
+# rows, silently under-weighting the CUMULATIVE side whenever it summarizes
+# more than one series (see that var's own doc, and the avg/count follow-up,
+# cerberus issue #2884). This fixture pins that
+# [rateIncreaseTemporalityUnionArms] still recognizes the union shape but
+# [buildTemporalityUnionVectorAgg] is never invoked for avg: the `-- chplan
+# --` golden below shows the ORDINARY exploded-then-grouped Aggregate over
+# the full Project(UnionAll{...}) input, byte-identical to what this query
+# would lower to with ts_grid_vector_agg disabled entirely — proving the new
+# branch is inert for avg rather than emitting something subtly wrong.
+
+-- query.promql --
+avg by(host) (rate(cerberus_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    AggregationTemporality Int32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 60.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 120.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 180.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 240.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 300.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 10.0, 1);
+-- args --
+[0] string = ""
+[1] string = "host"
+[2] string = "host"
+[3] string = ""
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = "service.name"
+[8] string = "service_name"
+[9] string = ""
+[10] string = "service_name"
+[11] string = "cerberus_requests_total"
+[12] string = "cerberus.requests.total"
+[13] string = "cerberus.requests/total"
+[14] string = "cerberus.requests_total"
+[15] string = "cerberus/requests/total"
+[16] string = "cerberus/requests_total"
+[17] string = "cerberus_requests.total"
+[18] int64 = 1
+[19] string = "service_name"
+[20] string = "service.name"
+[21] string = "service_name"
+[22] string = "service.name"
+[23] string = "service_name"
+[24] string = ""
+[25] string = "service_name"
+[26] string = "cerberus_requests_total"
+[27] string = "cerberus.requests.total"
+[28] string = "cerberus.requests/total"
+[29] string = "cerberus.requests_total"
+[30] string = "cerberus/requests/total"
+[31] string = "cerberus/requests_total"
+[32] string = "cerberus_requests.total"
+[33] int64 = 1
+[34] string = "service_name"
+[35] string = "service.name"
+[36] string = "service_name"
+[37] string = "service.name"
+[38] string = "service_name"
+[39] string = ""
+[40] string = "service_name"
+[41] string = "cerberus_requests_total"
+[42] string = "cerberus.requests.total"
+[43] string = "cerberus.requests/total"
+[44] string = "cerberus.requests_total"
+[45] string = "cerberus/requests/total"
+[46] string = "cerberus/requests_total"
+[47] string = "cerberus_requests.total"
+[48] int64 = 1
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("host", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["host"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnAvg(Value) AS Value]
+    Project ["" AS MetricName, Attributes AS Attributes, anchor_ts AS anchor_ts, TimeUnix AS TimeUnix, Value AS Value]
+      UnionAll arms=2
+        RangeWindowGridNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+            Filter predicate=((MetricName IN ("cerberus_requests_total", "cerberus.requests.total", "cerberus.requests/total", "cerberus.requests_total", "cerberus/requests/total", "cerberus/requests_total", "cerberus_requests.total")) AND (AggregationTemporality != 1))
+              Scan(otel_metrics_sum)
+        RangeWindow func=rate range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value temporality=AggregationTemporality groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+          Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value, AggregationTemporality AS AggregationTemporality]
+            Filter predicate=((MetricName IN ("cerberus_requests_total", "cerberus.requests.total", "cerberus.requests/total", "cerberus.requests_total", "cerberus/requests/total", "cerberus/requests_total", "cerberus_requests.total")) AND (AggregationTemporality = 1))
+              Scan(otel_metrics_sum)
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, avg(`Value`) AS `Value` FROM (SELECT ? AS `MetricName`, `Attributes` AS `Attributes`, `anchor_ts` AS `anchor_ts`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM ((SELECT `Attributes`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `TimeUnix`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`, timeSeriesRateToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` != ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL) UNION ALL (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, counter_delta * ((sampled_interval + if(counter_delta > 0 AND first_val >= 0, least(duration_to_start, sampled_interval * first_val / counter_delta), duration_to_start) + duration_to_end) / sampled_interval / 300), nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, if(temporality = 1, arraySum(arrayMap(x -> tupleElement(x, 2), window_pairs)) - tupleElement(window_pairs[1], 2), arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs))))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, if(temporality = 1, `delta_anchor_levels` + tupleElement(window_pairs[1], 2), tupleElement(window_pairs[1], 2)) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, `temporality`, `window_pairs`, sum(`delta_prefix_step`) OVER (PARTITION BY `Attributes` ORDER BY `anchor_ts`) AS `delta_anchor_levels` FROM (SELECT `Attributes`, `anchor_ts`, `temporality`, `window_pairs`, arraySum(arrayMap(p -> tupleElement(p, 2), arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(`delta_prefix_pairs`))))) AS `delta_prefix_step` FROM (SELECT `Attributes`, `anchor_ts`, `temporality`, `delta_prefix_pairs`, arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(window_pairs))) AS `window_pairs` FROM (SELECT `Attributes`, `anchor_ts`, any(`AggregationTemporality`) AS `temporality`, arraySort(groupArrayIf((`TimeUnix`, `Value`), `TimeUnix` > `anchor_ts` - toIntervalNanosecond(300000000000))) AS `window_pairs`, arraySort(groupArrayIf((`TimeUnix`, `Value`), `TimeUnix` <= `anchor_ts` - toIntervalNanosecond(300000000000))) AS `delta_prefix_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, `anchor_ts` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, `anchor_ts` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, arrayJoin(arrayConcat(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1))), arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)), least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)) + if(`AggregationTemporality` = 1 AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000), 1, 0))))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?))) WHERE `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) AND (`AggregationTemporality` = 1 AND `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(86400000000000) OR `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000))) LIMIT 2800001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `AggregationTemporality`, arrayJoin(arrayConcat(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1))), arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)), least(10, greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1 - 1)) + if(`AggregationTemporality` = 1 AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000), 1, 0))))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value`, `AggregationTemporality` AS `AggregationTemporality` FROM (SELECT * FROM `otel_metrics_sum` PREWHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)) AND (`AggregationTemporality` = ?))) WHERE `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) AND (`AggregationTemporality` = 1 AND `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(86400000000000) OR `TimeUnix` > toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(300000000000) - toIntervalNanosecond(300000000000))) LIMIT 2800001)) > 2800000, 'range window sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `Attributes`, `anchor_ts`)))))) WHERE length(`window_vals`) >= 2))) GROUP BY `gkey_0`, `bucket_ts`)
+-- expected_rows --
+[
+  ["", {"host": "a"}, "2026-01-01T00:01:00Z", 0.11666666666666667],
+  ["", {"host": "a"}, "2026-01-01T00:01:30Z", 0.175],
+  ["", {"host": "a"}, "2026-01-01T00:02:00Z", 0.23333333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:02:30Z", 0.2916666666666667],
+  ["", {"host": "a"}, "2026-01-01T00:03:00Z", 0.35000000000000003],
+  ["", {"host": "a"}, "2026-01-01T00:03:30Z", 0.4083333333333334],
+  ["", {"host": "a"}, "2026-01-01T00:04:00Z", 0.4666666666666667],
+  ["", {"host": "a"}, "2026-01-01T00:04:30Z", 0.5249999999999999],
+  ["", {"host": "a"}, "2026-01-01T00:05:00Z", 0.5833333333333334]
+]
