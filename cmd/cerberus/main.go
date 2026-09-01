@@ -1040,6 +1040,7 @@ func (a queryLogQuerierAdapter) QueryLogActuals(ctx context.Context, since time.
 //	classicHq = enabled ? NativeClassicHistogramWindowLowerer{Fallback: Fanout…{}} : Fanout…{}
 //	rankWalk  = enabled ? NativeQuantileRankWalkLowerer{} : FanoutQuantileRankWalkLowerer{}
 //	lastOverTime = enabled ? NativeLastOverTimeLowerer{Fallback: FanoutLastOverTimeLowerer{}} : FanoutLastOverTimeLowerer{}
+//	  // downsampleTierEnabled ? DownsampleTier{Irate,Idelta,LastOverTime}Lowerer{Fallback: <above>} : <above> unchanged
 //	overTime  = sortedSlabEnabled ? SortedSlabOverTimeLowerer{Fallback: FanoutOverTimeLowerer{}} : FanoutOverTimeLowerer{}
 //
 // rankWalk (quantile_prom_histogram) is not a timeSeries*ToGrid member — it
@@ -1263,6 +1264,20 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 		l.LastOverTime = promql.NativeLastOverTimeLowerer{Fallback: promql.FanoutLastOverTimeLowerer{}}
 	} else {
 		l.LastOverTime = promql.FanoutLastOverTimeLowerer{}
+	}
+	// downsample_tier (cerberus issue #2751) WRAPS whatever irate/idelta/
+	// last_over_time strategy was just resolved above — it is a genuinely
+	// different mechanism (an operator-provisioned, pre-populated table, not
+	// a stateless read-time function swap over the raw table), so it sits
+	// as an outer layer: an eligible shape routes to the tier, everything
+	// else falls through to the family's own best-available raw-scan
+	// strategy (native/laginframe/fanout) unchanged. See
+	// chopt.FeatureDownsampleTier's own doc for why rate()/increase()/
+	// delta() have no such wrapping at all.
+	if optSet.Has(chopt.FeatureDownsampleTier) {
+		l.Irate = promql.DownsampleTierIrateLowerer{Fallback: l.Irate}
+		l.Idelta = promql.DownsampleTierIdeltaLowerer{Fallback: l.Idelta}
+		l.LastOverTime = promql.DownsampleTierLastOverTimeLowerer{Fallback: l.LastOverTime}
 	}
 	// sorted_slab_over_time (issue #2761) has no native timeSeries*ToGrid
 	// competitor: sum_over_time/avg_over_time's only non-fan-out arm is the
@@ -1742,6 +1757,14 @@ func resolveCHOptimizations(ctx context.Context, logger *slog.Logger, client *ch
 	// rather than being threaded as an EnabledSet parameter.
 	cfg.SchemaTempoTagCatalogMV = set.Has(chopt.FeatureTempoTagCatalogMV)
 
+	// Same back-fill for downsample_tier (cerberus issue #2751) — see the
+	// map_bucketed_serialization comment above for why this runs here
+	// rather than being threaded as an EnabledSet parameter. Unlike the
+	// others above, this SAME verdict also drives query routing (see
+	// nativeRangeLowerers below) — schema.DownsampleTierTable's own doc
+	// explains why one flag safely covers both here.
+	cfg.SchemaDownsampleTier = set.Has(chopt.FeatureDownsampleTier)
+
 	// Install the client-side columnar matrix decode when the resolved set
 	// enables it. columnar_result_decode is a chopt feature (opt-in, never
 	// auto), so its enable decision flows through the EnabledSet exactly like
@@ -2180,6 +2203,18 @@ func setupSchema(
 		"signals", "metrics,logs,traces",
 	)
 	apply := func(ctx context.Context) error {
+		// The downsample tier's CREATE TABLE / MV (cerberus issue #2751) use
+		// AggregateFunction(timeSeriesLastTwoSamples, ...) — like every
+		// other consumer of that experimental function family, ClickHouse
+		// rejects it unless allow_experimental_time_series_aggregate_functions
+		// is set on the DDL-issuing session (chclient.WithTSGridSetting is
+		// the SAME carrier the query path stamps for the timeSeries*ToGrid
+		// family — see planHasTSGridNative). Stamped only when the tier is
+		// actually enabled, so a deployment that never opts in issues
+		// byte-identical DDL sessions to today.
+		if applyCfg.DownsampleTierEnabled {
+			ctx = chclient.WithTSGridSetting(ctx)
+		}
 		return ddl.ApplyWithConfig(ctx, applyConn, applyCfg, ddl.All)
 	}
 	if err := apply(ctx); err != nil {

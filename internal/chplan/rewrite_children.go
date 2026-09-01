@@ -331,16 +331,33 @@ func rewriteIrregularNode(n Node, fn func(Node) (Node, bool)) (out Node, changed
 	case *RangeWindow:
 		// Input is the always-present windowed relation;
 		// DeltaPrefixAggregateInput is the optional DELTA-prefix aggregate
-		// side-scan (cerberus issue #2389) — same shape as MetricsCompare's
-		// Inner/optional-RootLookup pair below, so recurse into both when
-		// present rather than treating the side-scan as an opaque leaf.
-		newInput, newDeltaPrefixInput, ch := rewriteOptionalPair(fn, v.Input, v.DeltaPrefixAggregateInput)
-		if !ch {
+		// side-scan (cerberus issue #2389) and DownsampleTierInput is its
+		// downsampled-long-range-tier sibling (cerberus issue #2751) — same
+		// shape as MetricsCompare's Inner/optional-RootLookup pair below, so
+		// recurse into all three when present rather than treating either
+		// side-scan as an opaque leaf.
+		newInput, inputCh := fn(v.Input)
+		var newDeltaPrefixInput Node
+		deltaPrefixCh := false
+		if v.DeltaPrefixAggregateInput != nil {
+			newDeltaPrefixInput, deltaPrefixCh = fn(v.DeltaPrefixAggregateInput)
+		}
+		var newDownsampleTierInput Node
+		downsampleTierCh := false
+		if v.DownsampleTierInput != nil {
+			newDownsampleTierInput, downsampleTierCh = fn(v.DownsampleTierInput)
+		}
+		if !inputCh && !deltaPrefixCh && !downsampleTierCh {
 			return v, false, true
 		}
 		cp := *v
 		cp.Input = newInput
-		cp.DeltaPrefixAggregateInput = newDeltaPrefixInput
+		if v.DeltaPrefixAggregateInput != nil {
+			cp.DeltaPrefixAggregateInput = newDeltaPrefixInput
+		}
+		if v.DownsampleTierInput != nil {
+			cp.DownsampleTierInput = newDownsampleTierInput
+		}
 		return &cp, true, true
 	case *UnionAll:
 		// Recurse into each arm so existing optimizer rules

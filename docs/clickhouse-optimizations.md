@@ -142,6 +142,7 @@ table.
 | `sorted_slab_over_time`          | none       | experimental | no         |
 | `map_bucketed_serialization`     | 26.4       | experimental | no         |
 | `ts_grid_last_over_time`         | 26.6       | experimental | no         |
+| `downsample_tier`                | 25.9       | experimental | no         |
 | `column_statistics`              | 26.3       | experimental | no         |
 | `classic_bucket_merge_summap`    | none       | experimental | no         |
 | `exp_histogram_merge_summap`     | none       | experimental | no         |

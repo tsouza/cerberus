@@ -169,6 +169,15 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// chopt.ExplicitlyRequested) — the SAME threading
 		// LokiLabelCatalogEnabled above uses for its own chopt verdict.
 		TempoTagCatalogEnabled: cfg.SchemaTempoTagCatalogMV,
+		// DownsampleTierEnabled (cerberus issue #2751) is the resolved chopt
+		// downsample_tier verdict, back-filled by cmd/cerberus's boot
+		// resolver (or, for the offline `migrate schema` preview,
+		// chopt.ExplicitlyRequested) — the SAME threading
+		// TraceIDProjectionEnabled above uses for its own chopt verdict. The
+		// table/column names are the fixed schema.DownsampleTier* constants
+		// (see that package's doc for why, unlike DeltaPrefixTable, they are
+		// not threaded from cfg.Schema at all).
+		DownsampleTierEnabled: cfg.SchemaDownsampleTier,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

@@ -248,6 +248,27 @@ type Config struct {
 	// — mirroring exactly how LokiLabelCatalogEnabled is threaded from its
 	// own chopt verdict.
 	TempoTagCatalogEnabled bool
+
+	// DownsampleTierEnabled gates provisioning the operator opt-in
+	// downsampled long-range tier (schema.DownsampleTierTable +
+	// its materialized view; cerberus issue #2751) alongside the five
+	// upstream metrics tables. False (the default) renders no
+	// downsample-tier statements at all — an operator on today's schema
+	// sees byte-identical DDL. Like DeltaPrefixEnabled this table is
+	// entirely cerberus-authored (see renderDownsampleTierTable /
+	// renderDownsampleTierView), so it needs no upstream sqltemplates fork.
+	//
+	// Unlike DeltaPrefixEnabled, this is threaded DIRECTLY from the resolved
+	// chopt.FeatureDownsampleTier boot verdict (internal/schemaboot.
+	// DDLConfig, cmd/cerberus's chOptResolution) — mirroring
+	// ColumnStatisticsEnabled / TraceIDProjectionEnabled above, not
+	// DeltaPrefixEnabled's own dedicated CERBERUS_SCHEMA_*_ENABLED env var —
+	// because this feature genuinely has a ClickHouse version floor to
+	// probe (timeSeriesLastTwoSamples, floor 25.9) the way those two do,
+	// and because a not-yet-backfilled bucket degrades safely (see
+	// schema.DownsampleTierTable's doc) rather than needing DeltaPrefix's
+	// separate later "backfill verified" declaration.
+	DownsampleTierEnabled bool
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -851,6 +872,17 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 				renderDeltaPrefixView(cfg),
 			)
 		}
+		// The downsampled long-range tier (cerberus issue #2751) is entirely
+		// opt-in and entirely cerberus-authored, the same shape as the
+		// DELTA-prefix pair immediately above — CREATE precedes the MV
+		// (which references it in its TO clause).
+		if cfg.DownsampleTierEnabled {
+			stmts = append(
+				stmts,
+				renderDownsampleTierTable(cfg),
+				renderDownsampleTierView(cfg),
+			)
+		}
 		// Column statistics (issue #2766) trail every other metrics
 		// statement — CREATE, then projections, then the temporality index,
 		// then the DELTA-prefix pair — for the same reason the temporality
@@ -1339,6 +1371,161 @@ func renderDeltaPrefixView(cfg Config) string {
 		Database(cfg.Database).
 		IfNotExists().
 		To(cfg.Database, cfg.Tables.MetricsDeltaPrefix).
+		As(body)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// --- Downsampled long-range tier (cerberus issue #2751) ---
+
+// downsampleTierBucketEndExpr renders the tier's bucket-boundary expression
+// over col (metricTimeColumn on the write side; see downsampletier's own
+// backfillBucketEndExpr, which MUST render the identical expression so a
+// backfilled row and a live-MV row for the same raw sample land in the same
+// bucket — see that package's doc comment for why the two copies cannot
+// share a Go func: internal/schema/ddl and internal/downsampletier are both
+// leaf packages neither may import the other's exported surface for one
+// shared helper alone).
+//
+// It computes the CEILING bucket boundary — `bucket * ceil(t / bucket)` —
+// NOT ClickHouse's native toStartOfInterval FLOOR convention
+// (deltaprefix's own dayBucket). This is deliberate: PromQL's range-vector
+// window is HALF-OPEN LEFT, CLOSED RIGHT — `(anchor-range, anchor]` — so a
+// raw sample landing exactly ON a bucket boundary must join the bucket
+// ENDING at that instant, not the one STARTING there. A plain
+// toStartOfInterval(t, bucket) bucket is closed-left/open-right, which is
+// off-by-one at BOTH edges against that PromQL window; the ceiling
+// convention here reproduces PromQL's half-open-left/closed-right window
+// exactly (verified empirically against a real ClickHouse boundary-exact
+// sample — see internal/chsql's downsample-tier chDB test), so the read
+// side (internal/chsql's emitRangeWindowDownsampleTier) can look up a
+// SINGLE bucket row per grid anchor with no multi-bucket merge or
+// arrayFilter re-narrowing — every raw sample in `(anchor-bucket, anchor]`
+// is guaranteed to land in exactly the row keyed `BucketEnd = anchor`.
+//
+// Computed as `toStartOfInterval(t - toIntervalNanosecond(1), bucket) +
+// bucket`: subtracting one nanosecond (TimeUnix's own DateTime64(9)
+// precision) before flooring turns ClickHouse's floor into the ceiling
+// PromQL's window needs, EXCEPT for a sample exactly ON a bucket's OWN
+// start (which correctly stays in that same, now-ending-here bucket rather
+// than jumping to the one before it) — see the chDB test's boundary-exact
+// case for the worked arithmetic.
+func downsampleTierBucketEndExpr(col string, bucket time.Duration) chsql.Frag {
+	bucketSeconds := int64(bucket / time.Second)
+	epsilon := chsql.Sub(chsql.Col(col), chsql.Call("toIntervalNanosecond", chsql.InlineLit(int64(1))))
+	floor := chsql.Call("toStartOfInterval", epsilon, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds)))
+	return chsql.Add(floor, chsql.Call("toIntervalSecond", chsql.InlineLit(bucketSeconds)))
+}
+
+// renderDownsampleTierTable renders the CREATE TABLE for the downsampled
+// long-range tier (cerberus issue #2751): one row per (series, bucket),
+// carrying an AggregateFunction(timeSeriesLastTwoSamples, ...) state folding
+// every raw sample in that bucket down to its two most recent (timestamp,
+// value) pairs. AggregatingMergeTree (not SimpleAggregateFunction, unlike
+// renderDeltaPrefixTable's PartialSum column) because timeSeriesLastTwoSamples'
+// combinator is a genuine two-state merge (re-selecting the top-2 by
+// timestamp across states), not an idempotent max/sum — see
+// renderLokiLabelCatalogTable's uniqState column for the same distinction.
+//
+// ORDER BY puts BucketEnd second, immediately after MetricName, for the SAME
+// primary-key-pruning reason renderDeltaPrefixTable's own ORDER BY does (a
+// query bounded to one metric + a bucket range prunes on the primary key
+// instead of scanning every bucket of every series for that metric).
+//
+// The engine is ALWAYS AggregatingMergeTree / ReplicatedAggregatingMergeTree
+// — never cfg.Engine's operator override — mirroring
+// renderDeltaPrefixTable's own reasoning: an AggregateFunction column
+// requires the Aggregating family specifically, a correctness requirement
+// of this table, not a deployment preference.
+func renderDownsampleTierTable(cfg Config) string {
+	lcString := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+	mapType := chsql.Call("Map", lcString, chsql.TypeRaw("String"))
+	dt64ns := chsql.Call("DateTime64", chsql.InlineLit(int64(9)))
+	engine := chsql.EngineAggregatingMergeTree()
+	if cfg.DatabaseEngine.Replicated {
+		engine = chsql.EngineReplicatedAggregatingMergeTree()
+	}
+	return chsql.CreateTable(schema.DownsampleTierTable).
+		Database(cfg.Database).
+		IfNotExists().
+		Columns(
+			chsql.ColumnDef{Name: metricNameColumn, Type: lcString},
+			chsql.ColumnDef{Name: metricAttributesColumn, Type: mapType},
+			chsql.ColumnDef{Name: metricResourceAttributesColumn, Type: mapType},
+			chsql.ColumnDef{Name: metricServiceNameColumn, Type: lcString},
+			chsql.ColumnDef{Name: schema.DownsampleTierBucketColumn, Type: dt64ns},
+			chsql.ColumnDef{
+				Name: schema.DownsampleTierSamplesColumn,
+				Type: chsql.Call("AggregateFunction", chsql.BareIdent("timeSeriesLastTwoSamples"), dt64ns, chsql.TypeRaw("Float64")),
+			},
+			// SimpleAggregateFunction(any, Int32), not a plain Int32:
+			// AggregatingMergeTree can hold multiple unmerged parts for the
+			// same (series, bucket) key until a background merge runs (see
+			// internal/chsql's emitRangeWindowDownsampleTier), and a plain
+			// column has no merge semantics at all — a background MERGE
+			// would otherwise pick an ARBITRARY row's value for a
+			// non-aggregate column instead of the single well-defined
+			// any() an OTel series' one-temporality-for-its-lifetime
+			// invariant makes exact.
+			chsql.ColumnDef{
+				Name: schema.DownsampleTierTemporalityColumn,
+				Type: chsql.Call("SimpleAggregateFunction", chsql.BareIdent("any"), chsql.TypeRaw("Int32")),
+			},
+		).
+		Engine(engine).
+		OrderBy(metricNameColumn, schema.DownsampleTierBucketColumn, metricAttributesColumn, metricResourceAttributesColumn, metricServiceNameColumn).
+		TTL(chsql.TableTTLTiered(schema.DownsampleTierBucketColumn, cfg.TTL.Metrics, cfg.Tiering.Metrics, cfg.Tiering.Volume)).
+		SQL()
+}
+
+// renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
+// renderDownsampleTierTable from the Sum table (cerberus issue #2751): every
+// raw sample, bucketed to its downsampleTierBucketEndExpr boundary, folded
+// through timeSeriesLastTwoSamplesState. Scoped to the Sum table only
+// (counters) — v1's deliberate scope decision, matching
+// renderDeltaPrefixView's own single-source-table shape; a gauge metric's
+// last_over_time() never routes to this tier (see
+// internal/promql/lower_strategy.go's eligibility check).
+//
+// any(AggregationTemporality) also rides along, feeding
+// schema.DownsampleTierTemporalityColumn — exact per bucket because a
+// single OTel series carries ONE temporality for its lifetime (see that
+// constant's own doc). Unlike renderDeltaPrefixView this carries NO
+// AggregationTemporality WHERE filter: the tier folds every sample
+// regardless of temporality, and irate()'s read branches on the carried
+// column at query time instead (chsql.CounterOrDeltaPairDelta) — see
+// chopt.FeatureDownsampleTier's own doc.
+//
+// Like every materialized view, this captures only rows inserted from the
+// moment it is created onward; pre-existing history needs the separate
+// `cerberus schema downsample-tier-backfill` one-time pass (see
+// internal/downsampletier and docs/operations.md).
+func renderDownsampleTierView(cfg Config) string {
+	bucketEnd := downsampleTierBucketEndExpr(metricTimeColumn, schema.DownsampleTierBucket)
+	body := chsql.NewQuery().
+		Select(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.Call("any", chsql.Col(aggregationTemporalityColumn)), schema.DownsampleTierTemporalityColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsSum)).
+		GroupBy(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			bucketEnd,
+		)
+	stmt := chsql.CreateMaterializedView(schema.DownsampleTierTable+cerberusOwnedViewSuffix).
+		Database(cfg.Database).
+		IfNotExists().
+		To(cfg.Database, schema.DownsampleTierTable).
 		As(body)
 	if cfg.Cluster != "" {
 		stmt.OnCluster(cfg.Cluster)

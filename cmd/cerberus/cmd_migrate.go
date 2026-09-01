@@ -233,6 +233,10 @@ func newMigrateSchemaCmd() *cobra.Command {
 			// issue #2771) — also AutoSelect=false, so the same
 			// explicit-listing-only reasoning applies.
 			cfg.SchemaTempoTagCatalogMV = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureTempoTagCatalogMV)
+			// Same best-effort preview for downsample_tier (cerberus issue
+			// #2751) — also AutoSelect=false, so the same
+			// explicit-listing-only reasoning applies.
+			cfg.SchemaDownsampleTier = chopt.ExplicitlyRequested(cfg.CHOptimizations, chopt.FeatureDownsampleTier)
 			return writeSchema(cmd.OutOrStdout(), cfg)
 		},
 	}
