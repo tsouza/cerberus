@@ -1590,7 +1590,7 @@ var registry = []Feature{
 		Stability:                  Experimental,
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
-		Doc:                        "fold an element-wise-correct outer sum/min/max/avg/count by/without directly into an eligible native rate grid via the -ForEach combinator, exploding only the already-aggregated per-output-series grid once (narrows ts_grid_range; experimental maturity, server >= 25.9, opt-in only — #2763)",
+		Doc:                        "fold an element-wise-correct sum/min/max/avg/count by/without into an eligible native rate grid via -ForEach, exploding only the aggregated per-output-series grid once (narrows ts_grid_range; experimental, server >= 25.9, opt-in — #2763)",
 	},
 	{
 		ID:                         FeatureTSGridInstant,
