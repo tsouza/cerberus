@@ -769,7 +769,7 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 // cache miss rather than the query. Reading ClickHouse's own handling as
 // redundant defense-in-depth behind this gate — rather than as the second,
 // load-bearing half of the decision — is what made cerberus issue #2895:
-// under the server's `throw` default the veto failed 21 fully-closed-window
+// under the server's `throw` default the veto failed fully-closed-window
 // range queries outright, and the error rate tripped the chclient circuit
 // breaker into a lane-wide compatibility regression.
 //

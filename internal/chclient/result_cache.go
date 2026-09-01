@@ -45,16 +45,21 @@ const SettingQueryCacheTTL = "query_cache_ttl"
 // samples out across its step grid — the `arrayJoin(arrayMap(i -> ...,
 // range(...)))` shape every non-native range lowering emits. So on the
 // DEFAULT server posture the result cache did not merely fail to help those
-// queries, it failed them: cerberus issue #2895, where 16 fully-closed-window
-// range queries were rejected outright and the resulting error rate tripped
-// the chclient circuit breaker, cascading into 144 diverged LogQL cases and
-// 871 diverged PromQL cases against the reference backends.
+// queries, it failed them: cerberus issue #2895. The rejections then
+// amplified, because the resulting error rate tripped the chclient circuit
+// breaker and everything dispatched behind it came back "circuit breaker
+// open" — in the failing CI run, 16 rejected queries became 144 diverged
+// LogQL cases and 871 diverged PromQL cases against the reference backends,
+// holding the compatibility lane red on main for 31 consecutive runs.
 //
 // Verified directly against clickhouse-server 24.8.14.39 (cerberus's supported
 // floor) and 26.5.7.64 (the compatibility harness's server): on both, the
 // setting exists, defaults to `throw`, `SELECT arrayJoin([1,2,3])` under
 // use_query_cache=1 raises 704, and the same statement under
-// queryCacheHandlingIgnore returns its rows normally.
+// queryCacheHandlingIgnore returns its rows normally. In a local reproduction
+// of the incident, the harness's own ClickHouse recorded 21 exceptions and
+// system.query_log agreed on every one: all 21 were code 704, all 21 carried
+// use_query_cache=1, and all 21 contained arrayJoin.
 const SettingQueryCacheNondeterministicFunctionHandling = "query_cache_nondeterministic_function_handling"
 
 // queryCacheHandlingIgnore is the value cerberus stamps for
