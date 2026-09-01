@@ -227,7 +227,27 @@ every PR) to *broad* (corpus-wide, nightly).
    reconciler uses. Two independent bounds per sentinel: an absolute,
    cap-relative ceiling, and a committed per-sentinel ceiling
    (`test/perf/perf-smoke-baseline.json`, max-of-N repeats with headroom,
-   `just update-perf-smoke-baseline` to regenerate).
+   `just update-perf-smoke-baseline` to regenerate). A sentinel whose
+   mechanism is a per-query ClickHouse SETTING carries a third bound, and it
+   is the load-bearing one: `Sentinel.RequiredQuerySettings` names the
+   settings that must appear in `system.query_log`'s `Settings` map on every
+   repeat. Those stamps are result-equivalent and threshold-gated by
+   construction, so peak memory and HTTP status are identical whether the rule
+   fired or was never wired at all — without the settings assertion such a
+   sentinel would pass just as green with the mechanism deleted.
+
+   The corpus is TIERED by ClickHouse capability (`smoke.ServerFloor`): the
+   harness boots one container per floor and runs each sentinel on the lowest
+   server that can actually exercise it. `chopt` gates several settings rules
+   behind a version floor above the repo-wide pinned image —
+   `join_spill`'s is 26.4 — and the tiers coexist rather than one replacing
+   the other, so sub-floor behaviour stays measured on the older server and no
+   existing sentinel's calibrated baseline moves when a newer-floor mechanism
+   gains coverage. Both this corpus and `test/perf/nightly`'s build their
+   handlers with the SAME boot-resolved `engine.SettingsRules` a real
+   deployment carries (`chopttest.BuildSettingsRules` from a live
+   probe-and-resolve), because `prom.New` / `tempo.New` leave `Engine.Settings`
+   at its zero value, which applies nothing at all.
 
 The static fan-out lint is the per-PR gate (in the required `check` job); the
 scaling harness and cardinality ratchet are release-gate checks that no-op on
