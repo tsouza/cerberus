@@ -2605,9 +2605,31 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 		carrier = s.ScopeAttributesColumn
 	}
 	return &chplan.FieldAccess{
-		Source: &chplan.ColumnRef{Name: carrier},
-		Path:   a.Name,
+		Source:             &chplan.ColumnRef{Name: carrier},
+		Path:               a.Name,
+		MaterializedColumn: materializedAttributeColumnFor(a.Scope, a.Name, s),
 	}, nil
+}
+
+// materializedAttributeColumnFor reports the schema-provisioned top-level
+// column name for a materialized span/resource attribute (cerberus issue
+// #2776), or "" when scope/key is not one cerberus was told to route —
+// the map-fallback case. Only span and resource scopes carry a materialized
+// registry (schema.Traces.MaterializedSpanAttributeColumns /
+// MaterializedResourceAttributeColumns); instrumentation-scope attributes
+// never reach here (lowerAttribute resolves that scope before calling this
+// helper). Both maps are nil unless an operator opted in
+// (CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED), matching
+// Logs.MaterializedResourceColumns' own nil-means-off contract.
+func materializedAttributeColumnFor(scope traceql.AttributeScope, key string, s schema.Traces) string {
+	switch scope {
+	case traceql.AttributeScopeSpan:
+		return s.MaterializedSpanAttributeColumns[key]
+	case traceql.AttributeScopeResource:
+		return s.MaterializedResourceAttributeColumns[key]
+	default:
+		return ""
+	}
 }
 
 func intrinsicColumn(i traceql.Intrinsic, s schema.Traces) string {

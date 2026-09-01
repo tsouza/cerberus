@@ -261,7 +261,27 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // outer one: it is a predicate over the span row, and the outer SELECT
 // sees only the exploded value column `v`. A nil filter appends no
 // clause, so a request without `q` renders exactly the SQL it always did.
+//
+// For the single-scope forms, a materialized attribute column (cerberus
+// issue #2776) short-circuits both the projection and the pre-filter to a
+// direct DISTINCT read of the narrow column instead of the map subscript —
+// see buildMaterializedAttributeValuesSQL. The auto-scope (both-maps) form
+// stays on the map-only path in this version: routing it would mean
+// unioning a materialized column with the OTHER scope's still-map-backed
+// arm, which is more machinery than the common case (Grafana's
+// scope-qualified value dropdown) justifies today — tracked as cerberus
+// issue #2870.
 func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
+	switch scope {
+	case attrMapScopeResource:
+		if col, ok := s.MaterializedResourceAttributeColumns[name]; ok {
+			return buildMaterializedAttributeValuesSQL(s, col, filter, start, end)
+		}
+	case attrMapScopeSpan:
+		if col, ok := s.MaterializedSpanAttributeColumns[name]; ok {
+			return buildMaterializedAttributeValuesSQL(s, col, filter, start, end)
+		}
+	}
 	var (
 		selFrag   chsql.Frag
 		whereFrag chsql.Frag
@@ -296,6 +316,37 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 		From(inner.Frag()).
 		Where(nonEmptyFrag("v"))
 	return outer.Build()
+}
+
+// buildMaterializedAttributeValuesSQL builds the SELECT for a single-scope
+// dynamic-attribute values lookup whose key is materialized (cerberus
+// issue #2776):
+//
+//	SELECT DISTINCT `<col>` AS value
+//	FROM `otel_traces`
+//	WHERE `<col>` != '' [AND time bounds] [AND filter]
+//
+// col is already a plain LowCardinality(String) top-level column — value-
+// identical to the map subscript it was provisioned from (see
+// schema.Traces.MaterializedSpanAttributeColumns' doc) — so, unlike
+// buildAttributeValuesSQL's map-backed shape, this needs no arrayJoin
+// fan-out, no mapContains pre-filter, and no inner/outer query split: a
+// direct DISTINCT read is both the correct and the cheapest shape.
+func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, filter chsql.Frag, start, end time.Time) (string, []any) {
+	sb := chsql.NewQuery().
+		Select(chsql.Distinct(chsql.Col(col))).
+		From(chsql.Col(s.SpansTable)).
+		Where(nonEmptyFrag(col))
+	if !start.IsZero() {
+		sb.Where(tempoTimeGteFrag(s.TimestampColumn, start))
+	}
+	if !end.IsZero() {
+		sb.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		sb.Where(filter)
+	}
+	return sb.Build()
 }
 
 // attrMapScope expresses which attribute map(s) a tag-values lookup

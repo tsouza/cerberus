@@ -439,6 +439,87 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 	}
 }
 
+// TestRunMaterializedAttrColumnMissingFails pins cerberus issue #2776's
+// preflight extension: when the operator configured a materialized
+// attribute column (schema.Traces.MaterializedSpanAttributeColumns is
+// non-nil) but the deployed table does not carry it, that is a FATAL
+// wrong-shape finding — the operator's own config declared the column
+// should exist.
+func TestRunMaterializedAttrColumnMissingFails(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{
+		"http.status_code": "__cerberus_materialized_http.status_code",
+	}
+	err := Run(context.Background(), q, req).Fatal
+	if err == nil {
+		t.Fatal("missing materialized attribute column must fail")
+	}
+	want := "table otel_traces: missing required column __cerberus_materialized_http.status_code"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("message missing %q: %v", want, err)
+	}
+}
+
+// TestRunMaterializedAttrColumnWrongTypeFails mirrors
+// TestRunWrongAttributeTypeFails for the materialized attribute column's
+// OWN expected type (LowCardinality(String)) rather than the generic
+// attribute-map type.
+func TestRunMaterializedAttrColumnWrongTypeFails(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
+	const col = "__cerberus_materialized_http.status_code"
+	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "String"})
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": col}
+	err := Run(context.Background(), q, req).Fatal
+	if err == nil {
+		t.Fatal("wrong-typed materialized attribute column must fail")
+	}
+	want := fmt.Sprintf("table otel_traces column %s: expected LowCardinality(String), found String", col)
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("message missing %q: %v", want, err)
+	}
+}
+
+// TestRunMaterializedAttrColumnCorrectPasses is the healthy-path sibling of
+// the two failure tests above: a correctly deployed materialized attribute
+// column (present, LowCardinality(String)) must not fail the shape gate.
+func TestRunMaterializedAttrColumnCorrectPasses(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
+	const col = "__cerberus_materialized_http.status_code"
+	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "LowCardinality(String)"})
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": col}
+	if err := Run(context.Background(), q, req).Fatal; err != nil {
+		t.Fatalf("correctly deployed materialized attribute column should pass, got: %v", err)
+	}
+}
+
+// TestRunNoMaterializedAttrColumnsConfiguredUnaffected confirms the
+// opt-in gate: a request with nil MaterializedSpanAttributeColumns /
+// MaterializedResourceAttributeColumns (today's default) gets byte-identical
+// gate behavior to before this feature existed — no new required columns,
+// regardless of what the deployed table actually carries.
+func TestRunNoMaterializedAttrColumnsConfiguredUnaffected(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	if err := Run(context.Background(), q, defaultReq()).Fatal; err != nil {
+		t.Fatalf("nil materialized-attribute registries must not affect the gate, got: %v", err)
+	}
+}
+
 func TestRunLowCardinalityMapAccepted(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()

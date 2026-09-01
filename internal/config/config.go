@@ -741,6 +741,34 @@ type SchemaProvisioning struct {
 	// the backfill. See DeltaPrefixReadEnabled's doc for why the two are
 	// deliberately independent knobs rather than one.
 	DeltaPrefixEnabled bool
+
+	// TraceMaterializedAttrsEnabled (CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED)
+	// opts into provisioning the curated default set of materialized
+	// span/resource attribute columns on the traces spans table
+	// (schema.Traces.MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns; cerberus issue #2776). Like
+	// every other knob on this struct it is a no-op unless
+	// AutoCreateSchema is ALSO true.
+	//
+	// UNLIKE DeltaPrefixEnabled, this SAME flag ALSO gates query routing
+	// (internal/schema/env.go's identical-named resolution populates the
+	// read-side maps from the same env var) — ONE verdict for both halves,
+	// not two independent ones. This mirrors SchemaDownsampleTier's
+	// reasoning, not DeltaPrefixEnabled's: DeltaPrefixEnabled needs a
+	// SEPARATE, LATER DeltaPrefixReadEnabled declaration because its
+	// materialized view only captures rows from its own creation moment
+	// onward, so reading it before the one-time historical backfill
+	// completes returns a silently WRONG (under-counted) answer for older
+	// windows. A materialized attribute column has no equivalent failure
+	// mode: it is a plain `DEFAULT <map>[<key>]` column (not MATERIALIZED),
+	// so ClickHouse computes it LAZILY, at read time, for any row whose
+	// part predates the ALTER — confirmed against a real ClickHouse 26.6
+	// server (cerberus issue #2776's PR body) to read byte-identical to
+	// the map on every existing row immediately, with zero divergence
+	// before, during, or after the optional MATERIALIZE COLUMN backfill.
+	// An un-backfilled column can only be slower to read, never wrong, so
+	// there is no "backfill verified" state for an operator to declare.
+	TraceMaterializedAttrsEnabled bool
 }
 
 // AdmitConfig holds the per-handler admission-control concurrency caps.
@@ -962,32 +990,37 @@ const (
 	envSchemaTierAfterTraces    = "CERBERUS_SCHEMA_TIER_AFTER_TRACES"
 	envSchemaSettings           = "CERBERUS_SCHEMA_SETTINGS"
 	envSchemaDeltaPrefixEnabled = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
-	envRequirementsCheck        = "CERBERUS_REQUIREMENTS_CHECK"
-	envExperimentalTSGrid       = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
-	envLogCommentShape          = "CERBERUS_LOG_COMMENT_SHAPE"
-	envResultCacheIngestLag     = "CERBERUS_RESULT_CACHE_INGEST_LAG"
-	envResultCacheTTL           = "CERBERUS_RESULT_CACHE_TTL"
-	envCHOptimizations          = "CERBERUS_CH_OPTIMIZATIONS"
-	envCHOptimizationsMode      = "CERBERUS_CH_OPTIMIZATIONS_MODE"
-	envCHOptCorpusEnabled       = "CERBERUS_CH_OPT_CORPUS_ENABLED"
-	envCHOptCorpusInterval      = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
-	envCHOptCorpusSinkPath      = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
-	envCHOptCorpusRing          = "CERBERUS_CH_OPT_CORPUS_RING"
-	envCHOptCorpusSinkMode      = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
-	envCHQueryWorkload          = "CERBERUS_CH_QUERY_WORKLOAD"
-	envLogFormat                = "CERBERUS_LOG_FORMAT"
-	envLogLevel                 = "CERBERUS_LOG_LEVEL"
-	envOTLPEndpoint             = "CERBERUS_OTLP_ENDPOINT"
-	envOTLPInsecure             = "CERBERUS_OTLP_INSECURE"
-	envOTLPHeaders              = "CERBERUS_OTLP_HEADERS"
-	envOTLPTimeout              = "CERBERUS_OTLP_TIMEOUT"
-	envOTLPExportInterval       = "CERBERUS_OTLP_EXPORT_INTERVAL"
-	envAdmitDisabled            = "CERBERUS_ADMIT_DISABLED"
-	envAdmitProm                = "CERBERUS_ADMIT_PROM"
-	envAdmitLoki                = "CERBERUS_ADMIT_LOKI"
-	envAdmitTempo               = "CERBERUS_ADMIT_TEMPO"
-	envAdmitTail                = "CERBERUS_ADMIT_TAIL"
-	envEnabledHeads             = "CERBERUS_ENABLED_HEADS"
+	// envSchemaTraceMaterializedAttrsEnabled is the SAME literal name
+	// schema.EnvTracesMaterializedAttrsEnabled uses — see that constant's
+	// doc for why internal/config reads it independently rather than
+	// importing internal/schema/env's Getenv-scoped helper.
+	envSchemaTraceMaterializedAttrsEnabled = "CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED"
+	envRequirementsCheck                   = "CERBERUS_REQUIREMENTS_CHECK"
+	envExperimentalTSGrid                  = "CERBERUS_EXPERIMENTAL_TS_GRID_RANGE"
+	envLogCommentShape                     = "CERBERUS_LOG_COMMENT_SHAPE"
+	envResultCacheIngestLag                = "CERBERUS_RESULT_CACHE_INGEST_LAG"
+	envResultCacheTTL                      = "CERBERUS_RESULT_CACHE_TTL"
+	envCHOptimizations                     = "CERBERUS_CH_OPTIMIZATIONS"
+	envCHOptimizationsMode                 = "CERBERUS_CH_OPTIMIZATIONS_MODE"
+	envCHOptCorpusEnabled                  = "CERBERUS_CH_OPT_CORPUS_ENABLED"
+	envCHOptCorpusInterval                 = "CERBERUS_CH_OPT_CORPUS_INTERVAL"
+	envCHOptCorpusSinkPath                 = "CERBERUS_CH_OPT_CORPUS_SINK_PATH"
+	envCHOptCorpusRing                     = "CERBERUS_CH_OPT_CORPUS_RING"
+	envCHOptCorpusSinkMode                 = "CERBERUS_CH_OPT_CORPUS_SINK_MODE"
+	envCHQueryWorkload                     = "CERBERUS_CH_QUERY_WORKLOAD"
+	envLogFormat                           = "CERBERUS_LOG_FORMAT"
+	envLogLevel                            = "CERBERUS_LOG_LEVEL"
+	envOTLPEndpoint                        = "CERBERUS_OTLP_ENDPOINT"
+	envOTLPInsecure                        = "CERBERUS_OTLP_INSECURE"
+	envOTLPHeaders                         = "CERBERUS_OTLP_HEADERS"
+	envOTLPTimeout                         = "CERBERUS_OTLP_TIMEOUT"
+	envOTLPExportInterval                  = "CERBERUS_OTLP_EXPORT_INTERVAL"
+	envAdmitDisabled                       = "CERBERUS_ADMIT_DISABLED"
+	envAdmitProm                           = "CERBERUS_ADMIT_PROM"
+	envAdmitLoki                           = "CERBERUS_ADMIT_LOKI"
+	envAdmitTempo                          = "CERBERUS_ADMIT_TEMPO"
+	envAdmitTail                           = "CERBERUS_ADMIT_TAIL"
+	envEnabledHeads                        = "CERBERUS_ENABLED_HEADS"
 )
 
 // configFileBaseName is the base name (without extension) viper looks
@@ -1131,6 +1164,10 @@ const configFileBaseName = "cerberus"
 //	CERBERUS_SCHEMA_LOGS_TABLE                  default "otel_logs"
 //	CERBERUS_SCHEMA_TRACES_TABLE                default "otel_traces"
 //	CERBERUS_SCHEMA_TRACES_TS_LOOKUP            default off (opt-in trace_id_ts window prune)
+//	CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED default off (opt-in
+//	    materialized span/resource attribute columns, cerberus issue #2776;
+//	    the SAME name also gates DDL provisioning via
+//	    SchemaProvisioning.TraceMaterializedAttrsEnabled below)
 //	CERBERUS_PROM_RESOURCE_LABELS              default "" (empty = project ALL OTel
 //	                                           ResourceAttributes keys as Prometheus
 //	                                           labels) — comma-separated allowlist of
@@ -1399,6 +1436,7 @@ var allEnvKeys = []string{
 	envSchemaTierAfterTraces,
 	envSchemaSettings,
 	envSchemaDeltaPrefixEnabled,
+	envSchemaTraceMaterializedAttrsEnabled,
 	envRequirementsCheck,
 	envExperimentalTSGrid,
 	envLogCommentShape,
@@ -1562,6 +1600,7 @@ func newDefaults() *viper.Viper {
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterTraces, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaDeltaPrefixEnabled, defaultSchemaDeltaPrefixEnabled)
+	v.SetDefault(envSchemaTraceMaterializedAttrsEnabled, defaultSchemaTraceMaterializedAttrsEnabled)
 	v.SetDefault(envRequirementsCheck, defaultRequirementsCheck)
 	v.SetDefault(envExperimentalTSGrid, defaultExperimentalTSGrid)
 	v.SetDefault(envLogCommentShape, defaultLogCommentShape)
@@ -1673,6 +1712,10 @@ const (
 	defaultSchemaTTL                = "0s"
 	defaultSchemaTierAfter          = "0s"
 	defaultSchemaDeltaPrefixEnabled = false
+	// defaultSchemaTraceMaterializedAttrsEnabled keeps materialized
+	// attribute column provisioning + routing OFF until an operator opts
+	// in — see SchemaProvisioning.TraceMaterializedAttrsEnabled's doc.
+	defaultSchemaTraceMaterializedAttrsEnabled = false
 	// defaultDeltaPrefixReadEnabled keeps the exact DELTA-prefix aggregate
 	// query path OFF until an operator explicitly declares backfill
 	// complete AND verified — see Config.DeltaPrefixReadEnabled's doc.
@@ -2870,27 +2913,32 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	traceMaterializedAttrsEnabled, err := getBool(v, envSchemaTraceMaterializedAttrsEnabled)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
 	return SchemaProvisioning{
-		Cluster:                   getString(v, envSchemaCluster),
-		TableEngine:               getString(v, envSchemaTableEngine),
-		TTL:                       ttl,
-		TTLMetrics:                ttlMetrics,
-		TTLLogs:                   ttlLogs,
-		TTLTraces:                 ttlTraces,
-		LogsBodyTTL:               logsBodyTTL,
-		TracesEventsLinksTTL:      tracesEventsLinksTTL,
-		DatabaseReplicated:        replicated,
-		DatabaseReplicatedPath:    getString(v, envSchemaDBReplPath),
-		DatabaseReplicatedShard:   getString(v, envSchemaDBReplShard),
-		DatabaseReplicatedReplica: getString(v, envSchemaDBReplReplica),
-		StoragePolicy:             getString(v, envSchemaStoragePolicy),
-		TierVolume:                getString(v, envSchemaTierVolume),
-		TierAfter:                 tierAfter,
-		TierAfterMetrics:          tierAfterMetrics,
-		TierAfterLogs:             tierAfterLogs,
-		TierAfterTraces:           tierAfterTraces,
-		Settings:                  settings,
-		DeltaPrefixEnabled:        deltaPrefixEnabled,
+		Cluster:                       getString(v, envSchemaCluster),
+		TableEngine:                   getString(v, envSchemaTableEngine),
+		TTL:                           ttl,
+		TTLMetrics:                    ttlMetrics,
+		TTLLogs:                       ttlLogs,
+		TTLTraces:                     ttlTraces,
+		LogsBodyTTL:                   logsBodyTTL,
+		TracesEventsLinksTTL:          tracesEventsLinksTTL,
+		DatabaseReplicated:            replicated,
+		DatabaseReplicatedPath:        getString(v, envSchemaDBReplPath),
+		DatabaseReplicatedShard:       getString(v, envSchemaDBReplShard),
+		DatabaseReplicatedReplica:     getString(v, envSchemaDBReplReplica),
+		StoragePolicy:                 getString(v, envSchemaStoragePolicy),
+		TierVolume:                    getString(v, envSchemaTierVolume),
+		TierAfter:                     tierAfter,
+		TierAfterMetrics:              tierAfterMetrics,
+		TierAfterLogs:                 tierAfterLogs,
+		TierAfterTraces:               tierAfterTraces,
+		Settings:                      settings,
+		DeltaPrefixEnabled:            deltaPrefixEnabled,
+		TraceMaterializedAttrsEnabled: traceMaterializedAttrsEnabled,
 	}, nil
 }
 

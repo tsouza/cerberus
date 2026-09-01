@@ -404,7 +404,7 @@ func cloneExpr(e Expr) Expr {
 	case *InList:
 		return &InList{Left: cloneExpr(v.Left), List: cloneExprs(v.List), Negated: v.Negated}
 	case *FieldAccess:
-		return &FieldAccess{Source: cloneExpr(v.Source), Path: v.Path}
+		return &FieldAccess{Source: cloneExpr(v.Source), Path: v.Path, MaterializedColumn: v.MaterializedColumn}
 	case *MapAccess:
 		return &MapAccess{Map: cloneExpr(v.Map), Key: cloneExpr(v.Key)}
 	case *Subscript:

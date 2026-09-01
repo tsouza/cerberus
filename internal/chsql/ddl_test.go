@@ -469,6 +469,86 @@ func TestAlterTableAddColumn(t *testing.T) {
 	}
 }
 
+// TestAlterTableAddColumn_Default pins the DEFAULT clause AddColumnBuilder.Default
+// adds (cerberus issue #2776): a materialized attribute column's ADD COLUMN
+// carries `DEFAULT <mapCol>['<key>']` so ClickHouse computes it LAZILY for
+// any row whose part predates the ALTER — see the method's own doc comment
+// for the real-ClickHouse evidence this relies on.
+func TestAlterTableAddColumn_Default(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *AddColumnBuilder
+		want string
+	}{
+		{
+			"default_map_subscript",
+			AlterTableAddColumn("otel", "otel_traces", "__cerberus_materialized_http.status_code", TypeLowCardinality(TypeRaw("String"))).
+				Default(Subscript(Col("SpanAttributes"), InlineLit("http.status_code"))),
+			"ALTER TABLE otel.otel_traces ADD COLUMN IF NOT EXISTS " +
+				"`__cerberus_materialized_http.status_code` LowCardinality(String) " +
+				"DEFAULT `SpanAttributes`['http.status_code']",
+		},
+		{
+			"default_and_on_cluster",
+			AlterTableAddColumn("otel", "otel_traces", "__cerberus_materialized_rpc.method", TypeLowCardinality(TypeRaw("String"))).
+				OnCluster("prod").
+				Default(Subscript(Col("SpanAttributes"), InlineLit("rpc.method"))),
+			"ALTER TABLE otel.otel_traces ON CLUSTER `prod` " +
+				"ADD COLUMN IF NOT EXISTS `__cerberus_materialized_rpc.method` LowCardinality(String) " +
+				"DEFAULT `SpanAttributes`['rpc.method']",
+		},
+		{
+			"no_default_unchanged",
+			AlterTableAddColumn("", "cerberus_router_corpus", "parallelism", TypeRaw("UInt8")),
+			"ALTER TABLE cerberus_router_corpus ADD COLUMN IF NOT EXISTS `parallelism` UInt8",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAlterTableMaterializeColumn pins the MATERIALIZE COLUMN statement
+// (cerberus issue #2776): the fully-qualified (or bare) <db>.<table>, the
+// bare column identifier (MATERIALIZE COLUMN has no IF NOT EXISTS-shaped
+// guard — see the builder's own doc comment), and the optional ON CLUSTER
+// clause. The statement carries no positional args.
+func TestAlterTableMaterializeColumn(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *MaterializeColumnBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableMaterializeColumn("", "otel_traces", "__cerberus_materialized_http.status_code"),
+			"ALTER TABLE otel_traces MATERIALIZE COLUMN `__cerberus_materialized_http.status_code`",
+		},
+		{
+			"qualified_table",
+			AlterTableMaterializeColumn("otel", "otel_traces", "__cerberus_materialized_http.status_code"),
+			"ALTER TABLE otel.otel_traces MATERIALIZE COLUMN `__cerberus_materialized_http.status_code`",
+		},
+		{
+			"on_cluster",
+			AlterTableMaterializeColumn("otel", "otel_traces", "__cerberus_materialized_http.status_code").OnCluster("prod"),
+			"ALTER TABLE otel.otel_traces ON CLUSTER `prod` " +
+				"MATERIALIZE COLUMN `__cerberus_materialized_http.status_code`",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAlterTableAddIndex pins the ADD INDEX statement: the fully-qualified
 // (or bare) <db>.<table>, the idempotent IF NOT EXISTS guard, the indexed
 // expression, the TYPE and GRANULARITY clauses, and the optional ON CLUSTER

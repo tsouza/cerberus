@@ -17,6 +17,20 @@ package chplan
 type FieldAccess struct {
 	Source Expr
 	Path   string
+
+	// MaterializedColumn, when non-empty, names a schema-provisioned
+	// top-level column that is value-identical to Source[Path] (see
+	// schema.Traces.MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns) and that the emitter should
+	// reference directly instead of rendering the Map subscript — see
+	// chsql's exprFieldAccess. Kept on FieldAccess itself, rather than
+	// swapped for a bare ColumnRef at lowering time, so every existing
+	// FieldAccess-aware pass (the numeric/bool coercion helpers in
+	// internal/traceql/lower.go, PREWHERE promotion in
+	// internal/chsql/prewhere.go) keeps treating a materialized
+	// attribute reference exactly like an unmaterialized one — only the
+	// final SQL rendering differs.
+	MaterializedColumn string
 }
 
 func (*FieldAccess) exprNode() {}
@@ -26,5 +40,5 @@ func (f *FieldAccess) Equal(other Expr) bool {
 	if !ok {
 		return false
 	}
-	return f.Path == o.Path && f.Source.Equal(o.Source)
+	return f.Path == o.Path && f.MaterializedColumn == o.MaterializedColumn && f.Source.Equal(o.Source)
 }

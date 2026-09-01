@@ -58,3 +58,9 @@ const (
 	AttrMapScopeResourceForTest = attrMapScopeResource
 	AttrMapScopeSpanForTest     = attrMapScopeSpan
 )
+
+// BuildAttributeValuesSQLForTest re-exports buildAttributeValuesSQL
+// (cerberus issue #2776's materialized-attribute tag-values routing lives
+// inside it) so the external tempo_test package can pin its SQL shape
+// directly, mirroring the re-export pattern above.
+var BuildAttributeValuesSQLForTest = buildAttributeValuesSQL

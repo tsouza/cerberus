@@ -153,6 +153,137 @@ type Traces struct {
 	// OTel-CH this is the same as StartTimeColumn ("Timestamp" in newer
 	// schemas, often "StartTimeUnix" in older).
 	TimestampColumn string
+
+	// MaterializedSpanAttributeColumns / MaterializedResourceAttributeColumns
+	// map a hot SpanAttributes / ResourceAttributes key (e.g.
+	// `http.status_code`, `k8s.namespace.name`) to the dedicated top-level
+	// LowCardinality(String) column cerberus provisions for it (cerberus
+	// issue #2776).
+	//
+	// UNLIKE Logs.MaterializedResourceColumns, this is NOT exporter-owned
+	// DDL: the traces spans table ships from the upstream OTel ClickHouse
+	// Exporter template with no such columns, so this is cerberus's first
+	// ADD COLUMN onto a table it does not otherwise own the CREATE TABLE
+	// body of (see internal/schema/ddl's renderAddTraceMaterializedAttrColumns).
+	// Each column is declared `LowCardinality(String) DEFAULT
+	// <map>['<key>']` — DEFAULT, not MATERIALIZED. That choice is load-bearing:
+	// a DEFAULT column's value for a row in a part that predates the ALTER is
+	// computed LAZILY, at read time, from that row's own already-stored
+	// Attributes map — confirmed against a real ClickHouse 26.6 server (see
+	// the issue #2776 PR body): a fresh ADD COLUMN reads byte-identical to
+	// the map on every existing row immediately, with zero mutation queued,
+	// and stays byte-identical through and after the optional `MATERIALIZE
+	// COLUMN` backfill (verified with zero divergence across 150M+ rows,
+	// including rows inserted concurrently while the backfill mutation was
+	// in flight). So — unlike the logs top-level scalar columns
+	// (SeverityText, ServiceName, …), which the exporter's ingest pipeline
+	// writes INDEPENDENTLY of the map and which therefore need
+	// `coalesce(nullIf(col,''), map[k])` to cover the two paths diverging —
+	// a materialized attribute column here can NEVER diverge from the map
+	// by construction, so no map-fallback coalesce is needed on the routed
+	// read: the column IS the map access, always, immediately. This also
+	// means read routing needs no separate "backfill verified" operator
+	// declaration the way schema.Config.DeltaPrefixReadEnabled does — a
+	// not-yet-backfilled column degrades only in read PERFORMANCE (it falls
+	// back to the lazy per-row DEFAULT evaluation, decoding the source Map
+	// exactly as an unmaterialized key already does today), never in
+	// correctness.
+	//
+	// nil (the default, DefaultOTelTraces leaves both maps empty) is the
+	// opt-in gate: cerberus never routes to a column it was not told
+	// exists. An operator turns this on by setting
+	// CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED, which populates
+	// both maps from DefaultMaterializedSpanAttributeColumns /
+	// DefaultMaterializedResourceAttributeColumns AND (independently, see
+	// internal/schema/ddl.Config.TraceMaterializedAttributesEnabled) drives
+	// AutoCreateSchema to provision the columns — see config.go's
+	// SchemaProvisioning.TraceMaterializedAttrsEnabled doc for why one
+	// operator-facing flag is enough for both halves (the DownsampleTier
+	// precedent: a single verdict may gate both provisioning and query
+	// routing whenever an un-backfilled state degrades safely, which the
+	// evidence above establishes for this feature).
+	//
+	// Split into two maps, one per attribute scope, rather than a single
+	// map carrying a scope tag: TraceQL resolves a scoped identifier like
+	// `span.http.status_code` / `resource.k8s.namespace.name` to a (scope,
+	// key) pair up front (see internal/traceql/ast.Attribute), so a
+	// scope-partitioned lookup is a direct map hit with no secondary
+	// disambiguation — and the two maps are keyed from disjoint semconv
+	// vocabularies in practice (span-level vs resource-level attributes),
+	// so nothing is lost by not sharing one namespace.
+	MaterializedSpanAttributeColumns     map[string]string
+	MaterializedResourceAttributeColumns map[string]string
+}
+
+// materializedAttributeColumnPrefix names the cerberus-invented column
+// prefix for a materialized span/resource attribute (cerberus issue
+// #2776). Deliberately distinct from Logs' materializedColumnPrefix
+// (`__otel_materialized_`), which spells out the exporter's OWN naming —
+// these columns are cerberus-authored DDL the upstream exporter template
+// knows nothing about, so the prefix says so.
+const materializedAttributeColumnPrefix = "__cerberus_materialized_"
+
+// MaterializedAttributeColumnType is the ClickHouse type every materialized
+// span/resource attribute column is declared as (cerberus issue #2776) —
+// the single source of truth internal/schema/ddl (which renders the ADD
+// COLUMN type) and internal/preflight (which validates the deployed type
+// via system.columns) both consume, so the two can never drift apart.
+const MaterializedAttributeColumnType = "LowCardinality(String)"
+
+// defaultMaterializedSpanAttributeKeys / defaultMaterializedResourceAttributeKeys
+// are the curated, deliberately small default set of hot TraceQL
+// attribute keys cerberus materializes (cerberus issue #2776). Each is
+// chosen for being both a near-universal OTel semantic-convention key and
+// one of the highest-value TraceQL filter/group-by targets:
+//
+//   - http.status_code (span): present on virtually every HTTP-instrumented
+//     span; the single most common error/latency-triage filter
+//     (`{ span.http.status_code >= 500 }`) and the exact numeric-coercion
+//     example the issue names.
+//   - rpc.method (span): the RPC-world sibling of http.status_code —
+//     high-cardinality-adjacent but low-cardinality-in-practice
+//     (bounded by the service's own RPC surface), a common structural
+//     filter/group-by for gRPC-instrumented systems.
+//   - k8s.namespace.name (resource): the same key Logs.MaterializedResourceColumns
+//     already materializes for logs (internal/schema/logs.go) — nearly
+//     every multi-tenant/k8s deployment's primary "which namespace"
+//     drilldown filter, and picking the identical key keeps the two
+//     signals' materialized sets consistent for an operator reasoning
+//     about both.
+//
+// Deliberately NOT an exhaustive semconv sweep: internal/schema/ddl.Column-per-key
+// does not scale past roughly a dozen keys (each is a real ADD COLUMN +
+// storage cost) — a wider or deployment-specific set is a config override,
+// and a systematically wide set is the JSON-column migration's job, not
+// this one's (see the issue's own scope note).
+var (
+	defaultMaterializedSpanAttributeKeys     = []string{"http.status_code", "rpc.method"}
+	defaultMaterializedResourceAttributeKeys = []string{"k8s.namespace.name"}
+)
+
+// materializedAttributeColumns builds the {map-key -> materialized-column}
+// table from a key list by prepending materializedAttributeColumnPrefix to
+// each key, mirroring Logs' defaultMaterializedResourceColumns.
+func materializedAttributeColumns(keys []string) map[string]string {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		out[key] = materializedAttributeColumnPrefix + key
+	}
+	return out
+}
+
+// DefaultMaterializedSpanAttributeColumns / DefaultMaterializedResourceAttributeColumns
+// return the curated default {key -> column} tables described on
+// defaultMaterializedSpanAttributeKeys / defaultMaterializedResourceAttributeKeys.
+// internal/schema/env.go's CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED
+// resolution and internal/schema/ddl's provisioning path both call these —
+// the single source of truth for which keys the opt-in default set covers.
+func DefaultMaterializedSpanAttributeColumns() map[string]string {
+	return materializedAttributeColumns(defaultMaterializedSpanAttributeKeys)
+}
+
+func DefaultMaterializedResourceAttributeColumns() map[string]string {
+	return materializedAttributeColumns(defaultMaterializedResourceAttributeKeys)
 }
 
 // DefaultOTelTraces returns the schema produced by the upstream OTel
@@ -186,5 +317,10 @@ func DefaultOTelTraces() Traces {
 		EventsColumn:          "Events",
 		LinksColumn:           "Links",
 		TimestampColumn:       "Timestamp",
+		// MaterializedSpanAttributeColumns / MaterializedResourceAttributeColumns
+		// stay nil: unlike Logs' materialized columns, these are new
+		// cerberus-authored DDL a fresh cluster does not carry until an
+		// operator opts in (CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED)
+		// — see the fields' own doc comment.
 	}
 }

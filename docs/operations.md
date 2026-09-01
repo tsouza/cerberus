@@ -1525,6 +1525,93 @@ floor, the same way `aggregation_in_order` / `condition_cache` do for their
 own floors. It is harmless (a no-op) on a table that carries no
 `proj_trace_id` projection at all.
 
+### Materialized span/resource attribute columns (cerberus issue #2776)
+
+Every TraceQL predicate on a span/resource attribute (`http.status_code`,
+`k8s.namespace.name`, `rpc.method`, …) decodes the full `SpanAttributes` /
+`ResourceAttributes` Map per row by default. `CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED`
+(`SchemaProvisioning.TraceMaterializedAttrsEnabled`, `AutoCreateSchema`
+must ALSO be `true`) provisions a curated default set of dedicated
+top-level `LowCardinality(String)` columns for three high-value keys and
+routes TraceQL reads (`FieldAccess`, structural filters, `tag_values`
+inventories for the single-scope `resource.x` / `span.x` forms) to them —
+`internal/schema/traces.go`'s `DefaultMaterializedSpanAttributeColumns` /
+`DefaultMaterializedResourceAttributeColumns`:
+
+- `http.status_code` (span) — the single most common error/latency-triage
+  filter, and the numeric-coercion example the proposing issue names.
+- `rpc.method` (span) — the RPC-world sibling of `http.status_code`, a
+  common structural filter for gRPC-instrumented systems.
+- `k8s.namespace.name` (resource) — the SAME key `Logs.MaterializedResourceColumns`
+  already materializes for logs, kept consistent across both signals.
+
+This is cerberus's FIRST `ADD COLUMN` onto a table it does not own the
+CREATE TABLE body of — the traces spans table ships from the upstream
+OTel ClickHouse Exporter template with no such columns. Each column is
+declared:
+
+```sql
+ALTER TABLE <db>.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_http.status_code` LowCardinality(String) DEFAULT `SpanAttributes`['http.status_code'];
+```
+
+**`DEFAULT`, not `MATERIALIZED` — this is the load-bearing design choice.**
+A `MATERIALIZED` column is computed once at insert time and frozen; a
+`DEFAULT` column's value for a row in a part that PREDATES the ALTER is
+instead computed LAZILY, at read time, from that row's own already-stored
+`SpanAttributes`. Verified directly against a real ClickHouse 26.6 server
+(cerberus issue #2776):
+
+- A fresh `ADD COLUMN ... DEFAULT` reads byte-identical to the map on
+  every pre-existing row IMMEDIATELY, with ZERO mutation queued in
+  `system.mutations` — `ADD COLUMN` is metadata-only.
+- Concurrent `INSERT`s against the table while a later `MATERIALIZE
+  COLUMN` mutation is in flight complete without error (reproduced on a
+  150M-row table with the mutation genuinely overlapping 11 concurrent
+  inserts).
+- Across 150,000,012 rows spanning before/during/after a `MATERIALIZE
+  COLUMN` backfill, ZERO divergence between the map value and the
+  materialized column's value was observed.
+- Reading through the materialized column + a `set(0)` skip index costs
+  ~143 MiB of `read_bytes` versus ~858 MiB reading the map directly on the
+  same query and table (~6x less I/O) — the "MB-not-GB" win the proposing
+  issue cites (ClickHouse's own
+  [map-performance doc](https://clickhouse.com/docs/knowledgebase/improve-map-performance)
+  measures 2.9x cold / 11x warm for the general pattern).
+
+The practical consequence: **an un-backfilled materialized attribute
+column can only be slower to read, never wrong.** Unlike the DELTA-prefix
+aggregate table (cerberus issue #2389), there is no "backfill verified"
+state for an operator to separately declare — `CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED`
+is the ONLY gate, covering both provisioning and query routing (see
+`SchemaProvisioning.TraceMaterializedAttrsEnabled`'s doc comment for the
+full reasoning, including why this differs from `DeltaPrefixEnabled`'s
+two-flag shape).
+
+#### One-time `MATERIALIZE COLUMN` back-fill runbook
+
+`ADD COLUMN` alone leaves existing parts reading the column via the lazy
+`DEFAULT` evaluation above — correct, but no cheaper than reading the map
+directly (ClickHouse still decodes `SpanAttributes` to compute the
+default). To convert an existing deployment's PAST data onto the narrow
+physical column (the actual read-performance win), run the one-time
+materialize per configured column:
+
+```sql
+ALTER TABLE <db>.otel_traces MATERIALIZE COLUMN `__cerberus_materialized_http.status_code` SETTINGS mutations_sync = 1;
+```
+
+Like `MATERIALIZE TTL` / `MATERIALIZE PROJECTION` / `MATERIALIZE INDEX`
+elsewhere in this document, `MATERIALIZE COLUMN` is asynchronous by
+default — it queues the rewrite and returns as soon as it is queued.
+`SETTINGS mutations_sync = 1` blocks until the local replica's mutation
+completes; poll `system.mutations` (`is_done`) otherwise. `MATERIALIZE
+COLUMN` is **not** issued by the auto-create hook — same posture as every
+other `MATERIALIZE`-style backfill above — because an unbounded-duration
+mutation has no business running inside the server's boot path. Re-running
+it against an already-backfilled column queues a mutation with zero parts
+left to touch (confirmed against real ClickHouse 26.6): a cheap, safe
+no-op, not a wasted rewrite.
+
 ### Loki label-cardinality catalog (cerberus issue #2770)
 
 `GET /loki/api/v1/detected_labels` normally answers every request with a
