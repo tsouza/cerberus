@@ -67,8 +67,7 @@ import (
 // tracked by #2834): each step anchor would need its own mergedScale, the
 // same per-group join problem with the anchor as the group key.
 //
-// # Cost model change, and why the EXISTING budget guard is reused
-// # unchanged
+// # Cost model, and the rows-independent budget guard (cerberus issue #2834)
 //
 // The old picker-based fold costs `rows x (posWidth^2 + negWidth^2)`
 // (histogram_merge_bound.go's calibration). This design's dominant cost is
@@ -76,37 +75,33 @@ import (
 // width-only reconstruction term (expHistogramSumMapLadderExpr, below)
 // that does NOT shrink as rows grow, and in the worst case (every merged
 // bucket populated) is itself quadratic in width alone; this design also
-// keeps collecting every row's raw groupArrays (needed by the reused
-// budget guard, below), so it never beats the fold by more than that
-// fixed per-row overhead saves. Real ClickHouse 26.6 measurements taken
-// for this issue, against the ACTUAL emitted SQL (not a hand-written
-// approximation), at realistic OTel-SDK-default width (~160 buckets):
-// roughly PARITY at a single series (3.4 MiB fold vs 3.7 MiB this
-// design), rising to a real 13x win at 100 series, 34x at 1,000, and 43x
-// at 3,741 (issue #2490's own repro). At a SINGLE series with an
-// unusually wide individual layout (width 1,280 and up) this design
-// costs MORE memory than the fold — 42.7 MiB vs 31.7 MiB at width 1,280,
-// 2,604 MiB vs 1,828 MiB at width 10,240 — a real, measured regression
-// for that narrow shape, though still FASTER in wall-clock time even
-// there (708ms vs 994ms at width 10,240). See cerberus issue #2757 for
-// the full measured table.
+// keeps collecting every row's raw groupArrays (needed by the guard, see
+// exp_histogram_merge_summap_bound.go), so it never beats the fold by more
+// than that fixed per-row overhead saves. Real ClickHouse 26.6 measurements
+// taken for issue #2757, against the ACTUAL emitted SQL (not a
+// hand-written approximation), at realistic OTel-SDK-default width (~160
+// buckets): roughly PARITY at a single series (3.4 MiB fold vs 3.7 MiB
+// this design), rising to a real 13x win at 100 series, 34x at 1,000, and
+// 43x at 3,741 (issue #2490's own repro). At a SINGLE series with an
+// unusually wide individual layout (width 1,280 and up) this design costs
+// MORE memory than the fold — 42.7 MiB vs 31.7 MiB at width 1,280,
+// 2,604 MiB vs 1,828 MiB at width 10,240 — a real, measured regression for
+// that narrow shape, though still FASTER in wall-clock time even there
+// (708ms vs 994ms at width 10,240). See cerberus issue #2757 for the full
+// measured table.
 //
-// Deriving and calibrating a NEW, rows-independent budget for this design
-// is real server-calibration work (histogram_merge_bound.go's own
-// methodology: binary search against a real ClickHouse server, never
-// chDB) that this change does not attempt. Instead, v1 reuses
-// [histogramMergeBudgetGuardExpr] — the EXISTING guard — unchanged: it
-// rejects whenever `rows x (posWidth^2 + negWidth^2) > maxCostUnits`, and
-// since rows >= 1 always, `posWidth^2 + negWidth^2 <=
-// rows x (posWidth^2 + negWidth^2)` — so ANY (rows, width) pair the
-// existing guard admits is PROVABLY safe under this design's own
-// (rows-independent) worst-case width^2 reconstruction term too. This is
-// conservative: it still rejects some large-row-count, modest-width
-// groups this design could in fact handle safely (issue #2490's own
-// 3,741-series repro, guard-rejected today at ~1.75 GiB under the OLD
-// algorithm, needs only ~42 MiB under this one) — recalibrating a
-// rows-independent guard to admit those is real server-calibration work
-// tracked by cerberus issue #2834, not attempted here.
+// [wrapExpHistogramMergeSumMapBudgetGuard]
+// (exp_histogram_merge_summap_bound.go) bounds this design with its OWN,
+// rows-independent guard, calibrated against real ClickHouse 26.6 for
+// cerberus issue #2834: it rejects whenever
+// `sumMapMergeCostMultiplier x (posWidth^2 + negWidth^2) > maxCostUnits`
+// (no `rows x` multiplier) OR the row count exceeds
+// [maxHistogramMergeRowCountOverflowGuard] — see that file's header doc
+// for the full calibration table and the row-count backstop's dual role.
+// Issue #2490's own 3,741-series repro at realistic OTel-default width,
+// guard-rejected under the OLD `rows x (posWidth^2 + negWidth^2)` model at
+// ~1.79 GiB, is comfortably ADMITTED under this guard (real measured cost
+// ~42 MiB).
 //
 // Because [expHistogramMergeAggs] — reused verbatim below for the
 // groupArray columns the guard reads — still collects every row's raw
@@ -299,9 +294,10 @@ func expHistogramGroupMergeProjectionsSumMap(s schema.Metrics) []chplan.Projecti
 
 // expHistogramGroupMergeSumMap builds the full two-pass merge node for the
 // eligible shape (instant, single-group, SUM fold — see this file's
-// header): pass 1's ScalarSubquery, pass 2's Aggregate (still wrapped in
-// the EXISTING [wrapExpHistogramMergeBudgetGuard], unchanged — see this
-// file's header for why that stays a safe, if conservative, bound), and
+// header): pass 1's ScalarSubquery, pass 2's Aggregate (wrapped in this
+// design's OWN rows-independent budget guard,
+// [wrapExpHistogramMergeSumMapBudgetGuard] — see this file's header and
+// exp_histogram_merge_summap_bound.go for the calibration behind it), and
 // the reshape Project. No [expHistogramMergeSortStage] call: that stage
 // exists only to give the OLD Kahan-compensated bucket fold a
 // deterministic per-series summation order (cerberus issue #2254);
@@ -325,7 +321,7 @@ func expHistogramGroupMergeSumMap(perSeries chplan.Node, s schema.Metrics, maxCo
 		),
 		DropEmptyOnNoGroup: true,
 	}
-	guarded := wrapExpHistogramMergeBudgetGuard(merged, maxCostUnits)
+	guarded := wrapExpHistogramMergeSumMapBudgetGuard(merged, maxCostUnits)
 	projs := append(
 		[]chplan.Projection{
 			{Expr: emptyAttrsMap(), Alias: s.AttributesColumn},
