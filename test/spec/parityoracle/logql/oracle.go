@@ -49,6 +49,17 @@
 // and the caller must refuse such a fixture loudly rather than compare
 // two different questions. [Stream] therefore models only what the
 // reference can actually observe — stream labels, timestamp, line.
+//
+// # Where the float comparison lives, and why not here
+//
+// This package produces reference answers and declares no equality rule
+// of its own. A LogQL fixture's float samples are compared by the SAME
+// comparator every other head's are: test/spec/parity_chdb.go's
+// compareSampleValue calls parityoracle/promql's EqualValues for the Loki
+// oracle's answers too. What that comparator bounds — the reordering and
+// rounding between a ClickHouse-computed float and a Go-computed one — is
+// a property of the comparison, not of which query language asked, so
+// stating the rule twice would only let the two spellings drift apart.
 package logql
 
 import (
@@ -309,23 +320,4 @@ func sortResults(rs []Result) {
 		}
 		return rs[i].TMillis < rs[j].TMillis
 	})
-}
-
-// EqualValues reports whether two float samples agree.
-//
-// NaN==NaN is TRUE here. LogQL produces NaN as a legitimate answer
-// (0/0, a quantile over an empty window), and Go's float comparison
-// would call two such answers different, failing fixtures that actually
-// agree.
-//
-// Everything else is EXACT. This is deliberate and is the reason no
-// epsilon appears anywhere in this package: cerberus and Loki evaluate
-// the same IEEE-754 doubles, so a real disagreement is a real bug, and
-// an epsilon would be a tolerance — the shape invariant 7 forbids —
-// dressed up as a numeric constant.
-func EqualValues(a, b float64) bool {
-	if math.IsNaN(a) && math.IsNaN(b) {
-		return true
-	}
-	return a == b
 }
