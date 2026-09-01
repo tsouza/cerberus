@@ -1735,10 +1735,11 @@ const (
 	// existing throwIf(uniqExact(MetricName) > 1, ...) — the issue's own point
 	// that "the Aggregate is also the collapse fix" and the throw-message
 	// mechanism is a SEPARATE, independently-verifiable change from the
-	// grouping-key swap this feature makes) — one feature id should not
-	// silently widen its own effective floor in a later PR without a version
-	// bump an operator can see, so the id is pinned to what the FAMILY needs
-	// once the throw is adopted, not merely what this PR's own diff touches.
+	// grouping-key swap this feature makes) — one feature id must not
+	// silently widen its own effective floor when a follow-up change adopts
+	// the throw, without a version bump an operator can see, so the id is
+	// pinned to what the FAMILY needs once the throw is adopted, not merely
+	// what this change's own diff touches.
 	//
 	// NO EXPERIMENTAL GATE — RequiresExperimentalTSGrid is deliberately false.
 	// The issue flagged the docs show no experimental gate for this family
@@ -2207,7 +2208,7 @@ var registry = []Feature{
 		MinVersion: Version{Major: 26, Minor: 2},
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "group the instant-mode duplicate-labelset guard's name-drop collapse on a deduplicated UInt64 id (timeSeriesTagsToGroup) instead of the raw Attributes Map, rehydrating via timeSeriesGroupToTags only in the output projection (server >= 26.2, no experimental gate, opt-in -- #2750)",
+		Doc:        "group the instant-mode duplicate-labelset guard's name-drop collapse on a UInt64 tag-group id (timeSeriesTagsToGroup), not the raw Attributes Map, rehydrating via timeSeriesGroupToTags in the projection (server >= 26.2, no experimental gate, opt-in -- #2750)",
 	},
 }
 
