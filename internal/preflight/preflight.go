@@ -14,7 +14,14 @@
 //   - Gate 2 (schema shape): the configured tables are introspected via
 //     system.columns and validated to carry the essential columns the
 //     emitters require, with the attribute-map columns typed
-//     Map(String, String).
+//     Map(String, String) — except logs' and traces' attribute maps, which
+//     may alternatively be typed JSON (cerberus issue #2777 phase 1's
+//     boot-probe compat: the upstream OTel exporter's `json:true` schema
+//     variant). A JSON-typed attribute map there boots with a WARNING rather
+//     than a FATAL, since query lowering against it is a follow-up (the
+//     emitters still assume Map). Metrics attribute maps carry series
+//     identity and stay Map-only per the issue's own scoping — see
+//     tableReq.jsonAttrMapCompat.
 //   - Gate 3 (storage tiering): when a storage policy or a tiering volume is
 //     configured, the policy's volumes are read from system.storage_policies
 //     and the configuration is checked for being ACCEPTED BUT INERT — a
@@ -38,8 +45,11 @@
 //   - FATAL — a too-old / unreadable / unparseable server version, or a
 //     table that EXISTS but whose SHAPE is wrong (a missing essential
 //     column, an attribute map typed something other than
-//     Map(String, String)). These never self-heal, so they fail startup
-//     fast with an aggregated diff (every unmet requirement at once).
+//     Map(String, String) — or, for metrics, something other than
+//     Map(String, String) even when it is JSON, since JSON attribute maps
+//     are only tolerated on logs/traces). These never self-heal, so they
+//     fail startup fast with an aggregated diff (every unmet requirement at
+//     once).
 //   - TRANSIENT — any of (a) the configured tables are ENTIRELY ABSENT
 //     (system.columns reports zero rows for them): the schema has not been
 //     provisioned yet; (b) the configured DATABASE does not exist yet — the
@@ -143,6 +153,22 @@ func defectNote(raw string, got chopt.Version) string {
 // canonical (no spaces); the deployed type read from system.columns is
 // normalised the same way before comparison.
 const attrMapType = "Map(String,String)"
+
+// isJSONAttrType reports whether a deployed attribute-map column's type is
+// ClickHouse's JSON type: bare "JSON", or parameterised with typed path
+// hints / SKIP clauses / max_dynamic_paths (e.g.
+// "JSON(max_dynamic_paths=100, `service.name` String)") — system.columns
+// reports either shape verbatim, so this matches on the "JSON" / "JSON("
+// prefix rather than an exact string. cerberus issue #2777 phase 1: the
+// upstream OTel exporter's `json:true` schema variant types the attribute
+// columns this way instead of Map(String,String). Recognising the shape
+// here is detection only — the query emitters (chsql.Builder) still assume
+// Map, so this is consulted solely to let tableReq.jsonAttrMapCompat tables
+// boot instead of FATALing; it changes no SQL cerberus emits.
+func isJSONAttrType(deployedType string) bool {
+	s := strings.TrimSpace(deployedType)
+	return s == "JSON" || strings.HasPrefix(s, "JSON(")
+}
 
 // Requirements is the active, override-resolved configuration the
 // preflight validates against. Every name comes from the resolved schema
@@ -380,10 +406,11 @@ func Run(ctx context.Context, q Querier, req Requirements) Result {
 		return Result{DatabaseAbsent: true, DatabaseAbsentErr: dbAbsent}
 	}
 
-	schemaProblems, absent, unreachable := checkSchema(ctx, q, req)
+	schemaProblems, absent, schemaWarnings, unreachable := checkSchema(ctx, q, req)
 	if unreachable != nil {
 		return Result{Unreachable: true, UnreachableErr: unreachable}
 	}
+	warnings = append(warnings, schemaWarnings...)
 
 	// Gate 3 (storage tiering) reads system.storage_policies. It only runs when
 	// the operator configured a storage policy or a tiering rule, so the default
@@ -659,6 +686,19 @@ type tableReq struct {
 	name    string
 	columns []string
 	attrMap []string
+	// jsonAttrMapCompat allows this table's attrMap columns to alternatively
+	// be typed JSON instead of Map(String,String) — cerberus issue #2777
+	// phase 1's boot-probe compat gate (the upstream OTel exporter's
+	// `json:true` schema variant). Only logs and traces set this: their
+	// attribute maps are per-row lookups, so a JSON-typed column there boots
+	// with a WARNING rather than a FATAL (query lowering against it is a
+	// follow-up, see the issue). Metrics attribute maps carry SERIES
+	// IDENTITY — the whole map, positionally sorted, contributes to the
+	// metric's label set — and the issue itself scopes metrics out ("Metrics
+	// tables stay Map"), so a JSON-typed metrics attribute column stays a
+	// genuine FATAL misconfiguration; requiredTables leaves this false for
+	// every metrics tableReq.
+	jsonAttrMapCompat bool
 	// materializedColumns is the subset of columns that must be typed a
 	// SPECIFIC ClickHouse type rather than checked for mere existence —
 	// the materialized span/resource attribute columns an operator opted
@@ -734,7 +774,8 @@ func requiredTables(req Requirements) []tableReq {
 				l.TimestampColumn, l.BodyColumn, l.ServiceNameColumn,
 				l.AttributesColumn, l.ResourceAttributesColumn,
 			),
-			attrMap: nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
+			attrMap:           nonEmpty(l.AttributesColumn, l.ResourceAttributesColumn, l.ScopeAttributesColumn),
+			jsonAttrMapCompat: true,
 		})
 	}
 
@@ -761,6 +802,7 @@ func requiredTables(req Requirements) []tableReq {
 				tr.AttributesColumn, tr.ResourceAttributesColumn,
 			), materializedCols...),
 			attrMap:             nonEmpty(tr.AttributesColumn, tr.ResourceAttributesColumn, tr.ScopeAttributesColumn),
+			jsonAttrMapCompat:   true,
 			materializedColumns: materializedChecks,
 		})
 	}
@@ -815,53 +857,62 @@ func nonEmpty(vals ...string) []string {
 // checkSchema runs gate 2: for each configured table it reads the
 // deployed (name, type) columns from system.columns and validates that
 // every essential column exists, with the attribute-map columns typed
-// Map(String, String). Distinct tables that resolve to the same physical
-// name (Gauge==Sum on a collapsed schema) are introspected once.
+// Map(String, String) — or, on a jsonAttrMapCompat table (logs/traces),
+// JSON, which is accepted with a WARNING rather than a FATAL (see
+// tableReq.jsonAttrMapCompat). Distinct tables that resolve to the same
+// physical name (Gauge==Sum on a collapsed schema) are introspected once.
 //
-// It returns two slices: the FATAL wrong-shape problems (missing columns /
-// wrong attribute-map types / introspection errors) for the aggregated
-// boot failure, and the ABSENT-table names — tables system.columns reports
-// zero rows for, i.e. not yet provisioned. An entirely-absent table is
-// transient (the schema race), so it lands in the second slice and is NOT
-// a wrong-shape problem; a table that exists but has the wrong columns is.
-func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent []string, unreachable error) {
+// It returns three slices: the FATAL wrong-shape problems (missing columns /
+// wrong attribute-map types / introspection errors) for the aggregated boot
+// failure, the ABSENT-table names — tables system.columns reports zero rows
+// for, i.e. not yet provisioned — and the boot-probe WARNINGS (a
+// jsonAttrMapCompat table whose attribute map is JSON-typed). An
+// entirely-absent table is transient (the schema race), so it lands in the
+// second slice and is NOT a wrong-shape problem; a table that exists but has
+// the wrong columns is.
+func checkSchema(ctx context.Context, q Querier, req Requirements) (problems, absent, warnings []string, unreachable error) {
 	seen := map[string]bool{}
 	for _, t := range requiredTables(req) {
 		if t.name == "" || seen[t.name] {
 			continue
 		}
 		seen[t.name] = true
-		probs, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
+		probs, warns, isAbsent, unreach := checkTable(ctx, q, req.Database, t)
 		if unreach != nil {
 			// A transport failure mid-introspection means the server dropped
 			// (or never came up): abandon the shape gate and report unreachable
 			// so the caller waits rather than recording a half-introspected
 			// schema as wrong-shape.
-			return nil, nil, unreach
+			return nil, nil, nil, unreach
 		}
 		problems = append(problems, probs...)
+		warnings = append(warnings, warns...)
 		if isAbsent {
 			absent = append(absent, t.name)
 		}
 	}
-	return problems, absent, nil
+	return problems, absent, warnings, nil
 }
 
 // checkTable introspects one table via system.columns and validates its
-// shape. It returns the per-table wrong-shape problems plus an absent flag.
+// shape. It returns the per-table wrong-shape problems, the boot-probe
+// warnings, plus an absent flag.
 //
 //   - A table that reports ZERO columns is treated as absent (not yet
 //     provisioned): absent=true, no wrong-shape problem. The caller turns
 //     this into a transient NOT-READY state, not a boot failure.
-//   - A TRANSPORT error (ClickHouse unreachable) is returned via the third
+//   - A TRANSPORT error (ClickHouse unreachable) is returned via the fourth
 //     value so the caller short-circuits to the transient Unreachable state —
 //     a dial failure is not a clean "table missing" signal, but it is just as
 //     transient as an absent table.
 //   - A non-transport query error is fatal (the introspection failed against
 //     a reachable server) and is reported as a problem.
 //   - Otherwise each missing column and each wrong attribute-map type is
-//     reported individually so the aggregated message is complete.
-func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems []string, absent bool, unreachable error) {
+//     reported individually so the aggregated message is complete — except a
+//     JSON-typed attribute map on a jsonAttrMapCompat table (logs/traces),
+//     which is a WARNING instead of a problem (cerberus issue #2777 phase 1
+//     boot-probe compat; see tableReq.jsonAttrMapCompat and isJSONAttrType).
+func checkTable(ctx context.Context, q Querier, database string, t tableReq) (problems, warnings []string, absent bool, unreachable error) {
 	sql, args := chsql.NewQuery().
 		Select(chsql.Col("name"), chsql.Col("type")).
 		From(chsql.Qual("system", "columns")).
@@ -873,15 +924,15 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 	rows, err := q.QueryNameTypePairs(ctx, sql, args...)
 	if err != nil {
 		if isUnreachable(err) {
-			return nil, false, err
+			return nil, nil, false, err
 		}
-		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, false, nil
+		return []string{fmt.Sprintf("could not introspect table %s: %v", t.name, err)}, nil, false, nil
 	}
 	if len(rows) == 0 {
 		// Entirely absent: the schema has not been provisioned yet. This is
 		// the transient startup race, not a misconfiguration — surface it as
 		// absent so the caller waits (NOT READY) rather than exiting.
-		return nil, true, nil
+		return nil, nil, true, nil
 	}
 
 	types := make(map[string]string, len(rows))
@@ -903,11 +954,26 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			// double-report. Skip — the missing-column message stands.
 			continue
 		}
-		if normalizeType(got) != attrMapType {
-			problems = append(problems, fmt.Sprintf(
-				"table %s column %s: expected %s, found %s", t.name, col, attrMapType, got,
-			))
+		if normalizeType(got) == attrMapType {
+			continue
 		}
+		if t.jsonAttrMapCompat && isJSONAttrType(got) {
+			// Boot-probe compat (cerberus issue #2777 phase 1): a JSON-typed
+			// attribute map on logs/traces boots instead of FATALing, but the
+			// query emitters still assume Map, so this is surfaced as a
+			// WARNING rather than silently accepted — an operator on this
+			// schema needs to know query support isn't there yet.
+			warnings = append(warnings, fmt.Sprintf(
+				"table %s column %s: JSON-typed attribute schema detected (cerberus issue #2777 phase 1 "+
+					"boot-probe compat) — boot allowed, but attribute-path query lowering is not implemented "+
+					"yet; queries touching this column's attribute keys will fail until follow-up work lands",
+				t.name, col,
+			))
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"table %s column %s: expected %s, found %s", t.name, col, attrMapType, got,
+		))
 	}
 	for _, chk := range t.materializedColumns {
 		got, ok := types[chk.column]
@@ -931,7 +997,7 @@ func checkTable(ctx context.Context, q Querier, database string, t tableReq) (pr
 			))
 		}
 	}
-	return problems, false, nil
+	return problems, warnings, false, nil
 }
 
 // normalizeType canonicalises a ClickHouse type string for comparison:
