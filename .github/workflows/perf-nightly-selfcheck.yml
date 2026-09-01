@@ -1,12 +1,13 @@
 name: perf-nightly-selfcheck
 
-# #2437's periodic mutation-style self-check: proves the #2370 nightly perf
-# gate (perf-nightly.yml, test/perf/nightly/) still catches a real
-# regression by deliberately breaking two real memory-bounding mechanisms —
-# the #2429 fanout resource bound and the spill safety net — one at a time,
-# and asserting `just perf-nightly-integration` actually fails under each.
+# #2437's periodic mutation-style self-check: proves the #2370 perf sentinel
+# gates (perf-nightly.yml + test/perf/nightly/, and the strict-scan lane's
+# test/perf/smoke/) still catch a real regression by deliberately breaking
+# three real memory-bounding mechanisms — the #2429 fanout resource bound,
+# the spill safety net, and #2779's chopt-gated join-spill stamp — one at a
+# time, and asserting the `just` gate that owns each actually fails under it.
 # See .github/scripts/perf-nightly-selfcheck.mjs's own header for the full
-# mechanism and why these two mutations were chosen.
+# mechanism and why these mutations were chosen.
 #
 # This is #2370's own "Bit-rot risk" paragraph's third named mitigation —
 # alerting and the release-ritual glance shipped in PR B (#2436); this is
@@ -19,10 +20,10 @@ name: perf-nightly-selfcheck
 # blocking anything. Weekly, not nightly: this needs the same real Docker +
 # real ClickHouse substrate as perf-nightly.yml itself, twice per run (one
 # `just perf-nightly-integration` invocation per mutation), so running it as
-# often as the lane it checks would roughly double that lane's own nightly
-# cost for a self-check that does not need to be that fresh — mirrors
-# mutation.yml's "regularly, not every push" cadence without stacking onto
-# perf-nightly.yml's own nightly cost.
+# often as the lanes it checks would roughly double their own cost for a
+# self-check that does not need to be that fresh — mirrors mutation.yml's
+# "regularly, not every push" cadence without stacking onto perf-nightly.yml's
+# own nightly cost.
 
 on:
   schedule:
@@ -53,16 +54,18 @@ jobs:
   perf-nightly-selfcheck:
     name: perf-nightly-selfcheck
     runs-on: ubuntu-latest
-    # Two full `just perf-nightly-integration` runs (one per mutation, see
-    # the script's MUTATIONS) plus setup — generous headroom over the
-    # ~1-2min-each measured locally.
-    timeout-minutes: 30
+    # One full gate run per mutation (see the script's MUTATIONS: two
+    # `just perf-nightly-integration`, one `just perf-smoke-integration`,
+    # the last of which boots two ClickHouse containers) plus setup —
+    # generous headroom over the few-minutes-each measured locally.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           # Same reason perf-nightly.yml needs it: the trimmed sample
           # parquet files are LFS-tracked, and this job loads them via the
-          # SAME `just perf-nightly-integration` recipe.
+          # SAME `just perf-nightly-integration` recipe. (The smoke recipe
+          # seeds synthetically and needs no LFS object of its own.)
           lfs: true
 
       - uses: ./.github/actions/setup-go

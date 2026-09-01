@@ -383,7 +383,14 @@ structural-two-phase-external-table-integration:
 # test/perf/smoke/realch_perfsmoke_integration_test.go and strict-scan.yml.
 perf-smoke-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    go test -timeout 15m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
+    @# The join-spill tier (smoke.FloorJoinSpill) boots a SECOND container:
+    @# chopt.FeatureJoinSpill floors at 26.4, above the 25.9 CH_TEST_IMAGE, and
+    @# max_bytes_before_external_join does not exist below it. The tag reused
+    @# here is CH_STRICT_SCAN_IMAGE, which this repo already pins at or above
+    @# every chopt floor — the same reuse the ts_grid_instant lane in
+    @# test/perf/nightly makes.
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    go test -timeout 20m -tags=integration -count=1 -run TestPerfSmoke ./test/perf/smoke/...
 
 # Run the ts_grid_* native range-window lowerer activation lane (#2487): wires
 # a *prom.Handler the way cmd/cerberus's own boot path does (via
@@ -1056,7 +1063,9 @@ update-scale-wall-baseline:
 # assertion is TestPerfSmokeRealCH in the required `strict-scan` job.
 update-perf-smoke-baseline:
     @just _pull-retry {{CH_TEST_IMAGE}}
-    UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 15m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
+    @# Second tier — see the perf-smoke-integration recipe for why.
+    @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
+    UPDATE_PERF_SMOKE_BASELINE=1 go test -timeout 20m -tags=integration -count=1 -run TestPerfSmokeRealCH ./test/perf/smoke/...
     @echo
     @echo "Diff of regenerated baseline:"
     @git --no-pager diff --stat test/perf/perf-smoke-baseline.json || true

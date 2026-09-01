@@ -170,7 +170,7 @@ func TestNativeRangeLowerers_RealCH_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	client := startPerfSmokeCH(ctx, t)
+	client := startPerfSmokeCH(ctx, t, perfSmokeCHImage)
 	conn := client.Conn()
 
 	if err := ddl.Apply(ctx, conn, []ddl.Signal{ddl.Metrics}); err != nil {

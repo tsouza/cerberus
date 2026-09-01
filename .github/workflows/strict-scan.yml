@@ -101,9 +101,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    # Generous: the lane pulls one ClickHouse image and seeds + executes the
-    # full matrix-shaped golden corpus (~330 fixtures) against it.
-    timeout-minutes: 20
+    # Generous: the lane pulls TWO ClickHouse images and seeds + executes the
+    # full matrix-shaped golden corpus (~330 fixtures) against the first. The
+    # second is the perf-smoke corpus's join-spill tier
+    # (test/perf/smoke's perfSmokeJoinSpillCHImage, >= chopt.FeatureJoinSpill's
+    # 26.4 floor), which boots and runs its own sentinel in about a minute on
+    # top of everything below.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -293,6 +297,11 @@ jobs:
       # system.query_log via the same optcorpus.CHQueryLogSource reader the
       # production async corpus reconciler uses. See
       # test/perf/smoke/realch_perfsmoke_integration_test.go.
+      # The recipe boots a SECOND ClickHouse of its own for the join-spill
+      # tier — chopt.FeatureJoinSpill floors at 26.4, above this job's own
+      # server, and max_bytes_before_external_join does not exist below it, so
+      # that sentinel cannot run on the container this job already owns
+      # (cerberus issue #2820).
       - name: Run perf-smoke sentinel differential (real ClickHouse)
         run: just perf-smoke-integration
 

@@ -104,6 +104,7 @@ import (
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chopt"
+	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/promql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -203,14 +204,41 @@ func TestPerfNightlyRealCH(t *testing.T) {
 		}
 	}
 
-	metricsHandler := prom.New(client, schema.DefaultOTelMetrics(), nil)
-	// Wire the SAME classic-histogram native/fan-out decision cmd/cerberus's
-	// own boot path makes (nativeRangeLowerers, main.go), scoped to just this
-	// one field — see nightlyClassicHistogramLowerer's own doc comment for
-	// why prom.New's zero-value Lowerers table alone would leave
-	// chplan.RangeBucketGridNative permanently unreachable here regardless of
-	// perfNightlyCHImage's pinned version.
-	metricsHandler.Lowerers.ClassicHistogram = nightlyClassicHistogramLowerer(ctx, t, client)
+	metricsSchema := schema.DefaultOTelMetrics()
+	metricsHandler := prom.New(client, metricsSchema, nil)
+
+	// ONE probe-and-resolve pass, exactly as cmd/cerberus's boot does, feeding
+	// BOTH boot-wired axes this lane needs from it.
+	set := chopttest.ResolveEnabledSet(ctx, t, client, "auto")
+
+	// Axis 1 — the SAME classic-histogram native/fan-out decision
+	// cmd/cerberus's own boot path makes (nativeRangeLowerers, main.go),
+	// scoped to just this one field: prom.New's zero-value Lowerers table
+	// alone would leave chplan.RangeBucketGridNative permanently unreachable
+	// here regardless of perfNightlyCHImage's pinned version, because
+	// promql.RangeLowerers.withDefaults normalises every nil field to its
+	// concrete FAN-OUT impl at the lowering entry. That gap is repo-wide and
+	// issue #2487 tracks wiring the other six native ts_grid families across
+	// the other lanes, so this stays scoped to the ONE field this lane's
+	// histogram sentinel needs.
+	metricsHandler.Lowerers.ClassicHistogram = nightlyClassicHistogramLowerer(t, set)
+
+	// Axis 2 — the per-query engine.SettingsRules (cerberus issue #2820).
+	// prom.New leaves Engine.Settings at its zero value, which applies
+	// NOTHING: before this, every SettingsRules mechanism
+	// (optimize_aggregation_in_order, use_query_condition_cache,
+	// max_bytes_before_external_join) was unreachable in this corpus no
+	// matter which server it ran against, so no sentinel here could ever
+	// have measured one.
+	rules := chopttest.BuildSettingsRules(set, metricsSchema, schema.DefaultOTelTraces(), schema.DefaultOTelLogs())
+	if rules.ResultCache {
+		t.Fatalf("the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
+			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+
+			"query and start measuring a cache hit", nightlySentinelRepeats-1)
+	}
+	metricsHandler.Engine.SetSettings(rules)
+	t.Logf("settings rules wired: %+v", rules)
+
 	mux := http.NewServeMux()
 	metricsHandler.Mount(mux)
 
@@ -417,47 +445,18 @@ func sampleParquetPath(t *testing.T, name string) string {
 	return filepath.Join("testdata", "samples", name)
 }
 
-// nightlyClassicHistogramLowerer probes the live container's ClickHouse
-// version and experimental-setting capability and resolves the SAME
-// chopt.FeatureTSGridHistogram decision cmd/cerberus's own boot wiring
-// (nativeRangeLowerers, main.go) makes, returning just the one
+// nightlyClassicHistogramLowerer reads the SAME chopt.FeatureTSGridHistogram
+// decision cmd/cerberus's own boot wiring (nativeRangeLowerers, main.go)
+// makes off the already-resolved set, returning just the one
 // promql.ClassicHistogramWindowLowerer classic_histogram_quantile_by_route
-// needs.
-//
-// Without this, metricsHandler.Lowerers stays at prom.New's zero value:
-// promql.RangeLowerers.withDefaults normalizes every nil field to its
-// concrete FAN-OUT impl at the lowering entry, so a bare prom.New handler is
-// permanently fan-out-only regardless of the connected server's version —
-// bumping perfNightlyCHImage past the 25.9 floor alone would never make
-// chplan.RangeBucketGridNative fire in this harness. That gap is real and
-// repo-wide (test/perf/smoke and internal/api/prom's own real-CH integration
-// tests build their handlers the identical zero-Lowerers way), so this fix
-// is deliberately scoped to just the ONE field this lane's histogram
-// sentinel needs, not a general native-lowerers-in-tests refactor — see
-// issue #2487, which tracks wiring the other six native ts_grid families
-// (rate/staleness/changes/resets/deriv/predict_linear) across the other
-// lanes.
-func nightlyClassicHistogramLowerer(ctx context.Context, t *testing.T, client *chclient.Client) promql.ClassicHistogramWindowLowerer {
+// needs. The probe-and-resolve itself is chopttest.ResolveEnabledSet's, run
+// once by the caller and shared with the SettingsRules axis, so this lane has
+// exactly one version probe and one resolved set — the same posture a real
+// boot has.
+func nightlyClassicHistogramLowerer(t *testing.T, set chopt.EnabledSet) promql.ClassicHistogramWindowLowerer {
 	t.Helper()
-	version, err := client.ProbeVersion(ctx)
-	if err != nil {
-		t.Fatalf("probe clickhouse version: %v", err)
-	}
-	capability := client.ProbeTSGridCapability(ctx)
-	set, warnings, err := chopt.Resolve(chopt.Config{
-		Optimizations: "auto",
-		Mode:          chopt.Enforcing,
-		Capability:    capability,
-	}, version)
-	if err != nil {
-		t.Fatalf("resolve clickhouse optimizations: %v", err)
-	}
-	for _, w := range warnings {
-		t.Logf("ch_opt: %s", w)
-	}
 	enabled := set.Has(chopt.FeatureTSGridHistogram)
-	t.Logf("probed clickhouse %s, ts_grid capability %s, ts_grid_histogram enabled=%v",
-		version.String(), capability.String(), enabled)
+	t.Logf("ts_grid_histogram enabled=%v", enabled)
 
 	// Matches cmd/cerberus's own nativeRangeLowerers exactly.
 	if enabled {

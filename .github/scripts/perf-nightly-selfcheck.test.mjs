@@ -14,8 +14,8 @@
 //
 // Deliberately NOT covered here (needs Docker + real ClickHouse, exercised
 // by the self-check workflow itself, not this fast unit suite):
-// runOneMutation()'s actual `just perf-nightly-integration` invocation and
-// the "was it caught" verdict.
+// runOneMutation()'s actual `just <recipe>` invocation and the "was it
+// caught" verdict.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,6 +24,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { MUTATIONS, applyMutation } from './perf-nightly-selfcheck.mjs';
+
+// KNOWN_RECIPES are the two #2370 sentinel gate recipes a mutation may name.
+// Pinned as a closed set so a typo'd recipe fails here rather than as a
+// `just` "no such recipe" the run would count as the gate catching it.
+const KNOWN_RECIPES = new Set(['perf-nightly-integration', 'perf-smoke-integration']);
 
 test('MUTATIONS is non-empty and every entry is well-formed', () => {
   assert.ok(MUTATIONS.length > 0, 'an empty mutation set makes the self-check vacuous');
@@ -34,6 +39,11 @@ test('MUTATIONS is non-empty and every entry is well-formed', () => {
     assert.ok(m.description.length > 0);
     assert.equal(typeof m.file, 'string');
     assert.ok(m.file.length > 0);
+    // recipe names the `just` gate that must catch this mutation. Without
+    // it runOneMutation would invoke `just undefined`, which fails for the
+    // wrong reason and would read as a spurious "caught".
+    assert.equal(typeof m.recipe, 'string', `${m.id}: missing recipe`);
+    assert.ok(KNOWN_RECIPES.has(m.recipe), `${m.id}: unknown gate recipe ${m.recipe}`);
     assert.notEqual(m.find, m.replace, `${m.id}: find and replace must differ, or the mutation is a no-op`);
   }
 });

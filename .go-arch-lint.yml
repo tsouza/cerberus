@@ -540,14 +540,17 @@ deps:
       - chclient
       - testsql
   # chopttest resolves the boot-time chopt.EnabledSet against a live client
-  # (chclient) and builds the full promql.RangeLowerers dispatch table from
-  # it (promql), so real-CH integration tests across packages can wire a
-  # handler the way a real deployment does instead of prom.New's
-  # permanently fan-out-only zero value.
+  # (chclient) and builds, from it, BOTH axes cmd/cerberus's own boot path
+  # wires from that set: the full promql.RangeLowerers dispatch table
+  # (promql) and the per-query engine.SettingsRules (engine). Real-CH
+  # integration tests across packages wire a handler the way a real
+  # deployment does instead of inheriting prom.New's permanently
+  # fan-out-only, settings-rules-free zero value.
   chopttest:
     mayDependOn:
       - chclient
       - promql
+      - engine
   # api-reqctx resolves the per-request query budget and threads it onto
   # the context, so it needs chclient for the WithQueryTimeout carrier
   # (the `?timeout=` parse itself comes from the api-format
