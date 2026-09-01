@@ -2270,16 +2270,21 @@ func groupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
 // ClickHouse aggregate replacement for groupArrayPairIfFrag
 // (chopt.FeatureTSGridGroupArray, cerberus issue #2862). ClickHouse's
 // generic `-If` aggregate-function combinator applies to timeSeriesGroupArray
-// like any other aggregate: measured against a real ClickHouse 25.9 server,
-// timeSeriesGroupArrayIf carries the SAME three preconditions
-// nativeGroupArrayPairFrag's own doc pins for the plain form — DateTime64(9)
-// accepted directly and losslessly, duplicate-timestamp collapse to the
-// max-valued sample among rows PASSING cond (insertion-order independent for
-// finite values), and insertion-order DEPENDENT survival on a NaN-bearing
-// duplicate — re-verified independently for the combinator form rather than
-// assumed to carry over. Callers that swap to this Frag must skip the
-// subsequent dedup step for THIS array — see seriesArrayPairIfFrag and
-// deltaPrefixSumFrag's alreadyDeduped parameter.
+// like any other aggregate. timeSeriesGroupArrayIf carries the SAME three
+// preconditions nativeGroupArrayPairFrag's own doc pins for the plain form —
+// DateTime64(9) accepted directly and losslessly, duplicate-timestamp
+// collapse to the max-valued sample (insertion-order independent for finite
+// values), and insertion-order DEPENDENT survival on a NaN-bearing duplicate
+// — plus the one only the combinator form can pose: cond gates whether a row
+// reaches the fold at ALL, so the collapse runs over the rows PASSING cond
+// and a cond-failing row can never take a timestamp from a passing one. All
+// four are RE-RUN for this form rather than assumed to carry over from the
+// plain one, against a real ClickHouse at chopt.FeatureTSGridGroupArray's own
+// 25.9 floor — see range_window_group_array_realch_integration_test.go's
+// TestTimeSeriesGroupArray_IfCombinator* trio (the strict-scan lane's
+// `just ts-grid-group-array-integration` recipe). Callers that swap to this
+// Frag must skip the subsequent dedup step for THIS array — see
+// seriesArrayPairIfFrag and deltaPrefixSumFrag's alreadyDeduped parameter.
 func nativeGroupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
 	return Call("timeSeriesGroupArrayIf", Col(tsCol), Col(valCol), cond)
 }

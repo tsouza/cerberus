@@ -456,8 +456,11 @@ func (e *emitter) fixedAccumRegroupLayer(
 	}
 	if needsDeltaFirstLevel {
 		regroup.Select(As(Call("sumIf", Col(r.ValueColumn), Gt(Col(srcTs), windowStart)), fixedAccumSumValAlias))
+		// groupArrayPairIfFrag, not seriesArrayPairIfFrag: this term stays
+		// on the hand-rolled idiom unconditionally — see
+		// fixedAccumDeltaLevelSource's own doc.
 		regroup.Select(As(
-			Call("arraySort", Call("groupArrayIf", Tuple(Col(srcTs), Col(r.ValueColumn)), Lte(Col(srcTs), windowStart))),
+			groupArrayPairIfFrag(srcTs, r.ValueColumn, Lte(Col(srcTs), windowStart)),
 			deltaPrefixPairsAlias,
 		))
 	}
