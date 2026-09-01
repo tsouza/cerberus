@@ -1458,6 +1458,15 @@ func (b *Builder) exprLineContent(l *chplan.LineContent) error {
 }
 
 func (b *Builder) exprFieldAccess(f *chplan.FieldAccess) error {
+	// A materialized attribute column reads byte-identical to the Map
+	// subscript below (see chplan.FieldAccess.MaterializedColumn's doc and
+	// AddColumnBuilder.Default's real-ClickHouse evidence) but avoids
+	// decompressing the wide Attributes Map, so the emitter prefers it
+	// whenever the lowering layer populated it.
+	if f.MaterializedColumn != "" {
+		b.Ident(f.MaterializedColumn)
+		return nil
+	}
 	if err := b.Expr(f.Source); err != nil {
 		return err
 	}

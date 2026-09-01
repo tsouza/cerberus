@@ -912,11 +912,12 @@ func (a *ModifyColumnTTLBuilder) SQL() string {
 
 // AddColumnBuilder builds an ALTER TABLE ADD COLUMN statement.
 type AddColumnBuilder struct {
-	database string // "" => unqualified table reference
-	table    string
-	column   string
-	cluster  string // "" => no ON CLUSTER clause
-	colType  Frag
+	database    string // "" => unqualified table reference
+	table       string
+	column      string
+	cluster     string // "" => no ON CLUSTER clause
+	colType     Frag
+	defaultExpr Frag // nil => no DEFAULT clause
 }
 
 // AlterTableAddColumn starts an ADD COLUMN builder appending <column> of
@@ -934,10 +935,28 @@ func (a *AddColumnBuilder) OnCluster(name string) *AddColumnBuilder {
 	return a
 }
 
+// Default adds a `DEFAULT <expr>` clause to the added column. Unlike a
+// MATERIALIZED column (computed once at insert time and frozen), a DEFAULT
+// column's value for a row in a part that predates the ALTER is computed
+// LAZILY at read time from that row's other already-stored columns — see
+// cerberus issue #2776's PR body for the real-ClickHouse (26.6) evidence
+// this relies on: a fresh ADD COLUMN ... DEFAULT <mapCol>[<key>] reads
+// byte-identical to the map on every existing row immediately, with zero
+// mutation queued, before any MATERIALIZE COLUMN backfill runs. This is
+// what lets a materialized attribute column be read safely the instant it
+// exists, with no "backfill verified" operator declaration required (see
+// schema.Traces.MaterializedSpanAttributeColumns' doc for the read-side
+// consequence).
+func (a *AddColumnBuilder) Default(expr Frag) *AddColumnBuilder {
+	a.defaultExpr = expr
+	return a
+}
+
 // frag assembles the statement from typed pieces: keyword tokens via ddlToken,
 // bare database/table identifiers via BareIdent, the quoted column via Col, the
-// optional ON CLUSTER clause via the typed constructor, and the column type via
-// the caller's type Frag — no raw token is written here.
+// optional ON CLUSTER clause via the typed constructor, the column type via
+// the caller's type Frag, and the optional DEFAULT clause via the caller's
+// expr Frag — no raw token is written here.
 func (a *AddColumnBuilder) frag() Frag {
 	return func(b *Builder) {
 		ddlToken("ALTER TABLE ")(b)
@@ -954,12 +973,94 @@ func (a *AddColumnBuilder) frag() Frag {
 		Col(a.column)(b)
 		ddlToken(" ")(b)
 		a.colType(b)
+		if a.defaultExpr != nil {
+			ddlToken(" DEFAULT ")(b)
+			a.defaultExpr(b)
+		}
 	}
 }
 
 // SQL renders the ALTER TABLE ADD COLUMN statement to ClickHouse text via
 // RenderDDL (which asserts the no-positional-bindings DDL invariant).
 func (a *AddColumnBuilder) SQL() string {
+	return RenderDDL(a.frag())
+}
+
+// --- ALTER TABLE ... MATERIALIZE COLUMN surface ---
+//
+// MaterializeColumnBuilder renders
+// `ALTER TABLE [<db>.]<table> [ON CLUSTER x] MATERIALIZE COLUMN <col>`, the
+// one-time backfill ALTER that forces a DEFAULT (or MATERIALIZED) column's
+// value to be physically written into every EXISTING part, instead of left
+// to the lazy per-read DEFAULT-expression evaluation AddColumnBuilder's own
+// doc describes. Correctness does not depend on this statement ever
+// running — see AddColumnBuilder.Default's doc — only the read-performance
+// win does: an un-backfilled old part still answers correctly, just by
+// decomposing the source Map on every read instead of reading the narrow
+// column directly.
+//
+// Unlike ADD COLUMN, ClickHouse has no IF NOT EXISTS-shaped guard for
+// MATERIALIZE COLUMN against a column that is already fully backfilled —
+// only IF EXISTS (a no-op on an absent column). Re-issuing it against an
+// already-backfilled table queues a mutation with zero parts left to touch
+// (confirmed against real ClickHouse 26.6 — see the PR body), so the
+// idempotent-on-every-boot contract this package's other ALTERs rely on
+// still holds; the residual cost is a near-instant no-op mutation record,
+// not a wasted rewrite.
+//
+// Like the other DDL builders it binds no positional `?` values, so SQL
+// renders through RenderDDL.
+
+// MaterializeColumnBuilder builds an ALTER TABLE MATERIALIZE COLUMN
+// statement.
+type MaterializeColumnBuilder struct {
+	database string // "" => unqualified table reference
+	table    string
+	column   string
+	cluster  string // "" => no ON CLUSTER clause
+}
+
+// AlterTableMaterializeColumn starts a MATERIALIZE COLUMN builder
+// backfilling <column> on [<database>.]<table>. An empty database emits no
+// qualifier, so a table the connection's own database owns is referenced
+// bare.
+func AlterTableMaterializeColumn(database, table, column string) *MaterializeColumnBuilder {
+	return &MaterializeColumnBuilder{database: database, table: table, column: column}
+}
+
+// OnCluster adds an `ON CLUSTER <name>` clause so the ALTER replicates the
+// same way the CREATE statements do under a classic ON CLUSTER deployment.
+// A Replicated database replicates the DDL itself and needs no clause.
+func (a *MaterializeColumnBuilder) OnCluster(name string) *MaterializeColumnBuilder {
+	a.cluster = name
+	return a
+}
+
+// frag assembles the statement from typed pieces: keyword tokens via
+// ddlToken, bare database/table identifiers via BareIdent, the quoted
+// column via Col, and the optional ON CLUSTER clause via the typed
+// constructor — no raw token is written here.
+func (a *MaterializeColumnBuilder) frag() Frag {
+	return func(b *Builder) {
+		ddlToken("ALTER TABLE ")(b)
+		if a.database != "" {
+			BareIdent(a.database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(a.table)(b)
+		if a.cluster != "" {
+			ddlToken(" ")(b)
+			OnCluster(a.cluster)(b)
+		}
+		ddlToken(" MATERIALIZE COLUMN ")(b)
+		Col(a.column)(b)
+	}
+}
+
+// SQL renders the ALTER TABLE MATERIALIZE COLUMN statement to ClickHouse
+// text via RenderDDL (which asserts the no-positional-bindings DDL
+// invariant).
+func (a *MaterializeColumnBuilder) SQL() string {
 	return RenderDDL(a.frag())
 }
 

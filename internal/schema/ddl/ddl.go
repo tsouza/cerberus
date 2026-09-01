@@ -36,6 +36,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -269,6 +270,35 @@ type Config struct {
 	// schema.DownsampleTierTable's doc) rather than needing DeltaPrefix's
 	// separate later "backfill verified" declaration.
 	DownsampleTierEnabled bool
+
+	// TraceMaterializedAttributesEnabled gates the curated `ADD COLUMN IF
+	// NOT EXISTS <col> LowCardinality(String) DEFAULT <map>['<key>']` +
+	// `MATERIALIZE COLUMN <col>` ALTER pairs (cerberus issue #2776) that
+	// install cerberus's default set of materialized span/resource
+	// attribute columns on the traces spans table. False (the default)
+	// renders no statements at all — an operator on today's schema sees
+	// byte-identical DDL. Unlike every other *Enabled flag above, this one
+	// is a no-op unless MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns (below) also carry at least one
+	// entry — see those fields' own doc for why a plain bool gate is
+	// enough here, with no ClickHouse version floor to probe (ADD COLUMN /
+	// MATERIALIZE COLUMN predate this repo's CH 24.8 floor) and no
+	// separate "backfill verified" declaration needed (see
+	// schema.Traces.MaterializedSpanAttributeColumns' doc for the
+	// real-ClickHouse evidence establishing that reading pre-backfill is
+	// always correct, only ever slower).
+	TraceMaterializedAttributesEnabled bool
+
+	// MaterializedSpanAttributeColumns / MaterializedResourceAttributeColumns
+	// carry the {map-key -> column} tables to provision — threaded from
+	// the SAME resolved schema.Traces struct the query heads read
+	// (cfg.Traces.MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns in internal/schemaboot.DDLConfig),
+	// mirroring exactly how DeltaPrefixBucketColumn / DeltaPrefixSumColumn
+	// are threaded from cfg.Schema rather than duplicated here. nil/empty
+	// renders no statements regardless of TraceMaterializedAttributesEnabled.
+	MaterializedSpanAttributeColumns     map[string]string
+	MaterializedResourceAttributeColumns map[string]string
 }
 
 // DatabaseEngine selects the ClickHouse database engine for the
@@ -984,6 +1014,15 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 				renderTempoTagCatalogTable(cfg),
 				renderTempoTagCatalogView(cfg),
 			)
+		}
+		// The curated materialized attribute columns (issue #2776) trail
+		// every other curated ALTER on the spans table, same ordering
+		// convention as the projection / column-statistics / column-TTL
+		// ALTERs above. See TraceMaterializedAttributesEnabled's doc
+		// comment for why this is a no-op unless the caller ALSO
+		// populated at least one of the two key/column maps.
+		if cfg.TraceMaterializedAttributesEnabled {
+			stmts = append(stmts, renderTraceMaterializedAttrColumns(cfg)...)
 		}
 		return stmts, nil
 	default:
@@ -2370,4 +2409,64 @@ func renderModifyColumnTTL(cfg Config, table, column, colType string, ttl time.D
 		stmt.OnCluster(cfg.Cluster)
 	}
 	return stmt.SQL()
+}
+
+// renderTraceMaterializedAttrColumns builds the idempotent ADD COLUMN
+// ALTERs installing cfg.MaterializedSpanAttributeColumns /
+// MaterializedResourceAttributeColumns on the traces spans table (cerberus
+// issue #2776) — cerberus's first ADD COLUMN onto a table it does not
+// otherwise own the CREATE TABLE body of. Each column is declared
+// `LowCardinality(String) DEFAULT <map>['<key>']` — DEFAULT, not
+// MATERIALIZED — so it is metadata-only for existing parts and
+// immediately, lazily correct on read; see chsql.AddColumnBuilder.Default's
+// doc comment for the real-ClickHouse (26.6) evidence this relies on.
+//
+// This renders ONLY the ADD COLUMN half. The MATERIALIZE COLUMN backfill
+// that physically rewrites existing parts — pure read-performance, never
+// correctness, per the same evidence — is, like every other
+// MATERIALIZE-style backfill in this package (MATERIALIZE PROJECTION /
+// INDEX / TTL), a manual operator runbook rather than an auto-applied boot
+// statement: see docs/operations.md's materialized attribute columns
+// section. An unbounded-duration mutation has no business running inside
+// the server's boot path.
+//
+// Each key set is sorted before rendering so the emitted statement order
+// is deterministic regardless of Go's randomized map iteration — the same
+// discipline this package's other map-keyed rendering paths (e.g.
+// appendSettings) already follow for their own ordered inputs.
+func renderTraceMaterializedAttrColumns(cfg Config) []string {
+	var stmts []string
+	stmts = append(stmts, renderAddMaterializedAttrColumns(cfg, tracesSpanAttributesColumn, cfg.MaterializedSpanAttributeColumns)...)
+	stmts = append(stmts, renderAddMaterializedAttrColumns(cfg, metricResourceAttributesColumn, cfg.MaterializedResourceAttributeColumns)...)
+	return stmts
+}
+
+// renderAddMaterializedAttrColumns builds one ADD COLUMN ALTER per {key:
+// column} entry, reading DEFAULT `<mapColumn>['<key>']`. mapColumn is
+// tracesSpanAttributesColumn for the span-scoped registry or
+// metricResourceAttributesColumn (reused cross-signal, see that constant's
+// doc) for the resource-scoped one.
+func renderAddMaterializedAttrColumns(cfg Config, mapColumn string, keyToColumn map[string]string) []string {
+	if len(keyToColumn) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(keyToColumn))
+	for k := range keyToColumn {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	stmts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		// TypeLowCardinality(TypeRaw("String")) renders "LowCardinality(String)"
+		// — byte-identical to schema.MaterializedAttributeColumnType, the
+		// string preflight compares system.columns' reported type against.
+		colType := chsql.TypeLowCardinality(chsql.TypeRaw("String"))
+		stmt := chsql.AlterTableAddColumn(cfg.Database, cfg.Tables.Traces, keyToColumn[key], colType).
+			Default(chsql.Subscript(chsql.Col(mapColumn), chsql.InlineLit(key)))
+		if cfg.Cluster != "" {
+			stmt.OnCluster(cfg.Cluster)
+		}
+		stmts = append(stmts, stmt.SQL())
+	}
+	return stmts
 }

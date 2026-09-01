@@ -178,6 +178,20 @@ func DDLConfig(cfg config.Config) (ddl.Config, error) {
 		// (see that package's doc for why, unlike DeltaPrefixTable, they are
 		// not threaded from cfg.Schema at all).
 		DownsampleTierEnabled: cfg.SchemaDownsampleTier,
+		// TraceMaterializedAttributesEnabled / MaterializedSpanAttributeColumns
+		// / MaterializedResourceAttributeColumns (cerberus issue #2776) are
+		// threaded straight from SchemaProvisioning's own enable bit and
+		// cfg.Traces' resolved registries (the SAME schema struct
+		// internal/traceql reads for query routing) — unlike the chopt
+		// verdicts above, this feature has no ClickHouse version floor to
+		// probe, so it uses DeltaPrefixEnabled's plain config-bool shape
+		// rather than a boot-resolved verdict; see
+		// SchemaProvisioning.TraceMaterializedAttrsEnabled's doc for why,
+		// unlike DeltaPrefixEnabled, this single bit is enough to gate BOTH
+		// provisioning and the read side.
+		TraceMaterializedAttributesEnabled:   p.TraceMaterializedAttrsEnabled,
+		MaterializedSpanAttributeColumns:     cfg.Traces.MaterializedSpanAttributeColumns,
+		MaterializedResourceAttributeColumns: cfg.Traces.MaterializedResourceAttributeColumns,
 	}
 	// Validate here rather than only inside ddl.ApplyWithConfig: DDLConfig runs
 	// on EVERY boot (the auto-create hook is a separate flag), so an inert

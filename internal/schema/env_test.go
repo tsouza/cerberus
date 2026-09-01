@@ -1,6 +1,9 @@
 package schema
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestDefaultOTelMetricsFromEnv_Unset confirms that with no env vars
 // set, the env-aware factory returns the exact same value as the
@@ -311,5 +314,63 @@ func TestDefaultOTelTracesFromEnv_Override(t *testing.T) {
 	}
 	if got.TraceIDColumn != "TraceId" {
 		t.Errorf("TraceIDColumn drifted while overriding SpansTable: got %q", got.TraceIDColumn)
+	}
+}
+
+// TestDefaultOTelTracesFrom_MaterializedAttrsGate pins cerberus issue
+// #2776's opt-in gate: unset/falsey leaves both materialized-attribute
+// registries nil (today's behavior, byte-identical DDL/routing); a truthy
+// value populates BOTH from the curated defaults — never just one, since a
+// deployment reasoning about "materialized attributes" as a single feature
+// should not find one scope silently unmaterialized.
+func TestDefaultOTelTracesFrom_MaterializedAttrsGate(t *testing.T) {
+	off := DefaultOTelTracesFrom(func(string) string { return "" })
+	if off.MaterializedSpanAttributeColumns != nil {
+		t.Errorf("gate off: MaterializedSpanAttributeColumns = %v, want nil", off.MaterializedSpanAttributeColumns)
+	}
+	if off.MaterializedResourceAttributeColumns != nil {
+		t.Errorf("gate off: MaterializedResourceAttributeColumns = %v, want nil", off.MaterializedResourceAttributeColumns)
+	}
+
+	on := DefaultOTelTracesFrom(func(k string) string {
+		if k == EnvTracesMaterializedAttrsEnabled {
+			return "true"
+		}
+		return ""
+	})
+	wantSpan := DefaultMaterializedSpanAttributeColumns()
+	wantResource := DefaultMaterializedResourceAttributeColumns()
+	if len(on.MaterializedSpanAttributeColumns) == 0 || len(wantSpan) != len(on.MaterializedSpanAttributeColumns) {
+		t.Errorf("gate on: MaterializedSpanAttributeColumns = %v, want %v", on.MaterializedSpanAttributeColumns, wantSpan)
+	}
+	for k, v := range wantSpan {
+		if on.MaterializedSpanAttributeColumns[k] != v {
+			t.Errorf("gate on: MaterializedSpanAttributeColumns[%q] = %q, want %q", k, on.MaterializedSpanAttributeColumns[k], v)
+		}
+	}
+	if len(on.MaterializedResourceAttributeColumns) == 0 || len(wantResource) != len(on.MaterializedResourceAttributeColumns) {
+		t.Errorf("gate on: MaterializedResourceAttributeColumns = %v, want %v", on.MaterializedResourceAttributeColumns, wantResource)
+	}
+}
+
+// TestMaterializedAttributeColumns_KeysDisjointFromPrefix guards the
+// column-naming convention MaterializedAttributeColumnPrefix documents:
+// every default key's derived column name carries the cerberus-owned
+// prefix, never the exporter-owned __otel_materialized_ prefix Logs uses —
+// the two must never collide on a table that (hypothetically) carried
+// both.
+func TestMaterializedAttributeColumns_KeysDisjointFromPrefix(t *testing.T) {
+	for _, reg := range []map[string]string{
+		DefaultMaterializedSpanAttributeColumns(),
+		DefaultMaterializedResourceAttributeColumns(),
+	} {
+		for key, col := range reg {
+			if !strings.HasPrefix(col, "__cerberus_materialized_") {
+				t.Errorf("key %q -> column %q: missing __cerberus_materialized_ prefix", key, col)
+			}
+			if strings.HasPrefix(col, "__otel_materialized_") {
+				t.Errorf("key %q -> column %q: collides with Logs' exporter-owned prefix", key, col)
+			}
+		}
 	}
 }

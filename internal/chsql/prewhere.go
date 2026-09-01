@@ -58,7 +58,16 @@ func collectColumnRefs(e chplan.Expr) []string {
 		case *chplan.LineContent:
 			walk(v.Source)
 		case *chplan.FieldAccess:
-			walk(v.Source)
+			// A materialized attribute reference emits the narrow column
+			// directly (see chsql's exprFieldAccess), not the wide Source
+			// map — record that column instead of walking Source, so
+			// classifyPredicate's touchesWide check reflects what the
+			// emitter actually reads.
+			if v.MaterializedColumn != "" {
+				seen[v.MaterializedColumn] = struct{}{}
+			} else {
+				walk(v.Source)
+			}
 		case *chplan.NestedArrayExists:
 			walk(v.Value)
 			if v.Column != "" {

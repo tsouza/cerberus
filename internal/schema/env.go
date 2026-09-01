@@ -47,6 +47,19 @@ const (
 	// resolve from the identical operator declaration, so they can never
 	// disagree about whether the deployment opted in.
 	EnvMetricsDeltaPrefixEnabled = "CERBERUS_SCHEMA_DELTA_PREFIX_ENABLED"
+	// EnvTracesMaterializedAttrsEnabled opts into the curated default set of
+	// materialized span/resource attribute columns (cerberus issue #2776).
+	// Truthy values populate Traces.MaterializedSpanAttributeColumns /
+	// MaterializedResourceAttributeColumns from
+	// DefaultMaterializedSpanAttributeColumns / DefaultMaterializedResourceAttributeColumns;
+	// unset/empty/falsey leaves both nil — mirrors EnvMetricsDeltaPrefixEnabled's
+	// shape exactly, including the SAME-env-var dual-resolution: internal/config
+	// reads this identical name independently (into
+	// SchemaProvisioning.TraceMaterializedAttrsEnabled, since it cannot import
+	// this package's Getenv-scoped helpers) to gate internal/schema/ddl's DDL
+	// provisioning, so the two can never disagree about whether the deployment
+	// opted in.
+	EnvTracesMaterializedAttrsEnabled = "CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED"
 )
 
 // traceIDTsSuffix is the fixed suffix the OTel-CH exporter's DDL template
@@ -238,5 +251,9 @@ func DefaultOTelTracesFrom(get Getenv) Traces {
 	// overrides the spans table the lookup table is `<spans>_trace_id_ts`.
 	t.TraceIDTsTable = t.SpansTable + traceIDTsSuffix
 	t.TraceIDTsEnabled = envBool(get, EnvTracesTsLookup)
+	if envBool(get, EnvTracesMaterializedAttrsEnabled) {
+		t.MaterializedSpanAttributeColumns = DefaultMaterializedSpanAttributeColumns()
+		t.MaterializedResourceAttributeColumns = DefaultMaterializedResourceAttributeColumns()
+	}
 	return t
 }
