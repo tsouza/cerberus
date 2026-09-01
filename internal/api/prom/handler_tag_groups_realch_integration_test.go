@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"testing"
 	"time"
 
@@ -300,14 +301,70 @@ func TestTagGroups_MatchesMapGrouping_RealClickHouse(t *testing.T) {
 // handlers' independent JSON encodings could otherwise introduce, while
 // still catching any REAL divergence in status, error, series set, labels,
 // or values.
+//
+// A vector Result's own SERIES order is additionally normalized by
+// sortVectorResult. Neither guardNameDropCollision's Map-grouped Aggregate
+// nor guardNameDropCollisionByTagGroup's UInt64-id-grouped one carries an
+// ORDER BY — ClickHouse's GROUP BY makes no row-order promise for either
+// shape, and switching the grouping key changes which order it happens to
+// pick, exactly like handler_route_b_realch_integration_test.go's own
+// route-A/route-B comparison already has to tolerate (its byLabels map
+// exists for the identical reason). Series order was never part of what
+// this feature's "no observable behaviour change" doc comment promises —
+// only the series SET and each series' own labels/value are.
 func normalizeQueryBody(body string) (string, error) {
 	var parsed queryResponse
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return "", err
+	}
+	if parsed.Data.ResultType == "vector" {
+		sorted, err := sortVectorResult(parsed.Data.Result)
+		if err != nil {
+			return "", err
+		}
+		parsed.Data.Result = sorted
 	}
 	out, err := json.Marshal(parsed)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// sortVectorResult decodes a vector Result (decoded generically by
+// queryResponse as `any`) into its typed []prom.VectorSample shape and
+// sorts it by each series' marshaled label set. encoding/json canonically
+// sorts a Go map's keys when marshaling, so two series sharing a label set
+// marshal identically regardless of which grouping key produced them; the
+// sort key is otherwise unique because the guard under test has already
+// rejected any query where two series would share one label set.
+func sortVectorResult(result any) ([]prom.VectorSample, error) {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var vec []prom.VectorSample
+	if err := json.Unmarshal(raw, &vec); err != nil {
+		return nil, err
+	}
+	// keyed pairs a sample with its own sort key so sort.Slice's swaps move
+	// both together — sorting `vec` directly against a same-indexed `keys`
+	// slice would desync the two the moment the first swap happened.
+	type keyed struct {
+		key    string
+		sample prom.VectorSample
+	}
+	pairs := make([]keyed, len(vec))
+	for i, sample := range vec {
+		key, err := json.Marshal(sample.Metric)
+		if err != nil {
+			return nil, err
+		}
+		pairs[i] = keyed{key: string(key), sample: sample}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].key < pairs[j].key })
+	for i, p := range pairs {
+		vec[i] = p.sample
+	}
+	return vec, nil
 }
