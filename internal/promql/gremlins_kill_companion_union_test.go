@@ -133,6 +133,67 @@ func TestLiteralCompanionValueTables_SkipsEmptyAndHistogramTables(t *testing.T) 
 	})
 }
 
+// TestResolveSelectorRouting_RewritesToTheBareNameOnlyForTheSingleArmFallback
+// pins the consequence of the decision above on the matchers the selector
+// actually scans with.
+//
+// The bare-name rewrite exists so the single-arm histogram fallback filters on
+// the name the histogram row is stored under. It is correct ONLY on that
+// fallback: when a distinct literal value table exists the union path owns the
+// rewrite per-arm, and rewriting here as well would make the Sum/Gauge arm
+// filter on the bare name — which is not in those tables — and return nothing.
+//
+// So the two configurations must disagree, and this asserts both. Testing only
+// the default schema would leave the negation of the guard indistinguishable
+// from the guard.
+func TestResolveSelectorRouting_RewritesToTheBareNameOnlyForTheSingleArmFallback(t *testing.T) {
+	t.Parallel()
+
+	matchers := func(t *testing.T) []*labels.Matcher {
+		t.Helper()
+		return []*labels.Matcher{
+			mustMatcher(t, labels.MatchEqual, labels.MetricName, companionSuffixedName),
+		}
+	}
+
+	t.Run("union path leaves the suffixed name alone", func(t *testing.T) {
+		t.Parallel()
+		s := schema.DefaultOTelMetrics()
+		if got := literalCompanionValueTables(s); len(got) == 0 {
+			t.Fatalf("default schema has no distinct literal value table (%v); this case would test the fallback instead", got)
+		}
+
+		route, err := resolveSelectorRouting(
+			companionSuffixedName, s, lowerCtx{}, s.TablesFor(companionSuffixedName), matchers(t),
+		)
+		if err != nil {
+			t.Fatalf("resolveSelectorRouting: %v", err)
+		}
+		if got := route.matchers[0].Value; got != companionSuffixedName {
+			t.Errorf("routed matcher = %q; want the suffixed name %q left intact — the union path rewrites per-arm",
+				got, companionSuffixedName)
+		}
+	})
+
+	t.Run("single-arm fallback rewrites to the bare name", func(t *testing.T) {
+		t.Parallel()
+		s := schema.DefaultOTelMetrics()
+		s.SumTable = s.HistogramTable
+		s.GaugeTable = s.HistogramTable
+
+		route, err := resolveSelectorRouting(
+			companionSuffixedName, s, lowerCtx{}, s.TablesFor(companionSuffixedName), matchers(t),
+		)
+		if err != nil {
+			t.Fatalf("resolveSelectorRouting: %v", err)
+		}
+		if got := route.matchers[0].Value; got != companionBareName {
+			t.Errorf("routed matcher = %q; want the bare name %q — the histogram row is stored under it",
+				got, companionBareName)
+		}
+	})
+}
+
 // TestRewriteMetricName_TouchesOnlyThePinnedNameMatcher pins both halves of
 // rewriteMetricName's per-matcher predicate and its copy-on-write contract.
 //
