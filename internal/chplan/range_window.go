@@ -348,6 +348,42 @@ type RangeWindow struct {
 	// permanent, always-available fallback the FeatureSortedSlabOverTime
 	// chopt kill-switch resolves to.
 	SortedSlabOverTime bool
+
+	// DownsampleTierInput is the optional second scan side-feeding the
+	// operator-provisioned downsampled long-range tier (cerberus issue
+	// #2751): a Scan of schema.DownsampleTierTable, filtered by the SAME
+	// label matchers Input's own selector applies, projected under the
+	// SAME selectorAttributesExpr(ctx, s) tower Input's own Attributes
+	// projection uses — see internal/promql/lower.go's
+	// buildDownsampleTierArm, the direct sibling of
+	// buildDeltaPrefixAggregateArm. Populated ONLY by the boot-wired
+	// promql.DownsampleTier{Irate,Idelta,LastOverTime}Lowerer strategies
+	// (chopt.FeatureDownsampleTier) — unlike DeltaPrefixAggregateInput,
+	// never by the base lowering unconditionally, because this is a whole
+	// alternate lowering the query either takes or does not (see
+	// DownsampleTier below), not a supplementary join side every Func
+	// value tolerates having populated-but-unconsumed.
+	//
+	// nil (the default) — every deployment that hasn't wired the feature
+	// keeps the pre-existing raw-scan RangeWindow emission, byte-identical
+	// to pre-#2751 SQL.
+	DownsampleTierInput Node
+
+	// DownsampleTier reports whether the emitter should render this node by
+	// reading DownsampleTierInput's bucketed AggregateFunction state instead
+	// of windowing Input's raw per-sample rows (cerberus issue #2751). Set
+	// ONLY when DownsampleTierInput is non-nil AND the boot-wired
+	// DownsampleTier*Lowerer strategy's resolution-aware eligibility check
+	// passed (Func is irate/idelta/last_over_time, Range equals the tier's
+	// fixed bucket, and the query_range grid is bucket-aligned with
+	// Step >= bucket) — never read as a per-query feature flag.
+	//
+	// false (the default) keeps the unchanged raw-scan emission — the
+	// permanent, always-available fallback the FeatureDownsampleTier chopt
+	// kill-switch resolves to, and the ONLY path rate() / increase() /
+	// delta() ever take (see chopt.FeatureDownsampleTier's own doc for why
+	// those three are structurally never eligible).
+	DownsampleTier bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -421,10 +457,14 @@ func (*RangeWindow) planNode() {}
 // recursive Children traversal) reaches the side-scan the same way it
 // already reaches Input, rather than silently treating it as an opaque leaf.
 func (r *RangeWindow) Children() []Node {
-	if r.DeltaPrefixAggregateInput == nil {
-		return []Node{r.Input}
+	children := []Node{r.Input}
+	if r.DeltaPrefixAggregateInput != nil {
+		children = append(children, r.DeltaPrefixAggregateInput)
 	}
-	return []Node{r.Input, r.DeltaPrefixAggregateInput}
+	if r.DownsampleTierInput != nil {
+		children = append(children, r.DownsampleTierInput)
+	}
+	return children
 }
 
 // NumAnchors is the number of subquery anchor points this RangeWindow
@@ -494,6 +534,9 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 	if r.SortedSlabOverTime != o.SortedSlabOverTime {
 		return false
 	}
+	if r.DownsampleTier != o.DownsampleTier {
+		return false
+	}
 	return r.VariantColumn == o.VariantColumn
 }
 
@@ -541,6 +584,9 @@ func (r *RangeWindow) Equal(other Node) bool {
 		}
 	}
 	if !optionalNodeEqual(r.DeltaPrefixAggregateInput, o.DeltaPrefixAggregateInput) {
+		return false
+	}
+	if !optionalNodeEqual(r.DownsampleTierInput, o.DownsampleTierInput) {
 		return false
 	}
 	return r.Input.Equal(o.Input)

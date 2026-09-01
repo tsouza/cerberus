@@ -719,14 +719,27 @@ func clampU8(v int64) uint8 {
 // * 2, m)` — hangs off an Expr slot that Walk does not follow. Missing it
 // leaves the setting unstamped and ClickHouse answers code 63 ("aggregate
 // function ... is experimental and disabled by default") on every such query.
+//
+// Also matches a *chplan.RangeWindow whose DownsampleTier field is true
+// (cerberus issue #2751): unlike the four dedicated node types above, the
+// downsampled long-range tier reuses the ordinary RangeWindow node with a
+// bool flag (see chplan.RangeWindow.DownsampleTier's own doc for why), so
+// this is a FIELD check rather than another type-only case — its tier
+// table's AggregateFunction(timeSeriesLastTwoSamples, ...) column shares
+// the SAME experimental gate the other four members do.
 func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch n.(type) {
+		switch v := n.(type) {
 		case *chplan.RangeWindowGridNative, *chplan.RangeWindowGridNativeInstant,
 			*chplan.RangeWindowStaleResample, *chplan.RangeBucketGridNative:
 			found = true
 			return false // stop descending this branch
+		case *chplan.RangeWindow:
+			if v.DownsampleTier {
+				found = true
+				return false
+			}
 		}
 		return true
 	})

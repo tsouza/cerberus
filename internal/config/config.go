@@ -430,6 +430,19 @@ type Config struct {
 	// internal/schema/ddl.Config.TempoTagCatalogEnabled).
 	SchemaTempoTagCatalogMV bool
 
+	// SchemaDownsampleTier is the resolved chopt downsample_tier verdict
+	// (cerberus issue #2751), back-filled the SAME way as
+	// SchemaTraceIDProjection above — including the offline `migrate
+	// schema` preview's chopt.ExplicitlyRequested fallback, since
+	// downsample_tier is also AutoSelect=false. internal/schemaboot.
+	// DDLConfig is the only reader: true adds the curated
+	// `CREATE TABLE otel_metrics_sum_downsample_tier` + its materialized
+	// view (see internal/schema/ddl.Config.DownsampleTierEnabled and
+	// schema.DownsampleTierTable's doc for why this single verdict gates
+	// both provisioning and query routing, unlike DeltaPrefixEnabled's
+	// separate later DeltaPrefixReadEnabled).
+	SchemaDownsampleTier bool
+
 	// CHOptCorpus configures the async system.query_log performance-corpus
 	// reconciler (disabled by default; production-only — chDB has no
 	// query_log).

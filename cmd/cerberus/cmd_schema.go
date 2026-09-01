@@ -14,6 +14,7 @@ import (
 	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/config"
 	"github.com/tsouza/cerberus/internal/deltaprefix"
+	"github.com/tsouza/cerberus/internal/downsampletier"
 	"github.com/tsouza/cerberus/internal/migrateverify"
 	"github.com/tsouza/cerberus/internal/schemaboot"
 )
@@ -60,6 +61,9 @@ func newSchemaCmd() *cobra.Command {
 	cmd.AddCommand(
 		newSchemaDeltaPrefixBackfillCmd(),
 		newSchemaDeltaPrefixVerifyCmd(),
+		newSchemaDownsampleTierBackfillCmd(),
+		newSchemaDownsampleTierRebuildCmd(),
+		newSchemaDownsampleTierVerifyCmd(),
 	)
 	return cmd
 }
@@ -389,6 +393,329 @@ func unionMetricNames(rep deltaprefix.Report) map[string]struct{} {
 		out[name] = struct{}{}
 	}
 	for name := range rep.BaseTotals {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+// downsampleTierColumns builds the downsampletier.Columns a schema verb
+// needs from cfg — unlike deltaPrefixColumns there is no "empty means not
+// opted in" pre-flight check: schema.DownsampleTierTable is a fixed
+// constant (see that package's doc for why), always non-empty, so a
+// deployment that never provisioned the table simply gets ClickHouse's own
+// UNKNOWN_TABLE error at the first statement instead of a friendlier
+// upfront message.
+func downsampleTierColumns(cfg config.Config) downsampletier.Columns {
+	return downsampletier.FromSchema(cfg.ClickHouse.Database, cfg.Schema)
+}
+
+// downsampleTierBackfillInputs carries newSchemaDownsampleTierBackfillCmd's
+// resolved flags to runDownsampleTierBackfill.
+type downsampleTierBackfillInputs struct {
+	before string
+	dryRun bool
+}
+
+// newSchemaDownsampleTierBackfillCmd builds `cerberus schema
+// downsample-tier-backfill` — the one-time historical backfill into the
+// downsampled long-range tier for data that predates its materialized
+// view's own creation (cerberus issue #2751; see internal/downsampletier's
+// package doc and docs/operations.md for the full runbook).
+func newSchemaDownsampleTierBackfillCmd() *cobra.Command {
+	var in downsampleTierBackfillInputs
+	cmd := &cobra.Command{
+		Use:   "downsample-tier-backfill",
+		Short: "One-time historical backfill into the downsampled long-range tier",
+		Long: "Backfill the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
+			"downsample_tier, cerberus issue #2751) for history that predates its\n" +
+			"materialized view: the MV only captures INSERTs into the base sum table\n" +
+			"from the moment it was created onward, so existing history needs this\n" +
+			"one-time INSERT ... SELECT pass. --before MUST be the MV's own creation\n" +
+			"timestamp (system.tables.metadata_modification_time, or an\n" +
+			"operator-recorded timestamp from the moment CREATE MATERIALIZED VIEW\n" +
+			"ran) — the SAME exact-instant bound discipline\n" +
+			"`cerberus schema delta-prefix-backfill` uses, and for the identical\n" +
+			"reason (see that command's --help). Run this AS SOON AS POSSIBLE after\n" +
+			"creating the table/MV: a day already past the target table's own TTL\n" +
+			"(CERBERUS_SCHEMA_TTL_METRICS) as of the moment this runs is written,\n" +
+			"then reaped by ClickHouse's own background merge almost immediately —\n" +
+			"permanently unrecoverable by any re-run. This command detects that case\n" +
+			"and prints a WARNING (not an error) listing the affected day(s) rather\n" +
+			"than succeeding silently.",
+		Example:       "  cerberus schema downsample-tier-backfill --before 2026-08-20T14:32:10Z",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDownsampleTierBackfill(cmd, in)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&in.before, "before", "",
+		"REQUIRED: the downsample-tier MV's creation timestamp (RFC3339, Unix seconds, or relative like -24h/now)")
+	f.BoolVar(&in.dryRun, "dry-run", false, "print the INSERT ... SELECT statement without executing it")
+	return cmd
+}
+
+func runDownsampleTierBackfill(cmd *cobra.Command, in downsampleTierBackfillInputs) error {
+	if in.before == "" {
+		return errors.New("missing --before: the downsample-tier MV's creation timestamp " +
+			"(see `cerberus schema downsample-tier-backfill --help`)")
+	}
+	before, err := migrateverify.ParseTime(in.before, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("parse --before: %w", err)
+	}
+
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return fmt.Errorf("load config from environment: %w", err)
+	}
+	cols := downsampleTierColumns(cfg)
+
+	if in.dryRun {
+		sql, args := downsampletier.BackfillSQL(cols, before)
+		fmt.Fprintln(cmd.OutOrStdout(), sql)
+		fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", args)
+		return nil
+	}
+
+	retention := schemaboot.MetricsRetention(cfg)
+
+	client, err := chclient.New(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect ClickHouse: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	result, err := downsampletier.Backfill(context.Background(), client.Conn(), cols, before, retention)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "backfilled the downsample tier from %s (rows strictly before %s)\n",
+		cols.SumTable, before.Format(time.RFC3339))
+	if len(result.OutsideRetentionDays) > 0 {
+		writeOutsideRetentionWarning(cmd.OutOrStdout(), "the downsample tier", result.OutsideRetentionDays)
+	}
+	return nil
+}
+
+// downsampleTierRebuildInputs carries newSchemaDownsampleTierRebuildCmd's
+// resolved flags to runDownsampleTierRebuild.
+type downsampleTierRebuildInputs struct {
+	dryRun bool
+}
+
+// newSchemaDownsampleTierRebuildCmd builds `cerberus schema
+// downsample-tier-rebuild` — TRUNCATEs and fully re-populates the
+// downsampled long-range tier (cerberus issue #2751), the recovery path a
+// suspected stranded or format-incompatible persisted
+// AggregateFunction(timeSeriesLastTwoSamples, ...) state needs (see
+// internal/downsampletier's package doc: a ClickHouse upgrade changing that
+// EXPERIMENTAL function's on-disk state format could strand every
+// already-written row, which an incremental --before backfill alone cannot
+// recover from).
+func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
+	var in downsampleTierRebuildInputs
+	cmd := &cobra.Command{
+		Use:   "downsample-tier-rebuild",
+		Short: "TRUNCATE and fully re-populate the downsampled long-range tier",
+		Long: "TRUNCATEs the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
+			"downsample_tier, cerberus issue #2751) and re-populates it in FULL, from\n" +
+			"the base sum table's entire currently-retained history — no --before\n" +
+			"bound. DESTRUCTIVE: every row currently in the tier is dropped first.\n" +
+			"Use this, not downsample-tier-backfill, when the persisted\n" +
+			"AggregateFunction(timeSeriesLastTwoSamples, ...) state is suspected\n" +
+			"stranded or format-incompatible (a ClickHouse changelog entry naming\n" +
+			"this function, or queries that should route to the tier unexpectedly\n" +
+			"dropping every point) — an incremental backfill cannot repair rows that\n" +
+			"are already unreadable. Any day already past the target table's own TTL\n" +
+			"(CERBERUS_SCHEMA_TTL_METRICS) as of the moment this runs is written,\n" +
+			"then reaped almost immediately — reported as a WARNING, not an error,\n" +
+			"mirroring downsample-tier-backfill's own retention-boundary check.",
+		Example:       "  cerberus schema downsample-tier-rebuild",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDownsampleTierRebuild(cmd, in)
+		},
+	}
+	f := cmd.Flags()
+	f.BoolVar(&in.dryRun, "dry-run", false, "print the TRUNCATE + INSERT ... SELECT statements without executing them")
+	return cmd
+}
+
+func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs) error {
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return fmt.Errorf("load config from environment: %w", err)
+	}
+	cols := downsampleTierColumns(cfg)
+
+	if in.dryRun {
+		fmt.Fprintln(cmd.OutOrStdout(), downsampletier.TruncateSQL(cols))
+		sql, args := downsampletier.RebuildSQL(cols)
+		fmt.Fprintln(cmd.OutOrStdout(), sql)
+		fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", args)
+		return nil
+	}
+
+	retention := schemaboot.MetricsRetention(cfg)
+
+	client, err := chclient.New(cfg.ClickHouse)
+	if err != nil {
+		return fmt.Errorf("connect ClickHouse: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	result, err := downsampletier.Rebuild(context.Background(), client.Conn(), cols, retention)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt the downsample tier from %s (full history)\n", cols.SumTable)
+	if len(result.OutsideRetentionDays) > 0 {
+		writeOutsideRetentionWarning(cmd.OutOrStdout(), "the downsample tier", result.OutsideRetentionDays)
+	}
+	return nil
+}
+
+// downsampleTierVerifyInputs carries newSchemaDownsampleTierVerifyCmd's
+// resolved flags to runDownsampleTierVerify.
+type downsampleTierVerifyInputs struct {
+	before string
+	asJSON bool
+}
+
+// newSchemaDownsampleTierVerifyCmd builds `cerberus schema
+// downsample-tier-verify` — a COMPLETENESS check (does every bucket the
+// base table has raw data for also have a tier row), not a value-parity
+// check like delta-prefix-verify's sum comparison — see
+// internal/downsampletier's package doc for why: the tier has no aggregate
+// total to parity-check in the first place.
+func newSchemaDownsampleTierVerifyCmd() *cobra.Command {
+	var in downsampleTierVerifyInputs
+	cmd := &cobra.Command{
+		Use:   "downsample-tier-verify",
+		Short: "Verify downsample-tier backfill completeness before relying on it",
+		Long: "Compare the downsampled long-range tier's per-metric-name DISTINCT\n" +
+			"bucket count against the base sum table's own, over the same\n" +
+			"backfilled/rebuilt history (--before, the tier MV's creation timestamp\n" +
+			"— see `cerberus schema downsample-tier-backfill --help`). A clean pass\n" +
+			"is the recommended confirmation before an operator sets\n" +
+			"CERBERUS_CH_OPTIMIZATIONS=downsample_tier for long-range queries over\n" +
+			"history that predates the MV. Unlike delta-prefix-verify this is NOT a\n" +
+			"strict precondition for correctness — a missing tier bucket degrades to\n" +
+			"an absent series point at query time, never a wrong value (see\n" +
+			"schema.DownsampleTierTable's own doc) — it is an operator-facing\n" +
+			"completeness signal. Any day already past the target table's own TTL\n" +
+			"(CERBERUS_SCHEMA_TTL_METRICS) as of this run is EXCLUDED from the\n" +
+			"comparison and reported separately as a labeled NOTE, never as an\n" +
+			"unexplained FAIL.",
+		Example:       "  cerberus schema downsample-tier-verify --before 2026-08-20T14:32:10Z",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDownsampleTierVerify(cmd, in)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&in.before, "before", "",
+		"REQUIRED: the downsample-tier MV's creation timestamp (RFC3339, Unix seconds, or relative like -24h/now)")
+	f.BoolVar(&in.asJSON, "json", false, "emit the machine-readable JSON report instead of text")
+	return cmd
+}
+
+// downsampleTierVerifyFailedError is returned when downsample-tier-verify
+// finds at least one mismatch — mirrors deltaPrefixVerifyFailedError's
+// "the gate did its job, not a tool malfunction" contract.
+type downsampleTierVerifyFailedError struct{ mismatches int }
+
+func (e downsampleTierVerifyFailedError) Error() string {
+	return fmt.Sprintf("downsample-tier verify: %d metric(s) mismatched", e.mismatches)
+}
+
+func runDownsampleTierVerify(cmd *cobra.Command, in downsampleTierVerifyInputs) error {
+	if in.before == "" {
+		return errors.New("missing --before: the downsample-tier MV's creation timestamp " +
+			"(see `cerberus schema downsample-tier-verify --help`)")
+	}
+	before, err := migrateverify.ParseTime(in.before, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("parse --before: %w", err)
+	}
+
+	cfg, client, err := schemaConnectClickHouse()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+	cols := downsampleTierColumns(cfg)
+
+	retention := schemaboot.MetricsRetention(cfg)
+	rep, err := downsampletier.Verify(context.Background(), client.Conn(), cols, before, retention)
+	if err != nil {
+		return err
+	}
+	if err := writeDownsampleTierVerifyReport(cmd.OutOrStdout(), rep, in.asJSON); err != nil {
+		return err
+	}
+	if !rep.Pass() {
+		return downsampleTierVerifyFailedError{mismatches: len(rep.Mismatches)}
+	}
+	return nil
+}
+
+func writeDownsampleTierVerifyReport(w io.Writer, rep downsampletier.Report, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	}
+	if rep.Pass() {
+		fmt.Fprintf(w, "PASS: %d metric(s) matched (before %s)\n",
+			len(rep.BaseBuckets), rep.Before.Format(time.RFC3339))
+	} else {
+		fmt.Fprintf(w, "FAIL: %d of %d metric(s) mismatched (before %s)\n\n",
+			len(rep.Mismatches), len(unionDownsampleTierMetricNames(rep)), rep.Before.Format(time.RFC3339))
+		tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "METRIC\tBASE_BUCKETS\tTIER_BUCKETS\tMISSING")
+		for _, m := range rep.Mismatches {
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\n", m.MetricName, m.BaseBuckets, m.TierBuckets, m.Missing())
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	writeDownsampleTierOutsideRetentionNote(w, rep)
+	return nil
+}
+
+// writeDownsampleTierOutsideRetentionNote mirrors writeOutsideRetentionNote
+// for downsampletier.Report — see that function's doc.
+func writeDownsampleTierOutsideRetentionNote(w io.Writer, rep downsampletier.Report) {
+	if len(rep.OutsideRetentionDays) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nNOTE: %d day(s) already outside the tier table's retention window "+
+		"(retention %s, boundary %s), cannot be backfilled — EXCLUDED from the comparison "+
+		"above (not counted as a mismatch):\n",
+		len(rep.OutsideRetentionDays), rep.Retention, rep.RetentionBoundary.Format(time.RFC3339))
+	for _, d := range rep.OutsideRetentionDays {
+		fmt.Fprintf(w, "  - %s\n", d.Format(time.DateOnly))
+	}
+}
+
+// unionDownsampleTierMetricNames is the total distinct metric-name
+// population Verify compared, for the FAIL summary line's "X of Y" count —
+// mirrors unionMetricNames.
+func unionDownsampleTierMetricNames(rep downsampletier.Report) map[string]struct{} {
+	out := make(map[string]struct{}, len(rep.BaseBuckets)+len(rep.TierBuckets))
+	for name := range rep.BaseBuckets {
+		out[name] = struct{}{}
+	}
+	for name := range rep.TierBuckets {
 		out[name] = struct{}{}
 	}
 	return out

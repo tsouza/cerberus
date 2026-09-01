@@ -1702,6 +1702,106 @@ func deltaPrefixAggregateEligibleFunc(funcName string) bool {
 	return funcName == "rate" || funcName == "increase"
 }
 
+// downsampleTierEligibleFunc reports whether funcName is one of the three
+// range functions the operator opt-in downsampled long-range tier (cerberus
+// issue #2751) ever answers. See chopt.FeatureDownsampleTier's own doc for
+// why rate() / increase() / delta() are hard-excluded: PromQL defines
+// irate() / idelta() / last_over_time() as functions of exactly the
+// trailing one or two samples in the window, which is exactly what the
+// tier's timeSeriesLastTwoSamples state retains — so those three are exact
+// by construction over it, while the other three would need every sample
+// the tier's own bucketing discards to detect a counter reset between them.
+func downsampleTierEligibleFunc(funcName string) bool {
+	switch funcName {
+	case "irate", "idelta", "last_over_time":
+		return true
+	}
+	return false
+}
+
+// attachDownsampleTierArm side-feeds the downsampled long-range tier
+// (cerberus issue #2751) onto rw whenever funcName is eligible for it
+// (downsampleTierEligibleFunc) over an unambiguous Sum/Histogram-table scan.
+// Unlike attachDeltaPrefixAggregateArm this does NOT gate on
+// counterTemporalityRangeFn(funcName) first — idelta() and last_over_time()
+// are not counterTemporalityRangeFn members (neither ever needs
+// rw.TemporalityColumn populated: idelta never counter-corrects and
+// last_over_time is temporality-agnostic), so this resolves its own "is
+// this a Sum/Histogram-table scan" verdict directly via
+// rangeVectorCounterTemporalityColumn, purely as an eligibility oracle —
+// the resolved column is discarded, never assigned to rw.TemporalityColumn.
+//
+// A Histogram-table verdict slipping through (the tier's own MV reads only
+// the Sum table — see internal/schema/ddl's renderDownsampleTierView) is
+// safe, not silently wrong: the arm's Scan filters on MetricName, and a
+// histogram metric's rows simply never exist in the tier table, so the
+// query reads back empty and the boot-wired DownsampleTier*Lowerer's own
+// row-count guard (chsql's emitRangeWindowDownsampleTier) drops the series
+// exactly as PromQL would for missing data — see
+// schema.DownsampleTierTable's doc for why this whole mechanism degrades
+// safely rather than silently.
+//
+// This populates the FIELD unconditionally under those conditions; whether
+// the emitter actually CONSUMES it is the separate, boot-wired
+// DownsampleTier*Lowerer's resolution-aware eligibility check
+// (rw.DownsampleTier), so populating it here changes no emitted SQL by
+// itself — mirroring attachDeltaPrefixAggregateArm's own two-phase
+// contract.
+func attachDownsampleTierArm(
+	rw *chplan.RangeWindow,
+	funcName string,
+	vs *parser.VectorSelector,
+	s schema.Metrics,
+	rangeCtx lowerCtx,
+) {
+	if !downsampleTierEligibleFunc(funcName) {
+		return
+	}
+	if rangeVectorCounterTemporalityColumn(vs, s, rangeCtx) == "" {
+		return
+	}
+	rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
+}
+
+// buildDownsampleTierArm builds chplan.RangeWindow.DownsampleTierInput
+// (cerberus issue #2751): a Scan of schema.DownsampleTierTable, filtered by
+// the SAME full label-matcher set the primary selector arm applies (unlike
+// buildDeltaPrefixAggregateArm's narrower MetricName-only filter — the tier
+// table carries the full Attributes/ResourceAttributes/ServiceName series
+// identity, so there is no later join step to defer the rest of the
+// matchers to), wrapped by augmentDownsampleTierAttributes so its Attributes
+// projection is built by the identical selectorAttributesExpr(ctx, s) call
+// the primary arm's own augmentSelectorAttributes uses.
+func buildDownsampleTierArm(matchers []*labels.Matcher, s schema.Metrics, ctx lowerCtx) chplan.Node {
+	scan := &chplan.Scan{Table: schema.DownsampleTierTable}
+	var input chplan.Node = scan
+	if pred := buildPredicate(matchers, s); pred != nil {
+		input = &chplan.Filter{Input: scan, Predicate: pred}
+	}
+	return augmentDownsampleTierAttributes(input, ctx, s)
+}
+
+// augmentDownsampleTierAttributes is augmentDeltaPrefixAggregateAttributes'
+// sibling for the downsample-tier table (cerberus issue #2751): the same
+// selectorAttributesExpr(ctx, s) tower, projecting the tier's own row shape
+// (MetricNameColumn, shaped Attributes, schema.DownsampleTierBucketColumn,
+// schema.DownsampleTierSamplesColumn) instead of the DELTA-prefix table's
+// (MetricName, Attributes, BucketStart, PartialSum) quadruple. Never skips
+// the Project, for the same reason augmentDeltaPrefixAggregateAttributes
+// never does: the tier table's own column names never match a raw Scan's.
+func augmentDownsampleTierAttributes(input chplan.Node, ctx lowerCtx, s schema.Metrics) chplan.Node {
+	return &chplan.Project{
+		Input: input,
+		Projections: []chplan.Projection{
+			{Expr: &chplan.ColumnRef{Name: s.MetricNameColumn}, Alias: s.MetricNameColumn},
+			{Expr: selectorAttributesExpr(ctx, s), Alias: s.AttributesColumn},
+			{Expr: &chplan.ColumnRef{Name: schema.DownsampleTierBucketColumn}, Alias: schema.DownsampleTierBucketColumn},
+			{Expr: &chplan.ColumnRef{Name: schema.DownsampleTierSamplesColumn}, Alias: schema.DownsampleTierSamplesColumn},
+			{Expr: &chplan.ColumnRef{Name: schema.DownsampleTierTemporalityColumn}, Alias: schema.DownsampleTierTemporalityColumn},
+		},
+	}
+}
+
 // selectorAttributesExpr returns the rebound Attributes expression for the
 // selector Project: the base resource-merge
 // (`mapUpdate(sanitize(ResourceAttributes), Attributes)`) with the
@@ -3067,6 +3167,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 		TemporalityColumn: temporalityCol,
 	}
 	attachDeltaPrefixAggregateArm(rw, c.Func.Name, vs, s, temporalityCol, rangeCtx)
+	attachDownsampleTierArm(rw, c.Func.Name, vs, s, rangeCtx)
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
 	// name land on one label set — the case reference Prometheus refuses

@@ -119,6 +119,9 @@ func cloneRangeNode(n Node) Node {
 		// returns nil for a nil Node so this stays a no-op then, same as
 		// Input would if it were ever nil.
 		c.DeltaPrefixAggregateInput = CloneNode(v.DeltaPrefixAggregateInput)
+		// DownsampleTierInput mirrors DeltaPrefixAggregateInput's own nil
+		// handling immediately above (cerberus issue #2751).
+		c.DownsampleTierInput = CloneNode(v.DownsampleTierInput)
 		c.GroupBy = cloneExprs(v.GroupBy)
 		c.Scalars = cloneFloats(v.Scalars)
 		c.ScalarExprs = cloneExprs(v.ScalarExprs)

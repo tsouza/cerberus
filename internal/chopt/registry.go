@@ -819,6 +819,69 @@ const (
 	// the fan-out unconditionally.
 	FeatureTSGridLastOverTime = "ts_grid_last_over_time"
 
+	// FeatureDownsampleTier opts eligible LONG-RANGE / low-resolution
+	// irate() / idelta() / last_over_time() query_range shapes (step >= the
+	// tier's fixed 5-minute bucket, range == bucket, grid aligned to the
+	// bucket boundary — see internal/promql/lower_strategy.go's eligibility
+	// check) onto the operator-provisioned downsampled long-range tier
+	// (schema.DownsampleTierTable): a materialized view folding raw Sum-
+	// table samples into a persisted timeSeriesLastTwoSamples aggregate
+	// state per bucket, read back via timeSeriesLastTwoSamplesMerge +
+	// finalizeAggregation instead of scanning full-resolution raw rows
+	// (cerberus issue #2751).
+	//
+	// THIS IS A FUNDAMENTALLY DIFFERENT MECHANISM from the rest of the
+	// timeSeries*ToGrid family above: those are stateless read-time
+	// function swaps over the SAME raw table; this reads an
+	// operator-provisioned, PERSISTED table that must be created
+	// (internal/schema/ddl, gated on this same verdict — see
+	// schema.DownsampleTierTable's doc) and, for history predating its own
+	// MV, separately backfilled (`cerberus schema downsample-tier-backfill`,
+	// internal/downsampletier) before it answers anything for that older
+	// range.
+	//
+	// HARD SCOPE BOUNDARY (cerberus issue #2751's own "Scope constraint",
+	// non-negotiable — verified empirically against a real ClickHouse
+	// instance, see internal/chsql's downsample-tier chDB test): retaining
+	// only the two newest raw samples per bucket makes a counter reset
+	// between samples the bucket DISCARDS undetectable. rate() / increase()
+	// / delta() over that state can silently underestimate an unbounded
+	// amount — a cerberus-COMPOSED failure mode, not documented ClickHouse
+	// behavior — so this feature's lowering (internal/promql/
+	// lower_strategy.go's DownsampleTier{Irate,Idelta,LastOverTime}Lowerer)
+	// is wired ONLY for irate() / idelta() / last_over_time(): PromQL
+	// defines all three as functions of EXACTLY the last two (or one, for
+	// last_over_time) samples in the window, so a state that retains
+	// exactly those two samples is exact by construction — verified
+	// empirically, including a counter reset landing ON the retained
+	// trailing pair (irate correctly reset-corrects; idelta correctly does
+	// not, matching Prometheus's funcIrate / funcIdelta). rate() /
+	// increase() / delta() have and will have NO DownsampleTier lowering —
+	// there is no Fallback wrapper for them the way NativeRateLowerer wraps
+	// FanoutRateLowerer for ts_grid_range; they are structurally absent
+	// from cmd/cerberus's nativeRangeLowerers wiring for this feature.
+	//
+	// Floor 25.9, the SAME floor and the SAME
+	// allow_experimental_time_series_aggregate_functions gate
+	// (RequiresExperimentalTSGrid) the rest of the family shares — the
+	// function itself (timeSeriesLastTwoSamples, its -State/-Merge
+	// combinators, and finalizeAggregation over its state) is available
+	// from 25.6, but this repo pins every timeSeries*ToGrid-family
+	// consumer to the family's own 25.9 floor rather than each function's
+	// individual introduction version (see FeatureTSGridRange's own doc):
+	// this feature shares the family's boot capability probe and its
+	// experimental-setting gate, so it can never actually be enabled below
+	// 25.9 regardless.
+	//
+	// AutoSelect is false, unlike most of the family: this is a genuine
+	// operator decision (new ongoing storage/compute cost, a PERSISTED
+	// EXPERIMENTAL aggregate state in an AggregatingMergeTree that a
+	// ClickHouse upgrade changing the state's wire format could strand —
+	// see the issue's own "Risks" section) with no safe-by-default
+	// posture, never AutoSelect where a raw read already fits budget.
+	// Opt-in only via CERBERUS_CH_OPTIMIZATIONS=downsample_tier.
+	FeatureDownsampleTier = "downsample_tier"
+
 	// FeatureExplainEstimate gates using ClickHouse's own `EXPLAIN ESTIMATE`
 	// (cerberus issue #2787) as an ADVISORY input to the solver's fan-out
 	// factor K and to the per-rung admission learner's priors — a NO-EXECUTION
@@ -1763,6 +1826,14 @@ var registry = []Feature{
 		AutoSelect:                 false,
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "opt eligible last_over_time(<v>[<range>]) shapes onto the native timeSeriesResampleToGridWithStaleness aggregate (ts_grid_resample's), [range] as staleness (experimental, server >= 26.6 — PRs #106504/#106577, opt-in via CERBERUS_CH_OPTIMIZATIONS)",
+	},
+	{
+		ID:                         FeatureDownsampleTier,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "route eligible irate()/idelta()/last_over_time() shapes onto the downsampled long-range tier (server >= 25.9, opt-in via CERBERUS_CH_OPTIMIZATIONS — new persisted state, provision + backfill first)",
 	},
 	{
 		ID:         FeatureColumnStatistics,

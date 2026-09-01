@@ -1361,3 +1361,23 @@ func (i *InsertSelectBuilder) frag() Frag {
 func (i *InsertSelectBuilder) Build() (string, []any) {
 	return Render(i.frag())
 }
+
+// TruncateTable renders `TRUNCATE TABLE <database>.<table>` — the statement
+// internal/downsampletier's Rebuild issues before a full re-populate
+// (cerberus issue #2751): unlike Backfill's incremental INSERT ... SELECT,
+// a rebuild must start from an empty table, since AggregatingMergeTree
+// merges are additive and re-running the same INSERT twice would double
+// every state rather than overwrite it. database may be "" for an
+// unqualified table reference, matching InsertSelect's own convention. No
+// positional bindings, so this returns a plain string like the CREATE/ALTER
+// builders' SQL() method, not InsertSelect's own (sql, args) pair.
+func TruncateTable(database, table string) string {
+	return RenderDDL(func(b *Builder) {
+		ddlToken("TRUNCATE TABLE ")(b)
+		if database != "" {
+			BareIdent(database)(b)
+			ddlToken(".")(b)
+		}
+		BareIdent(table)(b)
+	})
+}

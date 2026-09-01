@@ -368,6 +368,13 @@ func metricsMultiQuantileFanoutFrag(qs []float64, qsCol string) Frag {
 // the last sample in the window — used by bare-vector subqueries like
 // `up[5m:1m]`.
 func (e *emitter) emitRangeWindow(r *chplan.RangeWindow) error {
+	// DownsampleTier (cerberus issue #2751) is checked FIRST, ahead of even
+	// the Input-shape dispatches below: when set, r.Input is deliberately
+	// unused and r.DownsampleTierInput answers the query completely on its
+	// own — see emitRangeWindowDownsampleTier's own doc.
+	if r.DownsampleTier {
+		return e.emitRangeWindowDownsampleTier(r)
+	}
 	if m, ok := r.Input.(*chplan.MetricsAggregate); ok {
 		return e.emitRangeWindowMetrics(r, m)
 	}

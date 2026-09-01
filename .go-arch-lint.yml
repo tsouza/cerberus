@@ -208,6 +208,14 @@ components:
   # its own narrow Conn contract rather than importing chclient, mirroring
   # routerrules. Wired from cmd/cerberus only.
   deltaprefix:    { in: deltaprefix }
+  # Backfills + verifies the operator opt-in downsampled long-range tier
+  # (cerberus issue #2751). Composes its INSERT ... SELECT / TRUNCATE /
+  # SELECT queries via the typed chsql Frag API, so it depends on chsql
+  # (chsql -> chplan, no cycle) and schema (a commonComponent, for the
+  # fixed schema.DownsampleTier* table/column names). Re-declares its own
+  # narrow Conn contract rather than importing chclient, mirroring
+  # deltaprefix exactly. Wired from cmd/cerberus only.
+  downsampletier: { in: downsampletier }
   # Offline migration preview support: harvests a PromQL corpus from rule files
   # (promrules) and assembles the explain report over the chplan IR. Wired from
   # cmd/cerberus only.
@@ -363,6 +371,16 @@ deps:
   # the CLI (cmd/cerberus, arch-lint-exempt) supplies the resolved config +
   # the narrow Conn at boot, mirroring routerrules.
   deltaprefix:
+    mayDependOn:
+      - chsql
+
+  # downsampletier composes its backfill/rebuild/verify SQL via the typed
+  # chsql Frag API, so it depends on chsql (chsql -> chplan, no cycle).
+  # schema is available via commonComponents for the fixed
+  # schema.DownsampleTier* names. It must NOT depend on engine or chclient
+  # — the CLI (cmd/cerberus, arch-lint-exempt) supplies the resolved config
+  # + the narrow Conn at boot, mirroring deltaprefix exactly.
+  downsampletier:
     mayDependOn:
       - chsql
 

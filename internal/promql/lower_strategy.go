@@ -1488,3 +1488,150 @@ func (n NativeLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s s
 	}
 	return n.Fallback.LowerLastOverTime(rw, s)
 }
+
+// This section wires the operator opt-in downsampled long-range tier
+// (cerberus issue #2751): reading the operator-provisioned
+// schema.DownsampleTierTable (a materialized view folding raw samples into
+// a persisted timeSeriesLastTwoSamples aggregate state per bucket) instead
+// of scanning the full-resolution raw table. Unlike every strategy above,
+// this is NOT a stateless read-time function swap over the SAME table — it
+// reads a SEPARATE, pre-populated table an operator must provision and
+// backfill first (internal/schema/ddl, internal/downsampletier) — and it
+// wires only irate() / idelta() / last_over_time(): see
+// chopt.FeatureDownsampleTier's own doc for why rate() / increase() /
+// delta() are structurally never eligible (a hard scope boundary, not a
+// version gate).
+
+// downsampleTierEligible is the SHAPE + RESOLUTION-AWARE eligibility
+// predicate shared by every DownsampleTier*Lowerer below — the single
+// source of "is this the ONE query shape the tier can answer exactly"
+// (cerberus issue #2751's own scope decision, see
+// schema.DownsampleTierBucket's doc for why v1 supports only ONE fixed
+// bucket rather than a configurable one):
+//
+//   - rw.DownsampleTierInput must be populated — attachDownsampleTierArm
+//     (internal/promql/lower.go) only does that for an unambiguous
+//     Sum/Histogram-table scan of an eligible Func (downsampleTierEligibleFunc).
+//   - The window must be a materialised query_range grid: Step > 0, Start
+//     and End pinned — mirroring nativeTSGridMatrixNode's own instant
+//     exclusion. OuterRange is NOT checked: applyStepGridFanout
+//     (internal/promql/modifiers.go) sets it to End-Start for EVERY
+//     fan-out shape, ordinary query_range included, not only a literal
+//     PromQL subquery `[range:step]` — so it carries no subquery-specific
+//     signal at this layer to exclude on.
+//   - rw.Offset must be zero — an offset shifts the window off the tier's
+//     own bucket grid; v1 does not attempt to re-derive an offset-shifted
+//     alignment.
+//   - rw.Range must equal EXACTLY schema.DownsampleTierBucket. A wider
+//     range spanning multiple buckets would need merging several tier rows
+//     (timeSeriesLastTwoSamplesMerge across buckets) PLUS an exact
+//     timestamp re-filter at the union's edges to stay byte-correct at
+//     bucket boundaries — deliberately out of v1 scope (see the PR
+//     description's follow-up note); a narrower range cannot be answered
+//     from one bucket-granularity row at all.
+//   - rw.Step must be a POSITIVE INTEGER MULTIPLE of the bucket — this is
+//     the "step >= bucket" resolution-awareness the issue requires (a step
+//     smaller than the bucket can never divide it evenly, so the modulo
+//     check alone rejects every step-too-fine shape; a 15s-step query
+//     never touches the 5-minute tier).
+//   - rw.Start must land exactly on a bucket boundary (absolute Unix-epoch
+//     alignment, matching internal/schema/ddl's downsampleTierBucketEndExpr
+//     — ClickHouse's toStartOfInterval with no origin argument is itself
+//     epoch-aligned). Combined with the Step-multiple check above, EVERY
+//     anchor Start+k*Step is then also bucket-aligned, so this one check
+//     covers the whole grid.
+func downsampleTierEligible(rw *chplan.RangeWindow) bool {
+	if rw.DownsampleTierInput == nil {
+		return false
+	}
+	if rw.Identity || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
+		return false
+	}
+	if rw.Offset != 0 {
+		return false
+	}
+	if len(rw.Variants) > 0 {
+		return false
+	}
+	if rw.Range != schema.DownsampleTierBucket {
+		return false
+	}
+	bucketNS := schema.DownsampleTierBucket.Nanoseconds()
+	if rw.Step.Nanoseconds()%bucketNS != 0 {
+		return false
+	}
+	return rw.Start.UnixNano()%bucketNS == 0
+}
+
+// downsampleTierNode builds the eligible node: a shallow copy of rw with
+// DownsampleTier set, telling the emitter (internal/chsql's
+// emitRangeWindowDownsampleTier) to render DownsampleTierInput's bucketed
+// state instead of windowing Input's raw rows. Returns nil when
+// downsampleTierEligible(rw) is false, so every caller below follows the
+// same `if node := downsampleTierNode(rw); node != nil { return node }`
+// shape the native strategies above use.
+func downsampleTierNode(rw *chplan.RangeWindow) *chplan.RangeWindow {
+	if !downsampleTierEligible(rw) {
+		return nil
+	}
+	out := *rw
+	out.DownsampleTier = true
+	return &out
+}
+
+// DownsampleTierIrateLowerer is the boot-wired IrateLowerer that routes an
+// eligible range-mode irate() shape onto the downsampled long-range tier.
+// cmd/cerberus wires it ONLY when chopt resolved the downsample_tier
+// feature (server >= 25.9, opt-in) at boot, WRAPPING whatever IrateLowerer
+// the family's own ts_grid_irate / laginframe_adjacency wiring already
+// resolved — so a query this strategy declines still gets the family's own
+// best available raw-scan strategy, never a hand-rolled fallback.
+type DownsampleTierIrateLowerer struct {
+	// Fallback is the concrete lowerer for shapes the tier cannot handle —
+	// the family's own already-resolved IrateLowerer (Native, LagAdjacency,
+	// or Fanout), threaded so the raw-read path stays reachable forever.
+	Fallback IrateLowerer
+}
+
+// LowerIrate returns the tier-routed node for an eligible shape, or
+// delegates to the embedded Fallback otherwise.
+func (l DownsampleTierIrateLowerer) LowerIrate(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if node := downsampleTierNode(rw); node != nil {
+		return node
+	}
+	return l.Fallback.LowerIrate(rw, s)
+}
+
+// DownsampleTierIdeltaLowerer mirrors [DownsampleTierIrateLowerer] for
+// idelta().
+type DownsampleTierIdeltaLowerer struct {
+	// Fallback is the concrete lowerer for shapes the tier cannot handle —
+	// the family's own already-resolved IdeltaLowerer.
+	Fallback IdeltaLowerer
+}
+
+// LowerIdelta returns the tier-routed node for an eligible shape, or
+// delegates to the embedded Fallback otherwise.
+func (l DownsampleTierIdeltaLowerer) LowerIdelta(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if node := downsampleTierNode(rw); node != nil {
+		return node
+	}
+	return l.Fallback.LowerIdelta(rw, s)
+}
+
+// DownsampleTierLastOverTimeLowerer mirrors [DownsampleTierIrateLowerer] for
+// last_over_time().
+type DownsampleTierLastOverTimeLowerer struct {
+	// Fallback is the concrete lowerer for shapes the tier cannot handle —
+	// the family's own already-resolved LastOverTimeLowerer.
+	Fallback LastOverTimeLowerer
+}
+
+// LowerLastOverTime returns the tier-routed node for an eligible shape, or
+// delegates to the embedded Fallback otherwise.
+func (l DownsampleTierLastOverTimeLowerer) LowerLastOverTime(rw *chplan.RangeWindow, s schema.Metrics) chplan.Node {
+	if node := downsampleTierNode(rw); node != nil {
+		return node
+	}
+	return l.Fallback.LowerLastOverTime(rw, s)
+}

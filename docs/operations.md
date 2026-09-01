@@ -2316,6 +2316,115 @@ high-cardinality DELTA metric — not `date-range × 1` — and belongs in
 capacity planning for any deployment enabling
 `CERBERUS_DELTA_PREFIX_READ_ENABLED` against such a metric.
 
+### Downsampled long-range tier (cerberus issue #2751)
+
+Auto-create can also provision an **opt-in, cerberus-owned** table + materialized
+view folding raw Sum-table samples into a persisted `timeSeriesLastTwoSamples`
+aggregate state per 5-minute bucket (`internal/schema/ddl`, table
+`otel_metrics_sum_downsample_tier`), read back by `irate()` / `idelta()` /
+`last_over_time()` `query_range` shapes whose window matches the bucket
+exactly. Unlike the DELTA-prefix table above, provisioning and query routing
+share a **single** flag: `CERBERUS_CH_OPTIMIZATIONS=downsample_tier` (a chopt
+feature, floor ClickHouse >= 25.9, `AutoSelect=false` — never picked by
+`auto`). A not-yet-backfilled or missing bucket degrades to an ABSENT series
+point at query time, never a wrong value — see the scope note below — so
+this mechanism does not need DELTA-prefix's separate, later
+`*_READ_ENABLED` declaration.
+
+**Hard scope boundary — `rate()` / `increase()` / `delta()` never route
+here, and never will.** Retaining only the two newest raw samples per bucket
+makes a counter reset between DISCARDED intra-bucket samples undetectable;
+those three functions need every sample the bucket throws away to detect
+such a reset, so routing them here would silently underestimate the true
+increase by an unbounded amount. `irate()` / `idelta()` / `last_over_time()`
+are exact functions of exactly the last one or two samples in their window —
+precisely what the tier retains — so they are exact by construction over
+this state; see `chopt.FeatureDownsampleTier`'s registry doc for the full
+reasoning and the chDB probe that verified it against a real ClickHouse
+instance.
+
+**Resolution-aware routing.** A query only reads the tier when its
+`query_range` grid is EXACTLY the tier's own bucket grid: `range == 5m`,
+`step` a positive integer multiple of `5m`, and the grid's `start` landing on
+a bucket boundary (absolute Unix-epoch alignment) — a 15-second-step query
+never touches the 5-minute tier. A wider range (spanning multiple buckets) or
+a step finer than the bucket falls straight through to the ordinary raw-scan
+path, unchanged.
+
+```sql
+CREATE TABLE IF NOT EXISTS <db>.otel_metrics_sum_downsample_tier
+(
+    MetricName          LowCardinality(String),
+    Attributes           Map(LowCardinality(String), String),
+    ResourceAttributes    Map(LowCardinality(String), String),
+    ServiceName          LowCardinality(String),
+    BucketEnd            DateTime64(9),
+    LastTwoSamples       AggregateFunction(timeSeriesLastTwoSamples, DateTime64(9), Float64),
+    Temporality          SimpleAggregateFunction(any, Int32)
+)
+ENGINE = AggregatingMergeTree
+ORDER BY (MetricName, BucketEnd, Attributes, ResourceAttributes, ServiceName);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS <db>.otel_metrics_sum_downsample_tier_mv
+TO <db>.otel_metrics_sum_downsample_tier AS
+SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
+       toStartOfInterval(TimeUnix - toIntervalNanosecond(1), toIntervalSecond(300))
+           + toIntervalSecond(300) AS BucketEnd,
+       timeSeriesLastTwoSamplesState(TimeUnix, Value) AS LastTwoSamples,
+       any(AggregationTemporality) AS Temporality
+FROM <db>.otel_metrics_sum
+GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketEnd;
+```
+
+`BucketEnd` is a **ceiling**, not ClickHouse's native `toStartOfInterval`
+floor: PromQL's range-vector window is half-open-left / closed-right
+(`(anchor-range, anchor]`), so a raw sample landing exactly on a bucket
+boundary must join the bucket ENDING at that instant, not the one starting
+there — the `- toIntervalNanosecond(1)` epsilon trick reproduces that
+half-open window exactly (verified empirically against a boundary-exact
+sample on a real ClickHouse instance). This is what lets the read side look
+up a single bucket row per eligible grid anchor with no cross-bucket merge.
+
+`irate()`'s read branches on the carried `Temporality` column the same way
+the raw fan-out does (`chsql.CounterOrDeltaPairDelta`): the reset-aware
+`if(curr<prev, curr, curr-prev)` for a CUMULATIVE counter, but the raw
+current sample alone for a DELTA-temporality one (each DELTA sample already
+IS the increment since the prior export). `idelta()` never branches on
+temporality, matching this codebase's raw fan-out `idelta()` path.
+
+#### Backfill / rebuild / verify runbook
+
+Three `cerberus schema` subcommands, mirroring the DELTA-prefix verbs'
+shape:
+
+```sh
+cerberus schema downsample-tier-backfill --before 2026-08-20T14:32:10Z
+cerberus schema downsample-tier-verify   --before 2026-08-20T14:32:10Z
+```
+
+`downsample-tier-backfill` is the SAME non-retroactive, exact-instant
+`--before` bound `delta-prefix-backfill` uses, and the SAME
+already-outside-retention-TTL detection (reported as a `WARNING`, not an
+error). `downsample-tier-verify` is a per-metric **completeness** check —
+distinct `(MetricName, BucketEnd)` counts, base table vs. tier — not a
+value-parity check like `delta-prefix-verify`'s sum comparison: this
+mechanism has no aggregate total to parity-check against in the first
+place, only samples to be present or absent.
+
+```sh
+cerberus schema downsample-tier-rebuild
+```
+
+`downsample-tier-rebuild` `TRUNCATE`s the tier table and re-populates it in
+full, from the base table's entire currently-retained history — no
+`--before` bound. This is the recovery path for a suspected stranded or
+format-incompatible persisted state: `timeSeriesLastTwoSamples` is an
+EXPERIMENTAL ClickHouse aggregate function, and a future ClickHouse upgrade
+changing its on-disk state format could strand every already-written row.
+An incremental `downsample-tier-backfill` cannot repair rows that are
+already unreadable — `downsample-tier-rebuild` starts clean instead. All
+three verbs accept `--dry-run` to print the statement(s) without executing.
+
 ### Startup requirements preflight
 
 `CERBERUS_REQUIREMENTS_CHECK` (**on by default**) runs a boot-time
