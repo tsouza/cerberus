@@ -2682,6 +2682,17 @@ precise boot-time finding:
   a genuine misconfiguration, not a race, so failing fast is the honest
   signal. The check honours every `CERBERUS_SCHEMA_*` table rename — it
   validates the *active* shape.
+  - **Exception: JSON-typed attribute maps on logs/traces.** Cerberus issue
+    [#2777](https://github.com/tsouza/cerberus/issues/2777) phase 1: when a
+    **logs or traces** table's attribute-map column is typed ClickHouse's
+    `JSON` instead (the upstream OTel exporter's `json:true` schema variant),
+    startup **boots** rather than failing, with a **warning** logged naming
+    the table/column — query lowering against a JSON-typed attribute map is
+    not implemented yet (only detection is), so queries touching that
+    column's keys still fail, just at query time instead of at boot. Metrics
+    attribute-map columns are **not** covered by this exception and stay
+    `Map(String, String)`-only — they carry the metric's series identity, out
+    of scope per the issue itself.
 - **Absent (not-yet-provisioned) schema.** When the configured tables are
   **entirely absent** (`system.columns` reports zero rows for them), cerberus
   does **not** crash-loop — it **boots and waits**. This is the cerberus +

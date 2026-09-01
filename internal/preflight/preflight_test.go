@@ -418,6 +418,11 @@ func TestRunMissingColumnFails(t *testing.T) {
 	}
 }
 
+// TestRunWrongAttributeTypeFails pins that a JSON-typed attribute map on a
+// METRICS table stays a genuine FATAL misconfiguration: cerberus issue
+// #2777's boot-probe compat (see TestRunLogsJSONAttrMapPassesWithWarning)
+// is scoped to logs/traces only — metrics attribute maps carry series
+// identity, so mixing shapes there is out of scope per the issue itself.
 func TestRunWrongAttributeTypeFails(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -429,13 +434,141 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 		}
 	}
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
-	err := Run(context.Background(), q, defaultReq()).Fatal
+	res := Run(context.Background(), q, defaultReq())
+	err := res.Fatal
 	if err == nil {
 		t.Fatal("wrong attribute-map type must fail")
 	}
 	want := "table otel_metrics_gauge column Attributes: expected Map(String,String), found JSON"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("message missing %q: %v", want, err)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("a fatal metrics JSON mismatch must not also warn, got: %v", res.Warnings)
+	}
+}
+
+// TestRunLogsJSONAttrMapPassesWithWarning pins cerberus issue #2777 phase
+// 1's boot-probe compat: a logs table whose attribute-map columns are typed
+// JSON (the upstream OTel exporter's `json:true` schema variant) boots
+// instead of FATALing, with a WARNING naming the table/column and pointing
+// at the issue — the query emitters don't lower against JSON yet, so an
+// operator on this schema needs to know that up front.
+func TestRunLogsJSONAttrMapPassesWithWarning(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	l := schema.DefaultOTelLogs()
+	for i, c := range cols[l.LogsTable] {
+		if c.Name == l.AttributesColumn {
+			cols[l.LogsTable][i].Type = "JSON"
+		}
+	}
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("JSON-typed logs attribute map must not be fatal, got: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	w := res.Warnings[0]
+	for _, want := range []string{l.LogsTable, l.AttributesColumn, "JSON-typed attribute schema", "#2777"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning missing %q: %s", want, w)
+		}
+	}
+}
+
+// TestRunTracesJSONAttrMapPassesWithWarning is the traces counterpart of
+// TestRunLogsJSONAttrMapPassesWithWarning — the other signal the issue's
+// Phase 1 boot-probe compat covers.
+func TestRunTracesJSONAttrMapPassesWithWarning(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
+	for i, c := range cols[tr.SpansTable] {
+		if c.Name == tr.ResourceAttributesColumn {
+			cols[tr.SpansTable][i].Type = "JSON(max_dynamic_paths=100, `service.name` String)"
+		}
+	}
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal != nil {
+		t.Fatalf("JSON-typed traces attribute map must not be fatal, got: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("want exactly 1 warning, got %d: %v", len(res.Warnings), res.Warnings)
+	}
+	w := res.Warnings[0]
+	for _, want := range []string{tr.SpansTable, tr.ResourceAttributesColumn, "JSON-typed attribute schema", "#2777"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning missing %q: %s", want, w)
+		}
+	}
+}
+
+// TestRunMixedJSONAndFatalAreIndependent proves the JSON-compat warning on
+// one table and a genuine fatal wrong-shape finding on another both surface
+// — the boot-probe relaxation only narrows what counts as fatal on
+// jsonAttrMapCompat tables, it does not swallow unrelated fatal findings.
+func TestRunMixedJSONAndFatalAreIndependent(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	l := schema.DefaultOTelLogs()
+	m := schema.DefaultOTelMetrics()
+	for i, c := range cols[l.LogsTable] {
+		if c.Name == l.AttributesColumn {
+			cols[l.LogsTable][i].Type = "JSON"
+		}
+	}
+	// Unrelated genuine misconfiguration: a missing essential column on traces.
+	tr := schema.DefaultOTelTraces()
+	pruned := cols[tr.SpansTable][:0:0]
+	for _, c := range cols[tr.SpansTable] {
+		if c.Name != tr.ServiceNameColumn {
+			pruned = append(pruned, c)
+		}
+	}
+	cols[tr.SpansTable] = pruned
+
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+	res := Run(context.Background(), q, defaultReq())
+	if res.Fatal == nil {
+		t.Fatal("the unrelated traces misconfiguration must still be fatal")
+	}
+	if !strings.Contains(res.Fatal.Error(), "missing required column "+tr.ServiceNameColumn) {
+		t.Errorf("fatal message missing the traces finding: %v", res.Fatal)
+	}
+	if strings.Contains(res.Fatal.Error(), m.AttributesColumn+": expected") {
+		t.Errorf("fatal message must not also carry the logs JSON finding: %v", res.Fatal)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], l.LogsTable) {
+		t.Errorf("want exactly 1 warning naming %s, got: %v", l.LogsTable, res.Warnings)
+	}
+}
+
+// TestIsJSONAttrType pins the type-string matching isJSONAttrType relies
+// on: bare "JSON" and parameterised "JSON(...)" (typed path hints, SKIP
+// clauses, max_dynamic_paths) both count; a Map or any other type does not.
+func TestIsJSONAttrType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"JSON", true},
+		{"JSON(max_dynamic_paths=100, `service.name` String)", true},
+		{"JSON(SKIP `internal.debug`)", true},
+		{"Map(String,String)", false},
+		{"Map(String, String)", false},
+		{"Nullable(String)", false},
+		{"", false},
+		{"JSONEachRow", false}, // a format name, not the JSON data type
+	}
+	for _, c := range cases {
+		if got := isJSONAttrType(c.in); got != c.want {
+			t.Errorf("isJSONAttrType(%q) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }
 
