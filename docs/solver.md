@@ -139,7 +139,16 @@ whether slicing is worthwhile:
 - `D` = cumulative spine lookback (Σ `Range` down nested matrix windows + leaf
   `RangeLWR.Lookback`). Unlike `F`, `D` is unaffected by which emitter reads the
   window: it measures per-slice SCAN redundancy, and a native carrier's shard
-  widens its input by `Offset + Range` exactly as a fan-out carrier's does.
+  widens its input by `Offset + Range` exactly as a fan-out carrier's does. The
+  one exception is a `RangeWindow` with `DownsampleTier` set (issue #2751):
+  `DownsampleTierInput` reads a table bounded to one row per
+  `schema.DownsampleTierBucket` per series regardless of `Range`, a different
+  and sparser SOURCE than the raw scan `D`'s invariance assumes, so that
+  carrier's `D` contribution is capped at the bucket width instead of growing
+  with `Range` (issue #2859). `F` is untouched by the same case — the tier
+  emitter still arrayJoins each tier row across its covering anchors exactly
+  like the raw fan-out, so the materialised-rows-per-row ratio is still
+  `Range/Step`.
 - `K = clamp(floor(N / MinAnchorsPerSlice), 2, min(MaxK, floor(OuterRange /
   max(D, Step))))`.
 

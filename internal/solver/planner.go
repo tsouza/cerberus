@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/tsouza/cerberus/internal/chplan"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // Planner is pure, read-only classification of a post-optimize plan into a
@@ -762,6 +763,31 @@ type carrierGeometry struct {
 	// offset-bearing carrier kind at once.
 	lookback time.Duration
 
+	// redundancyLookback overrides lookback for the D (Σ lookback) term
+	// alone, when a carrier's SOURCE TABLE — not merely its emitter
+	// strategy — makes per-slice re-scan redundancy cheaper than the raw
+	// window span implies. Zero (the default for every carrier kind but
+	// one) means "use lookback for D too", which is what singlePass's own
+	// doc above already establishes as correct for a carrier reading the
+	// SAME raw table as the fan-out family: redundancy is unaffected by
+	// emitter strategy when the density of what is re-scanned is unchanged.
+	//
+	// The one exception is a [chplan.RangeWindow] with DownsampleTier set
+	// (cerberus issue #2751): DownsampleTierInput reads
+	// schema.DownsampleTierTable, which holds at most one row per
+	// schema.DownsampleTierBucket per series REGARDLESS of Range — a
+	// different, bounded-density source table, not just a different
+	// emitter over the same one. Re-scanning a Range-wide span of that
+	// table costs proportionally to the bucket width, not to Range, so D's
+	// contribution is capped there instead of growing with Range — see
+	// issue #2859. F is deliberately left untouched by this override: the
+	// tier emitter (chsql's emitRangeWindowDownsampleTier) still arrayJoins
+	// each tier row across its covering anchors exactly like the raw
+	// fan-out does, so the MATERIALISED-rows-per-row ratio genuinely is
+	// still lookback/Step — only the redundant RE-SCAN cost per slice
+	// changes, because the table underneath is sparser.
+	redundancyLookback time.Duration
+
 	// singlePass reports that the carrier's emitter reduces each raw sample
 	// EXACTLY ONCE, in one streaming aggregate pass, and never materialises the
 	// (sample, anchor) matrix. It is the native timeSeries*ToGrid family: the
@@ -886,7 +912,16 @@ func carrierGeometryOf(gc chplan.GridCarrier) (carrierGeometry, bool) {
 		// than derived from End-Start because a subquery-inner window leaves
 		// both bounds zero for ReanchorRange to fill, and the span must stay
 		// measurable there.
-		return carrierGeometry{outerRange: v.OuterRange, lookback: v.Range, reanchorable: true}, true
+		geom := carrierGeometry{outerRange: v.OuterRange, lookback: v.Range, reanchorable: true}
+		if v.DownsampleTier {
+			// See redundancyLookback's own doc: this node answers from
+			// schema.DownsampleTierTable's bounded, bucket-granularity rows
+			// (cerberus issue #2751) rather than Input's raw per-sample
+			// scan, so its per-slice re-scan redundancy is capped at the
+			// tier's fixed bucket width instead of growing with Range.
+			geom.redundancyLookback = schema.DownsampleTierBucket
+		}
+		return geom, true
 
 	case *chplan.RangeLWR:
 		// The bare-selector last-with-respect-to leaf: one sample per anchor,
@@ -1056,8 +1091,15 @@ func (p *Planner) recordGridCarrier(gc chplan.GridCarrier, depth int, sig *signa
 	// D is per-slice SCAN redundancy, which is the window SPAN regardless of
 	// which emitter reads it — a single-pass carrier's shard widens its input
 	// by Offset+Range exactly as a fan-out carrier's does, so singlePass does
-	// not enter here.
-	sig.cumulativeD += geom.lookback
+	// not enter here. redundancyLookback is the one exception: a carrier
+	// whose SOURCE TABLE (not just its emitter) is bounded-density —
+	// currently only a DownsampleTier RangeWindow — substitutes its capped
+	// value; see that field's own doc.
+	dLookback := geom.lookback
+	if geom.redundancyLookback > 0 {
+		dLookback = geom.redundancyLookback
+	}
+	sig.cumulativeD += dLookback
 
 	if depth == 0 && geom.outerRange > 0 && step > 0 {
 		sig.hasWindow = true
