@@ -4075,9 +4075,16 @@ func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
 // emitting exactly the SQL it emits today.
 //
 // Produces the SAME output shape as deltaMatrixLevelSource (groupFrags,
-// anchor_ts, windowTemporalityAlias, window_pairs, deltaAnchorLevelsAlias)
-// so the caller's downstream mid / extrap / outer layers need no changes —
-// only how deltaAnchorLevelsAlias is computed differs.
+// anchor_ts, windowTemporalityAlias, passthroughCols, deltaAnchorLevelsAlias)
+// so the caller's downstream layers need no changes — only how
+// deltaAnchorLevelsAlias is computed differs. passthroughCols carries
+// whatever per-(series, anchor) columns the caller's own regroupSource holds
+// besides the group/anchor/temporality keys — the array-fold matrix emitter
+// passes ["window_pairs"], while the fixed-accumulator sibling
+// (range_window_fixed_accumulator.go's fixedAccumRegroupLayer) passes its own
+// scalar accumulator alias list — this function never reads the columns'
+// CONTENTS, only relays them, so genericising over the name list needs no
+// behavioural change to the two DELTA-prefix streams themselves.
 //
 // Two DISJOINT, per-anchor cumulative streams are summed, mirroring
 // deltaPrefixAggregateSource's own two-term split:
@@ -4205,12 +4212,23 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	r *chplan.RangeWindow,
 	regroupSource Frag,
 	groupFrags []Frag,
+	passthroughCols []string,
 	end Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) (Frag, error) {
 	groupColumns, err := plainGroupColumnNames(r.GroupBy)
 	if err != nil {
 		return nil, err
+	}
+	selectPassthrough := func(q *QueryBuilder) {
+		for _, col := range passthroughCols {
+			q.Select(Col(col))
+		}
+	}
+	selectPassthroughQualified := func(q *QueryBuilder, qualifier string) {
+		for _, col := range passthroughCols {
+			q.Select(As(Qual(qualifier, col), col))
+		}
 	}
 
 	// Raw stream — deltaMatrixLevelSource's own shape, but the cumulative
@@ -4219,7 +4237,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	increments.Select(groupFrags...)
 	increments.Select(Col("anchor_ts"))
 	increments.Select(Col(windowTemporalityAlias))
-	increments.Select(Col("window_pairs"))
+	selectPassthrough(increments)
 	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
 	increments.Select(As(
 		deltaPrefixBucketStartFrag(rangeStartFrag(Col("anchor_ts"), rangeNS)),
@@ -4233,7 +4251,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	rawLevels.Select(groupFrags...)
 	rawLevels.Select(Col("anchor_ts"))
 	rawLevels.Select(Col(windowTemporalityAlias))
-	rawLevels.Select(Col("window_pairs"))
+	selectPassthrough(rawLevels)
 	rawLevels.Select(As(
 		Window(
 			Call("sum", Col(deltaPrefixStepAlias)),
@@ -4267,7 +4285,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	}
 	preJoin.Select(As(Qual("w", "anchor_ts"), "anchor_ts"))
 	preJoin.Select(As(Qual("w", windowTemporalityAlias), windowTemporalityAlias))
-	preJoin.Select(As(Qual("w", "window_pairs"), "window_pairs"))
+	selectPassthroughQualified(preJoin, "w")
 	preJoin.Select(As(Qual("w", deltaPrefixRawDayLevelAlias), deltaPrefixRawDayLevelAlias))
 	preJoin.Select(As(
 		Call("ifNull", Qual("af", deltaPrefixAggregateMatrixStepAlias), InlineLit(0)),
@@ -4286,7 +4304,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	}
 	aggLevels.Select(Col("anchor_ts"))
 	aggLevels.Select(Col(windowTemporalityAlias))
-	aggLevels.Select(Col("window_pairs"))
+	selectPassthrough(aggLevels)
 	aggLevels.Select(Col(deltaPrefixRawDayLevelAlias))
 	partition := make([]Frag, 0, len(groupColumns))
 	for _, col := range groupColumns {
@@ -4314,7 +4332,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	}
 	final.Select(Col("anchor_ts"))
 	final.Select(Col(windowTemporalityAlias))
-	final.Select(Col("window_pairs"))
+	selectPassthrough(final)
 	final.Select(As(
 		Add(
 			Call("ifNull", Col(deltaPrefixRawDayLevelAlias), InlineLit(0)),
@@ -4578,7 +4596,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	)
 	if needsDeltaFirstLevel {
 		if useAggregateDeltaPrefix {
-			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, end, stepNS, rangeNS, numAnchors)
+			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, []string{"window_pairs"}, end, stepNS, rangeNS, numAnchors)
 			if err != nil {
 				return err
 			}

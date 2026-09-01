@@ -75,20 +75,28 @@ import (
 // RECONSTRUCTED first_val for a DELTA series: a single DELTA sample is an
 // increment, not a running total, so feeding it directly into "did the
 // counter start inside this window" arithmetic answers the wrong question.
-// That reconstruction — the running per-anchor level built from
-// deltaPrefixPairsAlias / deltaPrefixSumFrag, range_window.go's own
-// deltaMatrixLevelSource / deltaFirstValFrag — is REUSED UNCHANGED here
-// (fixedAccumDeltaLevelSource is its pass-through sibling, carrying this
-// file's own scalar accumulator columns instead of a window_pairs array).
-// The reconstruction's OWN prefix array (deltaPrefixPairsAlias) is a
-// genuinely separate, already-small array (bounded by
-// e.deltaPrefixLookbackNS, not the window itself) — issue #2760's proposal
-// itself calls this piece "anchor-grid level and unaffected", so it is not
-// part of what this rewrite targets.
+// That reconstruction is one of two, mutually exclusive mechanisms — both
+// REUSED UNCHANGED from range_window.go, carrying this file's own scalar
+// accumulator columns as their passthrough instead of a window_pairs array
+// (fixedAccumDeltaLevelSource / the deltaMatrixLevelSourceAggregate call in
+// fixedAccumRegroupLayer are the pass-through siblings that wire this in):
+//
+//   - the default, BOUNDED-LOOKBACK approximation: a running per-anchor level
+//     built from deltaPrefixPairsAlias / deltaPrefixSumFrag,
+//     deltaMatrixLevelSource / deltaFirstValFrag (bounded by
+//     e.deltaPrefixLookbackNS, not the window itself).
+//   - cerberus issue #2389's EXACT, retention-independent DELTA-prefix
+//     aggregate mechanism, selected only when both
+//     r.DeltaPrefixAggregateInput != nil AND e.deltaPrefixReadEnabled
+//     (useAggregateDeltaPrefix, mirroring
+//     emitWindowedArrayExtrapolatedMatrix's own gate exactly):
+//     deltaMatrixLevelSourceAggregate reads a schema-provisioned
+//     DeltaPrefixTable instead of an unbounded/lookback-bounded raw scan.
 //
 // Getting there needs the array-fold's OWN sample-anchor fan-out
 // (windowedMatrixFanoutAnchorTsFrag) and scan bound
-// (applyMatrixFanoutScanBound), reused UNCHANGED: a temporality-bearing
+// (applyMatrixFanoutScanBound / applyMatrixFanoutScanBoundAggregate for the
+// useAggregateDeltaPrefix arm), reused UNCHANGED: a temporality-bearing
 // fan-out assigns a raw sample to EITHER its covering anchors' actual
 // windows OR (for a DELTA sample outside every window) a "prefix" anchor
 // supplying history for the reconstruction — the two are mutually exclusive
@@ -103,17 +111,12 @@ import (
 //
 // # Scope (this cut)
 //
-// Eligibility (fixedAccumulatorEligible, internal/promql/lower_strategy.go)
-// still requires DeltaPrefixAggregateInput == nil — the EXACT,
-// retention-independent DELTA-prefix aggregate mechanism (cerberus issue
-// #2389, deltaMatrixLevelSourceAggregate / deltaPrefixAggregateRawAnchorArrayFrag)
-// is a narrower, opt-in-only population (gated behind
-// config.Config.DeltaPrefixReadEnabled AND a schema-provisioned
-// DeltaPrefixTable) with its own separate re-plumbing needed; see
-// https://github.com/tsouza/cerberus/issues/2797. Every window using that
-// mechanism keeps the unchanged array-fold emission — a strict fallback
-// narrowing, never a regression (the plain fan-out remains the permanent,
-// fully-functional path for anything this feature does not claim).
+// Every RangeWindow shape the array-fold path supports for the EXTRAPOLATED
+// matrix family is now eligible (fixedAccumulatorEligible,
+// internal/promql/lower_strategy.go), including both DELTA-prefix
+// reconstruction mechanisms above (cerberus issue #2797). The plain fan-out
+// remains the permanent, fully-functional fallback for the excluded shapes
+// (rw.Identity, the INSTANT single-anchor shape, rw.Variants != nil).
 const (
 	// fixedAccumFirstTsAlias / fixedAccumLastTsAlias / fixedAccumFirstValAlias
 	// deliberately match the array-fold path's own "first_ts" / "last_ts" /
@@ -138,13 +141,13 @@ const (
 )
 
 // fixedAccumulatorMatrixShapeCheck validates the RangeWindow fields this
-// emitter needs, mirroring lagAdjacencyMatrixShapeCheck. The
-// DeltaPrefixAggregateInput guard is defense-in-depth:
-// promql.fixedAccumulatorEligible already excludes it at lowering time, so a
-// plan reaching here with it set means FixedAccumulatorExtrapolated was set
-// by something other than the boot-wired strategies — fail loudly rather
-// than silently ignore the side-scan (the same hazard
-// nativeTSGridMatrixNode's own guards name).
+// emitter needs, mirroring lagAdjacencyMatrixShapeCheck. r.DeltaPrefixAggregateInput
+// is intentionally NOT rejected here (cerberus issue #2797) — a set value is
+// a valid, eligible shape now; emitFixedAccumulatorExtrapolatedMatrix reads
+// it (gated behind e.deltaPrefixReadEnabled, the same runtime knob
+// emitWindowedArrayExtrapolatedMatrix consults) to select
+// deltaMatrixLevelSourceAggregate instead of the bounded-lookback
+// approximation.
 func fixedAccumulatorMatrixShapeCheck(r *chplan.RangeWindow) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
@@ -154,9 +157,6 @@ func fixedAccumulatorMatrixShapeCheck(r *chplan.RangeWindow) error {
 	}
 	if r.OuterRange <= 0 || r.Step <= 0 {
 		return fmt.Errorf("%w: RangeWindow.FixedAccumulatorExtrapolated requires a matrix (OuterRange > 0, Step > 0) window", ErrUnsupported)
-	}
-	if r.DeltaPrefixAggregateInput != nil {
-		return fmt.Errorf("%w: RangeWindow.FixedAccumulatorExtrapolated does not support DeltaPrefixAggregateInput (issue #2797)", ErrUnsupported)
 	}
 	return nil
 }
@@ -173,16 +173,16 @@ func fixedAccumulatorMatrixShapeCheck(r *chplan.RangeWindow) error {
 // The scan is bounded here, at the EARLIEST point over raw innerSub —
 // mirroring lagAdjacencyAnnotateLayer's own pushdown, so ClickHouse prunes
 // granules before any window function runs. A temporality-bearing window
-// (needsDeltaFirstLevel) needs the WIDER bound applyMatrixFanoutScanBound
-// already computes (admitting DELTA-temporality rows arbitrarily far back,
-// up to e.deltaPrefixLookbackNS, for the level reconstruction); that bound is
-// a pure function of the raw row's own srcTs (never of which anchor it will
-// later be assigned to), so applying it here rather than after the fan-out
-// is equivalent and prunes earlier.
+// (needsDeltaFirstLevel) needs the WIDER bound applyMatrixFanoutScanBound (or,
+// when useAggregateDeltaPrefix selects the exact #2389 mechanism,
+// applyMatrixFanoutScanBoundAggregate) already computes; that bound is a pure
+// function of the raw row's own srcTs (never of which anchor it will later be
+// assigned to), so applying it here rather than after the fan-out is
+// equivalent and prunes earlier.
 func (e *emitter) fixedAccumDedupLayer(
 	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string,
-	end Frag, stepNS, rangeNS, numAnchors int64, needsDeltaFirstLevel bool,
-) *QueryBuilder {
+	end Frag, stepNS, rangeNS, numAnchors int64, needsDeltaFirstLevel, useAggregateDeltaPrefix bool,
+) (*QueryBuilder, error) {
 	orderBy := []OrderKey{{Expr: Col(srcTs)}, {Expr: Col(r.ValueColumn)}}
 	leadFrame := RowsCurrentRowToUnboundedFollowing()
 	hasTemporality := windowTemporalityProjected(r)
@@ -198,7 +198,13 @@ func (e *emitter) fixedAccumDedupLayer(
 		Neq(WindowFrame(Call("leadInFrame", Col(srcTs)), groupFrags, orderBy, leadFrame), Col(srcTs)),
 		lagAdjIsLastOfRunAlias,
 	))
-	e.applyMatrixFanoutScanBound(tag, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
+	if useAggregateDeltaPrefix {
+		if err := e.applyMatrixFanoutScanBoundAggregate(tag, r, srcTs, end, stepNS, rangeNS, numAnchors); err != nil {
+			return nil, err
+		}
+	} else {
+		e.applyMatrixFanoutScanBound(tag, r, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel)
+	}
 
 	dedup := NewQuery().From(tag.Frag())
 	dedup.Select(groupFrags...)
@@ -208,7 +214,7 @@ func (e *emitter) fixedAccumDedupLayer(
 		dedup.Select(Col(r.TemporalityColumn))
 	}
 	dedup.Where(Col(lagAdjIsLastOfRunAlias))
-	return dedup
+	return dedup, nil
 }
 
 // fixedAccumLagLayer tags each ALREADY-DEDUPED row (fixedAccumDedupLayer's
@@ -369,9 +375,13 @@ func fixedAccumDeltaLevelSource(regroupSource Frag, groupFrags []Frag, passthrou
 // windowedMatrixFanoutAnchorTsFrag split for the identical reason.
 func (e *emitter) fixedAccumRegroupLayer(
 	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string, end Frag,
-	stepNS, rangeNS, numAnchors int64, hasTemporality, needsResetTerm, needsDeltaFirstLevel bool,
-) Frag {
-	dedupSource := e.fixedAccumDedupLayer(r, innerSub, groupFrags, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel).Frag()
+	stepNS, rangeNS, numAnchors int64, hasTemporality, needsResetTerm, needsDeltaFirstLevel, useAggregateDeltaPrefix bool,
+) (Frag, error) {
+	dedupQuery, err := e.fixedAccumDedupLayer(r, innerSub, groupFrags, srcTs, end, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix)
+	if err != nil {
+		return nil, err
+	}
+	dedupSource := dedupQuery.Frag()
 
 	preFanoutSource := dedupSource
 	if needsResetTerm {
@@ -390,7 +400,7 @@ func (e *emitter) fixedAccumRegroupLayer(
 		fanout.Select(Col(r.TemporalityColumn))
 	}
 	fanout.Select(RawAs(
-		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, false),
+		windowedMatrixFanoutAnchorTsFrag(r, end, srcTs, stepNS, rangeNS, numAnchors, needsDeltaFirstLevel, useAggregateDeltaPrefix),
 		RangeWindowAnchorAlias,
 	))
 
@@ -455,9 +465,16 @@ func (e *emitter) fixedAccumRegroupLayer(
 		if needsResetTerm {
 			passthrough = append(passthrough, fixedAccumResetSumAlias)
 		}
-		regroupSource = fixedAccumDeltaLevelSource(regroupSource, groupFrags, passthrough)
+		if useAggregateDeltaPrefix {
+			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, passthrough, end, stepNS, rangeNS, numAnchors)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			regroupSource = fixedAccumDeltaLevelSource(regroupSource, groupFrags, passthrough)
+		}
 	}
-	return regroupSource
+	return regroupSource, nil
 }
 
 // emitFixedAccumulatorExtrapolatedMatrix is the fixed-accumulator sibling of
@@ -510,9 +527,16 @@ func (e *emitter) emitFixedAccumulatorExtrapolatedMatrix(r *chplan.RangeWindow, 
 	// flag exactly: a temporality-bearing counter window (delta() never
 	// carries TemporalityColumn, so this is always false for that kind).
 	needsDeltaFirstLevel := hasTemporality && kind.isCounter()
+	// useAggregateDeltaPrefix mirrors emitWindowedArrayExtrapolatedMatrix's own
+	// gate exactly (cerberus issue #2389's exact, retention-independent
+	// DELTA-prefix aggregate mechanism) — see this file's own doc comment.
+	useAggregateDeltaPrefix := needsDeltaFirstLevel && r.DeltaPrefixAggregateInput != nil && e.deltaPrefixReadEnabled
 
-	regroupSource := e.fixedAccumRegroupLayer(r, innerSub, groupFrags, srcTs, end,
-		stepNS, rangeNS, numAnchors, hasTemporality, needsResetTerm, needsDeltaFirstLevel)
+	regroupSource, err := e.fixedAccumRegroupLayer(r, innerSub, groupFrags, srcTs, end,
+		stepNS, rangeNS, numAnchors, hasTemporality, needsResetTerm, needsDeltaFirstLevel, useAggregateDeltaPrefix)
+	if err != nil {
+		return err
+	}
 
 	extrap := NewQuery().From(regroupSource)
 	extrap.Select(groupFrags...)
