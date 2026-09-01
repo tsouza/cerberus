@@ -248,6 +248,21 @@ test('the gate PASSES a differing-value duplicate in an UNENROLLED fixture', () 
   assert.equal(res.status, 0, res.stdout + res.stderr);
 });
 
+test('the gate FAILS a metric row whose tuple arity does not match its column list', () => {
+  // A shape ClickHouse itself would reject, so reaching it means the DDL or
+  // VALUES parse went wrong; a truncated comparison could hide a duplicate as
+  // easily as invent one, so this fails closed rather than silently aligning.
+  const root = newCorpus({
+    'ragged.txtar': fixture({
+      seed: `${GAUGE_DDL}INSERT INTO otel_metrics_gauge VALUES\n` +
+        "    ('m', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9));\n",
+    }),
+  });
+  const res = runGate(root);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(res.stdout, /could not be aligned to its column list/);
+});
+
 test('the gate FAILS a scan that parsed no metric-shaped seed at all', () => {
   const root = newCorpus({
     'logs.txtar': fixture({

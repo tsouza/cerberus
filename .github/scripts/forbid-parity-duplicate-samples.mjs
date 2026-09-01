@@ -326,11 +326,22 @@ export function seriesNamespace(columns) {
 export function duplicateSamples(seed) {
   const tables = parseTables(seed);
   const groups = new Map();
+  const misaligned = [];
   let metricRows = 0;
 
   for (const row of parseInserts(seed, tables)) {
     const declared = tables.get(row.table);
     if (!declared || !isMetricTable(declared)) continue;
+
+    // A tuple whose arity does not match its column list cannot be read
+    // column-wise at all, and ClickHouse would reject the statement, so this
+    // means the DDL or VALUES parse above went wrong. Reported rather than
+    // truncated silently: a misaligned row would be compared against the
+    // wrong columns and could hide a duplicate or invent one.
+    if (row.cells.length !== row.columns.length) {
+      misaligned.push(`${row.table}: ${row.columns.length} column(s), ${row.cells.length} value(s)`);
+      continue;
+    }
     const typeOf = new Map(declared.map((c) => [c.name, c.type]));
 
     const identity = [];
@@ -371,7 +382,7 @@ export function duplicateSamples(seed) {
       payloads: [...payloads].sort(),
     });
   }
-  return { duplicates, metricRows, opaqueInserts: opaqueMetricInserts(seed, tables) };
+  return { duplicates, metricRows, misaligned, opaqueInserts: opaqueMetricInserts(seed, tables) };
 }
 
 /**
@@ -400,6 +411,7 @@ export function scan({ root = process.cwd(), dirs = DEFAULT_SPEC_DIRS } = {}) {
   let metricSeeded = 0;
   let opaqueInserts = 0;
   const violations = [];
+  const misaligned = [];
   for (const dir of dirs) {
     for (const path of fixturesIn(root, dir)) {
       const report = scanFixture(readFileSync(join(root, path), 'utf8'));
@@ -407,10 +419,11 @@ export function scan({ root = process.cwd(), dirs = DEFAULT_SPEC_DIRS } = {}) {
       enrolled++;
       if (report.metricRows > 0) metricSeeded++;
       opaqueInserts += report.opaqueInserts;
+      for (const problem of report.misaligned) misaligned.push({ path, problem });
       for (const duplicate of report.duplicates) violations.push({ path, ...duplicate });
     }
   }
-  return { enrolled, metricSeeded, opaqueInserts, violations };
+  return { enrolled, metricSeeded, opaqueInserts, misaligned, violations };
 }
 
 function main() {
@@ -420,7 +433,21 @@ function main() {
     .map((d) => d.trim())
     .filter(Boolean);
 
-  const { enrolled, metricSeeded, opaqueInserts, violations } = scan({ root, dirs });
+  const { enrolled, metricSeeded, opaqueInserts, misaligned, violations } = scan({ root, dirs });
+
+  // Fail closed on a row this scan could not read column-wise: it would be
+  // compared against the wrong columns, which can hide a duplicate as easily
+  // as invent one. Zero such rows today across the whole corpus, so a hit
+  // means the parser stopped understanding a seed shape.
+  for (const m of misaligned) {
+    error(
+      `${m.path}: a seeded metric row could not be aligned to its column list (${m.problem}). ` +
+        'ClickHouse would reject such a statement, so this is a parse failure in ' +
+        'forbid-parity-duplicate-samples.mjs, not a fixture defect — fix parseTables/parseInserts.',
+      { file: m.path },
+    );
+  }
+  if (misaligned.length > 0) return 1;
 
   // A gate that passes because it parsed nothing reports the same green as a
   // satisfied one. Metric-shaped seeds are what this scan is ABOUT, so finding
