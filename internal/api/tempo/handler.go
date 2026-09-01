@@ -154,6 +154,17 @@ type Handler struct {
 	// it true; cmd/ overrides from config.
 	StructuralTwoPhase bool
 
+	// ExternalTraceIDPush is the resolved chopt trace_id_external_table
+	// verdict, ANDed with Config.ClickHouse.Protocol==clickhouse.Native
+	// (cmd/cerberus's buildExternalTraceIDPush) — cerberus issue #2783. When
+	// true, runStructuralTwoPhase's phase-B restriction may push the phase-A
+	// TraceId set as a native-protocol external table instead of splicing it
+	// as a literal IN list once the literal's estimated size crosses
+	// traceIDLiteralByteBudget; see restrictStructural. false (New()'s
+	// default, matching every un-wired Handler in tests) keeps every phase-B
+	// restriction on the pre-#2783 literal path, byte-identical.
+	ExternalTraceIDPush bool
+
 	// QueryTimeout is the default per-request wall-clock budget every query
 	// entrypoint installs via applyQueryTimeout, wired from
 	// Config.ClickHouse.QueryTimeout — the same knob prom and loki draw

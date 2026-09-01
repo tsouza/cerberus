@@ -346,6 +346,29 @@ traces-scan-window-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestTracesScanWindowRealCH ./internal/api/tempo/...
 
+# Run the structural two-phase external-trace-id-table real-CH verification
+# (issue #2783): the phase-B literal `TraceId IN (...)` splice vs. the
+# native-protocol external-table push restrictStructural switches to on wide
+# closures. Three tests share this lane (they all seed the same otel_traces
+# shape at real-server scale, so one recipe/CI step covers them without
+# tripling the container-boot overhead each pays independently):
+#   - TestStructuralTwoPhase_ExternalTraceIDTable_RealCH — drives the real
+#     /api/search handler with h.ExternalTraceIDPush toggled and asserts the
+#     external-table run returns the EXACT same ordered traces as the literal
+#     run, with a comparable (not blown-up) read_rows count.
+#   - TestStructuralTwoPhase_ExternalTraceIDTable_ExplainIndexes — the
+#     issue's own EXPLAIN indexes=1 mandate: asserts idx_trace_id drops the
+#     SAME granule count for both forms.
+#   - TestExternalTraceIDs_ReusableAcrossDispatches — proves a
+#     chclient.WithExternalTraceIDs ctx is safe to dispatch more than once
+#     (the shape both a transport retry and a route-B shard take).
+# Requires Docker; gated behind the `integration` build tag. See
+# internal/api/tempo/structural_two_phase_external_table_integration_test.go
+# and strict-scan.yml.
+structural-two-phase-external-table-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run 'TestStructuralTwoPhase_ExternalTraceIDTable|TestExternalTraceIDs_ReusableAcrossDispatches' ./internal/api/tempo/...
+
 # Run the perf-smoke real-ClickHouse sentinel differential (#2370 PR 1): the
 # real-CH memory-bounding guard for the #2364 incident class. PR #2358
 # disabled ClickHouse's query analyzer for native-histogram plan shapes,

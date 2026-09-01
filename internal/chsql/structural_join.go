@@ -376,8 +376,8 @@ func (e *emitter) rootedStructuralLeftSub(j *chplan.StructuralJoin, leftSub Frag
 	}
 	winLo, winHi := spansScanWindowFrags(j.TimestampColumn, j.WindowStartNano, j.WindowEndNano)
 	anchorConds = appendNonNilFrags(anchorConds, winLo, winHi)
-	if len(j.TraceIDRestriction) > 0 {
-		anchorConds = append(anchorConds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
+	if f, ok := traceIDRestrictionFrag(j, Col(j.TraceIDColumn)); ok {
+		anchorConds = append(anchorConds, f)
 	}
 	cteName := "_struct_rooted_" + strconv.Itoa(e.nextCTESeq())
 	anchor := NewQuery().
@@ -802,8 +802,8 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// would not return. Restricting both sides keeps phase B a faithful
 		// top-N subset of the single-query result (A≡B). Nil off the two-phase
 		// path, so every other caller's SQL is byte-identical.
-		if len(j.TraceIDRestriction) > 0 {
-			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
+		if f, ok := traceIDRestrictionFrag(j, qualColFrag("R", j.TraceIDColumn)); ok {
+			sb = sb.Where(f)
 		}
 		return e.emitSelect(sb)
 	case j.Op.IsUnion():
@@ -842,8 +842,8 @@ func (e *emitter) emitStructuralRecursive(j *chplan.StructuralJoin) error {
 		// Phase B: granule-prune the wide R scan to the top-N traces. The
 		// closure already restricts L to those traces (anchor seed WHERE), so
 		// this only shrinks the R side's reads — the result rows are unchanged.
-		if len(j.TraceIDRestriction) > 0 {
-			sb = sb.Where(inStringLiteralsFrag(qualColFrag("R", j.TraceIDColumn), j.TraceIDRestriction))
+		if f, ok := traceIDRestrictionFrag(j, qualColFrag("R", j.TraceIDColumn)); ok {
+			sb = sb.Where(f)
 		}
 		return e.emitSelect(sb)
 	}
@@ -961,8 +961,8 @@ func structuralStepWhere(j *chplan.StructuralJoin) []Frag {
 	conds = appendNonNilFrags(conds, winLo, winHi)
 	// Phase B: granule-prune the step scan to the top-N traces so idx_trace_id
 	// prunes each recursion level's read. Empty off the two-phase path.
-	if len(j.TraceIDRestriction) > 0 {
-		conds = append(conds, inStringLiteralsFrag(qualColFrag("t", j.TraceIDColumn), j.TraceIDRestriction))
+	if f, ok := traceIDRestrictionFrag(j, qualColFrag("t", j.TraceIDColumn)); ok {
+		conds = append(conds, f)
 	}
 	return conds
 }
@@ -1001,8 +1001,8 @@ func structuralAnchorWhere(j *chplan.StructuralJoin, otherSideSub Frag) []Frag {
 // the top-N literals, exactly the read amplification phase B exists to avoid.
 func structuralAnchorNodeBounds(j *chplan.StructuralJoin) []Frag {
 	var conds []Frag
-	if len(j.TraceIDRestriction) > 0 {
-		conds = append(conds, inStringLiteralsFrag(Col(j.TraceIDColumn), j.TraceIDRestriction))
+	if f, ok := traceIDRestrictionFrag(j, Col(j.TraceIDColumn)); ok {
+		conds = append(conds, f)
 	}
 	return append(conds, structuralAnchorWindowFrags(j)...)
 }
@@ -1062,6 +1062,47 @@ func inStringLiteralsFrag(col Frag, ids []string) Frag {
 		lits = append(lits, InlineLit(id))
 	}
 	return In(col, lits...)
+}
+
+// inExternalTraceIDsFrag renders `<col> IN (SELECT <traceIDColumn> FROM
+// <table>)` — the native-protocol external-table form of
+// inStringLiteralsFrag. table is a bare identifier naming a temporary table
+// chclient.WithExternalTraceIDs attaches to the query's context (issue
+// #2783); it carries no user data itself, so it is rendered as a plain
+// identifier via Col, exactly like scanTableFrag renders a physical table
+// name. traceIDColumn names that external table's single column, which the
+// caller builds with the SAME name as the physical TraceId column
+// (StructuralJoin.TraceIDColumn) so the two sides need no separate naming
+// contract.
+//
+// Unlike inStringLiteralsFrag's literal list, this is a genuine subquery —
+// but EXPLAIN indexes=1 against a real ClickHouse server (issue #2783)
+// confirmed idx_trace_id prunes an `IN (SELECT … FROM <external table>)`
+// exactly as it prunes the literal list at every closure size tested, so the
+// swap costs no pruning.
+func inExternalTraceIDsFrag(col Frag, table, traceIDColumn string) Frag {
+	sub := NewQuery().Select(Col(traceIDColumn)).From(Col(table))
+	return InSubquery(col, Subquery(sub))
+}
+
+// traceIDRestrictionFrag renders the phase-B closure restriction for col and
+// reports whether j carries one at all: the literal IN-list form
+// (inStringLiteralsFrag) when TraceIDRestriction is set, or the external-table
+// form (inExternalTraceIDsFrag) when TraceIDExternalTable is set. The two
+// fields are mutually exclusive by construction (restrictStructural, issue
+// #2783, sets exactly one per plan), so at most one branch fires; every other
+// caller leaves both unset and gets (nil, false), which every call site below
+// reads as "leave this scan unrestricted" — byte-identical to the pre-#2783
+// behaviour.
+func traceIDRestrictionFrag(j *chplan.StructuralJoin, col Frag) (Frag, bool) {
+	switch {
+	case len(j.TraceIDRestriction) > 0:
+		return inStringLiteralsFrag(col, j.TraceIDRestriction), true
+	case j.TraceIDExternalTable != "":
+		return inExternalTraceIDsFrag(col, j.TraceIDExternalTable, j.TraceIDColumn), true
+	default:
+		return nil, false
+	}
 }
 
 // structuralDepthBoundFrag renders the recursive-CTE iteration cap

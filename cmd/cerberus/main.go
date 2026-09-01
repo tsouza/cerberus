@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
@@ -231,6 +232,7 @@ func mountAPIHeads(
 		tempoHandler := tempo.New(tempoClient, cfg.Traces, Version, logger.With("api", "tempo"))
 		tempoHandler.Limiter = limiters.tempo
 		tempoHandler.StructuralTwoPhase = cfg.TempoStructuralTwoPhase
+		tempoHandler.ExternalTraceIDPush = buildExternalTraceIDPush(optSet, cfg.ClickHouse.Protocol)
 		// Same knob + wiring shape as the prom and loki heads (see
 		// newPromHandler / newLokiHandler above): the Go-side context-deadline
 		// backstop that unblocks a hung handler and releases its admit slot +
@@ -937,6 +939,29 @@ func buildScanEstimateAdvisor(
 // buildPerRungAdmission constructed and buildScanEstimateAdvisor also
 // threads, never a third one, so all three mechanisms' state cannot
 // diverge.
+// buildExternalTraceIDPush resolves internal/api/tempo.Handler.ExternalTraceIDPush
+// (cerberus issue #2783): whether the structural two-phase phase-B
+// restriction (structural_two_phase.go's restrictStructural) may push a wide
+// closure's TraceId set as a native-protocol external table instead of a
+// spliced literal. Gated on TWO independent axes ANDed together —
+//
+//   - the chopt trace_id_external_table feature (an operator opt-in via
+//     CERBERUS_CH_OPTIMIZATIONS: AlwaysAvailable + AutoSelect=false, pending
+//     production calibration beyond this issue's own synthetic corpus — see
+//     the registry entry's doc); and
+//   - protocol == clickhouse.Native, because the mechanism itself
+//     (clickhouse-go/v2's WithExternalTable) is the native-protocol wire
+//     feature #2783 scoped this PR to — the chopt resolver has no visibility
+//     into Config.Protocol, so this function is the single place both axes
+//     combine.
+//
+// false (the default when the feature is unlisted, or when the deployment
+// runs Protocol=http) keeps every phase-B restriction on the pre-#2783
+// literal-splice path, byte-identical.
+func buildExternalTraceIDPush(optSet chopt.EnabledSet, protocol clickhouse.Protocol) bool {
+	return optSet.Has(chopt.FeatureTraceIDExternalTable) && protocol == clickhouse.Native
+}
+
 func buildCardinalityProbeAdvisor(
 	client *chclient.Client,
 	optSet chopt.EnabledSet,

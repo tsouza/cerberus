@@ -190,7 +190,27 @@ type StructuralJoin struct {
 	// byte-identical off the two-phase path. The restriction is a pure
 	// pruning bound: correctness comes from the closure, so restricting to a
 	// subset of traces only shrinks reads, never changes the per-trace rows.
+	//
+	// Mutually exclusive with TraceIDExternalTable — restrictStructural
+	// (issue #2783) sets exactly one of the two per plan, never both.
 	TraceIDRestriction []string
+
+	// TraceIDExternalTable, when non-empty, names a native-protocol external
+	// (temporary) table carrying the SAME phase-A TraceId set
+	// TraceIDRestriction would otherwise splice as literals: every closure
+	// scan site emits `<col> IN (SELECT <TraceIDColumn> FROM
+	// <TraceIDExternalTable>)` instead. restrictStructural chooses this form
+	// over TraceIDRestriction once the literal splice's estimated byte cost
+	// crosses a threshold (wide closures risk chsql's own emitted-SQL bound,
+	// internal/chsql/emit_size_bound.go, or ClickHouse's max_query_size) —
+	// EXPLAIN indexes=1 against a real server confirmed both forms engage
+	// idx_trace_id identically at every closure size tested, so the switch is
+	// purely about statement-size risk, never pruning parity (issue #2783).
+	// The actual id rows are attached to the query's context separately, by
+	// chclient.WithExternalTraceIDs — this field only names the table the
+	// emitted SQL references; empty means "no external table for this join",
+	// the pre-#2783 path.
+	TraceIDExternalTable string
 
 	// CandidatePrefilter, when true, restricts the recursive anchor seed to
 	// traces that appear on BOTH sides of the relation (the L-intersect-R
@@ -248,6 +268,9 @@ func (j *StructuralJoin) Equal(other Node) bool {
 		if j.TraceIDRestriction[i] != o.TraceIDRestriction[i] {
 			return false
 		}
+	}
+	if j.TraceIDExternalTable != o.TraceIDExternalTable {
+		return false
 	}
 	return j.Left.Equal(o.Left) && j.Right.Equal(o.Right)
 }

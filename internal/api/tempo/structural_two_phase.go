@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chplan"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/engine"
@@ -15,6 +16,65 @@ import (
 // uses as a trace's startTimeUnixNano. It is only ever referenced by the
 // ORDER BY of the phase-A plan and never surfaces on the wire.
 const phaseARankTsAlias = "rankTs"
+
+// externalTraceIDTableName is the fixed name restrictStructural stamps onto
+// chplan.StructuralJoin.TraceIDExternalTable and runStructuralTwoPhase passes
+// to chclient.WithExternalTraceIDs (issue #2783). A single fixed name is safe
+// even across concurrent phase-B dispatches (route-B sharding, or two
+// unrelated requests in flight at once): ClickHouse scopes a native-protocol
+// external table to the ONE query dispatch that declares it and tears the
+// backing storage down when that query finishes (see
+// chclient.WithExternalTraceIDs's doc), so there is no server-side registry
+// for two dispatches sharing this name to collide in.
+const externalTraceIDTableName = "cerberus_phase_b_trace_ids"
+
+// traceIDRestrictionSiteCount is the number of independent closure scan
+// sites chsql/structural_join.go's traceIDRestrictionFrag call sites splice
+// TraceIDRestriction onto (the anchor seed, the recursive step, the R leaf on
+// both the anti-join and direct-join arms, and the inverse-closure anchor).
+// Not every phase-B shape reaches every site simultaneously, but
+// useExternalTraceIDTable sizes its budget for the worst case — assuming
+// every site fires — so the byte-size decision never under-shoots and lets a
+// too-large literal splice through.
+const traceIDRestrictionSiteCount = 5
+
+// traceIDLiteralByteBudget bounds the TOTAL literal bytes
+// useExternalTraceIDTable is willing to let restrictStructural splice across
+// every closure scan site (traceIDRestrictionSiteCount of them) before
+// switching to the external-table form. chsql's own emitted-SQL bound
+// (internal/chsql/emit_size_bound.go's maxEmittedSQLBytes) is 262144 bytes —
+// ClickHouse's own max_query_size default — and this budget reserves the
+// majority of that for the REST of the query text (the recursive CTE
+// structure, window predicates, projected columns), rather than letting the
+// restriction alone consume it.
+const traceIDLiteralByteBudget = 64 * 1024
+
+// estimatedLiteralBytes returns the SQL-text weight of splicing ids as a
+// single `IN ('id0','id1',...)` literal list — each id wrapped in one quote
+// on either side plus a separator — matching what chsql's
+// inStringLiteralsFrag / InlineLit render (a 1-byte overcount for the list's
+// final id, which has no trailing separator, is irrelevant at threshold
+// scale).
+func estimatedLiteralBytes(ids []string) int {
+	total := 0
+	for _, id := range ids {
+		total += len(id) + len(`'',`)
+	}
+	return total
+}
+
+// useExternalTraceIDTable reports whether restrictStructural should push ids
+// as a native-protocol external table (chclient.WithExternalTraceIDs) rather
+// than splice them as literals: external is only ever worth its round trip
+// once the literal form's estimated total bytes — across every closure scan
+// site the restriction reaches — crosses traceIDLiteralByteBudget. Below the
+// budget the literal splice is cheaper and, per issue #2783's EXPLAIN
+// indexes=1 verification against a real ClickHouse server, prunes
+// idx_trace_id identically to the external-table form at every size tested —
+// so the choice is purely about SQL-text-size risk, never pruning parity.
+func useExternalTraceIDTable(ids []string) bool {
+	return estimatedLiteralBytes(ids)*traceIDRestrictionSiteCount > traceIDLiteralByteBudget
+}
 
 // structuralTwoPhaseTarget reports whether the lowered search plan is the
 // positive recursive structural join (`A >> B` / `A << B`) the two-phase
@@ -121,10 +181,13 @@ func (h *Handler) SearchResult(ctx context.Context, query string, limit int) (en
 // TraceId ASC LIMIT N — the exact ranking sortSummariesStartDesc +
 // TruncateSummaries apply downstream — yielding the top-N on-disk TraceIds.
 // Phase B re-runs the closure projecting WIDE but with those N TraceIds
-// spliced as literals onto every physical spans scan, so idx_trace_id
-// granule-prunes the wide fetch to just the response traces. toTraceSummaries
-// over phase B's rows recomputes the identical summaries; TruncateSummaries is
-// then a no-op safety net (≤ N traces already).
+// restricted onto every physical spans scan, so idx_trace_id granule-prunes
+// the wide fetch to just the response traces — spliced as literals below
+// useExternalTraceIDTable's threshold, or pushed as a native-protocol
+// external table above it when h.ExternalTraceIDPush is set (issue #2783;
+// see restrictStructural). toTraceSummaries over phase B's rows recomputes
+// the identical summaries; TruncateSummaries is then a no-op safety net (≤ N
+// traces already).
 func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.StructuralJoin, fullPlan chplan.Node, meta engine.Meta, limit int) (engine.Result, error) {
 	topN, err := h.runStructuralPhaseA(ctx, sj, limit)
 	if err != nil {
@@ -140,7 +203,13 @@ func (h *Handler) runStructuralTwoPhase(ctx context.Context, sj *chplan.Structur
 	// top-N traces, then run the normal wide pipeline (wrap-projection +
 	// optimizer + emit + execute) so res.Samples arrive in the exact shape
 	// toTraceSummaries already consumes.
-	restricted := restrictStructural(fullPlan, topN)
+	restricted, ids, external := restrictStructural(fullPlan, topN, h.ExternalTraceIDPush)
+	if external {
+		ctx, err = chclient.WithExternalTraceIDs(ctx, externalTraceIDTableName, h.Schema.TraceIDColumn, ids)
+		if err != nil {
+			return engine.Result{}, fmt.Errorf("engine: execute: structural phase B external trace-id table: %w", err)
+		}
+	}
 	return h.Engine.QueryPlan(ctx, h.lang, restricted, meta)
 }
 
@@ -220,19 +289,30 @@ func buildStructuralPhaseAPlan(sj *chplan.StructuralJoin, s schema.Traces, limit
 }
 
 // restrictStructural clones the lowered structural-join plan and stamps the
-// phase-A top-N TraceIds onto it as the closure's TraceIDRestriction, so phase
-// B's wide fetch reads only those traces. The ids are routed through
+// phase-A top-N TraceIds onto it as the closure's restriction, so phase B's
+// wide fetch reads only those traces. The ids are routed through
 // padTraceIDs (the root-lookup literal-splice helper) — idempotent for the
 // on-disk 32-char form phase A returns, and a defensive left-pad for any short
-// id — so the spliced literals match otel_traces.TraceId exactly.
-func restrictStructural(plan chplan.Node, topN []string) chplan.Node {
+// id — so the restriction matches otel_traces.TraceId exactly whichever form
+// it takes.
+//
+// externalEligible is h.ExternalTraceIDPush: when false (the pre-#2783
+// default) every restriction is the literal splice, byte-identical to
+// before. When true, restrictStructural ALSO checks useExternalTraceIDTable —
+// only once BOTH hold does it stamp TraceIDExternalTable instead of
+// TraceIDRestriction, and reports external=true so the caller
+// (runStructuralTwoPhase) knows to attach the actual id rows via
+// chclient.WithExternalTraceIDs. Returns the padded ids alongside the clone
+// either way, since the caller needs them again for that attach.
+func restrictStructural(plan chplan.Node, topN []string, externalEligible bool) (restricted chplan.Node, ids []string, external bool) {
 	// Clone as a plain Node (not *StructuralJoin): the plan may be a pure-select
 	// Project wrapped over the join (`… >> … | select(...)`), in which case the
 	// root is the Project and the join sits beneath it. eachStructuralJoin walks
 	// into it either way, so the restriction is stamped whether the root is the
 	// join or a wrapper over it.
 	clone := chplan.CloneNode(plan)
-	ids := padTraceIDs(topN)
+	ids = padTraceIDs(topN)
+	external = externalEligible && useExternalTraceIDTable(ids)
 	// Stamp EVERY structural join in the plan, not just the root: a chain
 	// `A >> B >> C` is left-associative, so the root's Left is itself a
 	// StructuralJoin (the inner `A >> B` closure). Restricting only the root
@@ -240,9 +320,13 @@ func restrictStructural(plan chplan.Node, topN []string) chplan.Node {
 	// phases (the exact OOM this fix removes). Every result trace is in the
 	// top-N set, so confining an inner closure to those trace-ids is loss-free.
 	eachStructuralJoin(clone, func(sj *chplan.StructuralJoin) {
-		sj.TraceIDRestriction = ids
+		if external {
+			sj.TraceIDExternalTable = externalTraceIDTableName
+		} else {
+			sj.TraceIDRestriction = ids
+		}
 	})
-	return clone
+	return clone, ids, external
 }
 
 // eachStructuralJoin visits every StructuralJoin in n (root-first), so a
