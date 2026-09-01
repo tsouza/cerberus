@@ -216,6 +216,24 @@ func IsSliceInvariant(n Node) bool {
 //     same shape family, but no production traffic exists yet to validate
 //     against; a follow-up PR with its own fixtures registers them.
 //
+//   - RangeWindowGridNativeVectorAgg — the ForEach-combinator vector-aggregation
+//     narrowing of RangeWindowGridNative (cerberus issue #2763). Its own GROUP
+//     BY runs directly over Input's per-series (grid, grid_ts) row — the exact
+//     same row RangeWindowGridNative's entry above already argues is
+//     scan-lower-bound-independent — and combines it with a `-ForEach`
+//     aggregate that reads only the array ELEMENTS at each position, never a
+//     neighbouring row or a scan-order-seeded state. Its final explode reads
+//     grid_ts by RECOMPUTING the same pure timeSeriesRange(start, end, step)
+//     call Input's own array level issues (a function of the query's fixed
+//     (Start, End, Step), not of any row), so it carries no additional
+//     scan-order dependence beyond Input's own. Slicing an anchor sub-grid
+//     therefore changes which (series, anchor) values feed the ForEach combine
+//     — exactly as it changes which rows reach RangeWindowGridNative's own
+//     explode — never what any surviving combine computes. Verified by
+//     dual-emit parity (Aggregate-over-exploded-rows vs
+//     RangeWindowGridNativeVectorAgg) in
+//     internal/chsql/range_window_grid_native_vector_agg_chdb_test.go.
+//
 // Extension point. Phase-3 node families (TopK as per-anchor LIMIT K BY,
 // VectorSetOp, HistogramQuantileNative, HistogramProjection, AbsentOverTime,
 // RangeWindowStaleResample, the metrics_* TraceQL family, nested spines
@@ -233,6 +251,7 @@ var sliceInvariantKinds = func() map[reflect.Type]struct{} {
 		&Aggregate{},
 		&RangeWindow{},
 		&RangeWindowGridNative{},
+		&RangeWindowGridNativeVectorAgg{},
 		&RangeLWR{},
 		&RangeBucketFanout{},
 		&RangeBucketGridNative{},

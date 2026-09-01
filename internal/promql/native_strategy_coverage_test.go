@@ -236,6 +236,22 @@ var nativeStrategies = []nativeStrategy{
 			l.ArgAndMaxFusion = true
 		},
 	},
+	{
+		field:   "VectorAgg",
+		section: "experimental_ts_grid_vector_agg",
+		// Like ArgAndMaxFusion, a plain bool: see
+		// promql.RangeLowerers.VectorAgg's own doc for why there is no
+		// alternate strategy TYPE to select between. A fixture carrying
+		// ONLY this section is inert — lowerAggregate only consults it
+		// after its input already lowered to a *chplan.RangeWindowGridNative,
+		// so a fixture exercising the resulting SQL shape must ALSO carry
+		// one of the range-function sections above (e.g.
+		// experimental_ts_grid_changes) to build that native grid in the
+		// first place — cerberus issue #2763.
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.VectorAgg = true
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

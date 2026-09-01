@@ -1019,6 +1019,17 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	// native staleness lowerer's embedded Fallback).
 	argAndMaxFusion := optSet.Has(chopt.FeatureArgAndMaxFusion)
 	l.ArgAndMaxFusion = argAndMaxFusion
+	// ts_grid_vector_agg (issue #2763) is a pure narrowing of ts_grid_range,
+	// but — unlike ts_grid_recollapse — it lives on RangeLowerers itself
+	// rather than on NativeRateLowerer (or any single Native*Lowerer),
+	// because lowerAggregate consults it at a LATER lowering stage than any
+	// range-function Lowerer: only after a range function has already
+	// lowered its input, and only when that input turns out to be a
+	// *chplan.RangeWindowGridNative. Setting it unconditionally here (never
+	// nested inside `if optSet.Has(chopt.FeatureTSGridRange)`) is therefore
+	// safe rather than a narrowing gap: the field is inert whenever no
+	// native grid node exists for lowerAggregate to fold into.
+	l.VectorAgg = optSet.Has(chopt.FeatureTSGridVectorAgg)
 	// ts_grid_instant (issue #2748) is a pure narrowing of each of
 	// rate/changes/resets/deriv/predict_linear's own matrix feature — it is
 	// consulted ONLY inside each function's own "matrix feature enabled"

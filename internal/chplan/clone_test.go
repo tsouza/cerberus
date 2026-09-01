@@ -65,6 +65,17 @@ func allNodeKinds() []chplan.Node {
 			TimestampColumn: "TimeUnix", ValueColumn: "Value",
 			GroupBy: []chplan.Expr{expr}, Scalars: []float64{1},
 		},
+		&chplan.RangeWindowGridNativeVectorAgg{
+			Input: &chplan.RangeWindowGridNative{
+				Input: leaf, Func: "rate", Range: 5 * time.Minute, Step: time.Minute,
+				Start: time.Unix(1000, 0).UTC(), End: time.Unix(4600, 0).UTC(),
+				TimestampColumn: "TimeUnix", ValueColumn: "Value", GroupBy: []chplan.Expr{expr},
+			},
+			Fn:             chplan.FnSum,
+			GroupBy:        []chplan.Expr{expr},
+			GroupByAliases: []string{"gkey_0"},
+			AnchorAlias:    "bucket_ts",
+		},
 		&chplan.RangeLWR{Input: leaf, Lookback: 5 * time.Minute, ValueCol: "Value"},
 		&chplan.RangeBucketFanout{
 			Input: leaf, GroupBy: []chplan.Expr{expr}, GroupByAliases: []string{"g0"},

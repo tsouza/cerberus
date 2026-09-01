@@ -189,6 +189,11 @@ func seriesIdentityKeys(n Node) []Expr {
 	switch v := n.(type) {
 	case *Aggregate:
 		return v.GroupBy
+	case *RangeWindowGridNativeVectorAgg:
+		// The elided-Aggregate narrowing (cerberus issue #2763): its own
+		// GroupBy IS the output series identity, exactly like the ordinary
+		// Aggregate case above it replaces.
+		return v.GroupBy
 	case *MetricsAggregate:
 		return v.GroupBy
 	case *MetricsHistogramOverTime:
@@ -361,6 +366,8 @@ func columnBindingIsRaw(name string, n Node, mapCols AttributeMapColumns) (bool,
 func seriesIdentityKeyAliases(n Node) []string {
 	switch v := n.(type) {
 	case *Aggregate:
+		return v.GroupByAliases
+	case *RangeWindowGridNativeVectorAgg:
 		return v.GroupByAliases
 	case *MetricsAggregate:
 		return v.GroupByAliases

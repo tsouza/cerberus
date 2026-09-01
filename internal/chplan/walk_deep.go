@@ -51,6 +51,8 @@ func nodeExprs(n Node, visit func(Expr)) {
 	case *RangeWindowGridNative:
 		visitExprs(v.GroupBy, visit)
 		visitProjections(v.Recollapse, visit)
+	case *RangeWindowGridNativeVectorAgg:
+		visitExprs(v.GroupBy, visit)
 	case *RangeWindowGridNativeInstant:
 		visitExprs(v.GroupBy, visit)
 	case *OrderBy:

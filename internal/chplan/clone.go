@@ -134,6 +134,12 @@ func cloneRangeNode(n Node) Node {
 		c.Recollapse = cloneProjections(v.Recollapse)
 		c.Scalars = cloneFloats(v.Scalars)
 		return &c
+	case *RangeWindowGridNativeVectorAgg:
+		c := *v
+		c.Input = CloneNode(v.Input)
+		c.GroupBy = cloneExprs(v.GroupBy)
+		c.GroupByAliases = cloneStrings(v.GroupByAliases)
+		return &c
 	case *RangeLWR:
 		c := *v
 		c.Input = CloneNode(v.Input)

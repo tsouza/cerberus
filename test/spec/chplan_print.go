@@ -258,6 +258,19 @@ func printNode(b *strings.Builder, n chplan.Node, depth int) {
 		}
 		b.WriteString("\n")
 		printNode(b, v.Input, depth+1)
+	case *chplan.RangeWindowGridNativeVectorAgg:
+		gb := make([]string, len(v.GroupBy))
+		for i, e := range v.GroupBy {
+			if i < len(v.GroupByAliases) && v.GroupByAliases[i] != "" {
+				gb[i] = fmt.Sprintf("%s AS %s", printExpr(e), v.GroupByAliases[i])
+			} else {
+				gb[i] = printExpr(e)
+			}
+		}
+		fmt.Fprintf(b, "%sRangeWindowGridNativeVectorAgg fn=%s groupBy=[%s] anchorAlias=%s",
+			indent, v.Fn, strings.Join(gb, ", "), v.AnchorAlias)
+		b.WriteString("\n")
+		printNode(b, v.Input, depth+1)
 	case *chplan.RangeLWR:
 		fmt.Fprintf(b, "%sRangeLWR step=%s lookback=%s", indent, v.Step, v.Lookback)
 		if v.Offset != 0 {

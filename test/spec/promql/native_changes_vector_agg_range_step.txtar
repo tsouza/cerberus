@@ -1,0 +1,114 @@
+# Experimental: ts_grid_vector_agg (cerberus issue #2763) folding the outer
+# `sum(...)` (no by/without clause — collapse every series into one) directly
+# into the native timeSeriesChangesToGrid grid via the `-ForEach` combinator,
+# instead of exploding every per-series grid to (series, anchor) rows first
+# and re-aggregating with a second, blocking GROUP BY.
+#
+# Same query, same seed, same grid as native_changes_range_step.txtar — the
+# TWO differences are (a) the query itself drops `by (host)` (this node's
+# GroupBy is exercised at zero elements here; a non-empty `by (...)` case
+# would render an ordinary, non-empty GROUP BY at the vecAgg level — same
+# shape, just with keys) and (b) the additional
+# `experimental_ts_grid_vector_agg` section. Diffing the two fixtures
+# therefore isolates exactly what this narrowing changes, and the shared
+# `-- expected_rows --` shape (summed across host=a/host=b into one series)
+# pins that the answer is unchanged.
+#
+# The rewrite replaces:
+#
+#   RangeWindowGridNative (per-series grid, one row per host)
+#     -> ARRAY JOIN (series x anchor rows)
+#     -> Aggregate GROUP BY (bucket_ts) SUM(Value)   [collapses ALL hosts]
+#
+# with:
+#
+#   RangeWindowGridNativeVectorAgg (fn=sum, groupBy=[] — the query names no
+#   by/without keys, so the outer group key is empty: every series collapses
+#   into the one output series) directly over RangeWindowGridNative's own
+#   pre-explode (grid, grid_ts) row:
+#
+#     inner : GROUP BY Attributes -> timeSeriesChangesToGrid
+#     vecAgg: GROUP BY <nothing>  -> sumForEach(grid)
+#     outer : ARRAY JOIN grid, grid_ts
+#
+# Two properties of the `-- sql --` golden are load-bearing and must be
+# read, not skimmed, on any regeneration:
+#
+#  1. The vecAgg level's `sumForEach(grid)` runs over the array BEFORE any
+#     ARRAY JOIN — there is exactly ONE explode in the whole query (the
+#     outer level's), not two. The old (Aggregate-only) shape in
+#     native_changes_range_step.txtar explodes at the RangeWindowGridNative
+#     level and AGAIN implicitly via the outer sum(Value); this shape
+#     explodes once.
+#  2. grid_ts is RECOMPUTED via a second, identical timeSeriesRange(...) call
+#     at the vecAgg level rather than read back out of an aggregated column —
+#     a closed-form function of (start, end, step), not of any row (see
+#     chplan.RangeWindowGridNativeVectorAgg's own doc for why no runtime
+#     "ragged grid" check is needed).
+
+-- query.promql --
+sum(changes(load_state[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_changes --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:03:00', 9), 0.0),
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('load_state', map('host', 'a'), toDateTime64('2026-01-01 00:05:00', 9), 1.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 5.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:02:00', 9), 7.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:03:00', 9), 7.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:04:00', 9), 9.0),
+    ('load_state', map('host', 'b'), toDateTime64('2026-01-01 00:05:00', 9), 2.0);
+-- expected_rows --
+[
+  ["", {}, "2026-01-01T00:00:00Z", 0],
+  ["", {}, "2026-01-01T00:00:30Z", 0],
+  ["", {}, "2026-01-01T00:01:00Z", 1],
+  ["", {}, "2026-01-01T00:01:30Z", 1],
+  ["", {}, "2026-01-01T00:02:00Z", 2],
+  ["", {}, "2026-01-01T00:02:30Z", 2],
+  ["", {}, "2026-01-01T00:03:00Z", 3],
+  ["", {}, "2026-01-01T00:03:30Z", 3],
+  ["", {}, "2026-01-01T00:04:00Z", 5],
+  ["", {}, "2026-01-01T00:04:30Z", 5],
+  ["", {}, "2026-01-01T00:05:00Z", 5]
+]
+-- args --
+[0] string = ""
+[1] string = "Map(String,String)"
+[2] string = "service_name"
+[3] string = "service.name"
+[4] string = "service_name"
+[5] string = "service.name"
+[6] string = "service_name"
+[7] string = ""
+[8] string = "service_name"
+[9] string = "load_state"
+[10] string = "load.state"
+[11] string = "load/state"
+-- chplan --
+Project ["" AS MetricName, FnCast(FnMap(), "Map(String,String)") AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  RangeWindowGridNativeVectorAgg fn=sum groupBy=[] anchorAlias=bucket_ts
+    RangeWindowGridNative func=changes range=5m0s step=30s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("load_state", "load.state", "load/state"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, CAST(map(), ?) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `bucket_ts`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT sumForEach(`grid`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `Attributes`, timeSeriesChangesToGrid(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `Attributes`)) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL)
