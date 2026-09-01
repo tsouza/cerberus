@@ -920,8 +920,10 @@ what actually runs.
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
 - **`mutation-phases.mjs`** — data, imported by `mutation-matrix.mjs`. The single
   source of truth for the `mutation` lane's phase partition: each entry is one
-  gremlins run (`scope` package, optional scope-relative `exclude_files` RE2
-  alternation, `workers` cap, `--threshold-efficacy` bar), rendered straight into
+  gremlins run (`scope` package, optional scope-relative RE2 alternation naming
+  either the files the leg owns (`include_files`, used by every curated leg) or
+  the files it skips (`exclude_files`, used by the one catch-all leg per scope),
+  `workers` cap, `--threshold-efficacy` bar), rendered straight into
   `mutation.yml`'s `strategy.matrix`. It carries the per-leg rationale — the
   logql/traceql OOM splits, the equivalent-mutant analysis behind each bar — that
   used to live in the workflow. Also exports `HARNESS_PATHS`: the paths that
@@ -932,11 +934,13 @@ what actually runs.
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
   ordinary PR — and on a merge-queue entry, off its own `base_sha..head_sha` —
   it selects only the legs whose scope the diff touches, applying each leg's
-  `exclude_files` to the SCOPE-RELATIVE path exactly as gremlins does.
+  file pattern to the SCOPE-RELATIVE path exactly as gremlins does.
   A changed path that lies inside a phase scope while claiming no leg is a
   coverage gap and fails the job rather than being dropped. `verify` mode asserts
   the table alone (every scope an existing directory, every pattern legal under
-  Go's RE2 — no lookaround, no backreferences); `emit` re-runs verify first, so
+  Go's RE2 — no lookaround, no backreferences — and every `include_files`
+  allowlist re-deriving from the real tree, so a name left behind by a deleted or
+  renamed file cannot shrink a leg silently); `emit` re-runs verify first, so
   it cannot ship a matrix built from a table that would have failed. `dump`
   validates and then writes the table to stdout as JSON and nothing else —
   that is the stream `test/regression/mutation_leg_partition_test.go` parses to

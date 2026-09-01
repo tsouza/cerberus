@@ -3,15 +3,17 @@
 // Two things are pinned here, and both are gates rather than documentation:
 //
 //   1. The REAL PHASES table is sound against the REAL tree — every scope is an
-//      existing directory, every exclude_files pattern is RE2-legal. This is the
-//      cheap in-process version of the check that otherwise costs a full
-//      checkout + toolchain setup per leg before failing.
+//      existing directory, every include_files / exclude_files pattern is
+//      RE2-legal, and every allowlist still names the files it actually claims.
+//      This is the cheap in-process version of the check that otherwise costs a
+//      full checkout + toolchain setup per leg before failing.
 //
 //   2. The selection is EXACT, not merely non-empty. Asserting "chplan.go
 //      selects at least one leg" would pass while quietly running all eighteen;
 //      asserting the precise leg set is what proves the scoping actually scopes,
-//      and that a file claimed by one leg's exclude alternation is not silently
-//      claimed by a sibling's too.
+//      and that a file claimed by one leg's alternation is not silently claimed
+//      by a sibling's too — including a file that did not exist when the legs
+//      were written, which is the case cerberus issue #2814 is about.
 //
 // Run: node --test .github/scripts/mutation-matrix.test.mjs (from the repo root).
 
@@ -394,7 +396,7 @@ test('a change under one scope selects exactly that scope’s leg', () => {
   assert.deepEqual(names(select(['internal/spansscan/match.go'])), ['phase6-spansscan']);
 });
 
-test('the chsql legs partition the package by exclude_files, one leg per file', () => {
+test('the chsql legs partition the package, one leg per file', () => {
   assert.deepEqual(names(select(['internal/chsql/metrics_compare.go'])), ['phase2-compare']);
   assert.deepEqual(names(select(['internal/chsql/emit_node.go'])), ['phase2-compare']);
   assert.deepEqual(names(select(['internal/chsql/emit.go'])), ['phase2-compare']);
@@ -461,13 +463,134 @@ test('resolvePhases derives an include_files leg\'s real exclude_files from a di
   }
 });
 
+test('an include_files allowlist that has drifted from the tree is rejected', () => {
+  // The failure mode an allowlist introduces that a denylist does not. A
+  // denylist naming a since-deleted file over-excludes nothing; an allowlist
+  // naming one silently claims fewer files than its doc comment promises, and
+  // on a RENAME hands that file's whole mutant population to the scope's
+  // catch-all with every other check still green — the exactly-one-owner
+  // invariant is satisfied either way, so nothing else in this file would
+  // notice. Found `late_mat` (deleted by cerberus #2830) still named in
+  // phase2-range the first time it ran.
+  const real = PHASES.find((p) => p.phase === 'phase2-range');
+  assert.ok(real.include_files, 'phase2-range must still be an include_files leg for this test to mean anything');
+
+  // A name that no longer exists: rejected, and the message hands over the
+  // exact pattern to paste.
+  const stale = tableViolations([{ ...real, include_files: real.include_files.replace('^(', '^(late_mat|') }]);
+  assert.equal(stale.length, 1);
+  assert.match(stale[0], /is not the canonical allowlist/);
+  assert.ok(stale[0].includes(`Expected: '${real.include_files}'`), stale[0]);
+
+  // A pattern that claims the right files but is written loosely — here with
+  // the `$` anchor dropped, which is how `range_window` would silently swallow
+  // `range_window_fused.go` if that file ever moved into this scope's orbit.
+  const loose = tableViolations([{ ...real, include_files: '^(range_window)' }]);
+  assert.equal(loose.length, 1);
+  assert.match(loose[0], /is not the canonical allowlist/);
+
+  // An allowlist matching nothing at all is rejected too, rather than
+  // reporting a vacuous "canonical" agreement.
+  const empty = tableViolations([{ ...real, include_files: '^(no_such_emitter)\\.go$' }]);
+  assert.equal(empty.length, 1);
+  assert.match(empty[0], /claims no mutable Go file at all/);
+
+  // And the shipped table passes it — the same assertion the `verify` mode
+  // makes, pinned here so a drifted allowlist fails in the unit suite too.
+  assert.deepEqual(tableViolations(PHASES), []);
+});
+
+// The regression cerberus issue #2814 is actually about, checked on every
+// multi-leg scope rather than on the one that happened to get hit twice.
+//
+// Before the include_files conversion this was a live landmine in three of the
+// four groups: a brand-new file matches no curated leg's hand-written DENYLIST,
+// and an exclude-shaped leg claims everything it does not name — so the new
+// file was claimed by all twelve promql legs, all four logql legs, both
+// lsyntax legs and both traceql pairs at once. Each collision is a hard
+// `ownershipViolations` failure that surfaces only once CI runs the selector,
+// and clearing it means hand-patching every one of those regexes.
+//
+// Note what is NOT asserted: that some leg claims the file. Exactly one leg
+// must, and it must be the scope's catch-all — "at least one" would pass in
+// precisely the broken state this pins against.
+const CATCH_ALL_BY_SCOPE = [
+  ['./internal/chsql', 'phase2-other'],
+  ['./internal/promql', 'phase4-promql-other'],
+  ['./internal/logql', 'phase4-logql-other-b'],
+  ['./internal/logql/logpattern', 'phase4-logql-other-b'],
+  ['./internal/logql/lsyntax', 'phase4-logql-lsyntax'],
+  ['./internal/traceql', 'phase4-traceql-other'],
+  ['./internal/traceql/ast', 'phase4-traceql-ast'],
+];
+
+// The probe file is REAL, briefly, and that is the point. resolvePhases derives
+// an allowlist leg's exclude_files from a live directory walk, so a purely
+// hypothetical path would exercise only the declared table and leave the one
+// gremlins actually receives untested. Written, measured, and removed before a
+// single assertion runs, so a failure never leaves it behind.
+const PROBE_BASENAME = 'zz_mutation_partition_probe.go';
+
+function claimersForProbe(scope) {
+  const directory = scope.replace(/^\.\//, '');
+  const probe = `${directory}/${PROBE_BASENAME}`;
+  writeFileSync(probe, `package ${basename(directory)}\n`);
+  try {
+    const resolved = resolvePhases(PHASES, process.cwd());
+    return {
+      probe,
+      declared: PHASES.filter((phase) => phaseClaims(phase, probe)).map((phase) => phase.phase),
+      resolved: resolved.filter((phase) => phaseClaims(phase, probe)).map((phase) => phase.phase),
+      selected: names(select([probe], { phases: resolved })),
+      gaps: select([probe], { phases: resolved }).gaps,
+    };
+  } finally {
+    rmSync(probe, { force: true });
+  }
+}
+
+test('a brand-new file in any multi-leg scope is claimed by exactly one leg, the catch-all', () => {
+  const measured = CATCH_ALL_BY_SCOPE.map(([scope, catchAll]) => [catchAll, claimersForProbe(scope)]);
+  for (const [catchAll, m] of measured) {
+    assert.deepEqual(m.declared, [catchAll], `declared table: ${m.probe} must fall through to ${catchAll} alone`);
+    assert.deepEqual(m.resolved, [catchAll], `resolved table: ${m.probe} must fall through to ${catchAll} alone`);
+    // Not a selector gap either: the new file selects that one leg and is
+    // mutated on a PR that touches it, rather than being owned by nobody.
+    assert.deepEqual(m.selected, [catchAll]);
+    assert.deepEqual(m.gaps, []);
+  }
+});
+
+test('every scope with sibling legs has exactly one catch-all to absorb a new file', () => {
+  // The structural precondition the test above depends on. A scope whose legs
+  // are ALL allowlists has nowhere for a new file to land: it would be claimed
+  // by nobody, which `selectPhases` reports as a coverage gap and
+  // `ownershipViolations` as "claimed by no mutation phase" — the opposite
+  // failure to the one #2814 fixed, and just as silent until someone adds a
+  // file. Pinned here so converting the last denylist in a group fails at PR
+  // time instead.
+  const byScope = new Map();
+  for (const phase of PHASES) {
+    if (!byScope.has(phase.scope)) byScope.set(phase.scope, []);
+    byScope.get(phase.scope).push(phase);
+  }
+  for (const [scope, legs] of byScope) {
+    const catchAlls = legs.filter((leg) => leg.include_files === undefined).map((leg) => leg.phase);
+    assert.equal(catchAlls.length, 1, `scope ${scope} must have exactly one non-allowlist leg, got [${catchAlls}]`);
+  }
+  // Every scope in the table is covered, and the conversion actually happened:
+  // the allowlist legs are the majority now, not the chsql-only exception.
+  assert.equal(byScope.size, 10);
+  assert.equal(PHASES.filter((p) => p.include_files !== undefined).length, 20);
+});
+
 test('resolvePhases leaves an exclude_files (or bare) leg completely untouched', () => {
   const [rangeLeg] = PHASES.filter((p) => p.phase === 'phase3-optimizer');
   const [resolved] = resolvePhases([rangeLeg], process.cwd());
   assert.deepEqual(resolved, rangeLeg);
 });
 
-test('the promql legs partition the package by exclude_files, one leg per file', () => {
+test('the promql legs partition the package, one leg per file', () => {
   // The two oversized single files each get a dedicated leg.
   assert.deepEqual(names(select(['internal/promql/lower.go'])), ['phase4-promql-lower']);
   assert.deepEqual(names(select(['internal/promql/histogram_quantile.go'])), ['phase4-promql-quantile']);
@@ -482,7 +605,7 @@ test('the promql legs partition the package by exclude_files, one leg per file',
   assert.deepEqual(names(select(['internal/promql/doc.go'])), ['phase4-promql-other']);
 });
 
-test('the logql legs partition the package by exclude_files, one leg per file', () => {
+test('the logql legs partition the package, one leg per file', () => {
   assert.deepEqual(names(select(['internal/logql/lower.go'])), ['phase4-logql-lower']);
   assert.deepEqual(names(select(['internal/logql/range_aggregation.go'])), ['phase4-logql-aggregation']);
   assert.deepEqual(names(select(['internal/logql/dotted_labels.go'])), ['phase4-logql-other-a']);

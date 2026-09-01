@@ -22,11 +22,13 @@
 //
 // Three modes (env MODE, or argv[2]; default `verify`):
 //   - verify : assert the PHASES table is internally sound — unique phase names,
-//              every `scope` an existing directory, every `exclude_files`
-//              pattern compiling AND staying inside RE2 (no lookaround, no
-//              backreferences: Go's regexp rejects them, and round 11 of the
-//              traceql split burned a full CI cycle discovering that mid-run).
-//              Runs in milliseconds, installs nothing.
+//              every `scope` an existing directory, every `exclude_files` /
+//              `include_files` pattern compiling AND staying inside RE2 (no
+//              lookaround, no backreferences: Go's regexp rejects them, and
+//              round 11 of the traceql split burned a full CI cycle discovering
+//              that mid-run), and every `include_files` allowlist still matching
+//              exactly the files it names in the real tree. Runs in
+//              milliseconds, installs nothing.
 //   - emit   : run the same assertions, select the phases this event needs, and
 //              write `matrix=<json>` + `has_phases=true|false` to $GITHUB_OUTPUT.
 //              emit re-runs verify internally, so it can never ship a matrix
@@ -77,8 +79,54 @@ const NON_RE2_CONSTRUCTS = [
   { re: /\\[1-9]/, what: 'a backreference `\\1`' },
 ];
 
+// canonicalFilePattern — the ONE RE2 alternation this table uses to name a set
+// of scope-relative mutable files: `^(stem|stem|…)\.go$`, stems sorted and
+// regex-escaped. Both directions of the include/exclude translation go through
+// it, so a hand-written `include_files` and the `exclude_files` resolvePhases
+// derives from it are the same shape by construction rather than by review.
+// Returns null for an empty set — "names nothing" has no honest pattern.
+export function canonicalFilePattern(rels) {
+  const stems = [];
+  for (const rel of rels) {
+    if (!rel.endsWith('.go')) return null;
+    stems.push(rel.slice(0, -3).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  }
+  if (stems.length === 0) return null;
+  return `^(${stems.sort().join('|')})\\.go$`;
+}
+
+// includeTightnessViolations — an `include_files` allowlist must be exactly the
+// canonical pattern for the files it actually claims, no more and no less.
+//
+// An allowlist fails differently from a denylist, and silently. A denylist that
+// names a since-deleted file over-excludes nothing (the name matches no path);
+// an allowlist that names one just claims fewer files than its doc comment
+// promises. Worse, a RENAME moves that file's whole mutant population out of
+// the curated leg and into the scope's catch-all with no signal at all — the
+// leg's efficacy denominator shifts underneath it while every check stays
+// green, because the exactly-one-owner invariant is still satisfied. Requiring
+// the pattern to re-derive from the real directory makes the drift a PR-time
+// failure that prints the pattern to paste. Caught `late_mat` in phase2-range
+// on its first run — deleted by cerberus #2830, still named in the allowlist.
+function includeTightnessViolations(name, phase, root) {
+  const directory = normalise(phase.scope);
+  const walkProblems = [];
+  const files = walkMutableGoFiles(root, directory, walkProblems);
+  if (walkProblems.length > 0) return walkProblems;
+  const includeRe = new RegExp(phase.include_files);
+  const claimed = files.map((file) => file.slice(directory.length + 1)).filter((rel) => includeRe.test(rel));
+  const canonical = canonicalFilePattern(claimed);
+  if (canonical === phase.include_files) return [];
+  return [
+    `phase "${name}" \`include_files\` is not the canonical allowlist of the files it actually claims in ` +
+      `${phase.scope} — it names a file that no longer exists, or is written in a non-canonical shape. ` +
+      `An allowlist that has drifted from the tree shrinks a leg silently. Expected: ` +
+      (canonical === null ? '(it claims no mutable Go file at all)' : `'${canonical}'`),
+  ];
+}
+
 // tableViolations — everything wrong with the PHASES table, as strings.
-export function tableViolations(phases) {
+export function tableViolations(phases, root = process.cwd()) {
   const problems = [];
   const seen = new Set();
 
@@ -126,7 +174,13 @@ export function tableViolations(phases) {
       problems.push(...filePatternViolations(name, 'exclude_files', p.exclude_files));
     }
     if (p.include_files !== undefined) {
-      problems.push(...filePatternViolations(name, 'include_files', p.include_files));
+      const patternProblems = filePatternViolations(name, 'include_files', p.include_files);
+      problems.push(...patternProblems);
+      // Tightness needs a compiled pattern and a real directory to walk. When
+      // either is already broken the message above is the actionable one.
+      if (patternProblems.length === 0 && p.scope && isDirectory(normalise(p.scope))) {
+        problems.push(...includeTightnessViolations(name, p, root));
+      }
     }
   }
 
@@ -423,7 +477,7 @@ export function resolvePhases(phases, root = process.cwd(), problems = []) {
     if (!phase.include_files) return phase;
     const directory = normalise(phase.scope);
     const includeRe = new RegExp(phase.include_files);
-    const excludedStems = [];
+    const excluded = [];
     for (const file of walkMutableGoFiles(root, directory, problems)) {
       const rel = file.slice(directory.length + 1);
       if (includeRe.test(rel)) continue;
@@ -431,11 +485,12 @@ export function resolvePhases(phases, root = process.cwd(), problems = []) {
         problems.push(`phase "${phase.phase}": derived exclude cannot express non-.go mutable file "${rel}"`);
         continue;
       }
-      excludedStems.push(rel.slice(0, -3).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      excluded.push(rel);
     }
     const { include_files: _includeFiles, ...rest } = phase;
-    if (excludedStems.length === 0) return rest; // this leg's include already claims everything in scope
-    return { ...rest, exclude_files: `^(${excludedStems.sort().join('|')})\\.go$` };
+    const derived = canonicalFilePattern(excluded);
+    if (derived === null) return rest; // this leg's include already claims everything in scope
+    return { ...rest, exclude_files: derived };
   });
 }
 

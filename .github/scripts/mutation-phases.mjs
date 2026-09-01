@@ -2,16 +2,51 @@
 // phase partition (mutation.yml's `mutate` strategy.matrix).
 //
 // Each entry is one gremlins run: a `scope` package (walked recursively), an
-// optional scope-relative `exclude_files` RE2 alternation carving that scope
-// into sibling legs, a `workers` cap, and the `--threshold-efficacy` bar the
-// leg must clear. The keys are the matrix keys mutation.yml interpolates as
-// `matrix.scope` / `matrix.workers` / `matrix.exclude_files` / `matrix.efficacy`
-// / `matrix.phase`, so this table renders straight into `strategy.matrix.include`.
+// optional scope-relative RE2 alternation carving that scope into sibling legs,
+// a `workers` cap, and the `--threshold-efficacy` bar the leg must clear. The
+// keys are the matrix keys mutation.yml interpolates as `matrix.scope` /
+// `matrix.workers` / `matrix.exclude_files` / `matrix.efficacy` /
+// `matrix.phase`, so this table renders straight into `strategy.matrix.include`.
 //
 // It lives in JS rather than inline YAML because mutation-matrix.mjs has to
 // REASON about it — selecting the legs an ordinary PR's diff actually touches,
-// and asserting the exclude regexes stay RE2-safe — and a workflow `include:`
+// and asserting the file regexes stay RE2-safe — and a workflow `include:`
 // block is data the workflow cannot read back.
+//
+// include_files vs exclude_files (cerberus issue #2814)
+// ----------------------------------------------------
+// A leg names its file set one way or the other, never both, and which one it
+// picks is decided by its ROLE in the scope, not by taste:
+//
+//   - A CURATED leg — one of several siblings sharing a scope, owning a small
+//     hand-balanced set — uses `include_files`, an allowlist. Expressing the
+//     same ownership as a denylist means naming every OTHER file in the
+//     package, including files that do not exist yet, and that is precisely
+//     what broke: a brand-new file matched none of its siblings' hand-written
+//     denylists, so EVERY curated leg claimed it at once, a hard
+//     `ownershipViolations` failure that surfaced only once CI ran and needed
+//     N separate regexes hand-patched to clear. It happened twice in one
+//     evening on two different new internal/chsql emitters. An allowlist
+//     cannot make that mistake: a new file simply is not in it.
+//
+//   - The scope's CATCH-ALL leg — exactly one per scope — uses `exclude_files`,
+//     naming its siblings' files and claiming everything else. That is what
+//     makes a new file land somewhere by default instead of nowhere, and why
+//     the catch-all is the one leg that must keep no positive file list to
+//     fall out of sync.
+//
+// gremlins itself only understands `--exclude-files`, so resolvePhases
+// (mutation-matrix.mjs) translates every allowlist into the equivalent denylist
+// at emit/dump time by walking the scope's real files. That walk is where a new
+// file gets classified for free: it matches no allowlist, lands in every
+// curated leg's DERIVED denylist, and falls through to the catch-all. No hand
+// edit anywhere.
+//
+// The cost of an allowlist is that it goes stale silently — a name left behind
+// by a deleted or renamed file shrinks the leg without tripping the
+// exactly-one-owner invariant. `tableViolations` therefore re-derives each
+// allowlist from the tree and fails when the two disagree, so the staleness is
+// a PR-time error rather than a drifting efficacy denominator.
 //
 // node: builtins only — no npm deps, no setup-node needed.
 
@@ -95,23 +130,13 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
     // range_window(228) + aggregate_range_lwr_fusion(29) +
-    // late_mat(25) + range_bucket_fanout(17) +
-    // range_window_stale_resample(11) + fnresolution(4) +
-    // lwr_fanout_bound(2). range_window.go alone is the package's single
-    // largest file; the rest of this leg is greedy-balance filler, not theme.
-    //
-    // `include_files` (an allowlist), not `exclude_files`: this leg owns a
-    // small, curated set, and an exclude-shaped pattern would have to name
-    // every OTHER file in the package to express that — including files that
-    // do not exist yet. cerberus issue #2814: a new chsql file matched none of
-    // the four legs' hand-written exclude lists and was claimed by all of
-    // them until three separate regexes were hand-patched. An allowlist leg
-    // cannot make that mistake — a new file simply isn't in it — and
-    // resolvePhases (mutation-matrix.mjs) derives the real `exclude_files`
-    // gremlins runs against from this list plus a live directory walk, so a
-    // new file falls straight through to phase2-other's catch-all, exactly
-    // as an existing unclaimed file already does today.
-    include_files: '^(aggregate_range_lwr_fusion|fnresolution|late_mat|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
+    // range_bucket_fanout(17) + range_window_stale_resample(11) +
+    // fnresolution(4) + lwr_fanout_bound(2). range_window.go alone is the
+    // package's single largest file; the rest of this leg is greedy-balance
+    // filler, not theme. late_mat(25) was part of this balance until cerberus
+    // #2830 deleted late_mat.go outright; the allowlist kept naming it until
+    // the include-tightness check in mutation-matrix.mjs caught the dead name.
+    include_files: '^(aggregate_range_lwr_fusion|fnresolution|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -122,9 +147,6 @@ export const PHASES = [
     // range_window_variants(31) + vector_join(27) +
     // range_lwr(24) + vector_set_op(10) +
     // nary_vector_set_op(6) + rate_window_fanout_bound(2).
-    //
-    // `include_files`, not `exclude_files` — see phase2-range's own comment
-    // for why (cerberus issue #2814).
     include_files: '^(builder|nary_vector_set_op|nested_set_annotate|range_lwr|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
   {
@@ -137,9 +159,6 @@ export const PHASES = [
     // range_window_fused(29) + histogram_over_time(25) +
     // histogram_projection(21) + emit(12) +
     // metrics_second_stage(10).
-    //
-    // `include_files`, not `exclude_files` — see phase2-range's own comment
-    // for why (cerberus issue #2814).
     include_files: '^(emit|emit_node|exemplars|histogram_over_time|histogram_projection|histogram_quantile_native|metrics_compare|metrics_second_stage|range_window_fused)\\.go$',
   },
   {
@@ -188,7 +207,7 @@ export const PHASES = [
     // tally the next time a mutant here gets a new "NOT KILLABLE" note, and
     // re-partition the leg wider if it ever approaches the margin.
     exclude_files:
-      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
+      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',
@@ -243,8 +262,8 @@ export const PHASES = [
     // lower.go only (485 mutants, the package's single largest file,
     // same reason phase4-traceql-lower and phase4-logql-lower each get a
     // dedicated leg for their own oversized file).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(lower)\\.go$',
   },
   {
     phase: 'phase4-promql-quantile',
@@ -254,8 +273,8 @@ export const PHASES = [
     // histogram_quantile.go only (359 mutants, the second largest — also
     // too big to fold into a balanced filler leg without recreating the
     // imbalance this split exists to fix).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_quantile)\\.go$',
   },
   {
     phase: 'phase4-promql-a',
@@ -264,8 +283,8 @@ export const PHASES = [
     workers: DEFAULT_WORKERS,
     // subquery(268) + histogram_native_mixed_or_arithmetic(12) +
     // histogram_native_drop_aggregation(9) + histogram_native_mixed_or_datefn(3).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_comparison|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_native_drop_aggregation|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_datefn|subquery)\\.go$',
   },
   {
     phase: 'phase4-promql-b',
@@ -276,8 +295,8 @@ export const PHASES = [
     // histogram_native_last_first_over_time(29) + schema_lookup(19) +
     // histogram_native_float_vector_scaling_binop(16) + histogram_synthetic_names(8) +
     // histogram_native_mixed_or_aggregate_float_only(4).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_label_replace|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_shape_guard|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_native_float_vector_scaling_binop|histogram_native_last_first_over_time|histogram_native_mixed_or_aggregate_float_only|histogram_quantile_window|histogram_synthetic_names|metadata_catalog|schema_lookup)\\.go$',
   },
   {
     phase: 'phase4-promql-c',
@@ -288,8 +307,8 @@ export const PHASES = [
     // histogram_native_binop_card(39) + histogram_native_reset(33) + scalar(27) +
     // histogram_native_dropping_shape(19) + histogram_native_mixed_or_subquery_range_fn(13) +
     // histogram_native_mixed_or_vector_plain_comparison(11) + scalar_guard(3).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_over_time|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar_args|scalar_domain|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_native_binop_card|histogram_native_dropping_shape|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_vector_plain_comparison|histogram_native_range_fn|histogram_native_reset|histogram_value_fns|scalar|scalar_guard)\\.go$',
   },
   {
     phase: 'phase4-promql-d',
@@ -299,8 +318,8 @@ export const PHASES = [
     // scalar_args(77) + resource_attributes(55) + date_fns(40) + regex_histogram_lower(37) +
     // histogram_native_over_time(31) + histogram_native_timestamp(23) +
     // histogram_native_mixed_or_comparison(18) + histogram_native_mixed_or_info(7) + unary(4).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_datefn|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|resource_bounds_env|scalar|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic)\\.go$',
+    include_files:
+      '^(date_fns|histogram_native_mixed_or_comparison|histogram_native_mixed_or_info|histogram_native_over_time|histogram_native_timestamp|regex_histogram_lower|resource_attributes|scalar_args|unary)\\.go$',
   },
   {
     phase: 'phase4-promql-e',
@@ -311,8 +330,8 @@ export const PHASES = [
     // duplicate_labelset_guard(36) + histogram_bucket(29) +
     // histogram_native_mixed_or_vector_plain_arithmetic(22) + histogram_merge_bound(18) +
     // histogram_native_mixed_or_aggregate_presence(6) + histogram_native_unary(6).
-    exclude_files:
-      '^(binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(absent|duplicate_labelset_guard|histogram_bucket|histogram_merge_bound|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_unary|instant_fns)\\.go$',
   },
   {
     phase: 'phase4-promql-f',
@@ -323,8 +342,8 @@ export const PHASES = [
     // synthetic(37) + modifiers(31) + histogram_native_binop_match(23) +
     // histogram_native_mixed_or_scale(17) + scalar_domain(8) + histogram_native_avg(3) +
     // histogram_native_mixed_or_sort(1).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|lower|lower_strategy|metadata_catalog|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_guard|schema_lookup|sort|subquery|unary)\\.go$',
+    include_files:
+      '^(histogram_native_avg|histogram_native_binop_match|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_resets|histogram_quantile_native_window|label_fns|modifiers|scalar_domain|synthetic)\\.go$',
   },
   {
     phase: 'phase4-promql-g',
@@ -334,8 +353,8 @@ export const PHASES = [
     // binary(70) + info_fn(59) + lower_strategy(42) + histogram_native_mixed_or_math_fn(38) +
     // histogram_native_count_present_over_time(31) + histogram_quantile_classic_native(23) +
     // classic_bucket_merge_bound(16) + histogram_native_float_fn(10) + histogram_wire_arms(3).
-    exclude_files:
-      '^(absent|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|instant_fns|label_fns|lower|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(binary|classic_bucket_merge_bound|classic_bucket_merge_summap|histogram_native_count_present_over_time|histogram_native_float_fn|histogram_native_mixed_or_math_fn|histogram_quantile_classic_native|histogram_wire_arms|info_fn|lower_strategy)\\.go$',
   },
   {
     phase: 'phase4-promql-h',
@@ -351,8 +370,8 @@ export const PHASES = [
     // #2724 — same family, joins this leg too) +
     // histogram_native_mixed_or_aggregate(27) + histogram_native_mixed_or(12) +
     // histogram_shape_guard(12) + histogram_native_mixed_or_aggregate_count_values(2).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_bare|histogram_native_binop_card|histogram_native_binop_eq|histogram_native_binop_match|histogram_native_count|histogram_native_count_present_over_time|histogram_native_count_values|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_label|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_comparison|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_native_value_producing_call|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_native_binop|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_resets_changes|histogram_quantile_float|histogram_shape_guard|range_fns|sort)\\.go$',
   },
   {
     phase: 'phase4-promql-i',
@@ -376,8 +395,8 @@ export const PHASES = [
     // rather than incidental coverage from a sweep, which is what cerberus
     // issue #2730 showed a shared leg needs to stay honest on a
     // CPU-constrained runner).
-    exclude_files:
-      '^(absent|binary|classic_bucket_merge_bound|classic_bucket_merge_summap|date_fns|doc|duplicate_labelset_guard|exp_histogram_merge_summap|exp_histogram_merge_summap_bound|histogram_bucket|histogram_merge_bound|histogram_native_avg|histogram_native_binop|histogram_native_binop_card|histogram_native_binop_match|histogram_native_count_present_over_time|histogram_native_drop_aggregation|histogram_native_dropping_shape|histogram_native_float_fn|histogram_native_float_vector_binop|histogram_native_float_vector_scaling_binop|histogram_native_label_replace|histogram_native_last_first_over_time|histogram_native_mixed_or|histogram_native_mixed_or_aggregate|histogram_native_mixed_or_aggregate_count_values|histogram_native_mixed_or_aggregate_float_only|histogram_native_mixed_or_aggregate_presence|histogram_native_mixed_or_aggregate_topk|histogram_native_mixed_or_arithmetic|histogram_native_mixed_or_comparison|histogram_native_mixed_or_datefn|histogram_native_mixed_or_info|histogram_native_mixed_or_math_fn|histogram_native_mixed_or_scalar|histogram_native_mixed_or_scale|histogram_native_mixed_or_sort|histogram_native_mixed_or_sort_by_label|histogram_native_mixed_or_subquery_aggregate_range_fn|histogram_native_mixed_or_subquery_further_setop_range_fn|histogram_native_mixed_or_subquery_last_first|histogram_native_mixed_or_subquery_range_fn|histogram_native_mixed_or_subquery_resets_changes|histogram_native_mixed_or_timestamp|histogram_native_mixed_or_vector_arithmetic|histogram_native_mixed_or_vector_plain_arithmetic|histogram_native_mixed_or_vector_plain_comparison|histogram_native_over_time|histogram_native_range_fn|histogram_native_reset|histogram_native_resets|histogram_native_scalar_binop|histogram_native_set_op|histogram_native_sum|histogram_native_timestamp|histogram_native_ts_of_first_last_over_time|histogram_native_unary|histogram_quantile|histogram_quantile_classic_native|histogram_quantile_float|histogram_quantile_le|histogram_quantile_native_window|histogram_quantile_range|histogram_quantile_window|histogram_shape_guard|histogram_synthetic_names|histogram_value_fns|histogram_wire_arms|info_fn|instant_fns|label_fns|lower|lower_strategy|metadata_catalog|modifiers|parser_shape|range_fns|regex_histogram_lower|resource_attributes|resource_bounds_env|scalar|scalar_args|scalar_domain|scalar_guard|schema_lookup|sort|subquery|synthetic|unary)\\.go$',
+    include_files:
+      '^(histogram_native_bare|histogram_native_binop_eq|histogram_native_count|histogram_native_count_values|histogram_native_mixed_or_label|histogram_native_mixed_or_value_fn|histogram_native_mixed_or_vector_comparison|histogram_native_subquery_call_subquery|histogram_native_subquery_call_subquery_outer_fn|histogram_native_subquery_select|histogram_native_value_producing_call)\\.go$',
   },
   {
     phase: 'phase4-promql-other',
@@ -417,8 +436,8 @@ export const PHASES = [
   // admits ~80 of ~300+ mutants in the package.
   //
   // Round 7 split phase4-logql into three sibling entries (lower / aggregation /
-  // other), each scoped to ./internal/logql but with --exclude-files regexes
-  // carving the source set into roughly equal slices. Round 8 split `other` into
+  // other), each scoped to ./internal/logql but with file regexes carving the
+  // source set into roughly equal slices. Round 8 split `other` into
   // `other-a` + `other-b`. Round 9 peeled dotted_labels.go into its own slice,
   // and round 10 (job 77211633492) proved even a single-file slice of that
   // surface SIGTERM'd at ~3 min — the runner-budget ceiling sat below it. That
@@ -453,10 +472,14 @@ export const PHASES = [
   // of directory). Once dotted_labels_test.go relocated into package lsyntax,
   // every covered mutant anywhere in lsyntax forced
   // `go test .../internal/logql/lsyntax` to link and run that heavier test
-  // binary, on every one of the four legs. Fix: exclude the whole lsyntax
-  // subtree (scope-relative '^lsyntax/', mirroring the phase4-traceql-lower
-  // '^ast/' precedent) from all four legs, and give lsyntax its own dedicated
-  // legs so the package keeps its mutation coverage instead of losing it.
+  // binary, on every one of the four legs. Fix: keep the whole lsyntax subtree
+  // out of all four legs, and give lsyntax its own dedicated legs so the
+  // package keeps its mutation coverage instead of losing it. The three curated
+  // legs do that by construction now — an `include_files` allowlist of bare
+  // filenames can never match a `lsyntax/…` scope-relative path — and the
+  // catch-all still names the subtree explicitly ('^lsyntax/', mirroring
+  // phase4-traceql-other's '^ast/' precedent), which is what an
+  // everything-else leg has to do to keep the subtree out.
   // ---------------------------------------------------------------------------
   {
     phase: 'phase4-logql-lower',
@@ -464,9 +487,8 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
     // Mutate only lower.go (~50 KB, the package's largest source file).
-    // Excludes every other logql source plus the lsyntax subtree.
-    exclude_files:
-      '^lsyntax/|^(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|range_aggregation|vector_aggregation|lang)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+    include_files:
+      '^(lower)\\.go$',
   },
   {
     phase: 'phase4-logql-aggregation',
@@ -474,8 +496,8 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
     // Mutate range_aggregation.go + vector_aggregation.go + lang.go (~54 KB).
-    exclude_files:
-      '^lsyntax/|^(binary|detected_level|dotted_labels|drop_keep|literal|label_fns|top_level_columns|lower)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+    include_files:
+      '^(lang|range_aggregation|vector_aggregation)\\.go$',
   },
   {
     phase: 'phase4-logql-other-a',
@@ -483,8 +505,8 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
     // Mutate binary.go + detected_level.go + dotted_labels.go (~21 KB).
-    exclude_files:
-      '^lsyntax/|^(lower|range_aggregation|vector_aggregation|lang|drop_keep|literal|label_fns|top_level_columns)\\.go$|^logpattern/|^(doc|duration|ip|jsonpath|numbytes|pattern_filter|variants)\\.go$',
+    include_files:
+      '^(binary|detected_level|dotted_labels)\\.go$',
   },
   {
     phase: 'phase4-logql-other-b',
@@ -508,7 +530,8 @@ export const PHASES = [
     // Mutate parser.go only (~27 KB, the recursive-descent LogQL parser — the
     // densest control-flow surface in the package, same shape as
     // phase4-traceql-parser). dotted_labels.go belongs to the lsyntax leg.
-    exclude_files: '^(ast|binop|dotted_labels|errors|labelfilter|lexer|ops|string)\\.go$',
+    include_files:
+      '^(parser)\\.go$',
   },
   {
     phase: 'phase4-logql-lsyntax',
@@ -530,8 +553,9 @@ export const PHASES = [
   // errored before running: their exclude regexes used negative lookahead
   // `(?!…)`, which Go's RE2 engine rejects — pinned now by mutation-matrix.mjs's
   // RE2-safety assertion, so that mistake fails at PR time instead of mid-run.
-  // Round 12 splits into four legs, each an RE2-safe alternation of the files to
-  // exclude.
+  // Round 12 splits into four legs, each an RE2-safe alternation naming the
+  // files it owns (the two curated legs) or the files its siblings own (the two
+  // catch-alls).
   //
   // Efficacy is preserved by scoping rather than lost: gremlins runs the mutated
   // file's own package tests per mutant, so scoping the ast legs to
@@ -543,9 +567,10 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
     // ast/parser.go only — where the ~109 timeout-inducing loop-control mutants
-    // live. exclude-files matches SCOPE-RELATIVE paths (here, relative to
+    // live. Both file patterns match SCOPE-RELATIVE paths (here, relative to
     // ./internal/traceql/ast), so entries are bare filenames.
-    exclude_files: '^(assert|attribute|doc|enum|expr|lexer|metrics|parse|pipeline|references|rewrite|static|validate)\\.go$',
+    include_files:
+      '^(parser)\\.go$',
   },
   {
     phase: 'phase4-traceql-ast',
@@ -560,9 +585,11 @@ export const PHASES = [
     scope: './internal/traceql',
     efficacy: EFFICACY,
     workers: SERIAL_WORKERS,
-    // lower.go only (~84 KB). scope ./internal/traceql recurses into ast/, so
-    // exclude the whole ast subtree plus the other top-level files.
-    exclude_files: '^ast/|^(aggregate|doc|group_coalesce|metrics_compare|metrics_pipeline|search_limit|select|spanset_operand)\\.go$',
+    // lower.go only (~84 KB). scope ./internal/traceql recurses into ast/; the
+    // allowlist keeps that subtree out by construction, since a bare-filename
+    // pattern can never match an `ast/…` scope-relative path.
+    include_files:
+      '^(lower)\\.go$',
   },
   {
     phase: 'phase4-traceql-other',
