@@ -14,6 +14,21 @@
 # to exercise the native aggregate's own duplicate-timestamp collapse in
 # place of the arrayReverse/arrayCompact/arrayReverse triple; job 'flat' has
 # no duplicates.
+#
+# The duplicate pair carries the SAME value. WHICH of two DIFFERENT values
+# survives a duplicate timestamp is implementation-defined on both sides —
+# ClickHouse's timeSeriesGroupArray keeps the max-valued row (and, for a
+# NaN, whichever the scan visits first: the reason
+# chopt.FeatureTSGridGroupArray ships AutoSelect: false), while the
+# reference engine's TSDB appender keeps whichever sample it ingested
+# first. That disagreement is a fact about the two storage layers, not
+# about this feature, so seeding it here would make the `parity:`
+# enrolment below assert something neither engine promises. Equal values
+# keep the collapse itself fully under test — dropping it would leave
+# delta()'s window carrying an extra element, changing the extrapolation's
+# own length(window_vals) divisor — while leaving the survivor choice out
+# of the comparison; the survivor choice is pinned separately, against a
+# real ClickHouse, by range_window_group_array_realch_integration_test.go.
 -- query.promql --
 sum by(job) (delta(cpu_temp_celsius[5m]))
 -- parity --
@@ -33,7 +48,7 @@ CREATE TABLE otel_metrics_gauge (
 INSERT INTO otel_metrics_gauge VALUES
     ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:00:00', 9), 40.0),
     ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:01:00', 9), 45.0),
-    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:01:00', 9), 55.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:01:00', 9), 45.0),
     ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:02:00', 9), 45.0),
     ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:03:00', 9), 60.0),
     ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
@@ -46,15 +61,15 @@ INSERT INTO otel_metrics_gauge VALUES
     ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:05:00', 9), 20.0);
 -- expected_rows --
 [
-  ["", {"job": "dup"}, "2026-01-01T00:01:00Z", 22.5],
-  ["", {"job": "dup"}, "2026-01-01T00:01:30Z", 30],
+  ["", {"job": "dup"}, "2026-01-01T00:01:00Z", 7.5],
+  ["", {"job": "dup"}, "2026-01-01T00:01:30Z", 10],
   ["", {"job": "dup"}, "2026-01-01T00:02:00Z", 6.25],
   ["", {"job": "dup"}, "2026-01-01T00:02:30Z", 7.5],
   ["", {"job": "dup"}, "2026-01-01T00:03:00Z", 23.333333333333336],
   ["", {"job": "dup"}, "2026-01-01T00:03:30Z", 26.666666666666664],
   ["", {"job": "dup"}, "2026-01-01T00:04:00Z", 12.5],
   ["", {"job": "dup"}, "2026-01-01T00:04:30Z", 12.5],
-  ["", {"job": "dup"}, "2026-01-01T00:05:00Z", 12.5],
+  ["", {"job": "dup"}, "2026-01-01T00:05:00Z", 25],
   ["", {"job": "flat"}, "2026-01-01T00:01:00Z", 0],
   ["", {"job": "flat"}, "2026-01-01T00:01:30Z", 0],
   ["", {"job": "flat"}, "2026-01-01T00:02:00Z", 0],

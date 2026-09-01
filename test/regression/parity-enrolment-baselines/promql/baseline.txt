@@ -453,6 +453,7 @@ native_delta_range_step.txtar
 native_delta_vector_agg_range_step.txtar
 native_deriv_range_step.txtar
 native_group_array_delta_range_step.txtar
+native_group_array_if_rate_delta_temporality_range.txtar
 native_idelta_range_step.txtar
 native_increase_range_step.txtar
 native_increase_vector_agg_temporality_union.txtar

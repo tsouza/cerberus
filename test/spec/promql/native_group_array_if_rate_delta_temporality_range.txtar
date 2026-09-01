@@ -10,13 +10,27 @@
 # arrayReverse dedup triple on both `window_pairs` and `delta_prefix_pairs`
 # (deltaPrefixSumFrag's alreadyDeduped parameter).
 #
-# job 'dup' carries a duplicate-timestamp pair landing in the PREFIX array
-# (23:59:30, at or before the first anchor's window start) and a
-# duplicate-timestamp pair landing in the WINDOW array (00:00:00, inside the
-# first anchor's window) — exercising the native aggregate's own
-# duplicate-timestamp collapse in place of the dedup triple at BOTH sites.
-# job 'plain' has no duplicates, so the test cannot pass merely because the
-# dedup happened to be a no-op everywhere.
+# Both series' earliest sample (23:59:30) is at or before the first anchor's
+# own window start, so it lands in `delta_prefix_pairs` for anchor 00:00:30
+# while the later two land in `window_pairs` — both arms of the split carry
+# real data at both anchors, and each series reconstructs a different DELTA
+# level, so a per-series mix-up in either arm changes the answer.
+#
+# The seed carries NO duplicate timestamps, deliberately. The parity
+# enrolment below answers the same query with the real Prometheus engine,
+# and evaluatePrometheusParity's DELTA-temporality adapter
+# (cumulativeDeltaSeries, test/spec/parity_chdb.go) running-sums EVERY
+# seeded row into the cumulative series Prometheus accepts — so two rows
+# sharing a timestamp become two additive increments there, while cerberus
+# collapses them to one sample. That disagreement is about what a duplicate
+# OTel DELTA observation MEANS, not about this feature, and seeding it here
+# would make the enrolment assert something neither engine promises. The
+# duplicate-timestamp collapse this feature does depend on is pinned
+# instead where both sides of the comparison are cerberus's own two
+# lowerings: internal/chsql/range_window_group_array_if_chdb_test.go
+# (native vs fan-out over a duplicate-bearing DELTA seed, at both split
+# arms), with the survivor choice among DIFFERENT values pinned against a
+# real ClickHouse by range_window_group_array_realch_integration_test.go.
 -- query.promql --
 rate(http_requests_delta_total[1m])
 -- range_step --
@@ -35,20 +49,18 @@ CREATE TABLE otel_metrics_sum (
     Value Float64
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_sum VALUES
-    (1, 'http_requests_delta_total', map('job', 'dup'), toDateTime64('2025-12-31 23:59:30', 9), 90.0),
-    (1, 'http_requests_delta_total', map('job', 'dup'), toDateTime64('2025-12-31 23:59:30', 9), 70.0),
-    (1, 'http_requests_delta_total', map('job', 'dup'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
-    (1, 'http_requests_delta_total', map('job', 'dup'), toDateTime64('2026-01-01 00:00:00', 9), 25.0),
-    (1, 'http_requests_delta_total', map('job', 'dup'), toDateTime64('2026-01-01 00:00:30', 9), 40.0),
-    (1, 'http_requests_delta_total', map('job', 'plain'), toDateTime64('2025-12-31 23:59:30', 9), 90.0),
-    (1, 'http_requests_delta_total', map('job', 'plain'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
-    (1, 'http_requests_delta_total', map('job', 'plain'), toDateTime64('2026-01-01 00:00:30', 9), 40.0);
+    (1, 'http_requests_delta_total', map('job', 'a'), toDateTime64('2025-12-31 23:59:30', 9), 90.0),
+    (1, 'http_requests_delta_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    (1, 'http_requests_delta_total', map('job', 'a'), toDateTime64('2026-01-01 00:00:30', 9), 40.0),
+    (1, 'http_requests_delta_total', map('job', 'b'), toDateTime64('2025-12-31 23:59:30', 9), 30.0),
+    (1, 'http_requests_delta_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:00', 9), 5.0),
+    (1, 'http_requests_delta_total', map('job', 'b'), toDateTime64('2026-01-01 00:00:30', 9), 60.0);
 -- expected_rows --
 [
-  [{"job": "dup"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.8333333333333334],
-  [{"job": "dup"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 1.3333333333333333],
-  [{"job": "plain"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.3333333333333333],
-  [{"job": "plain"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 1.3333333333333333]
+  [{"job": "a"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.3333333333333333],
+  [{"job": "a"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 1.3333333333333333],
+  [{"job": "b"}, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", 0.16666666666666666],
+  [{"job": "b"}, "2026-01-01T00:00:30Z", "2026-01-01T00:00:30Z", 1.5833333333333333]
 ]
 -- args --
 [0] string = "service_name"
