@@ -13,6 +13,10 @@ import (
 // whole GROUP BY hash table / sort buffer in RAM. Both are RESULT-EQUIVALENT —
 // only the execution strategy changes, never the rows — and have existed since
 // long before cerberus's CH floor, so stamping them is version-safe.
+//
+// perf-sentinel: memory-bounding — each caps the bytes an aggregation or sort
+// may hold in RAM before it spills, so changing either moves the peak memory a
+// query reaches. This is the #2364 class.
 const (
 	settingMaxBytesBeforeExternalGroupBy = "max_bytes_before_external_group_by"
 	settingMaxBytesBeforeExternalSort    = "max_bytes_before_external_sort"
@@ -26,6 +30,9 @@ const (
 // ClickHouse 26.4 — so stamping it is gated on the chopt.FeatureJoinSpill
 // boot-resolved verdict (see applyJoinSpillSettings) rather than being
 // unconditional like its two siblings.
+//
+// perf-sentinel: memory-bounding — caps the bytes a hash join's build side may
+// hold in RAM before it spills, exactly as its group-by/sort siblings do.
 const settingMaxBytesBeforeExternalJoin = "max_bytes_before_external_join"
 
 // spillThresholdBytes is the byte threshold at which a GROUP BY / sort begins
