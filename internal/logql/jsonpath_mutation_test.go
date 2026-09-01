@@ -13,11 +13,14 @@ import (
 // the plain `go test ./internal/logql` invocation gremlins drives — so
 // every predicate / boundary / control-flow mutant in the file survived.
 //
-// jsonpath.go is matched by NO phase's exclude_files regex in
-// mutation.yml, so it is mutated by ALL FOUR phase4-logql-* phases
-// (aggregation, lower, other-a, other-b). The same 18 LIVED mutants
-// therefore deflated every one of those phases below the 95% efficacy
-// bar; killing them here lifts all four back over the bar at once.
+// When these 18 mutants were found, jsonpath.go was named by no
+// phase4-logql-* leg's file pattern at all, so ALL FOUR legs mutated it
+// and the same 18 survivors deflated every one of them below the 95%
+// efficacy bar at once. The leg partition now claims it exactly once
+// (phase4-logql-other-b, its scope's catch-all — see
+// .github/scripts/mutation-phases.mjs), so a survivor here deflates that
+// one leg rather than four. Killing them is what put the file over the
+// bar either way.
 //
 // Each case below depends on the exact value or branch a cited mutation
 // alters, so the mutation breaks the assertion. Mutants pinned:

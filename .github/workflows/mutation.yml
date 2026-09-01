@@ -72,8 +72,10 @@ jobs:
   #
   # The phase table itself lives in .github/scripts/mutation-phases.mjs, not
   # inline here, because the selector has to REASON about it (match each leg's
-  # scope + scope-relative exclude_files against the PR diff, and assert the
-  # exclude patterns stay inside Go's RE2 dialect) — and a workflow `include:`
+  # scope + scope-relative file pattern against the PR diff, assert those
+  # patterns stay inside Go's RE2 dialect, and translate every `include_files`
+  # allowlist into the `exclude_files` gremlins understands) — and a workflow
+  # `include:`
   # block is data the workflow cannot read back. Same single-source-of-truth
   # shape as compose-smoke-setup / .github/scripts/compose-smoke-matrix.mjs.
   #

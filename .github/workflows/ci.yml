@@ -939,9 +939,9 @@ jobs:
       # its selector decides which legs an ordinary PR runs, so a bug there is
       # not a slow release but a SILENT one — legs quietly deselected while the
       # required `mutation` context still reports green. The tests pin the phase
-      # table against this tree (every scope a real directory, every
-      # exclude_files pattern legal under Go's RE2) and pin the selection
-      # EXACTLY, not merely non-empty.
+      # table against this tree (every scope a real directory, every file
+      # pattern legal under Go's RE2, every allowlist still naming files that
+      # exist) and pin the selection EXACTLY, not merely non-empty.
       - name: Assert the mutation phase selector scopes correctly
         run: node --test .github/scripts/mutation-matrix.test.mjs
 

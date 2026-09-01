@@ -1019,7 +1019,7 @@ with the packages they cover, and a table duplicated into prose drifts
 out of step without anything going red. Read the module.
 
 `internal/logql` is split into four sibling matrix entries (each scoped
-to `./internal/logql` but with disjoint `--exclude-files` regexes) to
+to `./internal/logql` but with disjoint file regexes) to
 keep the `go test ./internal/logql` cycle under the ubuntu-latest memory
 ceiling. Its `internal/logql/lsyntax` parser
 subpackage gets its own pair of dedicated legs (`phase4-logql-parser` /
