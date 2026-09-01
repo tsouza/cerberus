@@ -41,11 +41,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/tsouza/cerberus/internal/api/prom"
 	"github.com/tsouza/cerberus/internal/api/tempo"
 	"github.com/tsouza/cerberus/internal/chclient"
+	"github.com/tsouza/cerberus/internal/chopttest"
 	"github.com/tsouza/cerberus/internal/optcorpus"
 	"github.com/tsouza/cerberus/internal/schema"
 	"github.com/tsouza/cerberus/internal/schema/ddl"
@@ -54,8 +56,34 @@ import (
 // perfSmokeCHImage pins the same ClickHouse server image every other
 // strict-scan real-CH lane uses (traces_scan_window_integration_test.go
 // etc.) — testcontainers' own wait-strategy against this alpine tag doesn't
-// hit the healthcheck race docker-compose's Ubuntu-base image does.
+// hit the healthcheck race docker-compose's Ubuntu-base image does. It backs
+// smoke.FloorBase, and every pre-existing sentinel's committed baseline is a
+// measurement of THIS server.
 const perfSmokeCHImage = "clickhouse/clickhouse-server:25.9-alpine"
+
+// perfSmokeJoinSpillCHImage backs smoke.FloorJoinSpill: a SECOND container,
+// alongside (never instead of) perfSmokeCHImage.
+//
+// chopt.FeatureJoinSpill floors at 26.4 — max_bytes_before_external_join does
+// not exist below it, and an unknown setting name errors the whole query
+// rather than no-op'ing — so the join-spill stamp cannot fire on
+// perfSmokeCHImage at all, no matter what sentinel is written for it. The two
+// tiers COEXIST rather than one replacing the other for two independent
+// reasons: sub-floor behaviour (the stamp must stay absent, the lowering
+// byte-for-byte unchanged) is a supported path this lane still has to
+// measure, and bumping the shared image would move every existing sentinel's
+// calibrated baseline — the numbers this corpus exists to hold still — for a
+// feature none of them exercise.
+//
+// The tag is 26.6-alpine rather than a 26.4 one because it is the image this
+// repo ALREADY pins and pre-pulls for its highest-floor lanes (the Justfile's
+// CH_STRICT_SCAN_IMAGE, also used by test/perf/nightly's ts_grid_instant
+// measurement), so the second tier costs strict-scan no new image download.
+// The FLOOR is chopt's 26.4; the IMAGE is the repo's existing pin at or above
+// it. Which of the two it is never has to be guessed: the harness asserts
+// chopt.FeatureJoinSpill actually resolved in against the live container
+// before running a single FloorJoinSpill sentinel.
+const perfSmokeJoinSpillCHImage = "clickhouse/clickhouse-server:26.6-alpine"
 
 const perfSmokeDB = "default"
 
@@ -136,6 +164,15 @@ const spillSeriesCount = 10_000
 // sizes that clears the spill threshold with real margin on both sides.
 const wideTraceCount = 40_000
 
+// joinSpillSeriesCount is the join-spill tier's `session_id` cardinality,
+// calibrated the same way spillSeriesCount was and against the same fixed
+// 1 GiB cap, but on perfSmokeJoinSpillCHImage: the sentinel joins TWO
+// aggregations over the seeded counter, so its cost is not spillSeriesCount's.
+// See the join_spill_vector_join sentinel's own comment for what the
+// measurement is for, and the constant's committed baseline in
+// perf-smoke-baseline.json for the number it produces.
+const joinSpillSeriesCount = 4_000
+
 // --- harness --------------------------------------------------------------
 
 // sentinelWindowEnd anchors every sentinel's query_range window. Fixed
@@ -143,58 +180,58 @@ const wideTraceCount = 40_000
 // byte-reproducible.
 var sentinelWindowEnd = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
+// sentinelLane is one floor's fully-wired substrate: the container's client,
+// the mux the sentinels are issued against, and the query_log reader their
+// memory is measured through.
+type sentinelLane struct {
+	image     string
+	client    *chclient.Client
+	conn      driver.Conn
+	mux       *http.ServeMux
+	logSource *optcorpus.CHQueryLogSource
+}
+
 func TestPerfSmokeRealCH(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-
-	client := startPerfSmokeCH(ctx, t)
-	conn := client.Conn()
-
-	if err := ddl.Apply(ctx, conn, []ddl.Signal{ddl.Metrics, ddl.Traces}); err != nil {
-		t.Fatalf("apply DDL: %v", err)
-	}
 
 	end := sentinelWindowEnd
 	start := end.Add(-sentinelWindow)
-
-	histRows, err := SeedNativeHistogramAtScale(ctx, conn, NativeHistogramMetric, NativeHistogramSeriesCount, start, end)
-	if err != nil {
-		t.Fatalf("seed native histogram: %v", err)
-	}
-	t.Logf("seeded native histogram: %d rows, %d series", histRows, NativeHistogramSeriesCount)
-
-	counterRows, err := SeedHighCardinalityCounter(ctx, conn, WideCounterMetric, spillSeriesCount, start, end)
-	if err != nil {
-		t.Fatalf("seed high-cardinality counter: %v", err)
-	}
-	t.Logf("seeded high-cardinality counter: %d rows, %d series", counterRows, spillSeriesCount)
-
-	traceRows, err := SeedWideAttributeTraces(ctx, conn, wideTraceCount, start, end)
-	if err != nil {
-		t.Fatalf("seed wide-attribute traces: %v", err)
-	}
-	t.Logf("seeded wide-attribute traces: %d rows, %d traces", traceRows, wideTraceCount)
-
-	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
-	// noise so a sentinel's memory reading reflects the query itself, not an
-	// in-flight merge competing for the same cap.
-	for _, table := range []string{"otel_metrics_exponential_histogram", "otel_metrics_sum", "otel_traces"} {
-		optimizeTableFinal(ctx, t, client, table)
-	}
-
-	metricsHandler := prom.New(client, schema.DefaultOTelMetrics(), nil)
-	tracesHandler := tempo.New(client, schema.DefaultOTelTraces(), "v-perf-smoke", nil)
-	mux := http.NewServeMux()
-	metricsHandler.Mount(mux)
-	tracesHandler.Mount(mux)
-
-	logSource := optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour)
 
 	baseline := loadPerfSmokeBaseline(t)
 	update := os.Getenv("UPDATE_PERF_SMOKE_BASELINE") == "1"
 	updated := make(map[string]sentinelBound, len(Sentinels))
 
-	for _, sentinel := range Sentinels {
+	// One container per floor, base first. Both are brought up in the same
+	// test so the single committed baseline file stays the product of ONE
+	// calibration run — two top-level tests would each write it and the
+	// second would silently drop the first's measurements.
+	for _, floor := range []ServerFloor{FloorBase, FloorJoinSpill} {
+		sentinels := SentinelsForFloor(floor)
+		if len(sentinels) == 0 {
+			t.Fatalf("floor %s has no sentinels — the tier is booting a real ClickHouse for nothing", floor)
+		}
+		lane := startSentinelLane(ctx, t, floor, start, end)
+		runSentinelFloor(ctx, t, lane, sentinels, start, end, baseline, update, updated)
+	}
+
+	if update {
+		writePerfSmokeBaseline(t, updated)
+	}
+}
+
+// runSentinelFloor drives one floor's sentinels against its own lane: the
+// per-sentinel warm-up, the max-of-N memory measurement, the required-settings
+// assertion, and the two ceiling prongs (or, in calibration mode, the bound
+// capture).
+func runSentinelFloor(
+	ctx context.Context, t *testing.T, lane sentinelLane, sentinels []Sentinel,
+	start, end time.Time, baseline perfSmokeBaseline, update bool, updated map[string]sentinelBound,
+) {
+	t.Helper()
+	conn, mux, logSource := lane.conn, lane.mux, lane.logSource
+
+	for _, sentinel := range sentinels {
 		t.Run(sentinel.Name, func(t *testing.T) {
 			// One untimed, unmeasured warm-up: the OPTIMIZE ... FINAL pass above
 			// leaves this sentinel's table's marks/data cold, and the FIRST query
@@ -235,6 +272,15 @@ func TestPerfSmokeRealCH(t *testing.T) {
 				if rows[0].MemoryUsage > maxBytes {
 					maxBytes = rows[0].MemoryUsage
 				}
+
+				// The settings-rule assertion, checked on EVERY repeat rather
+				// than once: this is the only prong that can tell a fired
+				// mechanism from an unwired one (see
+				// Sentinel.RequiredQuerySettings), and a rule that fires
+				// intermittently is as broken as one that never fires.
+				for setting, want := range sentinel.RequiredSettings(sentinelMemoryCapBytes) {
+					chopttest.AssertQuerySettingStamped(ctx, t, conn, queryID, setting, want)
+				}
 			}
 
 			capCeiling := uint64(float64(sentinelMemoryCapBytes) * sentinelMemoryCapFraction)
@@ -267,10 +313,6 @@ func TestPerfSmokeRealCH(t *testing.T) {
 					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, sentinelBaselineHeadroom, sentinel.Mechanism)
 			}
 		})
-	}
-
-	if update {
-		writePerfSmokeBaseline(t, updated)
 	}
 }
 
@@ -318,11 +360,125 @@ func optimizeTableFinal(ctx context.Context, t *testing.T, client *chclient.Clie
 	}
 }
 
-func startPerfSmokeCH(ctx context.Context, t *testing.T) *chclient.Client {
+// startSentinelLane brings up one floor's ClickHouse, applies the DDL, seeds
+// exactly the fixtures that floor's sentinels read, and mounts the production
+// handlers with the SAME two boot-resolved axes cmd/cerberus wires from a
+// chopt.EnabledSet.
+//
+// Only ONE of those two axes is wired here — the SettingsRules one
+// (chopttest.BuildSettingsRules). The RangeLowerers axis stays at prom.New's
+// zero value, which promql.RangeLowerers.withDefaults normalises to the
+// concrete fan-out impls, exactly as this lane has always run: wiring the
+// native ts_grid_* families into the OTHER real-CH lanes is issue #2487's own
+// scope, and flipping them here would silently re-calibrate every existing
+// sentinel's committed baseline as a side effect of a settings-rules change.
+//
+// Wiring SettingsRules is what closes issue #2820: prom.New / tempo.New leave
+// Engine.Settings at its zero value, which applies NOTHING, so before this
+// every SettingsRules mechanism — aggregation_in_order and condition_cache as
+// much as join_spill — was unreachable in this corpus regardless of the
+// server it ran against.
+func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, start, end time.Time) sentinelLane {
+	t.Helper()
+
+	image := perfSmokeCHImage
+	signals := []ddl.Signal{ddl.Metrics, ddl.Traces}
+	if floor == FloorJoinSpill {
+		image = perfSmokeJoinSpillCHImage
+		// Metrics only: the join-spill tier's sentinel reads the seeded
+		// counter and nothing else, and seeding wideTraceCount traces it
+		// never queries would cost this lane real time for no measurement.
+		signals = []ddl.Signal{ddl.Metrics}
+	}
+
+	client := startPerfSmokeCH(ctx, t, image)
+	conn := client.Conn()
+	if err := ddl.Apply(ctx, conn, signals); err != nil {
+		t.Fatalf("%s: apply DDL: %v", floor, err)
+	}
+
+	// Tables OPTIMIZE ... FINAL is run against below, in seed order.
+	var tables []string
+	switch floor {
+	case FloorBase:
+		histRows, err := SeedNativeHistogramAtScale(ctx, conn, NativeHistogramMetric, NativeHistogramSeriesCount, start, end)
+		if err != nil {
+			t.Fatalf("seed native histogram: %v", err)
+		}
+		t.Logf("seeded native histogram: %d rows, %d series", histRows, NativeHistogramSeriesCount)
+
+		counterRows, err := SeedHighCardinalityCounter(ctx, conn, WideCounterMetric, spillSeriesCount, start, end)
+		if err != nil {
+			t.Fatalf("seed high-cardinality counter: %v", err)
+		}
+		t.Logf("seeded high-cardinality counter: %d rows, %d series", counterRows, spillSeriesCount)
+
+		traceRows, err := SeedWideAttributeTraces(ctx, conn, wideTraceCount, start, end)
+		if err != nil {
+			t.Fatalf("seed wide-attribute traces: %v", err)
+		}
+		t.Logf("seeded wide-attribute traces: %d rows, %d traces", traceRows, wideTraceCount)
+
+		tables = []string{"otel_metrics_exponential_histogram", "otel_metrics_sum", "otel_traces"}
+	case FloorJoinSpill:
+		counterRows, err := SeedHighCardinalityCounter(ctx, conn, WideCounterMetric, joinSpillSeriesCount, start, end)
+		if err != nil {
+			t.Fatalf("seed high-cardinality counter: %v", err)
+		}
+		t.Logf("seeded high-cardinality counter: %d rows, %d series", counterRows, joinSpillSeriesCount)
+
+		tables = []string{"otel_metrics_sum"}
+	}
+
+	// OPTIMIZE ... FINAL before measuring: controls background-merge-state
+	// noise so a sentinel's memory reading reflects the query itself, not an
+	// in-flight merge competing for the same cap.
+	for _, table := range tables {
+		optimizeTableFinal(ctx, t, client, table)
+	}
+
+	metricsSchema := schema.DefaultOTelMetrics()
+	tracesSchema := schema.DefaultOTelTraces()
+	metricsHandler := prom.New(client, metricsSchema, nil)
+	tracesHandler := tempo.New(client, tracesSchema, "v-perf-smoke", nil)
+	mux := http.NewServeMux()
+	metricsHandler.Mount(mux)
+	tracesHandler.Mount(mux)
+
+	// "auto" is the CERBERUS_CH_OPTIMIZATIONS default a real deployment boots
+	// under: no explicit opt-in, best-available on the connected server. Every
+	// AutoSelect feature the container's own probed version supports resolves
+	// in, join_spill included on the >= 26.4 tier.
+	set := chopttest.ResolveEnabledSet(ctx, t, client, "auto")
+	rules := chopttest.BuildSettingsRules(set, metricsSchema, tracesSchema, schema.DefaultOTelLogs())
+	if rules.ResultCache {
+		t.Fatalf("%s: the resolved set enabled chopt.FeatureResultCache — a query RESULT cache would serve "+
+			"repeats 1..%d of every sentinel from cache, so the max-of-N ceiling would stop measuring the "+
+			"query and start measuring a cache hit", floor, sentinelRepeats-1)
+	}
+	if floor == FloorJoinSpill && !rules.JoinSpill {
+		t.Fatalf("%s: chopt.FeatureJoinSpill did NOT resolve enabled against %s — every join_spill sentinel "+
+			"below would pass vacuously against a server that cannot stamp %s at all",
+			floor, image, settingMaxBytesBeforeExternalJoin)
+	}
+	metricsHandler.Engine.SetSettings(rules)
+	tracesHandler.Engine.SetSettings(rules)
+	t.Logf("%s (%s): settings rules wired: %+v", floor, image, rules)
+
+	return sentinelLane{
+		image:     image,
+		client:    client,
+		conn:      conn,
+		mux:       mux,
+		logSource: optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour),
+	}
+}
+
+func startPerfSmokeCH(ctx context.Context, t *testing.T, image string) *chclient.Client {
 	t.Helper()
 	container, err := tcclickhouse.Run(
 		ctx,
-		perfSmokeCHImage,
+		image,
 		tcclickhouse.WithUsername("cerberus"),
 		tcclickhouse.WithPassword("cerberus"),
 		tcclickhouse.WithDatabase(perfSmokeDB),

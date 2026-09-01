@@ -11,7 +11,7 @@ import (
 // broken request in the real-ClickHouse integration lane, where a driver
 // error is much more expensive to root-cause than this unit check.
 func TestSentinels_Roster(t *testing.T) {
-	const wantCount = 3
+	const wantCount = 4
 	if len(Sentinels) != wantCount {
 		t.Fatalf("len(Sentinels) = %d, want %d", len(Sentinels), wantCount)
 	}
@@ -35,6 +35,78 @@ func TestSentinels_Roster(t *testing.T) {
 		}
 		if s.Window <= 0 {
 			t.Fatalf("sentinel %s has non-positive Window %v", s.Name, s.Window)
+		}
+	}
+}
+
+// TestSentinels_FloorsArePartitioned asserts SentinelsForFloor covers the
+// whole corpus exactly once across the declared floors — a sentinel assigned
+// to a floor the harness never boots would silently never run, which is the
+// coverage-loss failure mode this corpus exists to prevent.
+func TestSentinels_FloorsArePartitioned(t *testing.T) {
+	floors := []ServerFloor{FloorBase, FloorJoinSpill}
+	total := 0
+	for _, floor := range floors {
+		got := SentinelsForFloor(floor)
+		if len(got) == 0 {
+			t.Errorf("floor %s has no sentinels — the harness boots a real ClickHouse for it regardless", floor)
+		}
+		for _, s := range got {
+			if s.Floor != floor {
+				t.Errorf("SentinelsForFloor(%s) returned %s, whose Floor is %s", floor, s.Name, s.Floor)
+			}
+		}
+		total += len(got)
+	}
+	if total != len(Sentinels) {
+		t.Errorf("the declared floors cover %d of %d sentinels — one is assigned to a floor the harness "+
+			"never boots, so it would silently never run", total, len(Sentinels))
+	}
+}
+
+// TestSentinels_JoinSpillStampIsAsserted pins the one thing that makes the
+// join_spill sentinel falsifiable: it must require the
+// max_bytes_before_external_join stamp, sized at half the live memory cap
+// (internal/engine/spill.go's spillThreshold). Without that requirement the
+// sentinel would measure only peak memory and HTTP status — both identical
+// whether the stamp fired or the mechanism was deleted outright.
+func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
+	joinSpill := SentinelsForFloor(FloorJoinSpill)
+	if len(joinSpill) != 1 {
+		t.Fatalf("SentinelsForFloor(FloorJoinSpill) returned %d sentinels, want 1", len(joinSpill))
+	}
+	s := joinSpill[0]
+
+	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
+	if !strings.Contains(query, " / on (session_id) ") {
+		t.Errorf("join_spill sentinel query %q is not a vector-vector match — it would not lower to "+
+			"chplan.VectorJoin, so planHasJoin would never match it and the stamp could not fire", query)
+	}
+
+	const cap1GiB int64 = 1 << 30
+	got := s.RequiredSettings(cap1GiB)
+	want := map[string]string{settingMaxBytesBeforeExternalJoin: "536870912"} // 1 GiB / 2
+	if len(got) != len(want) {
+		t.Fatalf("join_spill sentinel RequiredSettings = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("join_spill sentinel RequiredSettings[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestSentinels_RequiredSettingsIsNilSafe pins that a sentinel declaring no
+// required settings yields an empty map rather than panicking — the harness
+// ranges over the result for every sentinel, not just the ones that declare
+// the field.
+func TestSentinels_RequiredSettingsIsNilSafe(t *testing.T) {
+	for _, s := range Sentinels {
+		if s.RequiredQuerySettings != nil {
+			continue
+		}
+		if got := s.RequiredSettings(1 << 30); len(got) != 0 {
+			t.Errorf("sentinel %s declares no RequiredQuerySettings but RequiredSettings returned %v", s.Name, got)
 		}
 	}
 }
