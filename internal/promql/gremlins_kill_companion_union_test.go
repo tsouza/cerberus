@@ -3,6 +3,7 @@ package promql
 import (
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/schema"
@@ -149,7 +150,7 @@ func TestResolveSelectorRouting_RewritesToTheBareNameOnlyForTheSingleArmFallback
 	matchers := func(t *testing.T) []*labels.Matcher {
 		t.Helper()
 		return []*labels.Matcher{
-			mustMatcher(t, labels.MatchEqual, labels.MetricName, companionSuffixedName),
+			mustMatcher(t, labels.MatchEqual, model.MetricNameLabel, companionSuffixedName),
 		}
 	}
 
@@ -207,9 +208,9 @@ func TestResolveSelectorRouting_RewritesToTheBareNameOnlyForTheSingleArmFallback
 func TestRewriteMetricName_TouchesOnlyThePinnedNameMatcher(t *testing.T) {
 	t.Parallel()
 
-	name := mustMatcher(t, labels.MatchEqual, labels.MetricName, companionSuffixedName)
+	name := mustMatcher(t, labels.MatchEqual, model.MetricNameLabel, companionSuffixedName)
 	job := mustMatcher(t, labels.MatchEqual, "job", "api")
-	nameRegex := mustMatcher(t, labels.MatchRegexp, labels.MetricName, "http_.*")
+	nameRegex := mustMatcher(t, labels.MatchRegexp, model.MetricNameLabel, "http_.*")
 	in := []*labels.Matcher{name, job, nameRegex}
 
 	out := rewriteMetricName(in, companionBareName)

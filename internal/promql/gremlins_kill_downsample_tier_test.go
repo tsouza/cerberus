@@ -3,6 +3,7 @@ package promql
 import (
 	"testing"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/tsouza/cerberus/internal/chplan"
@@ -45,7 +46,7 @@ func TestBuildDownsampleTierArm_FiltersByTheFullMatcherSet(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 	matchers := []*labels.Matcher{
-		mustMatcher(t, labels.MatchEqual, labels.MetricName, downsampleTierMetric),
+		mustMatcher(t, labels.MatchEqual, model.MetricNameLabel, downsampleTierMetric),
 		mustMatcher(t, labels.MatchEqual, "job", "api"),
 	}
 
