@@ -35,7 +35,7 @@ func parseTempoStartEnd(r *http.Request) (time.Time, time.Time, error) {
 
 // boundDiscoveryWindow defaults a windowless tag / tag-value discovery
 // request to the most recent DefaultSearchLookback. The discovery SQL
-// (`SELECT DISTINCT arrayJoin(mapKeys(ResourceAttributes))` and the
+// (`SELECT DISTINCT arrayJoin(ResourceAttributes.keys)` and the
 // tag-value `mapContains` lookups) only emits a `Timestamp` predicate
 // when start/end are non-zero; with no predicate the scan reads every
 // row of otel_traces and explodes the Map column, running for minutes

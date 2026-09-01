@@ -26,7 +26,7 @@ const unwindowedRecursiveSpansSQL = "WITH RECURSIVE c AS (" +
 
 // windowedSpansSQL is the negative control: a Timestamp range sitting directly
 // on the otel_traces scan prunes partitions, so the guard passes it through.
-const windowedSpansSQL = "SELECT DISTINCT arrayJoin(mapKeys(`SpanAttributes`)) AS `tag` " +
+const windowedSpansSQL = "SELECT DISTINCT arrayJoin(`SpanAttributes`.`keys`) AS `tag` " +
 	"FROM `otel_traces` " +
 	"WHERE `Timestamp` >= fromUnixTimestamp64Nano(1782571392000000000) AND `Timestamp` <= fromUnixTimestamp64Nano(1782573192000000000)"
 

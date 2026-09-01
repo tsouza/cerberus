@@ -134,7 +134,7 @@ const nestedAttributesSubfield = "Attributes"
 //
 // SQL shape — one query per scope bucket, e.g. for `span`:
 //
-//	SELECT DISTINCT arrayJoin(mapKeys(`SpanAttributes`))
+//	SELECT DISTINCT arrayJoin(`SpanAttributes`.`keys`)
 //	FROM `otel_traces`
 //	WHERE `Timestamp` >= ? AND `Timestamp` <= ?
 //
@@ -382,19 +382,18 @@ func buildSearchTagsSQL(s schema.Traces, keys, filter chsql.Frag, start, end tim
 	return sb.Build()
 }
 
-// distinctMapKeysFrag emits "DISTINCT arrayJoin(mapKeys(`<col>`))" — the
-// CH idiom for "every distinct attribute key seen". DISTINCT is part of
-// the SELECT list (CH's flavour), not a separate keyword, so it folds
-// into the Frag for the QueryBuilder slot. `arrayJoin` + `mapKeys` are
-// CH functions composed through the typed Call constructor; the column
-// operand flows through chsql.Col.
+// distinctMapKeysFrag emits "DISTINCT arrayJoin(`<col>`.`keys`)" — the CH
+// idiom for "every distinct attribute key seen", spelled against the
+// column's virtual `.keys` subcolumn rather than mapKeys(<col>) so the
+// key-only decode is explicit rather than depending on the server-side
+// optimize_functions_to_subcolumns rewrite (cerberus issue #2775). DISTINCT
+// is part of the SELECT list (CH's flavour), not a separate keyword, so it
+// folds into the Frag for the QueryBuilder slot. `arrayJoin` composes
+// through the typed Call constructor; the `.keys` subcolumn operand flows
+// through chsql.Qual. Safe unconditionally, with no version gate: key
+// enumeration never consults a skip index.
 func distinctMapKeysFrag(col string) chsql.Frag {
-	return chsql.Distinct(
-		chsql.Call(
-			"arrayJoin",
-			chsql.Call("mapKeys", chsql.Col(col)),
-		),
-	)
+	return chsql.Distinct(chsql.Call("arrayJoin", chsql.Qual(col, "keys")))
 }
 
 // distinctNestedMapKeysFrag is the same idea one nesting level up:

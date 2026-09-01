@@ -23,8 +23,8 @@ import (
 //     ResourceAttributes key space across the time range is returned.
 //   - start / end (optional): time range, defaults to last hour / now.
 //
-// The SQL groups distinct map keys via arrayJoin(mapKeys(...)) on the
-// resource-attributes column.
+// The SQL groups distinct map keys via arrayJoin(<col>.keys) on the
+// resource-attributes column's virtual keys subcolumn.
 func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 	start, end, err := parseStartEnd(r)
 	if err != nil {
@@ -70,7 +70,7 @@ func (h *Handler) handleLabels(w http.ResponseWriter, r *http.Request) {
 
 // buildLabelsSQL renders:
 //
-//	SELECT DISTINCT arrayJoin(mapKeys(`ResourceAttributes`)) AS k
+//	SELECT DISTINCT arrayJoin(`ResourceAttributes`.`keys`) AS k
 //	FROM `otel_logs`
 //	WHERE <matchers> AND `Timestamp` >= ? AND `Timestamp` <= ?
 //	ORDER BY k
@@ -93,16 +93,19 @@ func buildLabelsSQL(s schema.Logs, matchers []*labels.Matcher, start, end time.T
 
 // distinctMapKeysFrag emits
 //
-//	DISTINCT arrayJoin(mapKeys(`<col>`))
+//	DISTINCT arrayJoin(`<col>`.`keys`)
 //
 // — the CH idiom for flattening a Map column's key array into the row
-// stream and de-duping. Used by /labels (the per-row key set) and is the
-// shape Grafana's label autocomplete expects. The arrayJoin / mapKeys
-// function calls compose through the typed Call constructor wrapping
-// Builder.MapKeys for the inner mapKeys(col) call.
+// stream and de-duping, spelled against the column's virtual `.keys`
+// subcolumn rather than mapKeys(<col>) so the key-only decode is explicit
+// rather than depending on the server-side optimize_functions_to_subcolumns
+// rewrite (cerberus issue #2775). Used by /labels (the per-row key set)
+// and is the shape Grafana's label autocomplete expects. Safe
+// unconditionally, with no version gate: DISTINCT/arrayJoin key
+// enumeration never consults a skip index, so there is no index-matching
+// risk to weigh the way there is for a keyed-existence WHERE predicate.
 func distinctMapKeysFrag(col string) chsql.Frag {
-	mapKeys := func(b *chsql.Builder) { b.MapKeys(col) }
-	return chsql.Distinct(chsql.Call("arrayJoin", mapKeys))
+	return chsql.Distinct(chsql.Call("arrayJoin", chsql.Qual(col, "keys")))
 }
 
 // dedupeAndSort drops empty strings, removes duplicates, and sorts the

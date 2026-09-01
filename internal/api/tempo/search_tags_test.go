@@ -72,8 +72,9 @@ func TestSearchTags_UnionsDynamicAttributes(t *testing.T) {
 
 // TestSearchTags_SQLShape — pins the SQL the handler emits so the
 // no-fmt-Sprintf-on-SQL rule (CLAUDE.md) doesn't quietly regress.
-// Builder must emit a parameterised `arrayJoin(mapKeys(<col>))`
-// SELECT — never a raw concatenated table name or column literal.
+// Builder must emit a parameterised `arrayJoin(<col>.keys)` SELECT
+// (cerberus issue #2775) — never a raw concatenated table name or
+// column literal.
 func TestSearchTags_SQLShape(t *testing.T) {
 	t.Parallel()
 	q := &stubQuerier{strings: []string{"a"}}
@@ -88,7 +89,7 @@ func TestSearchTags_SQLShape(t *testing.T) {
 	for _, want := range []string{
 		"SELECT DISTINCT",
 		"arrayJoin(",
-		"mapKeys(`SpanAttributes`)",
+		"`SpanAttributes`.`keys`",
 		"FROM `otel_traces`",
 	} {
 		if !strings.Contains(q.lastSQL, want) {
@@ -159,9 +160,10 @@ func TestSearchTags_TimeBounds(t *testing.T) {
 
 // TestSearchTags_WindowlessDefaultsToRecentBound — a request with no
 // `start`/`end` must NOT emit a windowless `SELECT DISTINCT
-// arrayJoin(mapKeys(...)) FROM otel_traces`: that full-scans the fact
-// table and explodes the attribute Map, the multi-minute / timeout
-// failure observed in prod. The handler defaults to the recent
+// arrayJoin(<col>.keys) FROM otel_traces`: that full-scans the fact
+// table and decodes the attribute Map's key stream over every row, the
+// multi-minute / timeout failure observed in prod. The handler defaults
+// to the recent
 // DefaultSearchLookback window so the scan part-prunes by partition,
 // which shows up as a `Timestamp` WHERE bound in the emitted SQL.
 func TestSearchTags_WindowlessDefaultsToRecentBound(t *testing.T) {
