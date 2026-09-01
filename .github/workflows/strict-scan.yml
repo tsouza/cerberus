@@ -166,6 +166,19 @@ jobs:
       - name: Run Tempo traces-scan WINDOW differential (real ClickHouse)
         run: just traces-scan-window-integration
 
+      # Issue #2783: the structural two-phase phase-B restriction may push its
+      # TraceId set as a native-protocol external table instead of a spliced
+      # literal IN list once the literal's estimated size crosses a byte
+      # budget. This step proves, against a real ClickHouse: (i) the
+      # external-table form returns byte-identical results to the literal
+      # form; (ii) EXPLAIN indexes=1 shows idx_trace_id drops the SAME
+      # granule count for both forms; and (iii) a chclient.WithExternalTraceIDs
+      # context is safe to dispatch more than once (a transport retry, or a
+      # route-B shard). See
+      # internal/api/tempo/structural_two_phase_external_table_integration_test.go.
+      - name: Run structural two-phase external-trace-id-table verification (real ClickHouse)
+        run: just structural-two-phase-external-table-integration
+
       # The failure-driven route memo's mandatory per-shard memory
       # apportionment (Executor.runShard) stamps a max_memory_usage override
       # via chclient.WithQuerySetting. chDB is known-lenient about settings

@@ -1573,6 +1573,42 @@ const (
 	// predicate already pays for, a pure (if small) per-row LIKE-evaluation
 	// tax with no pruning to offset it.
 	FeatureTextIndexLineFilter = "text_index_line_filter"
+
+	// FeatureTraceIDExternalTable pushes the /api/search structural
+	// two-phase orchestrator's phase-A TraceId result set onto phase B as a
+	// native-protocol external (temporary) table instead of splicing it as a
+	// literal `TraceId IN (...)` list (restrictStructural, issue #2783).
+	// CLIENT-SIDE and version-independent (AlwaysAvailable): clickhouse-go/v2
+	// external tables are ordinary native-protocol functionality with no CH
+	// version floor, so — like FeatureColumnarResultDecode — this carries no
+	// MinVersion gate, only the boot-wired chopt on/off switch the "register
+	// as chopt feature, resolve at boot, one lifecycle" rule requires even
+	// for a floor-less optimization.
+	//
+	// The switch is BYTE-SIZE-gated, not width-gated: restrictStructural only
+	// takes this path once the literal splice's estimated total bytes (summed
+	// across every closure scan site the restriction reaches) crosses a
+	// threshold sized against chsql's own emitted-SQL bound
+	// (internal/chsql/emit_size_bound.go's 262144-byte maxEmittedSQLBytes,
+	// itself ClickHouse's max_query_size default). Below the threshold the
+	// literal splice is cheaper (no external-table round trip) and, per this
+	// issue's own EXPLAIN indexes=1 verification against a real ClickHouse
+	// server, prunes idx_trace_id IDENTICALLY to the external-table form at
+	// every closure size tested — the switch exists purely to avoid the
+	// literal splice's SQL-text-size failure axis (megabyte-scale statements,
+	// chsql's ErrEmittedSQLTooLarge, or a bare max_query_size SYNTAX_ERROR),
+	// never to fix a pruning gap.
+	//
+	// NOT auto-selected (AutoSelect=false): native-protocol-only (the
+	// resolver has no way to see Config.Protocol, so cmd/cerberus's own
+	// wiring additionally requires Protocol==clickhouse.Native — see
+	// buildExternalTraceIDPush), and the production win at today's
+	// MaxSearchLimit=1000 is real but unmeasured at scale beyond this issue's
+	// own synthetic corpus — an operator opt-in via
+	// CERBERUS_CH_OPTIMIZATIONS=trace_id_external_table, mirroring
+	// FeatureTraceIDProjection's posture on a fresh, real-CH-server-only
+	// mechanism.
+	FeatureTraceIDExternalTable = "trace_id_external_table"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -1951,6 +1987,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "prepend an ANDed per-token LIKE strict-superset prefilter ahead of the unchanged row predicate for non-negated LogQL line filters (server >= 26.4 — verified LIKE-via-text-index floor, opt-in via CERBERUS_CH_OPTIMIZATIONS, inert without full_text_index)",
 	},
+	{
+		ID:         FeatureTraceIDExternalTable,
+		MinVersion: AlwaysAvailable,
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "push the /api/search two-phase phase-A TraceId set as a native-protocol external table instead of a literal IN list above a byte threshold (no version floor, native-protocol, opt-in via CERBERUS_CH_OPTIMIZATIONS -- EXPLAIN-verified idx_trace_id parity, #2783)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -1964,7 +2007,7 @@ var registry = []Feature{
 // join_spill, trace_id_projection, loki_catalog_mv, tempo_tag_catalog_mv,
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
-// full_text_index, text_index_line_filter). The copy
+// full_text_index, text_index_line_filter, trace_id_external_table). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
 // table.
