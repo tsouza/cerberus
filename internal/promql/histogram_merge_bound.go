@@ -237,7 +237,19 @@ const (
 	// prove it — the same role maxHistogramMergeClampedWidth already
 	// plays for the width term. Recalibrate only if
 	// maxHistogramMergeClampedWidth's own value changes; this is not an
-	// independent behavioral tuning knob.
+	// independent behavioral tuning knob for THIS (rows x width^2) formula.
+	//
+	// This same constant is reused, unchanged, by
+	// [expHistogramMergeSumMapCostOverBudgetExpr]
+	// (exp_histogram_merge_summap_bound.go, cerberus issue #2834) as that
+	// guard's own row-count backstop — there it is no longer a pure
+	// overflow margin: that design's cost formula drops the `rows x`
+	// multiplier entirely (see that file's own header doc for why), so
+	// this ceiling is the ONLY thing bounding its real, measured
+	// rows-linear cost term. That file's own calibration table pins real
+	// memory at exactly this row count, so the value stays load-bearing
+	// for a second, genuinely behavioral reason — recalibrate both guards
+	// together if this changes.
 	maxHistogramMergeRowCountOverflowGuard = 4096
 )
 
