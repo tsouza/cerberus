@@ -811,6 +811,61 @@ entirely: it rides the SAME per-query settings-stamping path cerberus
 already uses for `ts_grid_range` and the query result cache, needing no
 ClickHouse RBAC privilege at all on the connection cerberus uses.
 
+**S3-backed disk contention (cerberus issue #2847).** The measurement above
+ran against ClickHouse's local (`default`) disk on a single 8-core dev box.
+The recipe's `READ DISK` / `WRITE DISK` clause is disk-agnostic by
+construction, so the DDL itself needs no changes for an S3 disk — `CREATE
+RESOURCE io_s3 (READ DISK s3, WRITE DISK s3)` against an S3 (or
+S3-compatible) disk named `s3` is accepted exactly like `io_default` was.
+What was not yet exercised is the *behavioral* question: does the
+weight-based fair share still deliver the same protection when the disk
+underneath is an S3 bucket with a materially different latency/throughput/
+queueing profile than local disk?
+
+**Verified directly against a real ClickHouse 26.6 backed by MinIO**
+(`minio/minio`, S3-compatible, run locally in Docker — no cloud AWS S3
+needed): same table shape (MergeTree, 3M rows seeded, same synthetic
+500-row batched `INSERT` loop and 16 parallel heavy `GROUP BY` +
+`quantiles()` reads at `max_threads=8`), same recipe
+(`max_concurrent_threads=8` on `all`, `default` weight 6 vs
+`cerberus_queries` weight 1), disk name swapped for an S3 disk pointed at
+MinIO. `system.scheduler` showed the same weighted fair-share nodes live
+for both the `cpu` and `io_s3` resources — the DDL and the scheduler wiring
+transfer unchanged.
+
+The measured *effect size* does not transfer unchanged, and is
+substantially larger on the S3-backed disk than on local disk. Averaged
+over two repeated 60s runs each (individual runs agreed within ~5%):
+
+| Metric (60s combined load)         | Local disk (#2785)    | S3/MinIO (#2847)    |
+| ---------------------------------- | --------------------- | ------------------- |
+| Ingest p95 latency, no split       | ~135ms                | ~703ms              |
+| Ingest p95 latency, with split     | ~124ms (-8%)          | ~602ms (-14.5%)     |
+| Ingest p99 latency, no split       | ~160ms                | ~1485ms             |
+| Ingest p99 latency, with split     | ~149ms (-7%)          | ~1039ms (-30%)      |
+| Ingest throughput, no split        | ~9.7/s                | ~3.1/s              |
+| Ingest throughput, with split      | ~10.1/s (+4%)         | ~5.5/s (+80%)       |
+| Completed heavy reads, no split    | 476                   | 229                 |
+| Completed heavy reads, with split  | 352 (-26%)            | 177 (-23%)          |
+
+The read-side cost of the split (roughly a quarter of heavy-read throughput
+given up to protect ingest) transfers cleanly: -26% on local disk, -23% on
+S3/MinIO, the same order of magnitude. The ingest-side *protection*, on the
+other hand, is far more pronounced on S3: p99 latency improves ~30% (vs
+~7% on local disk) and ingest throughput nearly doubles (vs a ~4% bump on
+local disk). This is consistent with the mechanism #2785 already
+identified: stock ClickHouse's separate merge thread pool absorbs a fair
+amount of query/merge contention for free on fast local disk, so scheduling
+has modest headroom to add on top of it. S3 PUT/GET latency is an order of
+magnitude higher and far more variable than local disk, so the SAME 16
+concurrent heavy readers starve ingest's S3 merge/flush traffic much harder
+when nothing arbitrates between them — which is exactly the headroom the
+`default`-weight-6-vs-`cerberus_queries`-weight-1 split recovers. In short:
+**do not assume the local-disk percentages in the table above as a
+conservative estimate for an S3-backed deployment** — on S3, workload
+scheduling both matters more (bigger ingest win) and costs about the same
+(similar read-throughput give-up) as it does on local disk.
+
 ### Kubernetes HorizontalPodAutoscaler
 
 The chart's `autoscaling` block ships a working HPA: the e2e values
