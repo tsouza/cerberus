@@ -4289,6 +4289,27 @@ func wrapRangeWindowAtBroadcast(
 // though its own GroupByAliases never spell the canonical column name.
 const rangeBucketAlias = "bucket_ts"
 
+// nativeGridVectorAggFns is the set of chplan.Fn values [lowerAggregate]
+// will fold directly into an eligible native per-series grid via
+// chplan.RangeWindowGridNativeVectorAgg (cerberus issue #2763) instead of
+// building the ordinary exploded-then-grouped Aggregate. It is exactly the
+// set proven element-wise-correct over an already-finished per-series grid:
+// summing (or min/max/avg/count-ing) FINISHED rates across series is exactly
+// element-wise, unlike raw sample pooling — see chplan.
+// RangeWindowGridNativeVectorAgg's own doc for the fuller argument and the
+// empirical chDB verification behind it. FnStddevPop / FnVarPop (stddev/
+// stdvar) and FnQuantile / FnAny (quantile/group) are deliberately absent:
+// none of them is element-wise over a finished per-series grid, so they
+// keep lowering through the ordinary Aggregate path over the exploded rows,
+// permanently — this is a scope boundary, not a gap to close later.
+var nativeGridVectorAggFns = map[chplan.Fn]struct{}{
+	chplan.FnSum:   {},
+	chplan.FnMin:   {},
+	chplan.FnMax:   {},
+	chplan.FnAvg:   {},
+	chplan.FnCount: {},
+}
+
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
 // `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
 // `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
@@ -4383,6 +4404,33 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// row per series-set. Inject TimeUnix as an extra group key with a
 	// stable alias ([rangeBucketAlias]) the wrap can reference.
 	rangeBucketed := ctx.step > 0
+
+	// ts_grid_vector_agg (cerberus issue #2763): when input is ALREADY an
+	// eligible native per-series grid and this aggregation is one of the
+	// five PromQL vector aggregations proven element-wise-correct over an
+	// already-finished per-series grid, fold the GROUP BY directly into
+	// that grid's own pre-explode row via chplan.RangeWindowGridNativeVectorAgg
+	// instead of building the ordinary exploded-then-grouped Aggregate
+	// below. GroupBy/aliases here are the plain user by/without keys, NOT
+	// yet widened by the range-bucket injection above — exactly the shape
+	// the new node's own GROUP BY needs, since its per-series Input already
+	// carries the full per-anchor grid as an array (there is no per-row
+	// anchor to additionally group by).
+	if rangeBucketed && ctx.lowerers.VectorAgg {
+		if nativeGrid, ok := input.(*chplan.RangeWindowGridNative); ok {
+			if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; eligible {
+				node := &chplan.RangeWindowGridNativeVectorAgg{
+					Input:          nativeGrid,
+					Fn:             aggFunc.Fn,
+					GroupBy:        groupBy,
+					GroupByAliases: aliases,
+					AnchorAlias:    rangeBucketAlias,
+				}
+				return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
+			}
+		}
+	}
+
 	if rangeBucketed {
 		groupBy = append(groupBy, &chplan.ColumnRef{Name: s.TimestampColumn})
 		aliases = append(aliases, rangeBucketAlias)
@@ -5549,7 +5597,10 @@ func groupKeyAliases(n int) []string {
 }
 
 // wrapAggregateForSample produces the Sample-shape Project on top of an
-// Aggregate so downstream `chclient.Sample` decoding works for any
+// Aggregate (or, since cerberus issue #2763, a
+// chplan.RangeWindowGridNativeVectorAgg — the ForEach-combinator narrowing
+// that elides an ordinary Aggregate for an eligible native-grid vector
+// aggregation) so downstream `chclient.Sample` decoding works for any
 // PromQL aggregation.
 //
 //	MetricName  = ''                          (aggregations drop __name__)
@@ -5560,11 +5611,18 @@ func groupKeyAliases(n int) []string {
 //	            | <bucketAlias>                (range mode — per-step anchor)
 //	Value       = <aggFunc alias>             (sum / avg / quantile / ...)
 //
-// rangeBucketed reflects whether the underlying Aggregate carries an
-// extra TimeUnix group key (range mode); when true the projection's
-// TimeUnix slot references the bucket alias the Aggregate exposed so
-// per-step aggregation rows propagate onto the canonical column shape.
-func wrapAggregateForSample(agg *chplan.Aggregate, a *parser.AggregateExpr, s schema.Metrics, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
+// agg is typed as the generic chplan.Node (not *chplan.Aggregate) purely so
+// both callers can share this one wrap: its body only ever threads agg
+// through as the wrapping Project's Input, never inspects it further, so
+// both node kinds — which publish the IDENTICAL (group-key columns, a
+// TimeUnix-bearing column under bucketAlias, Value) row shape — resolve
+// through the exact same projection.
+//
+// rangeBucketed reflects whether agg carries an extra TimeUnix group key
+// (range mode); when true the projection's TimeUnix slot references the
+// bucket alias agg exposed so per-step aggregation rows propagate onto the
+// canonical column shape.
+func wrapAggregateForSample(agg chplan.Node, a *parser.AggregateExpr, s schema.Metrics, aliases []string, rangeBucketed bool, bucketAlias string) chplan.Node {
 	tsExpr := chplan.NowNano()
 	if rangeBucketed {
 		tsExpr = &chplan.ColumnRef{Name: bucketAlias}

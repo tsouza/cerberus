@@ -224,6 +224,57 @@ const (
 	// for the probe shape and the versions it was executed against).
 	FeatureTSGridRecollapse = "ts_grid_recollapse"
 
+	// FeatureTSGridVectorAgg folds an element-wise-correct outer PromQL vector
+	// aggregation (`sum`/`min`/`max`/`avg`/`count` by/without) directly into an
+	// eligible native rate grid's own pre-explode per-series grid, via
+	// ClickHouse's `-ForEach` combinator (sumForEach / minForEach / maxForEach
+	// / avgForEach / countForEach), instead of exploding every per-series grid
+	// to (series, anchor) rows FIRST and re-aggregating with a second,
+	// blocking GROUP BY (cerberus issue #2763 — the second axis of the
+	// ~33.5M-row hard cliff #2651 documents, internal/chsql/
+	// range_bucket_grid_native_bound.go). Only the resulting
+	// ALREADY-AGGREGATED per-OUTPUT-series grid is exploded, once, at the
+	// very end — dropping the row count entering that explode from
+	// (series x anchors) to (outSeries x anchors).
+	//
+	// It is a pure narrowing of FeatureTSGridRange, exactly the relationship
+	// FeatureTSGridRecollapse has to it: with ts_grid_range off there is no
+	// native per-series grid to fold an outer aggregation into, so
+	// internal/promql only consults this feature (via RangeLowerers.VectorAgg)
+	// inside code paths ts_grid_range has already activated. The registry
+	// cannot express that dependency directly, so the two carry the same 25.9
+	// floor and the same experimental gate and are therefore resolved
+	// identically by a single probed capability verdict — the floor is
+	// INHERITED from ts_grid_range, not independently derived: the `-ForEach`
+	// combinator itself is AlwaysAvailable (no version floor of its own,
+	// already proven in-tree by the classic-histogram bucket-array-sum path,
+	// chplan.FnSumForEach), so nothing about the combine raises the floor
+	// past whatever ts_grid_range already pins.
+	//
+	// It is a SINGLE feature governing all five outer aggregations together
+	// (sum/min/max/avg/count), the same one-feature-many-functions shape
+	// FeatureTSGridInstant uses for its own five range functions: the
+	// eligibility contract and SQL restructuring are identical across all
+	// five outer Fns (chplan.RangeWindowGridNativeVectorAgg), so there is no
+	// per-Fn divergence a split into five siblings would encode. A non-
+	// element-wise outer aggregation (stddev/stdvar/quantile/group/topk/
+	// bottomk/count_values/limitk/limit_ratio) is OUT OF SCOPE by
+	// construction — internal/promql's lowerAggregate only ever builds a
+	// RangeWindowGridNativeVectorAgg for the five Fns this feature covers,
+	// never a broader dispatch this registry entry would have to narrow
+	// further.
+	//
+	// AutoSelect is false: unlike FeatureTSGridRecollapse (whose merge
+	// exactness was checked across time-disjoint, interleaved, and
+	// counter-reset-straddling regimes before shipping auto-on), this is a
+	// brand-new code path with no fielded validation yet — the same
+	// conservative posture FeatureTSGridInstant's own new-floor bump took.
+	// Opt-in only via CERBERUS_CH_OPTIMIZATIONS=ts_grid_vector_agg until it
+	// earns auto promotion. Shares the family's RequiresExperimentalTSGrid
+	// gate (allow_experimental_time_series_aggregate_functions) because it
+	// only ever narrows an already-experimental ts_grid_range node.
+	FeatureTSGridVectorAgg = "ts_grid_vector_agg"
+
 	// FeatureTSGridIncrease opts eligible increase(<counter>[<range>])
 	// query_range shapes onto the native timeSeriesRateToGrid aggregate,
 	// retiring the arrayJoin sample-per-anchor fan-out
@@ -1613,6 +1664,14 @@ var registry = []Feature{
 		AutoSelect:                 true,
 		RequiresExperimentalTSGrid: true,
 		Doc:                        "defer the label-shaping tower past an eligible native rate grid via the -State/-Merge combinator pair, so it runs once per raw series instead of once per row (narrows ts_grid_range; experimental maturity, auto-enabled on server >= 25.9)",
+	},
+	{
+		ID:                         FeatureTSGridVectorAgg,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "fold an element-wise-correct sum/min/max/avg/count by/without into an eligible native rate grid via -ForEach, exploding only the aggregated per-output-series grid once (narrows ts_grid_range; experimental, server >= 25.9, opt-in — #2763)",
 	},
 	{
 		ID:                         FeatureTSGridInstant,

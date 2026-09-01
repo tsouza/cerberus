@@ -450,6 +450,8 @@ func (e *emitter) emitMetricNode(n chplan.Node) (bool, error) {
 		return true, e.emitRangeWindow(v)
 	case *chplan.RangeWindowGridNative:
 		return true, e.emitRangeWindowGridNative(v)
+	case *chplan.RangeWindowGridNativeVectorAgg:
+		return true, e.emitRangeWindowGridNativeVectorAgg(v)
 	case *chplan.RangeWindowGridNativeInstant:
 		return true, e.emitRangeWindowGridNativeInstant(v)
 	case *chplan.RangeLWR:

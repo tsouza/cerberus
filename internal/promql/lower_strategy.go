@@ -381,6 +381,34 @@ type RangeLowerers struct {
 	// keeps every deployment below the version floor on the pre-fusion
 	// SQL, byte-unchanged.
 	ArgAndMaxFusion bool
+
+	// VectorAgg is the resolved chopt.FeatureTSGridVectorAgg verdict
+	// (cerberus issue #2763), read directly by lowerAggregate. Like
+	// ArgAndMaxFusion it is a plain bool, not a swappable Lowerer: there is
+	// no per-range-function strategy to select between here, only whether
+	// lowerAggregate — a DIFFERENT lowering stage than any of the Native*
+	// Lowerer fields above, invoked AFTER a range function has already
+	// lowered to a possibly-native node — may fold an eligible outer
+	// sum/min/max/avg/count by/without directly into that node's own
+	// pre-explode grid via chplan.RangeWindowGridNativeVectorAgg, instead of
+	// building the ordinary exploded-then-grouped chplan.Aggregate.
+	//
+	// It is a pure narrowing of ts_grid_range in the SAME sense
+	// ts_grid_recollapse is: lowerAggregate only ever consults it AFTER
+	// confirming its own input is already a *chplan.RangeWindowGridNative
+	// (which can only exist when ts_grid_range fired for that node), so
+	// "VectorAgg true but no native grid beneath it" is unreachable by
+	// construction rather than a case this field's zero value has to guard
+	// against. cmd/cerberus's nativeRangeLowerers sets it from
+	// optSet.Has(chopt.FeatureTSGridVectorAgg), unconditionally (unlike
+	// ts_grid_recollapse, which is threaded ONLY inside the
+	// "ts_grid_range enabled" branch that builds NativeRateLowerer) because
+	// this field lives on RangeLowerers itself rather than on any single
+	// Native*Lowerer — mirroring FeatureTSGridInstant's own single-flag,
+	// governs-every-function shape rather than nine per-function siblings.
+	// False (the default) keeps every deployment on the unchanged
+	// exploded-then-grouped Aggregate shape.
+	VectorAgg bool
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its

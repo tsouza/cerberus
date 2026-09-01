@@ -20,6 +20,7 @@ func sliceInvariantRegisteredKinds() []chplan.Node {
 		&chplan.Aggregate{},
 		&chplan.RangeWindow{},
 		&chplan.RangeWindowGridNative{},
+		&chplan.RangeWindowGridNativeVectorAgg{},
 		&chplan.RangeLWR{},
 		&chplan.RangeBucketFanout{},
 		&chplan.RangeBucketGridNative{},

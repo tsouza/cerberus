@@ -20,7 +20,12 @@ import (
 // explicitly via CERBERUS_CH_OPTIMIZATIONS=auto,ts_grid_changes. This
 // package's whole point is exercising every family, so it resolves against
 // the identical explicit union rather than "auto" alone.
-const AllNativeOptimizations = "auto," + chopt.FeatureTSGridChanges
+// chopt.FeatureTSGridVectorAgg joins it for the same reason: it shares
+// ts_grid_range's own 25.9 floor (not a higher one — unlike ts_grid_instant
+// / quantile_prom_histogram / ts_grid_last_over_time below, which stay OUT
+// of this union for exactly that reason), but is AutoSelect: false as a
+// brand-new, not-yet-fielded code path (cerberus issue #2763).
+const AllNativeOptimizations = "auto," + chopt.FeatureTSGridChanges + "," + chopt.FeatureTSGridVectorAgg
 
 // ResolveEnabledSet probes client's connected server version and ts_grid
 // experimental capability, then resolves optimizations against them in
@@ -66,6 +71,12 @@ func ResolveEnabledSet(ctx context.Context, t testing.TB, client *chclient.Clien
 // as main.go's does.
 func BuildRangeLowerers(set chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
+
+	// ts_grid_vector_agg lives on RangeLowerers itself (never nested inside
+	// a `set.Has(chopt.FeatureTSGridRange)` branch) — mirrors
+	// cmd/cerberus/main.go's nativeRangeLowerers exactly; see
+	// promql.RangeLowerers.VectorAgg's own doc for why.
+	l.VectorAgg = set.Has(chopt.FeatureTSGridVectorAgg)
 
 	// ts_grid_instant is NOT part of AllNativeOptimizations (new 26.5 floor,
 	// AutoSelect=false — see chopt.FeatureTSGridInstant's own doc), the same

@@ -583,6 +583,21 @@ func (p *Planner) walkNode(n chplan.Node, predStart, predEnd time.Time, predStep
 		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
 		return
 
+	case *chplan.RangeWindowGridNativeVectorAgg:
+		// The ForEach-combinator narrowing (cerberus issue #2763) that elides
+		// an ordinary Aggregate for an eligible native-grid vector
+		// aggregation — same "sweep the group keys before recursing" duty
+		// the Aggregate arm above carries, for the identical now64-hidden-
+		// in-a-group-key hazard. It carries no grid of its own (Input, a
+		// *chplan.RangeWindowGridNative, is the sole carrier), so depth and
+		// the predicted bounds pass through UNCHANGED — exactly like the
+		// Aggregate arm above, which this node structurally replaces.
+		for _, e := range v.GroupBy {
+			p.walkExpr(e, predStart, predEnd, predStep, sig)
+		}
+		p.walkNode(v.Input, predStart, predEnd, predStep, depth, sig)
+		return
+
 	case *chplan.RangeBucketFanout:
 		p.walkRangeBucketFanout(v, predStart, predEnd, depth, sig)
 		return

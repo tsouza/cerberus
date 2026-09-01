@@ -368,18 +368,61 @@ func nativeGridTsAxisFrag(fn, tsColumn string) Frag {
 // onto the per-query ClickHouse context (see internal/engine +
 // internal/chclient).
 func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) error {
+	arrayLevel, outerKeyFrags, _, _, err := e.nativeGridArrayLevel(r)
+	if err != nil {
+		return err
+	}
+
+	// Outer SELECT — explode the parallel arrays in lockstep, drop NULL
+	// cells, cast to a non-nullable Float64, and surface anchor_ts under
+	// both the bare alias and the schema timestamp column name.
+	outer := NewQuery().From(arrayLevel.Frag())
+	outer.Select(outerKeyFrags...)
+	outer.Select(As(nativeAnchorTimestampFrag(), RangeWindowAnchorAlias))
+	if r.TimestampColumn != RangeWindowAnchorAlias {
+		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
+	}
+	outer.Select(As(nativeGridValueExpr(r), r.ValueColumn))
+	outer.ArrayJoin(
+		As(Col(nativeGridArrayAlias), nativeGridValAlias),
+		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),
+	)
+	outer.Where(IsNotNull(Col(nativeGridValAlias)))
+
+	return e.emitSelect(outer)
+}
+
+// nativeGridArrayLevel renders every level of a RangeWindowGridNative BELOW
+// its own final explode: the validation guards, the (two-level or
+// three-level, per Recollapse) per-series grid assembly, and the
+// (outerKeyFrags, grid, grid_ts) triple the explode level consumes. It is
+// the shared core [emitRangeWindowGridNative] and
+// [emitRangeWindowGridNativeVectorAgg] both build on — the ONLY difference
+// between the two emitters is what sits directly above this level: an
+// immediate ARRAY JOIN explode for the former, one extra GROUP BY /
+// `-ForEach` combine level (folding an eligible outer PromQL vector
+// aggregation in BEFORE any explode happens) for the latter.
+//
+// The returned agg is nativeTSGridFn[r.Func] (already validated), handed
+// back so a caller does not have to re-look it up; the returned gridTS is
+// the SAME pure timeSeriesRange(...) expression arrayLevel's own grid_ts
+// column carries, so a caller that needs the anchor axis one level up can
+// recompute it directly (a closed-form function of r's fixed Start/End/Step,
+// not of any row) instead of reading it back out of a combined row.
+func (e *emitter) nativeGridArrayLevel(r *chplan.RangeWindowGridNative) (arrayLevel *QueryBuilder, outerKeyFrags []Frag, agg nativeTSGridAgg, gridTS Frag, err error) {
 	if r.TimestampColumn == "" {
-		return fmt.Errorf("%w: RangeWindowGridNative.TimestampColumn unset", ErrUnsupported)
+		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative.TimestampColumn unset", ErrUnsupported)
 	}
 	if r.ValueColumn == "" {
-		return fmt.Errorf("%w: RangeWindowGridNative.ValueColumn unset", ErrUnsupported)
+		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative.ValueColumn unset", ErrUnsupported)
 	}
 	if r.Step <= 0 {
-		return fmt.Errorf("%w: RangeWindowGridNative requires Step > 0 (range mode)", ErrUnsupported)
+		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative requires Step > 0 (range mode)", ErrUnsupported)
 	}
-	agg, ok := nativeTSGridFn[r.Func]
+	var ok bool
+	agg, ok = nativeTSGridFn[r.Func]
 	if !ok {
-		return fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear, delta, irate, idelta)", ErrUnsupported, r.Func)
+		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative func %q (supported: rate, increase, changes, resets, deriv, predict_linear, delta, irate, idelta)", ErrUnsupported, r.Func)
 	}
 	// predict_linear threads its future-offset horizon t (whole seconds) as the
 	// 5th parametric arg of timeSeriesPredictLinearToGrid. The PromQL lowering
@@ -388,10 +431,10 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	// carry exactly one Scalar; any other func must carry none.
 	if r.Func == "predict_linear" {
 		if len(r.Scalars) != 1 {
-			return fmt.Errorf("%w: RangeWindowGridNative predict_linear requires exactly 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
+			return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative predict_linear requires exactly 1 scalar (t), got %d", ErrUnsupported, len(r.Scalars))
 		}
 	} else if len(r.Scalars) != 0 {
-		return fmt.Errorf("%w: RangeWindowGridNative func %q takes no scalar, got %d", ErrUnsupported, r.Func, len(r.Scalars))
+		return nil, nil, nativeTSGridAgg{}, nil, fmt.Errorf("%w: RangeWindowGridNative func %q takes no scalar, got %d", ErrUnsupported, r.Func, len(r.Scalars))
 	}
 
 	// Every deferred-shaping guard runs BEFORE anything is rendered: a node
@@ -403,20 +446,19 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 		shapedInputIdx  []int
 		groupFrags      []Frag
 		recollapseFrags []Frag
-		err             error
 	)
 	if len(r.Recollapse) == 0 {
 		if groupFrags, err = e.collectGroupByFrags(r.GroupBy); err != nil {
-			return err
+			return nil, nil, nativeTSGridAgg{}, nil, err
 		}
 	} else {
 		var groupCols []string
 		if groupCols, err = requireRecollapseEmittable(r, agg); err != nil {
-			return err
+			return nil, nil, nativeTSGridAgg{}, nil, err
 		}
 		passIdx, shapedInputIdx = r.PartitionRecollapseGroupBy(groupCols)
 		if groupFrags, recollapseFrags, err = e.collectRecollapseFrags(r, passIdx, shapedInputIdx); err != nil {
-			return err
+			return nil, nil, nativeTSGridAgg{}, nil, err
 		}
 	}
 
@@ -456,19 +498,12 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 	// (offset 0), keeping this axis and gridAgg's in lockstep.
 	gridStartFrag := nativeGridTimeBoundFrag(r.Start, 0)
 	gridEndFrag := nativeGridTimeBoundFrag(r.End, 0)
-	gridTS := Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
+	gridTS = Call("timeSeriesRange", gridStartFrag, gridEndFrag, InlineLit(stepSeconds))
 
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
-		return err
+		return nil, nil, nativeTSGridAgg{}, nil, err
 	}
-
-	// arrayLevel is the sub-SELECT that hands the outer level its (grid,
-	// grid_ts) pair — the inner level in the two-level shape, the middle
-	// (merge) level in the three-level one. outerKeyFrags is the series
-	// identity the outer level projects alongside it.
-	var arrayLevel *QueryBuilder
-	var outerKeyFrags []Frag
 
 	if len(r.Recollapse) == 0 {
 		// Inner SELECT — one row per series carrying the (grid, grid_ts) pair.
@@ -486,69 +521,50 @@ func (e *emitter) emitRangeWindowGridNative(r *chplan.RangeWindowGridNative) err
 		// GroupBy is a no-op on an empty slice, so no length guard is needed.
 		inner.GroupBy(groupFrags...)
 
-		arrayLevel = inner
-		outerKeyFrags = groupFrags
-	} else {
-		// Inner (state) SELECT — one PARTIAL AGGREGATION STATE per RAW series,
-		// grouped on the raw keys. Identical to the two-level inner level but
-		// for the -State combinator and the state alias; the scan bound is the
-		// same one, on the same level, so the hoist changes no granule pruning.
-		state := NewQuery().From(innerSub)
-		state.Select(groupFrags...)
-		state.Select(As(Parametric(agg.StateFn, gridParams, tsAxis, Col(r.ValueColumn)), nativeGridStateAlias))
-		maybePushRangeScanTimeBound(state, r.TimestampColumn, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
-		state.GroupBy(groupFrags...)
-
-		// Middle (merge) SELECT — evaluate the shaping tower once per raw
-		// series and merge the states of every raw series that shapes onto the
-		// same output key. The pass-through identity keys are projected and
-		// grouped VERBATIM; only the shaped keys change identity here.
-		merge := NewQuery().From(state.Frag())
-		mergeKeys := make([]Frag, 0, len(passIdx)+len(r.Recollapse))
-		for _, i := range passIdx {
-			merge.Select(groupFrags[i])
-			mergeKeys = append(mergeKeys, groupFrags[i])
-		}
-		for i := range r.Recollapse {
-			merge.SelectAs(recollapseFrags[i], nativeShapedKeyAlias(i))
-			mergeKeys = append(mergeKeys, Col(nativeShapedKeyAlias(i)))
-		}
-		// The -Merge form takes ONE argument, the state column — the (ts,
-		// value) pair was already consumed by the -State level. Its parametric
-		// tuple is the SAME (start, end, step, window) the state carries: the
-		// two must describe the same grid or the merged states land on
-		// mismatched anchors.
-		merge.Select(As(Parametric(agg.MergeFn, gridParams, Col(nativeGridStateAlias)), nativeGridArrayAlias))
-		merge.Select(As(gridTS, nativeGridTSAlias))
-		merge.GroupBy(mergeKeys...)
-
-		arrayLevel = merge
-		outerKeyFrags = make([]Frag, 0, len(passIdx)+len(r.Recollapse))
-		for _, i := range passIdx {
-			outerKeyFrags = append(outerKeyFrags, groupFrags[i])
-		}
-		for i := range r.Recollapse {
-			outerKeyFrags = append(outerKeyFrags, As(Col(nativeShapedKeyAlias(i)), r.Recollapse[i].Alias))
-		}
+		return inner, groupFrags, agg, gridTS, nil
 	}
 
-	// Outer SELECT — explode the parallel arrays in lockstep, drop NULL
-	// cells, cast to a non-nullable Float64, and surface anchor_ts under
-	// both the bare alias and the schema timestamp column name.
-	outer := NewQuery().From(arrayLevel.Frag())
-	outer.Select(outerKeyFrags...)
-	outer.Select(As(nativeAnchorTimestampFrag(), RangeWindowAnchorAlias))
-	if r.TimestampColumn != RangeWindowAnchorAlias {
-		outer.Select(As(nativeAnchorTimestampFrag(), r.TimestampColumn))
-	}
-	outer.Select(As(nativeGridValueExpr(r), r.ValueColumn))
-	outer.ArrayJoin(
-		As(Col(nativeGridArrayAlias), nativeGridValAlias),
-		As(Col(nativeGridTSAlias), RangeWindowAnchorAlias),
-	)
-	outer.Where(IsNotNull(Col(nativeGridValAlias)))
+	// Inner (state) SELECT — one PARTIAL AGGREGATION STATE per RAW series,
+	// grouped on the raw keys. Identical to the two-level inner level but
+	// for the -State combinator and the state alias; the scan bound is the
+	// same one, on the same level, so the hoist changes no granule pruning.
+	state := NewQuery().From(innerSub)
+	state.Select(groupFrags...)
+	state.Select(As(Parametric(agg.StateFn, gridParams, tsAxis, Col(r.ValueColumn)), nativeGridStateAlias))
+	maybePushRangeScanTimeBound(state, r.TimestampColumn, r.Start, r.End, offsetNS, r.Range.Nanoseconds())
+	state.GroupBy(groupFrags...)
 
-	return e.emitSelect(outer)
+	// Middle (merge) SELECT — evaluate the shaping tower once per raw
+	// series and merge the states of every raw series that shapes onto the
+	// same output key. The pass-through identity keys are projected and
+	// grouped VERBATIM; only the shaped keys change identity here.
+	merge := NewQuery().From(state.Frag())
+	mergeKeys := make([]Frag, 0, len(passIdx)+len(r.Recollapse))
+	for _, i := range passIdx {
+		merge.Select(groupFrags[i])
+		mergeKeys = append(mergeKeys, groupFrags[i])
+	}
+	for i := range r.Recollapse {
+		merge.SelectAs(recollapseFrags[i], nativeShapedKeyAlias(i))
+		mergeKeys = append(mergeKeys, Col(nativeShapedKeyAlias(i)))
+	}
+	// The -Merge form takes ONE argument, the state column — the (ts,
+	// value) pair was already consumed by the -State level. Its parametric
+	// tuple is the SAME (start, end, step, window) the state carries: the
+	// two must describe the same grid or the merged states land on
+	// mismatched anchors.
+	merge.Select(As(Parametric(agg.MergeFn, gridParams, Col(nativeGridStateAlias)), nativeGridArrayAlias))
+	merge.Select(As(gridTS, nativeGridTSAlias))
+	merge.GroupBy(mergeKeys...)
+
+	outerKeyFrags = make([]Frag, 0, len(passIdx)+len(r.Recollapse))
+	for _, i := range passIdx {
+		outerKeyFrags = append(outerKeyFrags, groupFrags[i])
+	}
+	for i := range r.Recollapse {
+		outerKeyFrags = append(outerKeyFrags, As(Col(nativeShapedKeyAlias(i)), r.Recollapse[i].Alias))
+	}
+	return merge, outerKeyFrags, agg, gridTS, nil
 }
 
 // nativeGridValueExpr renders the outer level's Value column: the exploded
