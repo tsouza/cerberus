@@ -114,6 +114,43 @@ const (
 	// subquery_inner_anchor_synthesised.txtar, all enrolled with a real
 	// `parity:` section for exactly that reason).
 	ReasonVacuousEmptyInput = "vacuous-empty-input"
+
+	// ReasonDuplicateTimestampSeed covers a fixture whose seed
+	// DELIBERATELY carries two metric samples at one (series, timestamp)
+	// with DIFFERENT values, in order to pin how cerberus's own emitted
+	// shape treats that pair. Like [ReasonVacuousEmptyInput] this is a
+	// fact about the SEED rather than about the operator.
+	//
+	// Which of the two survives is implementation-defined on both sides.
+	// Prometheus's TSDB appender stores at most one sample per (series,
+	// timestamp): parityoracle/promql/oracle.go's appendSeries feeds a
+	// real teststorage head, and the second sample is dropped at commit,
+	// so the survivor is whichever arrived first — a fact about the
+	// appender and about ingestion order, not about PromQL. ClickHouse
+	// keeps both rows, and which one a lowering surfaces depends on the
+	// emitted shape: the sorted-slab over_time path sums both, the
+	// array-fold path's arraySort(groupArray((ts, value))) breaks the tie
+	// by VALUE, and the rate family deduplicates by design. So the
+	// reference has no answer for cerberus to agree with, however
+	// faithfully it reimplements the operator.
+	//
+	// The contract such a fixture pins is not lost with the enrolment: it
+	// is pinned by a cerberus-vs-cerberus differential over the same seed
+	// (internal/promql/duplicate_timestamp_seed_chdb_test.go), a sharper
+	// oracle than a reference backend for this question — it compares the
+	// strategy under test against the fan-out strategy it must agree
+	// with, rather than against an engine that discarded one of the
+	// samples before evaluating anything.
+	//
+	// This is NOT the reason for a duplicate whose rows carry IDENTICAL
+	// values. Prometheus still keeps one row there and ClickHouse still
+	// keeps two, so a counting reducer can still diverge — but that
+	// divergence has a RIGHT answer (the reference's) and cerberus can be
+	// made to match it, which is an ordinary bug to fix at the source
+	// rather than a structural claim.
+	// increase_duplicate_timestamp_dedup.txtar seeds exactly that, stays
+	// ENROLLED, and passes because the rate family deduplicates.
+	ReasonDuplicateTimestampSeed = "duplicate-timestamp-seed"
 )
 
 // parityExemptReasons is the single source of truth for the `reason`
@@ -125,6 +162,7 @@ var parityExemptReasons = []string{
 	ReasonNoComparableOracle,
 	ReasonRejectionOnly,
 	ReasonVacuousEmptyInput,
+	ReasonDuplicateTimestampSeed,
 }
 
 // ParityExemptReasons returns the accepted `reason` values, sorted.

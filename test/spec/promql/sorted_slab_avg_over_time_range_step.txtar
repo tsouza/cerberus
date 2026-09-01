@@ -3,16 +3,23 @@
 # sorted_slab_sum_over_time_range_step.txtar, pinning avg_over_time's
 # nonEmptyWindowOrNaNFrag(arrayAvg(...)) reducer over the same sliced window.
 #
-# job 'api' carries a duplicate-timestamp pair (00:02:00 appears twice) to
-# pin the no-dedup contract (every sample counts individually, matching the
-# array-fold path, including in the divisor); job 'web' is a plain monotonic
-# series.
+# job 'api' carries a duplicate-timestamp pair (00:02:00 appears twice, with
+# DIFFERENT values 2.0 and 3.0) to pin the no-dedup contract (every sample
+# counts individually, matching the array-fold path, including in the
+# divisor); job 'web' is a plain monotonic series.
+#
+# That duplicate is why this fixture is parity-EXEMPT rather than enrolled
+# (cerberus issue #2905): Prometheus's TSDB appender keeps one sample per
+# (series, timestamp) and drops 3.0 at commit, so a reference comparison here
+# would assert that cerberus agrees with a survivor chosen by ingestion order.
+# The no-dedup contract is pinned instead, over this very seed, by
+# internal/promql/duplicate_timestamp_seed_chdb_test.go, which holds the
+# sorted-slab answer against the fan-out array-fold answer it must equal.
 -- query.promql --
 avg by(job) (avg_over_time(http_requests_total[5m]))
--- parity --
-oracle: prometheus
-endpoint: /api/v1/query_range
-scope: full
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: job 'api' seeds 00:02:00 twice with 2.0 and 3.0 to pin that avg_over_time's sorted-slab reducer counts both samples in numerator and divisor; the reference engine's appender keeps only the first-ingested one, so it has no answer to compare against.
 -- range_step --
 30s
 -- experimental_sorted_slab_over_time --
