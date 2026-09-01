@@ -450,6 +450,7 @@ native_changes_vector_agg_by_range_step.txtar
 native_changes_vector_agg_range_step.txtar
 native_delta_range_step.txtar
 native_deriv_range_step.txtar
+native_group_array_delta_range_step.txtar
 native_idelta_range_step.txtar
 native_increase_range_step.txtar
 native_irate_range_step.txtar

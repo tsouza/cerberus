@@ -252,6 +252,19 @@ var nativeStrategies = []nativeStrategy{
 			l.VectorAgg = true
 		},
 	},
+	{
+		field:   "NativeGroupArray",
+		section: "experimental_ts_grid_group_array",
+		// Like ArgAndMaxFusion/VectorAgg, a plain bool: see
+		// promql.RangeLowerers.NativeGroupArray's own doc for why there is
+		// no alternate strategy TYPE to select between — it only changes
+		// how rate/increase/delta's array-fold fallback tier assembles its
+		// sample array, not which of that family's own Native /
+		// FixedAccumulator / Fanout tiers fires.
+		wire: func(l *promql.RangeLowerers, _ func(string) bool) {
+			l.NativeGroupArray = true
+		},
+	},
 }
 
 // wireNativeStrategies builds the dispatch table for a fixture from the

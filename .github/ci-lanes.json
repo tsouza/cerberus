@@ -412,6 +412,7 @@
         "structural-two-phase-external-table-integration",
         "traces-scan-bound-integration",
         "traces-scan-window-integration",
+        "ts-grid-group-array-integration",
         "ts-grid-last-over-time-integration"
       ],
       "command": "strict-scan and real-ClickHouse integration recipes",

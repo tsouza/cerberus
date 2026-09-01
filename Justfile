@@ -576,6 +576,22 @@ ts-grid-last-over-time-integration:
     @just _pull-retry {{CH_STRICT_SCAN_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestLastOverTime_NativeResample_WindowNarrowerThanStep_RealCH ./internal/chsql/...
 
+# Run the ts_grid_group_array real-CH precondition + regression pin (#2749):
+# verifies timeSeriesGroupArray accepts a DateTime64(9) timestamp losslessly
+# (contrary to the function's own documented UInt32/DateTime/UInt64
+# signature), that a NaN-bearing duplicate timestamp collapses in an
+# insertion-order-DEPENDENT way (the reason
+# chopt.FeatureTSGridGroupArray ships AutoSelect: false), and — end to end
+# through cerberus's own lowering + emitter — that rate()'s native array-fold
+# assembly matches the fan-out exactly on a genuine duplicate, non-NaN
+# timestamp. The feature's own floor (25.9) is the family's usual one, so
+# this pins CH_TEST_IMAGE directly rather than reusing CH_STRICT_SCAN_IMAGE's
+# higher 26.6 pin. Requires Docker; gated behind the `integration` build tag.
+# See internal/chsql/range_window_group_array_realch_integration_test.go.
+ts-grid-group-array-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run '^(TestTimeSeriesGroupArray_|TestRate_NativeGroupArray_)' ./internal/chsql/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":

@@ -679,6 +679,83 @@ const (
 	// listing.
 	FeatureSortedSlabOverTime = "sorted_slab_over_time"
 
+	// FeatureTSGridGroupArray swaps the fan-out window-assembly idiom's
+	// `groupArray((ts,value))` + `arraySort` (+, at four sites, the
+	// `arrayReverse`/`arrayCompact`/`arrayReverse` last-of-run dedup triple,
+	// dedupWindowPairsByTsFrag) for the native
+	// `timeSeriesGroupArray(ts, value)` aggregate, which sorts AND collapses
+	// duplicate timestamps in one pass (cerberus issue #2749). Scoped to the
+	// three plain (non-split-window) sites that already carry the dedup
+	// triple: emitWindowedArrayExtrapolated's instant-path per-series array,
+	// emitWindowedArrayExtrapolatedMatrix's non-temporality-split regroup
+	// branch, and the fused multi-anchor slab (range_window_fused.go).
+	// Downstream Frag towers (window_pairs, window_vals, counter_delta, …)
+	// are unchanged either way.
+	//
+	// Explicitly OUT of scope, verified rather than assumed:
+	//   - The split-window groupArrayIf sites (range_window.go's
+	//     needsDeltaFirstLevel branch) and deltaPrefixSumFrag, which
+	//     exclusively consumes that branch's output: a plain
+	//     timeSeriesGroupArrayIf(ts, value, cond) DOES work (measured against
+	//     a real 26.6.3 server, contradicting the "no -If variant" premise),
+	//     but these sites are deliberately left on the hand-rolled idiom to
+	//     keep this cut to the four sites the dedup triple already touches —
+	//     tracked as a follow-up, https://github.com/tsouza/cerberus/issues/2862.
+	//   - The fused multi-arm variant tower (groupArrayVariantTupleFrag):
+	//     genuinely inexpressible, not just out of scope — it carries N
+	//     distinct value columns per sample in one tuple array, while
+	//     timeSeriesGroupArray is a fixed binary (timestamp, value)
+	//     aggregate (confirmed against system.functions and by direct call).
+	//   - Every site that sorts WITHOUT already deduping today (the
+	//     `*_over_time` array path, holt_winters, subquery interiors, the
+	//     pairs shapes irate/deriv/predict_linear/timestamp): OTel/ClickHouse
+	//     ingestion can genuinely write two rows with the same (Attributes,
+	//     TimeUnix) (dedupWindowPairsByTsFrag's own doc, the reason the four
+	//     dedup sites exist at all), so swapping any of these would SILENTLY
+	//     introduce duplicate-timestamp collapsing where the fan-out
+	//     currently sums/counts/tie-breaks every duplicate — a behavior
+	//     change this issue has no evidence to justify site-by-site.
+	//
+	// Timestamp-type precondition (measured against a real ClickHouse 26.6.3
+	// server): timeSeriesGroupArray(DateTime64(9), Float64) is accepted
+	// DIRECTLY and LOSSLESSLY, full nanosecond precision round-tripping, the
+	// result typed exactly Array(Tuple(DateTime64(9), Float64)) — byte-
+	// identical to window_pairs' existing element type — contradicting the
+	// function's own documented UInt32/DateTime/UInt64 signature. No
+	// toUnixTimestamp64Nano wrap-and-arrayMap-back pass is needed (and none
+	// is implemented): UInt64 was tried too, for comparison, and is REJECTED
+	// outright (ILLEGAL_TYPE_OF_ARGUMENT), so the documented UInt64
+	// alternative is not even reachable as a fallback shape.
+	//
+	// NaN precondition (measured, the reason AutoSelect is false): the
+	// existing dedupWindowPairsByTsFrag idiom is deterministic on a
+	// duplicate-timestamp NaN — arraySort ranks NaN greatest, so it always
+	// survives the last-of-run keep, independent of insertion order (both
+	// orderings verified). timeSeriesGroupArray's own duplicate-timestamp
+	// collapse is a running "replace current-best only when candidate >
+	// current-best" fold: for finite values this converges to the same true
+	// max regardless of insertion order (also verified both orderings), but
+	// IEEE754 makes every comparison against NaN false, so a NaN landing
+	// FIRST at a duplicate timestamp can never be replaced, and a NaN
+	// landing after any non-NaN can never displace it — the surviving value
+	// depends on which row a (possibly multi-threaded, multi-part) scan
+	// visits first. That is not just a divergence from the fan-out's own
+	// NaN-always-wins rule, it is NON-DETERMINISTIC. This codebase already
+	// forced ts_grid_changes into AutoSelect: false for an analogous
+	// NaN-adjacent native/fan-out divergence (#1721); this feature follows
+	// the identical posture rather than risk a query whose answer can flip
+	// between two runs of the same data.
+	//
+	// Shares the timeSeries*ToGrid family's registry gate
+	// (allow_experimental_time_series_aggregate_functions) and 25.9 floor —
+	// timeSeriesGroupArray itself shipped in 25.8, but the family's single
+	// capability probe only ever ran against the left-open/right-closed
+	// staleness-window fix (PR #86588, landed 25.9); pinning this feature to
+	// 25.8 would let it auto-fire on a probe verdict that never actually
+	// exercised it, the same reasoning ts_grid_deriv / ts_grid_predict_linear
+	// give for their own 25.9 floor despite shipping in 25.8.
+	FeatureTSGridGroupArray = "ts_grid_group_array"
+
 	// FeatureMapBucketedSerialization stamps
 	// map_serialization_version='with_buckets' on the logs table and the
 	// traces spans table's CREATE TABLE SETTINGS tail (cerberus issue #2774).
@@ -1857,6 +1934,14 @@ var registry = []Feature{
 		Stability:  Experimental,
 		AutoSelect: false,
 		Doc:        "opt eligible query_range sum_over_time/avg_over_time shapes onto a per-series sorted-slab groupArray sliced per anchor, retiring the arrayJoin fan-out + per-(series, anchor) regroup (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS pending optcorpus A/B)",
+	},
+	{
+		ID:                         FeatureTSGridGroupArray,
+		MinVersion:                 Version{Major: 25, Minor: 9},
+		Stability:                  Experimental,
+		AutoSelect:                 false,
+		RequiresExperimentalTSGrid: true,
+		Doc:                        "swap groupArray+arraySort(+dedup) window assembly for native timeSeriesGroupArray at sites that already dedup (server >= 25.9, opt-in — native collapse is order-dependent on a NaN duplicate, so auto never picks it)",
 	},
 	{
 		ID:         FeatureMapBucketedSerialization,

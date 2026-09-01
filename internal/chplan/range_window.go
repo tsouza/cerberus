@@ -384,6 +384,32 @@ type RangeWindow struct {
 	// delta() ever take (see chopt.FeatureDownsampleTier's own doc for why
 	// those three are structurally never eligible).
 	DownsampleTier bool
+
+	// NativeGroupArray asks the array-fold emitter to assemble the per-series
+	// (timestamp, value) sample array via the native `timeSeriesGroupArray`
+	// aggregate instead of `groupArray` + `arraySort` (+, where the site
+	// already dedups, the arrayReverse/arrayCompact/arrayReverse dedup
+	// triple) — cerberus issue #2749. A plain emission-detail bit, not a
+	// swappable strategy: it never changes WHICH Lowerer a rate/increase/
+	// delta query resolves to (that stays this family's usual Native /
+	// FixedAccumulator / Fanout tiering), only how the innermost array-fold
+	// tier — reachable as any of those tiers' ultimate fallback — assembles
+	// its sample array. Set unconditionally from the boot-resolved
+	// chopt.FeatureTSGridGroupArray verdict wherever the emitter reaches an
+	// eligible site; never read as a per-query feature flag.
+	//
+	// Consulted only at the three sites that already carry the dedup triple
+	// and assemble a plain (non-split-window) binary (ts, value) array: the
+	// windowed-array instant path, the windowed-array matrix path's
+	// non-temporality-split regroup, and the fused multi-anchor slab. The
+	// split-window groupArrayIf sites and the fused multi-arm variant tower
+	// never read this field — see chopt.FeatureTSGridGroupArray's own doc for
+	// why both stay on the hand-rolled idiom.
+	//
+	// false (the default) keeps the unchanged groupArray+arraySort(+dedup)
+	// emission — the permanent, always-available fallback the
+	// FeatureTSGridGroupArray chopt kill-switch resolves to.
+	NativeGroupArray bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -535,6 +561,9 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 		return false
 	}
 	if r.DownsampleTier != o.DownsampleTier {
+		return false
+	}
+	if r.NativeGroupArray != o.NativeGroupArray {
 		return false
 	}
 	return r.VariantColumn == o.VariantColumn

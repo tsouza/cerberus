@@ -2222,6 +2222,55 @@ func groupArrayPairFrag(tsCol, valCol string) Frag {
 		Call("groupArray", Tuple(Col(tsCol), Col(valCol))))
 }
 
+// nativeGroupArrayPairFrag returns a Frag rendering
+// `timeSeriesGroupArray(<tsCol>, <valCol>)` — the native ClickHouse
+// aggregate replacement for groupArrayPairFrag (chopt.FeatureTSGridGroupArray,
+// cerberus issue #2749). Measured against a real ClickHouse 26.6.3 server:
+// it accepts the DateTime64(9) timestamp column directly and losslessly (see
+// chopt.FeatureTSGridGroupArray's doc for the full empirical finding), sorts
+// ascending by timestamp exactly like arraySort(groupArray(...)) (verified
+// with out-of-order insertion), and additionally collapses duplicate
+// timestamps to the max-valued sample as it aggregates — byte-identical
+// membership and ordering to groupArrayPairFrag followed by
+// dedupWindowPairsByTsFrag, except on a NaN-bearing duplicate timestamp (see
+// that doc's NaN precondition finding, the reason this feature is opt-in
+// only). Callers that swap to this Frag must skip the subsequent
+// dedupWindowPairsByTsFrag / dedupWindowPairsLayer step — see
+// seriesArrayPairFrag.
+func nativeGroupArrayPairFrag(tsCol, valCol string) Frag {
+	return Call("timeSeriesGroupArray", Col(tsCol), Col(valCol))
+}
+
+// seriesArrayPairFrag picks groupArrayPairFrag or nativeGroupArrayPairFrag
+// for a per-series (timestamp, value) sample-array assembly site, based on
+// r.NativeGroupArray (chopt.FeatureTSGridGroupArray, cerberus issue #2749).
+// Every caller of this helper is a plain, non-split-window assembly — the
+// needsDeltaFirstLevel groupArrayIf split-window sites never call it (see
+// chopt.FeatureTSGridGroupArray's doc for why they stay hand-rolled) — so
+// the choice is a pure emission-detail swap: the two idioms produce the same
+// element type, the same ascending-by-timestamp order, and (outside the NaN
+// edge case) the same deduplicated membership.
+func seriesArrayPairFrag(r *chplan.RangeWindow, tsCol, valCol string) Frag {
+	if r.NativeGroupArray {
+		return nativeGroupArrayPairFrag(tsCol, valCol)
+	}
+	return groupArrayPairFrag(tsCol, valCol)
+}
+
+// matrixWindowPairsAlreadyDeduped reports whether
+// emitWindowedArrayExtrapolatedMatrix's regroup already assembled
+// `window_pairs` via the native, self-deduping timeSeriesGroupArray
+// aggregate (r.NativeGroupArray), so its caller's dedupWindowPairsLayer step
+// can skip the arrayReverse/arrayCompact/arrayReverse triple. The
+// needsDeltaFirstLevel branch always assembles window_pairs via the
+// hand-rolled groupArrayIf split instead (chopt.FeatureTSGridGroupArray's doc
+// explains why that stays hand-rolled), so it always still needs the dedup
+// pass regardless of r.NativeGroupArray — only the plain (non-split-window)
+// assembly seriesArrayPairFrag renders is ever already deduped.
+func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow, needsDeltaFirstLevel bool) bool {
+	return r.NativeGroupArray && !needsDeltaFirstLevel
+}
+
 // dedupWindowPairsByTsFrag collapses a `arraySort`-ordered
 // `Array(Tuple(ts, value))` down to one tuple per distinct timestamp,
 // keeping the LAST tuple of each equal-ts run. Because the input is
@@ -2272,10 +2321,20 @@ func dedupWindowPairsByTsFrag(arr Frag) Frag {
 // per-series `temporality` column when withTemporality is set) unchanged
 // so the downstream mid / extrap / outer layers consume a window array
 // that holds one sample per distinct timestamp.
+//
+// alreadyDeduped skips the dedupWindowPairsByTsFrag wrap and re-projects
+// `window_pairs` as-is: set when the upstream column was assembled via the
+// native timeSeriesGroupArray aggregate (chplan.RangeWindow.NativeGroupArray,
+// chopt.FeatureTSGridGroupArray, cerberus issue #2749), which already
+// collapses duplicate timestamps as it aggregates, so re-running the
+// arrayReverse/arrayCompact/arrayReverse triple over an already-deduped
+// array would be redundant work — it would still be correct (the triple is
+// idempotent on input with no duplicate timestamps), it would just spend the
+// three extra passes the native path exists to delete.
 func dedupWindowPairsLayer(
 	upstream Frag,
 	groupFrags []Frag,
-	withAnchor, withTemporality bool,
+	withAnchor, withTemporality, alreadyDeduped bool,
 	extraColumns ...string,
 ) Frag {
 	q := NewQuery().From(upstream)
@@ -2289,7 +2348,11 @@ func dedupWindowPairsLayer(
 	for _, col := range extraColumns {
 		q.Select(Col(col))
 	}
-	q.Select(As(dedupWindowPairsByTsFrag(BareIdent("window_pairs")), "window_pairs"))
+	windowPairs := Frag(BareIdent("window_pairs"))
+	if !alreadyDeduped {
+		windowPairs = dedupWindowPairsByTsFrag(windowPairs)
+	}
+	q.Select(As(windowPairs, "window_pairs"))
 	return q.Frag()
 }
 
@@ -3861,7 +3924,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 	// so any() over the window's rows is exact, not a lossy pick.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(As(seriesArrayPairFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
 	if hasTemporality {
 		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
@@ -3933,7 +3996,7 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 		extraColumns = append(extraColumns, deltaPrefixBeforeWindowAlias)
 	}
 	mid := NewQuery().From(dedupWindowPairsLayer(
-		innerMid.Frag(), groupFrags, false, hasTemporality, extraColumns...,
+		innerMid.Frag(), groupFrags, false, hasTemporality, r.NativeGroupArray, extraColumns...,
 	))
 	mid.Select(groupFrags...)
 	mid.Select(As(windowValsFrag(), "window_vals"))
@@ -4499,7 +4562,7 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 			deltaPrefixPairsAlias,
 		))
 	} else {
-		regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
+		regroup.Select(As(seriesArrayPairFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	}
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
@@ -4510,7 +4573,8 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 		extraColumns = append(extraColumns, deltaPrefixPairsAlias)
 	}
 	regroupSource := dedupWindowPairsLayer(
-		regroup.Frag(), groupFrags, true, hasTemporality, extraColumns...,
+		regroup.Frag(), groupFrags, true, hasTemporality,
+		matrixWindowPairsAlreadyDeduped(r, needsDeltaFirstLevel), extraColumns...,
 	)
 	if needsDeltaFirstLevel {
 		if useAggregateDeltaPrefix {

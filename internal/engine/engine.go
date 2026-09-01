@@ -712,13 +712,29 @@ func clampU8(v int64) uint8 {
 // timeSeriesPredictLinearToGrid for Func="predict_linear"), its instant-mode
 // sibling chplan.RangeWindowGridNativeInstant (the SAME five aggregates fed a
 // degenerate one-point grid, cerberus issue #2748), a
-// chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness), or a
+// chplan.RangeWindowStaleResample (timeSeriesResampleToGridWithStaleness), a
 // chplan.RangeBucketGridNative (the classic-histogram ladder, which reads
-// timeSeriesRateToGrid AND timeSeriesResetsToGrid). All share
-// the allow_experimental_time_series_aggregate_functions gate, so the engine
+// timeSeriesRateToGrid AND timeSeriesResetsToGrid), or a chplan.RangeWindow
+// whose DownsampleTier (cerberus issue #2751) or NativeGroupArray (cerberus
+// issue #2749) field is set. All share the
+// allow_experimental_time_series_aggregate_functions gate, so the engine
 // stamps the experimental setting on a query carrying ANY such node — the
 // changes / resets / deriv / predict_linear matrix functions ride the
 // RangeWindowGridNative match with no engine change.
+//
+// RangeWindow is the only member checked by FIELD rather than by bare type:
+// every other member's Go type exists ONLY to carry a native ts_grid
+// lowering, so a type-level match is precise. RangeWindow is the ordinary,
+// ubiquitous windowed-array node — matching it unconditionally would stamp
+// the experimental setting on every ordinary rate/increase/delta/
+// sum_over_time/… query regardless of DownsampleTier/NativeGroupArray, which
+// is wrong both ways: a query with neither field set never reaches an
+// experimental aggregate and so never needs the setting, and stamping it
+// anyway would mis-declare an ordinary query as depending on one it does not
+// use. DownsampleTier's own tier table reads
+// AggregateFunction(timeSeriesLastTwoSamples, ...); NativeGroupArray's array
+// assembly reads timeSeriesGroupArray — both share the SAME experimental
+// gate the four type-checked members above do.
 //
 // The sweep is chplan.WalkDeep, not chplan.Walk: a per-step scalar parameter
 // binds its vector as a chplan.ScalarSubquery, so a query whose ONLY ts-grid
@@ -726,14 +742,6 @@ func clampU8(v int64) uint8 {
 // * 2, m)` — hangs off an Expr slot that Walk does not follow. Missing it
 // leaves the setting unstamped and ClickHouse answers code 63 ("aggregate
 // function ... is experimental and disabled by default") on every such query.
-//
-// Also matches a *chplan.RangeWindow whose DownsampleTier field is true
-// (cerberus issue #2751): unlike the four dedicated node types above, the
-// downsampled long-range tier reuses the ordinary RangeWindow node with a
-// bool flag (see chplan.RangeWindow.DownsampleTier's own doc for why), so
-// this is a FIELD check rather than another type-only case — its tier
-// table's AggregateFunction(timeSeriesLastTwoSamples, ...) column shares
-// the SAME experimental gate the other four members do.
 func planHasTSGridNative(plan chplan.Node) bool {
 	found := false
 	chplan.WalkDeep(plan, func(n chplan.Node) bool {
@@ -743,7 +751,7 @@ func planHasTSGridNative(plan chplan.Node) bool {
 			found = true
 			return false // stop descending this branch
 		case *chplan.RangeWindow:
-			if v.DownsampleTier {
+			if v.DownsampleTier || v.NativeGroupArray {
 				found = true
 				return false
 			}

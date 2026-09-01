@@ -336,3 +336,18 @@ jobs:
       # internal/chsql/range_window_last_over_time_realch_integration_test.go.
       - name: Run ts_grid_last_over_time window-narrower-than-step regression (real ClickHouse)
         run: just ts-grid-last-over-time-integration
+
+      # The ts_grid_group_array real-CH precondition + regression pin
+      # (#2749): timeSeriesGroupArray accepts a DateTime64(9) timestamp
+      # directly and losslessly (contrary to its own documented
+      # UInt32/DateTime/UInt64 signature); a NaN-bearing duplicate timestamp
+      # collapses in an insertion-order-DEPENDENT way, unlike the fan-out's
+      # own deterministic dedup — the reason chopt.FeatureTSGridGroupArray
+      # ships AutoSelect: false; and, end to end through cerberus's own
+      # lowering + emitter, rate()'s native array-fold assembly matches the
+      # fan-out exactly on a genuine duplicate, non-NaN timestamp. Boots its
+      # own fresh testcontainer at CH_TEST_IMAGE (the feature's own 25.9
+      # floor) rather than this job's higher CH_STRICT_SCAN_IMAGE pin. See
+      # internal/chsql/range_window_group_array_realch_integration_test.go.
+      - name: Run ts_grid_group_array duplicate-timestamp + DateTime64 preconditions (real ClickHouse)
+        run: just ts-grid-group-array-integration
