@@ -402,6 +402,8 @@ func (b *Builder) Expr(x chplan.Expr) (err error) {
 		return b.exprInSubquery(v)
 	case *chplan.BoundedTraceScope:
 		return b.exprBoundedTraceScope(v)
+	case *chplan.WindowExpr:
+		return b.exprWindow(v)
 	default:
 		return fmt.Errorf("%w: expr %T", ErrUnsupported, x)
 	}
@@ -886,6 +888,58 @@ func (b *Builder) exprFunc(f *chplan.FuncCall) error {
 	}
 	b.sb.WriteByte(')')
 	return nil
+}
+
+// exprWindow renders chplan.WindowExpr as `<fn>(<Args>) OVER (PARTITION BY
+// <PartitionBy>)` via the Window Frag builder — the same window-clause
+// idiom chplan.TopK's computed-K path and the vector-set-op / range-window
+// emitters already use, generalised to an arbitrary Expr position. An
+// empty PartitionBy renders `OVER ()`, ClickHouse's whole-result-set
+// partition.
+//
+// Fn is resolved through the same fnResolutions table exprFunc uses; a Fn
+// resolving to a fnRender hook is rejected, mirroring resolveAggFuncName's
+// identical restriction for chplan.AggFunc — no current Fn sets one (see
+// fnresolution.go's fnRender doc), so this is a forward guard, not a live
+// case.
+func (b *Builder) exprWindow(w *chplan.WindowExpr) error {
+	name, render, err := resolveFn(w.Fn)
+	if err != nil {
+		return err
+	}
+	if render != nil {
+		return fmt.Errorf("%w: chplan.WindowExpr Fn %q resolves to a chsql render hook, "+
+			"not a plain aggregate name — window position cannot use it", ErrUnsupported, w.Fn)
+	}
+
+	var firstErr error
+	captureErr := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	args := w.Args
+	fnFrag := func(fb *Builder) {
+		fb.sb.WriteString(name)
+		fb.sb.WriteByte('(')
+		for i, a := range args {
+			if i > 0 {
+				fb.sb.WriteString(", ")
+			}
+			captureErr(fb.Expr(a))
+		}
+		fb.sb.WriteByte(')')
+	}
+
+	partitionBy := make([]Frag, 0, len(w.PartitionBy))
+	for _, p := range w.PartitionBy {
+		expr := p
+		partitionBy = append(partitionBy, func(fb *Builder) { captureErr(fb.Expr(expr)) })
+	}
+
+	Window(fnFrag, partitionBy, nil)(b)
+	return firstErr
 }
 
 func (b *Builder) exprMapAccess(m *chplan.MapAccess) error {

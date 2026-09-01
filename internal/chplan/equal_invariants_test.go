@@ -2197,6 +2197,99 @@ func TestScalarSubquery_Equal_Negative_OtherType(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------
+// WindowExpr Equal tests (windowed-aggregate pre-pass Expr).
+// -----------------------------------------------------------------------
+
+func TestWindowExpr_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	mk := func() *chplan.WindowExpr {
+		return &chplan.WindowExpr{
+			Fn:          chplan.FnMin,
+			Args:        []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}},
+			PartitionBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+		}
+	}
+	if !mk().Equal(mk()) {
+		t.Fatalf("identical WindowExpr should be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Positive_EmptyPartitionBy(t *testing.T) {
+	t.Parallel()
+	mk := func() *chplan.WindowExpr {
+		return &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	}
+	if !mk().Equal(mk()) {
+		t.Fatalf("identical WindowExpr with empty PartitionBy should be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_Fn(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	b := &chplan.WindowExpr{Fn: chplan.FnMax, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	if a.Equal(b) {
+		t.Errorf("different Fn should not be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_Args(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	b := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Other"}}}
+	if a.Equal(b) {
+		t.Errorf("different Args should not be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_ArgsLength(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	b := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}, &chplan.ColumnRef{Name: "Other"}}}
+	if a.Equal(b) || b.Equal(a) {
+		t.Errorf("different Args length should not be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_PartitionBy(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{
+		Fn:          chplan.FnMin,
+		Args:        []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}},
+		PartitionBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+	}
+	b := &chplan.WindowExpr{
+		Fn:          chplan.FnMin,
+		Args:        []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}},
+		PartitionBy: []chplan.Expr{&chplan.ColumnRef{Name: "other"}},
+	}
+	if a.Equal(b) {
+		t.Errorf("different PartitionBy should not be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_PartitionByLength(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	b := &chplan.WindowExpr{
+		Fn:          chplan.FnMin,
+		Args:        []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}},
+		PartitionBy: []chplan.Expr{&chplan.ColumnRef{Name: "route"}},
+	}
+	if a.Equal(b) || b.Equal(a) {
+		t.Errorf("empty vs non-empty PartitionBy should not be Equal")
+	}
+}
+
+func TestWindowExpr_Equal_Negative_OtherType(t *testing.T) {
+	t.Parallel()
+	a := &chplan.WindowExpr{Fn: chplan.FnMin, Args: []chplan.Expr{&chplan.ColumnRef{Name: "Scale"}}}
+	if a.Equal(&chplan.LitFloat{V: 1}) {
+		t.Errorf("WindowExpr should not equal a different Expr type")
+	}
+}
+
+// -----------------------------------------------------------------------
 // RangeWindow.ScalarExprs Equal coverage.
 // -----------------------------------------------------------------------
 
