@@ -32,6 +32,16 @@
 //     real, measured memory regression only shows up for a single series
 //     with an unusually WIDE individual layout, not exercised by this
 //     fixture).
+//
+// The five `TestExpHistogramMergeSumMapDifferential_Avg_*` cases below
+// mirror the five above, seed-for-seed, over `avg()` instead of `sum()` —
+// cerberus issue #2866's own differential proof that
+// [expHistogramGroupMergeSumMap]'s series-count collection and division
+// (added for avg() by that issue) reconciles bucket ladders identically to
+// the fold path's own [expHistogramAvgScaleProjections], not just that the
+// SUM-only shape still works. Each Avg case reuses its Sum sibling's exact
+// seed builder — same rows, same fixture — so a divergence in either
+// aggregation's arithmetic shows up against a shared baseline.
 package promql_test
 
 import (
@@ -83,9 +93,25 @@ type expHistSumMapDiffRow struct {
 // strategy and returns the single resulting merged-histogram row.
 func runExpHistSumMapDiffQuery(t *testing.T, fixture *chdbFixture, native bool) expHistSumMapDiffRow {
 	t.Helper()
+	return runExpHistSumMapDiffQueryAgg(t, fixture, native, "sum")
+}
+
+// runExpHistSumMapDiffQueryAvg is [runExpHistSumMapDiffQuery]'s `avg()`
+// twin — cerberus issue #2866's own eligibility widening.
+func runExpHistSumMapDiffQueryAvg(t *testing.T, fixture *chdbFixture, native bool) expHistSumMapDiffRow {
+	t.Helper()
+	return runExpHistSumMapDiffQueryAgg(t, fixture, native, "avg")
+}
+
+// runExpHistSumMapDiffQueryAgg lowers `<aggFn>(<metric>)` under the given
+// strategy and returns the single resulting merged-histogram row. aggFn is
+// "sum" or "avg" — the two shapes [NativeExpHistogramMergeLowerer] routes
+// onto [expHistogramGroupMergeSumMap].
+func runExpHistSumMapDiffQueryAgg(t *testing.T, fixture *chdbFixture, native bool, aggFn string) expHistSumMapDiffRow {
+	t.Helper()
 	s := schema.DefaultOTelMetrics()
 	p := promparser.NewParser(promparser.Options{})
-	query := fmt.Sprintf("sum(%s)", expHistSumMapDiffMetric)
+	query := fmt.Sprintf("%s(%s)", aggFn, expHistSumMapDiffMetric)
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
@@ -156,12 +182,13 @@ const expHistSumMapDiffSeedDDL = "" +
 	"`NegativeOffset` Int32, `NegativeBucketCounts` Array(UInt64)" +
 	") ENGINE = MergeTree ORDER BY (`MetricName`, `Attributes`, `TimeUnix`);\n"
 
-// TestExpHistogramMergeSumMapDifferential_Homogeneous seeds three series
-// sharing one Scale(0)/Offset(0) layout, each a plain 1-bucket-wide
-// positive-only histogram — the realistic OTel-SDK-default shape this
-// issue's own measured 13-43x win (at hundreds to thousands of rows) is
-// calibrated on.
-func TestExpHistogramMergeSumMapDifferential_Homogeneous(t *testing.T) {
+// newExpHistSumMapDiffFixtureHomogeneous seeds three series sharing one
+// Scale(0)/Offset(0) layout, each a plain 1-bucket-wide positive-only
+// histogram — the realistic OTel-SDK-default shape this issue's own
+// measured 13-43x win (at hundreds to thousands of rows) is calibrated on.
+// Shared by the Sum and Avg differential tests below.
+func newExpHistSumMapDiffFixtureHomogeneous(t *testing.T) *chdbFixture {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString(expHistSumMapDiffSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
@@ -171,19 +198,37 @@ func TestExpHistogramMergeSumMapDifferential_Homogeneous(t *testing.T) {
 		fmt.Sprintf("('%s', map('series', 's3'), toDateTime64('2026-01-01 00:00:00', 9), 3, 6.0, 0, 0, 0, [1,1,1], 0, [])", expHistSumMapDiffMetric),
 	}
 	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
-	fixture := newChDBFixture(t, b.String())
+	return newChDBFixture(t, b.String())
+}
 
+// TestExpHistogramMergeSumMapDifferential_Homogeneous is the `sum()` case
+// over [newExpHistSumMapDiffFixtureHomogeneous].
+func TestExpHistogramMergeSumMapDifferential_Homogeneous(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureHomogeneous(t)
 	fanout := runExpHistSumMapDiffQuery(t, fixture, false)
 	native := runExpHistSumMapDiffQuery(t, fixture, true)
 	assertExpHistSumMapDiffEqual(t, fanout, native)
 }
 
-// TestExpHistogramMergeSumMapDifferential_ScaleNegotiation seeds three
-// series with genuinely different Scale (0, 2, 1) and different
-// PositiveOffset — mirrors histogram_merge_scatter_chdb_test.go's own
-// scatter fixture, exercising both the no-collapse (ratio=1, s1) and
-// collapse (ratio>1, s2 and s3) downscale paths in the SAME merge.
-func TestExpHistogramMergeSumMapDifferential_ScaleNegotiation(t *testing.T) {
+// TestExpHistogramMergeSumMapDifferential_Avg_Homogeneous is
+// [TestExpHistogramMergeSumMapDifferential_Homogeneous]'s `avg()` twin
+// (cerberus issue #2866): the SAME seed, both strategies now dividing by
+// the group's 3-series member count.
+func TestExpHistogramMergeSumMapDifferential_Avg_Homogeneous(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureHomogeneous(t)
+	fanout := runExpHistSumMapDiffQueryAvg(t, fixture, false)
+	native := runExpHistSumMapDiffQueryAvg(t, fixture, true)
+	assertExpHistSumMapDiffEqual(t, fanout, native)
+}
+
+// newExpHistSumMapDiffFixtureScaleNegotiation seeds three series with
+// genuinely different Scale (0, 2, 1) and different PositiveOffset —
+// mirrors histogram_merge_scatter_chdb_test.go's own scatter fixture,
+// exercising both the no-collapse (ratio=1, s1) and collapse (ratio>1, s2
+// and s3) downscale paths in the SAME merge. Shared by the Sum and Avg
+// differential tests below.
+func newExpHistSumMapDiffFixtureScaleNegotiation(t *testing.T) *chdbFixture {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString(expHistSumMapDiffSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
@@ -193,35 +238,70 @@ func TestExpHistogramMergeSumMapDifferential_ScaleNegotiation(t *testing.T) {
 		fmt.Sprintf("('%s', map('series', 's3'), toDateTime64('2026-01-01 00:00:00', 9), 630, 1.0, 1, 0, 9, [100,200,300], 0, [])", expHistSumMapDiffMetric),
 	}
 	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
-	fixture := newChDBFixture(t, b.String())
+	return newChDBFixture(t, b.String())
+}
 
+// TestExpHistogramMergeSumMapDifferential_ScaleNegotiation is the `sum()`
+// case over [newExpHistSumMapDiffFixtureScaleNegotiation].
+func TestExpHistogramMergeSumMapDifferential_ScaleNegotiation(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureScaleNegotiation(t)
 	fanout := runExpHistSumMapDiffQuery(t, fixture, false)
 	native := runExpHistSumMapDiffQuery(t, fixture, true)
 	assertExpHistSumMapDiffEqual(t, fanout, native)
 }
 
-// TestExpHistogramMergeSumMapDifferential_ZeroBucket seeds a SINGLE series
-// whose middle bucket count is exactly zero — sumMap([idx0,idx1,idx2],
-// [5,0,3]) drops the zero-valued key entirely (the same quirk
+// TestExpHistogramMergeSumMapDifferential_Avg_ScaleNegotiation is
+// [TestExpHistogramMergeSumMapDifferential_ScaleNegotiation]'s `avg()`
+// twin (cerberus issue #2866): the downscale-collapse case must still
+// merge identically to the fold BEFORE the division, then divide
+// identically.
+func TestExpHistogramMergeSumMapDifferential_Avg_ScaleNegotiation(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureScaleNegotiation(t)
+	fanout := runExpHistSumMapDiffQueryAvg(t, fixture, false)
+	native := runExpHistSumMapDiffQueryAvg(t, fixture, true)
+	assertExpHistSumMapDiffEqual(t, fanout, native)
+}
+
+// newExpHistSumMapDiffFixtureZeroBucket seeds a SINGLE series whose middle
+// bucket count is exactly zero — sumMap([idx0,idx1,idx2], [5,0,3]) drops
+// the zero-valued key entirely (the same quirk
 // classic_bucket_merge_summap.go's header documents for the classic
-// path). Both strategies must still answer identically:
-// expHistogramSumMapLadderExpr's indexOf-based reconstruction restores
-// the dropped zero explicitly.
-func TestExpHistogramMergeSumMapDifferential_ZeroBucket(t *testing.T) {
-	fixture := newChDBFixture(t, expHistSumMapDiffSeedDDL+
+// path). Shared by the Sum and Avg differential tests below.
+func newExpHistSumMapDiffFixtureZeroBucket(t *testing.T) *chdbFixture {
+	t.Helper()
+	return newChDBFixture(t, expHistSumMapDiffSeedDDL+
 		"INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n"+
 		fmt.Sprintf("    ('%s', map('series', 's1'), toDateTime64('2026-01-01 00:00:00', 9), 8, 4.0, 0, 0, 0, [5,0,3], 0, []);\n", expHistSumMapDiffMetric))
+}
 
+// TestExpHistogramMergeSumMapDifferential_ZeroBucket is the `sum()` case
+// over [newExpHistSumMapDiffFixtureZeroBucket]. Both strategies must
+// answer identically: expHistogramSumMapLadderExpr's indexOf-based
+// reconstruction restores the dropped zero explicitly.
+func TestExpHistogramMergeSumMapDifferential_ZeroBucket(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureZeroBucket(t)
 	fanout := runExpHistSumMapDiffQuery(t, fixture, false)
 	native := runExpHistSumMapDiffQuery(t, fixture, true)
 	assertExpHistSumMapDiffEqual(t, fanout, native)
 }
 
-// TestExpHistogramMergeSumMapDifferential_SignBuckets seeds two series
-// each carrying BOTH real positive and real negative bucket data —
-// exercising expHistogramGroupMergeAggsSumMap's independent pos/neg
-// sumMap pair together.
-func TestExpHistogramMergeSumMapDifferential_SignBuckets(t *testing.T) {
+// TestExpHistogramMergeSumMapDifferential_Avg_ZeroBucket is
+// [TestExpHistogramMergeSumMapDifferential_ZeroBucket]'s `avg()` twin
+// (cerberus issue #2866): the dropped-zero-key reconstruction must survive
+// the division on top unchanged.
+func TestExpHistogramMergeSumMapDifferential_Avg_ZeroBucket(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureZeroBucket(t)
+	fanout := runExpHistSumMapDiffQueryAvg(t, fixture, false)
+	native := runExpHistSumMapDiffQueryAvg(t, fixture, true)
+	assertExpHistSumMapDiffEqual(t, fanout, native)
+}
+
+// newExpHistSumMapDiffFixtureSignBuckets seeds two series each carrying
+// BOTH real positive and real negative bucket data — exercising
+// expHistogramGroupMergeAggsSumMap's independent pos/neg sumMap pair
+// together. Shared by the Sum and Avg differential tests below.
+func newExpHistSumMapDiffFixtureSignBuckets(t *testing.T) *chdbFixture {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString(expHistSumMapDiffSeedDDL)
 	b.WriteString("INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n")
@@ -230,28 +310,62 @@ func TestExpHistogramMergeSumMapDifferential_SignBuckets(t *testing.T) {
 		fmt.Sprintf("('%s', map('series', 's2'), toDateTime64('2026-01-01 00:00:00', 9), 15, -1.0, 0, 1, 0, [3,2,1], -3, [1,1,1])", expHistSumMapDiffMetric),
 	}
 	b.WriteString("    " + strings.Join(rows, ",\n    ") + ";\n")
-	fixture := newChDBFixture(t, b.String())
+	return newChDBFixture(t, b.String())
+}
 
+// TestExpHistogramMergeSumMapDifferential_SignBuckets is the `sum()` case
+// over [newExpHistSumMapDiffFixtureSignBuckets].
+func TestExpHistogramMergeSumMapDifferential_SignBuckets(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureSignBuckets(t)
 	fanout := runExpHistSumMapDiffQuery(t, fixture, false)
 	native := runExpHistSumMapDiffQuery(t, fixture, true)
 	assertExpHistSumMapDiffEqual(t, fanout, native)
 }
 
-// TestExpHistogramMergeSumMapDifferential_SingleSeries seeds exactly ONE
-// series — no real cross-series merge — the "must not regress the simple
-// case" check: at this issue's own measured realistic OTel-default width
-// (~160 buckets and below), the two-pass design stays roughly PARITY with
-// the fold even here despite paying its own double-scan-of-perSeries
-// overhead; see this file's header and cerberus issue #2757 for the full
-// measured table (the documented memory regression only appears for a
-// SINGLE series with an unusually WIDE individual layout, not exercised
-// by this fixture).
-func TestExpHistogramMergeSumMapDifferential_SingleSeries(t *testing.T) {
-	fixture := newChDBFixture(t, expHistSumMapDiffSeedDDL+
+// TestExpHistogramMergeSumMapDifferential_Avg_SignBuckets is
+// [TestExpHistogramMergeSumMapDifferential_SignBuckets]'s `avg()` twin
+// (cerberus issue #2866): both ladders' merge, ZeroCount included, must
+// divide identically to the fold path.
+func TestExpHistogramMergeSumMapDifferential_Avg_SignBuckets(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureSignBuckets(t)
+	fanout := runExpHistSumMapDiffQueryAvg(t, fixture, false)
+	native := runExpHistSumMapDiffQueryAvg(t, fixture, true)
+	assertExpHistSumMapDiffEqual(t, fanout, native)
+}
+
+// newExpHistSumMapDiffFixtureSingleSeries seeds exactly ONE series — no
+// real cross-series merge — the "must not regress the simple case" check:
+// at this issue's own measured realistic OTel-default width (~160 buckets
+// and below), the two-pass design stays roughly PARITY with the fold even
+// here despite paying its own double-scan-of-perSeries overhead; see this
+// file's header and cerberus issue #2757 for the full measured table (the
+// documented memory regression only appears for a SINGLE series with an
+// unusually WIDE individual layout, not exercised by this fixture). Shared
+// by the Sum and Avg differential tests below.
+func newExpHistSumMapDiffFixtureSingleSeries(t *testing.T) *chdbFixture {
+	t.Helper()
+	return newChDBFixture(t, expHistSumMapDiffSeedDDL+
 		"INSERT INTO otel_metrics_exponential_histogram (MetricName, Attributes, TimeUnix, Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts, NegativeOffset, NegativeBucketCounts) VALUES\n"+
 		fmt.Sprintf("    ('%s', map('series', 's1'), toDateTime64('2026-01-01 00:00:00', 9), 6, 3.0, 3, 0, -2, [1,2,3], 0, []);\n", expHistSumMapDiffMetric))
+}
 
+// TestExpHistogramMergeSumMapDifferential_SingleSeries is the `sum()` case
+// over [newExpHistSumMapDiffFixtureSingleSeries].
+func TestExpHistogramMergeSumMapDifferential_SingleSeries(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureSingleSeries(t)
 	fanout := runExpHistSumMapDiffQuery(t, fixture, false)
 	native := runExpHistSumMapDiffQuery(t, fixture, true)
+	assertExpHistSumMapDiffEqual(t, fanout, native)
+}
+
+// TestExpHistogramMergeSumMapDifferential_Avg_SingleSeries is
+// [TestExpHistogramMergeSumMapDifferential_SingleSeries]'s `avg()` twin
+// (cerberus issue #2866): a single-member group's avg() divides by 1 —
+// the degenerate case a divide-by-member-count implementation is likeliest
+// to get wrong (e.g. dividing by row count from the wrong stage).
+func TestExpHistogramMergeSumMapDifferential_Avg_SingleSeries(t *testing.T) {
+	fixture := newExpHistSumMapDiffFixtureSingleSeries(t)
+	fanout := runExpHistSumMapDiffQueryAvg(t, fixture, false)
+	native := runExpHistSumMapDiffQueryAvg(t, fixture, true)
 	assertExpHistSumMapDiffEqual(t, fanout, native)
 }
