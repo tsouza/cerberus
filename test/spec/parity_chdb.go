@@ -821,7 +821,7 @@ const histogramRowValuePlaceholder = 0.0
 // pick another
 //
 // Every float pair goes through [oracle.EqualValues], whose one relative
-// tolerance is documented at [oracle] level by the arithmetic it covers:
+// tolerance is derived, where it is declared, from the arithmetic it covers:
 // cerberus accumulates in ClickHouse and the reference accumulates in Go,
 // and floating-point addition is not associative, so the same samples folded
 // in two different orders land a few ULPs apart. That is a property of the

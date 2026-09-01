@@ -371,9 +371,9 @@ const float64UnitRoundoff = 1.0 / (1 << 53)
 // into one range-window value, which is already far past any resolution a
 // Prometheus deployment scrapes at. It is a budget, so naming it larger than
 // the corpus needs is the safe direction — the cost is a wider tolerance, and
-// the section below measures how much width that actually buys (three orders
-// of magnitude above the noise, ten below the smallest real divergence this
-// lane has ever produced).
+// the section below measures how much width that actually buys (not quite
+// four orders of magnitude above the noise, more than ten below the smallest
+// real divergence this lane has ever produced).
 const maxReorderedSamplesPerOutputValue = 4096
 
 // summationReorderRelativeTolerance is the maximum RELATIVE difference
@@ -395,7 +395,7 @@ const maxReorderedSamplesPerOutputValue = 4096
 //
 // The bound is therefore derived from the arithmetic and a stated sample
 // budget. It is not fitted to any failing fixture — the observed divergences
-// it was adopted for sit three orders of magnitude BELOW it.
+// it was adopted for sit not quite four orders of magnitude BELOW it.
 //
 // # What it admits, and what it still rejects
 //
@@ -411,7 +411,7 @@ const maxReorderedSamplesPerOutputValue = 4096
 // Real divergence on the same lane is not close. Issue #2905's
 // duplicate-timestamp fixtures answered 2.75 against a reference 2.6666666666666665
 // (3.03e-2 relative) and a constant +3 absolute on values of 8 to 22 (1.2e-1
-// to 2.7e-1 relative) — between ten and eleven orders of magnitude ABOVE this
+// to 2.7e-1 relative) — more than ten orders of magnitude ABOVE this
 // tolerance, and rejected by it. TestEqualValuesRejectsRealDivergence pins
 // that, so the tolerance can never be widened into a rubber stamp without a
 // test going red.
