@@ -30,9 +30,6 @@ const (
 	companionBareName     = "http_request_duration_seconds"
 )
 
-// companionValueCol is the histogram-table column a `_sum` companion reads.
-const companionValueCol = "Sum"
-
 // TestNeedCompanionUnion_RejectsEachMissingNameIndependently pins that all
 // three name inputs are required, one at a time.
 //
@@ -49,7 +46,7 @@ func TestNeedCompanionUnion_RejectsEachMissingNameIndependently(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelMetrics()
 
-	if !needCompanionUnion(s, companionValueCol, companionSuffixedName, companionBareName) {
+	if !needCompanionUnion(s, s.SumColumn, companionSuffixedName, companionBareName) {
 		t.Fatal("the fully-named default-schema companion was refused; the rejection cases below would be vacuous")
 	}
 
@@ -60,8 +57,8 @@ func TestNeedCompanionUnion_RejectsEachMissingNameIndependently(t *testing.T) {
 		bare        string
 	}{
 		{"no companion value column", "", companionSuffixedName, companionBareName},
-		{"no suffixed name", companionValueCol, "", companionBareName},
-		{"no bare name", companionValueCol, companionSuffixedName, ""},
+		{"no suffixed name", s.SumColumn, "", companionBareName},
+		{"no bare name", s.SumColumn, companionSuffixedName, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -91,7 +88,7 @@ func TestNeedCompanionUnion_RequiresADistinctLiteralValueTable(t *testing.T) {
 	if got := literalCompanionValueTables(s); len(got) != 0 {
 		t.Fatalf("literalCompanionValueTables = %v; want empty once Sum and Gauge collapse onto Histogram", got)
 	}
-	if needCompanionUnion(s, companionValueCol, companionSuffixedName, companionBareName) {
+	if needCompanionUnion(s, s.SumColumn, companionSuffixedName, companionBareName) {
 		t.Error("needCompanionUnion requested a union with no distinct literal value table; want the single-arm histogram emit")
 	}
 }
