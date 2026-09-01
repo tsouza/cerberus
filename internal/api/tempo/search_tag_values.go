@@ -265,12 +265,14 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // For the single-scope forms, a materialized attribute column (cerberus
 // issue #2776) short-circuits both the projection and the pre-filter to a
 // direct DISTINCT read of the narrow column instead of the map subscript —
-// see buildMaterializedAttributeValuesSQL. The auto-scope (both-maps) form
-// stays on the map-only path in this version: routing it would mean
-// unioning a materialized column with the OTHER scope's still-map-backed
-// arm, which is more machinery than the common case (Grafana's
-// scope-qualified value dropdown) justifies today — tracked as cerberus
-// issue #2870.
+// see buildMaterializedAttributeValuesSQL.
+//
+// For the auto-scope (both-maps) form, a materialized key in EITHER map
+// (cerberus issue #2870) routes to buildAutoScopeUnionAttributeValuesSQL,
+// which reads whichever side has a materialized column directly and falls
+// back to the map subscript for the other side — see that function's doc
+// for the four routing cases. A key materialized in neither map keeps
+// today's single arrayJoin-over-both-maps shape, unchanged, below.
 func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
 	switch scope {
 	case attrMapScopeResource:
@@ -280,6 +282,17 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	case attrMapScopeSpan:
 		if col, ok := s.MaterializedSpanAttributeColumns[name]; ok {
 			return buildMaterializedAttributeValuesSQL(s, col, filter, start, end)
+		}
+	case attrMapScopeAny:
+		spanCol, spanMaterialized := s.MaterializedSpanAttributeColumns[name]
+		resCol, resMaterialized := s.MaterializedResourceAttributeColumns[name]
+		if spanMaterialized || resMaterialized {
+			return buildAutoScopeUnionAttributeValuesSQL(
+				s, name,
+				spanCol, spanMaterialized,
+				resCol, resMaterialized,
+				filter, start, end,
+			)
 		}
 	}
 	var (
@@ -347,6 +360,95 @@ func buildMaterializedAttributeValuesSQL(s schema.Traces, col string, filter chs
 		sb.Where(filter)
 	}
 	return sb.Build()
+}
+
+// buildAutoScopeUnionAttributeValuesSQL builds the SELECT for an
+// auto-scope (`.x` leading-dot, or the bare-key V1 fallback) dynamic-
+// attribute values lookup whose key is materialized in the span map, the
+// resource map, or both (cerberus issue #2870).
+//
+// Each side reads via its OWN narrow materialized column when one exists
+// for that side, or falls back to the map subscript otherwise — exactly
+// the same per-side shape buildAttributeValuesSQL already uses for the
+// single-scope (`span.x` / `resource.x`) forms, just built once per side
+// here instead of chosen once for the whole query:
+//
+//	SELECT DISTINCT v FROM (
+//	    (SELECT `<spanCol>`   AS v FROM `otel_traces` WHERE `<spanCol>` != ''            [AND time bounds] [AND filter])
+//	    UNION ALL
+//	    (SELECT `SpanAttributes`[?] AS v FROM `otel_traces` WHERE mapContains(`SpanAttributes`, ?) [AND time bounds] [AND filter])
+//	    -- (whichever of the two SpanAttributes lines applies)
+//	    UNION ALL
+//	    -- the matching ResourceAttributes line, materialized or map-backed
+//	) WHERE v != ''
+//
+// UNION ALL (not the arrayJoin-over-array-literal shape the map-only path
+// uses) is the composition that reuses the existing per-side Frag
+// builders as-is: attrValueArmFrag emits one complete arm — projection,
+// its own row-level pre-filter, time bounds, the optional `?q=` filter —
+// with no change needed to either mapAtFrag/mapContainsFrag (the map arm)
+// or the plain-column read (the materialized arm). Mixing a
+// LowCardinality(String) column and a Map subscript inside ONE arrayJoin
+// array literal would need both slots coerced to a common element type
+// up front; two independently-typed SELECT arms merged by UNION ALL let
+// ClickHouse resolve that per-column, the same way the map-only path's
+// own two-map arrayJoin already tolerates any per-key value-type drift
+// between the two source maps.
+//
+// The outer DISTINCT + `v != ”` wrapper is identical to every other
+// branch of buildAttributeValuesSQL: a materialized arm's own `<col> !=
+// ”` filter and a map arm's `mapContains` filter both admit only
+// non-empty values already, so the outer filter is redundant on any
+// single arm — but it is exactly what dedupes the two arms' results
+// against EACH OTHER (a key present with the same value in both maps
+// contributes one row here, not two), which no single arm can do alone.
+func buildAutoScopeUnionAttributeValuesSQL(
+	s schema.Traces, name string,
+	spanCol string, spanMaterialized bool,
+	resCol string, resMaterialized bool,
+	filter chsql.Frag, start, end time.Time,
+) (string, []any) {
+	spanArm := attrValueArmFrag(s, s.AttributesColumn, spanCol, spanMaterialized, name, filter, start, end)
+	resArm := attrValueArmFrag(s, s.ResourceAttributesColumn, resCol, resMaterialized, name, filter, start, end)
+
+	outer := chsql.NewQuery().
+		Select(chsql.Distinct(chsql.Col("v"))).
+		From(chsql.Paren(chsql.UnionAll(spanArm, resArm))).
+		Where(nonEmptyFrag("v"))
+	return outer.Build()
+}
+
+// attrValueArmFrag builds one UNION ALL arm of
+// buildAutoScopeUnionAttributeValuesSQL: a complete parenthesised SELECT
+// projecting the requested key's value (aliased `v`) from one attribute
+// map/column, with that key's own row-level pre-filter plus the shared
+// time-bounds and `?q=` conjuncts.
+//
+// materialized selects between the two per-arm shapes: true reads
+// materializedCol directly (mirrors buildMaterializedAttributeValuesSQL's
+// projection/filter pair); false reads the map subscript mapCol[name]
+// gated by mapContains(mapCol, name) (mirrors buildAttributeValuesSQL's
+// single-scope map-backed branch). materializedCol is ignored when
+// materialized is false.
+func attrValueArmFrag(s schema.Traces, mapCol, materializedCol string, materialized bool, name string, filter chsql.Frag, start, end time.Time) chsql.Frag {
+	arm := chsql.NewQuery().From(chsql.Col(s.SpansTable))
+	if materialized {
+		arm.Select(chsql.As(chsql.Col(materializedCol), "v")).
+			Where(nonEmptyFrag(materializedCol))
+	} else {
+		arm.Select(chsql.As(mapAtFrag(mapCol, name), "v")).
+			Where(mapContainsFrag(mapCol, name))
+	}
+	if !start.IsZero() {
+		arm.Where(tempoTimeGteFrag(s.TimestampColumn, start))
+	}
+	if !end.IsZero() {
+		arm.Where(tempoTimeLteFrag(s.TimestampColumn, end))
+	}
+	if filter != nil {
+		arm.Where(filter)
+	}
+	return arm.Frag()
 }
 
 // attrMapScope expresses which attribute map(s) a tag-values lookup
