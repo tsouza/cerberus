@@ -405,6 +405,24 @@ and a fixture change cannot pass its shard-coverage check without naming it.
 The generated files refuse line merging so unrelated additions cannot blend
 with a stale removal.
 
+Enrolment is a closed set rather than an aspiration. A PromQL fixture carries
+either a `-- parity --` section or a `-- parity_exempt --` one declaring, from a
+closed vocabulary of structural reasons (`test/spec/parity_exempt.go`), why it
+cannot be compared against a reference engine; `test/regression/
+parity_coverage_test.go` makes "neither" and "both" failures. One of those
+reasons, `duplicate-timestamp-seed`, covers a seed that deliberately carries two
+metric samples at one `(series, timestamp)` with different values: Prometheus's
+TSDB appender keeps a single sample per timestamp and drops the rest at commit,
+so the reference answers over rows cerberus never saw, with a survivor decided
+by ingestion order. Such a fixture pins its contract with a cerberus-vs-cerberus
+differential instead — the strategy under test against the fan-out strategy it
+must agree with, over the identical rows. `.github/scripts/
+forbid-parity-duplicate-samples.mjs`, a step of the required `forbid-skip` job
+and of the pre-push hook, is what keeps the two claims from being made at once:
+it walks all three head corpora and fails a `-- parity --` fixture whose seed
+carries such a duplicate. Identical-value duplicates stay enrollable, because
+that divergence has a reference answer for cerberus to converge on.
+
 Both sections are load-bearing: a fixture with a `-- seed --` but no
 `-- expected_rows --` is **inert** — the runner returns before it touches
 chDB, and the `GOLDEN_UPDATE=1` rewrite sits downstream of that return, so
