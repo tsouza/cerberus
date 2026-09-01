@@ -17,15 +17,31 @@
 // ran real CH with real memory measurement.
 //
 // This test drives the mounted PRODUCTION prom + tempo handlers over real
-// HTTP against a real ClickHouse (testcontainers-go,
-// clickhouse/clickhouse-server:25.9-alpine — the same tag every other
-// strict-scan real-CH lane uses), seeded at the scale each incident's own
-// root-cause mechanism needs to actually engage (see sentinels.go's
-// Sentinels and seed.go's builders), and reads peak per-query memory back
-// from system.query_log via optcorpus.CHQueryLogSource — the same production
-// reader the async query_log corpus reconciler uses. It is issue #2370's
-// small, ships-fast first slice: a targeted sentinel differential for the
-// EXACT incident, not the full multi-week design #2370 itself describes.
+// HTTP against a real ClickHouse (testcontainers-go), seeded at the scale
+// each incident's own root-cause mechanism needs to actually engage (see
+// sentinels.go's Sentinels and seed.go's builders), and reads peak per-query
+// memory back from system.query_log via optcorpus.CHQueryLogSource — the same
+// production reader the async query_log corpus reconciler uses. It is issue
+// #2370's small, ships-fast first slice: a targeted sentinel differential for
+// the EXACT incident, not the full multi-week design #2370 itself describes.
+//
+// # Two servers, not one
+//
+// The corpus is tiered by smoke.ServerFloor and the harness boots ONE
+// container per floor: perfSmokeCHImage (25.9-alpine, the tag every other
+// strict-scan real-CH lane uses) for FloorBase, and perfSmokeJoinSpillCHImage
+// for FloorJoinSpill, whose mechanism chopt gates behind a 26.4 server. Each
+// constant's own comment carries the why.
+//
+// # Two boot-resolved axes, one of them wired
+//
+// Both handlers carry the per-query engine.SettingsRules a real deployment
+// resolves at boot (chopttest.BuildSettingsRules, cerberus issue #2820) —
+// without it Engine.Settings stays at its zero value, which applies NOTHING,
+// and no sentinel here could measure a settings-rule mechanism at all. The
+// OTHER boot-resolved axis, the native ts_grid_* RangeLowerers table, stays at
+// prom.New's fan-out-only zero value; wiring it into this lane is issue
+// #2487's own scope.
 //
 // Gated behind the `integration` build tag (Docker required); wired into the
 // already-required strict-scan CI lane via `just perf-smoke-integration`.
@@ -167,10 +183,19 @@ const wideTraceCount = 40_000
 // joinSpillSeriesCount is the join-spill tier's `session_id` cardinality,
 // calibrated the same way spillSeriesCount was and against the same fixed
 // 1 GiB cap, but on perfSmokeJoinSpillCHImage: the sentinel joins TWO
-// aggregations over the seeded counter, so its cost is not spillSeriesCount's.
-// See the join_spill_vector_join sentinel's own comment for what the
-// measurement is for, and the constant's committed baseline in
-// perf-smoke-baseline.json for the number it produces.
+// aggregations over the seeded counter, so its cost is not spillSeriesCount's
+// 10,000-series one. Measured max-of-5 against a real
+// clickhouse/clickhouse-server:26.6-alpine container at this value:
+// 449,714,998 bytes, 41.9% of the cap — real work on both sides of the join,
+// with margin under the 0.75x/805 MiB absolute ceiling wide enough that the
+// 1.5x committed ceiling still lands below it and so actually gates.
+//
+// Deliberately NOT pushed up until the join's build side crosses
+// spillThreshold(cap) and the spill genuinely engages: this sentinel's
+// load-bearing assertion is the STAMP (Sentinel.RequiredQuerySettings), not
+// whether ClickHouse chose to act on it, and a cardinality tuned to sit right
+// at the spill boundary would make the memory prongs flap around that
+// boundary for no gain in what the sentinel actually proves.
 const joinSpillSeriesCount = 4_000
 
 // --- harness --------------------------------------------------------------
@@ -180,12 +205,10 @@ const joinSpillSeriesCount = 4_000
 // byte-reproducible.
 var sentinelWindowEnd = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-// sentinelLane is one floor's fully-wired substrate: the container's client,
-// the mux the sentinels are issued against, and the query_log reader their
-// memory is measured through.
+// sentinelLane is one floor's fully-wired substrate: the connection its
+// query_log is read through, the mux its sentinels are issued against, and
+// the query_log reader their memory is measured with.
 type sentinelLane struct {
-	image     string
-	client    *chclient.Client
 	conn      driver.Conn
 	mux       *http.ServeMux
 	logSource *optcorpus.CHQueryLogSource
@@ -233,8 +256,9 @@ func runSentinelFloor(
 
 	for _, sentinel := range sentinels {
 		t.Run(sentinel.Name, func(t *testing.T) {
-			// One untimed, unmeasured warm-up: the OPTIMIZE ... FINAL pass above
-			// leaves this sentinel's table's marks/data cold, and the FIRST query
+			// One untimed, unmeasured warm-up: startSentinelLane's
+			// OPTIMIZE ... FINAL pass leaves this sentinel's table's
+			// marks/data cold, and the FIRST query
 			// to touch it after that pays a real (measured, up to ~15% in
 			// calibration) extra allocation this warm-up absorbs — mirroring
 			// scale_wall_pin_chdb_test.go's bestOfWall, which does the identical
@@ -466,8 +490,6 @@ func startSentinelLane(ctx context.Context, t *testing.T, floor ServerFloor, sta
 	t.Logf("%s (%s): settings rules wired: %+v", floor, image, rules)
 
 	return sentinelLane{
-		image:     image,
-		client:    client,
 		conn:      conn,
 		mux:       mux,
 		logSource: optcorpus.NewCHQueryLogSource(conn, 30*time.Second, time.Hour),
