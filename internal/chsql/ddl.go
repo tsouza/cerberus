@@ -352,6 +352,15 @@ func TypeLowCardinality(inner Frag) Frag {
 	return Call("LowCardinality", inner)
 }
 
+// TypeNullable wraps an inner type in Nullable(...), the CH wrapper for a
+// column whose NULL means "no value" distinctly from the type's own zero —
+// used by the numeric-typed materialized attribute columns (cerberus issue
+// #2869), where a toXOrNull(...) DEFAULT expression needs a real NULL slot
+// for an absent or non-numeric source attribute.
+func TypeNullable(inner Frag) Frag {
+	return Call("Nullable", inner)
+}
+
 // EnumPair is one (name → value) entry of an Enum8 column type. Value is int8
 // because that IS an Enum8 member's domain — the narrow type means a caller that
 // also writes the column (clickhouse-go appends an Enum8 as an int8) can hand the

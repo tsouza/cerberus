@@ -1532,16 +1532,19 @@ Every TraceQL predicate on a span/resource attribute (`http.status_code`,
 `ResourceAttributes` Map per row by default. `CERBERUS_SCHEMA_TRACES_MATERIALIZED_ATTRS_ENABLED`
 (`SchemaProvisioning.TraceMaterializedAttrsEnabled`, `AutoCreateSchema`
 must ALSO be `true`) provisions a curated default set of dedicated
-top-level `LowCardinality(String)` columns for three high-value keys and
-routes TraceQL reads (`FieldAccess`, structural filters, and `tag_values`
-inventories for every scope form — `resource.x` / `span.x` read the
-narrow column directly, and the auto-scope `.x` form unions each side's
+top-level columns for three high-value keys and routes TraceQL reads
+(`FieldAccess`, structural filters, and `tag_values` inventories for
+every scope form — `resource.x` / `span.x` read the narrow column
+directly, and the auto-scope `.x` form unions each side's
 materialized-or-map read, cerberus issue #2870) to them —
 `internal/schema/traces.go`'s `DefaultMaterializedSpanAttributeColumns` /
 `DefaultMaterializedResourceAttributeColumns`:
 
 - `http.status_code` (span) — the single most common error/latency-triage
   filter, and the numeric-coercion example the proposing issue names.
+  Typed `Nullable(Int32)`, not `LowCardinality(String)` like the other two
+  keys below — see "Numeric-typed columns" further down (cerberus issue
+  #2869).
 - `rpc.method` (span) — the RPC-world sibling of `http.status_code`, a
   common structural filter for gRPC-instrumented systems.
 - `k8s.namespace.name` (resource) — the SAME key `Logs.MaterializedResourceColumns`
@@ -1549,11 +1552,11 @@ materialized-or-map read, cerberus issue #2870) to them —
 
 This is cerberus's FIRST `ADD COLUMN` onto a table it does not own the
 CREATE TABLE body of — the traces spans table ships from the upstream
-OTel ClickHouse Exporter template with no such columns. Each column is
-declared:
+OTel ClickHouse Exporter template with no such columns. `rpc.method` and
+`k8s.namespace.name` — every key except `http.status_code` — are declared:
 
 ```sql
-ALTER TABLE <db>.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_http.status_code` LowCardinality(String) DEFAULT `SpanAttributes`['http.status_code'];
+ALTER TABLE <db>.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_rpc.method` LowCardinality(String) DEFAULT `SpanAttributes`['rpc.method'];
 ```
 
 **`DEFAULT`, not `MATERIALIZED` — this is the load-bearing design choice.**
@@ -1588,6 +1591,51 @@ is the ONLY gate, covering both provisioning and query routing (see
 `SchemaProvisioning.TraceMaterializedAttrsEnabled`'s doc comment for the
 full reasoning, including why this differs from `DeltaPrefixEnabled`'s
 two-flag shape).
+
+#### Numeric-typed columns (cerberus issue #2869)
+
+`http.status_code` is the one key above declared a real ClickHouse
+numeric type instead of `LowCardinality(String)` — OTel semantic
+conventions define it as an integer, and it is the single most common
+TraceQL numeric-comparison target (`{ span.http.status_code >= 500 }`):
+
+```sql
+ALTER TABLE <db>.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_http.status_code` Nullable(Int32) DEFAULT toInt32OrNull(`SpanAttributes`['http.status_code']);
+```
+
+`toInt32OrNull`, not the bare `toInt32` cast, for the same DEFAULT-safety
+reason `internal/traceql/lower.go`'s `toFloat64OrNull` coercion exists on
+the map-read path: `SpanAttributes['http.status_code']` returns `''` for
+a span that never carries the key and arbitrary text for a malformed
+value, and a bare cast would abort the row's DEFAULT evaluation
+("Cannot parse string") the instant one such row exists. `toInt32OrNull`
+resolves both cases to `NULL` instead — verified against a real
+ClickHouse server (`internal/schema/ddl/trace_materialized_attrs_integration_test.go`'s
+`TestApply_NumericMaterializedAttrColumn_LazyDefaultAndGracefulNull`) and
+against chDB
+(`internal/api/tempo/search_tag_values_numeric_materialized_chdb_test.go`).
+
+Because the column is already natively numeric, TraceQL emission skips
+the `toFloat64OrNull` wrap it applies to every String-typed materialized
+(or map-backed) attribute — `chplan.FieldAccess.MaterializedColumnNumeric`
+tags the routed column so `internal/traceql/lower.go`'s
+`coerceNumericFieldAccess` / `coerceBoolFieldAccess` know not to wrap it.
+A `NULL` column value (the absent-key / malformed-value case above) still
+drops the row under TraceQL's WHERE semantics exactly like the map path's
+`toFloat64OrNull(NULL)` did — computed once at the column instead of once
+per query. The tag is a reusable per-key mechanism
+(`schema.MaterializedAttributeColumnKindFor`), not an `http.status_code`
+special case, so a future numeric semconv key can opt in with a one-line
+registry change rather than a new coercion path.
+
+`internal/api/tempo`'s `tag_values` auto-scope routing (cerberus issue #2870)
+unions a numeric-materialized arm with a String-typed arm (the
+other scope's map fallback, or a future numeric-in-one-scope-only
+key) by projecting every materialized arm through `toString(...)` before
+the `UNION ALL` — ClickHouse has no common supertype between `Int32` and
+`String`, so a bare numeric column alongside a String arm fails the query
+with `NO_COMMON_TYPE`; casting both arms to `String` up front sidesteps
+that for any key, numeric or not.
 
 #### One-time `MATERIALIZE COLUMN` back-fill runbook
 

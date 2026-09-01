@@ -1908,6 +1908,14 @@ func stringifyListForMap(elems []chplan.Expr) []chplan.Expr {
 // Only equality ops apply — TraceQL's type checker
 // (binaryTypeValid) rejects ordered comparisons on booleans before
 // lowering ever runs.
+//
+// Skipped when the FieldAccess side is a numeric materialized column
+// (FieldAccess.MaterializedColumnNumeric, cerberus issue #2869): that
+// column is a real ClickHouse numeric type, not the String carrier
+// boolToString's rewrite assumes, so stringifying the literal would turn a
+// harmless (if semantically odd) `span.http.status_code = true` into a
+// NO_COMMON_TYPE error instead of a Bool-vs-Int32 compare ClickHouse
+// already accepts on its own.
 func coerceBoolFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Expr, chplan.Expr) {
 	if op != chplan.OpEq && op != chplan.OpNe {
 		return lhs, rhs
@@ -1922,10 +1930,16 @@ func coerceBoolFieldAccess(op chplan.BinaryOp, lhs, rhs chplan.Expr) (chplan.Exp
 		}
 		return &chplan.LitString{V: "false"}
 	}
-	if _, ok := lhs.(*chplan.FieldAccess); ok {
+	if f, ok := lhs.(*chplan.FieldAccess); ok {
+		if f.MaterializedColumnNumeric {
+			return lhs, rhs
+		}
 		return lhs, boolToString(rhs)
 	}
-	if _, ok := rhs.(*chplan.FieldAccess); ok {
+	if f, ok := rhs.(*chplan.FieldAccess); ok {
+		if f.MaterializedColumnNumeric {
+			return lhs, rhs
+		}
 		return boolToString(lhs), rhs
 	}
 	return lhs, rhs
@@ -2066,9 +2080,22 @@ func isOrderingComparisonOp(op chplan.BinaryOp) bool {
 // without the attribute, or with a non-numeric value, simply doesn't
 // match). OrZero would instead make `{ .x < 5 }` match spans that
 // never carried x at all.
+//
+// A FieldAccess whose MaterializedColumnNumeric is set (cerberus issue
+// #2869) skips the wrap entirely: its materialized column is already a
+// native ClickHouse numeric type (e.g. Nullable(Int32) for
+// http.status_code) provisioned DEFAULT to<Type>OrNull(<map>[<key>]) —
+// see schema.NumericMaterializedAttributeColumnType — so it already
+// carries the exact same "NULL for absent/non-numeric" semantics OrNull
+// exists to simulate here, computed once at the column instead of once
+// per query. Wrapping it in toFloat64OrNull again would be redundant at
+// best and a needless Int32->Float64 widening at worst.
 func coerceFieldAccess(expr chplan.Expr) chplan.Expr {
 	switch v := expr.(type) {
 	case *chplan.FieldAccess:
+		if v.MaterializedColumnNumeric {
+			return v
+		}
 		return &chplan.FuncCall{Fn: chplan.FnToFloat64OrNull, Args: []chplan.Expr{v}}
 	case *chplan.Binary:
 		if isArithmeticOp(v.Op) {
@@ -2105,10 +2132,20 @@ func isComparisonOp(op chplan.BinaryOp) bool {
 }
 
 // isNumericExpr reports whether expr has numeric semantics on the CH
-// side — a numeric literal, an arithmetic Binary, or a FuncCall
-// (which in this lowering only comes from a prior toFloat64 wrap).
-// Used to decide whether a comparison's "other side" needs a numeric
-// peer, which is what triggers FieldAccess coercion.
+// side — a numeric literal, an arithmetic Binary, a FuncCall (which in
+// this lowering only comes from a prior toFloat64 wrap), or a FieldAccess
+// routed to a numeric materialized column (cerberus issue #2869). Used to
+// decide whether a comparison's "other side" needs a numeric peer, which
+// is what triggers FieldAccess coercion.
+//
+// The FieldAccess case matters for a comparison BETWEEN two attributes,
+// e.g. `span.http.status_code = span.some_string_attr`: without it,
+// neither side looks numeric to this function, coerceNumericFieldAccess's
+// equality branch never fires, and the numeric materialized column (a
+// real Int32) would be compared directly against the other side's String
+// map subscript — a ClickHouse NO_COMMON_TYPE error. Counting it as
+// numeric makes the OTHER (String) side get wrapped in toFloat64OrNull,
+// same as it already would have if the numeric side were a literal.
 //
 // ColumnRef deliberately does NOT count as numeric here: the only
 // intrinsic ColumnRef that's numeric in OTel-CH is Duration, and a
@@ -2120,9 +2157,11 @@ func isNumericExpr(expr chplan.Expr) bool {
 	if b, ok := expr.(*chplan.Binary); ok {
 		return isArithmeticOp(b.Op)
 	}
-	switch expr.(type) {
+	switch v := expr.(type) {
 	case *chplan.LitInt, *chplan.LitFloat, *chplan.FuncCall:
 		return true
+	case *chplan.FieldAccess:
+		return v.MaterializedColumnNumeric
 	}
 	return false
 }
@@ -2604,10 +2643,18 @@ func lowerAttribute(a traceql.Attribute, s schema.Traces) (chplan.Expr, error) {
 		}
 		carrier = s.ScopeAttributesColumn
 	}
+	matCol := materializedAttributeColumnFor(a.Scope, a.Name, s)
 	return &chplan.FieldAccess{
 		Source:             &chplan.ColumnRef{Name: carrier},
 		Path:               a.Name,
-		MaterializedColumn: materializedAttributeColumnFor(a.Scope, a.Name, s),
+		MaterializedColumn: matCol,
+		// Only a genuinely-routed column can be numeric-typed — an
+		// unmaterialized FieldAccess always reads the String-valued
+		// attribute map, so the kind lookup is skipped entirely rather
+		// than asked and discarded (matCol == "" already answers "not
+		// numeric" on its own, but skipping avoids a schema lookup keyed
+		// on a name that was never routed to a column at all).
+		MaterializedColumnNumeric: matCol != "" && schema.MaterializedAttributeColumnKindFor(a.Name) == schema.MaterializedColumnKindNumeric,
 	}, nil
 }
 

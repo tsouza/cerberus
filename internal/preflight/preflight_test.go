@@ -444,7 +444,10 @@ func TestRunWrongAttributeTypeFails(t *testing.T) {
 // attribute column (schema.Traces.MaterializedSpanAttributeColumns is
 // non-nil) but the deployed table does not carry it, that is a FATAL
 // wrong-shape finding — the operator's own config declared the column
-// should exist.
+// should exist. Uses rpc.method, a MaterializedColumnKindString key, so
+// this test exercises the generic (non-numeric) materialized-column path;
+// see TestRunNumericMaterializedAttrColumn* below for http.status_code's
+// numeric path (cerberus issue #2869).
 func TestRunMaterializedAttrColumnMissingFails(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
@@ -452,13 +455,13 @@ func TestRunMaterializedAttrColumnMissingFails(t *testing.T) {
 
 	req := defaultReq()
 	req.Traces.MaterializedSpanAttributeColumns = map[string]string{
-		"http.status_code": "__cerberus_materialized_http.status_code",
+		"rpc.method": "__cerberus_materialized_rpc.method",
 	}
 	err := Run(context.Background(), q, req).Fatal
 	if err == nil {
 		t.Fatal("missing materialized attribute column must fail")
 	}
-	want := "table otel_traces: missing required column __cerberus_materialized_http.status_code"
+	want := "table otel_traces: missing required column __cerberus_materialized_rpc.method"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("message missing %q: %v", want, err)
 	}
@@ -472,12 +475,12 @@ func TestRunMaterializedAttrColumnWrongTypeFails(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
 	tr := schema.DefaultOTelTraces()
-	const col = "__cerberus_materialized_http.status_code"
+	const col = "__cerberus_materialized_rpc.method"
 	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "String"})
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
 
 	req := defaultReq()
-	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": col}
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"rpc.method": col}
 	err := Run(context.Background(), q, req).Fatal
 	if err == nil {
 		t.Fatal("wrong-typed materialized attribute column must fail")
@@ -495,14 +498,103 @@ func TestRunMaterializedAttrColumnCorrectPasses(t *testing.T) {
 	t.Parallel()
 	cols := healthyColumns()
 	tr := schema.DefaultOTelTraces()
+	const col = "__cerberus_materialized_rpc.method"
+	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "LowCardinality(String)"})
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"rpc.method": col}
+	if err := Run(context.Background(), q, req).Fatal; err != nil {
+		t.Fatalf("correctly deployed materialized attribute column should pass, got: %v", err)
+	}
+}
+
+// TestRunNumericMaterializedAttrColumnWrongTypeFails is
+// TestRunMaterializedAttrColumnWrongTypeFails's counterpart for a
+// MaterializedColumnKindNumeric key (cerberus issue #2869):
+// http.status_code's materialized column must report
+// schema.NumericMaterializedAttributeColumnType (Nullable(Int32)), not
+// schema.MaterializedAttributeColumnType — a deployed
+// LowCardinality(String) column under that key (e.g. left over from a
+// pre-#2869 deployment, or a hand-edited schema) is the wrong shape and
+// must fail.
+func TestRunNumericMaterializedAttrColumnWrongTypeFails(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
 	const col = "__cerberus_materialized_http.status_code"
 	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "LowCardinality(String)"})
 	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
 
 	req := defaultReq()
 	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": col}
+	err := Run(context.Background(), q, req).Fatal
+	if err == nil {
+		t.Fatal("wrong-typed numeric materialized attribute column must fail")
+	}
+	want := fmt.Sprintf("table otel_traces column %s: expected Nullable(Int32), found LowCardinality(String)", col)
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("message missing %q: %v", want, err)
+	}
+}
+
+// TestRunNumericMaterializedAttrColumnCorrectPasses is the healthy-path
+// sibling: http.status_code's materialized column deployed as
+// Nullable(Int32) — schema.NumericMaterializedAttributeColumnType — must
+// not fail the shape gate.
+func TestRunNumericMaterializedAttrColumnCorrectPasses(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
+	const col = "__cerberus_materialized_http.status_code"
+	cols[tr.SpansTable] = append(cols[tr.SpansTable], chclient.NameTypePair{Name: col, Type: "Nullable(Int32)"})
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": col}
 	if err := Run(context.Background(), q, req).Fatal; err != nil {
-		t.Fatalf("correctly deployed materialized attribute column should pass, got: %v", err)
+		t.Fatalf("correctly deployed numeric materialized attribute column should pass, got: %v", err)
+	}
+}
+
+// TestRunMixedKindMaterializedAttrColumnsBothValidated confirms both kinds
+// validate independently in the SAME request: a numeric key
+// (http.status_code) deployed correctly alongside a string key
+// (rpc.method) deployed with the WRONG type still surfaces exactly the
+// rpc.method failure — the per-key kind lookup (cerberus issue #2869)
+// does not let one column's correctness mask another's mistake, nor does
+// it misapply the wrong expected type across keys.
+func TestRunMixedKindMaterializedAttrColumnsBothValidated(t *testing.T) {
+	t.Parallel()
+	cols := healthyColumns()
+	tr := schema.DefaultOTelTraces()
+	const (
+		numericCol = "__cerberus_materialized_http.status_code"
+		stringCol  = "__cerberus_materialized_rpc.method"
+	)
+	cols[tr.SpansTable] = append(
+		cols[tr.SpansTable],
+		chclient.NameTypePair{Name: numericCol, Type: "Nullable(Int32)"},
+		chclient.NameTypePair{Name: stringCol, Type: "String"},
+	)
+	q := &stubQuerier{Version: "25.8.2.1", Columns: cols}
+
+	req := defaultReq()
+	req.Traces.MaterializedSpanAttributeColumns = map[string]string{
+		"http.status_code": numericCol,
+		"rpc.method":       stringCol,
+	}
+	err := Run(context.Background(), q, req).Fatal
+	if err == nil {
+		t.Fatal("wrong-typed rpc.method column must fail even with a correctly-typed http.status_code column present")
+	}
+	wantBad := fmt.Sprintf("table otel_traces column %s: expected LowCardinality(String), found String", stringCol)
+	if !strings.Contains(err.Error(), wantBad) {
+		t.Errorf("message missing %q: %v", wantBad, err)
+	}
+	wantGoodAbsent := fmt.Sprintf("column %s", numericCol)
+	if strings.Contains(err.Error(), wantGoodAbsent) {
+		t.Errorf("message unexpectedly flags the correctly-typed numeric column %s: %v", numericCol, err)
 	}
 }
 

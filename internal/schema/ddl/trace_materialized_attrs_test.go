@@ -11,7 +11,9 @@ import (
 // subscript reading the right carrier column (SpanAttributes for the span
 // registry, ResourceAttributes for the resource registry), deterministic
 // (sorted) ordering across multiple keys, and the optional ON CLUSTER
-// clause.
+// clause — plus, for http.status_code, the numeric shape cerberus issue
+// #2869 gives it instead: Nullable(Int32) DEFAULT
+// toInt32OrNull(SpanAttributes['http.status_code']).
 func TestRenderTraceMaterializedAttrColumns_ExactSQL(t *testing.T) {
 	cfg := Config{
 		MaterializedSpanAttributeColumns: map[string]string{
@@ -25,7 +27,7 @@ func TestRenderTraceMaterializedAttrColumns_ExactSQL(t *testing.T) {
 
 	want := []string{
 		"ALTER TABLE default.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_http.status_code` " +
-			"LowCardinality(String) DEFAULT `SpanAttributes`['http.status_code']",
+			"Nullable(Int32) DEFAULT toInt32OrNull(`SpanAttributes`['http.status_code'])",
 		"ALTER TABLE default.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_rpc.method` " +
 			"LowCardinality(String) DEFAULT `SpanAttributes`['rpc.method']",
 		"ALTER TABLE default.otel_traces ADD COLUMN IF NOT EXISTS `__cerberus_materialized_k8s.namespace.name` " +

@@ -157,8 +157,10 @@ type Traces struct {
 	// MaterializedSpanAttributeColumns / MaterializedResourceAttributeColumns
 	// map a hot SpanAttributes / ResourceAttributes key (e.g.
 	// `http.status_code`, `k8s.namespace.name`) to the dedicated top-level
-	// LowCardinality(String) column cerberus provisions for it (cerberus
-	// issue #2776).
+	// column cerberus provisions for it (cerberus issue #2776) — see
+	// MaterializedAttributeColumnKindFor for the (usually
+	// LowCardinality(String), occasionally numeric) type each key is
+	// declared as.
 	//
 	// UNLIKE Logs.MaterializedResourceColumns, this is NOT exporter-owned
 	// DDL: the traces spans table ships from the upstream OTel ClickHouse
@@ -166,7 +168,10 @@ type Traces struct {
 	// ADD COLUMN onto a table it does not otherwise own the CREATE TABLE
 	// body of (see internal/schema/ddl's renderAddTraceMaterializedAttrColumns).
 	// Each column is declared `LowCardinality(String) DEFAULT
-	// <map>['<key>']` — DEFAULT, not MATERIALIZED. That choice is load-bearing:
+	// <map>['<key>']` by default, or the numeric shape
+	// MaterializedAttributeColumnKindFor names for a key like
+	// `http.status_code` (cerberus issue #2869) — DEFAULT, not MATERIALIZED
+	// either way. That choice is load-bearing:
 	// a DEFAULT column's value for a row in a part that predates the ALTER is
 	// computed LAZILY, at read time, from that row's own already-stored
 	// Attributes map — confirmed against a real ClickHouse 26.6 server (see
@@ -223,12 +228,79 @@ type Traces struct {
 // knows nothing about, so the prefix says so.
 const materializedAttributeColumnPrefix = "__cerberus_materialized_"
 
-// MaterializedAttributeColumnType is the ClickHouse type every materialized
-// span/resource attribute column is declared as (cerberus issue #2776) —
-// the single source of truth internal/schema/ddl (which renders the ADD
-// COLUMN type) and internal/preflight (which validates the deployed type
-// via system.columns) both consume, so the two can never drift apart.
+// MaterializedAttributeColumnType is the ClickHouse type a
+// MaterializedColumnKindString materialized span/resource attribute column
+// is declared as (cerberus issue #2776) — the single source of truth
+// internal/schema/ddl (which renders the ADD COLUMN type) and
+// internal/preflight (which validates the deployed type via system.columns)
+// both consume, so the two can never drift apart.
 const MaterializedAttributeColumnType = "LowCardinality(String)"
+
+// NumericMaterializedAttributeColumnType is the ClickHouse type a
+// MaterializedColumnKindNumeric materialized column is declared as
+// (cerberus issue #2869) — the numeric counterpart of
+// MaterializedAttributeColumnType, consumed the same way by
+// internal/schema/ddl and internal/preflight. Nullable, not a bare Int32:
+// the DEFAULT expression is toInt32OrNull(<map>[<key>]), which returns NULL
+// for an absent key or a non-numeric value rather than erroring the row,
+// and TraceQL's NULL-drops-row WHERE semantics needs that NULL to survive
+// as a real NULL rather than get silently coerced to a non-Nullable
+// column's zero default.
+const NumericMaterializedAttributeColumnType = "Nullable(Int32)"
+
+// MaterializedColumnKind classifies the ClickHouse type family a
+// materialized span/resource attribute column is provisioned as. Every
+// consumer that must render or validate the column differently by type —
+// internal/schema/ddl's DDL rendering, internal/preflight's schema-shape
+// check, internal/traceql's numeric-coercion skip, and the tempo tag-values
+// API's UNION-arm projection (cerberus issue #2870's auto-scope routing) —
+// derives its answer from MaterializedAttributeColumnKindFor, the single
+// source of truth keyed by the semconv attribute key (cerberus issue
+// #2869).
+type MaterializedColumnKind int
+
+const (
+	// MaterializedColumnKindString is the default: LowCardinality(String)
+	// DEFAULT <map>['<key>'], value-identical to the map's own String cell
+	// (cerberus issue #2776).
+	MaterializedColumnKindString MaterializedColumnKind = iota
+	// MaterializedColumnKindNumeric is a native ClickHouse numeric type
+	// (NumericMaterializedAttributeColumnType) DEFAULT
+	// to<Type>OrNull(<map>['<key>']) instead — see
+	// numericMaterializedAttributeKeys for which keys opt into this
+	// (cerberus issue #2869).
+	MaterializedColumnKindNumeric
+)
+
+// numericMaterializedAttributeKeys is the set of default-registry keys
+// (defaultMaterializedSpanAttributeKeys / defaultMaterializedResourceAttributeKeys
+// above) provisioned as MaterializedColumnKindNumeric instead of the
+// MaterializedColumnKindString default (cerberus issue #2869).
+// http.status_code is the only member today: OTel semconv defines it as an
+// integer, and it is the exact numeric-coercion example cerberus issue
+// #2776 named as the deferred stretch goal. Deliberately NOT extended to
+// other numeric-shaped semconv keys (e.g. a future retry-count or
+// byte-size attribute) speculatively — each addition is its own scope
+// decision (see the issue's own scope note), this map just makes adding
+// one a one-line change rather than a new coercion/DDL/preflight path.
+var numericMaterializedAttributeKeys = map[string]bool{
+	"http.status_code": true,
+}
+
+// MaterializedAttributeColumnKindFor reports the ClickHouse type family the
+// materialized column for a span/resource attribute key is provisioned as.
+// Keyed by the semconv attribute KEY rather than by scope or by column
+// name: a key's numeric-ness is a property of the semconv definition, not
+// of which map it happens to be materialized in, and every consumer
+// already has the key in hand at the point it needs this answer (DDL
+// renders per key, preflight validates per key alongside its column,
+// TraceQL resolves a scoped identifier to a key before routing).
+func MaterializedAttributeColumnKindFor(key string) MaterializedColumnKind {
+	if numericMaterializedAttributeKeys[key] {
+		return MaterializedColumnKindNumeric
+	}
+	return MaterializedColumnKindString
+}
 
 // defaultMaterializedSpanAttributeKeys / defaultMaterializedResourceAttributeKeys
 // are the curated, deliberately small default set of hot TraceQL

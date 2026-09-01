@@ -141,24 +141,60 @@ func containsArg(args []any, want string) bool {
 }
 
 // TestLowerAttribute_MaterializedColumnNumericCoercion pins that a
-// materialized attribute reference stays wrapped in the SAME
-// toFloat64OrNull numeric coercion an unmaterialized FieldAccess gets
-// (internal/traceql/lower.go's coerceNumericFieldAccess) — proving the
-// design choice to carry MaterializedColumn AS a chplan.FieldAccess field
-// (rather than swap in a bare chplan.ColumnRef at lowering time) keeps
-// every existing FieldAccess-aware pass working unchanged. Without this,
-// `span.http.status_code > 400` would compare a LowCardinality(String)
-// column directly against an integer literal — a type mismatch ClickHouse
-// rejects.
+// STRING-typed materialized attribute reference (rpc.method —
+// schema.MaterializedColumnKindString, cerberus issue #2776) stays
+// wrapped in the SAME toFloat64OrNull numeric coercion an unmaterialized
+// FieldAccess gets (internal/traceql/lower.go's coerceNumericFieldAccess)
+// — proving the design choice to carry MaterializedColumn AS a
+// chplan.FieldAccess field (rather than swap in a bare chplan.ColumnRef
+// at lowering time) keeps every existing FieldAccess-aware pass working
+// unchanged. Without this, `span.rpc.method > 400` would compare a
+// LowCardinality(String) column directly against an integer literal — a
+// type mismatch ClickHouse rejects. http.status_code is deliberately NOT
+// used here since cerberus issue #2869 made it numeric-typed and retired
+// exactly this coercion for it — see
+// TestLowerAttribute_NumericMaterializedColumnSkipsCoercion below.
 func TestLowerAttribute_MaterializedColumnNumericCoercion(t *testing.T) {
+	t.Parallel()
+
+	on := schema.DefaultOTelTraces()
+	on.MaterializedSpanAttributeColumns = map[string]string{"rpc.method": "__cerberus_materialized_rpc.method"}
+
+	sqlStr := emitTraceQL(t, `{ span.rpc.method > 400 }`, on)
+	want := "toFloat64OrNull(`__cerberus_materialized_rpc.method`)"
+	if !strings.Contains(sqlStr, want) {
+		t.Errorf("SQL missing numeric coercion around the materialized column (want %q); got: %s", want, sqlStr)
+	}
+}
+
+// TestLowerAttribute_NumericMaterializedColumnSkipsCoercion is
+// TestLowerAttribute_MaterializedColumnNumericCoercion's counterpart for
+// cerberus issue #2869: http.status_code's materialized column is a real
+// ClickHouse numeric type (schema.MaterializedColumnKindNumeric,
+// Nullable(Int32)), so FieldAccess.MaterializedColumnNumeric must make
+// coerceNumericFieldAccess / coerceFieldAccess skip the toFloat64OrNull
+// wrap entirely — the column already compares/arithmetics natively.
+func TestLowerAttribute_NumericMaterializedColumnSkipsCoercion(t *testing.T) {
 	t.Parallel()
 
 	on := schema.DefaultOTelTraces()
 	on.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": "__cerberus_materialized_http.status_code"}
 
-	sqlStr := emitTraceQL(t, `{ span.http.status_code > 400 }`, on)
-	want := "toFloat64OrNull(`__cerberus_materialized_http.status_code`)"
-	if !strings.Contains(sqlStr, want) {
-		t.Errorf("SQL missing numeric coercion around the materialized column (want %q); got: %s", want, sqlStr)
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"ordering_int_literal", `{ span.http.status_code > 400 }`},
+		{"arithmetic", `{ span.http.status_code + 1 = 501 }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sqlStr := emitTraceQL(t, tc.query, on)
+			if strings.Contains(sqlStr, "toFloat64OrNull") {
+				t.Errorf("numeric materialized column should skip toFloat64OrNull coercion; got: %s", sqlStr)
+			}
+			if !strings.Contains(sqlStr, "`__cerberus_materialized_http.status_code`") {
+				t.Errorf("SQL missing the bare materialized column reference; got: %s", sqlStr)
+			}
+		})
 	}
 }

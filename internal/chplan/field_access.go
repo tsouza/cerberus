@@ -31,6 +31,24 @@ type FieldAccess struct {
 	// attribute reference exactly like an unmaterialized one — only the
 	// final SQL rendering differs.
 	MaterializedColumn string
+
+	// MaterializedColumnNumeric tags MaterializedColumn as a real
+	// ClickHouse numeric type (schema.MaterializedColumnKindNumeric, e.g.
+	// Nullable(Int32) for http.status_code) rather than the default
+	// LowCardinality(String) (cerberus issue #2869). Always false when
+	// MaterializedColumn is empty — an unmaterialized FieldAccess always
+	// reads the String-valued attribute map.
+	//
+	// internal/traceql/lower.go's coerceNumericFieldAccess /
+	// coerceBoolFieldAccess consult this to skip the toFloat64OrNull /
+	// bool-to-string wraps a String-typed carrier needs: a numeric column
+	// is already comparable/arithmetic-able as-is, and wrapping it would
+	// be redundant at best (a needless cast) and lossy at worst (an
+	// unwanted Int32->Float64 widening). A plain bool, not a fuller kind
+	// enum, because coercion only ever needs this one yes/no answer —
+	// see schema.MaterializedColumnKind for the fuller type-family
+	// classification DDL/preflight consume instead.
+	MaterializedColumnNumeric bool
 }
 
 func (*FieldAccess) exprNode() {}
@@ -40,5 +58,6 @@ func (f *FieldAccess) Equal(other Expr) bool {
 	if !ok {
 		return false
 	}
-	return f.Path == o.Path && f.MaterializedColumn == o.MaterializedColumn && f.Source.Equal(o.Source)
+	return f.Path == o.Path && f.MaterializedColumn == o.MaterializedColumn &&
+		f.MaterializedColumnNumeric == o.MaterializedColumnNumeric && f.Source.Equal(o.Source)
 }
