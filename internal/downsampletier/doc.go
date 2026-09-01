@@ -7,6 +7,17 @@
 // composition + result diffing is unit testable without a live ClickHouse
 // connection (see Conn).
 //
+// # Two source tables, one target table
+//
+// The tier folds TWO raw source tables (cerberus issue #2858 added the
+// Gauge table alongside #2751's original Sum table — see downsampleTierSources)
+// into the SAME schema.DownsampleTierTable, mirroring internal/schema/ddl's
+// two independent materialized views into that one AggregatingMergeTree.
+// Every function in this package that reads or writes "the base table" —
+// Backfill, Rebuild, Verify — actually does so once per configured source,
+// via downsampleTierSources; BackfillSQL / RebuildSQL return one Statement
+// per source for the same reason.
+//
 // # Why a backfill is needed at all
 //
 // Exactly the same reason as internal/deltaprefix's own doc: `CREATE

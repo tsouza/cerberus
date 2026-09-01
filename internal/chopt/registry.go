@@ -825,12 +825,20 @@ const (
 	// bucket, grid aligned to the bucket boundary — see
 	// internal/promql/lower_strategy.go's eligibility check) onto the
 	// operator-provisioned downsampled long-range tier
-	// (schema.DownsampleTierTable): a materialized view folding raw Sum-
-	// table samples into a persisted timeSeriesLastTwoSamples aggregate
-	// state per bucket, read back via timeSeriesLastTwoSamplesMerge +
-	// finalizeAggregation instead of scanning full-resolution raw rows
-	// (cerberus issue #2751; a range spanning several buckets merges them
-	// and re-filters to the exact window — issue #2857).
+	// (schema.DownsampleTierTable): TWO independent materialized views
+	// (internal/schema/ddl's renderDownsampleTierView from the Sum table,
+	// renderDownsampleTierGaugeView from the Gauge table — cerberus issue
+	// #2858) folding raw samples into a SHARED persisted
+	// timeSeriesLastTwoSamples aggregate state per bucket, read back via
+	// timeSeriesLastTwoSamplesMerge + finalizeAggregation instead of
+	// scanning full-resolution raw rows (cerberus issue #2751; a range
+	// spanning several buckets merges them and re-filters to the exact
+	// window — issue #2857). The Gauge-sourced MV feeds last_over_time()
+	// ONLY — a gauge has no counter-reset semantics for irate()/idelta(),
+	// see internal/promql/lower.go's attachDownsampleTierArm — and is
+	// eligible only over an UNAMBIGUOUS Gauge-table metric-name resolution,
+	// the same restriction an unsuffixed COUNTER metric already has for
+	// irate()/idelta() (schema.Metrics.TablesForUnknownName's own doc).
 	//
 	// THIS IS A FUNDAMENTALLY DIFFERENT MECHANISM from the rest of the
 	// timeSeries*ToGrid family above: those are stateless read-time

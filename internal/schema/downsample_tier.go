@@ -58,6 +58,33 @@ const (
 	DownsampleTierTemporalityColumn = "Temporality"
 )
 
+// DownsampleTierGaugeTemporalitySentinel is the Temporality value the
+// Gauge-sourced materialized view (internal/schema/ddl's
+// renderDownsampleTierGaugeView, cerberus issue #2858) writes in place of a
+// real AggregationTemporality reading — a Gauge series has no such column at
+// all, unlike a merely-absent value in one that exists. Chosen OUTSIDE the
+// OTLP AggregationTemporality wire enum's valid {0, 1, 2} range
+// (AggregationTemporalityUnspecified / Delta / Cumulative below) specifically
+// so it can never be misread as a genuine reading by any code that branches
+// on this column.
+//
+// The only reader of DownsampleTierTemporalityColumn is irate() (see that
+// constant's own doc: idelta() and last_over_time() never branch on it), and
+// irate()'s own tier eligibility (internal/promql/lower.go's
+// attachDownsampleTierArm, via rangeVectorCounterTemporalityColumn) requires
+// an UNAMBIGUOUS Sum/Histogram-table resolution — which a Gauge-table metric
+// never satisfies, and which an AMBIGUOUS name (one [Metrics.TablesFor] could
+// resolve to either Gauge or Sum) never satisfies either, since that check
+// requires the routed table set to have exactly one member. So an irate()
+// query can only ever read tier rows THIS view wrote when its own metric name
+// is also somehow routable to Sum/Histogram — which the same single-table
+// check rules out by construction. See internal/chsql's downsample-tier
+// gauge chDB test for the empirical proof that this sentinel, if it were
+// ever read by CounterOrDeltaPairDelta, would take the safe "not DELTA"
+// branch rather than being confused for a genuine Delta or Cumulative
+// reading.
+const DownsampleTierGaugeTemporalitySentinel int64 = -1
+
 // DownsampleTierBucket is the tier's single supported aggregation bucket —
 // fixed, not operator-configurable (cerberus issue #2751's deliberate v1
 // scope decision). It mirrors the retired otel_metrics_sum_5m rollup's own

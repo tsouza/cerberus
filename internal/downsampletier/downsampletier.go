@@ -81,10 +81,18 @@ func withCaps(ctx context.Context) context.Context {
 // backfill + rebuild + verify queries reference. Unlike
 // internal/deltaprefix.Columns, the tier table/column names are FIXED
 // schema.DownsampleTier* constants (see that package's doc for why), so
-// only the database + base Sum table name vary by deployment.
+// only the database + base source table names vary by deployment.
+//
+// GaugeTable is the second source this package folds into the tier
+// (cerberus issue #2858), alongside SumTable — mirroring
+// internal/schema/ddl's two-MV shape (renderDownsampleTierView +
+// renderDownsampleTierGaugeView). See downsampleTierSources for how the two
+// combine, and for why a deployment where GaugeTable equals SumTable folds
+// only once.
 type Columns struct {
 	Database                     string
 	SumTable                     string
+	GaugeTable                   string
 	MetricNameColumn             string
 	AttributesColumn             string
 	ResourceAttributesColumn     string
@@ -101,6 +109,7 @@ func FromSchema(database string, m schema.Metrics) Columns {
 	return Columns{
 		Database:                     database,
 		SumTable:                     m.SumTable,
+		GaugeTable:                   m.GaugeTable,
 		MetricNameColumn:             m.MetricNameColumn,
 		AttributesColumn:             m.AttributesColumn,
 		ResourceAttributesColumn:     m.ResourceAttributesColumn,
@@ -109,6 +118,52 @@ func FromSchema(database string, m schema.Metrics) Columns {
 		ValueColumn:                  m.ValueColumn,
 		AggregationTemporalityColumn: m.AggregationTemporalityColumn,
 	}
+}
+
+// downsampleTierSource is one physical raw table this package folds into the
+// shared tier table, paired with the Temporality expression its own
+// backfillSelectSQL projects for it — the SAME (table, temporality-expr)
+// pairing internal/schema/ddl's renderDownsampleTierView /
+// renderDownsampleTierGaugeView use on the live-MV side, reproduced here for
+// the SAME "leaf packages can't share one helper" reason bucketEndExpr's own
+// doc gives.
+type downsampleTierSource struct {
+	table       string
+	temporality chsql.Frag
+}
+
+// downsampleTierSources returns the source(s) Backfill/Rebuild/Verify fold
+// into (or read completeness counts against): the Sum table always, and the
+// Gauge table too (cerberus issue #2858) UNLESS it is configured identically
+// to the Sum table. In that configuration the Sum source's own scan already
+// covers every row the Gauge source would otherwise re-read from the SAME
+// physical table — re-scanning it a second time would double-write every
+// bucket, mirroring the identical guard renderDownsampleTierGaugeView's own
+// doc explains on the live-MV side.
+func downsampleTierSources(c Columns) []downsampleTierSource {
+	sources := []downsampleTierSource{
+		{table: c.SumTable, temporality: chsql.Call("any", chsql.Col(c.AggregationTemporalityColumn))},
+	}
+	if c.GaugeTable != "" && c.GaugeTable != c.SumTable {
+		sources = append(sources, downsampleTierSource{
+			table:       c.GaugeTable,
+			temporality: chsql.InlineLit(schema.DownsampleTierGaugeTemporalitySentinel),
+		})
+	}
+	return sources
+}
+
+// SourceTables returns the base table name(s) Backfill/Rebuild/Verify fold
+// into or read completeness counts against — cmd/cerberus's own
+// user-facing messages name these rather than hard-coding "the Sum table"
+// (cerberus issue #2858: that used to be the only source).
+func SourceTables(c Columns) []string {
+	srcs := downsampleTierSources(c)
+	names := make([]string, len(srcs))
+	for i, src := range srcs {
+		names[i] = src.table
+	}
+	return names
 }
 
 // bucketEndExpr renders the SAME ceiling bucket-boundary expression
@@ -130,8 +185,12 @@ func bucketSeconds() int64 { return int64(schema.DownsampleTierBucket / time.Sec
 
 // backfillSelectSQL renders the SELECT half shared by BackfillSQL (bounded
 // by `before`) and RebuildSQL (unbounded, the full history) — factored out
-// so the two statements cannot drift on the GROUP BY / projection shape.
-func backfillSelectSQL(c Columns, before *time.Time) *chsql.QueryBuilder {
+// so the statements for every source (downsampleTierSources) cannot drift
+// on the GROUP BY / projection shape. src picks the FROM table and the
+// Temporality expression (a real any(AggregationTemporality) for the Sum
+// source, the fixed sentinel literal for the Gauge source — see
+// downsampleTierSources).
+func backfillSelectSQL(c Columns, src downsampleTierSource, before *time.Time) *chsql.QueryBuilder {
 	bucket := bucketEndExpr(c.TimestampColumn)
 	q := chsql.NewQuery().
 		Select(
@@ -141,9 +200,9 @@ func backfillSelectSQL(c Columns, before *time.Time) *chsql.QueryBuilder {
 			chsql.Col(c.ServiceNameColumn),
 			chsql.As(bucket, schema.DownsampleTierBucketColumn),
 			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(c.TimestampColumn), chsql.Col(c.ValueColumn)), schema.DownsampleTierSamplesColumn),
-			chsql.As(chsql.Call("any", chsql.Col(c.AggregationTemporalityColumn)), schema.DownsampleTierTemporalityColumn),
+			chsql.As(src.temporality, schema.DownsampleTierTemporalityColumn),
 		).
-		From(chsql.Qual(c.Database, c.SumTable))
+		From(chsql.Qual(c.Database, src.table))
 	if before != nil {
 		q = q.Where(chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(*before)))
 	}
@@ -165,21 +224,47 @@ func tierColumns(c Columns) []string {
 	}
 }
 
-// BackfillSQL renders the one-time `INSERT INTO ... SELECT` that populates
-// the tier table for c.SumTable history strictly older than before — the
-// MV's own exact creation instant (see internal/deltaprefix's package doc
-// for why an exact instant, never a calendar-day-rounded one). Mirrors
-// internal/deltaprefix.BackfillSQL's own bound discipline exactly.
-func BackfillSQL(c Columns, before time.Time) (string, []any) {
-	return chsql.InsertSelect(c.Database, schema.DownsampleTierTable, tierColumns(c), backfillSelectSQL(c, &before)).Build()
+// Statement is one rendered SQL text plus its positional args — BackfillSQL
+// / RebuildSQL return one per downsampleTierSources(c) entry (cerberus issue
+// #2858: previously always exactly one, the Sum table; now also the Gauge
+// table unless it collapses onto the Sum table). Two straightforward
+// single-source INSERT statements, rather than one UNION ALL statement,
+// mirror the two-independent-MV shape internal/schema/ddl provisions
+// (renderDownsampleTierView + renderDownsampleTierGaugeView) 1:1 — an
+// operator inspecting --dry-run output sees exactly the two statements the
+// live MVs themselves logically perform.
+type Statement struct {
+	SQL  string
+	Args []any
 }
 
-// RebuildSQL renders the FULL, unbounded `INSERT INTO ... SELECT` a Rebuild
-// issues after truncating the tier table (see this package's doc for why a
-// full rebuild — not just an incremental backfill — is the recovery path
-// for a suspected stranded/incompatible persisted state).
-func RebuildSQL(c Columns) (string, []any) {
-	return chsql.InsertSelect(c.Database, schema.DownsampleTierTable, tierColumns(c), backfillSelectSQL(c, nil)).Build()
+// BackfillSQL renders the one-time `INSERT INTO ... SELECT` statement(s)
+// that populate the tier table for history strictly older than before — the
+// relevant MV's own exact creation instant (see internal/deltaprefix's
+// package doc for why an exact instant, never a calendar-day-rounded one).
+// Mirrors internal/deltaprefix.BackfillSQL's own bound discipline exactly,
+// once per downsampleTierSources(c) entry.
+func BackfillSQL(c Columns, before time.Time) []Statement {
+	var stmts []Statement
+	for _, src := range downsampleTierSources(c) {
+		sql, args := chsql.InsertSelect(c.Database, schema.DownsampleTierTable, tierColumns(c), backfillSelectSQL(c, src, &before)).Build()
+		stmts = append(stmts, Statement{SQL: sql, Args: args})
+	}
+	return stmts
+}
+
+// RebuildSQL renders the FULL, unbounded `INSERT INTO ... SELECT`
+// statement(s) a Rebuild issues after truncating the tier table (see this
+// package's doc for why a full rebuild — not just an incremental backfill —
+// is the recovery path for a suspected stranded/incompatible persisted
+// state), once per downsampleTierSources(c) entry.
+func RebuildSQL(c Columns) []Statement {
+	var stmts []Statement
+	for _, src := range downsampleTierSources(c) {
+		sql, args := chsql.InsertSelect(c.Database, schema.DownsampleTierTable, tierColumns(c), backfillSelectSQL(c, src, nil)).Build()
+		stmts = append(stmts, Statement{SQL: sql, Args: args})
+	}
+	return stmts
 }
 
 // TruncateSQL renders the `TRUNCATE TABLE` Rebuild issues before its full
@@ -202,17 +287,19 @@ func retentionBoundary(now time.Time, retention time.Duration) (boundary time.Ti
 }
 
 // outsideRetentionDaysSQL renders the DISTINCT bucket-boundary read against
-// the base table's own history, restricted to Backfill's own `[-inf,
+// one source table's own history, restricted to Backfill's own `[-inf,
 // before)` scope AND already past the tier table's retention as of
 // boundary — the tier's analogue of internal/deltaprefix's own
 // outsideRetentionDaysSQL (cerberus issue #2652's finding, reproduced here
-// rather than re-derived: this table shares the base Sum table's TTL, see
-// internal/schema/ddl's renderDownsampleTierTable).
-func outsideRetentionDaysSQL(c Columns, before, boundary time.Time) (string, []any) {
+// rather than re-derived: this table shares the base table's TTL, see
+// internal/schema/ddl's renderDownsampleTierTable). source is a
+// downsampleTierSources(c) entry's table (cerberus issue #2858: previously
+// always c.SumTable).
+func outsideRetentionDaysSQL(c Columns, source string, before, boundary time.Time) (string, []any) {
 	bucket := bucketEndExpr(c.TimestampColumn)
 	q := chsql.NewQuery().
 		Select(bucket).
-		From(chsql.Qual(c.Database, c.SumTable)).
+		From(chsql.Qual(c.Database, source)).
 		Where(
 			chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before)),
 			chsql.Lt(bucket, chsql.Lit(boundary)),
@@ -222,24 +309,40 @@ func outsideRetentionDaysSQL(c Columns, before, boundary time.Time) (string, []a
 	return q.Build()
 }
 
+// queryOutsideRetentionDays unions the outside-retention bucket days across
+// EVERY configured source (cerberus issue #2858: previously just the Sum
+// table) — a day reported by either source's own history is worth warning
+// the operator about, so the result is the set union, de-duplicated and
+// sorted ascending exactly like the single-source result used to come back
+// from ClickHouse's own ORDER BY.
 func queryOutsideRetentionDays(ctx context.Context, conn Conn, c Columns, before, boundary time.Time) ([]time.Time, error) {
-	sql, args := outsideRetentionDaysSQL(c, before, boundary)
-	rows, err := conn.Query(withCaps(ctx), sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var days []time.Time
-	for rows.Next() {
-		var day time.Time
-		if err := rows.Scan(&day); err != nil {
-			return nil, err
+	seen := map[time.Time]struct{}{}
+	for _, src := range downsampleTierSources(c) {
+		sql, args := outsideRetentionDaysSQL(c, src.table, before, boundary)
+		rows, err := conn.Query(withCaps(ctx), sql, args...)
+		if err != nil {
+			return nil, fmt.Errorf("downsampletier: check retention window against %s: %w", src.table, err)
 		}
-		days = append(days, day)
+		scanErr := func() error {
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var day time.Time
+				if err := rows.Scan(&day); err != nil {
+					return err
+				}
+				seen[day] = struct{}{}
+			}
+			return rows.Err()
+		}()
+		if scanErr != nil {
+			return nil, fmt.Errorf("downsampletier: check retention window against %s: %w", src.table, scanErr)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	days := make([]time.Time, 0, len(seen))
+	for d := range seen {
+		days = append(days, d)
 	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
 	return days, nil
 }
 
@@ -260,12 +363,13 @@ func Backfill(ctx context.Context, conn Conn, c Columns, before time.Time, reten
 		var err error
 		outsideDays, err = queryOutsideRetentionDays(ctx, conn, c, before, boundary)
 		if err != nil {
-			return Result{}, fmt.Errorf("downsampletier: check retention window against %s: %w", c.SumTable, err)
+			return Result{}, err
 		}
 	}
-	sql, args := BackfillSQL(c, before)
-	if err := conn.Exec(withCaps(ctx), sql, args...); err != nil {
-		return Result{}, fmt.Errorf("downsampletier: backfill %s: %w", schema.DownsampleTierTable, err)
+	for _, stmt := range BackfillSQL(c, before) {
+		if err := conn.Exec(withCaps(ctx), stmt.SQL, stmt.Args...); err != nil {
+			return Result{}, fmt.Errorf("downsampletier: backfill %s: %w", schema.DownsampleTierTable, err)
+		}
 	}
 	return Result{OutsideRetentionDays: outsideDays}, nil
 }
@@ -287,15 +391,16 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration)
 		// entire currently-retained history.
 		outsideDays, err = queryOutsideRetentionDays(ctx, conn, c, nowFunc(), boundary)
 		if err != nil {
-			return Result{}, fmt.Errorf("downsampletier: check retention window against %s: %w", c.SumTable, err)
+			return Result{}, err
 		}
 	}
 	if err := conn.Exec(withCaps(ctx), TruncateSQL(c)); err != nil {
 		return Result{}, fmt.Errorf("downsampletier: truncate %s: %w", schema.DownsampleTierTable, err)
 	}
-	sql, args := RebuildSQL(c)
-	if err := conn.Exec(withCaps(ctx), sql, args...); err != nil {
-		return Result{}, fmt.Errorf("downsampletier: rebuild %s: %w", schema.DownsampleTierTable, err)
+	for _, stmt := range RebuildSQL(c) {
+		if err := conn.Exec(withCaps(ctx), stmt.SQL, stmt.Args...); err != nil {
+			return Result{}, fmt.Errorf("downsampletier: rebuild %s: %w", schema.DownsampleTierTable, err)
+		}
 	}
 	return Result{OutsideRetentionDays: outsideDays}, nil
 }
@@ -306,8 +411,9 @@ func Rebuild(ctx context.Context, conn Conn, c Columns, retention time.Duration)
 // like internal/deltaprefix.Verify's sum comparison. See this package's doc
 // for why: the tier's read-side failure mode for a missing bucket is a safe
 // absent series point, never a wrong number, so there is no aggregate total
-// to parity-check in the first place.
-func baseBucketsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
+// to parity-check in the first place. source is a downsampleTierSources(c)
+// entry's table (cerberus issue #2858: previously always c.SumTable).
+func baseBucketsSQL(c Columns, source string, before, boundary time.Time, retentionActive bool) (string, []any) {
 	bucket := bucketEndExpr(c.TimestampColumn)
 	conds := []chsql.Frag{chsql.Lt(chsql.Col(c.TimestampColumn), chsql.Lit(before))}
 	if retentionActive {
@@ -315,10 +421,36 @@ func baseBucketsSQL(c Columns, before, boundary time.Time, retentionActive bool)
 	}
 	q := chsql.NewQuery().
 		Select(chsql.Col(c.MetricNameColumn), chsql.As(chsql.Call("uniqExact", bucket), "n")).
-		From(chsql.Qual(c.Database, c.SumTable)).
+		From(chsql.Qual(c.Database, source)).
 		Where(conds...).
 		GroupBy(chsql.Col(c.MetricNameColumn))
 	return q.Build()
+}
+
+// baseBucketCounts merges per-metric-name DISTINCT bucket counts across
+// EVERY configured source (cerberus issue #2858: previously always just the
+// Sum table) — summed rather than deduped, since a metric name is expected
+// to live in exactly one source table (the same "one name -> one table"
+// invariant internal/promql's tier-routing eligibility relies on, via
+// resolveUnambiguousScanTable's single-table requirement). A name that
+// somehow existed in both would double count here, but such a name could
+// never route to the tier for either irate()/idelta() (Sum-only) or
+// last_over_time() (its own unambiguous-Gauge-table gate) in the first
+// place, so this completeness check does not need to defend against it any
+// harder than the read path already does.
+func baseBucketCounts(ctx context.Context, conn Conn, c Columns, before, boundary time.Time, retentionActive bool) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, src := range downsampleTierSources(c) {
+		sql, args := baseBucketsSQL(c, src.table, before, boundary, retentionActive)
+		counts, err := scanCounts(ctx, conn, sql, args)
+		if err != nil {
+			return nil, fmt.Errorf("downsampletier: read %s bucket counts: %w", src.table, err)
+		}
+		for name, n := range counts {
+			out[name] += n
+		}
+	}
+	return out, nil
 }
 
 func tierBucketsSQL(c Columns, before, boundary time.Time, retentionActive bool) (string, []any) {
@@ -383,14 +515,13 @@ func Verify(ctx context.Context, conn Conn, c Columns, before time.Time, retenti
 		var err error
 		outsideDays, err = queryOutsideRetentionDays(ctx, conn, c, before, boundary)
 		if err != nil {
-			return Report{}, fmt.Errorf("downsampletier: check retention window against %s: %w", c.SumTable, err)
+			return Report{}, err
 		}
 	}
 
-	baseSQL, baseArgs := baseBucketsSQL(c, before, boundary, active)
-	base, err := scanCounts(ctx, conn, baseSQL, baseArgs)
+	base, err := baseBucketCounts(ctx, conn, c, before, boundary, active)
 	if err != nil {
-		return Report{}, fmt.Errorf("downsampletier: read %s bucket counts: %w", c.SumTable, err)
+		return Report{}, err
 	}
 	tierSQL, tierArgs := tierBucketsSQL(c, before, boundary, active)
 	tier, err := scanCounts(ctx, conn, tierSQL, tierArgs)

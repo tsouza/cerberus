@@ -2316,22 +2316,40 @@ high-cardinality DELTA metric — not `date-range × 1` — and belongs in
 capacity planning for any deployment enabling
 `CERBERUS_DELTA_PREFIX_READ_ENABLED` against such a metric.
 
-### Downsampled long-range tier (cerberus issue #2751, #2857)
+### Downsampled long-range tier (cerberus issue #2751, #2857, #2858)
 
-Auto-create can also provision an **opt-in, cerberus-owned** table + materialized
-view folding raw Sum-table samples into a persisted `timeSeriesLastTwoSamples`
-aggregate state per 5-minute bucket (`internal/schema/ddl`, table
-`otel_metrics_sum_downsample_tier`), read back by `irate()` / `idelta()` /
-`last_over_time()` `query_range` shapes whose window is a positive integer
-multiple of the bucket (one bucket exactly, or several merged via
-`timeSeriesLastTwoSamplesMerge` and re-filtered to the exact window, per
-issue #2857). Unlike the DELTA-prefix table above, provisioning and query routing
-share a **single** flag: `CERBERUS_CH_OPTIMIZATIONS=downsample_tier` (a chopt
-feature, floor ClickHouse >= 25.9, `AutoSelect=false` — never picked by
-`auto`). A not-yet-backfilled or missing bucket degrades to an ABSENT series
-point at query time, never a wrong value — see the scope note below — so
-this mechanism does not need DELTA-prefix's separate, later
-`*_READ_ENABLED` declaration.
+Auto-create can also provision an **opt-in, cerberus-owned** table fed by
+**two independent materialized views**, folding raw samples into a persisted
+`timeSeriesLastTwoSamples` aggregate state per 5-minute bucket
+(`internal/schema/ddl`, table `otel_metrics_sum_downsample_tier`): one MV
+from the Sum table (`otel_metrics_sum_downsample_tier_mv`, issue #2751,
+feeding `irate()` / `idelta()` / `last_over_time()`), one from the Gauge
+table (`otel_metrics_sum_downsample_tier_gauge_mv`, issue #2858, feeding
+`last_over_time()` only — a gauge has no counter-reset semantics for
+`irate()`/`idelta()`). Read back by `query_range` shapes whose window is a
+positive integer multiple of the bucket (one bucket exactly, or several
+merged via `timeSeriesLastTwoSamplesMerge` and re-filtered to the exact
+window, per issue #2857). Unlike the DELTA-prefix table above, provisioning
+and query routing share a **single** flag:
+`CERBERUS_CH_OPTIMIZATIONS=downsample_tier` (a chopt feature, floor
+ClickHouse >= 25.9, `AutoSelect=false` — never picked by `auto`). A
+not-yet-backfilled or missing bucket degrades to an ABSENT series point at
+query time, never a wrong value — see the scope note below — so this
+mechanism does not need DELTA-prefix's separate, later `*_READ_ENABLED`
+declaration.
+
+The Gauge-sourced MV is skipped when `CERBERUS_SCHEMA_METRICS_GAUGE_TABLE`
+is configured identically to the Sum table — in that configuration the
+Sum-sourced MV already folds every row either name would otherwise read
+twice. Because an UNSUFFIXED metric name is otherwise ambiguous between
+Gauge and Sum (the same routing fan-out `/api/v1/series` etc. rely on to
+find hostmetrics-style cumulative sums under bare names), `last_over_time()`
+only routes a Gauge-table metric to the tier when its name resolves
+UNAMBIGUOUSLY to Gauge alone — realistically, a deployment with no Sum table
+configured at all. This mirrors the pre-existing restriction
+`irate()`/`idelta()` already have for an unsuffixed COUNTER metric (only a
+`_total`-suffixed name resolves unambiguously to Sum), applied symmetrically
+rather than newly introduced.
 
 **Hard scope boundary — `rate()` / `increase()` / `delta()` never route
 here, and never will.** Retaining only the two newest raw samples per bucket
@@ -2376,7 +2394,28 @@ SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
        any(AggregationTemporality) AS Temporality
 FROM <db>.otel_metrics_sum
 GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketEnd;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS <db>.otel_metrics_sum_downsample_tier_gauge_mv
+TO <db>.otel_metrics_sum_downsample_tier AS
+SELECT MetricName, Attributes, ResourceAttributes, ServiceName,
+       toStartOfInterval(TimeUnix - toIntervalNanosecond(1), toIntervalSecond(300))
+           + toIntervalSecond(300) AS BucketEnd,
+       timeSeriesLastTwoSamplesState(TimeUnix, Value) AS LastTwoSamples,
+       -1 AS Temporality
+FROM <db>.otel_metrics_gauge
+GROUP BY MetricName, Attributes, ResourceAttributes, ServiceName, BucketEnd;
 ```
+
+The Gauge-sourced MV writes the fixed sentinel `-1` in place of a real
+`AggregationTemporality` reading — a Gauge series carries no such column at
+all. `-1` is chosen outside the OTLP `AggregationTemporality` wire enum's
+valid `{0, 1, 2}` range so it can never be misread as a genuine reading; the
+only reader of `Temporality` is `irate()` (`idelta()` and `last_over_time()`
+ignore it), and `irate()`'s own eligibility already requires an unambiguous
+Sum/Histogram-table resolution, so a sentinel-valued row from this MV is
+never reachable from an `irate()` query in the first place — this is
+verified empirically (a real ClickHouse engine, not just reasoned about)
+against a manually-seeded sentinel row.
 
 `BucketEnd` is a **ceiling**, not ClickHouse's native `toStartOfInterval`
 floor: PromQL's range-vector window is half-open-left / closed-right
@@ -2407,8 +2446,11 @@ cerberus schema downsample-tier-verify   --before 2026-08-20T14:32:10Z
 `downsample-tier-backfill` is the SAME non-retroactive, exact-instant
 `--before` bound `delta-prefix-backfill` uses, and the SAME
 already-outside-retention-TTL detection (reported as a `WARNING`, not an
-error). `downsample-tier-verify` is a per-metric **completeness** check —
-distinct `(MetricName, BucketEnd)` counts, base table vs. tier — not a
+error) — checked and applied once PER configured source (Sum, and Gauge
+unless it is configured identically to Sum), so `--before` must be the
+LATER of the two MVs' own creation timestamps. `downsample-tier-verify` is a
+per-metric **completeness** check — distinct `(MetricName, BucketEnd)`
+counts, summed across every configured source, base tables vs. tier — not a
 value-parity check like `delta-prefix-verify`'s sum comparison: this
 mechanism has no aggregate total to parity-check against in the first
 place, only samples to be present or absent.
@@ -2418,14 +2460,15 @@ cerberus schema downsample-tier-rebuild
 ```
 
 `downsample-tier-rebuild` `TRUNCATE`s the tier table and re-populates it in
-full, from the base table's entire currently-retained history — no
+full, from every configured source's entire currently-retained history — no
 `--before` bound. This is the recovery path for a suspected stranded or
 format-incompatible persisted state: `timeSeriesLastTwoSamples` is an
 EXPERIMENTAL ClickHouse aggregate function, and a future ClickHouse upgrade
 changing its on-disk state format could strand every already-written row.
 An incremental `downsample-tier-backfill` cannot repair rows that are
 already unreadable — `downsample-tier-rebuild` starts clean instead. All
-three verbs accept `--dry-run` to print the statement(s) without executing.
+three verbs accept `--dry-run` to print the statement(s) — one per
+configured source for backfill/rebuild — without executing.
 
 ### Startup requirements preflight
 
