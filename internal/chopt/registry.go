@@ -635,11 +635,11 @@ const (
 	// zero-clamp are both decomposed into fixed accumulators, reusing
 	// range_window.go's deltaMatrixLevelSource / deltaFirstValFrag
 	// UNCHANGED (see internal/chsql/range_window_fixed_accumulator.go's own
-	// doc, "Temporality-bearing counters"). What stays excluded is the
-	// EXACT, retention-independent DELTA-prefix aggregate mechanism (issue
-	// #2389, RangeWindow.DeltaPrefixAggregateInput != nil) — a narrower
-	// opt-in-only population needing its own separate re-plumbing, tracked
-	// at https://github.com/tsouza/cerberus/issues/2797.
+	// doc, "Temporality-bearing counters"). This includes the EXACT,
+	// retention-independent DELTA-prefix aggregate mechanism (issue #2389,
+	// RangeWindow.DeltaPrefixAggregateInput != nil) — cerberus issue #2797
+	// closed the gap that used to exclude that narrower, opt-in-only
+	// population.
 	FeatureFixedAccumulatorExtrapolated = "fixed_accumulator_extrapolated"
 
 	// FeatureSortedSlabOverTime opts eligible query_range sum_over_time() /

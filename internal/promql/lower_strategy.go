@@ -727,12 +727,10 @@ func (n NativeIncreaseLowerer) LowerIncrease(rw *chplan.RangeWindow, s schema.Me
 // Scope: a temporality-bearing rate()/increase() window IS eligible — see
 // chsql/range_window_fixed_accumulator.go's own doc comment
 // ("Temporality-bearing counters") for the DELTA/CUMULATIVE runtime branch
-// and the reconstructed counter zero-clamp this needs and reuses UNCHANGED
-// from the array-fold path. What stays excluded is the EXACT,
-// retention-independent DELTA-prefix aggregate mechanism (issue #2389,
-// rw.DeltaPrefixAggregateInput != nil) — a narrower opt-in-only population
-// needing its own separate re-plumbing; see
-// https://github.com/tsouza/cerberus/issues/2797.
+// and the reconstructed counter zero-clamp this needs, including BOTH the
+// bounded-lookback approximation and issue #2389's EXACT, retention-independent
+// DELTA-prefix aggregate mechanism (rw.DeltaPrefixAggregateInput != nil) —
+// cerberus issue #2797 closed the gap that used to exclude the latter.
 
 // FixedAccumulatorRateLowerer is the boot-wired RateLowerer that emits
 // RangeWindow{FixedAccumulatorExtrapolated: true} for a shape-eligible rate
@@ -816,11 +814,6 @@ func (l FixedAccumulatorDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schem
 //     Step > 0, and both Start and End pinned — the fixed-accumulator
 //     emitter's own dedup/lag passes need the same scan-prune bound
 //     lagAdjacencyEligible's identical clause exists for.
-//   - rw.DeltaPrefixAggregateInput must be nil: the issue #2389 exact
-//     DELTA-prefix aggregate mechanism is out of scope for this cut (see
-//     chsql/range_window_fixed_accumulator.go's doc and
-//     https://github.com/tsouza/cerberus/issues/2797) — a populated side-scan
-//     declines rather than silently ignoring it.
 //   - rw.Variants must be empty: the fused multi-arm shape has its own
 //     emitter and does not participate in this decomposition.
 //
@@ -829,15 +822,16 @@ func (l FixedAccumulatorDeltaLowerer) LowerDelta(rw *chplan.RangeWindow, s schem
 // and chsql/range_window_fixed_accumulator.go's own "Temporality-bearing
 // counters" section) — the DELTA/CUMULATIVE runtime branch and the
 // reconstructed counter zero-clamp are both decomposed into fixed
-// accumulators too, not merely the no-temporality case.
+// accumulators too, not merely the no-temporality case. rw.DeltaPrefixAggregateInput
+// is likewise NOT excluded (cerberus issue #2797): the emitter reads it
+// (gated behind e.deltaPrefixReadEnabled, resolved from the runtime context,
+// not this shape predicate) to select issue #2389's exact reconstruction
+// mechanism instead of the bounded-lookback approximation.
 func fixedAccumulatorEligible(rw *chplan.RangeWindow) bool {
 	if rw.Identity {
 		return false
 	}
 	if rw.OuterRange <= 0 || rw.Step <= 0 || rw.Start.IsZero() || rw.End.IsZero() {
-		return false
-	}
-	if rw.DeltaPrefixAggregateInput != nil {
 		return false
 	}
 	return len(rw.Variants) == 0

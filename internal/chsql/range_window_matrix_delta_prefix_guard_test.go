@@ -285,7 +285,7 @@ func TestDeltaMatrixLevelSourceAggregate_EmptyGroupFragsDoesNotPanic(t *testing.
 	// numAnchors=3, stepNS/rangeNS arbitrary but nonzero — only
 	// groupFrags'/groupColumns' emptiness matters for the capacity hints
 	// under test (4133, 4180).
-	frag, err := e.deltaMatrixLevelSourceAggregate(r, regroupSource, nil, end, 10_000_000_000, 60_000_000_000, 3)
+	frag, err := e.deltaMatrixLevelSourceAggregate(r, regroupSource, nil, []string{"window_pairs"}, end, 10_000_000_000, 60_000_000_000, 3)
 	if err != nil {
 		t.Fatalf("deltaMatrixLevelSourceAggregate with empty groupFrags/GroupBy: %v", err)
 	}
