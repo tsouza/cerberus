@@ -264,6 +264,22 @@ const (
 	// never a broader dispatch this registry entry would have to narrow
 	// further.
 	//
+	// This SAME flag additionally governs a narrower composition (cerberus
+	// issue #2852): rate()/increase() against a schema with a per-row
+	// AggregationTemporality column always lower to a temporality-split
+	// UnionAll{RangeWindowGridNative, RangeWindow} (issue #2843), never a
+	// bare RangeWindowGridNative, so the plain branch above never fires for
+	// them. internal/promql's lowerAggregate recognizes that UnionAll shape
+	// too and folds the outer aggregation into just its CUMULATIVE
+	// RangeWindowGridNative arm — but ONLY for sum/min/max there, not the
+	// full five-Fn set: avg/count cannot correctly re-combine the native
+	// arm's single already-reduced row with the DELTA arm's raw per-series
+	// rows by re-applying the same Fn (see internal/promql's
+	// nativeGridVectorAggUnionFns for the full argument). This does not
+	// split the flag in two — it is the same boot-resolved verdict, still
+	// consulted through the same RangeLowerers.VectorAgg field, just with a
+	// per-shape Fn-set narrowing lowerAggregate itself applies.
+	//
 	// AutoSelect is false: unlike FeatureTSGridRecollapse (whose merge
 	// exactness was checked across time-disjoint, interleaved, and
 	// counter-reset-straddling regimes before shipping auto-on), this is a

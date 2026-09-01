@@ -103,12 +103,17 @@ package chplan
 // non-native-grid Input, and a disabled/unsupported-server feature all keep
 // lowering through it unchanged.
 //
-// Composes with Input.Recollapse: Recollapse only changes HOW Input's own
-// per-series grid is assembled (raw-key State level + shaped-key Merge
-// level) — it does not change the row SHAPE this node reads (still one row
-// per Input-level series carrying a (grid, grid_ts) pair), so this node's
-// own GROUP BY / ForEach combine composes unchanged whether or not Input
-// carries a Recollapse.
+// Does NOT compose with Input.Recollapse (cerberus issue #2888): this node's
+// emitter reads Input's per-series row via the shared array-assembly level,
+// which stops one level short of RangeWindowGridNative's own outer explode —
+// the level that restores a Recollapse-hoisted shaped key back to its
+// original column name (e.g. "Attributes"). Without that restore, a GroupBy
+// expression built against the original column resolves against a row that
+// no longer carries it (`Unknown expression or function identifier`,
+// confirmed against a real ClickHouse server). Every construction site in
+// internal/promql therefore refuses an Input carrying a non-empty Recollapse
+// rather than emit that broken query — a real, currently-open gap, not a
+// property of this shape.
 type RangeWindowGridNativeVectorAgg struct {
 	// Input is the per-series native grid this node folds an outer vector
 	// aggregation into. MUST be a *RangeWindowGridNative — typed as the

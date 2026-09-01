@@ -4470,6 +4470,205 @@ var nativeGridVectorAggFns = map[chplan.Fn]struct{}{
 	chplan.FnCount: {},
 }
 
+// nativeGridVectorAggUnionFns narrows nativeGridVectorAggFns further for the
+// rate()/increase() temporality-union shape [rateIncreaseTemporalityUnionArms]
+// recognizes (cerberus issue #2852). Sum/min/max compose correctly by
+// re-applying the SAME associative Fn a second time, at the combining
+// Aggregate [buildTemporalityUnionVectorAgg] builds, over the UNION of the
+// native arm's own already-pre-reduced (one row per output series per
+// anchor) row and the raw per-series DELTA-temporality arm's not-yet-reduced
+// rows: sum(sum(A), b1, b2, ...) == sum(A ∪ B), and likewise min(min(A), B)
+// == min(A ∪ B) / max(max(A), B) == max(A ∪ B), because sum/min/max are
+// associative over their own already-combined partial result.
+//
+// avg and count do NOT compose this way and are deliberately absent: the
+// combining Aggregate would average the native arm's single already-averaged
+// row as one bare observation among |B| raw ones (wrong unless the native
+// arm's own group had exactly one contributing series), and likewise count
+// the native arm's one pre-counted row as a single unit instead of the
+// |A| series it actually summarizes (wrong unless |A| == 1). Correctly
+// combining avg/count needs the native arm to expose its own (sum, count)
+// pair rather than the single finished scalar RangeWindowGridNativeVectorAgg
+// emits today — out of scope for this narrowing (cerberus issue #2884).
+var nativeGridVectorAggUnionFns = map[chplan.Fn]struct{}{
+	chplan.FnSum: {},
+	chplan.FnMin: {},
+	chplan.FnMax: {},
+}
+
+// rateIncreaseTemporalityUnionArms recognizes the
+// Project{Input: UnionAll{RangeWindowGridNative, RangeWindow}} shape
+// [derivedRateArm] builds for a temporality-bearing rate()/increase() range
+// window (cerberus issue #2843's union split: NativeRateLowerer.LowerRate /
+// NativeIncreaseLowerer.LowerIncrease). Returns the native CUMULATIVE arm and
+// the raw DELTA-temporality fan-out arm when input matches that exact shape,
+// or ok=false otherwise — a plain structural check (arm kinds, arm count),
+// since derivedRateArm(UnionAll{...}) is the ONLY construction site pairing a
+// *RangeWindowGridNative with a *RangeWindow inside a UnionAll anywhere in
+// this package.
+//
+// delta() is deliberately never recognized here: it never threads
+// TemporalityColumn (counterTemporalityRangeFn excludes it — delta() applies
+// no counter-reset rule, so it never splits into this union in the first
+// place; NativeDeltaLowerer.LowerDelta always returns a bare
+// RangeWindowGridNative for an eligible shape, which the existing
+// nativeGridVectorAggFns branch above already folds directly.
+func rateIncreaseTemporalityUnionArms(input chplan.Node) (native *chplan.RangeWindowGridNative, delta *chplan.RangeWindow, ok bool) {
+	project, isProject := input.(*chplan.Project)
+	if !isProject {
+		return nil, nil, false
+	}
+	union, isUnion := project.Input.(*chplan.UnionAll)
+	if !isUnion || len(union.Inputs) != 2 {
+		return nil, nil, false
+	}
+	native, isNative := union.Inputs[0].(*chplan.RangeWindowGridNative)
+	delta, isDelta := union.Inputs[1].(*chplan.RangeWindow)
+	if !isNative || !isDelta {
+		return nil, nil, false
+	}
+	return native, delta, true
+}
+
+// buildTemporalityUnionVectorAgg folds an outer sum/min/max vector
+// aggregation into the CUMULATIVE-native arm of a rate()/increase()
+// temporality union (cerberus issue #2852) — the [nativeGridVectorAggFns]
+// narrowing above, extended past the bare-RangeWindowGridNative shape to the
+// Project{UnionAll{RangeWindowGridNative, RangeWindow}} shape
+// [rateIncreaseTemporalityUnionArms] recognizes. Produces
+// UnionAll{RangeWindowGridNativeVectorAgg, <re-keyed raw DELTA arm>} under a
+// combining Aggregate that re-applies the SAME associative aggFunc once
+// more — see [nativeGridVectorAggUnionFns]'s own doc for why sum/min/max
+// compose this way and avg/count do not (aggFunc.Fn is guaranteed to be one
+// of the three by the caller).
+//
+// The native arm folds the outer by/without key directly into its own
+// pre-explode grid exactly like the bare-RangeWindowGridNative branch above,
+// except its AnchorAlias is the plain anchor column
+// (chplan.RangeWindowAnchorColumn) rather than rangeBucketAlias: passing the
+// SAME name for both means RangeWindowGridNativeVectorAgg's own emitter (see
+// its doc: it always emits RangeWindowAnchorAlias, and AnchorAlias again only
+// when the two differ) does not additionally project a second, redundant
+// anchor column — keeping its output column list (outer keys, anchor, Value)
+// exactly 1:1 positional with deltaArm's own re-keyed Project below, which
+// UnionAll requires (chplan.UnionAll's own doc: "Every Inputs element MUST
+// project the same output column shape").
+//
+// deltaArm re-projects the raw per-series DELTA-temporality rows onto the
+// SAME outer-key columns — evaluating the identical groupBy expressions the
+// native arm's own GroupBy field evaluates, one level lower, since both arms'
+// raw rows expose the same Attributes column the outer by/without keys read —
+// plus the plain anchor and Value columns. It is deliberately NOT
+// pre-reduced: the wrapping Aggregate performs its GROUP BY reduction over
+// these raw rows in the SAME pass that folds in the native arm's
+// already-reduced row, which is exactly what makes the sum/min/max
+// composition in nativeGridVectorAggUnionFns's doc hold.
+func buildTemporalityUnionVectorAgg(
+	native *chplan.RangeWindowGridNative,
+	delta *chplan.RangeWindow,
+	groupBy []chplan.Expr,
+	aliases []string,
+	aggFunc chplan.AggFunc,
+	s schema.Metrics,
+) *chplan.Aggregate {
+	nativeArm := &chplan.RangeWindowGridNativeVectorAgg{
+		Input:          native,
+		Fn:             aggFunc.Fn,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		AnchorAlias:    chplan.RangeWindowAnchorColumn,
+	}
+
+	deltaProjections := make([]chplan.Projection, 0, len(groupBy)+2)
+	for i, ge := range groupBy {
+		deltaProjections = append(deltaProjections, chplan.Projection{Expr: ge, Alias: aliases[i]})
+	}
+	deltaProjections = append(
+		deltaProjections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+	)
+	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+
+	combineGroupBy := make([]chplan.Expr, 0, len(aliases)+1)
+	combineAliases := make([]string, 0, len(aliases)+1)
+	for _, alias := range aliases {
+		combineGroupBy = append(combineGroupBy, &chplan.ColumnRef{Name: alias})
+		combineAliases = append(combineAliases, alias)
+	}
+	combineGroupBy = append(combineGroupBy, &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
+	combineAliases = append(combineAliases, rangeBucketAlias)
+
+	return &chplan.Aggregate{
+		Input:              &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
+		GroupBy:            combineGroupBy,
+		GroupByAliases:     combineAliases,
+		AggFuncs:           []chplan.AggFunc{aggFunc},
+		DropEmptyOnNoGroup: true,
+	}
+}
+
+// tryNativeGridVectorAgg is lowerAggregate's ts_grid_vector_agg dispatch: it
+// tries, in order, the plain bare-RangeWindowGridNative fold (cerberus issue
+// #2763) and the rate()/increase() temporality-union fold (issue #2852),
+// returning the first eligible node — or ok=false when input matches neither
+// shape or aggFunc.Fn isn't in that shape's own eligible set, in which case
+// the caller falls through to the ordinary exploded-then-grouped Aggregate.
+// Split out of lowerAggregate itself (guard clauses instead of nested ifs)
+// purely to keep that call site flat; groupBy/aliases are the plain user
+// by/without keys, not yet widened by lowerAggregate's own range-bucket
+// injection — see the two branches' own docs for why each needs exactly that.
+func tryNativeGridVectorAgg(
+	input chplan.Node, groupBy []chplan.Expr, aliases []string, aggFunc chplan.AggFunc, s schema.Metrics,
+) (chplan.Node, bool) {
+	if nativeGrid, ok := input.(*chplan.RangeWindowGridNative); ok {
+		if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; !eligible {
+			return nil, false
+		}
+		if len(nativeGrid.Recollapse) != 0 {
+			return nil, false
+		}
+		return &chplan.RangeWindowGridNativeVectorAgg{
+			Input:          nativeGrid,
+			Fn:             aggFunc.Fn,
+			GroupBy:        groupBy,
+			GroupByAliases: aliases,
+			AnchorAlias:    rangeBucketAlias,
+		}, true
+	}
+	// ts_grid_vector_agg composed with the rate()/increase() temporality-split
+	// UnionAll (cerberus issue #2852): input isn't a bare RangeWindowGridNative
+	// — rate()/increase() against a schema with a per-row AggregationTemporality
+	// column always splits into derivedRateArm(UnionAll{RangeWindowGridNative,
+	// RangeWindow}) (issue #2843) — but its CUMULATIVE arm still is one, so fold
+	// the outer aggregation into just that arm when the shape matches and the
+	// outer Fn is one of the three proven to compose correctly across the union
+	// (see nativeGridVectorAggUnionFns' own doc for sum/min/max vs the avg/count
+	// exclusion).
+	native, delta, ok := rateIncreaseTemporalityUnionArms(input)
+	if !ok {
+		return nil, false
+	}
+	if _, eligible := nativeGridVectorAggUnionFns[aggFunc.Fn]; !eligible {
+		return nil, false
+	}
+	// RangeWindowGridNativeVectorAgg's emitter (chsql) reads the native arm's
+	// per-series row via nativeGridArrayLevel, which stops one level short of
+	// emitRangeWindowGridNative's own outer explode — the level that restores
+	// a Recollapse-hoisted shaped key back to its original column name (e.g.
+	// "Attributes"). Without that restore, an outer GroupBy expression built
+	// against the ORIGINAL column (as groupBy here always is) resolves against
+	// a row that no longer carries it, producing an invalid query — confirmed
+	// against a real ClickHouse server (cerberus issue #2888, found by this
+	// exact branch in CI). rate() is the only function ts_grid_recollapse
+	// applies to, so this guard is exactly as narrow as the gap: it never
+	// affects increase(), and a rate() input without Recollapse is unaffected.
+	if len(native.Recollapse) != 0 {
+		return nil, false
+	}
+	return buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s), true
+}
+
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
 // `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
 // `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
@@ -4577,17 +4776,8 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// carries the full per-anchor grid as an array (there is no per-row
 	// anchor to additionally group by).
 	if rangeBucketed && ctx.lowerers.VectorAgg {
-		if nativeGrid, ok := input.(*chplan.RangeWindowGridNative); ok {
-			if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; eligible {
-				node := &chplan.RangeWindowGridNativeVectorAgg{
-					Input:          nativeGrid,
-					Fn:             aggFunc.Fn,
-					GroupBy:        groupBy,
-					GroupByAliases: aliases,
-					AnchorAlias:    rangeBucketAlias,
-				}
-				return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
-			}
+		if node, ok := tryNativeGridVectorAgg(input, groupBy, aliases, aggFunc, s); ok {
+			return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
 		}
 	}
 
