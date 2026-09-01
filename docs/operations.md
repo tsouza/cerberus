@@ -1533,8 +1533,10 @@ Every TraceQL predicate on a span/resource attribute (`http.status_code`,
 (`SchemaProvisioning.TraceMaterializedAttrsEnabled`, `AutoCreateSchema`
 must ALSO be `true`) provisions a curated default set of dedicated
 top-level `LowCardinality(String)` columns for three high-value keys and
-routes TraceQL reads (`FieldAccess`, structural filters, `tag_values`
-inventories for the single-scope `resource.x` / `span.x` forms) to them —
+routes TraceQL reads (`FieldAccess`, structural filters, and `tag_values`
+inventories for every scope form — `resource.x` / `span.x` read the
+narrow column directly, and the auto-scope `.x` form unions each side's
+materialized-or-map read, cerberus issue #2870) to them —
 `internal/schema/traces.go`'s `DefaultMaterializedSpanAttributeColumns` /
 `DefaultMaterializedResourceAttributeColumns`:
 

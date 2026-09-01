@@ -13,8 +13,15 @@ import (
 // issue #2776's tag-values routing contract: a single-scope (resource.x /
 // span.x) lookup whose key is materialized reads the narrow column
 // directly — no arrayJoin, no mapContains, no map subscript — while an
-// unconfigured key (or the auto-scope `.x` form, out of scope for this
-// version) keeps today's map-backed shape unchanged.
+// unconfigured key keeps today's map-backed shape unchanged. The
+// auto-scope (`.x`) form's OWN materialized routing (cerberus issue
+// #2870, which unions a per-side materialized/map-backed read rather than
+// short-circuiting the whole query to one column) is pinned separately in
+// TestBuildAttributeValuesSQL_AutoScopeMaterializedColumnRouting
+// (search_tag_values_autoscope_materialized_test.go) — the all-or-nothing
+// "materialized ⇒ no arrayJoin/mapContains anywhere" assertion below
+// doesn't fit its union shape, which can legitimately keep mapContains on
+// whichever side has no materialized entry for the key.
 func TestBuildAttributeValuesSQL_MaterializedColumnRouting(t *testing.T) {
 	s := schema.DefaultOTelTraces()
 	s.MaterializedSpanAttributeColumns = map[string]string{"http.status_code": "__cerberus_materialized_http.status_code"}
@@ -32,7 +39,6 @@ func TestBuildAttributeValuesSQL_MaterializedColumnRouting(t *testing.T) {
 		{"span_materialized", "http.status_code", tempo.AttrMapScopeSpanForTest, true},
 		{"resource_materialized", "k8s.namespace.name", tempo.AttrMapScopeResourceForTest, true},
 		{"span_unconfigured_key_stays_on_map", "rpc.method", tempo.AttrMapScopeSpanForTest, false},
-		{"auto_scope_stays_on_map_even_when_materialized", "http.status_code", tempo.AttrMapScopeAnyForTest, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
