@@ -1526,14 +1526,27 @@ const (
 	// a SEPARATE probed capability rather than trusting the version floor
 	// alone.
 	//
-	// AutoSelect is true: the eligibility gate is cerberus's own correctness
-	// guard (never ClickHouse's query_cache_nondeterministic_function_handling
-	// alone — that is defense in depth), so a query the gate marks eligible is
-	// safe to cache on any capable server, with no operator tradeoff to weigh.
-	// A deployment that wants the result cache off entirely omits it from an
-	// explicit CERBERUS_CH_OPTIMIZATIONS list (or sets "off"), exactly the
-	// opt-out condition_cache and every other AutoSelect feature already give
-	// an operator — no separate dedicated flag is needed.
+	// The two guards are INDEPENDENT and both required, which cerberus issue
+	// #2895 established the hard way. cerberus's closed-window gate decides
+	// which windows are stale-safe to cache; ClickHouse decides which
+	// STATEMENTS its cache can vouch for, and it vetoes any query containing a
+	// function it classifies as non-deterministic. Those are different
+	// questions, so an eligible window is NOT by itself a cacheable statement:
+	// arrayJoin — how every non-native range lowering fans samples across the
+	// step grid — is one of the functions ClickHouse vetoes. Treating its
+	// query_cache_nondeterministic_function_handling as mere defense in depth
+	// was the error: its server default is `throw`, so the veto FAILED those
+	// queries rather than merely leaving them uncached, until the stamp began
+	// co-sending `ignore` (see chclient.WithResultCacheSetting).
+	//
+	// AutoSelect is true: with the veto costing a cache miss instead of the
+	// query, a query BOTH gates admit is safe to cache on any capable server
+	// and one either gate declines simply runs uncached, so there is no
+	// operator tradeoff to weigh. A deployment that wants the result cache off
+	// entirely omits it from an explicit CERBERUS_CH_OPTIMIZATIONS list (or
+	// sets "off"), exactly the opt-out condition_cache and every other
+	// AutoSelect feature already give an operator — no separate dedicated flag
+	// is needed.
 	FeatureResultCache = "result_cache"
 
 	// FeatureLazyMaterialization stamps query_plan_optimize_lazy_materialization=1

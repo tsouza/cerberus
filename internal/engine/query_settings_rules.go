@@ -755,11 +755,23 @@ func (r SettingsRules) sortingKeyPrefixFor(table string) []string {
 // eligibleForResultCache reports whether plan's evaluated windows have ALL
 // fully CLOSED as of now, so ClickHouse's query result cache
 // (use_query_cache) can safely serve a cached answer for it without ever
-// risking a stale live-edge tail. This is cerberus's OWN correctness guard —
-// not merely a convenience layered on top of ClickHouse's own
-// query_cache_nondeterministic_function_handling, which the issue this
-// implements (#2781) explicitly calls out as defense-in-depth rather than the
-// primary gate.
+// risking a stale live-edge tail.
+//
+// This answers ONE of the two questions a result-cache stamp has to answer,
+// and only one: is the window closed enough that a cached answer cannot go
+// stale? The other — will ClickHouse's cache accept this STATEMENT at all? —
+// is not knowable from the plan and is not attempted here. ClickHouse answers
+// it itself, vetoing any statement carrying a function its cache classifies as
+// non-deterministic (arrayJoin, which every non-native range lowering emits to
+// fan samples across the step grid, is one), and
+// chclient.WithResultCacheSetting co-stamps
+// query_cache_nondeterministic_function_handling=ignore so that veto costs a
+// cache miss rather than the query. Reading ClickHouse's own handling as
+// redundant defense-in-depth behind this gate — rather than as the second,
+// load-bearing half of the decision — is what made cerberus issue #2895:
+// under the server's `throw` default the veto failed fully-closed-window
+// range queries outright, and the error rate tripped the chclient circuit
+// breaker into a lane-wide compatibility regression.
 //
 // Eligibility requires ALL of:
 //
