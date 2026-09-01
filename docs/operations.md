@@ -1906,6 +1906,18 @@ here: `MATERIALIZE TTL` is both the semantically correct statement (it
 targets exactly the TTL rules, not a general part rewrite) and the one that
 does not carry this error.
 
+**`MATERIALIZE TTL` is asynchronous by default** — like every ALTER-driven
+mutation, it queues the rewrite and returns as soon as the mutation is
+queued, not once it is applied. A query issued immediately afterward can
+still see the pre-TTL data; poll `system.mutations` (`is_done`) or, for a
+script that needs the rewrite to have actually happened before it
+continues, add `SETTINGS mutations_sync = 1` to block until the local
+replica's mutation completes:
+
+```sql
+ALTER TABLE <db>.otel_logs MATERIALIZE TTL SETTINGS mutations_sync = 1;
+```
+
 #### LogQL query-parity tradeoff (`Body` TTL only)
 
 A LogQL `|=` / `!=` / `|~` / `!~` line filter and `line_format` both read

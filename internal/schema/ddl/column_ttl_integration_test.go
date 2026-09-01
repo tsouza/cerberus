@@ -29,9 +29,22 @@ import (
 // MATERIALIZE TTL is both the semantically precise statement (it targets
 // exactly the TTL rules) and the one that completes without this error —
 // see docs/operations.md's "Materializing a column TTL on existing parts".
+//
+// `SETTINGS mutations_sync = 1` is REQUIRED, not cosmetic: like every
+// ALTER-driven mutation, MATERIALIZE TTL queues asynchronous background
+// work and returns as soon as it is queued, not once it is applied — an
+// immediate SELECT right after a bare MATERIALIZE TTL is a genuine race
+// (this surfaced as a real, environment-dependent CI failure: the assert
+// below saw the pre-TTL data on a slower/busier runner despite passing
+// reliably on a faster one). `mutations_sync = 1` blocks the ALTER itself
+// until the local replica's mutation completes, making the following
+// SELECT deterministic — verified directly against a real ClickHouse 25.9
+// server on this exact index+TTL combination.
 func materializeTTL(ctx context.Context, t *testing.T, conn driver.Conn, database, table string) {
 	t.Helper()
-	if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s MATERIALIZE TTL", database, table)); err != nil {
+	if err := conn.Exec(ctx, fmt.Sprintf(
+		"ALTER TABLE %s.%s MATERIALIZE TTL SETTINGS mutations_sync = 1", database, table,
+	)); err != nil {
 		t.Fatalf("ALTER TABLE %s.%s MATERIALIZE TTL: %v", database, table, err)
 	}
 }
