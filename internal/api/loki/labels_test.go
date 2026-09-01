@@ -49,10 +49,10 @@ func TestLabels_HappyPath(t *testing.T) {
 		}
 	}
 
-	// SQL sanity: arrayJoin(mapKeys(...)) must be present.
+	// SQL sanity: arrayJoin(<col>.keys) must be present (cerberus issue #2775).
 	lastSQL := q.LastSQL()
-	if !strings.Contains(lastSQL, "arrayJoin(mapKeys(`ResourceAttributes`))") {
-		t.Errorf("missing arrayJoin(mapKeys()) in SQL: %q", lastSQL)
+	if !strings.Contains(lastSQL, "arrayJoin(`ResourceAttributes`.`keys`)") {
+		t.Errorf("missing arrayJoin(<col>.keys) in SQL: %q", lastSQL)
 	}
 	if !strings.Contains(lastSQL, "toDateTime64(") {
 		t.Errorf("missing time bounds in SQL: %q", lastSQL)

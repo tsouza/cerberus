@@ -999,7 +999,7 @@ func (h *Handler) fetchLabelNamesMatched(
 	// collapses into ONE combined query (chunked under CH's max_query_size
 	// when broad). Each variant lowers to its inner matcher SELECT; the
 	// arms UNION-ALL into the FROM source of a single
-	// `SELECT DISTINCT arrayJoin(mapKeys(Attributes))` — N round-trips → 1
+	// `SELECT DISTINCT arrayJoin(Attributes.keys)` — N round-trips → 1
 	// (⌈N/K⌉ for a pathologically broad probe), same distinct key set the
 	// per-arm loop collected. start/end bound the closed metadata window
 	// each variant scans (zero = whole table).
@@ -1596,17 +1596,23 @@ func (h *Handler) resourceLabelValueArmActive(promLabel string) bool {
 // `arrayJoin(mapKeys(Attributes)) ... GROUP BY MetricName, Attributes HAVING
 // max(TimeUnix) >= start`, so the key fan-out routes onto the proj_series
 // aggregating projection (Attributes is a grouping key, the time bound an
-// aggregate predicate). A user-supplied finite window keeps the exact
-// WHERE-bounded scan.
+// aggregate predicate) — see arrayJoinMapKeysLegacyFrag's doc for why this
+// ONE shape keeps the mapKeys(...) spelling rather than the <col>.keys
+// subcolumn form arrayJoinMapKeysFrag uses everywhere else. A user-supplied
+// finite window keeps the exact WHERE-bounded scan.
 func (h *Handler) unionLabelNamesSQL(tables []string, start, end time.Time, nowAnchored bool) string {
 	attrsCol := h.Schema.AttributesColumn
 	metricCol := h.Schema.MetricNameColumn
 	tsCol := h.Schema.TimestampColumn
 	pred := h.metadataWindowPred(start, end)
+	nameFrag := arrayJoinMapKeysFrag(attrsCol)
+	if nowAnchored {
+		nameFrag = arrayJoinMapKeysLegacyFrag(attrsCol)
+	}
 	parts := make([]chsql.Frag, 0, len(tables))
 	for _, t := range tables {
 		arm := chsql.NewQuery().
-			Select(chsql.As(arrayJoinMapKeysFrag(attrsCol), "name")).
+			Select(chsql.As(nameFrag, "name")).
 			From(chsql.Col(t))
 		if nowAnchored {
 			arm = arm.GroupBy(chsql.Col(metricCol), chsql.Col(attrsCol))
@@ -1961,9 +1967,32 @@ func (h *Handler) existingTables(ctx context.Context, candidates []string) ([]st
 	return h.Client.QueryStrings(ctx, sql, args...)
 }
 
-// arrayJoinMapKeysFrag emits `arrayJoin(mapKeys(<col>))` — the CH idiom
-// for fanning out a Map column's key set as one row per key.
+// arrayJoinMapKeysFrag emits `arrayJoin(<col>.keys)` — the CH idiom for
+// fanning out a Map column's key set as one row per key, spelled against
+// the column's virtual `.keys` subcolumn rather than mapKeys(<col>) so the
+// key-only decode is explicit rather than depending on the server-side
+// optimize_functions_to_subcolumns rewrite (cerberus issue #2775). Safe
+// unconditionally, with no version gate, for a plain WHERE-bounded scan:
+// key enumeration never consults a skip index. NOT safe under a
+// `GROUP BY ..., <col>` SELECT list — use arrayJoinMapKeysLegacyFrag
+// there instead; see its doc for why.
 func arrayJoinMapKeysFrag(col string) chsql.Frag {
+	return chsql.Call("arrayJoin", chsql.Qual(col, "keys"))
+}
+
+// arrayJoinMapKeysLegacyFrag emits `arrayJoin(mapKeys(<col>))` — kept
+// verbatim (not arrayJoinMapKeysFrag's <col>.keys subcolumn spelling,
+// cerberus issue #2775) for the ONE shape that needs it: a SELECT list
+// under `GROUP BY ..., <col>`. ClickHouse's GROUP BY validity check
+// recognizes mapKeys(<col>) as a pure function of the grouped <col> (so a
+// non-aggregate SELECT expression is still legal), but does NOT extend
+// that recognition through the <col>.keys subcolumn spelling — confirmed
+// empirically (chDB 26.5.1.1): `SELECT arrayJoin(Attributes.keys) ...
+// GROUP BY MetricName, Attributes` throws NOT_AN_AGGREGATE ("Attributes.keys
+// is not under aggregate function and not in GROUP BY keys") on the exact
+// query the mapKeys(...) spelling accepts unchanged. unionLabelNamesSQL's
+// windowless (nowAnchored) arm is the only caller.
+func arrayJoinMapKeysLegacyFrag(col string) chsql.Frag {
 	return chsql.Call("arrayJoin", chsql.Call("mapKeys", chsql.Col(col)))
 }
 

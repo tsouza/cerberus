@@ -438,6 +438,20 @@ func mapContainsAnyFrag(attrCol, resCol, key string) chsql.Frag {
 // mapContainsFrag emits "mapContains(`<col>`, ?)" with key bound as a
 // positional argument. Composes through the typed Call constructor;
 // column / key operands flow through Col / Lit.
+//
+// Deliberately NOT spelled as the explicit has(<col>.keys, ?) subcolumn
+// form: cerberus issue #2775 verified (chDB 26.5.1.1, EXPLAIN QUERY TREE)
+// that ClickHouse's analyzer already rewrites mapContains(<col>, ?) into
+// exactly that has(<col>.keys, ?) shape internally, AND — unlike a
+// hand-written has(<col>.keys, ?) — the analyzer-rewritten form is the
+// ONLY one confirmed (via EXPLAIN indexes=1) to still match a
+// conventionally-declared `INDEX ... mapKeys(<col>) TYPE bloom_filter`
+// skip index; a directly-authored has(<col>.keys, ?) showed NO Skip
+// section at all against that same index. So mapContains(<col>, ?) is
+// strictly no worse (same key-only decode once the default-on
+// optimize_functions_to_subcolumns fires) and strictly safer
+// (index-compatible) than the subcolumn spelling the issue originally
+// proposed — see the issue for the full investigation.
 func mapContainsFrag(col, key string) chsql.Frag {
 	return chsql.Call("mapContains", chsql.Col(col), chsql.Lit(key))
 }

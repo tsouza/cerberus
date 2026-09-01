@@ -70,8 +70,14 @@ func TestLabels_Endpoint(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(q.lastSQL, "mapKeys") {
-		t.Errorf("expected SQL to use mapKeys; got %q", q.lastSQL)
+	// lastSQL is the LAST query fetchLabelNames issues — the
+	// ResourceAttributes union (fetchResourceLabelNames), which always
+	// uses the <col>.keys subcolumn form (cerberus issue #2775); the
+	// Attributes union that ran before it keeps the legacy mapKeys(...)
+	// spelling under its windowless GROUP BY (see
+	// arrayJoinMapKeysLegacyFrag's doc) and is not captured here.
+	if !strings.Contains(q.lastSQL, ".`keys`") {
+		t.Errorf("expected SQL to use the .keys subcolumn; got %q", q.lastSQL)
 	}
 }
 
