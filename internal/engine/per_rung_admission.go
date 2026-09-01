@@ -167,13 +167,16 @@ func (l *PerRungAdmissionLearner) record(key routememo.Key, cheap bool) {
 // same always-safe direction a wrong REAL observation already costs.
 //
 // cheap accepts either value for the same reason Observe does (this method
-// is a general building block, not itself the policy), but the ONE caller
-// (explain_estimate_wiring.go's maybeSeedPerRungPrior) only ever passes
-// true: a scan-side estimate is safe evidence FOR near-empty (an aggregate
-// cannot emit a meaningful value from samples it never read) but not
-// reliable evidence AGAINST it (dense raw data can still collapse to a
-// small composed result) — see that call site's own doc for why treating a
-// large estimate as cheap=false would risk resetting real accumulated
+// is a general building block, not itself the policy), but BOTH callers —
+// explain_estimate_wiring.go's maybeSeedPerRungPrior (issue #2787, a live
+// EXPLAIN ESTIMATE round trip) and actuals_wiring.go's
+// maybeSeedPerRungAdmissionFromActuals (issue #2789, a zero-I/O read of a
+// PAST dispatch's tracked actuals) — only ever pass true: a near-empty
+// scan-side signal is safe evidence FOR near-empty (an aggregate cannot
+// emit a meaningful value from samples it never read) but not reliable
+// evidence AGAINST it (dense raw data can still collapse to a small
+// composed result) — see either call site's own doc for why treating a
+// large reading as cheap=false would risk resetting real accumulated
 // evidence on an imprecise proxy. A single seed only ever advances
 // consecutiveCheap by one observation's worth (never jumps straight past
 // perRungEvidenceMinObservations), so a shape whose estimate is wrong once
@@ -272,12 +275,24 @@ func (e *Engine) refinePerRungAdmission(plan chplan.Node, decision *solver.Decis
 // wrapper IS that site — it changes no behavior the caller observes (every
 // method but Close delegates straight through the embedded Cursor) and only
 // ever reads Err()/Inspected() after Close(), never influencing either.
+//
+// routeMemo is issue #2789's hook 2 (routememo.Memo.RecordActualMagnitude's
+// own doc): OPTIONAL and independent of learner — either, both, or neither
+// may be nil, and each is fed from the SAME clean drain independently. A
+// per-rung predictive dispatch's routememo.Key (perRungAdmissionKey) is
+// computed with the identical routememo.KeyFor(plan, decision.NAnchors,
+// decision.Fanout, decision.Step) formula route_memo_wiring.go's own
+// deriveRouteMemoDispatch uses for the SAME plan/decision, so a magnitude
+// recorded here lands on the SAME Key the route memo's own routing state
+// already tracks — without this wrapper needing to touch
+// route_memo_wiring.go's own dispatch call graph at all.
 type perRungObservingCursor struct {
 	chclient.Cursor
-	learner  *PerRungAdmissionLearner
-	key      routememo.Key
-	nAnchors int64
-	once     sync.Once
+	learner   *PerRungAdmissionLearner
+	routeMemo *routememo.Memo
+	key       routememo.Key
+	nAnchors  int64
+	once      sync.Once
 }
 
 // Close delegates to the wrapped cursor first (this must never change teardown
@@ -286,28 +301,35 @@ type perRungObservingCursor struct {
 // caller, and a second observation must not double-count. Only a CLEAN drain
 // (Err() == nil) is trusted evidence — see PerRungAdmissionLearner.Observe's
 // own doc for why a cancelled/truncated drain must never be recorded as
-// "cheap".
+// "cheap"; the same reasoning applies to routeMemo's magnitude reading.
 func (c *perRungObservingCursor) Close() error {
 	err := c.Cursor.Close()
 	c.once.Do(func() {
-		if c.Err() == nil {
+		if c.Err() != nil {
+			return
+		}
+		if c.learner != nil {
 			c.learner.Observe(c.key, c.Inspected(), c.nAnchors)
+		}
+		if c.routeMemo != nil && c.Inspected() >= 0 {
+			c.routeMemo.RecordActualMagnitude(c.key, uint64(c.Inspected())) //nolint:gosec // G115 -- guarded by the >= 0 check above
 		}
 	})
 	return err
 }
 
-// wrapPerRungObserver returns cursor unchanged when learner is nil or the
-// dispatch was not a per-rung predictive route — every other route-B cursor
-// stays exactly what Executor.Execute returned.
-func wrapPerRungObserver(cursor chclient.Cursor, learner *PerRungAdmissionLearner, plan chplan.Node, decision *solver.Decision) chclient.Cursor {
-	if learner == nil || decision == nil || !decision.PerRungPredictive {
+// wrapPerRungObserver returns cursor unchanged when BOTH learner and
+// routeMemo are nil, or the dispatch was not a per-rung predictive route —
+// every other route-B cursor stays exactly what Executor.Execute returned.
+func wrapPerRungObserver(cursor chclient.Cursor, learner *PerRungAdmissionLearner, routeMemo *routememo.Memo, plan chplan.Node, decision *solver.Decision) chclient.Cursor {
+	if (learner == nil && routeMemo == nil) || decision == nil || !decision.PerRungPredictive {
 		return cursor
 	}
 	return &perRungObservingCursor{
-		Cursor:   cursor,
-		learner:  learner,
-		key:      perRungAdmissionKey(plan, decision),
-		nAnchors: int64(decision.NAnchors),
+		Cursor:    cursor,
+		learner:   learner,
+		routeMemo: routeMemo,
+		key:       perRungAdmissionKey(plan, decision),
+		nAnchors:  int64(decision.NAnchors),
 	}
 }

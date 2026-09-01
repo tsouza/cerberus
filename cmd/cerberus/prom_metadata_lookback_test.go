@@ -51,7 +51,7 @@ func newPromHandlerForTest(t *testing.T) *promHandlerUnderTest {
 
 	logger := slog.New(slog.NewTextHandler(httptestDiscard{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	limiters := newAdmitLimiters(cfg, logger)
-	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, limiters.prom, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{})
+	h := newPromHandler(client, cfg, chopt.EnabledSet{}, nil, limiters.prom, logger, engine.ResourceBoundOverrides{}, promql.ResourceBounds{}, nil)
 	return &promHandlerUnderTest{cfg: cfg, lookback: h.MetadataLookback}
 }
 

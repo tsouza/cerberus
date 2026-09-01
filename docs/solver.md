@@ -959,6 +959,151 @@ fixed Go constants pending real-world calibration evidence, mirroring
 `per_rung_admission.go`'s own unexported constants (`perRungCheapRowsPerAnchor`
 et al.) rather than growing a `Config` surface ahead of that evidence.
 
+## Query actuals: predicted-vs-actual drift detection (issue #2789)
+
+Both advisory pre-flight signals above — `EXPLAIN ESTIMATE` and the
+cardinality pre-probe — predict a plan's scan cost BEFORE dispatch and are
+never checked against what the query actually consumed. `internal/actuals`
+closes that loop: a bounded, in-process `Tracker`, keyed by the SAME
+literal-free plan-shape id `SettingsRules` stamps into ClickHouse's
+`log_comment` (`internal/engine/plan_shape_id.go`), records the most recent
+advisory prediction and a bounded exponential moving average of the REAL
+resource usage a dispatch of that shape actually consumed.
+
+**Not a chopt registry entry.** ProfileEvents on the native protocol and
+`system.query_log` are both ancient, always-available ClickHouse surfaces
+with no version floor to probe — this is a plain solver-policy config knob
+(`CERBERUS_QUERY_ACTUALS_ENABLED`, default `false`), mirroring
+`CERBERUS_SOLVER_ADAPTIVE_ENABLED`'s own posture rather than
+`CERBERUS_CH_OPTIMIZATIONS`'s AutoSelect/version-floor machinery.
+
+**Anti-autotune stance**, inherited from the cardinality pre-probe's own
+precedent above: the tracker is a bounded, ADVISORY input to existing
+policies, never a new fitting loop. Every EMA update moves at most
+`EMAAlpha` (default 0.2) of the way toward a single new observation, and
+`CalibrationFactor` clamps its output to `[0.5, 2.0]` — a burst of
+anomalous actuals can shift a shape's tracked state gradually, never
+violently in one request. This is the same boundary the retired
+threshold-fitting autotune (issue #1273) crossed and cerberus does not
+repeat.
+
+### Two capture sources
+
+1. **Native-protocol packets** (`internal/chclient/progress.go`, the FAST
+   path) — free, since the production deployment's driver already streams
+   both `Progress` (rows/bytes) and `ProfileEvents` packets for every
+   query; cerberus previously parsed only the former.
+   `MemoryTrackerPeakUsage`, a real ClickHouse `ProfileEvents` counter
+   (verified against a live ClickHouse 26.6 server; not documented on
+   ClickHouse's own reference, only in `system.query_log`'s column docs),
+   supplies peak memory. Registering the `WithProfileEvents` callback adds
+   no extra round trip — only the (already-flowing) packet's parse cost —
+   so it is wired ONLY when the actuals feature is on (`WithActualsCapture`),
+   never unconditionally.
+2. **`system.query_log`** (`internal/engine/query_log_actuals.go`, the SLOW
+   batch/fallback path) — a background reconciler polls for
+   `log_comment LIKE 'cerb:%'` `QueryFinish` rows, for the dispatches the
+   packet path could not observe (one that failed before completing, or a
+   deployment mode where packet capture is not wired). Genuinely slow by
+   construction: `system.query_log`'s own async flush lag means a row
+   surfaces well after the query that produced it finished, so the
+   reconciler is watermark-based (retries from the same point on a query
+   failure, never advances past unread rows) rather than assumed
+   synchronous.
+
+`log_comment` is stamped onto every dispatch the actuals feature covers
+REGARDLESS of `SettingsRules.LogCommentShape` — that flag governs a
+separate, purely-observability concern (an operator manually clustering
+`system.query_log` by hand); actuals capture needs the correlation key
+whether or not the operator separately opted into it.
+
+### Four consumers
+
+1. **Drift-detection core** (the issue's primary ask): every `RecordActual`
+   call computes `actualEMA / predicted` and flags the shape ALERTING once
+   `MinObservations` (default 2) is reached and the ratio falls outside
+   `[DriftLowerRatio, DriftUpperRatio]` (default `[0.1, 3.0]` — deliberately
+   asymmetric: `EXPLAIN ESTIMATE` is a granule-resolution UPPER BOUND, so
+   the actual is EXPECTED to run well below the prediction most of the
+   time; the dangerous direction is the actual EXCEEDING it). Every
+   observation — alerting or not — is recorded on the
+   `cerberus_solver_estimate_drift_ratio` histogram and
+   `cerberus_solver_estimate_drift_alerts_total` counter (attribute
+   `cerberus.actuals_source`, `"packet"` / `"query_log"`), so an operator
+   graphs `rate(cerberus_solver_estimate_drift_alerts_total[5m])` rather
+   than polling the tracker out of process.
+2. **Carrier-geometry cost-model calibration** (`internal/engine/actuals_wiring.go`'s
+   `calibrateEstimate`): before an advisory `solver.ScanEstimate` reaches
+   the K clamp, its `Rows` field is multiplied by the shape's own bounded
+   `CalibrationFactor` — a real correction to `classify()`'s existing
+   `EstimateNearEmptyRowFloor` / `MaxKWithEstimate` arithmetic, not a new
+   threshold.
+3. **Per-rung admission tightening** (`maybeSeedPerRungAdmissionFromActuals`):
+   reuses `PerRungAdmissionLearner.SeedPriorFromEstimate` — the SAME
+   one-directional (`cheap=true` only) seeding mechanism issue #2787's own
+   `maybeSeedPerRungPrior` uses for a live `EXPLAIN ESTIMATE` round trip —
+   applied to a ZERO-I/O read of a shape's tracked actuals instead. Same
+   safety argument as that mechanism's own doc: it can only ever DOWNGRADE
+   an already-`PerRungPredictive` route, never promote or block one.
+4. **Route-memo priors with real magnitudes** (`internal/routememo/magnitude.go`,
+   `RecordActualMagnitude` / `MagnitudeFor`): a deliberately THIN hook —
+   see "Why the failure-driven route memo is NOT seeded" above for why the
+   memo's routing VERDICT is never touched by an advisory or actuals
+   signal. This hook adds a second, purely OBSERVATIONAL axis on top of an
+   ALREADY-LIVE verdict (it never creates, deletes, or changes
+   `LookupState`, eviction order, or TTL) — wired from
+   `per_rung_admission.go`'s existing `perRungObservingCursor.Close()`,
+   which already computes the identical `routememo.Key` for a per-rung
+   predictive route-B dispatch's own clean drain. Architecture the memo
+   supports for a future routing use; this landing makes no routing
+   decision from it.
+
+### Verified against a live server, not assumed
+
+`system.query_log`'s column shape was checked against a live ClickHouse
+26.6 server before relying on it (the same discipline issue #2789's own
+risk note calls out — issue #2770's Loki catalog PR caught a real bug from
+an unverified assumption about `system.view_refreshes`'s columns):
+`log_comment` is `String`, `read_rows`/`read_bytes`/`memory_usage` are all
+`UInt64`, `event_time` is `DateTime`, `type` is the expected
+`Enum8('QueryStart'=1,'QueryFinish'=2,...)` — exactly as expected.
+
+A realistic drift scenario was also reproduced live, rather than
+constructed synthetically: `EXPLAIN ESTIMATE` was run against a MergeTree
+table holding 1,000 rows (`Rows: 1000`, the "cached admission-time
+estimate" `ScanEstimateAdvisor`'s own 30-minute TTL would hold); 1,000,000
+more matching rows were then inserted (a realistic traffic burst landing
+between the cached estimate and the real dispatch); the identical query
+was dispatched for real and `system.query_log` reported
+`read_rows = 1,001,000` for it — a **1001x** predicted-vs-actual ratio, far
+outside the default `[0.1, 3.0]` band. Replayed through the real
+`internal/actuals.Tracker` (two corroborating observations, reaching
+`MinObservations`): `DriftReport.Alerting = true`, and
+`CalibrationFactor` correctly clamped to its `2.0` ceiling rather than
+propagating the raw 1001x multiplier — proving the bounded-influence
+property holds even on a genuine, large real-world divergence, not only on
+a small synthetic one.
+
+A second, cleaner comparison — `EXPLAIN ESTIMATE` vs. real `read_rows` for
+the SAME query against a STABLE (non-growing) table, no `PREWHERE`, no
+skip index — landed within noise of each other (8,192 predicted vs. 8,192
+actual on a `minmax`-prunable `PREWHERE` range; 5,000,000 vs. 5,000,000 on
+a full-table `PREWHERE` scan), confirming the mechanism does NOT
+false-alarm on the common case where nothing has actually drifted: the two
+independent probes (`EXPLAIN ESTIMATE`'s no-execution index analysis and a
+real dispatch's own storage-layer read) agree closely when the underlying
+data is stable between them. The dominant real driver of drift this
+sandbox reproduces is TEMPORAL — a cached advisory estimate going stale
+relative to data that grew after it was taken — rather than a structural
+`PREWHERE`/skip-index mismatch in row-count terms specifically; both are
+covered by the SAME mechanism regardless of which one produced the
+divergence.
+
+### Configuration
+
+See [`configuration.md`](configuration.md#schema-overrides-and-prometheus-resource-labels)
+for the full `CERBERUS_QUERY_ACTUALS_*` knob table.
+
 ## Routing-decision calibration corpus (measurement-only)
 
 The router (`Planner.Plan`) is a **pure** classifier: a query routes A (single

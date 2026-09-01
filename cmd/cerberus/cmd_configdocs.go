@@ -458,6 +458,44 @@ All six reject a malformed or non-positive override at startup rather than
 silently falling back to the default or admitting every query; see each
 constant's own doc for the calibration its shipped default protects.
 
+The query-actuals predicted-vs-actual drift tracker (issue #2789) is
+likewise resolved by ` + "`internal/actuals`" + ` rather than the loader documented
+above (` + "`internal/actuals/config_env.go`" + `) - the same "kept in its own package
+to avoid an import cycle" reasoning ` + "`CERBERUS_SOLVER_*`" + ` uses above. It is a
+plain solver-policy config knob, **not** a ` + "`CERBERUS_CH_OPTIMIZATIONS`" + ` chopt
+feature: ProfileEvents on the native protocol and ` + "`system.query_log`" + ` are
+both ancient, always-available ClickHouse surfaces with no version floor to
+probe. ` + "`CERBERUS_QUERY_ACTUALS_ENABLED`" + ` is the master switch (default
+` + "`false`" + ` - the feature ships dark); every other knob below is inert while it
+is unset:
+
+- **` + "`CERBERUS_QUERY_ACTUALS_ENABLED`" + `** (bool, default ` + "`false`" + `) - master
+  switch. Records EXPLAIN ESTIMATE / cardinality-probe predictions against
+  the REAL read_rows/read_bytes/peak-memory a dispatch actually consumed
+  (native-protocol progress/ProfileEvents packets, or ` + "`system.query_log`" + ` as
+  the batch fallback), and alerts when a plan shape's predicted-vs-actual
+  ratio drifts beyond ` + "`CERBERUS_QUERY_ACTUALS_DRIFT_LOWER_RATIO`" + ` /
+  ` + "`_UPPER_RATIO`" + ` - see [` + "`solver.md`" + `](solver.md) for the full mechanism.
+  Prom-only: the feature keys off the solver's own plan-shape-id / K-clamp
+  machinery.
+- **` + "`CERBERUS_QUERY_ACTUALS_DRIFT_LOWER_RATIO`" + `** / **` + "`_UPPER_RATIO`" + `** (float,
+  default ` + "`0.1`" + ` / ` + "`3.0`" + `) - the "expected" band for actual-EMA/predicted.
+  EXPLAIN ESTIMATE is a granule-resolution UPPER BOUND, so the band is
+  deliberately asymmetric around 1.0 rather than a symmetric +/-X%.
+- **` + "`CERBERUS_QUERY_ACTUALS_MIN_OBSERVATIONS`" + `** (int, default ` + "`2`" + `) - the
+  corroboration floor before a shape's drift verdict is trusted at all.
+- **` + "`CERBERUS_QUERY_ACTUALS_EMA_ALPHA`" + `** (float, default ` + "`0.2`" + `) - the bounded
+  exponential-moving-average smoothing factor for the tracked actual-rows
+  side; caps how far a single anomalous observation can move it.
+- **` + "`CERBERUS_QUERY_ACTUALS_ENTRY_TTL`" + `** (duration, default ` + "`30m`" + `) - how long
+  a shape's tracked state is trusted before it ages out.
+- **` + "`CERBERUS_QUERY_ACTUALS_QUERY_LOG_POLL_INTERVAL`" + `** (duration, default
+  ` + "`60s`" + `) - how often the ` + "`system.query_log`" + ` batch/fallback reconciler polls.
+- **` + "`CERBERUS_QUERY_ACTUALS_QUERY_LOG_LOOKBACK`" + `** (duration, default ` + "`180s`" + `)
+  - the overlap margin the reconciler's first poll (and any recovery poll)
+  looks back by, sized well above the poll interval so a slow query_log
+  flush never drops a row between two polls.
+
 ## Dependency matrix
 
 Most knobs are validated in isolation (unknown enum, out-of-range buffer,

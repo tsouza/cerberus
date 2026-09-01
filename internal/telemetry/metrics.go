@@ -64,6 +64,12 @@ const (
 	// construction: derived from the status code's family, never from
 	// the code itself.
 	AttrStatusClass = attribute.Key("cerberus.status_class")
+	// AttrActualsSource is which capture path (issue #2789) produced an
+	// actuals observation — "packet" (native-protocol progress/
+	// ProfileEvents, the fast path) or "query_log" (the batch/fallback
+	// path). Bounded by construction: mirrors actuals.Source.String()'s own
+	// closed two-value vocabulary, never a raw string.
+	AttrActualsSource = attribute.Key("cerberus.actuals_source")
 )
 
 // RouteMemoDecline label values for AttrReason on RouteMemoHitSkippedTotal —
@@ -218,6 +224,25 @@ type Instruments struct {
 	// signal of a systematic exemplar outage; without it the failure
 	// is indistinguishable from "no exemplars in this window" (#1460).
 	ExemplarFailuresTotal metric.Int64Counter
+
+	// EstimateDriftRatio is the distribution of actuals.DriftReport.Ratio
+	// (actual-EMA-rows / predicted-rows) recorded on every RecordActual call
+	// that had enough corroborating evidence to compute a ratio at all
+	// (issue #2789's drift-detection core). Attribute:
+	// cerberus.actuals_source. This is the primary dogfooding surface for
+	// "the EXPLAIN-ESTIMATE bias never silently rots" — an operator graphs
+	// this alongside EstimateDriftAlertsTotal rather than needing to poll
+	// Tracker.Stats() out of process.
+	EstimateDriftRatio metric.Float64Histogram
+
+	// EstimateDriftAlertsTotal counts every RecordActual call whose
+	// resulting DriftReport.Alerting was true — the predicted-vs-actual
+	// ratio fell outside the configured band after enough observations to
+	// trust it. Attribute: cerberus.actuals_source. This is the alert
+	// surface issue #2789 exists to add: `rate(...)` over this counter on a
+	// dashboard/alert rule is how an operator learns a shape's EXPLAIN
+	// ESTIMATE prior has drifted, instead of it silently rotting.
+	EstimateDriftAlertsTotal metric.Int64Counter
 }
 
 // Histogram bucket boundaries, one ladder per instrument, matched to the
@@ -274,6 +299,16 @@ var (
 	// BytesReadBoundaries covers ClickHouse bytes read per query —
 	// decade-exponential from 10KB to 10GB.
 	BytesReadBoundaries = []float64{1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10}
+
+	// EstimateDriftRatioBoundaries covers actuals.DriftReport.Ratio
+	// (actual/predicted) — log-shaped around 1.0 since EXPLAIN ESTIMATE's
+	// own upper-bound bias (internal/actuals's own doc) means the
+	// EXPECTED mass sits well below 1.0, with the dangerous tail extending
+	// above it. Matches the default drift band
+	// (actuals.defaultDriftLowerRatio=0.1, defaultDriftUpperRatio=3.0) with
+	// enough resolution on both sides to see how close to the band edge a
+	// shape sits before it actually crosses into alerting.
+	EstimateDriftRatioBoundaries = []float64{0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 3, 5, 10, 50, 100}
 )
 
 var (
@@ -413,6 +448,23 @@ func mustBuild(meter metric.Meter) *Instruments {
 	if err != nil {
 		panic("telemetry: build tempo_exemplar_failures_total: " + err.Error())
 	}
+	estimateDriftRatio, err := meter.Float64Histogram(
+		"cerberus_solver_estimate_drift_ratio",
+		metric.WithDescription("actual/predicted rows ratio per recorded actuals observation, by capture source (issue #2789)."),
+		metric.WithUnit("1"),
+		metric.WithExplicitBucketBoundaries(EstimateDriftRatioBoundaries...),
+	)
+	if err != nil {
+		panic("telemetry: build solver_estimate_drift_ratio: " + err.Error())
+	}
+	estimateDriftAlerts, err := meter.Int64Counter(
+		"cerberus_solver_estimate_drift_alerts_total",
+		metric.WithDescription("Actuals observations whose predicted-vs-actual ratio fell outside the configured band, by capture source (issue #2789)."),
+		metric.WithUnit("{alert}"),
+	)
+	if err != nil {
+		panic("telemetry: build solver_estimate_drift_alerts_total: " + err.Error())
+	}
 	return &Instruments{
 		QueriesTotal:             queriesTotal,
 		QueryDuration:            queryDuration,
@@ -426,6 +478,8 @@ func mustBuild(meter metric.Meter) *Instruments {
 		RoutedDispatchInflight:   routedDispatchInflight,
 		RouteABSuccessTotal:      routeABSuccess,
 		ExemplarFailuresTotal:    exemplarFailures,
+		EstimateDriftRatio:       estimateDriftRatio,
+		EstimateDriftAlertsTotal: estimateDriftAlerts,
 	}
 }
 
@@ -618,4 +672,28 @@ func RecordRouteABSuccess(ctx context.Context, route string) {
 // shared by both the HTTP and gRPC Tempo metrics entrypoints.
 func RecordTempoExemplarFailure(ctx context.Context, stage string) {
 	Get().ExemplarFailuresTotal.Add(ctx, 1, metric.WithAttributes(AttrStage.String(stage)))
+}
+
+// RecordEstimateDrift records one predicted-vs-actual drift ratio (issue
+// #2789's drift-detection core, internal/actuals.Tracker.RecordActual's own
+// DriftReport) onto EstimateDriftRatio, and additionally increments
+// EstimateDriftAlertsTotal when alerting — the ALERT surface an operator
+// graphs `rate(cerberus_solver_estimate_drift_alerts_total[..])` against so
+// the EXPLAIN-ESTIMATE bias never silently rots.
+//
+// Takes the ratio/alerting verdict as plain values rather than
+// internal/actuals's own DriftReport type: telemetry is a commonComponent
+// every layer may import (.go-arch-lint.yml), and pulling a specific
+// feature package's type in here would invert that — actuals stays the one
+// importing telemetry, never the reverse. Caller is internal/chclient's
+// packet-path flush() and internal/engine's query_log fallback reconciler
+// (source distinguishing the two), both of which already have a
+// DriftReport in hand and pass its Ratio/Alerting fields through.
+func RecordEstimateDrift(ctx context.Context, ratio float64, alerting bool, source string) {
+	attrs := metric.WithAttributes(AttrActualsSource.String(source))
+	inst := Get()
+	inst.EstimateDriftRatio.Record(ctx, ratio, attrs)
+	if alerting {
+		inst.EstimateDriftAlertsTotal.Add(ctx, 1, attrs)
+	}
 }

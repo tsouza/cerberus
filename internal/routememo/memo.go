@@ -110,6 +110,16 @@ type Verdict struct {
 	// corroboration is the consecutive route-A ResourceFailure count with
 	// no intervening Success, for an Unknown (not-yet-probed) entry only.
 	corroboration int
+
+	// magnitudeEMARows / magnitudeObservations / magnitudeObservedAt are the
+	// OBSERVATIONAL (never routing-decision-affecting) real-magnitude axis
+	// issue #2789 adds — see magnitude.go's own doc. Untouched by every
+	// state-transition method in this file; only RecordActualMagnitude ever
+	// writes them, and only Lookup/eviction ever clear them (implicitly,
+	// by replacing or deleting the Verdict itself).
+	magnitudeEMARows      float64
+	magnitudeObservations int
+	magnitudeObservedAt   time.Time
 }
 
 // Memo is the bounded, in-process failure-driven route memo (docs/solver.md
