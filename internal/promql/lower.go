@@ -4595,6 +4595,50 @@ func buildTemporalityUnionVectorAgg(
 	}
 }
 
+// tryNativeGridVectorAgg is lowerAggregate's ts_grid_vector_agg dispatch: it
+// tries, in order, the plain bare-RangeWindowGridNative fold (cerberus issue
+// #2763) and the rate()/increase() temporality-union fold (issue #2852),
+// returning the first eligible node — or ok=false when input matches neither
+// shape or aggFunc.Fn isn't in that shape's own eligible set, in which case
+// the caller falls through to the ordinary exploded-then-grouped Aggregate.
+// Split out of lowerAggregate itself (guard clauses instead of nested ifs)
+// purely to keep that call site flat; groupBy/aliases are the plain user
+// by/without keys, not yet widened by lowerAggregate's own range-bucket
+// injection — see the two branches' own docs for why each needs exactly that.
+func tryNativeGridVectorAgg(
+	input chplan.Node, groupBy []chplan.Expr, aliases []string, aggFunc chplan.AggFunc, s schema.Metrics,
+) (chplan.Node, bool) {
+	if nativeGrid, ok := input.(*chplan.RangeWindowGridNative); ok {
+		if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; !eligible {
+			return nil, false
+		}
+		return &chplan.RangeWindowGridNativeVectorAgg{
+			Input:          nativeGrid,
+			Fn:             aggFunc.Fn,
+			GroupBy:        groupBy,
+			GroupByAliases: aliases,
+			AnchorAlias:    rangeBucketAlias,
+		}, true
+	}
+	// ts_grid_vector_agg composed with the rate()/increase() temporality-split
+	// UnionAll (cerberus issue #2852): input isn't a bare RangeWindowGridNative
+	// — rate()/increase() against a schema with a per-row AggregationTemporality
+	// column always splits into derivedRateArm(UnionAll{RangeWindowGridNative,
+	// RangeWindow}) (issue #2843) — but its CUMULATIVE arm still is one, so fold
+	// the outer aggregation into just that arm when the shape matches and the
+	// outer Fn is one of the three proven to compose correctly across the union
+	// (see nativeGridVectorAggUnionFns' own doc for sum/min/max vs the avg/count
+	// exclusion).
+	native, delta, ok := rateIncreaseTemporalityUnionArms(input)
+	if !ok {
+		return nil, false
+	}
+	if _, eligible := nativeGridVectorAggUnionFns[aggFunc.Fn]; !eligible {
+		return nil, false
+	}
+	return buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s), true
+}
+
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,
 // `count(...)`, `stddev(...)`, `stdvar(...)`, `group(...)`, and
 // `quantile(0.95, ...)`. The shape-changing aggregates `topk`/`bottomk` are
@@ -4702,33 +4746,8 @@ func lowerAggregate(a *parser.AggregateExpr, s schema.Metrics, ctx lowerCtx) (ch
 	// carries the full per-anchor grid as an array (there is no per-row
 	// anchor to additionally group by).
 	if rangeBucketed && ctx.lowerers.VectorAgg {
-		if nativeGrid, ok := input.(*chplan.RangeWindowGridNative); ok {
-			if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; eligible {
-				node := &chplan.RangeWindowGridNativeVectorAgg{
-					Input:          nativeGrid,
-					Fn:             aggFunc.Fn,
-					GroupBy:        groupBy,
-					GroupByAliases: aliases,
-					AnchorAlias:    rangeBucketAlias,
-				}
-				return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
-			}
-		}
-		// ts_grid_vector_agg composed with the rate()/increase()
-		// temporality-split UnionAll (cerberus issue #2852): input isn't a
-		// bare RangeWindowGridNative — rate()/increase() against a schema
-		// with a per-row AggregationTemporality column always splits into
-		// derivedRateArm(UnionAll{RangeWindowGridNative, RangeWindow}) (issue
-		// #2843) — but its CUMULATIVE arm still is one, so fold the outer
-		// aggregation into just that arm when the shape matches and the
-		// outer Fn is one of the three proven to compose correctly across
-		// the union (see nativeGridVectorAggUnionFns' own doc for sum/min/max
-		// vs the avg/count exclusion).
-		if native, delta, ok := rateIncreaseTemporalityUnionArms(input); ok {
-			if _, eligible := nativeGridVectorAggUnionFns[aggFunc.Fn]; eligible {
-				combined := buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s)
-				return wrapAggregateForSample(combined, a, s, aliases, true, rangeBucketAlias), nil
-			}
+		if node, ok := tryNativeGridVectorAgg(input, groupBy, aliases, aggFunc, s); ok {
+			return wrapAggregateForSample(node, a, s, aliases, true, rangeBucketAlias), nil
 		}
 	}
 
