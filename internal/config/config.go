@@ -1543,16 +1543,7 @@ func newDefaults() *viper.Viper {
 	// internal/schema/ddl supplies the {shard}/{replica} macro fallbacks and
 	// the bare ReplicatedMergeTree engine when the database is Replicated.
 	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
-	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
-	// LogsBodyTTL / TracesEventsLinksTTL (cerberus issue #2769) share
-	// defaultSchemaTTL's "0s" default — a genuinely different zero-value
-	// meaning (no column TTL at all, rather than "inherit the global TTL")
-	// but the SAME literal, since both are simply "no duration configured".
-	v.SetDefault(envSchemaLogsBodyTTL, defaultSchemaTTL)
-	v.SetDefault(envSchemaTracesEvLinksTTL, defaultSchemaTTL)
+	setSchemaTTLDefaults(v)
 	v.SetDefault(envSchemaTierAfter, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterMetrics, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
@@ -1595,6 +1586,25 @@ func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
 	// 0 is the SENTINEL for "derive from CERBERUS_CH_QUERY_MAX_MEMORY" — see
 	// rbgnDensityUnitsForMemory for why this bound cannot be a fixed constant.
 	v.SetDefault(envRBGNMaxDensityUnits, 0)
+}
+
+// setSchemaTTLDefaults seeds every row- and column-level TTL default —
+// CERBERUS_SCHEMA_TTL{,_METRICS,_LOGS,_TRACES} and, for the column-level
+// pair (cerberus issue #2769), CERBERUS_SCHEMA_LOGS_BODY_TTL /
+// CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL — all to defaultSchemaTTL's "0s"
+// literal. The column-level pair's zero carries a genuinely different
+// meaning from the row-level fields' zero (no column TTL at all, rather
+// than "inherit the global TTL"), but the same literal, since both are
+// simply "no duration configured". Extracted purely to keep newDefaults
+// under golangci-lint's funlen cap, mirroring setDeltaPrefixAndRBGNDefaults
+// above.
+func setSchemaTTLDefaults(v *viper.Viper) {
+	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
+	v.SetDefault(envSchemaLogsBodyTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTracesEvLinksTTL, defaultSchemaTTL)
 }
 
 // setResultCacheDefaults seeds CERBERUS_RESULT_CACHE_INGEST_LAG /

@@ -389,11 +389,6 @@ type ColumnTTL struct {
 	TracesEventsLinks time.Duration
 }
 
-// configured reports whether any column carries a TTL.
-func (c ColumnTTL) configured() bool {
-	return c.LogsBody > 0 || c.TracesEventsLinks > 0
-}
-
 // Tables overrides the per-signal table name used when rendering each
 // upstream DDL template. Empty fields fall back to the upstream defaults.
 type Tables struct {
