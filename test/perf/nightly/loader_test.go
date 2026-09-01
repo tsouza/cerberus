@@ -8,7 +8,7 @@ import (
 
 func TestMapArraysExpr_PlainKeys(t *testing.T) {
 	got := mapArraysExpr("Attributes", []string{"app_id", "method"})
-	want := "mapFromArrays(['app_id', 'method'], [Attributes.`app_id`, Attributes.`method`])"
+	want := "mapFromArrays(['app_id', 'method'], [tupleElement(Attributes, 'app_id'), tupleElement(Attributes, 'method')])"
 	if got != want {
 		t.Errorf("mapArraysExpr =\n%s\nwant\n%s", got, want)
 	}
@@ -16,14 +16,10 @@ func TestMapArraysExpr_PlainKeys(t *testing.T) {
 
 func TestMapArraysExpr_DottedKeys(t *testing.T) {
 	got := mapArraysExpr("ResourceAttributes", []string{"service.name", "k8s.namespace.name"})
-	// Dotted field names need backtick-quoted dot access — ClickHouse would
-	// otherwise try to parse the dot as nested member access on an
-	// intermediate identifier that doesn't exist.
-	if !strings.Contains(got, "ResourceAttributes.`service.name`") {
-		t.Errorf("mapArraysExpr must backtick-quote dotted keys, got: %s", got)
-	}
-	if !strings.Contains(got, "ResourceAttributes.`k8s.namespace.name`") {
-		t.Errorf("mapArraysExpr must backtick-quote dotted keys, got: %s", got)
+	want := "mapFromArrays(['service.name', 'k8s.namespace.name'], " +
+		"[tupleElement(ResourceAttributes, 'service.name'), tupleElement(ResourceAttributes, 'k8s.namespace.name')])"
+	if got != want {
+		t.Errorf("mapArraysExpr =\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -33,6 +29,58 @@ func TestMapArraysExpr_EmptyKeys(t *testing.T) {
 	if got != want {
 		t.Errorf("mapArraysExpr(no keys) = %q, want %q", got, want)
 	}
+}
+
+// TestMapArraysExpr_NeverUsesDotAccess pins the SHAPE the #2875 fix turns
+// on, over the loader's real key sets rather than a hand-picked pair: no
+// rendered field access may be dot access. Dot access is what ClickHouse
+// 26.x's file()-reader column pushdown resolves by longest matching column
+// prefix, and so what collapses "deployment.environment.name" onto
+// "deployment.environment" — see mapArraysExpr's own comment. Reverting to
+// `Col.` + "`key`" reddens this without needing an engine.
+func TestMapArraysExpr_NeverUsesDotAccess(t *testing.T) {
+	sets := map[string][]string{"ResourceAttributes": sampleResourceAttributeKeys}
+	for metric, keys := range sampleAttributeKeys {
+		sets["Attributes/"+metric] = keys
+	}
+	for name, keys := range sets {
+		column := "ResourceAttributes"
+		if strings.HasPrefix(name, "Attributes/") {
+			column = "Attributes"
+		}
+		got := mapArraysExpr(column, keys)
+		if strings.Contains(got, column+".") {
+			t.Errorf("%s: mapArraysExpr must not render dot access on %s, got: %s", name, column, got)
+		}
+		for _, k := range keys {
+			if !strings.Contains(got, fmt.Sprintf("tupleElement(%s, '%s')", column, k)) {
+				t.Errorf("%s: mapArraysExpr must read %q via tupleElement, got: %s", name, k, got)
+			}
+		}
+	}
+}
+
+// TestSampleResourceAttributeKeys_KeepPrefixCollision keeps
+// TestMapArraysExpr_NeverUsesDotAccess and the chDB pin honest. The whole
+// hazard exists only because the captured sample really does carry a key
+// that is a dotted prefix of another key; deleting one of the pair would
+// make the nightly lane pass while measuring strictly less real production
+// shape than it did before — the hollow green invariant 6 forbids. This
+// fails the moment such a pair stops being present.
+func TestSampleResourceAttributeKeys_KeepPrefixCollision(t *testing.T) {
+	var pairs []string
+	for _, a := range sampleResourceAttributeKeys {
+		for _, b := range sampleResourceAttributeKeys {
+			if a != b && strings.HasPrefix(b, a+".") {
+				pairs = append(pairs, fmt.Sprintf("%q is a dotted prefix of %q", a, b))
+			}
+		}
+	}
+	if len(pairs) == 0 {
+		t.Fatalf("sampleResourceAttributeKeys no longer carries a dotted-prefix key pair, so the #2875 "+
+			"regression pins cannot fail; the captured sample's real key set is %v", sampleResourceAttributeKeys)
+	}
+	t.Logf("prefix-colliding key pairs still loaded: %s", strings.Join(pairs, "; "))
 }
 
 func TestSampleAttributeKeys_CoverEveryMetric(t *testing.T) {
