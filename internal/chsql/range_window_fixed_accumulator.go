@@ -344,6 +344,13 @@ func fixedAccumValueFrag(kind extrapolationKind, rangeSeconds float64, temporali
 // this file's own doc comment. The only difference from deltaMatrixLevelSource
 // is WHICH columns pass through: this emitter carries its own scalar
 // accumulators (passthroughCols) instead of a window_pairs array.
+// deltaPrefixSumFrag is called with alreadyDeduped=false unconditionally: this
+// file's own delta_prefix_pairs term (fixedAccumRegroupLayer, above) is
+// always built via the hand-rolled groupArrayIf, never the native
+// timeSeriesGroupArrayIf combinator range_window.go's array-fold site
+// adopted for cerberus issue #2862 — see that issue and
+// deltaMatrixLevelSourceAggregate's own doc for why the flag can't be
+// derived from r.NativeGroupArray in a function this shared.
 func fixedAccumDeltaLevelSource(regroupSource Frag, groupFrags []Frag, passthroughCols []string) Frag {
 	selectPassthrough := func(q *QueryBuilder) {
 		q.Select(groupFrags...)
@@ -356,7 +363,7 @@ func fixedAccumDeltaLevelSource(regroupSource Frag, groupFrags []Frag, passthrou
 
 	increments := NewQuery().From(regroupSource)
 	selectPassthrough(increments)
-	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
+	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias), false), deltaPrefixStepAlias))
 
 	levels := NewQuery().From(increments.Frag())
 	selectPassthrough(levels)
@@ -466,7 +473,9 @@ func (e *emitter) fixedAccumRegroupLayer(
 			passthrough = append(passthrough, fixedAccumResetSumAlias)
 		}
 		if useAggregateDeltaPrefix {
-			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, passthrough, end, stepNS, rangeNS, numAnchors)
+			// false: see fixedAccumDeltaLevelSource's own doc — this file's
+			// delta_prefix_pairs term never adopts the native combinator.
+			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, passthrough, false, end, stepNS, rangeNS, numAnchors)
 			if err != nil {
 				return nil, err
 			}

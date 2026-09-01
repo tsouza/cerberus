@@ -69,7 +69,7 @@ func TestDeltaPrefixAggregateRawAnchorArrayRequiresDeltaTemporality(t *testing.T
 func TestDeltaPrefixSumDeduplicatesTimestampBeforeSumming(t *testing.T) {
 	t.Parallel()
 
-	got := renderFragToSQL(deltaPrefixSumFrag(Col("prefix_pairs")))
+	got := renderFragToSQL(deltaPrefixSumFrag(Col("prefix_pairs"), false))
 	for _, want := range []string{
 		"arraySum(arrayMap(p -> tupleElement(p, 2)",
 		"arrayReverse(arrayCompact(p -> tupleElement(p, 1), arrayReverse(`prefix_pairs`)))",
@@ -77,6 +77,24 @@ func TestDeltaPrefixSumDeduplicatesTimestampBeforeSumming(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("DELTA prefix sum missing %q\nSQL: %s", want, got)
 		}
+	}
+}
+
+// TestDeltaPrefixSumSkipsDedupeWhenAlreadyDeduped pins deltaPrefixSumFrag's
+// alreadyDeduped parameter (cerberus issue #2862): when the caller's own
+// pairs input was already assembled via a native, self-deduping
+// timeSeriesGroupArrayIf combinator, the redundant
+// arrayReverse/arrayCompact/arrayReverse dedup triple is skipped entirely —
+// only the arraySum(arrayMap(...)) reduction remains.
+func TestDeltaPrefixSumSkipsDedupeWhenAlreadyDeduped(t *testing.T) {
+	t.Parallel()
+
+	got := renderFragToSQL(deltaPrefixSumFrag(Col("prefix_pairs"), true))
+	if !strings.Contains(got, "arraySum(arrayMap(p -> tupleElement(p, 2), `prefix_pairs`))") {
+		t.Errorf("DELTA prefix sum (alreadyDeduped) should reduce `prefix_pairs` directly\nSQL: %s", got)
+	}
+	if strings.Contains(got, "arrayCompact") {
+		t.Errorf("DELTA prefix sum (alreadyDeduped) should skip the dedup triple\nSQL: %s", got)
 	}
 }
 

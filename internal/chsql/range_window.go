@@ -2245,11 +2245,8 @@ func nativeGroupArrayPairFrag(tsCol, valCol string) Frag {
 // for a per-series (timestamp, value) sample-array assembly site, based on
 // r.NativeGroupArray (chopt.FeatureTSGridGroupArray, cerberus issue #2749).
 // Every caller of this helper is a plain, non-split-window assembly — the
-// needsDeltaFirstLevel groupArrayIf split-window sites never call it (see
-// chopt.FeatureTSGridGroupArray's doc for why they stay hand-rolled) — so
-// the choice is a pure emission-detail swap: the two idioms produce the same
-// element type, the same ascending-by-timestamp order, and (outside the NaN
-// edge case) the same deduplicated membership.
+// two idioms produce the same element type, the same ascending-by-timestamp
+// order, and (outside the NaN edge case) the same deduplicated membership.
 func seriesArrayPairFrag(r *chplan.RangeWindow, tsCol, valCol string) Frag {
 	if r.NativeGroupArray {
 		return nativeGroupArrayPairFrag(tsCol, valCol)
@@ -2257,18 +2254,63 @@ func seriesArrayPairFrag(r *chplan.RangeWindow, tsCol, valCol string) Frag {
 	return groupArrayPairFrag(tsCol, valCol)
 }
 
+// groupArrayPairIfFrag returns a Frag rendering
+// `arraySort(groupArrayIf((<ts>, <val>), <cond>))` — groupArrayPairFrag's
+// split-window sibling, used where a single fan-out row must land in one of
+// two complementary (ts, value) arrays (needsDeltaFirstLevel's window_pairs /
+// delta_prefix_pairs split in emitWindowedArrayExtrapolatedMatrix, and the
+// fixed-accumulator's own delta_prefix_pairs term).
+func groupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
+	return Call("arraySort",
+		Call("groupArrayIf", Tuple(Col(tsCol), Col(valCol)), cond))
+}
+
+// nativeGroupArrayPairIfFrag returns a Frag rendering
+// `timeSeriesGroupArrayIf(<tsCol>, <valCol>, <cond>)` — the native
+// ClickHouse aggregate replacement for groupArrayPairIfFrag
+// (chopt.FeatureTSGridGroupArray, cerberus issue #2862). ClickHouse's
+// generic `-If` aggregate-function combinator applies to timeSeriesGroupArray
+// like any other aggregate: measured against a real ClickHouse 25.9 server,
+// timeSeriesGroupArrayIf carries the SAME three preconditions
+// nativeGroupArrayPairFrag's own doc pins for the plain form — DateTime64(9)
+// accepted directly and losslessly, duplicate-timestamp collapse to the
+// max-valued sample among rows PASSING cond (insertion-order independent for
+// finite values), and insertion-order DEPENDENT survival on a NaN-bearing
+// duplicate — re-verified independently for the combinator form rather than
+// assumed to carry over. Callers that swap to this Frag must skip the
+// subsequent dedup step for THIS array — see seriesArrayPairIfFrag and
+// deltaPrefixSumFrag's alreadyDeduped parameter.
+func nativeGroupArrayPairIfFrag(tsCol, valCol string, cond Frag) Frag {
+	return Call("timeSeriesGroupArrayIf", Col(tsCol), Col(valCol), cond)
+}
+
+// seriesArrayPairIfFrag picks groupArrayPairIfFrag or
+// nativeGroupArrayPairIfFrag for a split-window (timestamp, value)
+// sample-array assembly site, based on r.NativeGroupArray
+// (chopt.FeatureTSGridGroupArray, cerberus issue #2862). Only
+// emitWindowedArrayExtrapolatedMatrix's needsDeltaFirstLevel branch calls
+// this — the fixed-accumulator's own delta_prefix_pairs term
+// (range_window_fixed_accumulator.go) stays on groupArrayPairIfFrag
+// unconditionally, since it never reads r.NativeGroupArray (see that file's
+// own call site).
+func seriesArrayPairIfFrag(r *chplan.RangeWindow, tsCol, valCol string, cond Frag) Frag {
+	if r.NativeGroupArray {
+		return nativeGroupArrayPairIfFrag(tsCol, valCol, cond)
+	}
+	return groupArrayPairIfFrag(tsCol, valCol, cond)
+}
+
 // matrixWindowPairsAlreadyDeduped reports whether
 // emitWindowedArrayExtrapolatedMatrix's regroup already assembled
-// `window_pairs` via the native, self-deduping timeSeriesGroupArray
+// `window_pairs` via the native, self-deduping timeSeriesGroupArray(If)
 // aggregate (r.NativeGroupArray), so its caller's dedupWindowPairsLayer step
-// can skip the arrayReverse/arrayCompact/arrayReverse triple. The
-// needsDeltaFirstLevel branch always assembles window_pairs via the
-// hand-rolled groupArrayIf split instead (chopt.FeatureTSGridGroupArray's doc
-// explains why that stays hand-rolled), so it always still needs the dedup
-// pass regardless of r.NativeGroupArray — only the plain (non-split-window)
-// assembly seriesArrayPairFrag renders is ever already deduped.
-func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow, needsDeltaFirstLevel bool) bool {
-	return r.NativeGroupArray && !needsDeltaFirstLevel
+// can skip the arrayReverse/arrayCompact/arrayReverse triple. True
+// unconditionally whenever r.NativeGroupArray is set: the plain
+// (non-split-window) assembly reads it via seriesArrayPairFrag, and (since
+// cerberus issue #2862) the needsDeltaFirstLevel split-window assembly reads
+// it via seriesArrayPairIfFrag — both native paths self-dedup identically.
+func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow) bool {
+	return r.NativeGroupArray
 }
 
 // dedupWindowPairsByTsFrag collapses a `arraySort`-ordered
@@ -4039,14 +4081,18 @@ func (e *emitter) emitWindowedArrayExtrapolated(r *chplan.RangeWindow, kind extr
 // deltaMatrixLevelSource attaches the reconstructed DELTA level before each
 // anchor window. The input is already one row per (series, anchor); an ordered
 // window sum avoids packing those rows into nested arrays only to expand them
-// again before extrapolation.
-func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag) Frag {
+// again before extrapolation. deltaPrefixAlreadyDeduped is this caller's own
+// r.NativeGroupArray verdict (cerberus issue #2862): true only when
+// deltaPrefixPairsAlias was itself assembled via the native
+// timeSeriesGroupArrayIf combinator (seriesArrayPairIfFrag), which already
+// collapses duplicate timestamps — see deltaPrefixSumFrag.
+func deltaMatrixLevelSource(regroupSource Frag, groupFrags []Frag, deltaPrefixAlreadyDeduped bool) Frag {
 	increments := NewQuery().From(regroupSource)
 	increments.Select(groupFrags...)
 	increments.Select(Col("anchor_ts"))
 	increments.Select(Col(windowTemporalityAlias))
 	increments.Select(Col("window_pairs"))
-	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
+	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias), deltaPrefixAlreadyDeduped), deltaPrefixStepAlias))
 
 	levels := NewQuery().From(increments.Frag())
 	levels.Select(groupFrags...)
@@ -4208,11 +4254,23 @@ func (e *emitter) deltaMatrixLevelSourceAggregateDailyFanout(
 	return aggFanoutSummed, aggDailyKeys, nil
 }
 
+// deltaPrefixAlreadyDeduped is EXPLICIT, not derived from r.NativeGroupArray
+// inside this function: this function is shared between
+// emitWindowedArrayExtrapolatedMatrix's array-fold regroup (whose
+// deltaPrefixPairsAlias is built by seriesArrayPairIfFrag, natively deduped
+// exactly when r.NativeGroupArray) and
+// range_window_fixed_accumulator.go's fixedAccumRegroupLayer (whose own
+// deltaPrefixPairsAlias is ALWAYS built via the hand-rolled groupArrayIf —
+// cerberus issue #2862 only adopted the native combinator at the array-fold
+// site). Deriving the flag from r.NativeGroupArray here would wrongly skip
+// the dedup pass for the fixed-accumulator caller whenever that boot-resolved
+// flag happens to be on.
 func (e *emitter) deltaMatrixLevelSourceAggregate(
 	r *chplan.RangeWindow,
 	regroupSource Frag,
 	groupFrags []Frag,
 	passthroughCols []string,
+	deltaPrefixAlreadyDeduped bool,
 	end Frag,
 	stepNS, rangeNS, numAnchors int64,
 ) (Frag, error) {
@@ -4238,7 +4296,7 @@ func (e *emitter) deltaMatrixLevelSourceAggregate(
 	increments.Select(Col("anchor_ts"))
 	increments.Select(Col(windowTemporalityAlias))
 	selectPassthrough(increments)
-	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias)), deltaPrefixStepAlias))
+	increments.Select(As(deltaPrefixSumFrag(Col(deltaPrefixPairsAlias), deltaPrefixAlreadyDeduped), deltaPrefixStepAlias))
 	increments.Select(As(
 		deltaPrefixBucketStartFrag(rangeStartFrag(Col("anchor_ts"), rangeNS)),
 		deltaPrefixAnchorDayAlias,
@@ -4558,25 +4616,11 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	if needsDeltaFirstLevel {
 		windowStart := rangeStartFrag(Col("anchor_ts"), rangeNS)
 		regroup.Select(As(
-			Call(
-				"arraySort",
-				Call(
-					"groupArrayIf",
-					Tuple(Col(srcTs), Col(r.ValueColumn)),
-					Gt(Col(srcTs), windowStart),
-				),
-			),
+			seriesArrayPairIfFrag(r, srcTs, r.ValueColumn, Gt(Col(srcTs), windowStart)),
 			"window_pairs",
 		))
 		regroup.Select(As(
-			Call(
-				"arraySort",
-				Call(
-					"groupArrayIf",
-					Tuple(Col(srcTs), Col(r.ValueColumn)),
-					Lte(Col(srcTs), windowStart),
-				),
-			),
+			seriesArrayPairIfFrag(r, srcTs, r.ValueColumn, Lte(Col(srcTs), windowStart)),
 			deltaPrefixPairsAlias,
 		))
 	} else {
@@ -4592,16 +4636,18 @@ func (e *emitter) emitWindowedArrayExtrapolatedMatrix(r *chplan.RangeWindow, kin
 	}
 	regroupSource := dedupWindowPairsLayer(
 		regroup.Frag(), groupFrags, true, hasTemporality,
-		matrixWindowPairsAlreadyDeduped(r, needsDeltaFirstLevel), extraColumns...,
+		matrixWindowPairsAlreadyDeduped(r), extraColumns...,
 	)
 	if needsDeltaFirstLevel {
 		if useAggregateDeltaPrefix {
-			regroupSource, err = e.deltaMatrixLevelSourceAggregate(r, regroupSource, groupFrags, []string{"window_pairs"}, end, stepNS, rangeNS, numAnchors)
+			regroupSource, err = e.deltaMatrixLevelSourceAggregate(
+				r, regroupSource, groupFrags, []string{"window_pairs"}, r.NativeGroupArray, end, stepNS, rangeNS, numAnchors,
+			)
 			if err != nil {
 				return err
 			}
 		} else {
-			regroupSource = deltaMatrixLevelSource(regroupSource, groupFrags)
+			regroupSource = deltaMatrixLevelSource(regroupSource, groupFrags, r.NativeGroupArray)
 		}
 	}
 
@@ -4725,11 +4771,19 @@ func firstValFrag() Frag {
 	return tupleElemFrag(Subscript(BareIdent("window_pairs"), InlineLit(int64(1))), 2)
 }
 
-func deltaPrefixSumFrag(pairs Frag) Frag {
-	deduped := dedupWindowPairsByTsFrag(pairs)
+// deltaPrefixSumFrag sums the values of a `delta_prefix_pairs`-shaped
+// (timestamp, value) array. alreadyDeduped skips the dedupWindowPairsByTsFrag
+// wrap: set only when pairs was itself assembled via a native, self-deduping
+// timeSeriesGroupArray(If) aggregate (cerberus issues #2749 / #2862) — see
+// each caller's own doc for why the flag is threaded explicitly rather than
+// read off r.NativeGroupArray inside this shared helper.
+func deltaPrefixSumFrag(pairs Frag, alreadyDeduped bool) Frag {
+	if !alreadyDeduped {
+		pairs = dedupWindowPairsByTsFrag(pairs)
+	}
 	return Call(
 		"arraySum",
-		Call("arrayMap", Lambda1("p", tupleElemFrag(BareIdent("p"), 2)), deduped),
+		Call("arrayMap", Lambda1("p", tupleElemFrag(BareIdent("p"), 2)), pairs),
 	)
 }
 
