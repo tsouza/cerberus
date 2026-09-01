@@ -10,11 +10,10 @@
 // ClickHouse exporter's own templates, see internal/schema/ddl) declares
 // both as Map(LowCardinality(String), String) — so loading is not a bare
 // `INSERT ... SELECT * FROM file(...)`; each named tuple field is read back
-// via dot access (backtick-quoted for the dotted ResourceAttributes keys)
-// and re-packed with mapFromArrays. This file is test-only data-loading
-// code, not the chsql emitter, so invariant 10 (typed Frags only) does not
-// apply here — the same carve-out scale_wall_pin_chdb_test.go's own seeding
-// already uses.
+// by name (see mapArraysExpr) and re-packed with mapFromArrays. This file
+// is test-only data-loading code, not the chsql emitter, so invariant 10
+// (typed Frags only) does not apply here — the same carve-out
+// scale_wall_pin_chdb_test.go's own seeding already uses.
 package nightly
 
 import (
@@ -41,6 +40,15 @@ var sampleAttributeKeys = map[string][]string{
 // sampleResourceAttributeKeys names the ResourceAttributes struct fields
 // every sample metric carries identically (the extraction pipeline flattens
 // the same resource-level key set regardless of metric type).
+//
+// Two of these are a PREFIX PAIR: "deployment.environment" (the OTel
+// semantic-convention name the captured production workload emitted) and
+// "deployment.environment.name" (its successor, emitted alongside it during
+// the convention's own migration window). Both are real, both carry
+// distinct values in the captured sample, and both stay listed — dropping
+// either would silently narrow what the nightly lane loads and measures.
+// Their coexistence is exactly what mapArraysExpr's field access has to
+// survive; see that function's comment.
 var sampleResourceAttributeKeys = []string{
 	"container.image.name", "container.image.tag", "deployment.environment", "deployment.environment.name",
 	"host.name", "k8s.cluster.name", "k8s.cluster.uid", "k8s.container.name", "k8s.deployment.name",
@@ -55,10 +63,38 @@ var sampleResourceAttributeKeys = []string{
 // configuration choice.
 const clickhouseUserFilesDir = "/var/lib/clickhouse/user_files"
 
-// mapArraysExpr renders `mapFromArrays([...keys...], [col.key1, col.key2, ...])`
-// for a struct column's named fields, backtick-quoting each key for the dot
-// access (required for ResourceAttributes' dotted field names, harmless for
-// Attributes' plain ones).
+// mapArraysExpr renders
+// `mapFromArrays([...keys...], [tupleElement(col, 'key1'), ...])` for a
+// struct column's named fields.
+//
+// The field access is deliberately the tupleElement(...) FUNCTION rather
+// than dot access — not a style choice, and specifically not the
+// backtick-quoted dot access this rendered before, which broke the lane
+// (#2875).
+//
+// Dot access is ambiguous whenever one tuple field name is a dotted prefix
+// of another, and sampleResourceAttributeKeys carries exactly such a pair
+// ("deployment.environment" / "deployment.environment.name"). Backticks do
+// not disambiguate it: reading from the file() table function, ClickHouse
+// pushes the requested column paths down into the format reader, and from
+// 26.x that pushdown splits the requested
+// ResourceAttributes.deployment.environment.name at the longest matching
+// column prefix — it asks Parquet for
+// ResourceAttributes.deployment.environment (a String), then fails to find
+// the ".name" remainder inside it:
+//
+//	Code: 10. Not found column or subcolumn
+//	ResourceAttributes.deployment.environment.name in block. There are only
+//	columns: ResourceAttributes.deployment.environment
+//
+// ClickHouse 25.9 (perfNightlyCHImage) resolved the same dot access
+// correctly, which is why only the 26.6 leg — the ts_grid_instant memory
+// measurement, whose floor sits above 25.9 — went red.
+//
+// tupleElement takes the field name as a string LITERAL, so no path
+// splitting happens at all and every field, prefix-colliding or not,
+// resolves to its own column. Verified against both engine versions;
+// pinned behaviourally by loader_prefix_collision_chdb_test.go.
 func mapArraysExpr(column string, keys []string) string {
 	keyList, valueList := "", ""
 	for i, k := range keys {
@@ -67,7 +103,7 @@ func mapArraysExpr(column string, keys []string) string {
 			valueList += ", "
 		}
 		keyList += fmt.Sprintf("'%s'", k)
-		valueList += fmt.Sprintf("%s.`%s`", column, k)
+		valueList += fmt.Sprintf("tupleElement(%s, '%s')", column, k)
 	}
 	return fmt.Sprintf("mapFromArrays([%s], [%s])", keyList, valueList)
 }
