@@ -1984,7 +1984,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "push the /api/search structural two-phase phase-A TraceId set as a native-protocol external table instead of a spliced literal IN list once the estimated literal bytes cross a threshold (no version floor, native-protocol only, opt-in via CERBERUS_CH_OPTIMIZATIONS — EXPLAIN-verified idx_trace_id parity with the literal form, #2783)",
+		Doc:        "push the /api/search two-phase phase-A TraceId set as a native-protocol external table instead of a literal IN list above a byte threshold (no version floor, native-protocol, opt-in via CERBERUS_CH_OPTIMIZATIONS -- EXPLAIN-verified idx_trace_id parity, #2783)",
 	},
 }
 
