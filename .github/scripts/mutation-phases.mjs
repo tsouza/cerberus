@@ -95,10 +95,12 @@ export const PHASES = [
     efficacy: EFFICACY,
     workers: DEFAULT_WORKERS,
     // range_window(228) + aggregate_range_lwr_fusion(29) +
-    // late_mat(25) + range_bucket_fanout(17) +
-    // range_window_stale_resample(11) + fnresolution(4) +
-    // lwr_fanout_bound(2). range_window.go alone is the package's single
-    // largest file; the rest of this leg is greedy-balance filler, not theme.
+    // range_bucket_fanout(17) + range_window_stale_resample(11) +
+    // fnresolution(4) + lwr_fanout_bound(2). range_window.go alone is the
+    // package's single largest file; the rest of this leg is greedy-balance
+    // filler, not theme. late_mat(25) was part of this balance until cerberus
+    // #2830 deleted late_mat.go outright; the allowlist kept naming it until
+    // the include-tightness check in mutation-matrix.mjs caught the dead name.
     //
     // `include_files` (an allowlist), not `exclude_files`: this leg owns a
     // small, curated set, and an exclude-shaped pattern would have to name
@@ -111,7 +113,7 @@ export const PHASES = [
     // gremlins runs against from this list plus a live directory walk, so a
     // new file falls straight through to phase2-other's catch-all, exactly
     // as an existing unclaimed file already does today.
-    include_files: '^(aggregate_range_lwr_fusion|fnresolution|late_mat|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
+    include_files: '^(aggregate_range_lwr_fusion|fnresolution|lwr_fanout_bound|range_bucket_fanout|range_window|range_window_stale_resample)\\.go$',
   },
   {
     phase: 'phase2-builder',
@@ -188,7 +190,7 @@ export const PHASES = [
     // tally the next time a mutant here gets a new "NOT KILLABLE" note, and
     // re-partition the leg wider if it ever approaches the margin.
     exclude_files:
-      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|late_mat|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
+      '^(aggregate_range_lwr_fusion|builder|emit|emit_node|exemplars|fnresolution|histogram_over_time|histogram_projection|histogram_quantile_native|lwr_fanout_bound|metrics_compare|metrics_second_stage|nary_vector_set_op|nested_set_annotate|range_bucket_fanout|range_lwr|range_window|range_window_fused|range_window_stale_resample|range_window_variants|rate_window_fanout_bound|vector_join|vector_set_op)\\.go$',
   },
   {
     phase: 'phase3-optimizer',

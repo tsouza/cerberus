@@ -461,6 +461,43 @@ test('resolvePhases derives an include_files leg\'s real exclude_files from a di
   }
 });
 
+test('an include_files allowlist that has drifted from the tree is rejected', () => {
+  // The failure mode an allowlist introduces that a denylist does not. A
+  // denylist naming a since-deleted file over-excludes nothing; an allowlist
+  // naming one silently claims fewer files than its doc comment promises, and
+  // on a RENAME hands that file's whole mutant population to the scope's
+  // catch-all with every other check still green — the exactly-one-owner
+  // invariant is satisfied either way, so nothing else in this file would
+  // notice. Found `late_mat` (deleted by cerberus #2830) still named in
+  // phase2-range the first time it ran.
+  const real = PHASES.find((p) => p.phase === 'phase2-range');
+  assert.ok(real.include_files, 'phase2-range must still be an include_files leg for this test to mean anything');
+
+  // A name that no longer exists: rejected, and the message hands over the
+  // exact pattern to paste.
+  const stale = tableViolations([{ ...real, include_files: real.include_files.replace('^(', '^(late_mat|') }]);
+  assert.equal(stale.length, 1);
+  assert.match(stale[0], /is not the canonical allowlist/);
+  assert.ok(stale[0].includes(`Expected: '${real.include_files}'`), stale[0]);
+
+  // A pattern that claims the right files but is written loosely — here with
+  // the `$` anchor dropped, which is how `range_window` would silently swallow
+  // `range_window_fused.go` if that file ever moved into this scope's orbit.
+  const loose = tableViolations([{ ...real, include_files: '^(range_window)' }]);
+  assert.equal(loose.length, 1);
+  assert.match(loose[0], /is not the canonical allowlist/);
+
+  // An allowlist matching nothing at all is rejected too, rather than
+  // reporting a vacuous "canonical" agreement.
+  const empty = tableViolations([{ ...real, include_files: '^(no_such_emitter)\\.go$' }]);
+  assert.equal(empty.length, 1);
+  assert.match(empty[0], /claims no mutable Go file at all/);
+
+  // And the shipped table passes it — the same assertion the `verify` mode
+  // makes, pinned here so a drifted allowlist fails in the unit suite too.
+  assert.deepEqual(tableViolations(PHASES), []);
+});
+
 test('resolvePhases leaves an exclude_files (or bare) leg completely untouched', () => {
   const [rangeLeg] = PHASES.filter((p) => p.phase === 'phase3-optimizer');
   const [resolved] = resolvePhases([rangeLeg], process.cwd());
