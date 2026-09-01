@@ -617,6 +617,33 @@ type SchemaProvisioning struct {
 	TTLLogs    time.Duration
 	TTLTraces  time.Duration
 
+	// LogsBodyTTL (CERBERUS_SCHEMA_LOGS_BODY_TTL) opts into a COLUMN-level
+	// TTL on the logs table's Body column alone (cerberus issue #2769,
+	// same posture as DeltaPrefixEnabled — new, opt-in, off by default).
+	// Zero (the default) emits no column TTL — the row-level TTLLogs
+	// retention above is the only lifecycle Body is subject to, today's
+	// behavior. A non-zero value must be strictly shorter than the
+	// effective logs row TTL (TTLLogs, or TTL when TTLLogs is unset) —
+	// internal/schema/ddl.Config.Validate rejects a column TTL that could
+	// never fire before the row itself is deleted. Body is chosen as the
+	// sole target because it is the dominant column by size in virtually
+	// every real logs corpus, and it is the column LogQL line filters
+	// (`|=`) and line_format read — see the loki query-range handler's
+	// Warning-header mitigation for the resulting query-parity tradeoff
+	// when a query window crosses this TTL boundary.
+	LogsBodyTTL time.Duration
+
+	// TracesEventsLinksTTL (CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL) is
+	// LogsBodyTTL's traces-signal sibling: it opts into a COLUMN-level TTL
+	// on the traces spans table's Events.Attributes AND Links.Attributes
+	// Nested subcolumns (cerberus issue #2769) — the two Nested blocks'
+	// own unbounded-width Map payload, analogous to Body on the logs
+	// table. Zero (the default) emits no column TTL. A non-zero value
+	// must be strictly shorter than the effective traces row TTL
+	// (TTLTraces, or TTL when TTLTraces is unset), the same
+	// Config.Validate guard LogsBodyTTL gets.
+	TracesEventsLinksTTL time.Duration
+
 	// DatabaseReplicated (CERBERUS_SCHEMA_DATABASE_REPLICATED) creates the
 	// database with `ENGINE = Replicated(...)`. A Replicated database
 	// auto-replicates all DDL across replicas, so no ON CLUSTER clause is
@@ -908,6 +935,8 @@ const (
 	envSchemaTTLMetrics         = "CERBERUS_SCHEMA_TTL_METRICS"
 	envSchemaTTLLogs            = "CERBERUS_SCHEMA_TTL_LOGS"
 	envSchemaTTLTraces          = "CERBERUS_SCHEMA_TTL_TRACES"
+	envSchemaLogsBodyTTL        = "CERBERUS_SCHEMA_LOGS_BODY_TTL"
+	envSchemaTracesEvLinksTTL   = "CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL"
 	envSchemaDBReplicated       = "CERBERUS_SCHEMA_DATABASE_REPLICATED"
 	envSchemaDBReplPath         = "CERBERUS_SCHEMA_DATABASE_REPLICATED_PATH"
 	envSchemaDBReplShard        = "CERBERUS_SCHEMA_DATABASE_REPLICATED_SHARD"
@@ -1343,6 +1372,8 @@ var allEnvKeys = []string{
 	envSchemaTTLMetrics,
 	envSchemaTTLLogs,
 	envSchemaTTLTraces,
+	envSchemaLogsBodyTTL,
+	envSchemaTracesEvLinksTTL,
 	envSchemaDBReplicated,
 	envSchemaDBReplPath,
 	envSchemaDBReplShard,
@@ -1512,10 +1543,7 @@ func newDefaults() *viper.Viper {
 	// internal/schema/ddl supplies the {shard}/{replica} macro fallbacks and
 	// the bare ReplicatedMergeTree engine when the database is Replicated.
 	v.SetDefault(envSchemaDBReplicated, defaultSchemaDBReplicated)
-	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
-	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
+	setSchemaTTLDefaults(v)
 	v.SetDefault(envSchemaTierAfter, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterMetrics, defaultSchemaTierAfter)
 	v.SetDefault(envSchemaTierAfterLogs, defaultSchemaTierAfter)
@@ -1558,6 +1586,25 @@ func setDeltaPrefixAndRBGNDefaults(v *viper.Viper) {
 	// 0 is the SENTINEL for "derive from CERBERUS_CH_QUERY_MAX_MEMORY" — see
 	// rbgnDensityUnitsForMemory for why this bound cannot be a fixed constant.
 	v.SetDefault(envRBGNMaxDensityUnits, 0)
+}
+
+// setSchemaTTLDefaults seeds every row- and column-level TTL default —
+// CERBERUS_SCHEMA_TTL{,_METRICS,_LOGS,_TRACES} and, for the column-level
+// pair (cerberus issue #2769), CERBERUS_SCHEMA_LOGS_BODY_TTL /
+// CERBERUS_SCHEMA_TRACES_EVENTS_LINKS_TTL — all to defaultSchemaTTL's "0s"
+// literal. The column-level pair's zero carries a genuinely different
+// meaning from the row-level fields' zero (no column TTL at all, rather
+// than "inherit the global TTL"), but the same literal, since both are
+// simply "no duration configured". Extracted purely to keep newDefaults
+// under golangci-lint's funlen cap, mirroring setDeltaPrefixAndRBGNDefaults
+// above.
+func setSchemaTTLDefaults(v *viper.Viper) {
+	v.SetDefault(envSchemaTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLMetrics, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLLogs, defaultSchemaTTL)
+	v.SetDefault(envSchemaTTLTraces, defaultSchemaTTL)
+	v.SetDefault(envSchemaLogsBodyTTL, defaultSchemaTTL)
+	v.SetDefault(envSchemaTracesEvLinksTTL, defaultSchemaTTL)
 }
 
 // setResultCacheDefaults seeds CERBERUS_RESULT_CACHE_INGEST_LAG /
@@ -2778,6 +2825,14 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 	if err != nil {
 		return SchemaProvisioning{}, err
 	}
+	logsBodyTTL, err := getNonNegativeTTLDuration(v, envSchemaLogsBodyTTL)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
+	tracesEventsLinksTTL, err := getNonNegativeTTLDuration(v, envSchemaTracesEvLinksTTL)
+	if err != nil {
+		return SchemaProvisioning{}, err
+	}
 	tierAfter, err := getNonNegativeTTLDuration(v, envSchemaTierAfter)
 	if err != nil {
 		return SchemaProvisioning{}, err
@@ -2809,6 +2864,8 @@ func schemaProvisioningFromEnv(v *viper.Viper) (SchemaProvisioning, error) {
 		TTLMetrics:                ttlMetrics,
 		TTLLogs:                   ttlLogs,
 		TTLTraces:                 ttlTraces,
+		LogsBodyTTL:               logsBodyTTL,
+		TracesEventsLinksTTL:      tracesEventsLinksTTL,
 		DatabaseReplicated:        replicated,
 		DatabaseReplicatedPath:    getString(v, envSchemaDBReplPath),
 		DatabaseReplicatedShard:   getString(v, envSchemaDBReplShard),

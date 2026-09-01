@@ -85,6 +85,13 @@ type Config struct {
 	// retention-only deployment. See Tiering.
 	Tiering Tiering
 
+	// ColumnTTL sets operator-opt-in COLUMN-level TTLs on individual heavy
+	// payload columns — the logs table's Body and the traces spans table's
+	// Events.Attributes / Links.Attributes Nested subcolumns (cerberus
+	// issue #2769). The zero value emits no column TTL clause anywhere, so
+	// an operator on today's schema sees byte-identical DDL. See ColumnTTL.
+	ColumnTTL ColumnTTL
+
 	// DatabaseEngine selects the ClickHouse engine for the CREATE DATABASE
 	// statement. The zero value emits no ENGINE clause (server default
 	// Atomic — the single-node shape); set Replicated to create the
@@ -331,6 +338,55 @@ type Tiering struct {
 // configured reports whether any signal carries a move age.
 func (t Tiering) configured() bool {
 	return t.Metrics > 0 || t.Logs > 0 || t.Traces > 0
+}
+
+// ColumnTTL carries operator-opt-in COLUMN-level TTL durations for
+// individual heavy payload columns (cerberus issue #2769) — the logs
+// table's Body and the traces spans table's Events.Attributes /
+// Links.Attributes Nested subcolumns. A zero duration leaves that column
+// with no TTL clause, the same zero-means-off convention TTL and Tiering
+// already use above — there is deliberately no separate enabled bool.
+//
+// This is a genuinely different retention shape from TTL: TTL's DELETE
+// action drops the WHOLE row once it ages out, so keeping N days of
+// queryable log aggregates means storing N days of full Body text (and
+// span Events/Links) even though the row's other columns — severity,
+// attributes, materialized k8s columns, trace correlation — are a fraction
+// of the size. ColumnTTL lets the row survive the signal's own TTL.{Logs,
+// Traces} retention while its heaviest column empties earlier, so an
+// operator can keep 30d of queryable aggregates while paying full-text
+// storage for only the most recent 7d.
+//
+// Body and Events/Links.Attributes are chosen the same way ColumnStatistics
+// chose its columns (cerberus issue #2766): the curated, highest-value
+// targets, not a blanket sweep. Body is the logs table's dominant column by
+// size in virtually every real corpus (see docs/operations.md's storage
+// notes); Events.Attributes / Links.Attributes are the traces table's
+// analogous unbounded-width Map columns — Events.Name / Events.Timestamp /
+// Links.TraceId / Links.SpanId / Links.TraceState are small, bounded-width
+// identifiers a real deployment gets negligible storage benefit from
+// TTL-ing, so they are deliberately left at the row's own full retention
+// (needed for span-link / event-name aggregation over the whole window).
+//
+// A column TTL is accepted on a column carrying a data-skipping index
+// (idx_lower_body / idx_body_text) and on a Nested subcolumn — both
+// verified empirically against a real ClickHouse server; see
+// chsql.ModifyColumnTTLBuilder's doc comment for the exact probes. Setting
+// a column TTL that never fires before the row's own TTL deletes it first
+// is inert and rejected by Config.Validate, mirroring the existing
+// Tiering-vs-retention inert-combination check.
+type ColumnTTL struct {
+	// LogsBody is the logs table's Body column TTL, keyed on Timestamp —
+	// the same time column TTL.Logs keys the row's own retention on.
+	LogsBody time.Duration
+
+	// TracesEventsLinks is the traces spans table's Events.Attributes AND
+	// Links.Attributes Nested-subcolumn TTL, keyed on Timestamp — the same
+	// time column TTL.Traces keys the row's own retention on. One knob
+	// covers both subcolumns: they are each Nested block's own payload
+	// column and share a lifecycle the same way the five metrics tables
+	// share TTL.Metrics.
+	TracesEventsLinks time.Duration
 }
 
 // Tables overrides the per-signal table name used when rendering each
@@ -584,6 +640,27 @@ func (c Config) Validate() error {
 			)
 		}
 	}
+	// A column TTL that never fires before the row's own retention TTL
+	// deletes the row first is the same "accepted but inert" shape the
+	// tiering checks above reject: the column ALTER applies, but no query
+	// ever observes an emptied column before the whole row is gone.
+	for _, s := range []struct {
+		signal    string
+		column    string
+		columnTTL time.Duration
+		rowTTL    time.Duration
+	}{
+		{"logs", "Body", c.ColumnTTL.LogsBody, c.TTL.Logs},
+		{"traces", "Events.Attributes / Links.Attributes", c.ColumnTTL.TracesEventsLinks, c.TTL.Traces},
+	} {
+		if s.columnTTL > 0 && s.rowTTL > 0 && s.columnTTL >= s.rowTTL {
+			return fmt.Errorf(
+				"ddl: %s column TTL %s (%s) is not shorter than the row's own retention TTL %s — "+
+					"the row would be deleted before the column ever empties",
+				s.signal, s.column, s.columnTTL, s.rowTTL,
+			)
+		}
+	}
 	return nil
 }
 
@@ -810,6 +887,14 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderLogsColumnStatistics(cfg)...)
 		}
+		// The curated Body column TTL (issue #2769) trails every other
+		// curated ALTER in this package the same way — see ColumnTTL's doc
+		// comment. A zero LogsBody duration (the default) renders nothing
+		// here, matching every other ColumnTTL/TTL/Tiering zero-means-off
+		// field.
+		if cfg.ColumnTTL.LogsBody > 0 {
+			stmts = append(stmts, renderLogsBodyTTL(cfg))
+		}
 		// The loki label-cardinality catalog table + its refreshable MV
 		// (issue #2770) trail every other logs statement, mirroring the
 		// DELTA-prefix pair's CREATE-then-MV order on the metrics
@@ -840,6 +925,14 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		}
 		if cfg.ColumnStatisticsEnabled {
 			stmts = append(stmts, renderTracesColumnStatistics(cfg)...)
+		}
+		// The curated Events.Attributes / Links.Attributes column TTL
+		// (issue #2769) trails every other curated ALTER in this package
+		// the same way — see ColumnTTL's doc comment. A zero
+		// TracesEventsLinks duration (the default) renders nothing here,
+		// matching every other ColumnTTL/TTL/Tiering zero-means-off field.
+		if cfg.ColumnTTL.TracesEventsLinks > 0 {
+			stmts = append(stmts, renderTracesEventsLinksTTL(cfg)...)
 		}
 		// The Tempo tag catalog table + its refreshable MV (issue #2771)
 		// trail every other traces statement, mirroring the loki
@@ -1950,4 +2043,66 @@ func isColumnStatisticsUnsupported(err error) bool {
 		strings.Contains(msg, "not implemented") ||
 		strings.Contains(msg, "disabled") ||
 		strings.Contains(msg, "cloud")
+}
+
+// --- Column TTL (cerberus issue #2769) ---
+//
+// See ColumnTTL's doc comment for the design rationale (why Body /
+// Events.Attributes / Links.Attributes, why a row's own retention TTL must
+// stay strictly longer) and chsql.ModifyColumnTTLBuilder's doc comment for
+// the empirically-verified ClickHouse behavior (type re-declaration
+// required, indexed columns and Nested subcolumns both accept a TTL,
+// ttl_only_drop_parts does not block it).
+const (
+	// eventsAttributesColumn / linksAttributesColumn name the traces spans
+	// table's two Nested-subcolumn TTL targets, materialized by ClickHouse
+	// as ordinary Array(...) columns addressable by their dotted name.
+	eventsAttributesColumn = "Events.Attributes"
+	linksAttributesColumn  = "Links.Attributes"
+
+	// bodyColumnType / attributesArrayColumnType are the exact ClickHouse
+	// types MODIFY COLUMN TTL must re-declare for each target column — see
+	// chsql.ModifyColumnTTLBuilder's doc comment for why the type cannot be
+	// omitted. Fixed by the upstream OTel-CH exporter template (Body) and
+	// by ClickHouse's own Nested-to-Array materialization rule
+	// (Events.Attributes / Links.Attributes both being
+	// `Map(LowCardinality(String), String)` Nested members, per
+	// sqltemplates' TracesCreateTable), not configurable.
+	bodyColumnType            = "String"
+	attributesArrayColumnType = "Array(Map(LowCardinality(String), String))"
+)
+
+// renderLogsBodyTTL builds the curated Body column TTL ALTER for the logs
+// table, keyed on the same Timestamp column the table's own row-level TTL
+// (TTL.Logs) uses.
+func renderLogsBodyTTL(cfg Config) string {
+	return renderModifyColumnTTL(cfg, cfg.Tables.Logs, bodyColumn, bodyColumnType, cfg.ColumnTTL.LogsBody)
+}
+
+// renderTracesEventsLinksTTL builds the curated Events.Attributes and
+// Links.Attributes column TTL ALTERs for the traces spans table, both keyed
+// on the same Timestamp column the table's own row-level TTL (TTL.Traces)
+// uses and sharing the one TracesEventsLinks duration.
+func renderTracesEventsLinksTTL(cfg Config) []string {
+	return []string{
+		renderModifyColumnTTL(cfg, cfg.Tables.Traces, eventsAttributesColumn, attributesArrayColumnType, cfg.ColumnTTL.TracesEventsLinks),
+		renderModifyColumnTTL(cfg, cfg.Tables.Traces, linksAttributesColumn, attributesArrayColumnType, cfg.ColumnTTL.TracesEventsLinks),
+	}
+}
+
+// renderModifyColumnTTL builds one idempotent MODIFY COLUMN TTL ALTER via
+// chsql.AlterTableModifyColumnTTL — see that builder's doc comment for the
+// exact idempotency contract (re-apply is a no-op once the TTL clause has
+// converged, the same ClickHouse behavior renderModifyColumnCodec relies
+// on) and for why colType cannot be omitted the way a codec-only MODIFY
+// COLUMN omits it. ON CLUSTER is threaded so the ALTER replicates the same
+// way the CREATE statements do. Both targets key on "Timestamp", matching
+// the literal renderLogsTable / renderTracesTable already pass their own
+// ttlExpr calls for the SAME tables' row-level TTL.
+func renderModifyColumnTTL(cfg Config, table, column, colType string, ttl time.Duration) string {
+	stmt := chsql.AlterTableModifyColumnTTL(cfg.Database, table, column, chsql.BareIdent(colType), "Timestamp", ttl)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
 }

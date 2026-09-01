@@ -355,6 +355,76 @@ func TestAlterTableModifyColumnCodec(t *testing.T) {
 	}
 }
 
+// TestAlterTableModifyColumnTTL pins the column-TTL MODIFY COLUMN statement
+// (cerberus issue #2769): the optional <db>. qualifier, the idempotent IF
+// EXISTS guard, the quoted column name (a dotted Nested subcolumn name
+// quoted as ONE identifier, not split into two), the REQUIRED type (unlike
+// TestAlterTableModifyColumnCodec's codec-only shape — verified empirically
+// that ClickHouse's MODIFY COLUMN TTL grammar rejects an omitted type), the
+// TTL age expression (the SAME toDateTime(<col>) + toIntervalXxx(N) shape
+// TableTTL renders for a table's own row-level TTL), and the optional ON
+// CLUSTER clause. The statement carries no positional args, so RenderDDL
+// accepts it.
+func TestAlterTableModifyColumnTTL(t *testing.T) {
+	cases := []struct {
+		name string
+		stmt *ModifyColumnTTLBuilder
+		want string
+	}{
+		{
+			"unqualified_table",
+			AlterTableModifyColumnTTL("", "otel_logs", "Body", BareIdent("String"), "Timestamp", 7*24*time.Hour),
+			"ALTER TABLE otel_logs MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalWeek(1)",
+		},
+		{
+			"qualified_table",
+			AlterTableModifyColumnTTL("otel", "otel_logs", "Body", BareIdent("String"), "Timestamp", 7*24*time.Hour),
+			"ALTER TABLE otel.otel_logs MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalWeek(1)",
+		},
+		{
+			"on_cluster",
+			AlterTableModifyColumnTTL("otel", "otel_logs", "Body", BareIdent("String"), "Timestamp", 7*24*time.Hour).OnCluster("prod"),
+			"ALTER TABLE otel.otel_logs ON CLUSTER `prod` MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalWeek(1)",
+		},
+		{
+			"nested_subcolumn_dotted_name_single_identifier",
+			AlterTableModifyColumnTTL("otel", "otel_traces", "Events.Attributes", BareIdent("Array(Map(LowCardinality(String), String))"), "Timestamp", 3*24*time.Hour),
+			"ALTER TABLE otel.otel_traces MODIFY COLUMN IF EXISTS `Events.Attributes` Array(Map(LowCardinality(String), String)) TTL toDateTime(Timestamp) + toIntervalDay(3)",
+		},
+		{
+			"non_exact_week_uses_finest_matching_interval",
+			AlterTableModifyColumnTTL("", "otel_logs", "Body", BareIdent("String"), "Timestamp", 90*time.Minute),
+			"ALTER TABLE otel_logs MODIFY COLUMN IF EXISTS `Body` String TTL toDateTime(Timestamp) + toIntervalMinute(90)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.stmt.SQL(); got != tc.want {
+				t.Errorf("SQL() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAlterTableModifyColumnTTL_PanicsOnNonPositiveTTL pins that a
+// construction-time invalid ttl (<= 0) panics rather than silently
+// rendering DDL ClickHouse would reject (or, worse, DDL that quietly means
+// something other than what the caller asked for) — mirroring
+// AlterTableAddIndex's granularity guard and AlterTableAddStatistics's
+// empty-list guards.
+func TestAlterTableModifyColumnTTL_PanicsOnNonPositiveTTL(t *testing.T) {
+	for _, ttl := range []time.Duration{0, -time.Hour} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("AlterTableModifyColumnTTL(ttl=%s) did not panic", ttl)
+				}
+			}()
+			AlterTableModifyColumnTTL("", "otel_logs", "Body", BareIdent("String"), "Timestamp", ttl)
+		}()
+	}
+}
+
 // TestAlterTableAddColumn pins the ADD COLUMN statement: the optional <db>.
 // qualifier, the idempotent IF NOT EXISTS guard, the quoted column name, the
 // caller's type fragment, and the optional ON CLUSTER clause. The guard is IF

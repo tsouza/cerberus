@@ -585,6 +585,69 @@ func TestResponseHeaders_EngineInstrumentation(t *testing.T) {
 	}
 }
 
+// TestQueryRange_BodyTTLWindowWarningHeader pins the HeaderBodyTTLWindow
+// mitigation (cerberus issue #2769): /query_range stamps the header only
+// when Handler.BodyTTL is configured AND the request's own window start is
+// old enough for Body to already be empty under it — never when BodyTTL is
+// unset (byte-identical to before this feature existed, and the shape
+// every un-wired test Handler in this file exercises), and never for a
+// window entirely inside the TTL boundary.
+func TestQueryRange_BodyTTLWindowWarningHeader(t *testing.T) {
+	t.Parallel()
+
+	// bodyTTLBoundaryCrossed compares against the real time.Now() at request
+	// time (there is no clock-injection point on Handler), so these windows
+	// are built relative to time.Now() rather than a fixed date.
+	now := time.Now()
+	agedStart := now.Add(-10 * 24 * time.Hour)
+	freshStart := now.Add(-1 * time.Hour)
+	const stepSec = 60
+
+	cases := []struct {
+		name     string
+		bodyTTL  time.Duration
+		start    time.Time
+		wantWarn bool
+	}{
+		{"disabled: no header even over an aged window", 0, agedStart, false},
+		{"enabled, aged window: header present", 7 * 24 * time.Hour, agedStart, true},
+		{"enabled, fresh window: no header", 7 * 24 * time.Hour, freshStart, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &stubQuerier{}
+			h := loki.New(q, schema.DefaultOTelLogs(), nil)
+			h.BodyTTL = tc.bodyTTL
+			mux := http.NewServeMux()
+			h.Mount(mux)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			startSec := tc.start.Unix()
+			endSec := startSec + stepSec
+			url := srv.URL + `/loki/api/v1/query_range?query=%7Bservice_name%3D%22api%22%7D` +
+				`&start=` + strconv.FormatInt(startSec, 10) +
+				`&end=` + strconv.FormatInt(endSec, 10) +
+				`&step=` + strconv.Itoa(stepSec)
+			resp, err := http.Get(url)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			got := resp.Header.Get(loki.HeaderBodyTTLWindow)
+			if tc.wantWarn && got == "" {
+				t.Errorf("expected %s header, got none", loki.HeaderBodyTTLWindow)
+			}
+			if !tc.wantWarn && got != "" {
+				t.Errorf("expected no %s header, got %q", loki.HeaderBodyTTLWindow, got)
+			}
+		})
+	}
+}
+
 // TestQueryRange_PushesStartEndToSQL pins the wire-format contract that
 // the URL `start` / `end` parameters reach the engine and produce a
 // Timestamp BETWEEN predicate in the emitted SQL. The bug this guards
