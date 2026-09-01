@@ -1129,6 +1129,14 @@ func (a queryLogQuerierAdapter) QueryLogActuals(ctx context.Context, since time.
 // arm can never fire for a function whose matrix arm is off. increase() and
 // delta() are out of scope (see chopt.FeatureTSGridInstant's own doc) and
 // carry no Instant field.
+//
+// ts_grid_group_array (issue #2749) is a third non-swappable emission-detail
+// bit, mirroring VectorAgg's own posture: it lives on RangeLowerers itself
+// (promql.RangeLowerers.NativeGroupArray) rather than on any single
+// Native*Lowerer, and is set unconditionally below because rate/increase/
+// delta's fanout lowering reads it directly off the SAME chplan.RangeWindow
+// node regardless of which of those three functions' own Native /
+// FixedAccumulator / Fanout tiers produced it.
 func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	var l promql.RangeLowerers
 	// arg_and_max_fusion (issue #2764) is a plain emission-detail bit, not
@@ -1150,6 +1158,14 @@ func nativeRangeLowerers(optSet chopt.EnabledSet) promql.RangeLowerers {
 	// safe rather than a narrowing gap: the field is inert whenever no
 	// native grid node exists for lowerAggregate to fold into.
 	l.VectorAgg = optSet.Has(chopt.FeatureTSGridVectorAgg)
+	// ts_grid_group_array (issue #2749) is, like VectorAgg immediately
+	// above, a plain narrowing bit rather than a per-function Lowerer swap:
+	// it never changes WHICH of rate/increase/delta's own Native /
+	// FixedAccumulator / Fanout tiers fires, only how that tier's array-fold
+	// fallback assembles its per-series sample array. Set unconditionally
+	// here for the same reason VectorAgg is — it lives on RangeLowerers
+	// itself, not on any single Native*Lowerer.
+	l.NativeGroupArray = optSet.Has(chopt.FeatureTSGridGroupArray)
 	// ts_grid_instant (issue #2748) is a pure narrowing of each of
 	// rate/changes/resets/deriv/predict_linear's own matrix feature — it is
 	// consulted ONLY inside each function's own "matrix feature enabled"

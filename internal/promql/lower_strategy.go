@@ -409,6 +409,27 @@ type RangeLowerers struct {
 	// False (the default) keeps every deployment on the unchanged
 	// exploded-then-grouped Aggregate shape.
 	VectorAgg bool
+
+	// NativeGroupArray is the resolved chopt.FeatureTSGridGroupArray verdict
+	// (cerberus issue #2749), threaded onto rate/increase/delta's own
+	// chplan.RangeWindow node by lowerRangeVectorCallFanout. Like
+	// ArgAndMaxFusion / VectorAgg it is a plain bool, not a swappable
+	// Lowerer: it never decides WHICH of rate/increase/delta's own Native /
+	// FixedAccumulator / Fanout tiers fires (that stays this field's own
+	// three-tier composition), only whether the array-fold tier — reachable
+	// as any of those tiers' ultimate fallback, and the fused subquery-
+	// interior slab — assembles its per-series sample array via the native
+	// timeSeriesGroupArray aggregate instead of groupArray + arraySort
+	// (+dedup). cmd/cerberus's nativeRangeLowerers sets it from
+	// optSet.Has(chopt.FeatureTSGridGroupArray), unconditionally, mirroring
+	// VectorAgg's own "lives on RangeLowerers itself, not on any single
+	// Native*Lowerer" posture — it is inert on every func this codebase
+	// does not read chplan.RangeWindow.NativeGroupArray for (changes /
+	// resets / deriv / irate / idelta / last_over_time / sum_over_time /
+	// avg_over_time all keep their own, unrelated fan-out shapes). False
+	// (the default) keeps every deployment on the unchanged
+	// groupArray+arraySort(+dedup) array-fold assembly.
+	NativeGroupArray bool
 }
 
 // withDefaults returns a copy of l with any nil strategy field filled with its

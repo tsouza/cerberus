@@ -3391,6 +3391,12 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 // fixed-accumulator, or sorted-slab decomposition proven equivalent yet).
 func lowerRangeVectorCallFanout(c *parser.Call, s schema.Metrics, ctx lowerCtx, rw *chplan.RangeWindow) chplan.Node {
 	applyStepGridFanout(rw, ctx)
+	// rate/increase/delta are the only functions whose array-fold fallback
+	// tier reads chplan.RangeWindow.NativeGroupArray (cerberus issue #2749) —
+	// setting it unconditionally here is inert for every other func name,
+	// mirroring how ArgAndMaxFusion/VectorAgg thread broadly and no-op where
+	// unread (see RangeLowerers.NativeGroupArray's own doc).
+	rw.NativeGroupArray = ctx.lowerers.NativeGroupArray
 	switch c.Func.Name {
 	case "increase":
 		return ctx.lowerers.Increase.LowerIncrease(rw, s)

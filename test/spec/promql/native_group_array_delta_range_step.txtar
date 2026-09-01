@@ -1,0 +1,108 @@
+# Native array assembly (cerberus issue #2749) for delta() in RANGE mode —
+# chsql's emitWindowedArrayExtrapolatedMatrix's plain regroup branch. delta()
+# has no temporality-tracking split-window shape (extrapolationKind.isCounter()
+# is false for delta), so its regroup always takes the plain
+# groupArrayPairFrag/timeSeriesGroupArray branch regardless of schema — unlike
+# rate()/increase() against a Sum-family table, which always route through the
+# needsDeltaFirstLevel groupArrayIf split instead (out of scope for this
+# feature, see chopt.FeatureTSGridGroupArray's own doc). The
+# `experimental_ts_grid_group_array` section opts the fixture into
+# RangeLowerers.NativeGroupArray = true, pinning the array-fold's own
+# timeSeriesGroupArray SQL shape.
+#
+# job 'dup' carries a duplicate-timestamp sample pair (two rows at 00:01:00)
+# to exercise the native aggregate's own duplicate-timestamp collapse in
+# place of the arrayReverse/arrayCompact/arrayReverse triple; job 'flat' has
+# no duplicates.
+-- query.promql --
+sum by(job) (delta(cpu_temp_celsius[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_group_array --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:00:00', 9), 40.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:01:00', 9), 45.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:01:00', 9), 55.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:02:00', 9), 45.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:03:00', 9), 60.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('cpu_temp_celsius', map('job', 'dup'), toDateTime64('2026-01-01 00:05:00', 9), 65.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:00:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:02:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:03:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:04:00', 9), 20.0),
+    ('cpu_temp_celsius', map('job', 'flat'), toDateTime64('2026-01-01 00:05:00', 9), 20.0);
+-- expected_rows --
+[
+  ["", {"job": "dup"}, "2026-01-01T00:01:00Z", 22.5],
+  ["", {"job": "dup"}, "2026-01-01T00:01:30Z", 30],
+  ["", {"job": "dup"}, "2026-01-01T00:02:00Z", 6.25],
+  ["", {"job": "dup"}, "2026-01-01T00:02:30Z", 7.5],
+  ["", {"job": "dup"}, "2026-01-01T00:03:00Z", 23.333333333333336],
+  ["", {"job": "dup"}, "2026-01-01T00:03:30Z", 26.666666666666664],
+  ["", {"job": "dup"}, "2026-01-01T00:04:00Z", 12.5],
+  ["", {"job": "dup"}, "2026-01-01T00:04:30Z", 12.5],
+  ["", {"job": "dup"}, "2026-01-01T00:05:00Z", 12.5],
+  ["", {"job": "flat"}, "2026-01-01T00:01:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:01:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:02:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:02:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:03:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:03:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:04:00Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:04:30Z", 0],
+  ["", {"job": "flat"}, "2026-01-01T00:05:00Z", 0]
+]
+-- args --
+[0] string = ""
+[1] string = "job"
+[2] string = "job"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "cpu_temp_celsius"
+[11] string = "cpu.temp.celsius"
+[12] string = "cpu.temp/celsius"
+[13] string = "cpu.temp_celsius"
+[14] string = "cpu/temp/celsius"
+[15] string = "cpu/temp_celsius"
+[16] string = "cpu_temp.celsius"
+[17] string = "service_name"
+[18] string = "service.name"
+[19] string = "service_name"
+[20] string = "service.name"
+[21] string = "service_name"
+[22] string = ""
+[23] string = "service_name"
+[24] string = "cpu_temp_celsius"
+[25] string = "cpu.temp.celsius"
+[26] string = "cpu.temp/celsius"
+[27] string = "cpu.temp_celsius"
+[28] string = "cpu/temp/celsius"
+[29] string = "cpu/temp_celsius"
+[30] string = "cpu_temp.celsius"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("job", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  Aggregate groupBy=[Attributes["job"] AS gkey_0, TimeUnix AS bucket_ts] funcs=[FnSum(Value) AS Value]
+    RangeWindow func=delta range=5m0s step=30s outerRange=5m0s ts=TimeUnix value=Value groupBy=[Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Project [MetricName AS MetricName, FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes, TimeUnix AS TimeUnix, Value AS Value]
+        Filter predicate=(MetricName IN ("cpu_temp_celsius", "cpu.temp.celsius", "cpu.temp/celsius", "cpu.temp_celsius", "cpu/temp/celsius", "cpu/temp_celsius", "cpu_temp.celsius"))
+          Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, `TimeUnix` AS `bucket_ts`, sum(`Value`) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, anchor_ts AS `TimeUnix`, if(sampled_interval > 0, (window_vals[length(window_vals)] - first_val) * ((sampled_interval + duration_to_start + duration_to_end) / sampled_interval), nan) AS `Value` FROM (SELECT `Attributes`, `anchor_ts`, `window_vals`, `counter_delta`, `first_val`, toFloat64(dateDiff('nanosecond', first_ts, last_ts)) / 1e9 AS `sampled_interval`, if(toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', anchor_ts - toIntervalNanosecond(300000000000), first_ts)) / 1e9) AS `duration_to_start`, if(toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9 >= 1.1 * sampled_interval / (length(window_vals) - 1), sampled_interval / (length(window_vals) - 1) / 2, toFloat64(dateDiff('nanosecond', last_ts, anchor_ts)) / 1e9) AS `duration_to_end` FROM (SELECT `Attributes`, `anchor_ts`, arrayMap(p -> tupleElement(p, 2), window_pairs) AS `window_vals`, arraySum(arrayMap((p, c) -> if(c < p, c, c - p), arrayPopBack(arrayMap(x -> tupleElement(x, 2), window_pairs)), arrayPopFront(arrayMap(x -> tupleElement(x, 2), window_pairs)))) AS `counter_delta`, tupleElement(window_pairs[1], 1) AS `first_ts`, tupleElement(window_pairs[length(window_pairs)], 1) AS `last_ts`, tupleElement(window_pairs[1], 2) AS `first_val` FROM (SELECT `Attributes`, `anchor_ts`, window_pairs AS `window_pairs` FROM (SELECT `Attributes`, `anchor_ts`, timeSeriesGroupArray(`TimeUnix`, `Value`) AS `window_pairs` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `anchor_ts` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, `anchor_ts` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 2800001) WHERE throwIf((SELECT count() AS `n` FROM (SELECT `TimeUnix` FROM (SELECT `Attributes`, `TimeUnix`, `Value`, arrayJoin(arrayMap(i -> toDateTime64('2026-01-01 00:05:00.000000000', 9) - toIntervalNanosecond(i * 30000000000), range(greatest(0, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)) - 300000000000, toInt64(30000000000)) < 0) + 1), least(11, intDiv(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) - (modulo(dateDiff('nanosecond', `TimeUnix`, toDateTime64('2026-01-01 00:05:00.000000000', 9)), toInt64(30000000000)) < 0) + 1)))) AS `anchor_ts` FROM (SELECT `MetricName` AS `MetricName`, mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `Attributes`, `TimeUnix` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?, ?, ?, ?, ?)))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9)) LIMIT 2800001)) > 2800000, 'range window sample fanout exceeds the series-times-anchors resource bound') = 0) GROUP BY `Attributes`, `anchor_ts`)))) WHERE length(`window_vals`) >= 2) GROUP BY `gkey_0`, `bucket_ts`)

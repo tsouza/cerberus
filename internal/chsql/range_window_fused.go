@@ -230,7 +230,7 @@ func (e *emitter) newFusedSubqueryGrid(
 func (g *fusedSubqueryGrid) samplesQuery() *QueryBuilder {
 	q := NewQuery().From(g.innerSub)
 	q.Select(g.groupFrags...)
-	q.Select(As(groupArrayPairFrag(g.inner.TimestampColumn, g.inner.ValueColumn), "samples"))
+	q.Select(As(seriesArrayPairFrag(g.inner, g.inner.TimestampColumn, g.inner.ValueColumn), "samples"))
 	if g.temporality != nil {
 		q.Select(As(Call("any", Col(g.inner.TemporalityColumn)), windowTemporalityAlias))
 	}
@@ -250,10 +250,12 @@ func (g *fusedSubqueryGrid) anchorsFrag() Frag {
 	)
 }
 
-// sliceOf renders the dedup-by-ts of the half-open (a-range, a] window over the
-// per-series samples array — element-for-element identical to the materialized
+// sliceOf renders the half-open (a-range, a] window over the per-series
+// samples array, deduped by ts unless samplesQuery already deduped `samples`
+// itself (g.inner.NativeGroupArray, chopt.FeatureTSGridGroupArray, cerberus
+// issue #2749) — element-for-element identical to the materialized
 // window_pairs(a) (same membership, same arraySort order, same dedup keeping
-// last-of-equal-ts run).
+// the max-valued sample of each equal-ts run) either way.
 func (g *fusedSubqueryGrid) sliceOf(a Frag) Frag {
 	win := Call(
 		"arrayFilter",
@@ -263,6 +265,9 @@ func (g *fusedSubqueryGrid) sliceOf(a Frag) Frag {
 		)),
 		BareIdent("samples"),
 	)
+	if g.inner.NativeGroupArray {
+		return win
+	}
 	return dedupWindowPairsByTsFrag(win)
 }
 
