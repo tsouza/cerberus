@@ -1720,26 +1720,35 @@ func downsampleTierEligibleFunc(funcName string) bool {
 }
 
 // attachDownsampleTierArm side-feeds the downsampled long-range tier
-// (cerberus issue #2751) onto rw whenever funcName is eligible for it
-// (downsampleTierEligibleFunc) over an unambiguous Sum/Histogram-table scan.
-// Unlike attachDeltaPrefixAggregateArm this does NOT gate on
-// counterTemporalityRangeFn(funcName) first — idelta() and last_over_time()
-// are not counterTemporalityRangeFn members (neither ever needs
-// rw.TemporalityColumn populated: idelta never counter-corrects and
-// last_over_time is temporality-agnostic), so this resolves its own "is
-// this a Sum/Histogram-table scan" verdict directly via
-// rangeVectorCounterTemporalityColumn, purely as an eligibility oracle —
-// the resolved column is discarded, never assigned to rw.TemporalityColumn.
+// (cerberus issue #2751, extended by #2858) onto rw whenever funcName is
+// eligible for it (downsampleTierEligibleFunc) over an unambiguous scan of a
+// table the tier is actually fed from. Unlike attachDeltaPrefixAggregateArm
+// this does NOT gate on counterTemporalityRangeFn(funcName) first — idelta()
+// and last_over_time() are not counterTemporalityRangeFn members (neither
+// ever needs rw.TemporalityColumn populated: idelta never counter-corrects
+// and last_over_time is temporality-agnostic), so this resolves its own
+// eligibility verdict directly via rangeVectorCounterTemporalityColumn /
+// rangeVectorSingleGaugeTable, purely as eligibility oracles — neither
+// resolved value is ever assigned to rw.TemporalityColumn.
 //
-// A Histogram-table verdict slipping through (the tier's own MV reads only
-// the Sum table — see internal/schema/ddl's renderDownsampleTierView) is
-// safe, not silently wrong: the arm's Scan filters on MetricName, and a
-// histogram metric's rows simply never exist in the tier table, so the
-// query reads back empty and the boot-wired DownsampleTier*Lowerer's own
-// row-count guard (chsql's emitRangeWindowDownsampleTier) drops the series
-// exactly as PromQL would for missing data — see
-// schema.DownsampleTierTable's doc for why this whole mechanism degrades
-// safely rather than silently.
+// irate() and idelta() accept only an unambiguous Sum/Histogram-table
+// resolution (rangeVectorCounterTemporalityColumn != "") — a gauge has no
+// counter-reset semantics for either. last_over_time() additionally accepts
+// an unambiguous GAUGE-table resolution (rangeVectorSingleGaugeTable,
+// cerberus issue #2858): it is temporality-agnostic by definition, so the
+// tier's Gauge-sourced rows (internal/schema/ddl's
+// renderDownsampleTierGaugeView) answer it exactly as its Sum-sourced rows
+// do.
+//
+// A Histogram-table verdict slipping through irate()/idelta()'s check (the
+// tier's Sum-sourced MV reads only the Sum table — see internal/schema/ddl's
+// renderDownsampleTierView) is safe, not silently wrong: the arm's Scan
+// filters on MetricName, and a histogram metric's rows simply never exist in
+// the tier table, so the query reads back empty and the boot-wired
+// DownsampleTier*Lowerer's own row-count guard (chsql's
+// emitRangeWindowDownsampleTier) drops the series exactly as PromQL would
+// for missing data — see schema.DownsampleTierTable's doc for why this whole
+// mechanism degrades safely rather than silently.
 //
 // This populates the FIELD unconditionally under those conditions; whether
 // the emitter actually CONSUMES it is the separate, boot-wired
@@ -1757,10 +1766,13 @@ func attachDownsampleTierArm(
 	if !downsampleTierEligibleFunc(funcName) {
 		return
 	}
-	if rangeVectorCounterTemporalityColumn(vs, s, rangeCtx) == "" {
+	if rangeVectorCounterTemporalityColumn(vs, s, rangeCtx) != "" {
+		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
 		return
 	}
-	rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
+	if funcName == "last_over_time" && rangeVectorSingleGaugeTable(vs, s, rangeCtx) {
+		rw.DownsampleTierInput = buildDownsampleTierArm(vs.LabelMatchers, s, rangeCtx)
+	}
 }
 
 // buildDownsampleTierArm builds chplan.RangeWindow.DownsampleTierInput
@@ -3834,36 +3846,28 @@ func counterTemporalityRangeFn(name string) bool {
 	return false
 }
 
-// rangeVectorCounterTemporalityColumn reports which column
-// chplan.RangeWindow.TemporalityColumn should carry for a
-// counterTemporalityRangeFn call over vs, or "" when none applies. It
-// calls the SAME resolveSelectorRouting the inner lowerVectorSelector is
-// about to call for this exact selector, so the two never disagree about
-// which table(s) the selector resolves to — see
-// rangeCtx.wantsTemporalityColumn's doc for why this has to run BEFORE
-// lowerVectorSelector rather than inspect its output.
+// resolveUnambiguousScanTable resolves vs to the single physical table its
+// selector routing collapses to, or "" when it doesn't collapse to exactly
+// one. It calls the SAME resolveSelectorRouting the inner lowerVectorSelector
+// is about to call for this exact selector, so no caller of this function
+// ever disagrees with the real lowering about which table(s) the selector
+// resolves to — see rangeCtx.wantsTemporalityColumn's doc for why this has
+// to run BEFORE lowerVectorSelector rather than inspect its output.
 //
-// The column only applies when the selector resolves to EXACTLY ONE
-// table, and that table is the Sum or (classic) Histogram table: a
-// Gauge-table scan carries no AggregationTemporality column in production,
-// the exp-histogram / companion-union arms stay out of #1628's scope (see
-// the nil-temporality call sites in histogram_quantile_range.go /
-// histogram_quantile_native_window.go), and the (Gauge, Sum)
-// Scan.UnionTables ambiguous-routing shape (an unsuffixed metric name that
-// could live in either table) deliberately drops the Sum-only column from
-// its projection so the union's column list still matches. A
-// resolveSelectorRouting error here is not this function's to report —
-// the real lowerVectorSelector call right after it will hit the identical
-// error and report it through the normal path — so an error conservatively
-// answers "no column" instead.
-func rangeVectorCounterTemporalityColumn(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) string {
-	if s.AggregationTemporalityColumn == "" {
-		return ""
-	}
+// Shared by rangeVectorCounterTemporalityColumn (accepts Sum/Histogram, for
+// irate()/idelta()/rate()/increase()'s temporality-aware reads) and
+// rangeVectorSingleGaugeTable (accepts Gauge, for last_over_time()'s
+// downsample-tier eligibility — cerberus issue #2858) so the two callers can
+// never disagree about what "an unambiguous scan" means. A caller-visible
+// resolveSelectorRouting error is not this function's to report — the real
+// lowerVectorSelector call right after it will hit the identical error and
+// report it through the normal path — so an error conservatively answers ""
+// instead.
+func resolveUnambiguousScanTable(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) string {
 	metricName := metricNameFromMatchers(vs.LabelMatchers)
 	if hasUnpinnedMetricNameMatcher(vs.LabelMatchers) && s.HistogramTable != "" {
 		// The regex-histogram fan-out (lowerRegexHistogramSelector) unions
-		// several arms — never a single unambiguous Sum/Histogram scan.
+		// several arms — never a single unambiguous scan.
 		return ""
 	}
 	tables := s.TablesForUnknownName()
@@ -3874,27 +3878,63 @@ func rangeVectorCounterTemporalityColumn(vs *parser.VectorSelector, s schema.Met
 	if err != nil || len(route.tables) != 1 {
 		return ""
 	}
-	if route.tables[0] != s.SumTable && route.tables[0] != s.HistogramTable {
-		return ""
-	}
 	// The `_bucket` fan-out (wrapHistogramBucketFanout) and the `_count` /
 	// `_sum` / exp-histogram companion routing (buildHistogramCompanionArm,
 	// lowerCompanionUnion, expHistogramSelectorRouting) all pre-merge
 	// resource attributes themselves and pass augmentSelectorAttributes a
 	// ctx with attributesPreMerged set — which makes selectorAttributesExpr
 	// return the bare Attributes ColumnRef, taking augmentSelectorAttributes'
-	// EARLY RETURN before it ever reaches the temporality-widening branch.
-	// route.tables reporting a single Sum/Histogram table doesn't rule any
-	// of these out (the companion-union case still reports
-	// route.tables == [HistogramTable] even though its real output is a
-	// 4-column UnionAll with the Sum-table arm, which cannot carry
-	// AggregationTemporality through at all). Restricting eligibility to a
-	// route with NONE of these set is what keeps this to the plain-selector
-	// path augmentSelectorAttributes actually widens.
+	// EARLY RETURN before it ever reaches a column-widening branch.
+	// route.tables reporting a single table doesn't rule any of these out
+	// (the companion-union case still reports route.tables == [HistogramTable]
+	// even though its real output is a multi-column UnionAll with a second
+	// arm). Restricting eligibility to a route with NONE of these set is what
+	// keeps this to the plain-selector path augmentSelectorAttributes
+	// actually widens.
 	if route.bucketSuffixed != "" || route.companionValueColumn != "" || route.expHistogramCompanion {
 		return ""
 	}
+	return route.tables[0]
+}
+
+// rangeVectorCounterTemporalityColumn reports which column
+// chplan.RangeWindow.TemporalityColumn should carry for a
+// counterTemporalityRangeFn call over vs, or "" when none applies.
+//
+// The column only applies when resolveUnambiguousScanTable resolves to the
+// Sum or (classic) Histogram table: a Gauge-table scan carries no
+// AggregationTemporality column in production, the exp-histogram /
+// companion-union arms stay out of #1628's scope (see the nil-temporality
+// call sites in histogram_quantile_range.go / histogram_quantile_native_window.go),
+// and the (Gauge, Sum) Scan.UnionTables ambiguous-routing shape (an
+// unsuffixed metric name that could live in either table) deliberately drops
+// the Sum-only column from its projection so the union's column list still
+// matches — resolveUnambiguousScanTable's own len(route.tables) != 1 check
+// answers "" for exactly that shape.
+func rangeVectorCounterTemporalityColumn(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) string {
+	if s.AggregationTemporalityColumn == "" {
+		return ""
+	}
+	table := resolveUnambiguousScanTable(vs, s, ctx)
+	if table != s.SumTable && table != s.HistogramTable {
+		return ""
+	}
 	return s.AggregationTemporalityColumn
+}
+
+// rangeVectorSingleGaugeTable reports whether vs resolves to an unambiguous
+// Gauge-table scan — last_over_time()'s downsample-tier eligibility
+// counterpart of rangeVectorCounterTemporalityColumn's Sum/Histogram check
+// (cerberus issue #2858). last_over_time() is temporality-agnostic by
+// definition (schema.DownsampleTierTemporalityColumn's own doc), so unlike
+// irate()/idelta() — which stay Sum/Histogram-only, since a gauge has no
+// counter-reset rule for either — it is ALSO eligible for the tier over a
+// Gauge-table resolution.
+func rangeVectorSingleGaugeTable(vs *parser.VectorSelector, s schema.Metrics, ctx lowerCtx) bool {
+	if s.GaugeTable == "" {
+		return false
+	}
+	return resolveUnambiguousScanTable(vs, s, ctx) == s.GaugeTable
 }
 
 // noRecollapse spells out the [nativeTSGridMatrixNode] recollapse argument for

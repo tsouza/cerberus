@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -427,11 +428,13 @@ func newSchemaDownsampleTierBackfillCmd() *cobra.Command {
 		Use:   "downsample-tier-backfill",
 		Short: "One-time historical backfill into the downsampled long-range tier",
 		Long: "Backfill the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
-			"downsample_tier, cerberus issue #2751) for history that predates its\n" +
-			"materialized view: the MV only captures INSERTs into the base sum table\n" +
-			"from the moment it was created onward, so existing history needs this\n" +
-			"one-time INSERT ... SELECT pass. --before MUST be the MV's own creation\n" +
-			"timestamp (system.tables.metadata_modification_time, or an\n" +
+			"downsample_tier, cerberus issues #2751 and #2858) for history that\n" +
+			"predates its materialized view(s): the MV(s) only capture INSERTs into\n" +
+			"the base Sum table (and, unless it is configured identically to Sum,\n" +
+			"the base Gauge table) from the moment each was created onward, so\n" +
+			"existing history needs this one-time INSERT ... SELECT pass PER SOURCE.\n" +
+			"--before MUST be the LATER of the two MVs' own creation timestamps\n" +
+			"(system.tables.metadata_modification_time, or an\n" +
 			"operator-recorded timestamp from the moment CREATE MATERIALIZED VIEW\n" +
 			"ran) — the SAME exact-instant bound discipline\n" +
 			"`cerberus schema delta-prefix-backfill` uses, and for the identical\n" +
@@ -474,9 +477,10 @@ func runDownsampleTierBackfill(cmd *cobra.Command, in downsampleTierBackfillInpu
 	cols := downsampleTierColumns(cfg)
 
 	if in.dryRun {
-		sql, args := downsampletier.BackfillSQL(cols, before)
-		fmt.Fprintln(cmd.OutOrStdout(), sql)
-		fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", args)
+		for _, stmt := range downsampletier.BackfillSQL(cols, before) {
+			fmt.Fprintln(cmd.OutOrStdout(), stmt.SQL)
+			fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", stmt.Args)
+		}
 		return nil
 	}
 
@@ -493,7 +497,7 @@ func runDownsampleTierBackfill(cmd *cobra.Command, in downsampleTierBackfillInpu
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "backfilled the downsample tier from %s (rows strictly before %s)\n",
-		cols.SumTable, before.Format(time.RFC3339))
+		strings.Join(downsampletier.SourceTables(cols), ", "), before.Format(time.RFC3339))
 	if len(result.OutsideRetentionDays) > 0 {
 		writeOutsideRetentionWarning(cmd.OutOrStdout(), "the downsample tier", result.OutsideRetentionDays)
 	}
@@ -521,9 +525,10 @@ func newSchemaDownsampleTierRebuildCmd() *cobra.Command {
 		Use:   "downsample-tier-rebuild",
 		Short: "TRUNCATE and fully re-populate the downsampled long-range tier",
 		Long: "TRUNCATEs the downsampled long-range tier (CERBERUS_CH_OPTIMIZATIONS=\n" +
-			"downsample_tier, cerberus issue #2751) and re-populates it in FULL, from\n" +
-			"the base sum table's entire currently-retained history — no --before\n" +
-			"bound. DESTRUCTIVE: every row currently in the tier is dropped first.\n" +
+			"downsample_tier, cerberus issues #2751 and #2858) and re-populates it in\n" +
+			"FULL, from every configured source table's (Sum, and Gauge unless it is\n" +
+			"configured identically to Sum) entire currently-retained history — no\n" +
+			"--before bound. DESTRUCTIVE: every row currently in the tier is dropped first.\n" +
 			"Use this, not downsample-tier-backfill, when the persisted\n" +
 			"AggregateFunction(timeSeriesLastTwoSamples, ...) state is suspected\n" +
 			"stranded or format-incompatible (a ClickHouse changelog entry naming\n" +
@@ -555,9 +560,10 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 
 	if in.dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), downsampletier.TruncateSQL(cols))
-		sql, args := downsampletier.RebuildSQL(cols)
-		fmt.Fprintln(cmd.OutOrStdout(), sql)
-		fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", args)
+		for _, stmt := range downsampletier.RebuildSQL(cols) {
+			fmt.Fprintln(cmd.OutOrStdout(), stmt.SQL)
+			fmt.Fprintf(cmd.OutOrStdout(), "-- args: %v\n", stmt.Args)
+		}
 		return nil
 	}
 
@@ -573,7 +579,8 @@ func runDownsampleTierRebuild(cmd *cobra.Command, in downsampleTierRebuildInputs
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt the downsample tier from %s (full history)\n", cols.SumTable)
+	fmt.Fprintf(cmd.OutOrStdout(), "rebuilt the downsample tier from %s (full history)\n",
+		strings.Join(downsampletier.SourceTables(cols), ", "))
 	if len(result.OutsideRetentionDays) > 0 {
 		writeOutsideRetentionWarning(cmd.OutOrStdout(), "the downsample tier", result.OutsideRetentionDays)
 	}
@@ -599,8 +606,9 @@ func newSchemaDownsampleTierVerifyCmd() *cobra.Command {
 		Use:   "downsample-tier-verify",
 		Short: "Verify downsample-tier backfill completeness before relying on it",
 		Long: "Compare the downsampled long-range tier's per-metric-name DISTINCT\n" +
-			"bucket count against the base sum table's own, over the same\n" +
-			"backfilled/rebuilt history (--before, the tier MV's creation timestamp\n" +
+			"bucket count against the SUM of every configured source table's own\n" +
+			"(Sum, and Gauge unless it is configured identically to Sum), over the same\n" +
+			"backfilled/rebuilt history (--before, the later of the MVs' creation timestamps\n" +
 			"— see `cerberus schema downsample-tier-backfill --help`). A clean pass\n" +
 			"is the recommended confirmation before an operator sets\n" +
 			"CERBERUS_CH_OPTIMIZATIONS=downsample_tier for long-range queries over\n" +

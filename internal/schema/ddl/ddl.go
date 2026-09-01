@@ -875,13 +875,20 @@ func renderSignal(cfg Config, s Signal) ([]string, error) {
 		// The downsampled long-range tier (cerberus issue #2751) is entirely
 		// opt-in and entirely cerberus-authored, the same shape as the
 		// DELTA-prefix pair immediately above — CREATE precedes the MV
-		// (which references it in its TO clause).
+		// (which references it in its TO clause). The Gauge-sourced MV
+		// (cerberus issue #2858) is a SECOND, independent MV into the SAME
+		// table, added only when Gauge and Sum are configured as distinct
+		// physical tables — see renderDownsampleTierGaugeView's own doc for
+		// why an identically-configured pair skips it.
 		if cfg.DownsampleTierEnabled {
 			stmts = append(
 				stmts,
 				renderDownsampleTierTable(cfg),
 				renderDownsampleTierView(cfg),
 			)
+			if cfg.Tables.MetricsGauge != cfg.Tables.MetricsSum {
+				stmts = append(stmts, renderDownsampleTierGaugeView(cfg))
+			}
 		}
 		// Column statistics (issue #2766) trail every other metrics
 		// statement — CREATE, then projections, then the temporality index,
@@ -1491,11 +1498,12 @@ func renderDownsampleTierTable(cfg Config) string {
 // renderDownsampleTierView renders the CREATE MATERIALIZED VIEW feeding
 // renderDownsampleTierTable from the Sum table (cerberus issue #2751): every
 // raw sample, bucketed to its downsampleTierBucketEndExpr boundary, folded
-// through timeSeriesLastTwoSamplesState. Scoped to the Sum table only
-// (counters) — v1's deliberate scope decision, matching
-// renderDeltaPrefixView's own single-source-table shape; a gauge metric's
-// last_over_time() never routes to this tier (see
-// internal/promql/lower_strategy.go's eligibility check).
+// through timeSeriesLastTwoSamplesState. Scoped to the Sum table alone —
+// counters, feeding irate()/idelta()/last_over_time() — with
+// renderDownsampleTierGaugeView below as its Gauge-sourced sibling (cerberus
+// issue #2858), feeding the SAME target table for last_over_time() only (a
+// gauge has no counter-reset semantics for irate()/idelta() — see
+// internal/promql/lower.go's attachDownsampleTierArm).
 //
 // any(AggregationTemporality) also rides along, feeding
 // schema.DownsampleTierTemporalityColumn — exact per bucket because a
@@ -1531,6 +1539,68 @@ func renderDownsampleTierView(cfg Config) string {
 			bucketEnd,
 		)
 	stmt := chsql.CreateMaterializedView(schema.DownsampleTierTable+cerberusOwnedViewSuffix).
+		Database(cfg.Database).
+		IfNotExists().
+		To(cfg.Database, schema.DownsampleTierTable).
+		As(body)
+	if cfg.Cluster != "" {
+		stmt.OnCluster(cfg.Cluster)
+	}
+	return stmt.SQL()
+}
+
+// renderDownsampleTierGaugeView renders the CREATE MATERIALIZED VIEW feeding
+// renderDownsampleTierTable from the Gauge table (cerberus issue #2858):
+// renderDownsampleTierView's sibling, folding every raw Gauge sample through
+// the SAME timeSeriesLastTwoSamplesState bucketing into the SAME physical
+// tier table via a SECOND, independent MV — the same "two MVs, one
+// AggregatingMergeTree target" shape renderDeltaPrefixView's own doc
+// establishes as this codebase's precedent, not a new pattern.
+//
+// A Gauge series carries no AggregationTemporality column at all — the
+// column does not exist on the Gauge table's schema, unlike a merely-empty
+// value in a column that does exist. In place of `any(AggregationTemporality)`
+// this projects the fixed schema.DownsampleTierGaugeTemporalitySentinel
+// literal — see that constant's own doc for why a sentinel outside the
+// OTLP-enum range, rather than a second physical tier table, is the correct
+// choice here: the read side (internal/chsql's emitRangeWindowDownsampleTier)
+// already scans schema.DownsampleTierTable by MetricName + label matchers
+// alone, with no notion of "which MV wrote this row" anywhere in its own
+// query shape — adding a second physical table would mean TEACHING the read
+// side that distinction for the first time, whereas the sentinel keeps it
+// exactly as agnostic as it already is for the Sum-only v1 shipped by
+// #2751.
+//
+// Skipped by RenderAll when cfg.Tables.MetricsGauge equals cfg.Tables.MetricsSum
+// (a deployment schema is allowed to point both at the same physical table —
+// see schema.Metrics.TablesForUnknownName's own doc): in that configuration
+// renderDownsampleTierView's Sum-sourced MV above already fires on every row
+// this one would otherwise re-read from the identical table, and adding a
+// second MV over the same source would double-fold every sample into the
+// tier table AND make the merged Temporality column's any() pick
+// nondeterministically between a real reading and the sentinel for what is
+// actually the same underlying row.
+func renderDownsampleTierGaugeView(cfg Config) string {
+	bucketEnd := downsampleTierBucketEndExpr(metricTimeColumn, schema.DownsampleTierBucket)
+	body := chsql.NewQuery().
+		Select(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			chsql.As(bucketEnd, schema.DownsampleTierBucketColumn),
+			chsql.As(chsql.Call("timeSeriesLastTwoSamplesState", chsql.Col(metricTimeColumn), chsql.Col(metricValueColumn)), schema.DownsampleTierSamplesColumn),
+			chsql.As(chsql.InlineLit(schema.DownsampleTierGaugeTemporalitySentinel), schema.DownsampleTierTemporalityColumn),
+		).
+		From(chsql.Qual(cfg.Database, cfg.Tables.MetricsGauge)).
+		GroupBy(
+			chsql.Col(metricNameColumn),
+			chsql.Col(metricAttributesColumn),
+			chsql.Col(metricResourceAttributesColumn),
+			chsql.Col(metricServiceNameColumn),
+			bucketEnd,
+		)
+	stmt := chsql.CreateMaterializedView(schema.DownsampleTierTable+"_gauge"+cerberusOwnedViewSuffix).
 		Database(cfg.Database).
 		IfNotExists().
 		To(cfg.Database, schema.DownsampleTierTable).

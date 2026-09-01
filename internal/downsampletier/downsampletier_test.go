@@ -21,13 +21,20 @@ func testColumns() Columns {
 
 var testBefore = time.Date(2026, 8, 20, 12, 30, 0, 0, time.UTC)
 
-// TestBackfillSQL pins the rendered INSERT ... SELECT shape: the target
-// column list, the exact-instant-before WHERE bound (no temporality
-// filter, unlike internal/deltaprefix — see this package's doc), and the
-// ceiling-bucket GROUP BY matching internal/schema/ddl's MV exactly.
+// TestBackfillSQL pins the rendered INSERT ... SELECT shape: ONE statement
+// per downsampleTierSources(c) entry (Sum, then Gauge — cerberus issue
+// #2858), the target column list, the exact-instant-before WHERE bound (no
+// temporality filter, unlike internal/deltaprefix — see this package's
+// doc), and the ceiling-bucket GROUP BY matching internal/schema/ddl's MVs
+// exactly. The Sum statement carries a real any(AggregationTemporality);
+// the Gauge statement carries the fixed sentinel literal in its place —
+// see schema.DownsampleTierGaugeTemporalitySentinel's own doc.
 func TestBackfillSQL(t *testing.T) {
-	sql, args := BackfillSQL(testColumns(), testBefore)
-	want := "INSERT INTO otel.otel_metrics_sum_downsample_tier " +
+	stmts := BackfillSQL(testColumns(), testBefore)
+	if len(stmts) != 2 {
+		t.Fatalf("BackfillSQL returned %d statements; want 2 (Sum, Gauge)", len(stmts))
+	}
+	wantSum := "INSERT INTO otel.otel_metrics_sum_downsample_tier " +
 		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketEnd`, `LastTwoSamples`, `Temporality`) " +
 		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
@@ -36,11 +43,59 @@ func TestBackfillSQL(t *testing.T) {
 		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? " +
 		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
 		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
-	if sql != want {
-		t.Errorf("BackfillSQL sql =\n%s\nwant\n%s", sql, want)
+	if stmts[0].SQL != wantSum {
+		t.Errorf("BackfillSQL[0] sql =\n%s\nwant\n%s", stmts[0].SQL, wantSum)
 	}
-	if len(args) != 1 || args[0] != testBefore {
-		t.Errorf("BackfillSQL args = %v; want [%v]", args, testBefore)
+	if len(stmts[0].Args) != 1 || stmts[0].Args[0] != testBefore {
+		t.Errorf("BackfillSQL[0] args = %v; want [%v]", stmts[0].Args, testBefore)
+	}
+	wantGauge := "INSERT INTO otel.otel_metrics_sum_downsample_tier " +
+		"(`MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, `BucketEnd`, `LastTwoSamples`, `Temporality`) " +
+		"SELECT `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
+		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300) AS `BucketEnd`, " +
+		"timeSeriesLastTwoSamplesState(`TimeUnix`, `Value`) AS `LastTwoSamples`, " +
+		"-1 AS `Temporality` " +
+		"FROM `otel`.`otel_metrics_gauge` WHERE `TimeUnix` < ? " +
+		"GROUP BY `MetricName`, `Attributes`, `ResourceAttributes`, `ServiceName`, " +
+		"toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
+	if stmts[1].SQL != wantGauge {
+		t.Errorf("BackfillSQL[1] sql =\n%s\nwant\n%s", stmts[1].SQL, wantGauge)
+	}
+	if len(stmts[1].Args) != 1 || stmts[1].Args[0] != testBefore {
+		t.Errorf("BackfillSQL[1] args = %v; want [%v]", stmts[1].Args, testBefore)
+	}
+}
+
+// TestBackfillSQL_GaugeEqualsSumSkipsSecondStatement pins
+// downsampleTierSources' collapse guard (cerberus issue #2858's own doc): a
+// deployment schema pointing GaugeTable at the SAME physical table as
+// SumTable gets exactly ONE statement, not two — a second MV/backfill over
+// the identical source would double-write every bucket.
+func TestBackfillSQL_GaugeEqualsSumSkipsSecondStatement(t *testing.T) {
+	c := testColumns()
+	c.GaugeTable = c.SumTable
+	stmts := BackfillSQL(c, testBefore)
+	if len(stmts) != 1 {
+		t.Fatalf("BackfillSQL with GaugeTable==SumTable returned %d statements; want 1", len(stmts))
+	}
+}
+
+// TestSourceTables pins the cmd/cerberus-facing helper: both configured
+// sources by default, collapsing to just the Sum table when Gauge is
+// configured identically to it (mirroring downsampleTierSources' own
+// collapse guard).
+func TestSourceTables(t *testing.T) {
+	c := testColumns()
+	got := SourceTables(c)
+	want := []string{c.SumTable, c.GaugeTable}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("SourceTables = %v; want %v", got, want)
+	}
+
+	c.GaugeTable = c.SumTable
+	got = SourceTables(c)
+	if len(got) != 1 || got[0] != c.SumTable {
+		t.Errorf("SourceTables with GaugeTable==SumTable = %v; want [%s]", got, c.SumTable)
 	}
 }
 
@@ -48,20 +103,27 @@ func TestBackfillSQL(t *testing.T) {
 // bound at all — the full-history rebuild this package's doc explains is
 // the recovery path for a suspected stranded persisted state.
 func TestRebuildSQL(t *testing.T) {
-	sql, args := RebuildSQL(testColumns())
-	if len(args) != 0 {
-		t.Errorf("RebuildSQL args = %v; want none (no --before bound)", args)
+	stmts := RebuildSQL(testColumns())
+	if len(stmts) != 2 {
+		t.Fatalf("RebuildSQL returned %d statements; want 2 (Sum, Gauge)", len(stmts))
 	}
-	backfillSQL, _ := BackfillSQL(testColumns(), testBefore)
-	if sql == backfillSQL {
-		t.Fatal("RebuildSQL rendered identically to a bounded BackfillSQL — the WHERE clause is missing")
+	for i, stmt := range stmts {
+		if len(stmt.Args) != 0 {
+			t.Errorf("RebuildSQL[%d] args = %v; want none (no --before bound)", i, stmt.Args)
+		}
+		if containsSubstr(stmt.SQL, "WHERE") {
+			t.Errorf("RebuildSQL[%d] sql = %q; want no WHERE clause at all", i, stmt.SQL)
+		}
+	}
+	backfillStmts := BackfillSQL(testColumns(), testBefore)
+	if stmts[0].SQL == backfillStmts[0].SQL {
+		t.Fatal("RebuildSQL[0] rendered identically to a bounded BackfillSQL[0] — the WHERE clause is missing")
 	}
 	wantPrefix := "INSERT INTO otel.otel_metrics_sum_downsample_tier "
-	if len(sql) < len(wantPrefix) || sql[:len(wantPrefix)] != wantPrefix {
-		t.Errorf("RebuildSQL sql = %q; want prefix %q", sql, wantPrefix)
-	}
-	if containsSubstr(sql, "WHERE") {
-		t.Errorf("RebuildSQL sql = %q; want no WHERE clause at all", sql)
+	for i, stmt := range stmts {
+		if len(stmt.SQL) < len(wantPrefix) || stmt.SQL[:len(wantPrefix)] != wantPrefix {
+			t.Errorf("RebuildSQL[%d] sql = %q; want prefix %q", i, stmt.SQL, wantPrefix)
+		}
 	}
 }
 
@@ -81,17 +143,26 @@ func TestTruncateSQL(t *testing.T) {
 // to this package's ceiling bucket expression and lack of a temporality
 // filter.
 func TestOutsideRetentionDaysSQL(t *testing.T) {
+	c := testColumns()
 	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
-	sql, args := outsideRetentionDaysSQL(testColumns(), testBefore, boundary)
 	bucketExpr := "toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
-	want := "SELECT " + bucketExpr + " FROM `otel`.`otel_metrics_sum` " +
-		"WHERE `TimeUnix` < ? AND " + bucketExpr + " < ? " +
-		"GROUP BY " + bucketExpr + " ORDER BY " + bucketExpr
-	if sql != want {
-		t.Errorf("outsideRetentionDaysSQL sql =\n%s\nwant\n%s", sql, want)
-	}
-	if len(args) != 2 || args[0] != testBefore || args[1] != boundary {
-		t.Errorf("outsideRetentionDaysSQL args = %v; want [%v %v]", args, testBefore, boundary)
+	for _, tc := range []struct {
+		source string
+		table  string
+	}{
+		{c.SumTable, "otel_metrics_sum"},
+		{c.GaugeTable, "otel_metrics_gauge"},
+	} {
+		sql, args := outsideRetentionDaysSQL(c, tc.source, testBefore, boundary)
+		want := "SELECT " + bucketExpr + " FROM `otel`.`" + tc.table + "` " +
+			"WHERE `TimeUnix` < ? AND " + bucketExpr + " < ? " +
+			"GROUP BY " + bucketExpr + " ORDER BY " + bucketExpr
+		if sql != want {
+			t.Errorf("outsideRetentionDaysSQL(%s) sql =\n%s\nwant\n%s", tc.table, sql, want)
+		}
+		if len(args) != 2 || args[0] != testBefore || args[1] != boundary {
+			t.Errorf("outsideRetentionDaysSQL(%s) args = %v; want [%v %v]", tc.table, args, testBefore, boundary)
+		}
 	}
 }
 
@@ -101,7 +172,7 @@ func TestOutsideRetentionDaysSQL(t *testing.T) {
 func TestBaseAndTierBucketsSQL(t *testing.T) {
 	c := testColumns()
 
-	baseSQL, baseArgs := baseBucketsSQL(c, testBefore, time.Time{}, false)
+	baseSQL, baseArgs := baseBucketsSQL(c, c.SumTable, testBefore, time.Time{}, false)
 	bucketExpr := "toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	wantBase := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
 		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? GROUP BY `MetricName`"
@@ -110,6 +181,13 @@ func TestBaseAndTierBucketsSQL(t *testing.T) {
 	}
 	if len(baseArgs) != 1 || baseArgs[0] != testBefore {
 		t.Errorf("baseBucketsSQL args = %v; want [%v]", baseArgs, testBefore)
+	}
+
+	gaugeSQL, _ := baseBucketsSQL(c, c.GaugeTable, testBefore, time.Time{}, false)
+	wantGauge := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
+		"FROM `otel`.`otel_metrics_gauge` WHERE `TimeUnix` < ? GROUP BY `MetricName`"
+	if gaugeSQL != wantGauge {
+		t.Errorf("baseBucketsSQL(gauge) sql =\n%s\nwant\n%s", gaugeSQL, wantGauge)
 	}
 
 	tierSQL, tierArgs := tierBucketsSQL(c, testBefore, time.Time{}, false)
@@ -130,7 +208,7 @@ func TestBaseAndTierBucketsSQL_RetentionActive(t *testing.T) {
 	c := testColumns()
 	boundary := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 
-	baseSQL, baseArgs := baseBucketsSQL(c, testBefore, boundary, true)
+	baseSQL, baseArgs := baseBucketsSQL(c, c.SumTable, testBefore, boundary, true)
 	bucketExpr := "toStartOfInterval(`TimeUnix` - toIntervalNanosecond(1), toIntervalSecond(300)) + toIntervalSecond(300)"
 	wantBase := "SELECT `MetricName`, uniqExact(" + bucketExpr + ") AS `n` " +
 		"FROM `otel`.`otel_metrics_sum` WHERE `TimeUnix` < ? AND " + bucketExpr + " >= ? GROUP BY `MetricName`"
@@ -265,6 +343,11 @@ type fakeConn struct {
 	execSQL  []string
 	execArgs [][]any
 	execErr  error
+	// execErrOn, when non-zero, fails only the execErrOn-th Exec call
+	// (1-indexed) rather than every one — used to reach a LATER statement's
+	// own error-wrap branch (e.g. Rebuild's second, Gauge-sourced INSERT)
+	// without also failing every earlier one.
+	execErrOn int
 
 	queries []string
 	respond map[string][][2]any
@@ -274,6 +357,12 @@ type fakeConn struct {
 func (c *fakeConn) Exec(_ context.Context, query string, args ...any) error {
 	c.execSQL = append(c.execSQL, query)
 	c.execArgs = append(c.execArgs, args)
+	if c.execErrOn != 0 {
+		if len(c.execSQL) == c.execErrOn {
+			return c.execErr
+		}
+		return nil
+	}
 	return c.execErr
 }
 
@@ -302,19 +391,22 @@ func containsSubstr(s, substr string) bool {
 	return false
 }
 
-// twoCallConn succeeds on its first Query and fails on its second — the
-// shape Verify's own two reads (base table, then tier table) need to reach
-// its second error-wrap branch.
-type twoCallConn struct {
-	calls int
-	err   error
+// nthCallConn succeeds on every Query call except the failOn-th (1-indexed),
+// which fails — used to reach a specific error-wrap branch among Verify's
+// several sequential reads (retention check x2 sources, base-bucket reads x2
+// sources, tier-bucket read x1 — cerberus issue #2858 widened the base read
+// from one call to one per downsampleTierSources(c) entry).
+type nthCallConn struct {
+	calls  int
+	failOn int
+	err    error
 }
 
-func (c *twoCallConn) Exec(context.Context, string, ...any) error { return nil }
+func (c *nthCallConn) Exec(context.Context, string, ...any) error { return nil }
 
-func (c *twoCallConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+func (c *nthCallConn) Query(context.Context, string, ...any) (driver.Rows, error) {
 	c.calls++
-	if c.calls == 2 {
+	if c.calls == c.failOn {
 		return nil, c.err
 	}
 	return &fakeRows{}, nil
@@ -328,8 +420,9 @@ func withFrozenNow(t *testing.T, now time.Time) {
 }
 
 // TestBackfill_ExecutesRenderedSQL confirms Backfill hands conn EXACTLY the
-// statement + args BackfillSQL renders, and wraps a real Exec failure with
-// enough context to identify the target table.
+// statements + args BackfillSQL renders — one per downsampleTierSources(c)
+// entry (Sum, then Gauge — cerberus issue #2858) — and wraps a real Exec
+// failure with enough context to identify the target table.
 func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{}
@@ -340,14 +433,21 @@ func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 	if len(result.OutsideRetentionDays) != 0 {
 		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", result.OutsideRetentionDays)
 	}
-	wantSQL, wantArgs := BackfillSQL(c, testBefore)
-	if len(conn.execSQL) != 1 || conn.execSQL[0] != wantSQL {
-		t.Errorf("Exec sql = %v; want [%q]", conn.execSQL, wantSQL)
+	wantStmts := BackfillSQL(c, testBefore)
+	if len(conn.execSQL) != len(wantStmts) {
+		t.Fatalf("Exec calls = %d; want %d (one per source)", len(conn.execSQL), len(wantStmts))
 	}
-	if len(conn.execArgs) != 1 || len(conn.execArgs[0]) != len(wantArgs) {
-		t.Errorf("Exec args = %v; want %v", conn.execArgs, wantArgs)
+	for i, want := range wantStmts {
+		if conn.execSQL[i] != want.SQL {
+			t.Errorf("Exec[%d] sql = %q; want %q", i, conn.execSQL[i], want.SQL)
+		}
+		if len(conn.execArgs[i]) != len(want.Args) {
+			t.Errorf("Exec[%d] args = %v; want %v", i, conn.execArgs[i], want.Args)
+		}
 	}
 
+	// A failing FIRST (Sum) Exec must stop before ever attempting the
+	// second (Gauge) statement.
 	failing := &fakeConn{execErr: errors.New("boom")}
 	_, err = Backfill(context.Background(), failing, c, testBefore, 0)
 	if err == nil {
@@ -355,6 +455,9 @@ func TestBackfill_ExecutesRenderedSQL(t *testing.T) {
 	}
 	if got := err.Error(); !containsSubstr(got, schema.DownsampleTierTable) {
 		t.Errorf("Backfill error %q does not name the target table %q", got, schema.DownsampleTierTable)
+	}
+	if len(failing.execSQL) != 1 {
+		t.Errorf("expected Backfill to stop after the first failing Exec; got %d Exec calls", len(failing.execSQL))
 	}
 }
 
@@ -373,15 +476,17 @@ func TestBackfill_DetectsOutsideRetentionDays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
-	// The outside-retention check must run BEFORE the INSERT.
-	if len(conn.queries) != 1 {
-		t.Fatalf("expected exactly 1 Query (the retention check); got %d", len(conn.queries))
+	// The outside-retention check must run BEFORE the INSERT — one Query
+	// per source (Sum, Gauge), both matching "GROUP BY" and both reporting
+	// the SAME outsideDay, deduplicated by queryOutsideRetentionDays.
+	if len(conn.queries) != 2 {
+		t.Fatalf("expected exactly 2 Query calls (the retention check, one per source); got %d", len(conn.queries))
 	}
-	if len(conn.execSQL) != 1 {
-		t.Fatalf("expected exactly 1 Exec (the INSERT); got %d", len(conn.execSQL))
+	if len(conn.execSQL) != 2 {
+		t.Fatalf("expected exactly 2 Exec calls (the INSERTs, one per source); got %d", len(conn.execSQL))
 	}
 	if len(result.OutsideRetentionDays) != 1 || !result.OutsideRetentionDays[0].Equal(outsideDay) {
-		t.Errorf("OutsideRetentionDays = %v; want [%v]", result.OutsideRetentionDays, outsideDay)
+		t.Errorf("OutsideRetentionDays = %v; want [%v] (deduplicated across both sources)", result.OutsideRetentionDays, outsideDay)
 	}
 }
 
@@ -395,10 +500,43 @@ func TestBackfill_PropagatesRetentionCheckQueryError(t *testing.T) {
 	}
 }
 
+// TestQueryOutsideRetentionDays_PropagatesSecondSourceQueryError confirms
+// the per-source loop (cerberus issue #2858) surfaces a failure from the
+// SECOND source's own Query call — not just the first, which every other
+// retention-check test above already covers via a conn that fails
+// unconditionally.
+func TestQueryOutsideRetentionDays_PropagatesSecondSourceQueryError(t *testing.T) {
+	c := testColumns()
+	conn := &nthCallConn{failOn: 2, err: errors.New("gauge retention query failed")}
+	_, err := queryOutsideRetentionDays(context.Background(), conn, c, testBefore, time.Time{})
+	if err == nil {
+		t.Fatal("expected an error from the second (Gauge) source's Query")
+	}
+	if !containsSubstr(err.Error(), c.GaugeTable) {
+		t.Errorf("error %q does not name the Gauge source table", err.Error())
+	}
+}
+
+// TestQueryOutsideRetentionDays_PropagatesScanError confirms a Scan failure
+// on the retention-day read is wrapped with the failing source's table name,
+// mirroring scanCounts' own PropagatesScanError coverage for the sibling
+// bucket-count reads.
+func TestQueryOutsideRetentionDays_PropagatesScanError(t *testing.T) {
+	c := testColumns()
+	conn := &singleRowsConn{rows: &erroringRows{hasRow: true, scanErr: errors.New("scan failed")}}
+	_, err := queryOutsideRetentionDays(context.Background(), conn, c, testBefore, time.Time{})
+	if err == nil {
+		t.Fatal("expected an error from a failing Scan")
+	}
+	if !containsSubstr(err.Error(), c.SumTable) {
+		t.Errorf("error %q does not name the source table", err.Error())
+	}
+}
+
 // TestRebuild_TruncatesThenInserts confirms Rebuild issues TRUNCATE before
-// the unbounded INSERT ... SELECT, in that order, and surfaces
-// outside-retention days computed against `now` rather than any --before
-// bound.
+// the unbounded INSERT ... SELECT statements (one per source — cerberus
+// issue #2858), in that order, and surfaces outside-retention days computed
+// against `now` rather than any --before bound.
 func TestRebuild_TruncatesThenInserts(t *testing.T) {
 	c := testColumns()
 	conn := &fakeConn{}
@@ -409,15 +547,17 @@ func TestRebuild_TruncatesThenInserts(t *testing.T) {
 	if len(result.OutsideRetentionDays) != 0 {
 		t.Errorf("OutsideRetentionDays = %v; want none with retention=0", result.OutsideRetentionDays)
 	}
-	if len(conn.execSQL) != 2 {
-		t.Fatalf("Exec calls = %d; want 2 (TRUNCATE then INSERT)", len(conn.execSQL))
+	wantInserts := RebuildSQL(c)
+	if len(conn.execSQL) != 1+len(wantInserts) {
+		t.Fatalf("Exec calls = %d; want %d (TRUNCATE then one INSERT per source)", len(conn.execSQL), 1+len(wantInserts))
 	}
 	if conn.execSQL[0] != TruncateSQL(c) {
 		t.Errorf("first Exec = %q; want TRUNCATE %q", conn.execSQL[0], TruncateSQL(c))
 	}
-	wantInsert, _ := RebuildSQL(c)
-	if conn.execSQL[1] != wantInsert {
-		t.Errorf("second Exec = %q; want %q", conn.execSQL[1], wantInsert)
+	for i, want := range wantInserts {
+		if conn.execSQL[1+i] != want.SQL {
+			t.Errorf("Exec[%d] = %q; want %q", 1+i, conn.execSQL[1+i], want.SQL)
+		}
 	}
 
 	failingTruncate := &fakeConn{execErr: errors.New("truncate failed")}
@@ -426,7 +566,28 @@ func TestRebuild_TruncatesThenInserts(t *testing.T) {
 		t.Fatal("expected error from a failing TRUNCATE")
 	}
 	if len(failingTruncate.execSQL) != 1 {
-		t.Errorf("expected Rebuild to stop after a failing TRUNCATE, not attempt the INSERT; got %d Exec calls", len(failingTruncate.execSQL))
+		t.Errorf("expected Rebuild to stop after a failing TRUNCATE, not attempt any INSERT; got %d Exec calls", len(failingTruncate.execSQL))
+	}
+}
+
+// TestRebuild_StopsAfterFirstFailingInsert confirms Rebuild stops issuing
+// further INSERT statements (cerberus issue #2858: now one per source) as
+// soon as one fails, rather than attempting every remaining source's own
+// statement regardless. execErrOn=3 fails the SECOND insert (Exec call 3:
+// TRUNCATE, Sum insert, Gauge insert).
+func TestRebuild_StopsAfterFirstFailingInsert(t *testing.T) {
+	c := testColumns()
+	conn := &fakeConn{execErrOn: 3, execErr: errors.New("gauge insert failed")}
+	_, err := Rebuild(context.Background(), conn, c, 0)
+	if err == nil {
+		t.Fatal("expected error from the second (Gauge) INSERT failing")
+	}
+	if !containsSubstr(err.Error(), schema.DownsampleTierTable) {
+		t.Errorf("Rebuild error %q does not name the target table", err.Error())
+	}
+	if len(conn.execSQL) != 3 {
+		t.Errorf("Exec calls = %d; want 3 (TRUNCATE, Sum insert, the failing Gauge insert) — "+
+			"no statement past the failure should run", len(conn.execSQL))
 	}
 }
 
@@ -443,6 +604,11 @@ func TestRebuild_PropagatesRetentionCheckQueryError(t *testing.T) {
 	}
 }
 
+// TestVerify_ReadsBothBucketCountsAndDiffs confirms baseBucketCounts SUMS
+// per-metric-name counts across BOTH sources (cerberus issue #2858: "m2"
+// only exists in the Gauge table's response here, proving its count is not
+// silently dropped just because it's absent from the Sum table's read) and
+// still diffs correctly against the tier's own combined count.
 func TestVerify_ReadsBothBucketCountsAndDiffs(t *testing.T) {
 	c := testColumns()
 	// Match keys must be MUTUALLY EXCLUSIVE substrings — a bare
@@ -451,12 +617,13 @@ func TestVerify_ReadsBothBucketCountsAndDiffs(t *testing.T) {
 	// containsSubstr would match BOTH queries against whichever key map
 	// iteration (random order) happens to check first. The closing
 	// backtick right after the table name disambiguates: it appears in
-	// the base table's own quoted reference but not inside the tier
+	// the base tables' own quoted references but not inside the tier
 	// table's (longer) one.
 	conn := &fakeConn{
 		respond: map[string][][2]any{
-			"`" + schema.DownsampleTierTable + "`": {{"m1", int64(4)}},
+			"`" + schema.DownsampleTierTable + "`": {{"m1", int64(4)}, {"m2", int64(2)}},
 			"`" + c.SumTable + "`":                 {{"m1", int64(5)}},
+			"`" + c.GaugeTable + "`":               {{"m2", int64(2)}},
 		},
 	}
 	rep, err := Verify(context.Background(), conn, c, testBefore, 0)
@@ -464,25 +631,41 @@ func TestVerify_ReadsBothBucketCountsAndDiffs(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 	if rep.Pass() {
-		t.Fatal("expected a mismatch (base=5, tier=4)")
+		t.Fatal("expected a mismatch (base=5, tier=4 for m1)")
 	}
 	if len(rep.Mismatches) != 1 || rep.Mismatches[0].MetricName != "m1" {
-		t.Errorf("Mismatches = %v; want one entry for m1", rep.Mismatches)
+		t.Errorf("Mismatches = %v; want one entry for m1 (m2's Gauge-sourced base/tier counts agree at 2)", rep.Mismatches)
 	}
 }
 
 func TestVerify_PropagatesBaseTableQueryError(t *testing.T) {
 	c := testColumns()
-	conn := &twoCallConn{err: errors.New("boom")}
-	// twoCallConn fails on its SECOND call. Verify's own read order is
-	// base table first, then tier table — see Verify's own doc — so the
-	// second call belongs to the TIER table read.
+	// retention=0 skips the retention-day check entirely, so Verify's own
+	// read order is: base-Sum (call 1), base-Gauge (call 2), tier (call 3).
+	// failOn=3 reaches the tier read's own error-wrap branch.
+	conn := &nthCallConn{failOn: 3, err: errors.New("boom")}
 	_, err := Verify(context.Background(), conn, c, testBefore, 0)
 	if err == nil {
-		t.Fatal("expected an error from the second (tier table) Query")
+		t.Fatal("expected an error from the third (tier table) Query")
 	}
 	if !containsSubstr(err.Error(), schema.DownsampleTierTable) {
 		t.Errorf("Verify error %q does not name the tier table", err.Error())
+	}
+}
+
+// TestVerify_PropagatesGaugeBaseTableQueryError mirrors
+// TestVerify_PropagatesBaseTableQueryError for the SECOND base read (the
+// Gauge source, cerberus issue #2858) — proving baseBucketCounts surfaces a
+// failure from either configured source, not just the first.
+func TestVerify_PropagatesGaugeBaseTableQueryError(t *testing.T) {
+	c := testColumns()
+	conn := &nthCallConn{failOn: 2, err: errors.New("boom")}
+	_, err := Verify(context.Background(), conn, c, testBefore, 0)
+	if err == nil {
+		t.Fatal("expected an error from the second (Gauge base) Query")
+	}
+	if !containsSubstr(err.Error(), c.GaugeTable) {
+		t.Errorf("Verify error %q does not name the Gauge source table", err.Error())
 	}
 }
 
@@ -503,12 +686,14 @@ func TestVerify_ExcludesOutsideRetentionDaysFromReport(t *testing.T) {
 	retention := 30 * 24 * time.Hour
 	outsideDay := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	boundary, _ := retentionBoundary(now, retention)
-	// Three distinct queries land on this one conn (the retention-day
-	// check, baseBucketsSQL, tierBucketsSQL) — key each response by its
-	// OWN exact rendered SQL (derived from the real renderers, not a
-	// hand-guessed substring) so none can accidentally match another.
-	dayQuery, _ := outsideRetentionDaysSQL(c, testBefore, boundary)
-	baseQuery, _ := baseBucketsSQL(c, testBefore, boundary, true)
+	// Five distinct queries land on this one conn (the retention-day check
+	// and the base-bucket read, each once per source, plus tierBucketsSQL)
+	// — key the Sum source's two responses by their OWN exact rendered SQL
+	// (derived from the real renderers, not a hand-guessed substring) so
+	// none can accidentally match another; the Gauge source's two queries
+	// fall through to the default empty response, contributing nothing.
+	dayQuery, _ := outsideRetentionDaysSQL(c, c.SumTable, testBefore, boundary)
+	baseQuery, _ := baseBucketsSQL(c, c.SumTable, testBefore, boundary, true)
 	conn := &fakeConn{
 		respond: map[string][][2]any{
 			dayQuery:  {{outsideDay, int64(0)}},

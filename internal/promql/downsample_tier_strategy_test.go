@@ -313,3 +313,133 @@ func TestDownsampleTierDisabled_FallsThroughToFanout(t *testing.T) {
 		t.Error("DownsampleTier must stay false when no DownsampleTier*Lowerer was wired")
 	}
 }
+
+// --- Gauge-table eligibility for last_over_time() (cerberus issue #2858) ---
+//
+// These are the plain lowering-shape counterparts of the Sum-table tests
+// above, using rangeVectorSingleGaugeTable's own unambiguous-resolution
+// requirement (internal/promql/lower.go) instead of
+// rangeVectorCounterTemporalityColumn's. An UNSUFFIXED metric name is
+// otherwise ambiguous between Gauge and Sum (schema.Metrics.TablesForUnknownName's
+// own doc — the SAME pre-existing restriction #1628/#2751 already impose on
+// an unsuffixed COUNTER metric's own irate()/idelta() eligibility), so every
+// test below clears SumTable to give the fixture metric name an unambiguous
+// Gauge-only resolution — see
+// internal/chsql's range_window_downsample_tier_gauge_chdb_test.go
+// (downsampleTierGaugeOnlySchema) for the identical reasoning against a real
+// ClickHouse engine.
+
+// lowerDownsampleTierQueryWithSchema mirrors lowerDownsampleTierQuery but
+// takes an explicit schema.Metrics rather than hard-coding
+// schema.DefaultOTelMetrics() — needed so a test can clear SumTable to make
+// an unsuffixed metric name resolve unambiguously to Gauge.
+func lowerDownsampleTierQueryWithSchema(t *testing.T, s schema.Metrics, query string, start, end time.Time, step time.Duration) (*chplan.RangeWindow, bool) {
+	t.Helper()
+	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
+	expr, err := p.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("parse %q: %v", query, err)
+	}
+	plan, err := promql.LowerAtRangeOpts(context.Background(), expr, s,
+		start, end, step, promql.LowerOpts{Lowerers: downsampleTierLowerers()})
+	if err != nil {
+		t.Fatalf("lower %q: %v", query, err)
+	}
+	var found *chplan.RangeWindow
+	chplan.WalkDeep(plan, func(n chplan.Node) bool {
+		if rw, ok := n.(*chplan.RangeWindow); ok && found == nil {
+			found = rw
+			return false
+		}
+		return true
+	})
+	return found, found != nil
+}
+
+// gaugeOnlySchema returns schema.DefaultOTelMetrics() with SumTable cleared
+// — see this section's own doc for why an unambiguous Gauge resolution
+// needs it.
+func gaugeOnlySchema() schema.Metrics {
+	m := schema.DefaultOTelMetrics()
+	m.SumTable = ""
+	return m
+}
+
+func TestDownsampleTierEligible_LastOverTimeGaugeTable(t *testing.T) {
+	rw, ok := lowerDownsampleTierQueryWithSchema(t, gaugeOnlySchema(), `last_over_time(cpu_temperature[5m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if !rw.DownsampleTier {
+		t.Error("expected DownsampleTier=true for a bucket-aligned last_over_time() query over an unambiguous Gauge-table metric")
+	}
+	if rw.DownsampleTierInput == nil {
+		t.Error("expected DownsampleTierInput to be populated")
+	}
+}
+
+// TestDownsampleTierIneligible_IrateGaugeTable proves irate() stays
+// Sum/Histogram-only even over an UNAMBIGUOUS Gauge-table resolution — a
+// gauge has no counter-reset semantics for irate() to apply.
+// TestDownsampleTierIneligible_IdeltaGaugeTable mirrors it for idelta().
+func TestDownsampleTierIneligible_IrateGaugeTable(t *testing.T) {
+	rw, ok := lowerDownsampleTierQueryWithSchema(t, gaugeOnlySchema(), `irate(cpu_temperature[5m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if rw.DownsampleTier || rw.DownsampleTierInput != nil {
+		t.Error("irate() must never route to the tier for a Gauge-table metric, even unambiguously resolved")
+	}
+}
+
+func TestDownsampleTierIneligible_IdeltaGaugeTable(t *testing.T) {
+	rw, ok := lowerDownsampleTierQueryWithSchema(t, gaugeOnlySchema(), `idelta(cpu_temperature[5m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if rw.DownsampleTier || rw.DownsampleTierInput != nil {
+		t.Error("idelta() must never route to the tier for a Gauge-table metric, even unambiguously resolved")
+	}
+}
+
+// TestDownsampleTierIneligible_LastOverTimeNoGaugeTableConfigured proves
+// rangeVectorSingleGaugeTable's own s.GaugeTable == "" guard: a deployment
+// with no Gauge table configured at all can never have an "unambiguous
+// Gauge-table resolution", so last_over_time() stays off the tier for it —
+// as opposed to falling through to resolveUnambiguousScanTable and
+// (incorrectly) matching an empty string against an equally-empty
+// s.GaugeTable. SumTable stays configured (unlike gaugeOnlySchema's own
+// Sum-disabled shape) so `_total`-suffixed selectors elsewhere in this
+// schema still resolve normally — only the Gauge arm is disabled.
+func TestDownsampleTierIneligible_LastOverTimeNoGaugeTableConfigured(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	s.GaugeTable = ""
+	rw, ok := lowerDownsampleTierQueryWithSchema(t, s, `last_over_time(cpu_temperature[5m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if rw.DownsampleTier || rw.DownsampleTierInput != nil {
+		t.Error("last_over_time() must not route to the tier when no Gauge table is configured at all")
+	}
+}
+
+// TestDownsampleTierIneligible_LastOverTimeAmbiguousGaugeSum proves the
+// pre-existing (Gauge, Sum) ambiguity fan-out for an unsuffixed metric name
+// (schema.Metrics.TablesForUnknownName, both tables configured) keeps
+// last_over_time() OUT of the tier — the same restriction #1628/#2751
+// already impose on irate()/idelta() for an unsuffixed counter metric,
+// applied symmetrically here rather than newly introduced.
+func TestDownsampleTierIneligible_LastOverTimeAmbiguousGaugeSum(t *testing.T) {
+	rw, ok := lowerDownsampleTierQuery(t, `last_over_time(cpu_temperature[5m])`,
+		bucketAlignedStart, bucketAlignedStart.Add(20*time.Minute), schema.DownsampleTierBucket)
+	if !ok {
+		t.Fatal("expected a RangeWindow in the plan")
+	}
+	if rw.DownsampleTier || rw.DownsampleTierInput != nil {
+		t.Error("last_over_time() must not route to the tier for an unsuffixed name ambiguous between Gauge and Sum")
+	}
+}
