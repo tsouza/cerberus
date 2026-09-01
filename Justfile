@@ -559,6 +559,23 @@ quantile-prom-histogram-rankwalk-integration:
     @just _pull-retry {{CH_QUANTILE_PROM_HISTOGRAM_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run TestHistogramQuantile_RankWalkNative_DifferentialRealCH ./internal/chsql/...
 
+# Run the ts_tag_groups real-CH differential (cerberus issue #2750): the
+# duplicate-labelset guard's instant-mode name-drop collapse
+# (guardNameDropCollisionByTagGroup) answers BYTE-IDENTICAL to the existing
+# Map-grouped path across the collision-reject, distinct-labelsets
+# pass-through, and pinned-name no-guard shapes, driven through the REAL
+# production HTTP handler + emitter against a REAL ClickHouse — the proof
+# chopt.FeatureTSGridTagGroups's registry entry rests on.
+# timeSeriesThrowDuplicateSeriesIf's floor (26.2) is above every other
+# integration lane's pin, so this lane boots its own dedicated server
+# (CH_TAG_GROUPS_IMAGE) rather than reusing CH_TEST_IMAGE. Requires Docker;
+# gated behind the `integration` build tag. See
+# internal/api/prom/handler_tag_groups_realch_integration_test.go and
+# strict-scan.yml.
+tag-groups-differential-integration:
+    @just _pull-retry {{CH_TAG_GROUPS_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run TestTagGroups_MatchesMapGrouping_RealClickHouse ./internal/api/prom/...
+
 # Run the ts_grid_last_over_time real-CH regression pin (#2747): reproduces
 # upstream's own #106577 regression fixture shape (a staleness window
 # narrower than the query_range grid step) end to end through cerberus's
@@ -1313,6 +1330,16 @@ CH_STRICT_SCAN_IMAGE := "clickhouse/clickhouse-server:26.6-alpine"
 # timeSeries*ToGrid family. TestIntegrationImagePinsMatchTheJustfile holds this
 # against the literal in the test source.
 CH_QUANTILE_PROM_HISTOGRAM_IMAGE := "clickhouse/clickhouse-server:25.10-alpine"
+
+# CH_TAG_GROUPS_IMAGE is the server the ts_tag_groups real-CH differential
+# boots (internal/api/prom's TestTagGroups_MatchesMapGrouping_RealClickHouse).
+# Its own dedicated pin, like CH_QUANTILE_PROM_HISTOGRAM_IMAGE's:
+# chopt.FeatureTSGridTagGroups's floor is 26.2 (timeSeriesThrowDuplicateSeriesIf,
+# the higher of the two functions the feature needs) — above CH_TEST_IMAGE's
+# 25.9 — so this lane boots its own server rather than reusing CH_TEST_IMAGE.
+# TestIntegrationImagePinsMatchTheJustfile holds this against the literal in
+# the test source.
+CH_TAG_GROUPS_IMAGE := "clickhouse/clickhouse-server:26.2-alpine"
 
 # k3s node image for the k3d clusters. Pinned (k3d otherwise picks a default tag
 # per k3d version) so we pull ONE known tag with retry and hand it to

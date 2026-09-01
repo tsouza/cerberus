@@ -1686,6 +1686,130 @@ const (
 	// FeatureTraceIDProjection's posture on a fresh, real-CH-server-only
 	// mechanism.
 	FeatureTraceIDExternalTable = "trace_id_external_table"
+
+	// FeatureTSGridTagGroups opts the instant-mode duplicate-labelset guard's
+	// collapsing Aggregate (internal/promql/duplicate_labelset_guard.go —
+	// guardNameDropCollision, the name-dropping half; guardLabelRewriteCollision
+	// is a documented follow-up, see below) onto grouping by a deduplicated
+	// UInt64 id (timeSeriesTagsToGroup(Attributes)) instead of the raw
+	// Map(String,String) Attributes column, rehydrating Attributes via
+	// timeSeriesGroupToTags only in the wrapping output projection (cerberus
+	// issue #2750 — the grouping-keys-only slice of the tag-group family; label
+	// ops (by/without/label_replace/label_join/group_left via the purpose-built
+	// tag functions) are explicit follow-up, tracked on #2750 itself per the
+	// issue's own "grouping keys first, label ops later" staging).
+	//
+	// SITE CHOICE: guardNameDropCollision is the single most self-contained
+	// grouping site in the pipeline that groups on the raw Attributes Map —
+	// one file, no entanglement with the out-of-scope label-rewrite/group_left
+	// towers, and (checked directly against internal/api/prom/lang.go) reached
+	// ONLY from the instant-mode `/api/v1/query` path, which — unlike
+	// query_range — never routes through the solver's route-B sharding
+	// (internal/solver; classify()/IsSliceInvariant gate route B on Step > 0).
+	// That matters concretely: timeSeriesTagsToGroup/timeSeriesGroupToTags are
+	// STATEFUL, backed by a per-query ContextTimeSeriesTagsCollector (confirmed
+	// by reading the ClickHouse source, src/Functions/TimeSeries/*.cpp) — a
+	// group id has NO meaning outside the single query execution that produced
+	// it. Route B runs K per-shard ClickHouse queries and concatenates their
+	// cursors in Go WITHOUT re-aggregating on any key the shards produced
+	// (internal/api/prom/lang.go, internal/api/prom/handler.go's "K per-shard
+	// cursors... concatenated, NOT merged" comment), so a route-B-sharded
+	// grouping site would need its OWN per-shard rehydration story before any
+	// group id could cross a shard boundary — a route-B-sharded grouping site
+	// is deliberately out of scope for cerberus issue #2750's own grouping-keys
+	// slice; this PR picks a site that structurally cannot reach route B at
+	// all, rather than shipping an unverified assumption about cross-shard id
+	// reuse. Route-B-sharded grouping sites remain open follow-up work,
+	// tracked at https://github.com/tsouza/cerberus/issues/2880.
+	//
+	// VERSION FLOOR — verified against real ClickHouse 26.1-alpine and
+	// 26.2-alpine servers (fresh containers, default config, no
+	// allow_experimental_* setting of any kind): timeSeriesTagsToGroup and
+	// timeSeriesGroupToTags both work on 26.1 (the issue's own claimed core
+	// floor); timeSeriesThrowDuplicateSeriesIf does NOT exist on 26.1
+	// (UNKNOWN_FUNCTION) and DOES exist on 26.2 — confirming the issue's "floor
+	// 26.1 core; 26.2 specifically for timeSeriesThrowDuplicateSeriesIf" claim
+	// exactly. This feature's own MinVersion is pinned to the HIGHER 26.2,
+	// not 26.1, even though this PR does not yet wire
+	// timeSeriesThrowDuplicateSeriesIf into the guard's HAVING (that stays the
+	// existing throwIf(uniqExact(MetricName) > 1, ...) — the issue's own point
+	// that "the Aggregate is also the collapse fix" and the throw-message
+	// mechanism is a SEPARATE, independently-verifiable change from the
+	// grouping-key swap this feature makes) — one feature id must not
+	// silently widen its own effective floor when a follow-up change adopts
+	// the throw, without a version bump an operator can see, so the id is
+	// pinned to what the FAMILY needs once the throw is adopted, not merely
+	// what this change's own diff touches.
+	//
+	// NO EXPERIMENTAL GATE — RequiresExperimentalTSGrid is deliberately false.
+	// The issue flagged the docs show no experimental gate for this family
+	// (unlike the timeSeries*ToGrid MATRIX/aggregate family, which stamps
+	// allow_experimental_time_series_aggregate_functions) and asked for
+	// empirical verification rather than trusting that absence: confirmed —
+	// every call above ran on a stock container with no settings applied
+	// beyond CLICKHOUSE_USER/PASSWORD, and system.functions lists the whole
+	// timeSeriesTagsToGroup/GroupToTags/IdToTags/IdToGroup/StoreTags/
+	// ThrowDuplicateSeriesIf family as ordinary (non-experimental) functions on
+	// both 26.1 and 26.2.
+	//
+	// ORDER-INDEPENDENCE — verified directly (the reason this feature can
+	// obviate mapSort canonicalisation for THIS grouping site specifically,
+	// without weakening it): timeSeriesTagsToGroup(map('a','1','b','2')) and
+	// timeSeriesTagsToGroup(map('b','2','a','1')) return the IDENTICAL group id
+	// — the function keys on the tag SET, not the Map's iteration order, unlike
+	// a raw positional Map comparison (canonical_series_keys.go's whole reason
+	// for existing). canonical_series_keys.go / canonical_attributes.go are
+	// UNCHANGED by this feature: they still canonicalise every other Map
+	// comparison and join in the pipeline this PR does not touch.
+	//
+	// ALIAS-SCOPING CONSTRAINT — verified directly, and the reason the
+	// emission is a wrapping chplan.Project rather than one flat Aggregate:
+	// ClickHouse rejects referencing a GROUP BY SELECT-list alias from inside
+	// an aggregate function's argument in the SAME SELECT
+	// (UNKNOWN_IDENTIFIER), and separately rejects re-deriving the grouping
+	// expression a second time inside an aggregate argument
+	// (ILLEGAL_AGGREGATION — the analyzer matches the repeated sub-expression
+	// against the GROUP BY key and misclassifies the whole aggregate call).
+	// The only shape that measured correctly is two query levels: an inner
+	// Aggregate that groups on timeSeriesTagsToGroup(Attributes) and carries
+	// only the group id plus the existing any(Value)/any(Timestamp)/carry
+	// payload (Attributes itself is dropped, never re-read), and an outer
+	// Project that reads the group id back as a REAL column from that
+	// subquery and calls timeSeriesGroupToTags on it to rehydrate Attributes —
+	// exactly "rehydrating Maps only in the final output projection" the issue
+	// proposed, not a stylistic choice.
+	//
+	// AutoSelect is false — and, unlike every other opt-in feature's "no
+	// fielded validation yet" posture, this one has a MEASURED reason, not
+	// just a cautious default: a real ClickHouse 26.2 A/B (2M rows, the same
+	// two SQL shapes this feature emits, FORMAT Null to isolate server-side
+	// cost) at both a low (100 distinct label sets) and a high (200,000
+	// distinct label sets) group cardinality found the UInt64-group-id path
+	// CONSISTENTLY SLOWER in wall clock than the Map GROUP BY it replaces —
+	// roughly 2-3x at low cardinality (666-1083ms vs 265-305ms) and ~50%
+	// at high cardinality (1358-1506ms vs 881-957ms) — while peak memory was
+	// a MIXED result, not a clean win: ~1.8x HIGHER at low cardinality
+	// (29.7-34.9MB vs 19.6MB) and only ~10-20% lower at high cardinality
+	// (411-413MB vs 462-520MB). The per-query ContextTimeSeriesTagsCollector
+	// backing timeSeriesTagsToGroup/timeSeriesGroupToTags (see this feature's
+	// own doc above) carries real bookkeeping cost that, at this grouping
+	// site's row/cardinality shape, outweighs the O(1)-integer-comparison
+	// win the issue's "single biggest CPU/memory lever" framing predicted —
+	// this PR's own site was chosen for being the most self-contained
+	// worked example the issue names (see this feature's SITE CHOICE note),
+	// not for being the highest-cardinality one; a wider, hotter GROUP BY
+	// elsewhere in the pipeline remains the open question for realizing the
+	// win the issue actually promises, tracked at
+	// https://github.com/tsouza/cerberus/issues/2880 — cerberus issue #2750
+	// itself stays open, not closed, for exactly this reason. Until a site is
+	// found where the measured numbers turn around,
+	// AutoSelect must stay false regardless of how many fielded runs pass —
+	// the mechanism (grouping-key correctness, round-trip fidelity, version
+	// floor) is proven; the performance case for THIS site is not, and the
+	// measurement above is why, not merely absence of evidence. Reachable
+	// only via an explicit CERBERUS_CH_OPTIMIZATIONS=ts_tag_groups listing
+	// (or "auto,ts_tag_groups").
+	FeatureTSGridTagGroups = "ts_tag_groups"
 )
 
 // AlwaysAvailable is the zero version floor for a feature that depends on no
@@ -2079,6 +2203,13 @@ var registry = []Feature{
 		AutoSelect: false,
 		Doc:        "push the /api/search two-phase phase-A TraceId set as a native-protocol external table instead of a literal IN list above a byte threshold (no version floor, native-protocol, opt-in via CERBERUS_CH_OPTIMIZATIONS -- EXPLAIN-verified idx_trace_id parity, #2783)",
 	},
+	{
+		ID:         FeatureTSGridTagGroups,
+		MinVersion: Version{Major: 26, Minor: 2},
+		Stability:  Experimental,
+		AutoSelect: false,
+		Doc:        "group the instant-mode duplicate-labelset guard's name-drop collapse on a UInt64 tag-group id (timeSeriesTagsToGroup), not the raw Attributes Map, rehydrating via timeSeriesGroupToTags in the projection (server >= 26.2, no experimental gate, opt-in -- #2750)",
+	},
 }
 
 // Registry returns a copy of the seeded feature registry
@@ -2092,7 +2223,8 @@ var registry = []Feature{
 // join_spill, trace_id_projection, loki_catalog_mv, tempo_tag_catalog_mv,
 // trace_id_bitmap_filter, arg_and_max_fusion, result_cache,
 // lazy_materialization, explain_estimate, cardinality_probe,
-// full_text_index, text_index_line_filter, trace_id_external_table). The copy
+// full_text_index, text_index_line_filter, trace_id_external_table,
+// ts_tag_groups). The copy
 // keeps the canonical entries immutable from the caller's side. Exposed so
 // tests can enumerate the gates and the docs generator can render the
 // table.

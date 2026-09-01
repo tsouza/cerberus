@@ -65,6 +65,17 @@ type lang struct {
 	// NewExplainLangRange) keeps the shipped, calibrated defaults —
 	// mirroring how a zero Lowerers keeps the all-fan-out default.
 	ResourceBounds promql.ResourceBounds
+
+	// TagGroups threads chopt.FeatureTSGridTagGroups's resolved verdict
+	// (cerberus issue #2750) from Handler.TagGroups (built once at boot in
+	// cmd/cerberus from the resolved chopt.EnabledSet) into
+	// promql.LowerOpts.TagGroups. Both executeInstant and
+	// executeRangeStreaming set it — unlike Lowerers, which targets the
+	// range-only timeSeries*ToGrid MATRIX family, this feature's only
+	// consumer (the instant-mode duplicate-labelset guard) is reached from
+	// the instant path, so the instant lang MUST carry it. The zero value
+	// keeps the pre-#2750 Map-grouped guard shape.
+	TagGroups bool
 }
 
 // Compile-time check that *lang satisfies engine.Lang.
@@ -126,7 +137,7 @@ func (l *lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	// promql.Lower leave the sink nil.
 	var guards []promql.ScalarGuard
 	plan, err := promql.LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step,
-		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards, ResourceBounds: l.ResourceBounds})
+		promql.LowerOpts{Lowerers: l.Lowerers, Guards: &guards, ResourceBounds: l.ResourceBounds, TagGroups: l.TagGroups})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &parseStageError{stage: "lower", err: err}

@@ -323,6 +323,24 @@ const (
 	// evaluates to 0 otherwise, so it composes as an expression.
 	FnThrowIf Fn = "throwIf"
 
+	// timeSeriesTagsToGroup(tags) — a deterministic-in-scope-of-query UInt64
+	// surrogate for the Map(String,String) tags value: every call with an
+	// equal tag SET (order-independent — verified against a real ClickHouse
+	// 26.1 server) returns the same id within one query execution, and a
+	// different set returns a different id. The id has NO meaning outside the
+	// query that produced it (chopt.FeatureTSGridTagGroups's own doc explains
+	// why), so it may only be compared / grouped / joined on within a single
+	// statement, never persisted or compared across statements.
+	FnTimeSeriesTagsToGroup Fn = "timeSeriesTagsToGroup"
+
+	// timeSeriesGroupToTags(group) — the Array(Tuple(String,String)) inverse
+	// of [FnTimeSeriesTagsToGroup] within the SAME query: it can only resolve
+	// a group id produced earlier in the identical statement. Cast to
+	// Map(String,String) to match the schema's Attributes column type
+	// (verified against a real ClickHouse 26.1 server — the cast is lossless
+	// and order-independent).
+	FnTimeSeriesGroupToTags Fn = "timeSeriesGroupToTags"
+
 	// Type-cast and numeric-conversion functions.
 	// assumeNotNull(x) — x's Nullable wrapper dropped without a runtime check; a
 	// NULL operand renders as the underlying type's default, not an error.

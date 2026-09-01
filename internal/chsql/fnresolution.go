@@ -123,6 +123,11 @@ var fnResolutions = map[chplan.Fn]fnResolution{
 	chplan.FnNot:        {Name: "not"},
 	chplan.FnThrowIf:    {Name: "throwIf"},
 
+	// timeSeries tag/group functions (chopt.FeatureTSGridTagGroups, cerberus
+	// issue #2750) — see internal/chplan/fn.go's own doc for each.
+	chplan.FnTimeSeriesTagsToGroup: {Name: "timeSeriesTagsToGroup"},
+	chplan.FnTimeSeriesGroupToTags: {Name: "timeSeriesGroupToTags"},
+
 	// Type-cast and numeric-conversion functions.
 	chplan.FnAssumeNotNull:        {Name: "assumeNotNull"},
 	chplan.FnCast:                 {Name: "CAST"},

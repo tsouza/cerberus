@@ -410,6 +410,7 @@
         "solver-memory-apportion-integration",
         "strict-scan-test",
         "structural-two-phase-external-table-integration",
+        "tag-groups-differential-integration",
         "traces-scan-bound-integration",
         "traces-scan-window-integration",
         "ts-grid-group-array-integration",

@@ -206,9 +206,9 @@ func lowerVectorVector(b *parser.BinaryExpr, s schema.Metrics, op chplan.BinaryO
 		rSynth := isSyntheticScalarPlan(right, s) && !isVectorTypedSyntheticOperand(b.RHS)
 		switch {
 		case lSynth && !rSynth:
-			return foldSyntheticVectorBinary(left, right, b.RHS, op, true /*scalarOnLeft*/, b.ReturnBool, s), nil
+			return foldSyntheticVectorBinary(left, right, b.RHS, op, true /*scalarOnLeft*/, b.ReturnBool, s, ctx), nil
 		case !lSynth && rSynth:
-			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s), nil
+			return foldSyntheticVectorBinary(right, left, b.LHS, op, false /*scalarOnLeft*/, b.ReturnBool, s, ctx), nil
 		}
 	}
 
@@ -404,6 +404,7 @@ func foldSyntheticVectorBinary(
 	op chplan.BinaryOp,
 	scalarOnLeft, returnBool bool,
 	s schema.Metrics,
+	ctx lowerCtx,
 ) chplan.Node {
 	synthVal := rewriteAnchorToTimeUnix(syntheticValueExpr(synth), s)
 	vecValue := chplan.Expr(&chplan.ColumnRef{Name: s.ValueColumn})
@@ -429,7 +430,7 @@ func foldSyntheticVectorBinary(
 	// exposes only (Attributes, Value), so a TimeUnix passthrough would
 	// raise CH UNKNOWN_IDENTIFIER. For a selector / already-canonicalised
 	// vec leg the helper emits the identical 4-column shape.
-	return guardedValueProjection(vec, vecExpr, s, newValue)
+	return guardedValueProjection(vec, vecExpr, s, ctx, newValue)
 }
 
 // rewriteAnchorToTimeUnix walks expr and replaces every
@@ -868,5 +869,5 @@ func lowerVectorScalar(vec parser.Expr, s schema.Metrics, op chplan.BinaryOp, sc
 	// matrix shape keeps its per-anchor `anchor_ts`. Mirrors the
 	// instant-fn / unary-minus path which already routes through this
 	// helper.
-	return guardedValueProjection(inner, vec, s, newValue), nil
+	return guardedValueProjection(inner, vec, s, ctx, newValue), nil
 }

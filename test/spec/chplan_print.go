@@ -916,6 +916,8 @@ var fnGoNames = map[chplan.Fn]string{
 	chplan.FnMultiIf:                         "FnMultiIf",
 	chplan.FnNot:                             "FnNot",
 	chplan.FnThrowIf:                         "FnThrowIf",
+	chplan.FnTimeSeriesTagsToGroup:           "FnTimeSeriesTagsToGroup",
+	chplan.FnTimeSeriesGroupToTags:           "FnTimeSeriesGroupToTags",
 	chplan.FnAssumeNotNull:                   "FnAssumeNotNull",
 	chplan.FnCast:                            "FnCast",
 	chplan.FnToDateTime:                      "FnToDateTime",
