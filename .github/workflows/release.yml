@@ -304,11 +304,25 @@ jobs:
           # finishing in a few minutes. That is fast enough not to meaningfully
           # delay a hotfix, so it gates like every other required lane instead
           # of being carved out.
+          #
+          # `update-golden-guard` is de-gated for a structural reason rather
+          # than a cost one: it guards a PULL REQUEST against merging while an
+          # update-golden.yml dispatch is still regenerating its head branch
+          # (#2350). A publish commit has no head branch to strand and no pull
+          # request to hold back, and update-golden-guard.yml triggers on
+          # `pull_request` / `merge_group` / `workflow_run` only — it has no
+          # push trigger at all, on `main` or on a maintenance line, so a
+          # release commit can never carry that check-run. Requiring it would
+          # make the preflight wait out its whole window and abort every
+          # publish. Its real enforcement points are the merge gate and the
+          # merge queue, both of which a change passes before it can reach a
+          # release commit.
           RELEASE_INFORMATIONAL_CHECKS: |
             compose-smoke-shard-info
             mutation
             gremlins
             drought
+            update-golden-guard
         # On the maintenance path this also enforces the support-window / EOL
         # policy: a push to a line 3+ minors behind the current minor is refused
         # (the line is EOL, gets no hotfixes). See docs/operations.md "Release

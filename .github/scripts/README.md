@@ -2486,11 +2486,29 @@ what actually runs.
     `update-golden.yml` stamps `run-name: update-golden[${{ inputs.branch }}]`
     for exactly this reason; the API surfaces that as `display_title`, and
     `runTargetsBranch()` is the one place that shape is parsed.
-  - Env: `GH_TOKEN`, `REPO`, `BRANCH` (required); `API_URL`,
-    `POLL_INTERVAL_MS`, `MAX_WAIT_MS` (optional).
+  - Three triggers, one question. `pull_request` is the poll above.
+    `workflow_run` (on `update-golden` itself) covers a dispatch made after the
+    PR's check already went green, which fires no new `pull_request` event: it
+    pushes the same context onto the PR's head SHA through the Statuses API.
+    `merge_group` covers the merge queue, where the merge no longer happens on
+    the pull request at all — a required context that never posts there leaves
+    the queue entry unresolved forever, and a context that posts a free pass
+    would REGRESS #2350, since a queued PR sits between "last green" and
+    "merged" for the whole duration of merge-group CI. So the queue run repeats
+    the poll: it resolves the pull request from the group's own
+    `gh-readonly-queue/<base>/pr-<n>-<sha>` ref (GitHub builds one such branch
+    per queued PR, so that resolution is complete rather than a sample of a
+    batch), reads its head branch through the Pulls API, and gates on that. A
+    ref it cannot parse fails the check — an unresolved merge group is exactly
+    the state in which the guard has verified nothing.
+  - Env: `GH_TOKEN`, `REPO` (all paths); `BRANCH` (`pull_request`);
+    `MERGE_GROUP_HEAD_REF`, `MERGE_GROUP_BASE_REF` (`merge_group`);
+    `WORKFLOW_RUN_DISPLAY_TITLE`, `WORKFLOW_RUN_HTML_URL` (`workflow_run`);
+    `API_URL`, `POLL_INTERVAL_MS`, `MAX_WAIT_MS` (optional).
   - Exit: `0` once no matching run is `queued`/`in_progress`; `1` if one still
     is after `MAX_WAIT_MS` (default 60 minutes — `update-golden.yml`'s own
-    regenerate legs are capped at 45), or the API calls themselves failed.
+    regenerate legs are capped at 45), if a merge group's head ref cannot be
+    resolved to a pull request, or if the API calls themselves failed.
 
 - **`cardinality-baseline-update.mjs`** — three callers. Unmoded (default), it
   is the script a contributor runs by hand, through `just update-cardinality-

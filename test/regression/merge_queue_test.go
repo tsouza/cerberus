@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -34,17 +33,18 @@ import (
 // projected trunk.
 const mergeGroupTrigger = "merge_group"
 
-// queueRequiredContextsOutsideReleaseGate are contexts branch protection
-// requires on `main` that are absent from branchProtectionContexts because they
-// appear in neither RELEASE_REQUIRED_CHECKS nor RELEASE_INFORMATIONAL_CHECKS —
-// adding them to that list would fail the totality assertion in
-// release_required_checks_test.go. That omission is a real gap in the release
-// gate, tracked in #1463. The merge queue's requirement is independent of the
-// release gate's, so it is asserted over the full set either way.
-var queueRequiredContextsOutsideReleaseGate = []string{
-	"CodeQL",
-	"strict-scan",
-}
+// There is no second list of required contexts here. `CodeQL` and
+// `strict-scan` used to need one — they were branch-protection contexts that
+// appeared in neither RELEASE_REQUIRED_CHECKS nor RELEASE_INFORMATIONAL_CHECKS,
+// so naming them in branchProtectionContexts would have failed the totality
+// assertion in release_required_checks_test.go while omitting them left the
+// merge-queue assertion blind. #1463 closed that by deciding each lane
+// explicitly, and both are in branchProtectionContexts now. A separate list
+// kept past that point is worse than none: it reads as the sanctioned place to
+// park a context that has not been decided, which is exactly how
+// `update-golden-guard` stayed invisible to this test between becoming
+// required and being pinned. One list, and a context enters it only once the
+// release gate has an answer for it too.
 
 // queueExternalContexts are required contexts posted by a GitHub app rather
 // than by a workflow in this repository, mapped to the producer.
@@ -88,9 +88,7 @@ func TestEveryRequiredContextPostsOnTheMergeGroup(t *testing.T) {
 	t.Parallel()
 
 	owners := workflowCheckOwners(t)
-	required := slices.Concat(branchProtectionContexts, queueRequiredContextsOutsideReleaseGate)
-
-	for _, ctx := range required {
+	for _, ctx := range branchProtectionContexts {
 		owner, ok := owners.lookup(ctx)
 
 		if producer, external := queueExternalContexts[ctx]; external {
@@ -118,13 +116,24 @@ func TestEveryRequiredContextPostsOnTheMergeGroup(t *testing.T) {
 	}
 }
 
-// queueSafeCancelInProgress matches the one expression form vetted as false
-// under `merge_group`: a comparison of the event name against a single other
-// event. Any other shape has to be reasoned about before it is added here —
-// the literal `false` is handled separately, and an unrecognised expression
-// fails rather than being assumed harmless.
+// queueSafeCancelInProgress matches the first expression form vetted as false
+// under `merge_group`: an EQUALITY comparison of the event name against a
+// single other event. Any other shape has to be reasoned about before it is
+// added here — the literal `false` is handled separately, and an unrecognised
+// expression fails rather than being assumed harmless.
 var queueSafeCancelInProgress = regexp.MustCompile(
 	`^\$\{\{\s*github\.event_name\s*==\s*'([a-z_]+)'\s*\}\}$`,
+)
+
+// queueUnsafeEventInequality matches the second vetted form: an INEQUALITY
+// against a single event. `github.event_name != 'x'` is false on `merge_group`
+// for exactly one x — `merge_group` itself — so unlike the equality form, the
+// captured event must EQUAL mergeGroupTrigger to be safe. A workflow needs
+// this shape when cancellation is wanted on every trigger but the queue:
+// update-golden-guard.yml runs on `pull_request`, `workflow_run` and
+// `merge_group`, and wants newest-wins cancellation on the first two.
+var queueUnsafeEventInequality = regexp.MustCompile(
+	`^\$\{\{\s*github\.event_name\s*!=\s*'([a-z_]+)'\s*\}\}$`,
 )
 
 const replaceableMainModeCancelInProgress = "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}"
@@ -138,8 +147,13 @@ func cancelInProgressIsQueueSafe(value string) bool {
 	if value == replaceableMainModeCancelInProgress {
 		return true
 	}
-	m := queueSafeCancelInProgress.FindStringSubmatch(value)
-	return m != nil && m[1] != mergeGroupTrigger
+	if m := queueSafeCancelInProgress.FindStringSubmatch(value); m != nil {
+		return m[1] != mergeGroupTrigger
+	}
+	if m := queueUnsafeEventInequality.FindStringSubmatch(value); m != nil {
+		return m[1] == mergeGroupTrigger
+	}
+	return false
 }
 
 // concurrencySite is one `concurrency:` block and where it was found.
@@ -238,5 +252,35 @@ func TestMergeGroupRunsAreNeverCancelledByConcurrency(t *testing.T) {
 	if queued == 0 {
 		t.Fatalf("no workflow under %s declares the `%s:` trigger, so no required context can "+
 			"report on a queue's projected trunk", workflowsDir, mergeGroupTrigger)
+	}
+}
+
+// TestCancelInProgressQueueSafetyRecognisesOnlyVettedForms pins the classifier
+// the sweep above depends on. Without it the classifier is only ever exercised
+// on whatever the tree currently contains, so a form it wrongly accepts —
+// `!= 'push'`, say, which IS true on `merge_group` — would be caught only once
+// some workflow shipped it, which is the failure the sweep exists to prevent.
+func TestCancelInProgressQueueSafetyRecognisesOnlyVettedForms(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		value string
+		safe  bool
+		why   string
+	}{
+		{"false", true, "the literal is unconditionally safe"},
+		{"true", false, "cancels merge-group runs, which GitHub reads as failures"},
+		{"${{ github.event_name == 'pull_request' }}", true, "false on merge_group"},
+		{"${{ github.event_name == 'merge_group' }}", false, "true on exactly the event that must never cancel"},
+		{"${{ github.event_name != 'merge_group' }}", true, "false on merge_group by construction"},
+		{"${{ github.event_name != 'push' }}", false, "true on merge_group, which is not a push"},
+		{"${{ github.event_name != 'pull_request' }}", false, "true on merge_group"},
+		{replaceableMainModeCancelInProgress, true, "vetted main-mode expression"},
+		{"${{ github.ref != 'refs/heads/main' }}", false, "unrecognised shape must fail rather than be assumed harmless"},
+		{"", false, "an empty value is not one of the vetted forms"},
+	} {
+		if got := cancelInProgressIsQueueSafe(tc.value); got != tc.safe {
+			t.Errorf("cancelInProgressIsQueueSafe(%q) = %v, want %v: %s", tc.value, got, tc.safe, tc.why)
+		}
 	}
 }

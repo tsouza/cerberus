@@ -1439,6 +1439,45 @@
       "accountable_owner": "release-engineering"
     },
     {
+      "id": "governance.update-golden-guard",
+      "description": "No pull request merges while an update-golden.yml dispatch is regenerating its branch.",
+      "owner": {
+        "workflow": ".github/workflows/update-golden-guard.yml",
+        "jobs": ["update-golden-guard"],
+        "producer_jobs": [],
+        "context_job": "update-golden-guard"
+      },
+      "executions": ["default"],
+      "context": {
+        "match": "exact",
+        "name": "update-golden-guard",
+        "protected": true
+      },
+      "purpose": "governance",
+      "layers": [],
+      "oracle_class": "monitor",
+      "recipes": [],
+      "command": "node .github/scripts/update-golden-guard.mjs",
+      "build_tags": [],
+      "package_globs": [
+        ".github/ci-lanes.json",
+        ".github/scripts/update-golden-guard.mjs",
+        ".github/scripts/update-golden-guard.test.mjs",
+        ".github/workflows/update-golden-guard.yml",
+        ".github/workflows/update-golden.yml"
+      ],
+      "substrate": "github-api",
+      "risk_domains": ["ci", "governance"],
+      "merge_posture": "always",
+      "main_posture": "never",
+      "release_posture": "advisory",
+      "determinism": "observational",
+      "applicability": { "source": true, "artifact": false },
+      "timeout_minutes": 65,
+      "slo_minutes": 5,
+      "accountable_owner": "quality-platform"
+    },
+    {
       "id": "migration.e2e",
       "description": "Tier-0, Tier-1, and Tier-2 Gherkin execution plus run-report attestation.",
       "owner": {
@@ -2053,10 +2092,6 @@
       "reason": "release_preparation"
     },
     { "workflow": ".github/workflows/release.yml", "reason": "publication" },
-    {
-      "workflow": ".github/workflows/update-golden-guard.yml",
-      "reason": "automation"
-    },
     {
       "workflow": ".github/workflows/update-golden.yml",
       "reason": "automation"
