@@ -9,12 +9,25 @@ import { byteSize, goDurationSeconds, residentBytes } from './mutant-memory-guar
 
 const guard = '.github/scripts/mutant-memory-guard.mjs';
 
-// A child that allocates far past any ceiling the tests set, retaining every
-// buffer so the growth is LIVE — the shape of the mutant this guard exists for
+// A child that allocates past the ceiling the tests set, retaining every buffer
+// so the growth is LIVE — the shape of the mutant this guard exists for
 // (`i += size` -> `i = size` pins a scanner index and appends per iteration).
+//
+// It stops at 4x the ceiling under test rather than running away for real. That
+// self-limit is not decoration: this suite runs on a shared CI runner, and a
+// child that allocated without bound would take the runner down whenever the
+// guard is BROKEN — turning a test failure into the very outage the guard
+// exists to prevent, with no assertion to read afterwards. A working guard kills
+// it at the 256MiB ceiling long before the self-limit; a broken one lets the
+// child stop on its own and leaves the ledger empty, which is what the
+// assertions below read.
+const runawayChildCeilingBytes = 4 * 256 * 1024 * 1024;
 const runawayChild = `
 const held = [];
-for (;;) held.push(Buffer.alloc(8 * 1024 * 1024, 1));
+while (held.length * 8 * 1024 * 1024 < ${runawayChildCeilingBytes}) {
+  held.push(Buffer.alloc(8 * 1024 * 1024, 1));
+}
+setTimeout(() => process.exit(0), 30_000);
 `;
 
 function workspace(t) {
