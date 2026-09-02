@@ -635,3 +635,203 @@ func TestIdenticalDuplicateTimestamp_EveryLoweringAgrees(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The count-shaped lowering's timestamp binding — cerberus issue #2914
+// ---------------------------------------------------------------------------
+//
+// count_over_time is the one *_over_time member the direct-aggregate fast path
+// renders WITHOUT materialising a sample array (chsql's overTimeDirectAggFrag),
+// and the only one whose aggregate reads the sample TIMESTAMP once the
+// duplicate-row contract is in force: it counts distinct (timestamp, value)
+// pairs rather than stored rows.
+//
+// That makes it the one member exposed to a silent binding hazard in the
+// matrix fan-out. chsql's fanoutTsSource renames the per-sample timestamp
+// column to `_src_ts` for a NESTED matrix shape — where the input relation
+// already publishes its timestamps under the fan-out's own `anchor_ts` output
+// alias — and in exactly that shape `anchor_ts` ALSO survives one subquery up
+// as the regroup layer's own GROUP BY key. An aggregate built against the
+// pre-rename name therefore resolves to the grouping key rather than to the
+// sample's own timestamp, and ClickHouse raises no error at all: the count
+// silently degrades to the number of distinct VALUES in the group.
+//
+// The case below is that nested shape, executed. It carries TWO series chosen
+// so the degraded answer is a different wrong number in each, which is what
+// makes the pin discriminating rather than a single equality that several
+// mistakes could satisfy.
+
+// dupTSNestedMetric is the nested-matrix case's own metric name, distinct from
+// every other name sharing this package's chDB session.
+const dupTSNestedMetric = "duplicate_ts_nested_matrix_test_metric"
+
+// dupTSNestedSeed samples two series every minute:
+//
+//	job 'api' — 1, 5, 5, 7, 7, 9. Its inner per-minute maxima repeat a value
+//	  at two distinct anchors, so losing the per-sample timestamp merges those
+//	  two and answers 2.
+//	job 'web' — a flat 4. Every inner maximum is the same value, so losing the
+//	  per-sample timestamp merges ALL of them and answers 1 — the exact
+//	  symptom observed on this hazard.
+//
+// Both series hold three inner anchors in the outer window, so the contract's
+// answer is 3 for both and neither degraded answer can be reached by accident.
+const dupTSNestedSeed = dupTSMetricsDDL + `
+INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 5.0),
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 7.0),
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 7.0),
+    ('` + dupTSNestedMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 9.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 4.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 4.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 4.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 4.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 4.0),
+    ('` + dupTSNestedMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 4.0);
+`
+
+// dupTSNestedExpectedCount is the contract's answer for both series: the inner
+// `max_over_time(m[1m:1m])` grid walks back from 00:05:00 in 1m steps, so the
+// inner anchors inside the outer `[3m:…]` window (00:02:00, 00:05:00] are
+// 00:03:00, 00:04:00 and 00:05:00 — three samples at three distinct
+// timestamps, whatever values they carry.
+const dupTSNestedExpectedCount = 3.0
+
+// dupTSWebAttributes is how the emitted ungrouped projection renders job 'web'
+// — dupTSAPIAttributes' sibling for the nested case's second series.
+const dupTSWebAttributes = `{'job':'web'}`
+
+// dupTSNestedDegradedCount maps each series to the answer it produces when the
+// count loses the per-sample timestamp and degrades to counting distinct
+// values: two for 'api' (7, 7, 9 → 7 and 9) and one for 'web' (4, 4, 4 → 4).
+var dupTSNestedDegradedCount = map[string]float64{
+	dupTSAPIAttributes: 2,
+	dupTSWebAttributes: 1,
+}
+
+// TestNestedMatrixCountOverTime_CountsSamplesNotItsGroupingKey executes the
+// nested-matrix count_over_time shape and pins both series against the
+// contract's answer and against their own degraded one.
+func TestNestedMatrixCountOverTime_CountsSamplesNotItsGroupingKey(t *testing.T) {
+	fixture := newChDBFixture(t, dupTSNestedSeed)
+	query := "count_over_time(max_over_time(" + dupTSNestedMetric + "[1m:1m])[3m:1m])"
+
+	answer := runDupTSQuery(t, fixture, query, dupTSOverTimeStep, promql.RangeLowerers{})
+	for _, attributes := range []string{dupTSAPIAttributes, dupTSWebAttributes} {
+		degraded := dupTSNestedDegradedCount[attributes]
+		if degraded == dupTSNestedExpectedCount {
+			t.Fatalf("%s: the contract answer and the degraded answer are both %v, so this "+
+				"series pins nothing about the timestamp binding", attributes, degraded)
+		}
+		got := dupTSValueAt(t, answer, attributes, dupTSFinalAnchor)
+		if got != dupTSNestedExpectedCount {
+			t.Errorf("nested count_over_time for %s at the final anchor = %v, want %v",
+				attributes, got, dupTSNestedExpectedCount)
+		}
+		if got == degraded {
+			t.Errorf("nested count_over_time for %s at the final anchor = %v — the count lost the "+
+				"per-sample timestamp and fell back to counting distinct VALUES, which is what "+
+				"binding it to the regroup's own anchor_ts grouping key produces", attributes, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The subquery INTERIOR — cerberus issue #2914
+// ---------------------------------------------------------------------------
+//
+// A PromQL subquery lowers to two stacked range windows, and only the OUTER
+// one carries the duplicate-row contract. `sum_over_time(m[5m:1m])` builds a
+// sum_over_time window (DistinctSampleRows set) over an `Identity` window
+// (chplan.RangeWindow.Identity, Func empty, DistinctSampleRows unset) — and
+// it is the INTERIOR that aggregates raw rows keyed by the schema timestamp
+// column, which is exactly where a duplicate (series, timestamp) lives. The
+// emitted SQL shows the asymmetry plainly: the interior assembles a bare
+// `arraySort(groupArray((TimeUnix, Value)))` while the outer assembles
+// `arrayCompact(arraySort(groupArray((_src_ts, Value))))`.
+//
+// That asymmetry is deliberate and it is safe, for a structural reason: the
+// interior is PromQL's subquery resampling step, which reports the value of
+// its input AT each anchor. Its reducer is the time-latest sample of the
+// anchor's window — chsql's lastWindowValOrNaNFrag,
+// `window_vals[length(window_vals)]` over the arraySort-by-(ts, value) order
+// — so it emits exactly ONE row per (series, anchor) whatever the window
+// held, and repeating a value already present at the winning timestamp
+// cannot change which value that is. A duplicated raw row therefore cannot
+// reach the outer window as a second sample; there is nothing there for the
+// outer collapse to have missed.
+//
+// TestIdenticalDuplicateTimestamp_EveryLoweringAgrees does NOT cover this: it
+// compares two lowerings of one INSTANT-input query and never builds a
+// subquery interior. This case is what makes the claim executed rather than
+// argued.
+
+// dupTSSubqueryMetric is the subquery-interior case's own metric name,
+// distinct from every other name sharing this package's chDB session.
+const dupTSSubqueryMetric = "duplicate_ts_subquery_interior_test_metric"
+
+// dupTSSubquerySeedRows is the per-minute sample series both seeds below
+// share; dupTSSubqueryDuplicatedRow is the extra row that makes one of them
+// carry an identical duplicate at 00:02:00.
+const (
+	dupTSSubquerySeedRows = `
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0)`
+	dupTSSubqueryDuplicatedRow = `,
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0)`
+)
+
+// dupTSSubquerySeedWithDuplicate / dupTSSubquerySeedWithout are the same
+// series with and without the duplicated 00:02:00 row. They differ by exactly
+// one stored row, which is what the differential below turns on.
+const (
+	dupTSSubquerySeedWithDuplicate = dupTSMetricsDDL + `INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES` +
+		dupTSSubquerySeedRows + dupTSSubqueryDuplicatedRow + `;`
+	dupTSSubquerySeedWithout = dupTSMetricsDDL + `INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES` +
+		dupTSSubquerySeedRows + `;`
+)
+
+// TestSubqueryInterior_DuplicateRowCannotReachTheOuterWindow executes a
+// subquery whose interior is the un-deduped Identity window and asserts that
+// adding an identical duplicate raw row changes NOTHING about the answer.
+//
+// The two seeds are asserted to actually differ first, so the differential
+// cannot pass by comparing two identical inputs — the hollow green a
+// same-shape comparison is otherwise open to.
+func TestSubqueryInterior_DuplicateRowCannotReachTheOuterWindow(t *testing.T) {
+	if dupTSSubquerySeedWithDuplicate == dupTSSubquerySeedWithout {
+		t.Fatal("the two seeds are identical, so this differential asserts nothing")
+	}
+	query := "sum_over_time(" + dupTSSubqueryMetric + "[5m:1m])"
+
+	withDup := runDupTSQuery(t, newChDBFixture(t, dupTSSubquerySeedWithDuplicate),
+		query, dupTSOverTimeStep, promql.RangeLowerers{})
+	without := runDupTSQuery(t, newChDBFixture(t, dupTSSubquerySeedWithout),
+		query, dupTSOverTimeStep, promql.RangeLowerers{})
+
+	if len(withDup.samples) != len(without.samples) {
+		t.Fatalf("the duplicated row changed the ROW COUNT: %d with it, %d without — it reached the "+
+			"outer window as a second sample through the un-deduped subquery interior",
+			len(withDup.samples), len(without.samples))
+	}
+	for i := range withDup.samples {
+		d, w := withDup.samples[i], without.samples[i]
+		if d.attributes != w.attributes || d.timestamp != w.timestamp {
+			t.Fatalf("row %d: with the duplicate (%s, %s), without it (%s, %s)",
+				i, d.attributes, d.timestamp, w.attributes, w.timestamp)
+		}
+		if math.Abs(d.value-w.value) > dupTSFloatTolerance {
+			t.Errorf("row %d (%s @ %s): %v with the duplicated row, %v without it. The subquery "+
+				"interior is the Identity resampling window and carries no duplicate-row collapse; "+
+				"it is safe only because it reports one time-latest sample per anchor. A difference "+
+				"here means that no longer holds and the interior needs the contract too",
+				i, d.attributes, d.timestamp, d.value, w.value)
+		}
+	}
+}

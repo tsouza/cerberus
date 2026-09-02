@@ -410,6 +410,43 @@ type RangeWindow struct {
 	// emission — the permanent, always-available fallback the
 	// FeatureTSGridGroupArray chopt kill-switch resolves to.
 	NativeGroupArray bool
+
+	// DistinctSampleRows declares that the rows this window reduces are
+	// METRIC SAMPLES whose identity is the (timestamp, value) pair, so two
+	// stored rows carrying the SAME (timestamp, value) are one sample
+	// written twice rather than two observations. Every emitter that
+	// materialises this window's sample multiset must then reduce the
+	// DISTINCT (timestamp, value) rows in it (cerberus issue #2914).
+	//
+	// Why that is the right identity, and why it is a per-node declaration
+	// rather than an emitter-wide rule:
+	//
+	//   - For a metric sample it matches Prometheus exactly. Its TSDB
+	//     appender (tsdb.memSeries.appendable) accepts a re-append of a
+	//     sample it already holds as a silent no-op when the value's bits
+	//     match, and REJECTS it with ErrDuplicateSampleForTimestamp when
+	//     they differ. So a repeated identical row is storage duplication
+	//     that upstream absorbs — cerberus must too — while a same-timestamp
+	//     pair with different values is a conflict upstream never stores and
+	//     cerberus does not arbitrate here (cerberus issue #2905: both rows
+	//     count, and those fixtures are parity-exempt).
+	//   - For a LOG LINE or a SPAN it is NOT the right identity. A LogQL
+	//     `unwrap` sample's row identity is the log entry, and two different
+	//     entries at one timestamp can unwrap to the same value; collapsing
+	//     them would drop an event Loki counts. The LogQL and TraceQL heads
+	//     therefore leave this false and their windows keep every row.
+	//
+	// Relationship to the rate family's stronger collapse: rate / increase /
+	// delta reduce to ONE sample per distinct TIMESTAMP (keeping the
+	// max-valued row) because their extrapolation arithmetic cannot evaluate
+	// a zero-length sample interval — chsql's dedupWindowPairsByTsFrag,
+	// cerberus issue #1092. That collapse SUBSUMES this one, so the sites
+	// carrying it neither set nor read this field; the two rules agree
+	// wherever the question has a defined answer (identical rows) and differ
+	// only on the conflicting-value shape upstream rejects at ingest.
+	//
+	// false (the default) keeps every stored row counted.
+	DistinctSampleRows bool
 }
 
 // RangeWindowVariant is one arm of a fused multi-arm RangeWindow: the range
@@ -564,6 +601,9 @@ func rangeWindowScalarFieldsEqual(r, o *RangeWindow) bool {
 		return false
 	}
 	if r.NativeGroupArray != o.NativeGroupArray {
+		return false
+	}
+	if r.DistinctSampleRows != o.DistinctSampleRows {
 		return false
 	}
 	return r.VariantColumn == o.VariantColumn
