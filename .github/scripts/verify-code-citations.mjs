@@ -104,22 +104,28 @@ export function isCodeLine(line) {
 }
 
 // funcRanges — the top-level function scopes of a Go file, as
-// name -> { start, end } 1-based inclusive line bounds. A top-level `func`
-// declaration starts at column 0; its scope runs to the line before the next
-// one. gofumpt is enforced repo-wide, so column-0 `func` is reliable.
+// name -> [{ start, end }] 1-based inclusive line bounds. A top-level `func`
+// declaration starts at column 0 and its body closes at the first following
+// line that is exactly `}` at column 0; gofumpt is enforced repo-wide, so both
+// anchors are reliable. Ending at the closing brace rather than at the next
+// declaration matters: otherwise a package-level `var` block sitting between
+// two funcs would be searchable under the name of the func above it.
 export function funcRanges(lines) {
-  const decls = [];
+  const out = new Map();
   lines.forEach((line, i) => {
     const m = /^func\s+(?:\([^)]*\)\s*)?([A-Za-z0-9_]+)/.exec(line);
-    if (m) decls.push({ name: m[1], start: i + 1 });
-  });
-  const out = new Map();
-  decls.forEach((d, i) => {
-    const end = i + 1 < decls.length ? decls[i + 1].start - 1 : lines.length;
+    if (!m) return;
+    let end = lines.length;
+    for (let k = i; k < lines.length; k += 1) {
+      if (lines[k] === '}') {
+        end = k + 1;
+        break;
+      }
+    }
     // A name may be declared more than once across receivers; keep every range
     // so a citation naming it searches all of them and still demands one hit.
-    if (!out.has(d.name)) out.set(d.name, []);
-    out.get(d.name).push({ start: d.start, end });
+    if (!out.has(m[1])) out.set(m[1], []);
+    out.get(m[1]).push({ start: i + 1, end });
   });
   return out;
 }

@@ -44,6 +44,8 @@ const TARGET = [
   '\treturn errQuoted // rejects `"` in a name',
   '}',
   '',
+  'var outsideAnyFunc = dupCond',
+  '',
 ].join('\n');
 
 function fixture() {
@@ -176,6 +178,17 @@ test('rejects a path that escapes the repository root', () => {
   const r = run(f.dir);
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /does not resolve to a file in this repository/);
+});
+
+test('rejects a construct that sits outside the named func, after its closing brace', () => {
+  // A func scope ends at its closing brace, not at the next declaration —
+  // otherwise a package-level var between two funcs would be searchable under
+  // the name of the func above it.
+  const f = fixture();
+  f.write('note.go', note('target.go:beta:`outsideAnyFunc`'));
+  const r = run(f.dir);
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /matches no code line/);
 });
 
 test('rejects a scope that is not a top-level func of the cited file', () => {
