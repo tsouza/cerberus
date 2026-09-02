@@ -373,6 +373,27 @@ what actually runs.
   - Pins: `crawl-surface-inventory-purity.test.mjs` (`node --test`), which
     drives the real script and pairs every clean case with the dirty one it
     must catch, using the real defect rows the committed inventories carried.
+- **`verify-code-citations.mjs`** — `ci.yml`, the `forbid-skip` job step "Reject
+  source citations that name a line instead of a construct". Every `file.go:…`
+  citation in a Go comment or string must name the CONSTRUCT it is about
+  (``range_window.go:`numAnchors-1` ``, or
+  ``range_window.go:emitRangeWindow:`numAnchors-1` `` when the construct repeats
+  in the file), and the gate resolves it: the path must be a file in this
+  repository, and the construct must appear on exactly one CODE line of that
+  file, or of the named top-level func. Blank lines and whole-line `//` comments
+  are never searched, so a citation cannot resolve to one. A line number is
+  rejected outright — it is unverifiable, and measured over the 200 commits
+  before this gate it would have been invalidated 575 times with the construct
+  it named untouched in 573 of them (#2953). `.go:` followed by anything else
+  carries no address and is left alone: ordinary prose, a bare function
+  reference, and `test/rejection-parity`'s `path.go:func#hash` site ids.
+  - Env: `REPO_ROOT` (default `process.cwd()`), `PATHSPECS` (default `*.go`).
+  - Exit: `0` when every citation resolves; `1` on any violation or on a
+    pathspec that matches no Go file at all.
+  - Pins: `verify-code-citations.test.mjs` (`node --test`), which drives the
+    real CLI over a throwaway git repository and pairs every rejection with the
+    nearest-miss acceptance, so neither widening the gate into uselessness nor
+    narrowing it into noise passes.
 - **`generated-baseline-structural-guard.mjs`** — `ci.yml`, the `forbid-skip`
   job step "Structural sanity check over generated baseline shapes (#1568)".
   A fast, dependency-free structural pre-filter (unique key, sorted order,

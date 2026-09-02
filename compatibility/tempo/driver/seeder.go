@@ -835,7 +835,7 @@ func decodeCerberusSpanCount(r io.Reader) (int, error) {
 //
 // The /api/search confirmation request still passes start/end covering
 // the fixture's span timestamps so the backend block search path is
-// exercised (modules/frontend/search_sharder.go:140 short-circuits when
+// exercised (modules/frontend/search_sharder.go short-circuits when
 // start or end is unset and queries the ingester only — useless on a
 // flushed live-store).
 //

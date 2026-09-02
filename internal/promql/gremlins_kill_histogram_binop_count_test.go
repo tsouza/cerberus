@@ -8,15 +8,15 @@
 // Two INVERT_LOGICAL mutants are NOT addressed with a dedicated test here —
 // both are provably equivalent, not coverage gaps:
 //
-//   - histogram_native_binop_eq.go:119:31 (`s.ExpHistogramTable == "" ||
-//     ctx.metadataFullRange` -> `&&` inside expHistogramHistogramCompareBinop).
-//   - histogram_native_binop_eq.go:191:31 (the FIRST `||` of the three-way
+//   - histogram_native_binop_eq.go:expHistogramHistogramCompareBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//     (`||` -> `&&`).
+//   - histogram_native_binop_eq.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool` (the FIRST `||` of the three-way
 //     `s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`
 //     inside expHistogramHistogramCompareBoolBinop).
 //
 // Both functions re-validate the identical table/metadataFullRange
 // condition one level down, via isExpHistogramValuedShape(b.LHS/b.RHS, s,
-// ctx) a few lines later (line 140 / line 197) — and EVERY leaf recognizer
+// ctx) a few lines later — and EVERY leaf recognizer
 // isExpHistogramValuedShape dispatches to (bareExpHistogramSelector,
 // sumOrAvgOverExpHistogram, rangeFnOverExpHistogram, and so on) carries the
 // exact same `s.ExpHistogramTable == "" || ctx.metadataFullRange` guard.
@@ -41,7 +41,8 @@ import (
 
 // TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool kills the
 // CONDITIONALS_BOUNDARY... no — INVERT_LOGICAL mutant at
-// histogram_native_binop_eq.go:191:56, the SECOND `||` of
+// histogram_native_binop_eq.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`,
+// the SECOND `||` of
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool {
 //
@@ -73,12 +74,14 @@ func TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool(t *testing.T) 
 	if _, _, _, _, ok := expHistogramHistogramCompareBoolBinop(b, s, lowerCtx{}); ok {
 		t.Fatalf("expected a non-bool histogram/histogram comparison to be rejected by the " +
 			"bool-modifier-only recognizer; got ok=true (mutant `||`->`&&` at " +
-			"histogram_native_binop_eq.go:191:56 would accept it despite ReturnBool=false)")
+			"histogram_native_binop_eq.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange || !b.ReturnBool` " +
+			"would accept it despite ReturnBool=false)")
 	}
 }
 
 // TestExpHistogramHistogramCompareBoolBinop_BothSidesMustBeHistogramValued
-// kills the INVERT_LOGICAL mutant at histogram_native_binop_eq.go:197:47:
+// kills the INVERT_LOGICAL mutant at
+// histogram_native_binop_eq.go:expHistogramHistogramCompareBoolBinop:`!isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx)`:
 //
 //	if !isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx) {
 //
@@ -101,13 +104,15 @@ func TestExpHistogramHistogramCompareBoolBinop_BothSidesMustBeHistogramValued(t 
 	}
 	if _, _, _, _, ok := expHistogramHistogramCompareBoolBinop(b, s, lowerCtx{}); ok {
 		t.Fatalf("expected a histogram/float mismatched bool-compare to be rejected; got ok=true " +
-			"(mutant `||`->`&&` at histogram_native_binop_eq.go:197:47 would accept it as long as " +
+			"(mutant `||`->`&&` at histogram_native_binop_eq.go:expHistogramHistogramCompareBoolBinop:" +
+			"`!isExpHistogramValuedShape(b.LHS, s, ctx) || !isExpHistogramValuedShape(b.RHS, s, ctx)` " +
+			"would accept it as long as " +
 			"ONE side is histogram-valued)")
 	}
 }
 
 // TestProjectHistogramCompareSide_ProjectionsCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at histogram_native_binop_eq.go:353:49 inside
+// ARITHMETIC_BASE mutant at histogram_native_binop_eq.go:`projs := make([]chplan.Projection, 0, len(cols)+1)` inside
 // projectHistogramCompareSide's slice-capacity hint:
 //
 //	projs := make([]chplan.Projection, 0, len(cols)+1)
@@ -137,13 +142,13 @@ func TestProjectHistogramCompareSide_ProjectionsCapacityIsTight(t *testing.T) {
 	}
 	if gotCap := cap(got.Projections); gotCap != wantLen {
 		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at "+
-			"histogram_native_binop_eq.go:353:49 would yield a different cap via forced regrowth)",
+			"histogram_native_binop_eq.go:`projs := make([]chplan.Projection, 0, len(cols)+1)` would yield a different cap via forced regrowth)",
 			gotCap, wantLen)
 	}
 }
 
 // TestCountOverExpHistogram_MetadataFullRangeShortCircuits kills the
-// INVERT_LOGICAL mutant at histogram_native_count.go:73:31, where
+// INVERT_LOGICAL mutant at histogram_native_count.go:countOverExpHistogram:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -162,12 +167,14 @@ func TestCountOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
 	expr := mustParse(t, `count(latency_exp_hist)`)
 	if _, _, ok := countOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true " +
-			"(mutant `||`->`&&` at histogram_native_count.go:73:31)")
+			"(mutant `||`->`&&` at histogram_native_count.go:countOverExpHistogram:" +
+			"`s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
 	}
 }
 
 // TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
-// kills the INVERT_LOGICAL mutant at histogram_native_count.go:98:31.
+// kills the INVERT_LOGICAL mutant at
+// histogram_native_count.go:countOrGroupOverExpHistogramValue:`s.ExpHistogramTable == "" || ctx.metadataFullRange`.
 //
 // Unlike countOverExpHistogram above, countOrGroupOverExpHistogramValue
 // DOES re-validate the identical guard one level down: its own tail
@@ -199,14 +206,17 @@ func TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
 	if agg != nil {
 		t.Fatalf("expected countOrGroupOverExpHistogramValue to short-circuit BEFORE parsing the "+
 			"aggregate under metadataFullRange (agg == nil); got %#v — the mutant `||`->`&&` at "+
-			"histogram_native_count.go:98:31 would fall through to unwrapAggregateExpr and return a "+
+			"histogram_native_count.go:countOrGroupOverExpHistogramValue:"+
+			"`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` would fall through to "+
+			"unwrapAggregateExpr and return a "+
 			"non-nil agg even though ok stays false via the recursive isExpHistogramValuedShape guard",
 			agg)
 	}
 }
 
 // TestCountValuesOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
-// kills the INVERT_LOGICAL mutant at histogram_native_count_values.go:18:31
+// kills the INVERT_LOGICAL mutant at
+// histogram_native_count_values.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
 // — the SAME "agg persists past the masked guard" shape
 // TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
 // kills above, for countValuesOverExpHistogramValue's identical
@@ -223,14 +233,17 @@ func TestCountValuesOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing(
 	if agg != nil {
 		t.Fatalf("expected countValuesOverExpHistogramValue to short-circuit BEFORE parsing the "+
 			"aggregate under metadataFullRange (agg == nil); got %#v — the mutant `||`->`&&` at "+
-			"histogram_native_count_values.go:18:31 would fall through and return a non-nil agg "+
+			"histogram_native_count_values.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` "+
+			"would fall through and return a non-nil agg "+
 			"even though ok stays false via the recursive isExpHistogramValuedShape guard", agg)
 	}
 }
 
 // TestNativeHistogramBucketStrings_NegativeBoundsAreSignFlipped kills the
-// two adjacent mutants at histogram_native_count_values.go:116:79 and
-// :117:55 (ARITHMETIC_BASE `-`->`+` and INVERT_NEGATIVES `-1`->`1` — both
+// two adjacent mutants at
+// histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, upperBound)`
+// and histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, lowerBound)`
+// (ARITHMETIC_BASE `-`->`+` and INVERT_NEGATIVES `-1`->`1` — both
 // produce the identical observable effect, the multiplier flips from -1 to
 // 1) inside nativeHistogramBucketStrings's negative-bucket sign flip:
 //
@@ -291,9 +304,10 @@ func TestNativeHistogramBucketStrings_NegativeBoundsAreSignFlipped(t *testing.T)
 		}
 		lit, ok := mul.Left.(*chplan.LitFloat)
 		if !ok || lit.V != -1 {
-			t.Fatalf("%s multiplier = %#v, want LitFloat{-1} (mutants at "+
-				"histogram_native_count_values.go:116:79 and :117:55 would flip this to 1, "+
-				"dropping the negative-bucket sign flip)", label, mul.Left)
+			t.Fatalf("%s multiplier = %#v, want LitFloat{-1} (the mutants at "+
+				"histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, upperBound)` "+
+				"and histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, lowerBound)` "+
+				"would flip this to 1, dropping the negative-bucket sign flip)", label, mul.Left)
 		}
 	}
 	assertNegatedBound("lowerBound (rendered from the swapped upperBound expr)", body.Args[lowerBoundArgIdx])
@@ -367,9 +381,10 @@ func unwrapHqLetBoundValue(t *testing.T, e chplan.Expr) chplan.Expr {
 }
 
 // TestNativeHistogramBoundExpr_ScaleExponentIsNegated kills the two
-// adjacent mutants at histogram_native_count_values.go:187:107
+// adjacent mutants at
+// histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, scale)`
 // (ARITHMETIC_BASE `-`->`+` and INVERT_NEGATIVES `-1`->`1`, the same
-// observable-effect pair as the 116/117 kill above) inside
+// observable-effect pair as the negative-bucket kill above) inside
 // nativeHistogramBoundExpr's growth-factor base:
 //
 //	base := histStringCall(chplan.FnPow, &chplan.LitFloat{V: 2},
@@ -420,7 +435,8 @@ func TestNativeHistogramBoundExpr_ScaleExponentIsNegated(t *testing.T) {
 	lit, ok := mul.Left.(*chplan.LitFloat)
 	if !ok || lit.V != -1 {
 		t.Fatalf("mul.Left = %#v, want LitFloat{-1} (mutants at "+
-			"histogram_native_count_values.go:187:107 would flip this to 1, negating the "+
+			"histogram_native_count_values.go:`histStringBinary(chplan.OpMul, &chplan.LitFloat{V: -1}, scale)` "+
+			"would flip this to 1, negating the "+
 			"exponent's sign)", mul.Left)
 	}
 	if !mul.Right.Equal(scale) {

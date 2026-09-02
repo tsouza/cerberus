@@ -416,8 +416,8 @@ FROM numbers(600)`
 
 	// Classic-histogram companion rows for `http_server_request_duration`.
 	//
-	// Since PR #645 (`HistogramCompanionColumn`,
-	// internal/schema/otel.go:373), the PromQL lowering routes any
+	// Since PR #645 ([schema.Metrics.HistogramCompanionColumn] in
+	// internal/schema/otel.go), the PromQL lowering routes any
 	// `<base>_count` / `<base>_sum` reference to `otel_metrics_histogram`
 	// under the bare `<base>` MetricName, projecting `Count` / `Sum` as
 	// the value. That's the correct production behaviour — the OTel-CH
@@ -466,7 +466,8 @@ FROM numbers(600)`
 	// seed_now: [seed_now - 300 s, seed_now + 285 s], with 40 rows at
 	// 15 s cadence across 3 services. The rolling re-seeder re-runs
 	// this INSERT every 30 s, so every Loki `/query` instant request
-	// (5 m staleness lookback, see internal/api/loki/handler.go:235)
+	// (5 m staleness lookback, see
+	// internal/api/loki/handler.go:`h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts)`)
 	// finds ≥1 row inside the lookback regardless of suite drift.
 	//
 	// `service_name="api"` rows (number % 3 = 0, ~14 of the 40) are

@@ -51,7 +51,8 @@ func failingSubquery() *QueryBuilder {
 // ordering is the contract — the first failure is the root cause; everything
 // after it is rendered against a Builder already known to be broken.
 //
-// Kills builder.go:298:17 INVERT_LOGICAL (`&&` -> `||`): the mutated guard is
+// Kills INVERT_LOGICAL (`&&` -> `||`) on
+// builder.go:Expr:`err != nil && b.err == nil`: the mutated guard is
 // `err != nil || b.err == nil`, which fires on EVERY non-nil err, so the
 // second rejection overwrites the first and Build reports the ScalarSubquery
 // error instead of the Lambda one.
@@ -83,10 +84,10 @@ func TestMutation_Expr_LatchKeepsFirstError(t *testing.T) {
 // stream by the time it returns, so dropping the error hands the caller a
 // query that cannot parse and no indication why.
 //
-// Kills builder.go:2001:10 CONDITIONALS_NEGATION (`err != nil` -> `err == nil`)
-// and 2001:26 CONDITIONALS_NEGATION (`b.err == nil` -> `b.err != nil`): under
-// either the outer latch is never given its first value, and Build reports
-// success.
+// Kills both CONDITIONALS_NEGATION mutants of
+// builder.go:Subquery:`err != nil && b.err == nil` (`err != nil` ->
+// `err == nil`, `b.err == nil` -> `b.err != nil`): under either the outer
+// latch is never given its first value, and Build reports success.
 func TestMutation_Subquery_PropagatesNestedError(t *testing.T) {
 	t.Parallel()
 
@@ -102,7 +103,8 @@ func TestMutation_Subquery_PropagatesNestedError(t *testing.T) {
 // guard: an outer Builder that has ALREADY failed keeps its own error when a
 // spliced subquery fails too.
 //
-// Kills builder.go:2001:17 INVERT_LOGICAL (`&&` -> `||`), which fires on every
+// Kills INVERT_LOGICAL (`&&` -> `||`) on
+// builder.go:Subquery:`err != nil && b.err == nil`, which fires on every
 // non-nil nested error and so replaces the outer Builder's first error with
 // the subquery's.
 func TestMutation_Subquery_KeepsOuterFirstError(t *testing.T) {
@@ -126,8 +128,9 @@ func TestMutation_Subquery_KeepsOuterFirstError(t *testing.T) {
 // TestMutation_Subquery_PropagatesNestedError for Spliced, whose guard is a
 // verbatim copy carrying its own mutants.
 //
-// Kills builder.go:2023:10 CONDITIONALS_NEGATION (`err != nil` -> `err == nil`)
-// and 2023:26 CONDITIONALS_NEGATION (`b.err == nil` -> `b.err != nil`).
+// Kills both CONDITIONALS_NEGATION mutants of
+// builder.go:Spliced:`err != nil && b.err == nil` (`err != nil` ->
+// `err == nil`, `b.err == nil` -> `b.err != nil`).
 func TestMutation_Spliced_PropagatesNestedError(t *testing.T) {
 	t.Parallel()
 
@@ -142,7 +145,8 @@ func TestMutation_Spliced_PropagatesNestedError(t *testing.T) {
 // TestMutation_Spliced_KeepsOuterFirstError is
 // TestMutation_Subquery_KeepsOuterFirstError for Spliced.
 //
-// Kills builder.go:2023:17 INVERT_LOGICAL (`&&` -> `||`).
+// Kills INVERT_LOGICAL (`&&` -> `||`) on
+// builder.go:Spliced:`err != nil && b.err == nil`.
 func TestMutation_Spliced_KeepsOuterFirstError(t *testing.T) {
 	t.Parallel()
 
@@ -167,9 +171,10 @@ func TestMutation_Spliced_KeepsOuterFirstError(t *testing.T) {
 // label_replace whose source expression cannot render emits
 // `extractGroups(<nothing>, '…')[1]` and reports success.
 //
-// Kills builder.go:1116:33 CONDITIONALS_NEGATION (`err != nil` -> `err == nil`)
-// and 1116:50 CONDITIONALS_NEGATION (`srcErr == nil` -> `srcErr != nil`):
-// under either, srcErr never takes a non-nil value and the method returns nil.
+// Kills both CONDITIONALS_NEGATION mutants of
+// builder.go:`err != nil && srcErr == nil` (`err != nil` -> `err == nil`,
+// `srcErr == nil` -> `srcErr != nil`): under either, srcErr never takes a
+// non-nil value and the method returns nil.
 func TestMutation_LabelReplaceSegment_SrcErrorPropagates(t *testing.T) {
 	t.Parallel()
 
@@ -210,8 +215,8 @@ func TestMutation_LabelReplaceSegment_RendersCaptureGroup(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// builder.go:1116:40 (INVERT_LOGICAL, `&&` -> `||` in labelReplaceSegment's
-// srcErr latch) is EQUIVALENT. The mutated guard is
+// builder.go:`err != nil && srcErr == nil` (INVERT_LOGICAL, `&&` -> `||` in
+// labelReplaceSegment's srcErr latch) is EQUIVALENT. The mutated guard is
 // `err != nil || srcErr == nil`, which differs from the original in exactly
 // one state: srcErr already non-nil AND err non-nil, where the mutant
 // overwrites srcErr with the later error instead of keeping the first. Every

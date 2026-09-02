@@ -284,8 +284,10 @@ func pushLeafPredicate(n chplan.Node, pred chplan.Expr) chplan.Node {
 		return v
 	case *chplan.SearchTraceLimit:
 		// Already fully windowed: stampSearchTraceLimit creates this node and
-		// folds the window onto its plain-search leaves at lower.go:56, before
-		// stampSearchWindow runs at :62. Recursing here would double-fold the
+		// folds the window onto its plain-search leaves at
+		// lower.go:`plan = stampSearchTraceLimit(plan, searchTraceLimit(ctx), start, end, s)`,
+		// before lower.go:`plan = stampSearchWindow(plan, searchTraceLimit(ctx), start, end, s)`
+		// runs. Recursing here would double-fold the
 		// predicate (TestSearchWindow_PlainNotDoubleFolded). This is an explicit
 		// "already handled", not a silent drop — every OTHER node still recurses.
 		return n

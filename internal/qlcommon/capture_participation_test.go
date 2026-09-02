@@ -516,8 +516,8 @@ func firstNonEmptyDisagreement(re *regexp.Regexp, inputs []string) string {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// capture_participation.go:181:38 (CONDITIONALS_BOUNDARY, the SECOND `>=` in
-// mutuallyExclusive's `if shared >= len(a.spine) || shared >= len(b.spine)`
+// capture_participation.go:`shared >= len(a.spine) || shared >= len(b.spine)`
+// (CONDITIONALS_BOUNDARY, the SECOND `>=` in mutuallyExclusive's guard
 // -> `>`). The loop above increments `shared` only while it is below BOTH
 // lengths, so shared <= min(len(a.spine), len(b.spine)) on exit and
 // `shared > len(b.spine)` is unsatisfiable: the mutant simply deletes that

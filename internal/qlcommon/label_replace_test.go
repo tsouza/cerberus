@@ -358,8 +358,8 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// label_replace.go:770:10 (CONDITIONALS_BOUNDARY, extractRef's
-// `for end < len(rest)` -> `<=`). The extra iteration the mutant admits runs
+// label_replace.go:`for end < len(rest)` (CONDITIONALS_BOUNDARY, extractRef's
+// loop condition, `<` -> `<=`). The extra iteration the mutant admits runs
 // at end == len(rest), where `rest[end:]` is the empty string — a legal
 // slice — and utf8.DecodeRuneInString("") returns (utf8.RuneError, 0).
 // utf8.RuneError is U+FFFD, category So: unicode.IsLetter and unicode.IsDigit

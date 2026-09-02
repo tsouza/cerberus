@@ -95,7 +95,7 @@ func groupBatchesProto(samples []chclient.Sample) *tempopb.Trace {
 		// Tempo's per-scope batching. Scope is ALWAYS non-nil (empty
 		// InstrumentationScope at minimum): Grafana 12's
 		// spanToSpanRow dereferences ils.Scope.Name / .Version with no
-		// nil check (trace_transform.go:137 — the exact panic that
+		// nil check (trace_transform.go — the exact panic that
 		// broke trace detail via /api/ds/query on the compose smoke),
 		// and reference Tempo's parquetToProtoInstrumentationScope
 		// always returns a non-nil scope. Spans inside each bucket

@@ -385,8 +385,8 @@ func TestHandleTraceByID_AcceptJSON_KeepsJSONShape(t *testing.T) {
 
 // TestTraceByID_EmptyResourceAndScope_NonNilSubmessages is the
 // consumer-grade pin for the Grafana 12 server-side transform panic
-// (pkg/tsdb/tempo/trace_transform.go:137 — `libraryTags.Name` where
-// libraryTags = ils.Scope, plus resource.Attributes read at line 89,
+// (pkg/tsdb/tempo/trace_transform.go — `libraryTags.Name` where
+// libraryTags = ils.Scope, plus its `resource.Attributes` read,
 // neither nil-checked; compose-smoke run 27307929705). A span whose
 // row carries NO resource attributes and an empty ScopeName /
 // ScopeVersion must still marshal — on BOTH the v1 bare trace and the
@@ -458,7 +458,7 @@ func TestTraceByID_EmptyResourceAndScope_NonNilSubmessages(t *testing.T) {
 		}
 		ss := rs.ScopeSpans[0]
 		if ss.Scope == nil {
-			t.Fatalf("%s: ScopeSpans.Scope is nil after decode — the scope field is missing from the wire; Grafana 12 trace_transform.go:137 panics on it", label)
+			t.Fatalf("%s: ScopeSpans.Scope is nil after decode — the scope field is missing from the wire; Grafana 12 trace_transform.go panics on it", label)
 		}
 		if ss.Scope.Name != "" || ss.Scope.Version != "" {
 			t.Errorf("%s: empty scope columns must yield an EMPTY InstrumentationScope, got name=%q version=%q", label, ss.Scope.Name, ss.Scope.Version)

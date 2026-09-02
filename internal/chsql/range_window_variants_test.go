@@ -171,7 +171,8 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"stepless anchor grid": func(r *chplan.RangeWindow) {
 			r.Step = 0
 		},
-		// checkFusedVariants.go:92 — the fused emitter drives only the
+		// range_window_variants.go:`len(r.Scalars) > 0 || len(r.ScalarExprs) > 0`
+		// (checkFusedVariants) — the fused emitter drives only the
 		// *_over_time array reducers, which take no scalar parameters.
 		// A scalar argument here is untested territory: the guard's
 		// condition is EVALUATED on every fused Emit (both operands are
@@ -181,7 +182,8 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"scalar argument present": func(r *chplan.RangeWindow) {
 			r.Scalars = []float64{1}
 		},
-		// checkFusedVariants.go:95 — the fused emitter consults no
+		// range_window_variants.go:`r.TemporalityColumn != ""`
+		// (checkFusedVariants) — the fused emitter consults no
 		// temporality column (each arm's own reducer never reads
 		// windowTemporalityRef). Same coverage gap as the scalar case.
 		"temporality column present": func(r *chplan.RangeWindow) {
@@ -224,7 +226,7 @@ func TestFusedVariantValueLayout(t *testing.T) {
 
 // TestEmitFusedVariants_InstantVsMatrixDispatch kills the
 // CONDITIONALS_NEGATION / CONDITIONALS_BOUNDARY mutants at
-// range_window_variants.go:114 (`r.OuterRange > 0`) in
+// range_window_variants.go:`r.OuterRange > 0` in
 // emitRangeWindowVariants. The instant shape (OuterRange == 0) has no
 // anchor grid at all — no `anchor_ts` column anywhere in the emitted
 // SQL — while the matrix shape fans out across one. A `>` → `<=` flip
@@ -261,7 +263,7 @@ func TestEmitFusedVariants_InstantVsMatrixDispatch(t *testing.T) {
 }
 
 // TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias kills the
-// CONDITIONALS_NEGATION mutant at range_window_variants.go:351
+// CONDITIONALS_NEGATION mutant at range_window_variants.go:`r.TimestampColumn != "anchor_ts"`
 // (`r.TimestampColumn != "anchor_ts"`). The matrix outer layer always
 // selects the raw `anchor_ts` column; it additionally re-projects it
 // under the schema timestamp column's own alias UNLESS that alias
@@ -297,7 +299,7 @@ func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
 }
 
 // TestVariantValsFrag_TupleSlotArithmetic kills the ARITHMETIC_BASE mutant
-// at range_window_variants.go:151 (`valueSlot + firstValueSlot`). Tuple
+// at range_window_variants.go:`valueSlot + firstValueSlot`. Tuple
 // slot 1 is always the timestamp, so value slot 0 must read tuple index 2
 // and value slot 1 must read tuple index 3; a `+`→`-` flip would read
 // negative/zero indices and a `+`→`*` flip would collide slot 0 onto index
@@ -327,7 +329,7 @@ func TestVariantValsFrag_TupleSlotArithmetic(t *testing.T) {
 }
 
 // TestEmitFusedVariantsMatrix_AnchorCountArithmetic kills the
-// ARITHMETIC_BASE mutants at range_window_variants.go:293
+// ARITHMETIC_BASE mutants at range_window_variants.go:`r.OuterRange.Nanoseconds()/stepNS + 1`
 // (`r.OuterRange.Nanoseconds()/stepNS + 1`). fusedTestWindow's OuterRange
 // (1m) / Step (30s) + 1 = 3 anchors, surfacing as the sample-fanout's
 // `least(3, ...)` upper clamp. A `/`→`*` flip overflows to a huge count;
@@ -347,7 +349,7 @@ func TestEmitFusedVariantsMatrix_AnchorCountArithmetic(t *testing.T) {
 }
 
 // TestGroupArrayVariantTupleFrag_EmptyValCols kills the ARITHMETIC_BASE
-// mutant at range_window_variants.go:129:39 (`len(valCols)+1`, the capacity
+// mutant at range_window_variants.go:`len(valCols)+1` (`len(valCols)+1`, the capacity
 // hint for the tuple-parts slice). With valCols empty, len(valCols)+1 == 1,
 // a harmless capacity; a `+`->`-` flip instead computes -1, which panics
 // make() immediately. Production never calls this with an empty valCols
@@ -368,9 +370,9 @@ func TestGroupArrayVariantTupleFrag_EmptyValCols(t *testing.T) {
 }
 
 // TestEmitFusedVariantsInstant_CompletesAllSteps kills the four
-// CONDITIONALS_NEGATION mutants at range_window_variants.go:232:9, 236:9,
-// 249:9 and 256:66 — the four `if err != nil { return err }` guards inside
-// emitRangeWindowVariantsInstant. Every one of those checks genuinely
+// CONDITIONALS_NEGATION mutants on the four `if err != nil { return err }`
+// guards inside range_window_variants.go:emitRangeWindowVariantsInstant.
+// Every one of those checks genuinely
 // succeeds on this well-formed plan, so a `!= nil` -> `== nil` mutant at any
 // one of them turns "keep going on success" into "return nil immediately
 // after this step succeeds" — the function would return before ever
@@ -395,7 +397,7 @@ func TestEmitFusedVariantsInstant_CompletesAllSteps(t *testing.T) {
 }
 
 // TestEmitFusedVariantsMatrix_UngroupedRegroupKeysCapacity kills the
-// ARITHMETIC_BASE mutant at range_window_variants.go:333:48
+// ARITHMETIC_BASE mutant at range_window_variants.go:`len(groupFrags)+1`
 // (`len(groupFrags)+1`, the capacity hint for regroupKeys). An ungrouped
 // fused matrix window has zero groupFrags, so len(groupFrags)+1 == 1 (the
 // anchor_ts key alone); a `+`->`-` flip computes -1, panicking make()

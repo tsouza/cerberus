@@ -37,8 +37,8 @@ func fanoutMinSamplesPlan(minSamples int) *chplan.RangeBucketFanout {
 }
 
 // TestMutation_RangeBucketFanout_MinSamplesFilterThreshold defends
-// range_bucket_fanout.go:159 (`if r.MinSamples > fanoutNoMinSampleFilter`, the
-// gate on the collapse HAVING).
+// range_bucket_fanout.go:`r.MinSamples > fanoutNoMinSampleFilter` (the gate on
+// the collapse HAVING).
 //
 // fanoutNoMinSampleFilter is 1: an anchor whose window holds no sample already
 // receives no fanned row and so produces no GROUP BY row, which makes "at

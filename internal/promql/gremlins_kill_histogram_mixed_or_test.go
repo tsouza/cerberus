@@ -9,7 +9,7 @@
 // One CONDITIONALS_BOUNDARY mutant is NOT addressed with a dedicated test
 // here — it is provably equivalent, not a coverage gap:
 //
-//   - histogram_native_mixed_or_vector_comparison.go:163:36
+//   - histogram_native_mixed_or_vector_comparison.go:`len(b.VectorMatching.Include) > 0`
 //     (`len(b.VectorMatching.Include) > 0` -> `>= 0`, inside
 //     comparisonVectorVectorOverMixedExpHistogramSetOp).
 //
@@ -37,7 +37,7 @@ import (
 )
 
 // TestLabelCallOverMixedExpHistogramSetOp_LabelJoinMinArity kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_mixed_or_label.go:61:21
+// CONDITIONALS_BOUNDARY mutant at histogram_native_mixed_or_label.go:`len(call.Args) < 3`
 // (`len(call.Args) < 3` -> `<= 3`) inside labelCallOverMixedExpHistogramSetOp's
 // label_join arm. The minimum valid label_join call has exactly 3 args
 // (vector, dst, separator, zero src labels) — label_fns.go's own arity
@@ -63,13 +63,13 @@ func TestLabelCallOverMixedExpHistogramSetOp_LabelJoinMinArity(t *testing.T) {
 	if _, _, ok := labelCallOverMixedExpHistogramSetOp(call, s, lowerCtx{}); !ok {
 		t.Fatalf("expected minimum-arity (3-arg) label_join wrapping a mixed histogram/float `or` " +
 			"to be recognised; got ok=false (mutant `<`->`<=` at " +
-			"histogram_native_mixed_or_label.go:61:21)")
+			"histogram_native_mixed_or_label.go:`if len(call.Args) < 3`)")
 	}
 }
 
 // TestLowerMixedVVCompareBool_HistCmpNegationMatchesOp kills the
 // CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_vector_comparison.go:357:44
+// histogram_native_mixed_or_vector_comparison.go:lowerMixedVVCompareBool:`histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)`
 // (`op == chplan.OpNe` -> `!=`) inside lowerMixedVVCompareBool's
 // histogram,histogram branch:
 //
@@ -129,19 +129,19 @@ func TestLowerMixedVVCompareBool_HistCmpNegationMatchesOp(t *testing.T) {
 
 	if got := histCmpCombine(t, chplan.OpEq); got != chplan.OpAnd {
 		t.Fatalf("op=EQ: histCmp top combine = %s, want AND (ne=false) — mutant `==`->`!=` at "+
-			"histogram_native_mixed_or_vector_comparison.go:357:44 would pass ne=true here and use OR",
+			"histogram_native_mixed_or_vector_comparison.go:lowerMixedVVCompareBool:`histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)` would pass ne=true here and use OR",
 			got)
 	}
 	if got := histCmpCombine(t, chplan.OpNe); got != chplan.OpOr {
 		t.Fatalf("op=NE: histCmp top combine = %s, want OR (ne=true) — mutant `==`->`!=` at "+
-			"histogram_native_mixed_or_vector_comparison.go:357:44 would pass ne=false here and use AND",
+			"histogram_native_mixed_or_vector_comparison.go:lowerMixedVVCompareBool:`histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)` would pass ne=false here and use AND",
 			got)
 	}
 }
 
 // TestHistogramValuedProducerCall_InfoAcceptsTwoArgs kills the
 // CONDITIONALS_BOUNDARY mutant at
-// histogram_native_value_producing_call.go:41:43 (`len(call.Args) > 2` ->
+// histogram_native_value_producing_call.go:`len(call.Args) > 2` (`len(call.Args) > 2` ->
 // `>= 2`) inside histogramValuedProducerCall's info() arm. info() accepts
 // 1 or 2 arguments; exactly 2 is the valid upper boundary and must NOT be
 // rejected.
@@ -159,13 +159,13 @@ func TestHistogramValuedProducerCall_InfoAcceptsTwoArgs(t *testing.T) {
 	if _, ok := histogramValuedProducerCall(call, s, lowerCtx{}); !ok {
 		t.Fatalf("expected info() with exactly 2 args over a histogram-valued base to be " +
 			"recognised; got ok=false (mutant `>`->`>=` at " +
-			"histogram_native_value_producing_call.go:41:43 would reject the 2-arg boundary)")
+			"histogram_native_value_producing_call.go:`if len(call.Args) < 1 || len(call.Args) > 2` would reject the 2-arg boundary)")
 	}
 }
 
 // TestHistogramValuedProducerCall_SortByLabelAcceptsSingleArg kills the
 // CONDITIONALS_BOUNDARY mutant at
-// histogram_native_value_producing_call.go:45:21 (`len(call.Args) < 1` ->
+// histogram_native_value_producing_call.go:`if len(call.Args) < 1 {` (`len(call.Args) < 1` ->
 // `<= 1`) inside histogramValuedProducerCall's sort_by_label(_desc) arm.
 // sort_by_label accepts the vector argument alone (zero label names); the
 // parser's own grammar allows this shape (no minimum label-name count),
@@ -181,6 +181,6 @@ func TestHistogramValuedProducerCall_SortByLabelAcceptsSingleArg(t *testing.T) {
 	if _, ok := histogramValuedProducerCall(call, s, lowerCtx{}); !ok {
 		t.Fatalf("expected sort_by_label() with exactly 1 arg (no label names) over a " +
 			"histogram-valued base to be recognised; got ok=false (mutant `<`->`<=` at " +
-			"histogram_native_value_producing_call.go:45:21 would reject the 1-arg boundary)")
+			"histogram_native_value_producing_call.go:`if len(call.Args) < 1 {` would reject the 1-arg boundary)")
 	}
 }

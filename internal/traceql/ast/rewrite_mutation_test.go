@@ -164,8 +164,8 @@ func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// rewrite.go:115:4 (INVERT_LOOPCTRL, the `continue` under `if !ok || attrL !=
-// attrR`). Reaching that branch means attrLiteralOperands accepted op.LHS
+// rewrite.go:`!ok || attrL != attrR` (INVERT_LOOPCTRL, the `continue` under
+// that guard). Reaching that branch means attrLiteralOperands accepted op.LHS
 // against the CURRENT rule, so op.LHS's operator is that rule's `scalar` or
 // `array`. arrayFoldRules pairs the only two rules that share an outer
 // operator as {OpEqual, OpIn} with {OpRegex, OpRegexMatchAny} under `||`, and
@@ -174,8 +174,8 @@ func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
 // EARLIER `continue` (the op.LHS extraction) or at the outer-operator match,
 // so a `break` here reaches the same `return nil, false`.
 //
-// rewrite.go:123:52 (INVERT_LOGICAL, `if !staticTypeAllowed(valL.Type,
-// rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)` -> `&&`).
+// rewrite.go:`!staticTypeAllowed(valL.Type, rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)`
+// (INVERT_LOGICAL, `||` -> `&&`).
 // Both rules that carry a `restrict` list carry the same one — the string
 // family, {TypeString, TypeStringArray} — and that family is exactly the set
 // staticMerge will merge a string with. So the two operands are either both

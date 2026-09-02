@@ -8,7 +8,7 @@ package ast
 // The scope is the WHOLE query — every pipeline stage plus the metrics
 // first stage — and that is a deliberate mirror of upstream rather than a
 // convenience. Upstream's `RootExpr.extractConditions`
-// (pkg/traceql/ast_conditions.go:3) folds every stage of the query into a
+// (in pkg/traceql/ast_conditions.go) folds every stage of the query into a
 // single FetchSpansRequest, so its storage layer materialises an
 // intrinsic on every candidate span the moment any part of the query
 // mentions it. There is no per-spanset-side narrowing to model:

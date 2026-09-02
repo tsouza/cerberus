@@ -7,8 +7,8 @@
 // code and the mutated branch produce observably different `changed`
 // flags or output trees.
 //
-// Mutant IDs use gremlins's `file:line:col` notation from the
-// phase3-optimizer workflow logs.
+// Mutants are named by the construct they rewrite rather than by the
+// `file:line:col` address the phase3-optimizer workflow logs report.
 package chplan
 
 import (
@@ -16,7 +16,7 @@ import (
 )
 
 // TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges pins the
-// `if !lch && !rch` early-return guard at rule.go:251 inside
+// rewrite_children.go:`!lch && !rch` early-return guard inside
 // rewriteLeftRight. The condition means "neither child changed — hand
 // back the original node". Flipping `&&` to `||` (gremlins
 // INVERT_LOGICAL) would early-return whenever EITHER child is unchanged,
@@ -55,8 +55,10 @@ func TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges(t *testing.T) {
 }
 
 // TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged pins the
-// `if v.KExpr != nil` guard at rule.go:463 inside rewriteIrregularNode's
-// TopK case. The guard means "only recurse into KExpr when it exists".
+// rewrite_children.go:`optional != nil` guard in rewriteOptionalPair,
+// which rewriteIrregularNode's TopK case reaches with KExpr as the
+// optional child. The guard means "only recurse into KExpr when it
+// exists".
 // Flipping `!= nil` to `== nil` (gremlins CONDITIONALS_NEGATION) inverts
 // it: a non-nil KExpr would be bypassed (and a nil KExpr would be fed to
 // fn). So a TopK whose KExpr carries the only rewrite target — and whose
@@ -64,9 +66,9 @@ func TestRewriteLeftRight_RebuildsWhenOnlyLeftChanges(t *testing.T) {
 // rewrite.
 //
 // Input: TopK{Input: plain Scan (unchanged), KExpr: sentinel}. Original:
-// kCh=true → rebuild with rewritten KExpr. Mutant (`== nil`): KExpr is
-// non-nil so the branch is bypassed, kCh=false, Input unchanged → returns
-// the original unchanged.
+// optCh=true → rebuild with rewritten KExpr. Mutant (`== nil`): KExpr is
+// non-nil so the branch is bypassed, optCh=false, Input unchanged →
+// returns the original unchanged.
 func TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -95,17 +97,18 @@ func TestRewriteIrregular_TopK_RecursesIntoKExprWhenInputUnchanged(t *testing.T)
 }
 
 // TestRewriteIrregular_MetricsCompare_RebuildsWhenOnlyRootLookupChanges
-// pins the `if !innerCh && !rootCh` early-return guard at rule.go:507
-// inside rewriteIrregularNode's MetricsCompare case. The condition means
-// "neither child changed — hand back the original". Flipping `&&` to
-// `||` (gremlins INVERT_LOGICAL) would early-return whenever EITHER child
-// is unchanged, so a MetricsCompare whose RootLookup rewrote but whose
-// Inner did not would be returned UNCHANGED, dropping the RootLookup
-// rewrite.
+// pins the rewrite_children.go:`primaryCh || optCh` changed-flag
+// disjunction in rewriteOptionalPair, which rewriteIrregularNode's
+// MetricsCompare case reaches with RootLookup as the optional child. The
+// disjunction means "either child changed — rebuild". Flipping `||` to
+// `&&` (gremlins INVERT_LOGICAL) would report unchanged whenever EITHER
+// child is unchanged, so a MetricsCompare whose RootLookup rewrote but
+// whose Inner did not would be returned UNCHANGED, dropping the
+// RootLookup rewrite.
 //
 // Input: MetricsCompare{Inner: plain Scan (unchanged), RootLookup:
-// sentinel}. innerCh=false, rootCh=true. Original: `!false && !true` =
-// false → rebuild. Mutant: `!false || !true` = true → return unchanged.
+// sentinel}. primaryCh=false, optCh=true. Original: `false || true` =
+// true → rebuild. Mutant: `false && true` = false → return unchanged.
 func TestRewriteIrregular_MetricsCompare_RebuildsWhenOnlyRootLookupChanges(t *testing.T) {
 	t.Parallel()
 

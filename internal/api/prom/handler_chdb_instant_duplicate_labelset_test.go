@@ -10,7 +10,7 @@
 // two halves exist because cerberus lowers each operation into its own SQL
 // shape; upstream needs no such split, because `rangeEval` checks EVERY
 // step's output vector for a repeated label set from one generic site
-// (prometheus/promql/engine.go:1531, :1552) and every operation inherits
+// in prometheus/promql/engine.go, and every operation inherits
 // it. That asymmetry is the whole content of #1839: the guard was wired
 // into two lowering functions instead of into the property they share.
 //

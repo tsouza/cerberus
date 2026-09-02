@@ -191,18 +191,21 @@ func TestPlanCaptureProbesDeclines(t *testing.T) {
 // Four surviving mutants in regex_source_scan.go, all of them in a `switch`
 // that is the ENTIRE body of its enclosing `for`.
 //
-// regex_source_scan.go:77:5 (INVERT_LOOPCTRL, scanSourceGroups' `\Q` arm) and
-// regex_source_scan.go:155:5 (INVERT_LOOPCTRL, skipCharClass' POSIX-name arm)
-// are the same shape. `break` inside a `switch` leaves the SWITCH, not the
+// The `continue` after regex_source_scan.go:`i = endOfQuotedRun(src, i)`
+// (INVERT_LOOPCTRL, scanSourceGroups' `\Q` arm) and the one after
+// regex_source_scan.go:`j += 2 + end + 2` (INVERT_LOOPCTRL, skipCharClass'
+// POSIX-name arm) are the same shape. Each citation names the statement above
+// the mutated `continue`, which is a bare keyword no construct can single
+// out. `break` inside a `switch` leaves the SWITCH, not the
 // loop. In both functions the switch is the whole loop body and the `for` has
 // an empty post statement, so the byte after the switch is the loop's closing
 // brace: `break` re-evaluates the loop condition exactly as `continue` does,
 // and it skips the `i += 2` / `j++` that follows in the same case arm for the
 // same reason. The two forms have identical control flow on every input.
 //
-// regex_source_scan.go:142:11 (CONDITIONALS_BOUNDARY, skipCharClass'
-// `if j+1 >= len(src)` -> `>`) and regex_source_scan.go:142:8
-// (ARITHMETIC_BASE, the same line's `j+1` -> `j-1`). The guard sits inside
+// regex_source_scan.go:`if j+1 >= len(src)` carries two mutants —
+// CONDITIONALS_BOUNDARY (skipCharClass' `>=` -> `>`) and ARITHMETIC_BASE (the
+// same line's `j+1` -> `j-1`). The guard sits inside
 // `for j < len(src)`, so j+1 <= len(src) and j-1 <= len(src)-2: neither
 // `j+1 > len(src)` nor `j-1 >= len(src)` can hold, and both mutants delete
 // the guard rather than move it. The deleted case is a trailing `\` at

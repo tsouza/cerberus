@@ -50,8 +50,9 @@ func TestSyntheticScalarVector_WrapsLitFloatInToFloat64(t *testing.T) {
 		// passing &chplan.LitFloat{V:v} to syntheticScalarVector.
 		{"vector_one", `vector(1)`},
 		{"vector_two", `vector(2)`},
-		// `1+1` — lowerBinary scalar-only fold, binary.go:45 callsite
-		// passing &chplan.LitFloat{V:v} to syntheticScalarVector.
+		// `1+1` — lowerBinary scalar-only fold, the
+		// binary.go:`syntheticScalarVector(&chplan.LitFloat{V: v}, nil, s, ctx)`
+		// callsite.
 		{"scalar_fold_add", `1+1`},
 		{"scalar_fold_mul", `2*3`},
 	}

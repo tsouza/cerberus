@@ -5,9 +5,13 @@
 // mutated branch, so the test fails when the mutant is applied and the
 // mutant is reported KILLED.
 //
-// See `.gremlins.yaml` for the mutation operators in play; the mutant
-// IDs in each test's doc comment refer to gremlins's `file:line:col`
-// notation as printed in the workflow logs.
+// See `.gremlins.yaml` for the mutation operators in play. Gremlins prints
+// mutant IDs in `file:line:col` notation in the workflow logs; each test's
+// doc comment cites the same mutant by the CONSTRUCT it lives on instead —
+// the source path, a colon, and the backticked construct, optionally with
+// the enclosing top-level func between them when the construct repeats — so
+// the citation survives edits that only move lines.
+// `.github/scripts/verify-code-citations.mjs` verifies every one of them.
 //
 // Conventions:
 //   - one Test... per source-file cluster of related mutants
@@ -29,8 +33,8 @@ import (
 )
 
 // TestFoldComparisonScalar_LessThanIsStrict kills the `<` → `<=`
-// boundary flip at scalar.go:136 inside foldComparisonScalar's LSS
-// case. PromQL's `<` is strict — `5 < 5` is false (0.0). A
+// boundary flip at scalar.go:`result = lhs < rhs` inside
+// foldComparisonScalar's LSS case. PromQL's `<` is strict — `5 < 5` is false (0.0). A
 // CONDITIONALS_BOUNDARY mutant flipping `<` to `<=` would return 1.0
 // for equal operands, breaking Prom's scalar-scalar comparison
 // semantics.
@@ -52,8 +56,8 @@ func TestFoldComparisonScalar_LessThanIsStrict(t *testing.T) {
 }
 
 // TestFoldComparisonScalar_GreaterThanIsStrict kills the `>` → `>=`
-// boundary flip at scalar.go:140 inside foldComparisonScalar's GTR
-// case. PromQL's `>` is strict — `5 > 5` is false (0.0). A
+// boundary flip at scalar.go:`result = lhs > rhs` inside
+// foldComparisonScalar's GTR case. PromQL's `>` is strict — `5 > 5` is false (0.0). A
 // CONDITIONALS_BOUNDARY mutant flipping `>` to `>=` would return 1.0
 // for equal operands.
 func TestFoldComparisonScalar_GreaterThanIsStrict(t *testing.T) {
@@ -71,7 +75,8 @@ func TestFoldComparisonScalar_GreaterThanIsStrict(t *testing.T) {
 
 // TestFoldComparisonScalar_LessOrEqualIncludesEquality complements the
 // LSS kill above: `<=` includes equality, so `5 <= bool 5` must yield
-// 1.0. This pins the LTE boundary at scalar.go:138 — flipping `<=` to
+// 1.0. This pins the LTE boundary at scalar.go:`result = lhs <= rhs` —
+// flipping `<=` to
 // `<` (a hypothetical sibling mutant in the same family) would return
 // 0 for the equality case. The test is also a regression backstop for
 // the LSS kill in case a future refactor merges the cases.
@@ -111,8 +116,9 @@ func mustParseHoltWintersCall(t *testing.T, q string) *parser.Call {
 }
 
 // TestLowerHoltWinters_SmoothingFactorZeroRejected kills the `<=` → `<`
-// boundary flip at range_fns.go:91 in the smoothing-factor guard. The
-// guard `if sf <= 0 || sf >= 1` rejects the boundary value sf=0; a
+// boundary flip at scalar_domain.go:`if v <= 0 || v >= 1`, the shared
+// factor-domain guard, reached here for the smoothing factor. The
+// guard rejects the boundary value sf=0; a
 // CONDITIONALS_BOUNDARY mutant relaxing `<=` to `<` would let sf=0
 // through into the lowering, where the recurrence is undefined.
 func TestLowerHoltWinters_SmoothingFactorZeroRejected(t *testing.T) {
@@ -122,13 +128,15 @@ func TestLowerHoltWinters_SmoothingFactorZeroRejected(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
-		t.Fatalf("expected holt_winters(sf=0, ...) to error; got nil (mutant `<=` → `<` at range_fns.go:91 would pass sf=0 through the (0,1) check)")
+		t.Fatalf("expected holt_winters(sf=0, ...) to error; got nil (mutant `<=` → `<` at " +
+			"scalar_domain.go:`if v <= 0 || v >= 1` would pass sf=0 through the (0,1) check)")
 	}
 }
 
 // TestLowerHoltWinters_SmoothingFactorOneRejected kills the `>=` → `>`
-// boundary flip at range_fns.go:91 in the smoothing-factor upper
-// guard. Same shape as the lower-bound test: sf=1 sits exactly on the
+// boundary flip at scalar_domain.go:`if v <= 0 || v >= 1`, the upper
+// half of the same shared factor-domain guard. Same shape as the
+// lower-bound test: sf=1 sits exactly on the
 // `>= 1` boundary; flipping `>=` to `>` would let sf=1 through.
 func TestLowerHoltWinters_SmoothingFactorOneRejected(t *testing.T) {
 	t.Parallel()
@@ -137,13 +145,15 @@ func TestLowerHoltWinters_SmoothingFactorOneRejected(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
-		t.Fatalf("expected holt_winters(sf=1, ...) to error; got nil (mutant `>=` → `>` at range_fns.go:91 would pass sf=1 through the (0,1) check)")
+		t.Fatalf("expected holt_winters(sf=1, ...) to error; got nil (mutant `>=` → `>` at " +
+			"scalar_domain.go:`if v <= 0 || v >= 1` would pass sf=1 through the (0,1) check)")
 	}
 }
 
 // TestLowerHoltWinters_TrendFactorZeroRejected kills the `<=` → `<`
-// boundary flip at range_fns.go:94 in the trend-factor guard. The
-// guard `if tf <= 0 || tf >= 1` rejects the boundary value tf=0; a
+// boundary flip at scalar_domain.go:`if v <= 0 || v >= 1`, the same
+// shared factor-domain guard reached for the trend factor. The
+// guard rejects the boundary value tf=0; a
 // CONDITIONALS_BOUNDARY mutant relaxing `<=` to `<` would let tf=0
 // through.
 func TestLowerHoltWinters_TrendFactorZeroRejected(t *testing.T) {
@@ -153,12 +163,14 @@ func TestLowerHoltWinters_TrendFactorZeroRejected(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
-		t.Fatalf("expected holt_winters(tf=0, ...) to error; got nil (mutant `<=` → `<` at range_fns.go:94 would pass tf=0 through the (0,1) check)")
+		t.Fatalf("expected holt_winters(tf=0, ...) to error; got nil (mutant `<=` → `<` at " +
+			"scalar_domain.go:`if v <= 0 || v >= 1` would pass tf=0 through the (0,1) check)")
 	}
 }
 
 // TestLowerHoltWinters_TrendFactorOneRejected kills the `>=` → `>`
-// boundary flip at range_fns.go:94 in the trend-factor upper guard.
+// boundary flip at scalar_domain.go:`if v <= 0 || v >= 1`, reached for
+// the trend factor's upper bound.
 func TestLowerHoltWinters_TrendFactorOneRejected(t *testing.T) {
 	t.Parallel()
 
@@ -166,15 +178,14 @@ func TestLowerHoltWinters_TrendFactorOneRejected(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	_, err := lowerHoltWinters(call, s, lowerCtx{})
 	if err == nil {
-		t.Fatalf("expected holt_winters(tf=1, ...) to error; got nil (mutant `>=` → `>` at range_fns.go:94 would pass tf=1 through the (0,1) check)")
+		t.Fatalf("expected holt_winters(tf=1, ...) to error; got nil (mutant `>=` → `>` at " +
+			"scalar_domain.go:`if v <= 0 || v >= 1` would pass tf=1 through the (0,1) check)")
 	}
 }
 
 // TestRewriteAnchorToTimeUnix_QualifierGuardsName kills the
-// INVERT_LOGICAL mutant at binary.go:396, where the guard
-//
-//	if v.Name == "anchor_ts" && v.Qualifier == ""
-//
+// INVERT_LOGICAL mutant at
+// binary.go:`if v.Name == "anchor_ts" && v.Qualifier == ""`, whose guard
 // must combine the two conditions with AND. Flipping `&&` to `||`
 // would let a `ColumnRef{Name: "anchor_ts", Qualifier: "leg"}` slip
 // through and get rewritten to the TimestampColumn — but Qualifier
@@ -192,7 +203,8 @@ func TestRewriteAnchorToTimeUnix_QualifierGuardsName(t *testing.T) {
 		t.Fatalf("expected *ColumnRef, got %T", got)
 	}
 	if cr.Name != "anchor_ts" || cr.Qualifier != "leg" {
-		t.Fatalf("expected qualified anchor_ts to pass through unchanged; got %#v (mutant `&&` → `||` at binary.go:396 would rewrite it to %q)",
+		t.Fatalf("expected qualified anchor_ts to pass through unchanged; got %#v (mutant `&&` → `||` at "+
+			"binary.go:`if v.Name == \"anchor_ts\" && v.Qualifier == \"\"` would rewrite it to %q)",
 			cr, s.TimestampColumn)
 	}
 }
@@ -219,8 +231,8 @@ func TestRewriteAnchorToTimeUnix_BareAnchorTsIsRewritten(t *testing.T) {
 }
 
 // TestIsDefaultMatching_AllFourConjunctsRequired kills the conjunctive
-// guard at binary.go:236-238 which combines four independent
-// constraints with `&&`:
+// guard at binary.go:`return vm.Card == parser.CardOneToOne &&`, which
+// combines four independent constraints with `&&`:
 //
 //	vm.Card == parser.CardOneToOne &&
 //	    len(vm.MatchingLabels) == 0 &&
@@ -304,12 +316,9 @@ func TestLowerClamp_MixedBoundsTakeComputedPath(t *testing.T) {
 }
 
 // TestFoldBinaryScalar_DivByZeroNegativeBranches pins the `<` boundary
-// at scalar.go:89 inside foldBinaryScalar's DIV case. The branch
-//
-//	if lhs < 0 { return math.Inf(-1), true }
-//
-// returns -Inf for any strictly-negative LHS divided by zero. The
-// sibling `lhs == 0` branch (line 86) already handles the 0/0 case
+// at scalar.go:foldBinaryScalar:`if lhs < 0` in its DIV case. That
+// branch returns -Inf for any strictly-negative LHS divided by zero. The
+// sibling `if lhs == 0` branch just above it already handles the 0/0 case
 // (NaN), and the fall-through returns +Inf. A boundary mutant would
 // either misclassify the lhs=0 case (already caught earlier in the
 // switch) or shift the negative/positive split — pinning two opposite
@@ -376,10 +385,8 @@ func labelRewriteProject(t *testing.T, plan chplan.Node) *chplan.Project {
 }
 
 // TestLowerLabelJoin_SrcsSliceCapacityIsTight kills the two adjacent
-// arithmetic mutants at label_fns.go:81:39 inside lowerLabelJoin's
-// slice-capacity hint:
-//
-//	srcs := make([]string, 0, len(c.Args)-3)
+// arithmetic mutants on lowerLabelJoin's slice-capacity hint,
+// label_fns.go:`srcs := make([]string, 0, len(c.Args)-3)`.
 //
 // The `-` is gremlins ARITHMETIC_BASE (`-` → `+`) and the literal `3`
 // is INVERT_NEGATIVES (`-3` → `+3`). Both mutants enlarge the initial
@@ -435,7 +442,8 @@ func TestLowerLabelJoin_SrcsSliceCapacityIsTight(t *testing.T) {
 	// `-3` → `+3` mutant: cap == 5+3 == 8 (same observable as above).
 	// Both mutants must yield cap == 8; original yields cap == 2.
 	if got := cap(lj.Srcs); got != wantSrcs {
-		t.Fatalf("cap(Srcs) = %d; want %d (mutants `-` → `+` and `-3` → `+3` at label_fns.go:81:39 would yield cap=%d)",
+		t.Fatalf("cap(Srcs) = %d; want %d (mutants `-` → `+` and `-3` → `+3` at "+
+			"label_fns.go:`srcs := make([]string, 0, len(c.Args)-3)` would yield cap=%d)",
 			got, wantSrcs, len(call.Args)+3)
 	}
 }
@@ -477,16 +485,16 @@ func TestLowerLabelJoin_SrcsSliceCapacityIsTight_FiveSrcs(t *testing.T) {
 		t.Fatalf("len(Srcs) = %d; want %d", got, wantSrcs)
 	}
 	if got := cap(lj.Srcs); got != wantSrcs {
-		t.Fatalf("cap(Srcs) = %d; want %d (mutants at label_fns.go:81:39 would yield cap=%d)",
+		t.Fatalf("cap(Srcs) = %d; want %d (mutants at "+
+			"label_fns.go:`srcs := make([]string, 0, len(c.Args)-3)` would yield cap=%d)",
 			got, wantSrcs, len(call.Args)+3)
 	}
 }
 
 // TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName kills the two
-// adjacent arithmetic mutants at label_fns.go:83:79 inside the
-// per-src error-formatting:
-//
-//	fmt.Sprintf("src_label_%d", i-2)
+// adjacent arithmetic mutants on the per-src error-formatting,
+// label_fns.go:`i-2` (the index expression inside
+// `fmt.Sprintf("src_label_%d", i-2)`).
 //
 // The `-` is gremlins ARITHMETIC_BASE (`-` → `+`) and the literal `2`
 // is INVERT_NEGATIVES (`-2` → `+2`). Both mutants change the parameter
@@ -537,7 +545,8 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName(t *testing.T) {
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "src_label_2") {
-		t.Fatalf("error %q does not mention %q (mutants `-` → `+` and `-2` → `+2` at label_fns.go:83:79 would emit %q)",
+		t.Fatalf("error %q does not mention %q (mutants `-` → `+` and `-2` → `+2` at "+
+			"label_fns.go:`i-2` would emit %q)",
 			msg, "src_label_2", "src_label_6")
 	}
 	// Defensive: also ensure the mutant string is NOT present (e.g., if a
@@ -580,7 +589,8 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName_FirstSlot(t *testing.
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "src_label_1") {
-		t.Fatalf("error %q does not mention %q (mutants at label_fns.go:83:79 would emit %q)",
+		t.Fatalf("error %q does not mention %q (mutants at "+
+			"label_fns.go:`i-2` would emit %q)",
 			msg, "src_label_1", "src_label_5")
 	}
 	if strings.Contains(msg, "src_label_5") {
@@ -589,10 +599,8 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName_FirstSlot(t *testing.
 }
 
 // TestAbsentAttrsMap_ArgsSliceCapacityIsTight kills the ARITHMETIC_BASE
-// mutant at absent.go:473:43 inside absentAttrsMap's slice-capacity
-// hint:
-//
-//	args := make([]chplan.Expr, 0, len(pairs)*2)
+// mutant on absentAttrsMap's slice-capacity hint,
+// absent.go:`args := make([]chplan.Expr, 0, len(pairs)*2)`.
 //
 // Each of the len(pairs) iterations below appends exactly 2 elements
 // (one LitString per key, one per value), so len(args) after the loop
@@ -603,7 +611,7 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName_FirstSlot(t *testing.
 // level assertions (the emitted Map() args) pass under both branches;
 // only cap() distinguishes them, mirroring
 // TestLowerLabelJoin_SrcsSliceCapacityIsTight's own strategy for the
-// analogous label_fns.go:81:39 pair.
+// analogous label_fns.go:`srcs := make([]string, 0, len(c.Args)-3)` pair.
 func TestAbsentAttrsMap_ArgsSliceCapacityIsTight(t *testing.T) {
 	t.Parallel()
 
@@ -626,16 +634,16 @@ func TestAbsentAttrsMap_ArgsSliceCapacityIsTight(t *testing.T) {
 	// `/` mutant: cap starts at len(pairs)/2 == 1, then grows past it
 	// while appending 6 elements — never lands back on 6.
 	if got := cap(fc.Args); got != wantPairs*2 {
-		t.Fatalf("cap(Args) = %d; want %d (mutant `*` -> `/` at absent.go:473:43 would yield a different cap via forced regrowth)",
+		t.Fatalf("cap(Args) = %d; want %d (mutant `*` -> `/` at "+
+			"absent.go:`args := make([]chplan.Expr, 0, len(pairs)*2)` "+
+			"would yield a different cap via forced regrowth)",
 			got, wantPairs*2)
 	}
 }
 
 // TestLowerSortByLabel_KeysSliceCapacityIsTight kills the two adjacent
-// mutants at sort.go:192:48 inside lowerSortByLabel's slice-capacity
-// hint:
-//
-//	keys := make([]chplan.OrderKey, 0, len(c.Args)-1)
+// mutants on lowerSortByLabel's slice-capacity hint,
+// sort.go:`keys := make([]chplan.OrderKey, 0, len(c.Args)-1)`.
 //
 // The `-` is ARITHMETIC_BASE (`-` -> `+`) and the literal `1` is the
 // INVERT_NEGATIVES sibling (`-1` -> `+1`) — both produce the identical
@@ -672,17 +680,14 @@ func TestLowerSortByLabel_KeysSliceCapacityIsTight(t *testing.T) {
 	// Original: cap == len(c.Args)-1 == 4-1 == 3, exact fit.
 	// Both mutants: cap == 4+1 == 5.
 	if got := cap(ob.Keys); got != wantKeys {
-		t.Fatalf("cap(Keys) = %d; want %d (mutants at sort.go:192:48 would yield cap=%d)",
+		t.Fatalf("cap(Keys) = %d; want %d (mutants at sort.go:`keys := make([]chplan.OrderKey, 0, len(c.Args)-1)` would yield cap=%d)",
 			got, wantKeys, len(call.Args)+1)
 	}
 }
 
 // TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath kills the
-// CONDITIONALS_BOUNDARY mutant at instant_fns.go:202:17, which flips
-//
-//	if len(c.Args) >= 1 {
-//
-// to `> 1`. Every VALID clamp/clamp_max/clamp_min call the parser
+// CONDITIONALS_BOUNDARY mutant at
+// instant_fns.go:`if len(c.Args) >= 1`, which flips it to `> 1`. Every VALID clamp/clamp_max/clamp_min call the parser
 // accepts always carries at least 2 arguments, so a real query can
 // never observe the boundary — the only way to reach it with exactly 1
 // argument is to hand-build the *parser.Call the way this test does,
@@ -710,7 +715,7 @@ func TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath(t *testing.T) {
 	plan, err := lowerClamp(call, s, lowerCtx{})
 	if err != nil {
 		t.Fatalf("lowerClamp(clamp_max(<1 histogram arg>)): unexpected error %v "+
-			"(mutant `>= 1` -> `> 1` at instant_fns.go:202:17 would skip the histogram "+
+			"(mutant `>= 1` -> `> 1` at instant_fns.go:`if len(c.Args) >= 1` would skip the histogram "+
 			"shortcut and fail the switch's arg-count check instead)", err)
 	}
 	if plan == nil {
@@ -719,11 +724,8 @@ func TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath(t *testing.T) {
 }
 
 // TestLowerClamp_EqualLiteralBoundsTakeComputedPath kills the
-// CONDITIONALS_BOUNDARY mutant at instant_fns.go:271:12, which flips
-//
-//	if maxB < minB {
-//
-// to `<= `. Prom's funcClamp only short-circuits to an empty vector
+// CONDITIONALS_BOUNDARY mutant at instant_fns.go:`if maxB < minB`,
+// which flips it to `<=`. Prom's funcClamp only short-circuits to an empty vector
 // when max is STRICTLY less than min; `clamp(v, 5, 5)` (equal bounds)
 // is a normal, non-degenerate clamp that pins every sample to exactly
 // 5 via greatest(min, least(max, v)). The `<=` mutant would treat the
@@ -750,7 +752,7 @@ func TestLowerClamp_EqualLiteralBoundsTakeComputedPath(t *testing.T) {
 		if lb, ok := f.Predicate.(*chplan.LitBool); ok && !lb.V {
 			t.Fatalf("clamp(up, 5, 5) lowered to the degenerate-bounds empty Filter %#v; "+
 				"want the computed greatest/least projection (mutant `<` -> `<=` at "+
-				"instant_fns.go:271:12 would treat equal bounds as degenerate)", f)
+				"instant_fns.go:`if maxB < minB` would treat equal bounds as degenerate)", f)
 		}
 	}
 	if _, ok := plan.(*chplan.Project); !ok {
@@ -760,11 +762,8 @@ func TestLowerClamp_EqualLiteralBoundsTakeComputedPath(t *testing.T) {
 }
 
 // TestLowerInfo_ArgCountRejectsOutOfRange kills the INVERT_LOGICAL
-// mutant at info_fn.go:83:21, which flips
-//
-//	if len(c.Args) < 1 || len(c.Args) > 2 {
-//
-// to `&&`. No integer argument count can be simultaneously < 1 AND >
+// mutant at info_fn.go:`if len(c.Args) < 1 || len(c.Args) > 2`, which
+// flips its `||` to `&&`. No integer argument count can be simultaneously < 1 AND >
 // 2, so the mutant's conjunction is always false — it would accept
 // ANY argument count, including 0, silently skipping the validation
 // that guards `c.Args[0]` from an out-of-range index a few lines
@@ -784,7 +783,7 @@ func TestLowerInfo_ArgCountRejectsOutOfRange(t *testing.T) {
 	_, err := lowerInfo(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected info() with 0 arguments to error; got nil " +
-			"(mutant `||` -> `&&` at info_fn.go:83:21 can never be true, so " +
+			"(mutant `||` -> `&&` at info_fn.go:`if len(c.Args) < 1 || len(c.Args) > 2` can never be true, so " +
 			"validation never fires and c.Args[0] would index out of range)")
 	}
 	if !strings.Contains(err.Error(), "got 0") {
@@ -793,7 +792,8 @@ func TestLowerInfo_ArgCountRejectsOutOfRange(t *testing.T) {
 }
 
 // TestScalarGuardPlan_LoweringErrorPropagates kills the
-// CONDITIONALS_NEGATION mutant at scalar_guard.go:92:9, which flips
+// CONDITIONALS_NEGATION mutant at
+// scalar_guard.go:scalarGuardPlan:`if err != nil`, which flips
 //
 //	if err != nil {
 //		return nil, err
@@ -822,7 +822,7 @@ func TestScalarGuardPlan_LoweringErrorPropagates(t *testing.T) {
 	plan, err := scalarGuardPlan(e, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected scalarGuardPlan to propagate lowerScalarArg's error; got nil err, "+
-			"plan=%#v (mutant `!=` -> `==` at scalar_guard.go:92:9 would swallow the error "+
+			"plan=%#v (mutant `!=` -> `==` at scalar_guard.go:scalarGuardPlan:`if err != nil` would swallow the error "+
 			"and build a synthetic vector from a nil value instead)", plan)
 	}
 	if plan != nil {
@@ -831,7 +831,7 @@ func TestScalarGuardPlan_LoweringErrorPropagates(t *testing.T) {
 }
 
 // TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath kills
-// the INVERT_LOGICAL mutant at range_fns.go:246:10, which flips
+// the INVERT_LOGICAL mutant at range_fns.go:`if okSf && okTf`, which flips
 //
 //	if okSf && okTf {
 //		return sf, tf, nil, nil, nil
@@ -858,7 +858,7 @@ func TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath(t *testing.T) 
 	}
 	if sfExpr == nil || tfExpr == nil {
 		t.Fatalf("expected both sfExpr and tfExpr populated on the computed path "+
-			"(sfExpr=%v tfExpr=%v sf=%v tf=%v); mutant `&&` -> `||` at range_fns.go:246:10 "+
+			"(sfExpr=%v tfExpr=%v sf=%v tf=%v); mutant `&&` -> `||` at range_fns.go:`if okSf && okTf` "+
 			"would take the literal-only fast path and leave them nil",
 			sfExpr, tfExpr, sf, tf)
 	}
@@ -869,7 +869,8 @@ func TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath(t *testing.T) 
 }
 
 // TestSynthLabelsFromMatchers_NameSkipContinuesPastLaterMatchers kills
-// the INVERT_LOOPCTRL mutant at absent.go:390:4, where
+// the INVERT_LOOPCTRL mutant on the `continue` of
+// absent.go:synthLabelsFromMatchers:`if m.Name == model.MetricNameLabel`:
 //
 //	if m.Name == model.MetricNameLabel {
 //		continue
@@ -895,7 +896,8 @@ func TestSynthLabelsFromMatchers_NameSkipContinuesPastLaterMatchers(t *testing.T
 	want := map[string]string{"job": "a", "instance": "b"}
 	if len(got) != len(want) {
 		t.Fatalf("synthLabelsFromMatchers = %#v; want %d labels (mutant `continue` -> "+
-			"`break` at absent.go:390:4 would abandon the loop at __name__ and drop "+
+			"`break` at absent.go:synthLabelsFromMatchers:`if m.Name == model.MetricNameLabel` "+
+			"would abandon the loop at __name__ and drop "+
 			"every matcher after it, yielding 0)", got, len(want))
 	}
 	for _, sl := range got {
@@ -906,7 +908,8 @@ func TestSynthLabelsFromMatchers_NameSkipContinuesPastLaterMatchers(t *testing.T
 }
 
 // TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers kills the
-// INVERT_LOOPCTRL mutant at absent.go:440:4 — absentAttrsMap's own
+// INVERT_LOOPCTRL mutant at
+// absent.go:absentAttrsMap:`if m.Name == model.MetricNameLabel` — its own
 // `__name__`-skip, the mirror of synthLabelsFromMatchers' loop just
 // above (see that test's doc comment for why a single-matcher list
 // cannot distinguish `continue` from `break`).
@@ -922,7 +925,8 @@ func TestAbsentAttrsMap_NameSkipContinuesPastLaterMatchers(t *testing.T) {
 	fc, ok := got.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnMap {
 		t.Fatalf("absentAttrsMap = %#v; want a Map() FuncCall over the surviving pairs "+
-			"(mutant `continue` -> `break` at absent.go:440:4 would abandon the loop at "+
+			"(mutant `continue` -> `break` at "+
+			"absent.go:absentAttrsMap:`if m.Name == model.MetricNameLabel` would abandon the loop at "+
 			"__name__ and drop every matcher after it, yielding the empty-map literal)", got)
 	}
 	// 2 surviving pairs (job, instance) * 2 args each.
@@ -948,8 +952,9 @@ func mixedDiscriminatorMarkerProject(input chplan.Node) *chplan.Project {
 }
 
 // TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop kills
-// the INVERT_LOOPCTRL mutant at duplicate_labelset_guard.go:391:5,
-// inside guardLabelRewriteCollision's per-projection switch:
+// the INVERT_LOOPCTRL mutant on the `continue` of
+// duplicate_labelset_guard.go:`if mixed && mixedPayload[name]`, inside
+// guardLabelRewriteCollision's per-projection switch:
 //
 //	default:
 //		if mixed && mixedPayload[name] {
@@ -994,13 +999,15 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 	}
 	if !found {
 		t.Fatalf("GroupByAliases = %#v; want %q present (mutant `continue` -> `break` at "+
-			"duplicate_labelset_guard.go:391:5 would abandon the loop at the mixed-payload "+
+			"duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` "+
+			"would abandon the loop at the mixed-payload "+
 			"histogram column and never reach the projection after it)", agg.GroupByAliases, extraStepCol)
 	}
 }
 
 // TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop kills the
-// INVERT_LOOPCTRL mutant at duplicate_labelset_guard.go:400:5:
+// INVERT_LOOPCTRL mutant on the `continue` of
+// duplicate_labelset_guard.go:`if keyOnStep`:
 //
 //	if keyOnStep {
 //		groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
@@ -1042,7 +1049,7 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	for name := range wantAliases {
 		if !gotAliases[name] {
 			t.Fatalf("GroupByAliases = %#v; want both %q and %q present (mutant `continue` "+
-				"-> `break` at duplicate_labelset_guard.go:400:5 would abandon the loop after "+
+				"-> `break` at duplicate_labelset_guard.go:`if keyOnStep` would abandon the loop after "+
 				"the first key-on-step projection and never reach the second)",
 				agg.GroupByAliases, colA, colB)
 		}

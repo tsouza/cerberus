@@ -294,8 +294,17 @@ func TestBuildRetryWrapperRetriesOnlyTransientRegistryFailures(t *testing.T) {
 			"https://registry-1.docker.io/v2/library/golang/manifests/1.26: 429 Too Many Requests"
 		hubRateLimitProse = "toomanyrequests: You have reached your unauthenticated pull rate limit."
 
-		resetConnection     = `#4 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/": read: connection reset by peer`
-		compileError        = "internal/api/prom/handler.go:12:2: undefined: notAThing"
+		resetConnection = `#4 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/": read: connection reset by peer`
+		// The build failure is spelled as BuildKit's step-exit line rather than
+		// the compiler diagnostic it wraps. A raw `<file>.go:<line>:<col>:`
+		// diagnostic is indistinguishable, to any reader and to
+		// verify-code-citations, from a source citation naming a line — the form
+		// that gate exists to reject (#2953) — and this string is fixture data
+		// with no construct to name. Both spellings are classified identically:
+		// neither matches a transient or a rate-limit pattern in
+		// .github/scripts/lib/registry.mjs, so the case still asserts that a
+		// genuine build failure is not retried and keeps its exit status.
+		compileError        = `#8 ERROR: process "/bin/sh -c go build ./cmd/cerberus" did not complete successfully: exit code: 2`
 		compileExitStatus   = 2
 		neverSucceeds       = buildRetryAttempts + 1
 		succeedsImmediately = 1
