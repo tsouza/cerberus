@@ -67,7 +67,7 @@ func TestStampSearchTraceLimitWrapsPlainSource(t *testing.T) {
 }
 
 // TestWithSearchTraceLimit_ZeroStoresNothing pins the exact `n <= 0` boundary in
-// WithSearchTraceLimit (search_limit.go:32). At n == 0 the `<=` guard returns the
+// WithSearchTraceLimit (search_limit.go:`n <= 0`). At n == 0 the `<=` guard returns the
 // context UNCHANGED, so the key is never stored. The CONDITIONALS_BOUNDARY mutant
 // `n < 0` would fall through at n == 0 and store the int 0 under the key.
 // searchTraceLimit masks that (its own `n > 0` check reads it back as 0 either

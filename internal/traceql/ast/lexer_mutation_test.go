@@ -138,7 +138,7 @@ func TestParentScopedAttribute(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// lexer.go:523:15 (CONDITIONALS_BOUNDARY, `if sb.Len() > longestScopePrefix`
+// lexer.go:`if sb.Len() > longestScopePrefix` (CONDITIONALS_BOUNDARY, `if sb.Len() > longestScopePrefix`
 // -> `>=`). tryScopeAttribute only ever ACTS on the two keywords that map to
 // tokSpanDot / tokResourceDot — "span." (5 bytes) and "resource." (9) — and
 // the '.' arm two branches above fires before this length check, so sb holds

@@ -71,7 +71,7 @@ func clampFamilyNewValue(t *testing.T, q string) chplan.Expr {
 // ---------------------------------------------------------------------
 
 // TestIsVectorTypedSyntheticOperand_ConjunctsAndGuard kills two mutants
-// on the same line, binary.go:289:
+// on the same line, binary.go:`call, ok := e.(*parser.Call)`:
 //
 //	return ok && call.Func != nil && call.Func.Name == "vector"
 //
@@ -369,7 +369,7 @@ func TestNativePredictLinearHorizonEligible_ZeroHorizonIsEligible(t *testing.T) 
 
 // TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn kills
 // the CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_math_fn.go:270:21:
+// histogram_native_mixed_or_math_fn.go:`if call.Func.Name == "clamp_min"`:
 //
 //	fnName := chplan.FnLeast
 //	if call.Func.Name == "clamp_min" {
@@ -397,7 +397,7 @@ func TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn(t *testin
 
 // TestLowerClampOverMixedExpHistogramSetOp_MixedBoundsTakeRuntimePath
 // kills the INVERT_LOGICAL mutant at
-// histogram_native_mixed_or_math_fn.go:293:12:
+// histogram_native_mixed_or_math_fn.go:`if okMin && okMax`:
 //
 //	if okMin && okMax {
 //
@@ -461,7 +461,7 @@ func TestLowerClampOverMixedExpHistogramSetOp_DegenerateLiteralBoundsAreEmpty(t 
 
 // TestCountValuesOverMixedExpHistogramSetOp_RecognizesOnlyCountValues
 // kills the CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_aggregate_count_values.go:76:19:
+// histogram_native_mixed_or_aggregate_count_values.go:`if !ok || agg.Op != parser.COUNT_VALUES`:
 //
 //	if !ok || agg.Op != parser.COUNT_VALUES {
 //	    return nil, nil, false
@@ -493,7 +493,7 @@ func TestCountValuesOverMixedExpHistogramSetOp_RecognizesOnlyCountValues(t *test
 
 // TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup
 // kills the three CONDITIONALS_NEGATION mutants on
-// histogram_native_mixed_or_aggregate_presence.go:66:
+// histogram_native_mixed_or_aggregate_presence.go:`agg.Op != parser.COUNT`:
 //
 //	if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil {
 //	    return nil, nil, false
@@ -541,7 +541,7 @@ func TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup(t *testi
 // ---------------------------------------------------------------------
 
 // TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion
-// kills the three mutants on histogram_native_mixed_or_datefn.go:58:
+// kills the three mutants on histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == "timestamp"`:
 //
 //	if len(c.Args) != 1 || c.Func.Name == "timestamp" {
 //	    return nil, false
@@ -585,6 +585,6 @@ func TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion(t *testi
 
 	tsCall := &parser.Call{Func: parser.MustGetFunction("timestamp"), Args: parser.Expressions{binExpr}}
 	if _, ok := dateFnOverMixedExpHistogramSetOp(tsCall, s, lowerCtx{}); ok {
-		t.Fatalf("timestamp(<mixed or>) wrongly recognized (mutant `||`→`&&` at histogram_native_mixed_or_datefn.go:58:22, or `==`→`!=` at :58:37, would accept it)")
+		t.Fatalf("timestamp(<mixed or>) wrongly recognized (mutant `||`→`&&` at histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"`, or `==`→`!=` at :58:37, would accept it)")
 	}
 }

@@ -174,7 +174,7 @@ func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
 // EARLIER `continue` (the op.LHS extraction) or at the outer-operator match,
 // so a `break` here reaches the same `return nil, false`.
 //
-// rewrite.go:123:52 (INVERT_LOGICAL, `if !staticTypeAllowed(valL.Type,
+// rewrite.go:`if !staticTypeAllowed(valL.Type, rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)` (INVERT_LOGICAL, `if !staticTypeAllowed(valL.Type,
 // rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)` -> `&&`).
 // Both rules that carry a `restrict` list carry the same one — the string
 // family, {TypeString, TypeStringArray} — and that family is exactly the set

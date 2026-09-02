@@ -11,7 +11,7 @@
 // recognizer itself. See gremlins_kill_test.go for the shared file-header
 // convention this file otherwise follows.
 //
-//   - histogram_native_mixed_or.go:123:31, INVERT_LOGICAL (`||` -> `&&`)
+//   - histogram_native_mixed_or.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, INVERT_LOGICAL (`||` -> `&&`)
 //     inside mixedExpHistogramSetOp:
 //
 //     if s.ExpHistogramTable == "" || ctx.metadataFullRange {

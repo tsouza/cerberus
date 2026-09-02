@@ -8,7 +8,7 @@
 // Three mutants are NOT addressed with a dedicated test here — all three
 // are provably equivalent, not coverage gaps:
 //
-//   - histogram_native_subquery_select.go:102:31 (INVERT_LOGICAL,
+//   - histogram_native_subquery_select.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange` (INVERT_LOGICAL,
 //     `s.ExpHistogramTable == "" || ctx.metadataFullRange` -> `&&` inside
 //     selectFnOverExpHistogramSubquery). This function re-validates the
 //     identical condition one level down at line 118's
@@ -23,7 +23,7 @@
 //     `histogramSubquerySelectShape{}, false` — never a partially built
 //     one — so the two branches converge on the exact same return value on
 //     every input.
-//   - histogram_native_subquery_select.go:170:10 (CONDITIONALS_BOUNDARY,
+//   - histogram_native_subquery_select.go:`step < 0` (CONDITIONALS_BOUNDARY,
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
 //     defaultSubqueryStep }` (defaultSubqueryStep = time.Minute, a positive
 //     constant) already eliminates step == 0 as a reachable value by the
@@ -31,8 +31,8 @@
 //     sub.Step or the positive default. `<` and `<=` decide identically
 //     over every value except exactly 0, so no reachable input can make
 //     the two operators disagree (the same reasoning
-//     gremlins_kill_subquery_test.go's header gives for subquery.go:37:10).
-//   - histogram_native_subquery_select.go:185:14 (INVERT_LOGICAL, `!matched
+//     gremlins_kill_subquery_test.go's header gives for subquery.go:`step < 0`).
+//   - histogram_native_subquery_select.go:`!matched` (INVERT_LOGICAL, `!matched
 //     || chplan.RowShapeOf(input) != chplan.HistogramRowShape` -> `&&`).
 //     lowerExpHistogramValuedShape's own contract (histogram_native_float_
 //     fn.go) guarantees `matched == false` if and only if its very last
@@ -142,7 +142,7 @@ func TestLowerSelectFnOverExpHistogramSubquery_InstantPinDoesNotBroadcast(t *tes
 }
 
 // TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits kills
-// the INVERT_LOGICAL mutant at histogram_native_bare.go:225:31, where
+// the INVERT_LOGICAL mutant at histogram_native_bare.go:bareExpHistogramMatrixSelector:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -164,7 +164,7 @@ func TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits(t *testin
 }
 
 // TestLowerExpHistogramBareMatrix_PinnedAtNotOverwrittenByQueryEnd kills
-// the INVERT_LOGICAL mutant at histogram_native_bare.go:265:25
+// the INVERT_LOGICAL mutant at histogram_native_bare.go:`anchor.End.IsZero() && !ctx.end.IsZero()`
 // (`anchor.End.IsZero() && !ctx.end.IsZero()` -> `||`).
 //
 // The original AND only back-fills anchor.End from ctx.end when the
@@ -202,13 +202,13 @@ func TestLowerExpHistogramBareMatrix_PinnedAtNotOverwrittenByQueryEnd(t *testing
 	}
 	if strings.Contains(got, "2030-05-05") {
 		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ "+
-			"timestamp (mutant `&&`->`||` at histogram_native_bare.go:265:25 overwrites the pin "+
+			"timestamp (mutant `&&`->`||` at histogram_native_bare.go:`if anchor.End.IsZero() && !ctx.end.IsZero()` overwrites the pin "+
 			"with ctx.end):\n%s", got)
 	}
 }
 
 // TestLowerExpHistogramBareMatrix_PredicateAppliesFilter kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_bare.go:277:10 (`pred
+// CONDITIONALS_NEGATION mutant at histogram_native_bare.go:lowerExpHistogramBareMatrix:`if pred != nil` (`pred
 // != nil` -> `== nil`) inside lowerExpHistogramBareMatrix:
 //
 //	if pred != nil {
@@ -239,7 +239,7 @@ func TestLowerExpHistogramBareMatrix_PredicateAppliesFilter(t *testing.T) {
 	}
 	if _, ok := hp.Input.(*chplan.Filter); !ok {
 		t.Fatalf("HistogramProjection.Input = %T, want *chplan.Filter (mutant `!=`->`==` at "+
-			"histogram_native_bare.go:277:10 would leave the scan unfiltered whenever a real "+
+			"histogram_native_bare.go:lowerExpHistogramBareMatrix:`if pred != nil` would leave the scan unfiltered whenever a real "+
 			"predicate exists)", hp.Input)
 	}
 }

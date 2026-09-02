@@ -10,7 +10,7 @@
 //
 //   - histogram_native_binop_eq.go:119:31 (`s.ExpHistogramTable == "" ||
 //     ctx.metadataFullRange` -> `&&` inside expHistogramHistogramCompareBinop).
-//   - histogram_native_binop_eq.go:191:31 (the FIRST `||` of the three-way
+//   - histogram_native_binop_eq.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool` (the FIRST `||` of the three-way
 //     `s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`
 //     inside expHistogramHistogramCompareBoolBinop).
 //
@@ -107,7 +107,7 @@ func TestExpHistogramHistogramCompareBoolBinop_BothSidesMustBeHistogramValued(t 
 }
 
 // TestProjectHistogramCompareSide_ProjectionsCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at histogram_native_binop_eq.go:353:49 inside
+// ARITHMETIC_BASE mutant at histogram_native_binop_eq.go:`projs := make([]chplan.Projection, 0, len(cols)+1)` inside
 // projectHistogramCompareSide's slice-capacity hint:
 //
 //	projs := make([]chplan.Projection, 0, len(cols)+1)
@@ -137,13 +137,13 @@ func TestProjectHistogramCompareSide_ProjectionsCapacityIsTight(t *testing.T) {
 	}
 	if gotCap := cap(got.Projections); gotCap != wantLen {
 		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at "+
-			"histogram_native_binop_eq.go:353:49 would yield a different cap via forced regrowth)",
+			"histogram_native_binop_eq.go:`projs := make([]chplan.Projection, 0, len(cols)+1)` would yield a different cap via forced regrowth)",
 			gotCap, wantLen)
 	}
 }
 
 // TestCountOverExpHistogram_MetadataFullRangeShortCircuits kills the
-// INVERT_LOGICAL mutant at histogram_native_count.go:73:31, where
+// INVERT_LOGICAL mutant at histogram_native_count.go:countOverExpHistogram:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //

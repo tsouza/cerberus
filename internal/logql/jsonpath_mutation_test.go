@@ -125,14 +125,14 @@ func TestJSONPathParse_NonDigitInsideIndexRejected(t *testing.T) {
 // Two scanInt/scanStr mutants are GENUINELY EQUIVALENT w.r.t. the parser's
 // reachable input domain and are documented (not pinned) here:
 //
-//   - jsonpath.go:245:30 CONDITIONALS_BOUNDARY `len(digits) > 0` → `>= 0`
+//   - jsonpath.go:`len(digits) > 0` CONDITIONALS_BOUNDARY `len(digits) > 0` → `>= 0`
 //     in scanInt's float-index guard. scanInt is only ever entered from
 //     next() AFTER a digit is detected and unread, so the first rune it
 //     reads is always a digit and len(digits) >= 1 by the time a '.' can
 //     appear. The `> 0` qualifier therefore never evaluates at len == 0 in
 //     any reachable path; `>= 0` yields identical behaviour. (A leading '.'
 //     is tokenised as jpDot by next(), never routed to scanInt.)
-//   - jsonpath.go:218:9 INVERT_LOGICAL `!ok || r != '"'` → `&&` in scanStr's
+//   - jsonpath.go:`!ok || r != '"'` INVERT_LOGICAL `!ok || r != '"'` → `&&` in scanStr's
 //     opening-quote guard. scanStr is only ever entered from next() after a
 //     '"' is detected and unread, so its first read is always a successful
 //     '"' (ok == true, r == '"'); both operands are false and the `||`/`&&`

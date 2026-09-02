@@ -414,7 +414,7 @@ func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
 }
 
 // TestFusedSamplesQueryTemporalityGate kills the CONDITIONALS_NEGATION
-// mutant at range_window_fused.go:234 (`g.temporality != nil`, inside
+// mutant at range_window_fused.go:`g.temporality != nil` (`g.temporality != nil`, inside
 // samplesQuery). When the inner window carries a TemporalityColumn, the
 // fused samples layer must read the series' single AggregationTemporality
 // via `any(...)` under windowTemporalityAlias; when it doesn't, that

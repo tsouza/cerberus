@@ -6,13 +6,13 @@
 // the file:line:col convention.
 //
 // Two CONDITIONALS_BOUNDARY mutants reported for this file are NOT
-// addressed here (subquery.go:37:10 and subquery.go:408:26): both are
-// mathematically equivalent mutants, not coverage gaps. At subquery.go:37
+// addressed here (subquery.go:`if step < 0` and subquery.go:`if ns%stepNS != 0 && ns < 0`): both are
+// mathematically equivalent mutants, not coverage gaps. At subquery.go:`if step < 0`
 // (`if step < 0`), `step` is reassigned to the positive
 // `defaultSubqueryStep` constant whenever it was zero (lines 33-36), so
 // `step` can never be exactly 0 by the time the boundary check runs —
 // `<` and `<=` decide identically over every reachable value. At
-// subquery.go:408:26 (`if ns%stepNS != 0 && ns < 0`), the `<`/`<=`
+// subquery.go:`if ns%stepNS != 0 && ns < 0`, the `<`/`<=`
 // boundary sits at ns==0, but ns==0 forces `ns%stepNS == 0` for any
 // nonzero stepNS, which makes the left `&&` operand false and
 // short-circuits the whole expression regardless of the right operand's
@@ -204,7 +204,7 @@ func TestLowerAbsentOverTimeOverSubquery_InstantModeKeepsExistingPin(t *testing.
 }
 
 // TestLowerSubqueryOverCall_UnsafeInstantTransformSkipsIdentityWrap kills
-// the INVERT_LOGICAL mutant at subquery.go:487:34 — the `&&` in
+// the INVERT_LOGICAL mutant at subquery.go:`if isInstantTransformCall(call) && subqueryInstantSafe(call)` — the `&&` in
 // `if isInstantTransformCall(call) && subqueryInstantSafe(call)`. abs() is
 // an instant-transform call, but its argument here is rate(...), which is
 // NOT sample-preserving, so subqueryInstantSafe must be false and the
@@ -289,7 +289,7 @@ func TestSubqueryInstantSafe_PiExceptionNotRejected(t *testing.T) {
 }
 
 // TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor kills the
-// CONDITIONALS_NEGATION mutant at subquery.go:793:83 — the second `==` in
+// CONDITIONALS_NEGATION mutant at subquery.go:lowerSubqueryOverBinary:`if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape` — the second `==` in
 // `if shape := chplan.RowShapeOf(inner); shape == chplan.HistogramRowShape || shape == chplan.MixedRowShape`.
 // A plain (non-histogram, non-mixed) `or` composition must lower
 // successfully even with no query eval-time context threaded through
@@ -334,7 +334,7 @@ func TestSubqueryOffsetCtx_NonZeroOffsetShiftsBothBounds(t *testing.T) {
 	wantStart := start.Add(-10 * time.Minute)
 	wantEnd := end.Add(-10 * time.Minute)
 	if !got.start.Equal(wantStart) {
-		t.Errorf("start = %s, want %s (mutant `==`->`!=` at subquery.go:804:24 would leave it at %s)",
+		t.Errorf("start = %s, want %s (mutant `==`->`!=` at subquery.go:`if sub.OriginalOffset == 0` would leave it at %s)",
 			got.start, wantStart, start)
 	}
 	if !got.end.Equal(wantEnd) {
@@ -494,6 +494,6 @@ func TestLowerSubqueryOverCallSubquery_WidensToSumOfBothRanges(t *testing.T) {
 	const want = time.Hour + 5*time.Minute
 	if wideInner.OuterRange != want {
 		t.Fatalf("wideInner.OuterRange = %s, want %s (sub.Range + innerSub.Range) — mutant `+`->`-` "+
-			"at subquery.go:2871:28 would yield %s", wideInner.OuterRange, want, time.Hour-5*time.Minute)
+			"at subquery.go:lowerSubqueryOverSubquery:`StepAlign: true, // epoch-align inner subquery sample grid (PromQL)` would yield %s", wideInner.OuterRange, want, time.Hour-5*time.Minute)
 	}
 }

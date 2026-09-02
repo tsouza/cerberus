@@ -85,7 +85,7 @@ func TestMutation_FusedIntersect_UnfilteredArmDoesNotEndTheGateLoop(t *testing.T
 }
 
 // TestMutation_SplitCommonConjuncts_FactorsTheSharedConjunct defends
-// set_op.go:497 (`if len(common) == 0 { return nil, arms }`, the "nothing is
+// set_op.go:`if len(common) == 0` (`if len(common) == 0 { return nil, arms }`, the "nothing is
 // shared, keep every arm whole" bail-out).
 //
 // Mutation CONDITIONALS_NEGATION turns `== 0` into `!= 0`, inverting the
@@ -129,7 +129,7 @@ func TestMutation_SplitCommonConjuncts_FactorsTheSharedConjunct(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// set_op.go:327:35 (CONDITIONALS_BOUNDARY, `i < j` -> `i <= j` in
+// set_op.go:`i < j` (CONDITIONALS_BOUNDARY, `i < j` -> `i <= j` in
 // filterChainOverScan's in-place reversal of the collected Filter
 // predicates). The extra iteration the mutant runs is the one where
 // `i == j`, whose body is `preds[i], preds[j] = preds[j], preds[i]` with
@@ -140,7 +140,7 @@ func TestMutation_SplitCommonConjuncts_FactorsTheSharedConjunct(t *testing.T) {
 // mutant produces a byte-identical `preds` and therefore an identical
 // conjunction — only the iteration count differs.
 //
-// set_op.go:490:5 (INVERT_LOOPCTRL, `break` -> `continue` in
+// set_op.go:`break` (INVERT_LOOPCTRL, `break` -> `continue` in
 // splitCommonConjuncts' shared-conjunct scan). The break guards a boolean
 // latch: `shared[i]` is set true once before the inner loop and the loop
 // body's only write sets it false. Continuing instead of breaking keeps

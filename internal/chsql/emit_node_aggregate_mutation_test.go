@@ -16,7 +16,7 @@ import (
 // clause — accepting the combination would silently DROP the predicate, so a
 // `sum(x) > 5`-style filter would stop filtering.
 //
-// Kills emit_node.go:519:39 CONDITIONALS_NEGATION (`len(a.GroupBy) == 0` ->
+// Kills emit_node.go:`return fmt.Errorf("%w: Aggregate.Having combined with DropEmptyOnNoGroup", ErrUnsupported)` CONDITIONALS_NEGATION (`len(a.GroupBy) == 0` ->
 // `!= 0`): the mutated guard fires only for GROUPED aggregates, so this
 // ungrouped plan sails past it into emitAggregateNoGroup and emits SQL.
 func TestMutation_EmitAggregate_HavingWithDropEmptyIsRejected(t *testing.T) {
@@ -39,7 +39,7 @@ func TestMutation_EmitAggregate_HavingWithDropEmptyIsRejected(t *testing.T) {
 // DropEmptyOnNoGroup is simply inert (the flag only speaks about the no-group
 // case).
 //
-// Also kills emit_node.go:519:39 CONDITIONALS_NEGATION from the other side:
+// Also kills emit_node.go:`return fmt.Errorf("%w: Aggregate.Having combined with DropEmptyOnNoGroup", ErrUnsupported)` CONDITIONALS_NEGATION from the other side:
 // the mutated guard rejects exactly this plan.
 func TestMutation_EmitAggregate_HavingWithGroupKeysIsAccepted(t *testing.T) {
 	t.Parallel()

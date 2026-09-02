@@ -410,7 +410,7 @@ func TestRunBatch_FixedPointBranchCountsEachChange(t *testing.T) {
 }
 
 // matchAllPattern is a Pattern that matches EVERY node, including nil,
-// recording nothing. It exists to witness the rule_pattern.go:53 guard:
+// recording nothing. It exists to witness the rule_pattern.go:`if n == nil || r == nil || r.Match == nil || r.Transform == nil` guard:
 // stock kindPattern.Match(nil) returns (nil,false), so it can't reveal
 // whether Apply's nil-guard short-circuited before calling Match. A
 // pattern that matches nil makes the difference observable.
@@ -421,7 +421,7 @@ func (matchAllPattern) Match(_ chplan.Node) (optimizer.Bindings, bool) {
 }
 
 // TestPatternRule_ApplyNilShortCircuitsBeforeMatch pins the leading
-// `n == nil ||` term of the nil-guard at rule_pattern.go:53:
+// `n == nil ||` term of the nil-guard at rule_pattern.go:`n == nil ||`:
 //
 //	if n == nil || r == nil || r.Match == nil || r.Transform == nil {
 //		return n, false

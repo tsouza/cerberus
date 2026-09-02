@@ -130,7 +130,7 @@ func TestIsCheapPredicate_AsymmetricMapAccess(t *testing.T) {
 }
 
 // TestFlattenAnd_NonAndOp kills the `bin.Op != chplan.OpAnd` → `==`
-// flip at prewhere.go:13 (the negation mutator on the conjunction
+// flip at prewhere.go:`bin.Op != chplan.OpAnd` (the negation mutator on the conjunction
 // type-switch guard). A Binary{OpOr} or Binary{OpEq} must be treated
 // as a single opaque leaf — flattenAnd must not recurse through it.
 func TestFlattenAnd_NonAndOp(t *testing.T) {
@@ -490,7 +490,7 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_GroupByDisplayNamesFallback kills the `!=
-// ""` mutant at exemplars.go:139:65. The branch falls back to the SQL
+// ""` mutant at exemplars.go:`numAnchors, err := exemplarNumAnchors(rw, stepNS)`. The branch falls back to the SQL
 // alias only when the display name slot is empty; when both alias and
 // display name are present, the display name wins. The check inspects
 // the bound args (the labels render as `?` placeholders bound to
@@ -893,7 +893,7 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 }
 
 // TestEmitMetricsAggregate_BadStartEndPin kills the boundary mutants
-// on `span < 0` at range_window.go:736 (mirror of exemplars.go:115).
+// on `span < 0` at range_window.go:736 (mirror of exemplars.go:`span < 0`).
 // End < Start must error; End == Start must succeed (boundary case).
 func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
 	t.Parallel()
@@ -1813,7 +1813,7 @@ func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_ArithmeticBoundary118 kills the two
-// ARITHMETIC_BASE mutants at exemplars.go:118 (`span/stepNS + 1`). The
+// ARITHMETIC_BASE mutants at exemplars.go:`span/stepNS + 1`. The
 // formula divides the half-window span by stepNS, then adds 1 for the
 // end-inclusive anchor count. Mutants:
 //   - `+` → `-`: yields one fewer anchor (e.g. 5 instead of 6).
@@ -2625,7 +2625,7 @@ func TestValidateScanShape_BothSet_FilterScan(t *testing.T) {
 }
 
 // TestValidateScanShape_BothEmpty_FilterScan kills the
-// CONDITIONALS_NEGATION at emit_node.go:86 reached via emitFilterScan.
+// CONDITIONALS_NEGATION at emit_node.go:`sql, args, err := b.Build()` reached via emitFilterScan.
 // With both Table and UnionTables empty the Filter path must surface
 // the same error as the bare-Scan path.
 func TestValidateScanShape_BothEmpty_FilterScan(t *testing.T) {

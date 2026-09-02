@@ -589,7 +589,7 @@ func TestLowerLabelJoin_NonLiteralSrcErrorIndexesParamName_FirstSlot(t *testing.
 }
 
 // TestAbsentAttrsMap_ArgsSliceCapacityIsTight kills the ARITHMETIC_BASE
-// mutant at absent.go:473:43 inside absentAttrsMap's slice-capacity
+// mutant at absent.go:absentAttrsMap:`for _, name := range order` inside absentAttrsMap's slice-capacity
 // hint:
 //
 //	args := make([]chplan.Expr, 0, len(pairs)*2)
@@ -626,7 +626,7 @@ func TestAbsentAttrsMap_ArgsSliceCapacityIsTight(t *testing.T) {
 	// `/` mutant: cap starts at len(pairs)/2 == 1, then grows past it
 	// while appending 6 elements — never lands back on 6.
 	if got := cap(fc.Args); got != wantPairs*2 {
-		t.Fatalf("cap(Args) = %d; want %d (mutant `*` -> `/` at absent.go:473:43 would yield a different cap via forced regrowth)",
+		t.Fatalf("cap(Args) = %d; want %d (mutant `*` -> `/` at absent.go:absentAttrsMap:`for _, name := range order` would yield a different cap via forced regrowth)",
 			got, wantPairs*2)
 	}
 }
@@ -672,7 +672,7 @@ func TestLowerSortByLabel_KeysSliceCapacityIsTight(t *testing.T) {
 	// Original: cap == len(c.Args)-1 == 4-1 == 3, exact fit.
 	// Both mutants: cap == 4+1 == 5.
 	if got := cap(ob.Keys); got != wantKeys {
-		t.Fatalf("cap(Keys) = %d; want %d (mutants at sort.go:192:48 would yield cap=%d)",
+		t.Fatalf("cap(Keys) = %d; want %d (mutants at sort.go:`keys := make([]chplan.OrderKey, 0, len(c.Args)-1)` would yield cap=%d)",
 			got, wantKeys, len(call.Args)+1)
 	}
 }
@@ -710,7 +710,7 @@ func TestLowerClamp_SingleArgHistogramShortcutTakesHistogramPath(t *testing.T) {
 	plan, err := lowerClamp(call, s, lowerCtx{})
 	if err != nil {
 		t.Fatalf("lowerClamp(clamp_max(<1 histogram arg>)): unexpected error %v "+
-			"(mutant `>= 1` -> `> 1` at instant_fns.go:202:17 would skip the histogram "+
+			"(mutant `>= 1` -> `> 1` at instant_fns.go:`>= 1` would skip the histogram "+
 			"shortcut and fail the switch's arg-count check instead)", err)
 	}
 	if plan == nil {
@@ -750,7 +750,7 @@ func TestLowerClamp_EqualLiteralBoundsTakeComputedPath(t *testing.T) {
 		if lb, ok := f.Predicate.(*chplan.LitBool); ok && !lb.V {
 			t.Fatalf("clamp(up, 5, 5) lowered to the degenerate-bounds empty Filter %#v; "+
 				"want the computed greatest/least projection (mutant `<` -> `<=` at "+
-				"instant_fns.go:271:12 would treat equal bounds as degenerate)", f)
+				"instant_fns.go:`if maxB < minB` would treat equal bounds as degenerate)", f)
 		}
 	}
 	if _, ok := plan.(*chplan.Project); !ok {
@@ -784,7 +784,7 @@ func TestLowerInfo_ArgCountRejectsOutOfRange(t *testing.T) {
 	_, err := lowerInfo(call, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected info() with 0 arguments to error; got nil " +
-			"(mutant `||` -> `&&` at info_fn.go:83:21 can never be true, so " +
+			"(mutant `||` -> `&&` at info_fn.go:`if len(c.Args) < 1 || len(c.Args) > 2` can never be true, so " +
 			"validation never fires and c.Args[0] would index out of range)")
 	}
 	if !strings.Contains(err.Error(), "got 0") {
@@ -822,7 +822,7 @@ func TestScalarGuardPlan_LoweringErrorPropagates(t *testing.T) {
 	plan, err := scalarGuardPlan(e, s, lowerCtx{})
 	if err == nil {
 		t.Fatalf("expected scalarGuardPlan to propagate lowerScalarArg's error; got nil err, "+
-			"plan=%#v (mutant `!=` -> `==` at scalar_guard.go:92:9 would swallow the error "+
+			"plan=%#v (mutant `!=` -> `==` at scalar_guard.go:scalarGuardPlan:`if err != nil` would swallow the error "+
 			"and build a synthetic vector from a nil value instead)", plan)
 	}
 	if plan != nil {
@@ -858,7 +858,7 @@ func TestHoltWintersFactors_MixedLiteralComputedTakesComputedPath(t *testing.T) 
 	}
 	if sfExpr == nil || tfExpr == nil {
 		t.Fatalf("expected both sfExpr and tfExpr populated on the computed path "+
-			"(sfExpr=%v tfExpr=%v sf=%v tf=%v); mutant `&&` -> `||` at range_fns.go:246:10 "+
+			"(sfExpr=%v tfExpr=%v sf=%v tf=%v); mutant `&&` -> `||` at range_fns.go:`if okSf && okTf` "+
 			"would take the literal-only fast path and leave them nil",
 			sfExpr, tfExpr, sf, tf)
 	}

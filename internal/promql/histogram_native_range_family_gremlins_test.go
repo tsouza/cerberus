@@ -110,7 +110,7 @@ func TestSelectExpHistogramWindowSamples_ProjectionCapacityIsTight(t *testing.T)
 
 // TestExpHistogramResetMaskStage_ProjectionCapacityIsTight is the sibling
 // of the test above for the ARITHMETIC_BASE mutant at
-// histogram_native_reset.go:156:65 inside expHistogramResetMaskStage's
+// histogram_native_reset.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)` inside expHistogramResetMaskStage's
 // identically-shaped capacity hint. The function appends exactly
 // len(keyAliases) + len(aggs) + 1 (the reset-mask column) projections, so
 // the same exact-capacity argument applies.
@@ -133,14 +133,14 @@ func TestExpHistogramResetMaskStage_ProjectionCapacityIsTight(t *testing.T) {
 		t.Fatalf("len(Projections) = %d, want %d", got, want)
 	}
 	if got := cap(proj.Projections); got != want {
-		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at histogram_native_reset.go:156:65 under-allocates and forces a reallocation, leaving cap != %d)",
+		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at histogram_native_reset.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)` under-allocates and forces a reallocation, leaving cap != %d)",
 			got, want, want)
 	}
 }
 
 // TestCountPresentOverExpHistogram_MetadataFullRangeShortCircuits kills
 // the INVERT_LOGICAL mutant at
-// histogram_native_count_present_over_time.go:65:31, where
+// histogram_native_count_present_over_time.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -163,7 +163,7 @@ func TestCountPresentOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.
 
 // TestCountPresentOverExpHistogram_ZeroRangeRejected kills the
 // CONDITIONALS_BOUNDARY mutant at
-// histogram_native_count_present_over_time.go:73:21 (`ms.Range <= 0` ->
+// histogram_native_count_present_over_time.go:`ms.Range <= 0` (`ms.Range <= 0` ->
 // `ms.Range < 0`). A zero-duration matrix selector is built by hand — the
 // PromQL grammar refuses a literal `[0s]` — and must still be rejected.
 func TestCountPresentOverExpHistogram_ZeroRangeRejected(t *testing.T) {
@@ -177,7 +177,7 @@ func TestCountPresentOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 		},
 	}
 	if _, _, _, ok := countPresentOverExpHistogram(call, s, lowerCtx{}); ok {
-		t.Fatalf("expected zero-range matrix selector to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_count_present_over_time.go:73:21)")
+		t.Fatalf("expected zero-range matrix selector to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_count_present_over_time.go:`if !ok || ms.Range <= 0`)")
 	}
 }
 
@@ -197,7 +197,7 @@ func TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
 }
 
 // TestRangeFnOverExpHistogram_ZeroRangeRejected kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_range_fn.go:170:21
+// CONDITIONALS_BOUNDARY mutant at histogram_native_range_fn.go:`ms.Range <= 0`
 // (`ms.Range <= 0` -> `ms.Range < 0`).
 func TestRangeFnOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
@@ -215,7 +215,7 @@ func TestRangeFnOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 }
 
 // TestRangeFnOverExpHistogramSubquery_ZeroRangeRejected kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_range_fn.go:223:22
+// CONDITIONALS_BOUNDARY mutant at histogram_native_range_fn.go:`sub.Range <= 0`
 // (`sub.Range <= 0` -> `sub.Range < 0`). Unlike the guard-clause
 // INVERT_LOGICAL mutant on this same function's first line (masked by
 // isExpHistogramValuedShape's own identical guard — see this file's
@@ -243,7 +243,7 @@ func TestRangeFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 }
 
 // TestLowerExpHistogramRangeFnOverSubquery_ZeroStepDefaults kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_range_fn.go:266:10
+// CONDITIONALS_NEGATION mutant at histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery:`if step == 0`
 // (`step == 0` -> `step != 0`) inside lowerExpHistogramRangeFnOverSubquery.
 //
 // A subquery with no explicit step (`[5m:]`) must fall back to
@@ -306,7 +306,7 @@ func TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd(t *testing
 }
 
 // TestLabelCallOverExpHistogramDroppingShape_LabelReplaceExactArity kills
-// two mutants at once, both on histogram_native_dropping_shape.go:213:
+// two mutants at once, both on histogram_native_dropping_shape.go:`len(call.Args) != 5`:
 //   - CONDITIONALS_NEGATION at :204:25 (`s.ExpHistogramTable == ""` ->
 //     `!= ""`): with the negation, ANY non-empty ExpHistogramTable — the
 //     normal, default schema — makes the guard bail, so this test's
@@ -332,7 +332,7 @@ func TestLabelCallOverExpHistogramDroppingShape_LabelReplaceExactArity(t *testin
 }
 
 // TestLabelCallOverExpHistogramDroppingShape_LabelJoinMinArity kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_dropping_shape.go:217:21
+// CONDITIONALS_BOUNDARY mutant at histogram_native_dropping_shape.go:`len(call.Args) < 3`
 // (`len(call.Args) < 3` -> `<= 3`). The minimum valid label_join call has
 // exactly 3 args (vector, dst, separator, zero src labels) — the parser
 // itself refuses this degenerate shape, so the Call is built by hand.

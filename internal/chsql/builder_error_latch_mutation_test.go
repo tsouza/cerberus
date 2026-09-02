@@ -102,7 +102,7 @@ func TestMutation_Subquery_PropagatesNestedError(t *testing.T) {
 // guard: an outer Builder that has ALREADY failed keeps its own error when a
 // spliced subquery fails too.
 //
-// Kills builder.go:2001:17 INVERT_LOGICAL (`&&` -> `||`), which fires on every
+// Kills builder.go:`b.sb.WriteString(p2)` INVERT_LOGICAL (`&&` -> `||`), which fires on every
 // non-nil nested error and so replaces the outer Builder's first error with
 // the subquery's.
 func TestMutation_Subquery_KeepsOuterFirstError(t *testing.T) {

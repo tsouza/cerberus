@@ -18,7 +18,7 @@ import (
 // that cap.
 //
 // It does NOT kill the CONDITIONALS_BOUNDARY mutant on the guard it
-// exercises (exemplars.go:298, `if maxPerSeries > 0` -> `>= 0`); see the
+// exercises (exemplars.go:`if maxPerSeries > 0`, `if maxPerSeries > 0` -> `>= 0`); see the
 // NOT KILLABLE note at the foot of this file for why that mutant is
 // equivalent. The contract is worth pinning regardless — it is the
 // difference between "uncapped" and "every bucket capped to zero rows".
@@ -246,7 +246,7 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// exemplars.go:298:18 (CONDITIONALS_BOUNDARY, `if maxPerSeries > 0` ->
+// exemplars.go:`if maxPerSeries > 0` (CONDITIONALS_BOUNDARY, `if maxPerSeries > 0` ->
 // `>= 0`). The two forms differ only at maxPerSeries == 0, where the mutant
 // enters the block and calls `outerSb.Limit(0)` followed by
 // `outerSb.LimitBy(...)`. QueryBuilder.Limit records `hasLimit = n > 0`, so

@@ -19,7 +19,7 @@ import (
 //     `emitterSpansTable == "" || table != emitterSpansTable`. Negating either
 //     conjunct, or turning `||` into `&&`, would either reject a scoped-out
 //     table or wave through an unbounded scan over the enforced table.
-//   - scan_resource_bound.go:129:22 — the requireInnerSpansScanBound guard
+//   - scan_resource_bound.go:`spansTable == "" || findScanTable(inner) != spansTable` — the requireInnerSpansScanBound guard
 //     `spansTable == "" || findScanTable(inner) != spansTable`. `||`→`&&` would
 //     reject a non-spans inner (or wave through the windowless spans inner).
 //   - scan_resource_bound.go:211:19/25/34/60 — the requireSpansScanWindow guard
@@ -35,7 +35,7 @@ const (
 	scanBoundTSColumn      = "Timestamp"
 )
 
-// TestRequireScanResourceBound_GuardBranches pins scan_resource_bound.go:97.
+// TestRequireScanResourceBound_GuardBranches pins scan_resource_bound.go:`table != emitterSpansTable`.
 func TestRequireScanResourceBound_GuardBranches(t *testing.T) {
 	t.Parallel()
 	none := scanResourceBound{}  // zero value → kind spansBoundNone
@@ -66,7 +66,7 @@ func TestRequireScanResourceBound_GuardBranches(t *testing.T) {
 	}
 }
 
-// TestRequireInnerSpansScanBound_GuardBranch pins scan_resource_bound.go:129.
+// TestRequireInnerSpansScanBound_GuardBranch pins scan_resource_bound.go:`if spansTable == "" || findScanTable(inner) != spansTable`.
 func TestRequireInnerSpansScanBound_GuardBranch(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

@@ -130,7 +130,7 @@ func TestSortRankForMinimum(t *testing.T) {
 }
 
 // TestIsNarrowIntegerDiscriminatorFinalReturnLogical defends
-// isNarrowIntegerDiscriminator's final return (prewhere.go:287): the chain
+// isNarrowIntegerDiscriminator's final return (prewhere.go:`if !ok || (binary.Op != chplan.OpEq && binary.Op != chplan.OpNe)`): the chain
 // `columnOK && literalOK && column.Qualifier == "" && shape.IsInteger...
 // && sortRankFor(...) < 0`.
 //

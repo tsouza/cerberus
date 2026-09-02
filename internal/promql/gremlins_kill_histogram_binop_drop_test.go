@@ -7,7 +7,7 @@
 // gremlins_kill_test.go for the shared file-header convention this file
 // otherwise follows.
 //
-//   - histogram_native_binop.go:218:31, INVERT_LOGICAL (`||` -> `&&`)
+//   - histogram_native_binop.go:expHistogramDroppingHistogramBinop:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, INVERT_LOGICAL (`||` -> `&&`)
 //     inside expHistogramDroppingHistogramBinop:
 //
 //     if s.ExpHistogramTable == "" || ctx.metadataFullRange {
