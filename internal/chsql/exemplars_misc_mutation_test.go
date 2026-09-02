@@ -164,16 +164,17 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 
 // TestExemplarsRateAndCountIgnoreAttr pins the two-site agreement that
 // makes the exemplar Value column well-formed for the counting ops:
-// EmitMetricsExemplars projects the metric operand as `metric_arg` ONLY
-// when the op is neither rate nor count_over_time (exemplars.go:179), so
-// the Value expression must reach for `argMax(1, ts)` — never
-// `argMax(metric_arg, ts)` — for exactly those two ops
-// (exemplars.go:275). Whether the caller left Attr set is irrelevant:
+// EmitMetricsExemplars's inner SELECT projects the metric operand as
+// `metric_arg` ONLY when the op is neither rate nor count_over_time, so
+// its Value expression must reach for `argMax(1, ts)` — never
+// `argMax(metric_arg, ts)` — for exactly those two ops. The two guards
+// are a pair: whichever one moves, the other has to move with it.
+// Whether the caller left Attr set is irrelevant:
 // rate and count_over_time count rows, and the operand a caller may have
 // attached is deliberately ignored.
 //
-// Inverting the `||` at exemplars.go:275 makes that guard unsatisfiable.
-// A rate/count_over_time node carrying an Attr then falls into the
+// Inverting the `||` on the Value-expression guard makes it
+// unsatisfiable. A rate/count_over_time node carrying an Attr then falls into the
 // `else if m.Attr != nil` arm and emits `argMax(metric_arg, ts)` against
 // a column the inner SELECT never projected — SQL ClickHouse rejects at
 // parse time. Nothing in the suite asked, because every test built the

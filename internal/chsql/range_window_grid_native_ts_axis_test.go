@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tsouza/cerberus/internal/chplan"
 )
 
 // The native ts-grid aggregates take their timestamp axis as the FIRST
@@ -31,12 +34,12 @@ import (
 // the first time once #2940 stopped `go vet`'s bools analyzer rejecting it as
 // "suspect and").
 //
-// The assertion below is a class-level ratchet driven by the emitter's OWN
-// registry, in the same shape as TestNativeTSGrid_ScanBound_EveryRegisteredFunc
-// in range_window_grid_native_scan_bound_test.go: every registered native
-// function must have its axis choice recorded here, so a function added later
-// cannot ship without one, and the two axis forms are mutually exclusive so
-// neither expectation can be satisfied vacuously.
+// nativeGridTsAxisFrag has TWO callers — the range emitter
+// (range_window_grid_native.go) and the instant one
+// (range_window_grid_native_instant.go), which build different node types and
+// so cannot share one driver. Both are covered below, mirroring the way
+// range_window_grid_native_scan_bound_test.go pairs its registry loop with
+// TestNativeTSGrid_ScanBound_Resample for the node type that loop cannot reach.
 
 // nativeWholeSecondTsAxis records, per registered native function, whether its
 // timestamp axis is the whole-second `toDateTime(<ts>)` form (true) or the raw
@@ -55,44 +58,86 @@ var nativeWholeSecondTsAxis = map[string]bool{
 }
 
 // nativeTsAxisRaw / nativeTsAxisWholeSecond are the two renderings of the axis
-// argument as it appears at the head of the aggregate's argument group.
+// argument as it appears at the head of the aggregate's argument group. Under
+// strings.HasPrefix over the argument group they are mutually exclusive in both
+// directions, so asserting the expected one is enough — no negative half is
+// needed to tell them apart.
 const (
-	nativeTsAxisRaw          = "`" + nativeScanBoundTSCol + "`"
-	nativeTsAxisWholeSecond  = "toDateTime(`" + nativeScanBoundTSCol + "`)"
-	errNativeAggNotRendered  = "emitted SQL contains no %q call — the expression did not reach the native emitter"
-	errNativeAggUnterminated = "emitted SQL's %q call is unterminated — cannot read its argument group"
+	nativeTsAxisRaw         = "`" + nativeScanBoundTSCol + "`"
+	nativeTsAxisWholeSecond = "toDateTime(`" + nativeScanBoundTSCol + "`)"
 )
 
-// nativeGridArgGroup returns the text of the argument (second) paren group of
-// the first `fn(params...)(args...)` parametric call in sql. The params group
-// nests parens of its own (`toDateTime(…, 'UTC')`), so the scan matches them
-// rather than searching for the first `)`.
+// nativeGridArgGroup returns the text INSIDE the argument (second) paren group
+// of the first `fn(params...)(args...)` parametric call in sql. Both groups
+// nest parens of their own (`toDateTime(…, 'UTC')` in the params,
+// `toDateTime(<ts>)` in the args), so each is found by matching parens rather
+// than by searching for the next `)`.
+//
+// It reads the FIRST such call. Every caller below emits exactly one native
+// node — the range cases are guarded by requireNativeNodeCount(t, plan, 1) and
+// the instant case builds a single node by hand — which matters because `rate`
+// and `increase` share the aggregate name `timeSeriesRateToGrid`, so a plan
+// carrying two native nodes would silently be asserted on its first one only.
+// The `fn+"("` match also keeps the `…ToGridState(` / `…ToGridMerge(`
+// combinators from being mistaken for the aggregate itself.
 func nativeGridArgGroup(sql, fn string) (string, bool) {
-	i := strings.Index(sql, fn+"(")
-	if i < 0 {
+	open := strings.Index(sql, fn+"(")
+	if open < 0 {
 		return "", false
 	}
+	paramsEnd, ok := matchParen(sql, open+len(fn))
+	if !ok || paramsEnd+1 >= len(sql) || sql[paramsEnd+1] != '(' {
+		return "", false
+	}
+	argsEnd, ok := matchParen(sql, paramsEnd+1)
+	if !ok {
+		return "", false
+	}
+	return sql[paramsEnd+2 : argsEnd], true
+}
+
+// matchParen returns the index of the `)` closing the `(` at position open, or
+// false when the group is unterminated.
+func matchParen(s string, open int) (int, bool) {
 	depth := 0
-	for j := i + len(fn); j < len(sql); j++ {
-		switch sql[j] {
+	for i := open; i < len(s); i++ {
+		switch s[i] {
 		case '(':
 			depth++
 		case ')':
 			depth--
 			if depth == 0 {
-				// End of the params group; the args group opens next.
-				if j+1 >= len(sql) || sql[j+1] != '(' {
-					return "", false
-				}
-				return sql[j+2:], true
+				return i, true
 			}
 		}
 	}
-	return "", false
+	return 0, false
+}
+
+// assertNativeTsAxis fails unless the aggregate's argument group leads with the
+// axis form recorded for fn.
+func assertNativeTsAxis(t *testing.T, fn, aggFn, sql string, wholeSecond bool) {
+	t.Helper()
+
+	args, ok := nativeGridArgGroup(sql, aggFn)
+	if !ok {
+		t.Fatalf("%s: emitted SQL contains no complete %q parametric call — the expression did not reach the native emitter\nSQL: %s",
+			fn, aggFn, sql)
+	}
+	want := nativeTsAxisRaw
+	if wholeSecond {
+		want = nativeTsAxisWholeSecond
+	}
+	if !strings.HasPrefix(args, want+",") {
+		t.Errorf("%s: %s's timestamp axis is not %s — the emitted grid would be computed on the wrong x-axis\nargument group: %s",
+			fn, aggFn, want, args)
+	}
 }
 
 // TestNativeTSGrid_TsAxis_EveryRegisteredFunc pins the per-function timestamp
-// axis for every member of the emitter's native registry.
+// axis for every member of the emitter's native registry, through the RANGE
+// emitter. Driven by the registry itself, so a native aggregate registered
+// later cannot ship without recording an axis choice here.
 func TestNativeTSGrid_TsAxis_EveryRegisteredFunc(t *testing.T) {
 	t.Parallel()
 
@@ -121,28 +166,100 @@ func TestNativeTSGrid_TsAxis_EveryRegisteredFunc(t *testing.T) {
 			if err != nil {
 				t.Fatalf("emit %q: %v", tc.query, err)
 			}
-			args, ok := nativeGridArgGroup(sql, agg.Fn)
-			if !ok {
-				if !strings.Contains(sql, agg.Fn+"(") {
-					t.Fatalf(errNativeAggNotRendered+"\nSQL: %s", agg.Fn, sql)
-				}
-				t.Fatalf(errNativeAggUnterminated+"\nSQL: %s", agg.Fn, sql)
-			}
+			assertNativeTsAxis(t, fn, agg.Fn, sql, wholeSecond)
+		})
+	}
+}
 
-			want, unwanted := nativeTsAxisRaw, nativeTsAxisWholeSecond
-			if wholeSecond {
-				want, unwanted = nativeTsAxisWholeSecond, nativeTsAxisRaw
+// nativeTsAxisInstantWindow / nativeTsAxisInstantHorizon are the instant
+// fixture's lookback window and predict_linear's whole-second horizon t.
+const (
+	nativeTsAxisInstantWindow  = 5 * time.Minute
+	nativeTsAxisInstantHorizon = 3600
+)
+
+// nativeTsAxisInstantOutOfScope names the two registry members the INSTANT
+// emitter rejects outright rather than emitting: the lowering never builds an
+// instant node for them, and the emitter fails loudly instead of accepting a
+// shape nothing has differentially proven (cerberus issue #2748). They are
+// therefore skipped by the loop below rather than left silently uncovered.
+var nativeTsAxisInstantOutOfScope = map[string]bool{"increase": true, "delta": true}
+
+// TestNativeTSGrid_TsAxis_InstantEmitter covers nativeGridTsAxisFrag's OTHER
+// caller. RangeWindowGridNativeInstant is a distinct node type with its own
+// emitter, so the registry loop above cannot reach it — the same gap
+// TestNativeTSGrid_ScanBound_Resample closes for the scan bound.
+//
+// The node is built directly rather than lowered: instant native routing is
+// per-function opt-in at the lowering seam, and this test is about the
+// emitter's axis choice, not about which queries reach it.
+func TestNativeTSGrid_TsAxis_InstantEmitter(t *testing.T) {
+	t.Parallel()
+
+	anchor := time.Date(2029, 2, 3, 4, 0, 0, 0, time.UTC)
+
+	for fn, agg := range nativeTSGridFn {
+		if nativeTsAxisInstantOutOfScope[fn] {
+			continue
+		}
+		wholeSecond, recorded := nativeWholeSecondTsAxis[fn]
+		if !recorded {
+			t.Errorf("nativeTSGridFn registers %q but nativeWholeSecondTsAxis records no timestamp-axis choice for it", fn)
+			continue
+		}
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+
+			node := &chplan.RangeWindowGridNativeInstant{
+				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Func:            fn,
+				Range:           nativeTsAxisInstantWindow,
+				Anchor:          anchor,
+				TimestampColumn: nativeScanBoundTSCol,
+				ValueColumn:     "Value",
+				GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
 			}
-			if !strings.HasPrefix(args, want+",") {
-				t.Errorf("%s: %s's timestamp axis is not %s — the emitted grid would be computed on the "+
-					"wrong x-axis\nargument group: %s", fn, agg.Fn, want, args)
+			if fn == "predict_linear" {
+				node.Scalars = []float64{nativeTsAxisInstantHorizon}
 			}
-			// Mutually exclusive by construction: the whole-second form
-			// CONTAINS the raw form, so the negative half is asserted only
-			// for the raw expectation, where it is discriminating.
-			if !wholeSecond && strings.HasPrefix(args, unwanted+",") {
-				t.Errorf("%s: %s's timestamp axis is %s, but this function reads the raw column\n"+
-					"argument group: %s", fn, agg.Fn, unwanted, args)
+			sql, _, err := Emit(context.Background(), node)
+			if err != nil {
+				t.Fatalf("emit instant %q: %v", fn, err)
+			}
+			assertNativeTsAxis(t, fn, agg.Fn, sql, wholeSecond)
+		})
+	}
+}
+
+// TestNativeTSGrid_TsAxis_InstantOutOfScopeStillRejected keeps the skip list
+// above honest: the two functions it excludes are excluded because the instant
+// emitter REFUSES them, not because covering them was inconvenient. If either
+// ever starts emitting, this fails and the skip has to be reconsidered rather
+// than quietly hiding an uncovered axis choice.
+func TestNativeTSGrid_TsAxis_InstantOutOfScopeStillRejected(t *testing.T) {
+	t.Parallel()
+
+	anchor := time.Date(2029, 2, 3, 4, 0, 0, 0, time.UTC)
+
+	if len(nativeTsAxisInstantOutOfScope) == 0 {
+		t.Fatal("nativeTsAxisInstantOutOfScope is empty — this test would vacuously pass")
+	}
+	for fn := range nativeTsAxisInstantOutOfScope {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+
+			node := &chplan.RangeWindowGridNativeInstant{
+				Input:           &chplan.Scan{Table: "otel_metrics_gauge"},
+				Func:            fn,
+				Range:           nativeTsAxisInstantWindow,
+				Anchor:          anchor,
+				TimestampColumn: nativeScanBoundTSCol,
+				ValueColumn:     "Value",
+				GroupBy:         []chplan.Expr{&chplan.ColumnRef{Name: "Attributes"}},
+			}
+			if _, _, err := Emit(context.Background(), node); err == nil {
+				t.Fatalf("instant emitter accepted %q — it is listed as out of scope, so either the "+
+					"exclusion in nativeTsAxisInstantOutOfScope is stale or the axis choice is now uncovered", fn)
 			}
 		})
 	}

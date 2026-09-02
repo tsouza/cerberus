@@ -14,6 +14,10 @@ import (
 // the expected divisor a readable literal.
 const metricsReducerRouteStep = time.Minute
 
+// metricsReducerRouteSpanSteps is the grid span in steps, so the fixture
+// covers several anchors rather than the instant-fallback single one.
+const metricsReducerRouteSpanSteps = 5
+
 // metricsReducerRouteZeroFillReducer is the reducer emitRangeWindowMetrics
 // renders for the ops that zero-fill empty buckets: the sample arm tags every
 // real row `1 AS in_window` and the generator arm tags every (group, anchor)
@@ -25,6 +29,25 @@ const (
 	metricsReducerRouteRateDivisor     = " / 60"
 	metricsReducerRouteOperandReducer  = "toFloat64(sum(`metric_arg`))"
 )
+
+// metricsOpZeroFillExpectation records, for EVERY chplan.MetricsOp, whether
+// the matrix path zero-fills its empty buckets. rate and count_over_time do
+// because Tempo's aggregators emit 0 for an empty bucket; quantile_over_time
+// does too (and is additionally routed to the bucket-shape emitter before the
+// reducer choice is made); the observed-only ops do not, because Tempo
+// initialises their aggregators to NaN and skips empty buckets on the wire.
+// MetricsOpInvalid is the zero value and reaches no reducer at all.
+var metricsOpZeroFillExpectation = map[chplan.MetricsOp]bool{
+	chplan.MetricsOpInvalid:           false,
+	chplan.MetricsOpRate:              true,
+	chplan.MetricsOpCountOverTime:     true,
+	chplan.MetricsOpQuantileOverTime:  true,
+	chplan.MetricsOpSumOverTime:       false,
+	chplan.MetricsOpAvgOverTime:       false,
+	chplan.MetricsOpMinOverTime:       false,
+	chplan.MetricsOpMaxOverTime:       false,
+	chplan.MetricsOpHistogramOverTime: false,
+}
 
 // metricsReducerRoutePlan builds the matrix-path RangeWindow the emitter walks
 // for op, over a spans inner with a bounded request window.
@@ -45,7 +68,7 @@ func metricsReducerRoutePlan(op chplan.MetricsOp) *chplan.RangeWindow {
 		Step:            metricsReducerRouteStep,
 		Range:           metricsReducerRouteStep,
 		Start:           start,
-		End:             start.Add(5 * metricsReducerRouteStep),
+		End:             start.Add(metricsReducerRouteSpanSteps * metricsReducerRouteStep),
 		TimestampColumn: "Timestamp",
 	}
 }
@@ -113,31 +136,22 @@ func TestMetricsMatrixCountingOpsTakeTheZeroFillReducer(t *testing.T) {
 	})
 
 	// The predicate that routes the two counting ops away from
-	// metricsReducerFrag, asserted directly. quantile_over_time is listed
-	// because it zero-fills too, and is additionally routed to the
-	// bucket-shape emitter before the reducer choice is even made.
+	// metricsReducerFrag, asserted directly and over the WHOLE enum rather
+	// than a hand-picked sample: an op added to chplan.MetricsOp later must
+	// have its zero-fill answer recorded here, or this fails. That is what
+	// keeps the equivalence note at the foot of this file from quietly going
+	// stale behind a new op.
 	t.Run("zero-fill op set", func(t *testing.T) {
 		t.Parallel()
-		zeroFilling := []chplan.MetricsOp{
-			chplan.MetricsOpRate,
-			chplan.MetricsOpCountOverTime,
-			chplan.MetricsOpQuantileOverTime,
-		}
-		for _, op := range zeroFilling {
-			if !metricsOpZeroFillsEmptyBuckets(op) {
-				t.Errorf("metricsOpZeroFillsEmptyBuckets(%v) = false, want true", op)
+		for op := chplan.MetricsOpInvalid; op <= chplan.MetricsOpHistogramOverTime; op++ {
+			want, recorded := metricsOpZeroFillExpectation[op]
+			if !recorded {
+				t.Errorf("chplan.MetricsOp %v (%d) has no recorded zero-fill expectation — record one, "+
+					"or the new op ships with no coverage of the predicate this file's equivalence note depends on", op, op)
+				continue
 			}
-		}
-		observedOnly := []chplan.MetricsOp{
-			chplan.MetricsOpSumOverTime,
-			chplan.MetricsOpAvgOverTime,
-			chplan.MetricsOpMinOverTime,
-			chplan.MetricsOpMaxOverTime,
-			chplan.MetricsOpHistogramOverTime,
-		}
-		for _, op := range observedOnly {
-			if metricsOpZeroFillsEmptyBuckets(op) {
-				t.Errorf("metricsOpZeroFillsEmptyBuckets(%v) = true, want false", op)
+			if got := metricsOpZeroFillsEmptyBuckets(op); got != want {
+				t.Errorf("metricsOpZeroFillsEmptyBuckets(%v) = %v, want %v", op, got, want)
 			}
 		}
 	})

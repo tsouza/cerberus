@@ -149,8 +149,18 @@ func TestLower_ExpHistogram_MixedSetOpOr_NonTopKAggregateNotRouted(t *testing.T)
 // TestLower_ExpHistogram_MixedSetOpOr_TopKBoolModifierRejected pins the
 // `bool` guard [lowerTopKOverMixedExpHistogramSetOp] carries: `bool` is
 // only legal on a comparison binary op, never on the `or` this
-// composition lowers, so the shape is rejected with that message rather
-// than silently lowering.
+// composition lowers, so the shape is rejected rather than silently
+// lowered.
+//
+// The rejection message is NOT unique — thirteen sites in this package
+// emit the same "'bool' modifier is only allowed on comparison binary
+// ops" text, so matching it alone would pass even with this recognizer
+// disabled entirely and the rejection coming from some other route. The
+// test therefore establishes the route FIRST: the identical AST with
+// ReturnBool cleared must lower to a *chplan.TopK, which is reachable
+// only through this file's recognizer. Only then is ReturnBool set and
+// the rejection asserted, so the second half is known to be this guard's
+// answer and not a stranger's.
 func TestLower_ExpHistogram_MixedSetOpOr_TopKBoolModifierRejected(t *testing.T) {
 	t.Parallel()
 
@@ -173,8 +183,20 @@ func TestLower_ExpHistogram_MixedSetOpOr_TopKBoolModifierRejected(t *testing.T) 
 	if !ok {
 		t.Fatalf("topk operand is %T, want *parser.BinaryExpr", agg.Expr)
 	}
-	bin.ReturnBool = true
 
+	// Route control: without ReturnBool this AST reaches
+	// lowerTopKOverMixedExpHistogramSetOp and lowers. If this fails, the
+	// rejection below proves nothing about that function.
+	plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+	if err != nil {
+		t.Fatalf("LowerAt(%q) without ReturnBool: unexpected error: %v — the rejection assertion below would not be about this recognizer", query, err)
+	}
+	if _, isTopK := plan.(*chplan.TopK); !isTopK {
+		t.Fatalf("LowerAt(%q) without ReturnBool: plan root is %T, want *chplan.TopK — this AST is not on the topk-over-mixed-`or` route, so the rejection below would be some other site's",
+			query, plan)
+	}
+
+	bin.ReturnBool = true
 	_, err = promql.LowerAt(context.Background(), expr, s, at, at)
 	if err == nil {
 		t.Fatalf("LowerAt(%q) with ReturnBool set: expected an error, got none", query)
