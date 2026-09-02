@@ -49,8 +49,9 @@ package smoke
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -106,45 +107,12 @@ const perfSmokeDB = "default"
 // --- calibrated constants (task 4) ----------------------------------------
 //
 // Every number below was measured, not guessed, against a real
-// testcontainers ClickHouse 25.8-alpine on this branch. See each constant's
-// own comment for the specific run that produced it; the PR description
-// carries the full calibration log.
-
-// sentinelMemoryCapBytes is the max_memory_usage cap the whole test session
-// runs under. 1 GiB matches config's default CERBERUS_CH_QUERY_MAX_MEMORY —
-// the cap a real deployment runs under by default — so
-// spillThreshold(cap) (spill.go) resolves to the exact 512 MiB the #2364
-// incident's own postmortem cites, and Sentinel 2's seed cardinality is
-// calibrated to reliably cross it at this specific cap.
-const sentinelMemoryCapBytes int64 = 1 << 30 // 1 GiB
-
-// sentinelMemoryCapFraction bounds the ABSOLUTE, cap-relative ceiling every
-// sentinel's peak memory must stay under: strictly above spillCapDenominator's
-// implied 0.5 (spill.go — below that fraction spill should already have
-// engaged and kept every query comfortably under half the cap) and strictly
-// below 1.0 (ClickHouse's own MEMORY_LIMIT_EXCEEDED boundary). 0.75 sits at
-// the midpoint of that (0.5, 1.0) admissible band. Calibration against a real
-// testcontainers ClickHouse 25.8-alpine measured every sentinel comfortably
-// under this line: Sentinel 1 (native histogram) ~205 MiB (19% of the 1 GiB
-// cap), Sentinel 2 (spill) ~650 MiB (61%) at its calibrated 10,000-series
-// cardinality, Sentinel 3 (compare) ~682 MiB (64%) at its calibrated
-// 40,000-trace cardinality — every one comfortably under the 0.75x/805 MiB
-// line with real margin, so 0.75 is not tuned tight to the measured data; it
-// is the band midpoint the task asked for, validated rather than picked
-// blind.
-const sentinelMemoryCapFraction = 0.75
-
-// sentinelBaselineHeadroom multiplies each sentinel's calibrated max-of-N
-// measurement to derive its committed per-sentinel ceiling in
-// perf-smoke-baseline.json. 1.5x mirrors scale_wall_pin_chdb_test.go's
-// scanAmplificationHeadroom (its low-variance prong): real-CH memory_usage
-// across the calibration repeats varied by well under 2% run-to-run for
-// every sentinel (e.g. Sentinel 3's five repeats at its calibrated scale all
-// landed within 4 bytes of each other, 682,475,556-682,475,660), far tighter
-// than scale-wall's WALL-clock prong (which uses 2.5x precisely because wall
-// is noisier), so the tighter 1.5x is the deliberate choice for a memory
-// metric.
-const sentinelBaselineHeadroom = 1.5
+// testcontainers ClickHouse on this branch. See each constant's own comment
+// for the specific run that produced it; the PR description carries the full
+// calibration log. The memory-cap fraction and the baseline headroom — the
+// two numbers the ceilings themselves are derived from — live in the untagged
+// baseline.go alongside that derivation, so the unit lane can assert the
+// derived bounds without Docker.
 
 // sentinelRepeats (N) is the max-of-N repeat count each sentinel's memory
 // measurement is taken over — a CEILING gate wants the worst observed case,
@@ -307,13 +275,16 @@ func runSentinelFloor(
 				}
 			}
 
-			capCeiling := uint64(float64(sentinelMemoryCapBytes) * sentinelMemoryCapFraction)
+			const capCeiling = sentinelCapCeilingBytes
 			t.Logf("%s (%s): max-of-%d peak memory_usage = %d bytes (%.1f%% of %d-byte cap; absolute ceiling %d)",
 				sentinel.Name, sentinel.Mechanism, sentinelRepeats, maxBytes,
 				100*float64(maxBytes)/float64(sentinelMemoryCapBytes), sentinelMemoryCapBytes, capCeiling)
 
 			if update {
-				ceiling := uint64(float64(maxBytes) * sentinelBaselineHeadroom)
+				// committedCeilingBytes clamps to capCeiling — see its own
+				// comment for why an unclamped PRONG (b) ceiling gates
+				// nothing (#2906).
+				ceiling := committedCeilingBytes(maxBytes)
 				updated[sentinel.Name] = sentinelBound{Name: sentinel.Name, MaxOfNBytes: maxBytes, CeilingBytes: ceiling}
 				return
 			}
@@ -534,70 +505,37 @@ func startPerfSmokeCH(ctx context.Context, t *testing.T, image string) *chclient
 }
 
 // --- baseline load/write (invariant 9: never hand-edited) -----------------
-
-// perfSmokeBaselinePath is the committed bound file, a sibling of
-// scale-wall-baseline.json one level up from this package.
-const perfSmokeBaselinePath = "../perf-smoke-baseline.json"
-
-// sentinelBound is one sentinel's committed bound: the calibration-time
-// max-of-N measurement (kept for the diff/failure message) and the
-// headroom-multiplied ceiling the gate actually asserts against.
-type sentinelBound struct {
-	Name         string `json:"name"`
-	MaxOfNBytes  uint64 `json:"max_of_n_bytes"`
-	CeilingBytes uint64 `json:"ceiling_bytes"`
-}
-
-type perfSmokeBaseline struct {
-	Sentinels []sentinelBound `json:"sentinels"`
-}
-
-func baselineFor(b perfSmokeBaseline, name string) (sentinelBound, bool) {
-	for _, s := range b.Sentinels {
-		if s.Name == name {
-			return s, true
-		}
-	}
-	return sentinelBound{}, false
-}
+//
+// The file format, the loader and the writer live in the untagged baseline.go;
+// these two wrappers add only this lane's test plumbing (t.Fatalf, and the
+// calibration path's tolerance for a not-yet-created file).
 
 func loadPerfSmokeBaseline(t *testing.T) perfSmokeBaseline {
 	t.Helper()
-	buf, err := os.ReadFile(perfSmokeBaselinePath)
+	b, err := readPerfSmokeBaseline()
 	if err != nil {
-		if os.Getenv("UPDATE_PERF_SMOKE_BASELINE") == "1" {
+		if os.Getenv("UPDATE_PERF_SMOKE_BASELINE") == "1" && errors.Is(err, fs.ErrNotExist) {
 			return perfSmokeBaseline{}
 		}
-		t.Fatalf("read baseline %s: %v — run `just update-perf-smoke-baseline` to create it", perfSmokeBaselinePath, err)
-	}
-	var b perfSmokeBaseline
-	if err := json.Unmarshal(buf, &b); err != nil {
-		t.Fatalf("parse baseline %s: %v", perfSmokeBaselinePath, err)
+		t.Fatalf("%v — run `just update-perf-smoke-baseline` to create it", err)
 	}
 	return b
 }
 
-// writePerfSmokeBaseline serialises updated (keyed by sentinel name, in
-// Sentinels order) as pretty JSON with a trailing newline, so the committed
-// file diffs cleanly and is never hand-edited (invariant 9) — this is the
-// ONLY code path that writes perf-smoke-baseline.json, gated on
-// UPDATE_PERF_SMOKE_BASELINE=1.
+// writePerfSmokeBaseline orders updated (keyed by sentinel name) by Sentinels
+// and hands it to writePerfSmokeBaselineFile — this is the ONLY code path that
+// writes perf-smoke-baseline.json, gated on UPDATE_PERF_SMOKE_BASELINE=1.
 func writePerfSmokeBaseline(t *testing.T, updated map[string]sentinelBound) {
 	t.Helper()
-	out := perfSmokeBaseline{Sentinels: make([]sentinelBound, 0, len(Sentinels))}
+	bounds := make([]sentinelBound, 0, len(Sentinels))
 	for _, s := range Sentinels {
 		bound, ok := updated[s.Name]
 		if !ok {
 			t.Fatalf("writePerfSmokeBaseline: no measurement for sentinel %q", s.Name)
 		}
-		out.Sentinels = append(out.Sentinels, bound)
+		bounds = append(bounds, bound)
 	}
-	buf, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal baseline: %v", err)
-	}
-	buf = append(buf, '\n')
-	if err := os.WriteFile(perfSmokeBaselinePath, buf, 0o644); err != nil {
+	if err := writePerfSmokeBaselineFile(bounds); err != nil {
 		t.Fatalf("write baseline: %v", err)
 	}
 	t.Logf("wrote %s", perfSmokeBaselinePath)
