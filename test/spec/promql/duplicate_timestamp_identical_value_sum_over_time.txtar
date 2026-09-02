@@ -1,0 +1,61 @@
+# Identical-value duplicate timestamp, ENROLLED for parity against the real
+# upstream Prometheus engine (cerberus issue #2931).
+#
+# sum_over_time takes the array-shaped lowering, whose sample assembly runs
+# through chsql's windowSamplePairsFrag — the single gate PR #2928 applied
+# the distinct-(timestamp, value) rule at.
+#
+# The seed is byte-for-byte the parity-EXEMPT sibling's
+# (sorted_slab_sum_over_time_range_step.txtar) except at 00:02:00, where job
+# 'api' carries 2.0 TWICE instead of 2.0 and 3.0. That one change is what
+# moves the fixture from "no reference answer exists" to "the reference
+# answer is the contract":
+#
+#   - conflicting values (2.0, 3.0): Prometheus's tsdb.memSeries.appendable
+#     rejects the second append with ErrDuplicateSampleForTimestamp, so the
+#     head keeps whichever arrived FIRST. Which one survives is a fact about
+#     ingestion order, not about PromQL — hence parity_exempt (#2905).
+#   - identical values (2.0, 2.0): appendable accepts a bit-identical
+#     re-append as a silent NO-OP. Prometheus holds one sample; ClickHouse
+#     holds two rows. Both engines can therefore agree on "how many samples
+#     is this", so the shape has a right answer and belongs under `parity`.
+#
+# The contract cerberus implements (#2914, PR #2928): a window's sample
+# multiset is its DISTINCT (timestamp, value) rows. This fixture is what
+# measures that claim against the real engine instead of reasoning about it.
+#
+# job 'web' is a plain monotonic series that no duplicate touches — the
+# control. A regression that collapsed rows too eagerly would move 'web'
+# too, so 'web' staying put is what distinguishes "deduplicates the
+# duplicate" from "deduplicates everything".
+-- query.promql --
+sum by(job) (sum_over_time(http_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('http_requests_total', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('http_requests_total', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+-- expected_rows --
+[]
