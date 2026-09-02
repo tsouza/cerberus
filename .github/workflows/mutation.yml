@@ -181,6 +181,17 @@ jobs:
       #     exit status, because `go test` reports a failing test, a package
       #     that does not build and a test that ran past its -timeout all as
       #     exit 1 (#2910).
+      #
+      #   prefix operators read as prefix operators
+      #     gremlins' token table describes the INFIX meaning of each operator,
+      #     and it was applied to `*ast.UnaryExpr` too. On this tree, whose
+      #     plan-building code is mostly `&chplan.Foo{...}` composite literals,
+      #     INVERT_BITWISE turned every one of them into `|chplan.Foo{...}` —
+      #     source that does not parse. Those mutants were then booked KILLED
+      #     off the same exit status 1, so each leg was paid efficacy for work
+      #     the compiler did: `Not viable: 0` on every leg was the tell that the
+      #     status had never once been reported. The fork no longer generates
+      #     them (#2930).
       # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
       # the warm step in ./.github/actions/setup-go — which runs
       # `go mod download` over the main module's own requirements — does not
@@ -193,7 +204,7 @@ jobs:
       - name: install gremlins
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash-consume
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
