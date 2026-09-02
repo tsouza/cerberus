@@ -75,7 +75,11 @@ func gremlinsFanoutAggAliases(rbf *chplan.RangeBucketFanout) map[string]bool {
 
 // TestGremlinsKill_CallSubqueryLastFirst_HistVsMixedRouting kills the
 // CONDITIONALS_NEGATION mutant on the `if shape == chplan.HistogramRowShape`
-// guard of histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`.
+// guard that opens the arm
+// histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`.
+// The citation names the `case` label rather than the mutated guard
+// because that guard is spelled identically in all three arms of this
+// switch, so no substring of it singles one out, while the label does.
 // A HistogramRowShape inner must route through
 // [lowerSelectFnOverCallSubqueryInput] ([nativeHistogramProjection], a
 // *chplan.HistogramProjection — chplan.HistogramRowShape); a MixedRowShape
@@ -101,7 +105,9 @@ func TestGremlinsKill_CallSubqueryLastFirst_HistVsMixedRouting(t *testing.T) {
 }
 
 // TestGremlinsKill_CallSubqueryFold_HistVsMixedRouting kills the
-// CONDITIONALS_NEGATION mutant on the identical guard in the FOLD-family arm,
+// CONDITIONALS_NEGATION mutant on the identical
+// `if shape == chplan.HistogramRowShape` guard in the FOLD-family arm,
+// located the same way by its label,
 // histogram_native_subquery_call_subquery.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`.
 // A HistogramRowShape inner routes through [lowerExpHistogramFoldOverCallSubqueryInput]
 // ([aggregatedHistogramProjection], chplan.HistogramRowShape); a
@@ -125,8 +131,10 @@ func TestGremlinsKill_CallSubqueryFold_HistVsMixedRouting(t *testing.T) {
 }
 
 // TestGremlinsKill_CallSubqueryResetsChanges_HistVsMixedRouting kills the
-// CONDITIONALS_NEGATION mutant on the identical guard in the resets/changes
-// arm, histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case resetsWindowFn, changesWindowFn:`.
+// CONDITIONALS_NEGATION mutant on the identical
+// `if shape == chplan.HistogramRowShape` guard in the resets/changes arm,
+// located the same way by its label,
+// histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case resetsWindowFn, changesWindowFn:`.
 // Both branches wrap
 // their result in the SAME [expHistogramPairCountProjection] outer node,
 // so chplan.RowShapeOf cannot distinguish them — the two branches differ

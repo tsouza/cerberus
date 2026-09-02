@@ -58,9 +58,12 @@ func mixedDiscriminatorProjected(n chplan.Node) bool {
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch
 // kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the
-// `if shape == chplan.HistogramRowShape` guard of
+// `if shape == chplan.HistogramRowShape` guard that opens the arm
 // histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`,
-// inside lowerHistogramOrMixedSubqueryOuterFnInput:
+// inside lowerHistogramOrMixedSubqueryOuterFnInput. The citation names the
+// `case` label rather than the mutated guard because that guard is spelled
+// identically in all three arms of this switch, so no substring of it
+// singles one out, while the label above it does:
 //
 //	if shape == chplan.HistogramRowShape {
 //	    node, err = lowerSelectFnOverExpHistogramSubqueryInput(...)
@@ -101,10 +104,12 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 }
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch
-// kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on
-// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`, the
-// resets/changes sibling of the last_over_time/first_over_time dispatch
-// above. Both shapes ultimately produce the same four-column canonical
+// kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the same
+// `if shape == chplan.HistogramRowShape` guard one arm further down,
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:` —
+// the label locates the arm, the guard inside it is the mutant. This is
+// the resets/changes sibling of the last_over_time/first_over_time
+// dispatch above. Both shapes ultimately produce the same four-column canonical
 // Project, so the two paths are told apart by whether the underlying
 // Aggregate collected the Mixed-only groupArrays
 // [mixedPairCountAggs] adds.
@@ -137,10 +142,12 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 }
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch kills
-// the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on
-// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`, the
-// FOLD-family (rate/increase/delta/...) sibling of the two dispatches
-// above. Over a MixedRowShape input this case routes to
+// the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the same
+// `if shape == chplan.HistogramRowShape` guard in the third arm,
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:` —
+// again the label locates the arm and the guard inside it is the mutant.
+// This is the FOLD-family (rate/increase/delta/...) sibling of the two
+// dispatches above. Over a MixedRowShape input this case routes to
 // [lowerFurtherWrapMixedOrSubqueryFoldFn], whose own
 // [combineMixedAggregateBranches] always returns a *chplan.VectorSetOp at
 // the root — a shape the plain-histogram continuation
