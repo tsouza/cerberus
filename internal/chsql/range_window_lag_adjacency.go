@@ -79,10 +79,54 @@ func lagAdjacencyMatrixShapeCheck(r *chplan.RangeWindow) error {
 	return nil
 }
 
+// lagAdjacencyDistinctRowsLayer interposes a `SELECT DISTINCT` projection
+// beneath the annotation layer when r declares its rows to be metric samples
+// (chplan.RangeWindow.DistinctSampleRows, cerberus issues #2914 / #2927), so
+// this shape reduces the SAME multiset the array-fold fan-out reduces through
+// chsql's windowSamplePairsFrag gate.
+//
+// This shape needs its own layer because it reads no sample array at all:
+// lagInFrame/leadInFrame annotate ROWS and the per-anchor accumulators reduce
+// rows, so the array-assembly gate the fan-out routes through never runs here.
+// Collapsing at the row level BEFORE the annotation is what makes the two
+// arms answer identically — a duplicated row left standing would otherwise
+// become its own successor's lagInFrame predecessor, which for irate/idelta
+// is a trailing pair spanning zero time (NaN, and the series disappears).
+//
+// The projection is exactly the annotation layer's own input column set —
+// the series keys, the sample timestamp, the value, and the
+// AggregationTemporality column when the window carries one — so DISTINCT
+// over the whole row IS the distinct-(timestamp, value) rule for this series,
+// stated once. It deliberately does not `SELECT DISTINCT *`: an input
+// relation projecting any further column would then dedupe on that column
+// too, and two rows agreeing on (timestamp, value) but differing elsewhere
+// would survive here while the fan-out's arrayCompact collapsed them.
+//
+// A conflicting-value duplicate is untouched, exactly as at the array gate:
+// the two rows differ in the value column, so DISTINCT keeps both and the
+// (ts, value) ORDER BY below still lands the max-valued row last — the
+// cerberus issue #2905 contract this must not disturb.
+func lagAdjacencyDistinctRowsLayer(
+	r *chplan.RangeWindow, innerSub Frag, groupFrags []Frag, srcTs string,
+) *QueryBuilder {
+	cols := make([]Frag, 0, len(groupFrags)+3)
+	cols = append(cols, groupFrags...)
+	cols = append(cols, Col(srcTs), Col(r.ValueColumn))
+	if windowTemporalityProjected(r) {
+		cols = append(cols, Col(r.TemporalityColumn))
+	}
+	cols[0] = Distinct(cols[0])
+	return NewQuery().From(innerSub).Select(cols...)
+}
+
 // lagAdjacencyAnnotateLayer builds the shape's first layer: one row per raw
 // sample from innerSub, tagged with (prev_ts, prev_val) via lagInFrame and,
 // when needsSurvivor is set (the irate/idelta pairs shape), an
 // is_last_of_run flag via leadInFrame.
+//
+// When r declares chplan.RangeWindow.DistinctSampleRows the raw rows are
+// first collapsed by lagAdjacencyDistinctRowsLayer, so every window function
+// below sees one row per distinct (timestamp, value) sample.
 //
 // All three window-function calls share ONE `PARTITION BY <groupFrags>
 // ORDER BY <srcTs>, <r.ValueColumn>` — the explicit compound ORDER BY (not
@@ -132,6 +176,22 @@ func lagAdjacencyAnnotateLayer(
 	leadFrame := RowsCurrentRowToUnboundedFollowing()
 	hasTemporality := windowTemporalityProjected(r)
 
+	// The scan prune belongs on the LOWEST layer this shape has. Without the
+	// distinct-rows collapse that is the annotation layer itself; with it,
+	// the collapse layer sits underneath, and leaving the prune above would
+	// dedupe the WHOLE scan to throw most of it away one layer up. Which of
+	// the two carries the predicate cannot change what the window functions
+	// see: ClickHouse evaluates WHERE before it computes window functions,
+	// so lagInFrame/leadInFrame observe the pruned rows either way — and the
+	// bound itself is the same Offset+Range-widened one the slice-invariance
+	// argument rests on (internal/chplan/sliceinvariant.go).
+	prunedBelow := false
+	if r.DistinctSampleRows {
+		distinct := lagAdjacencyDistinctRowsLayer(r, innerSub, groupFrags, srcTs)
+		maybePushInnerScanTimeBounds(distinct, r, srcTs, r.Range.Nanoseconds())
+		innerSub = distinct.Frag()
+		prunedBelow = true
+	}
 	annotate := NewQuery().From(innerSub)
 	annotate.Select(groupFrags...)
 	annotate.Select(Col(srcTs))
@@ -153,7 +213,9 @@ func lagAdjacencyAnnotateLayer(
 			lagAdjIsLastOfRunAlias,
 		))
 	}
-	maybePushInnerScanTimeBounds(annotate, r, srcTs, r.Range.Nanoseconds())
+	if !prunedBelow {
+		maybePushInnerScanTimeBounds(annotate, r, srcTs, r.Range.Nanoseconds())
+	}
 	return annotate
 }
 

@@ -230,11 +230,29 @@ func assertDupTSStrategiesAgree(t *testing.T, nativeAnswer, fanoutAnswer dupTSAn
 			t.Fatalf("row %d: native is (%s, %s), fan-out is (%s, %s)",
 				i, n.attributes, n.timestamp, f.attributes, f.timestamp)
 		}
-		if math.Abs(n.value-f.value) > dupTSFloatTolerance {
+		if !dupTSAnswersAgree(n.value, f.value) {
 			t.Errorf("row %d (%s @ %s): native = %v, fan-out = %v; the two strategies must treat a "+
 				"duplicate (series, timestamp) identically", i, n.attributes, n.timestamp, n.value, f.value)
 		}
 	}
+}
+
+// dupTSAnswersAgree compares two executed answers within
+// dupTSFloatTolerance, treating NaN as equal to itself and unequal to
+// everything else.
+//
+// The NaN arm is load-bearing rather than tidy. `math.Abs(NaN - x)` is NaN
+// and every comparison against NaN is false, so a plain
+// `> dupTSFloatTolerance` difference test reports AGREEMENT whenever either
+// side is NaN — and "one lowering answers NaN where the other answers a
+// number" is precisely the divergence class cerberus issue #2927 is about
+// (irate's trailing pair spanning zero time drops the series entirely). A
+// differential blind to it would have passed over the sharpest of the five.
+func dupTSAnswersAgree(a, b float64) bool {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.IsNaN(a) && math.IsNaN(b)
+	}
+	return math.Abs(a-b) <= dupTSFloatTolerance
 }
 
 // dupTSValueAt returns the value of the single row matching attributes at the
