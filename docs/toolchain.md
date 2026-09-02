@@ -49,11 +49,12 @@ because that rule has no auto-fixer of its own.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash-consume
 ```
 
-Both fixes it carries exist because a mutation run that dies mid-flight is worse than one that
-reports a bad number: it reports nothing at all.
+The fixes it carries defend one thing between them: that the number a run reports is a number the
+tests earned. A run that dies mid-flight reports nothing at all; a run that credits the compiler
+reports something worse than nothing.
 
 **`--on-shutdown-status`, for mutants cancelled in flight.** Upstream's signal handler closes the
 channel that `os/signal` still writes to, so a second signal — the typical CI runner sequence of
@@ -74,20 +75,41 @@ time. A mutant that inverts a scanner's loop advance (`i++` to `i--`) never term
 per iteration, so on a slow-baseline package it gets minutes to exhaust the runner's memory; the OOM
 killer then reaps the runner and the job ends with no verdict. Measured across 91 heavy runs, all 55
 runner deaths were stalled on a lexer or scanner mutant. `--timeout-max` bounds exposure absolutely,
-independent of the baseline; cerberus passes `--timeout-max 15s`.
+independent of the baseline; cerberus derives its value per leg and clamps it into
+`[MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX]`, declared in `mutation.yml`.
 
 A recurrence is not fixed by excluding the file the log names. Excluding a file relocates its runaway
 mutants into whichever leg still owns it and burns real mutation coverage at the same time.
 `test/regression/mutation_timeout_max_test.go` pins the flag and the fork tag together, because the
 failure mode it prevents presents as flake rather than as a missing bound.
 
+**`--compile-allowance`, and verdicts read from the output rather than the exit status.** Upstream
+bounds a mutant with one number, a context deadline wrapping the whole `go test` child, and sets
+`go test`'s own run-only `-timeout` two seconds ABOVE it — so the run leash is structurally
+unreachable and compile time is charged to the budget meant to bound execution. Measured on cerberus:
+12.7-15.8s of compile against a 15s budget while the test itself reaches a verdict in 0.3-2.1s, so
+mutants were recorded `TIMED OUT` having never run. The fork hands the bound to `go test -timeout`,
+whose clock starts when the test binary starts, and keeps the context deadline — widened by
+`--compile-allowance` — as the backstop for a compile that has hung, since no `-timeout` can bound
+one.
+
+Letting Go's `-timeout` win that race is only safe with the second half. `go test` collapses a
+failing test, a package that does not build and a test that ran past its `-timeout` into its own exit
+status 1; only the test *binary* exits 2, and what gremlins spawns is `go`. Reading that 1 at face
+value credits a timeout as a KILL and books a mutant that never compiled as one too. The fork scans
+the child's output instead — the `panic: test timed out after` line maps to `TIMED OUT`,
+`[build failed]` and `[setup failed]` map to `NOT VIABLE`, and anything else is left to the exit
+status. `TIMED OUT` stays in the efficacy denominator and credits nobody, so a slow test cannot buy
+a score. The scan is streaming and retains only enough bytes to recognise a marker split across two
+writes, so a mutant that prints without bound cannot exhaust memory.
+
 `.gremlins.yaml`'s `exclude-files` paths are interpreted relative to the run's scope, not the repo
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
-The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-timeout-max`
+The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-run-leash`
 is the branch the upstream pull request is built from, and keeps the upstream module path
 `github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-timeout-max-consume` is the branch
+`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-run-leash-consume` is the branch
 `mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
 `github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
 rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes

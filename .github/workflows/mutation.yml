@@ -164,7 +164,7 @@ jobs:
       # opaque `gremlins exited N` with no artifact and no measured-vs-threshold
       # numbers.
       #
-      # We consume gremlins via the tsouza/gremlins fork, which carries two
+      # We consume gremlins via the tsouza/gremlins fork, which carries three
       # fixes cerberus needs:
       #
       #   --on-shutdown-status=not-run   in-flight mutants killed by the
@@ -174,6 +174,13 @@ jobs:
       #
       #   --timeout-max                  an absolute ceiling on a single
       #     mutant's test run. See the `gremlins unleash` step below.
+      #
+      #   --compile-allowance            the run bound above now bounds only the
+      #     RUN, and this is what compiling the mutant is charged to. The fork
+      #     also reads a mutant's verdict from the child's output instead of its
+      #     exit status, because `go test` reports a failing test, a package
+      #     that does not build and a test that ran past its -timeout all as
+      #     exit 1 (#2910).
       # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
       # the warm step in ./.github/actions/setup-go — which runs
       # `go mod download` over the main module's own requirements — does not
@@ -186,7 +193,7 @@ jobs:
       - name: install gremlins
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max-consume
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
@@ -198,20 +205,29 @@ jobs:
       # measured. MUTANT_TIMEOUT_MIN and MUTANT_TIMEOUT_MAX are the bounds that
       # measurement is clamped into, not the budget itself.
       #
-      # Measuring is the fix for #2903. A flat declared budget bounds a
-      # quantity it does not describe: it wraps the WHOLE `go test` child, which
-      # is a recompile, a link, and only then a run. Per mutant on an 8-core
-      # machine, against the flat 15s that used to be declared here:
+      # A mutant is bounded TWICE, and the measured cycle serves both. Per
+      # mutant on an 8-core machine, against the flat 15s that used to be
+      # declared here:
       #
       #   internal/chsql   compile+link 12.7-14.4s   test run 0.31s
       #   internal/promql  compile+link  8.4-8.7s    test run 2.07s
       #
-      # So the compiler was 80-98% of the budget, every contended runner pushed
-      # mutants over it, and gremlins recorded that as TIMED OUT — which the
-      # gate then scored as a detection, paying the leg efficacy points for
-      # being starved. gremlins-threshold.mjs no longer scores it that way, so
-      # an undersized budget is now visibly RED; this step is what keeps an
-      # honest leg from being red for the compiler's sake.
+      # One number could not bound both. The compiler was 80-98% of it, every
+      # contended runner pushed mutants over, and gremlins recorded that as
+      # TIMED OUT — which the gate then scored as a detection, paying the leg
+      # efficacy points for being starved (#2903). Measuring the cycle sized the
+      # number to what it was really bounding; the fork then stopped asking one
+      # number to bound two quantities at all (#2910). `--timeout-max` is now
+      # the RUN bound, handed to `go test -timeout`, which the Go toolchain
+      # starts when the test binary starts; `--compile-allowance` is what the
+      # compile is charged to; and their sum is the context deadline, which is
+      # all that can bound a compile that has hung.
+      #
+      # mutation-run.mjs passes the measured cycle as both, because the probe
+      # cannot separate the run from the compile inside it and the cycle is an
+      # upper bound on each — so neither bound can starve an honest mutant. An
+      # undersized budget is visibly RED rather than quietly scored as a
+      # detection, so erring high here is the cheap direction.
       #
       # MIN is the floor: a probe that cannot measure anything (no `go` on
       # PATH, a build error) leaves the lane on exactly the 15s it ran on

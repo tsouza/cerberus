@@ -1099,11 +1099,32 @@ spent its checkout and toolchain setup.
 
 ### Per-mutant time budget
 
-Each mutant's `go test` child runs under a deadline, because a mutant that
-inverts a loop advance never terminates and allocates per iteration; without a
-deadline the OOM killer reaps the runner and the leg reports no verdict at all.
+Each mutant is bounded twice, because there are two things to bound and they
+scale with unrelated quantities.
 
-That deadline is MEASURED, per leg, per run. `.github/scripts/mutation-run.mjs`
+`go test -timeout` bounds the test RUN. The Go toolchain starts that clock when
+the test binary starts, so compiling the mutated package cannot consume it. This
+is the leash that matters: a mutant that inverts a loop advance never terminates
+and allocates per iteration, and this is what stops it.
+
+A context deadline — the run bound plus a compile allowance — bounds compilation
+and the run together, as a backstop. No `-timeout` can bound a compile that has
+hung, because there is no test binary yet to enforce one.
+
+The split is the fix for #2910. Before it the fork had only the context
+deadline, and it was set BELOW the run leash, so the run leash could never fire
+and compile time was charged to the budget meant to bound execution. On a leg
+compiling in 12.7-15.8s against a 15s budget, a mutant whose test reached a
+verdict in 0.3s was recorded `TIMED OUT` having never run a line of test code.
+
+The other half of that fix is how a verdict is read. `go test` reports a failing
+test, a package that does not build and a test that ran past its `-timeout` all
+as exit status 1 — only the test *binary* exits 2, and gremlins spawns `go` — so
+the fork scans the child's output to tell them apart. Taking the exit status at
+face value credits a timeout as a detection and books a mutant that never
+compiled as one too.
+
+Both bounds are MEASURED, per leg, per run. `.github/scripts/mutation-run.mjs`
 times one mutant's worth of work before gremlins starts — it appends a byte to
 the largest production file in the leg's scope, runs the scope's tests exactly
 as gremlins runs them for a mutant (`-count=1 -failfast`), and restores the file
@@ -1114,10 +1135,17 @@ concurrently and by a named headroom multiple. The result is clamped into
 keyed on content, so timing an unedited package times a cache hit and measures
 nothing a mutant will ever pay.
 
-It is measured because the thing the deadline has to cover is a COMPILE, and a
-compile's cost is a property of the package and the runner rather than of the
-test suite. Measured per mutant on an 8-core machine, against the flat 15s the
-lane used to declare:
+The measured cycle is passed as BOTH bounds: as `--timeout-max` (the run leash)
+and as `--compile-allowance`. The probe times a whole recompile+link+run and
+cannot separate the run from the compile inside it, and the cycle is an upper
+bound on each of them, so neither bound can starve an honest mutant. Their sum
+is the deadline gremlins gives up at, and it is what the memory guard's hold is
+sized from — a hold that expired first would exit 0 and book a memory runaway as
+`LIVED` rather than `TIMED OUT`.
+
+It is measured because the dominant cost is a COMPILE, and a compile's cost is a
+property of the package and the runner rather than of the test suite. Measured
+per mutant on an 8-core machine, against the flat 15s the lane used to declare:
 
 | scope             | compile + link | test run |
 | ----------------- | -------------- | -------- |
@@ -1127,7 +1155,8 @@ lane used to declare:
 80-98% of the budget went to the compiler, so every contended runner pushed
 ordinary mutants over it and gremlins recorded them as `TIMED OUT` — which the
 gate then scored as detections (#2903, and the "Timed-out mutants" section
-below).
+below). Measuring sized the number to what it was really bounding; splitting the
+bounds stopped it having to bound both.
 
 `MUTANT_TIMEOUT_MIN` is the floor a measurement may raise but never lower, so a
 probe that cannot measure anything leaves the lane exactly where it was.
@@ -1135,7 +1164,7 @@ probe that cannot measure anything leaves the lane exactly where it was.
 spend the job's whole `timeout-minutes` on hung mutants — and a leg that hits
 that job timeout reports `cancelled`, which the `mutation` aggregator fails.
 
-gremlins itself computes the deadline as
+gremlins itself computes the run bound as
 `min(timeout-coefficient x max(coverage_elapsed, 1s), timeout-max)`, where
 `coverage_elapsed` is the wall time of its own coverage pass — the same
 compile-dominated quantity, but taken on whatever build-cache warmth the
