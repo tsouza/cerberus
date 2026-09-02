@@ -1356,6 +1356,15 @@ that names none cannot claim that defence. Both habits make the note
 more useful to the next reader, which is why the gate asks for them
 rather than for an exemption.
 
+Naming the mutator once per note is enough. A footer that states the
+rewrite in its opening paragraph and then enumerates the sites it
+applies to — as `internal/promql`'s `||` -> `&&` INVERT_LOGICAL ledger
+does across ten citations — is the clearer way to write it, and the gate
+reads the preamble's mutator for the citations it introduces. That
+inheritance needs the note to be unambiguous: a preamble discussing two
+mutators lends neither, because it cannot say which one the list is
+about.
+
 A mutator can also strike one construct twice — `*2` and `+6` in
 `len(groupAliases)*2+6` — and there the gate reports the pair even
 though both verdicts are true. Narrowing both citations to the operand

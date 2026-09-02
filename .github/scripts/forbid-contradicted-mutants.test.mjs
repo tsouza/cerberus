@@ -536,3 +536,102 @@ test('a footer paragraph that never says "equivalent" is still a verdict', () =>
   const { status, output } = run(f.dir);
   assert.equal(status, 1, output);
 });
+
+test('a citation paragraph inherits the mutator its note states once up front', () => {
+  // The real internal/promql shape: a footer states the rewrite once and then
+  // enumerates the ten sites it applies to. Reading the citation list alone
+  // says "equivalent, mutator unknown", which cannot be told apart from a
+  // genuine CONDITIONALS_NEGATION kill on the same guard — and both verdicts
+  // there are true.
+  const f = fixture();
+  f.write(
+    'kill_test.go',
+    [
+      'package fixture',
+      '',
+      '// TestNegation kills the CONDITIONALS_NEGATION on',
+      '// target.go:`best < 0 || r < best` (`best < 0` -> `best != 0`).',
+      'func TestNegation(t *testing.T) {}',
+      '',
+    ].join('\n'),
+  );
+  f.write(
+    'footer_test.go',
+    [
+      'package fixture',
+      '',
+      '// NOT KILLABLE — documented, not defended by a test.',
+      '//',
+      '// The same `||` -> `&&` INVERT_LOGICAL rewrite is EQUIVALENT at every',
+      '// recognizer, and these are of that kind:',
+      '//',
+      '//\ttarget.go:`best < 0 || r < best`',
+      '',
+    ].join('\n'),
+  );
+  const { status, output } = run(f.dir);
+  assert.equal(status, 0, output);
+});
+
+test('an AMBIGUOUS note lends nothing, so the pair is still reported', () => {
+  // The nearest miss of the case above, and the reason the rule requires the
+  // run to name exactly one mutator. A note discussing two mutators cannot say
+  // which of them its citation list is about, so inheriting either would be a
+  // guess — and a guess that suppresses a real contradiction.
+  const f = fixture();
+  f.write(
+    'kill_test.go',
+    [
+      'package fixture',
+      '',
+      '// TestNegation kills the CONDITIONALS_NEGATION on',
+      '// target.go:`best < 0 || r < best`.',
+      'func TestNegation(t *testing.T) {}',
+      '',
+    ].join('\n'),
+  );
+  f.write(
+    'footer_test.go',
+    [
+      'package fixture',
+      '',
+      '// NOT KILLABLE — documented, not defended by a test.',
+      '//',
+      '// Both the INVERT_LOGICAL and the CONDITIONALS_NEGATION rewrites are',
+      '// discussed in this note, which is what makes it ambiguous:',
+      '//',
+      '//\ttarget.go:`best < 0 || r < best`',
+      '',
+    ].join('\n'),
+  );
+  const { status, output } = run(f.dir);
+  assert.equal(status, 1, output);
+  assert.match(output, /claims to KILL/);
+});
+
+test('inheritance widens the evidence, never the verdict', () => {
+  // A run whose preamble is an equivalence note still may not turn a kill
+  // paragraph inside it into a verdict, or vice versa. Classification is per
+  // paragraph; only the mutator vocabulary is inherited. Here the kill claim
+  // and the verdict sit in ONE run, name the same mutator, and must conflict.
+  const f = fixture();
+  f.write(
+    'adjudication_test.go',
+    [
+      'package fixture',
+      '',
+      '// NOT KILLABLE — documented, not defended by a test.',
+      '//',
+      '// The ARITHMETIC_BASE rewrite below is equivalent:',
+      '//',
+      '//\ttarget.go:`len(groupAliases)*2+6`',
+      '//',
+      '// TestCapacity kills that same mutant at',
+      '// target.go:`len(groupAliases)*2+6`.',
+      '',
+    ].join('\n'),
+  );
+  const { status, output } = run(f.dir);
+  assert.equal(status, 1, output);
+  assert.match(output, /claims to KILL/);
+});

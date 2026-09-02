@@ -52,8 +52,34 @@
 //   mutants a test kills AND an INVERT_LOGICAL mutant a footer proves
 //   equivalent. Two notes naming disjoint mutators describe different mutants.
 //
-// In both cases naming nothing is no evidence rather than a defence: the pair
-// is still reported. Fail closed, not open.
+// A paragraph that names NO mutator is treated as matching ANY of them. That
+// is the fail-closed reading — no evidence is not a defence — and it is worth
+// stating plainly, because it means the discrimination above is only as good
+// as the notes' own precision, and a note that names nothing gets reported.
+//
+// WHICH MUTATOR A NOTE IS ABOUT IS A PROPERTY OF THE NOTE, NOT OF ONE
+// PARAGRAPH. A well-written footer states the rewrite once and then
+// enumerates the sites it applies to:
+//
+//     // The same `||` -> `&&` INVERT_LOGICAL rewrite of … is EQUIVALENT at
+//     // every COMPOSITE recognizer, and ten of the mutants are of that kind:
+//     //
+//     //     histogram_native_scalar_binop.go:expHistogramScalarBinop:`…`
+//     //     …
+//
+// Reading the citation list in isolation says "equivalent, mutator unknown",
+// which then cannot be told apart from a genuine CONDITIONALS_NEGATION kill on
+// the same guard — and that is a real pair in internal/promql, both verdicts
+// true. So a citation paragraph that names no mutator INHERITS its comment
+// run's, and only when the run names exactly one: an ambiguous preamble lends
+// nothing. This widens the evidence, never the verdict — whether a paragraph
+// is a kill claim or an equivalence verdict stays strictly per paragraph, so a
+// disclaimer or a neighbouring note still cannot cast one.
+//
+// Measured over the tree: 10 equivalence paragraphs carry citations without
+// naming a mutator, and all 10 sit under a run naming exactly one, with no run
+// naming more. On the kill side no paragraph qualifies at all, so the rule is
+// symmetric at zero cost rather than a special case for footers.
 //
 // ONE MUTATOR CAN ALSO STRIKE ONE CONSTRUCT TWICE, and the gate deliberately
 // does NOT try to tell those apart from prose. `len(groupAliases)*2+6` carries
@@ -141,26 +167,33 @@ export const EQUIV_VERDICT = /\bNOT KILLABLE\b|\bequivalent\b|\bunkillable\b/i;
 // file" is a disclaimer, and the correct pattern.
 export function footerRegion(lines) {
   const inFooter = new Set();
-  let runStart = null;
-  const close = (end) => {
-    if (runStart === null) return;
-    for (let n = runStart; n <= end; n += 1) {
+  for (const { start, end } of commentRuns(lines)) {
+    for (let n = start; n <= end; n += 1) {
       const body = lines[n - 1].trim().replace(/^\/\/\s?/, '');
       if (!/^NOT KILLABLE\b/.test(body)) continue;
       for (let k = n; k <= end; k += 1) inFooter.add(k);
       break;
     }
-    runStart = null;
-  };
+  }
+  return inFooter;
+}
+
+// commentRuns — the 1-based line bounds of every maximal run of `//` lines,
+// bare separators included. A run is the whole note; `paragraphs()` splits it
+// into the units a single verdict is written in.
+export function commentRuns(lines) {
+  const out = [];
+  let start = null;
   lines.forEach((line, i) => {
     if (line.trim().startsWith('//')) {
-      if (runStart === null) runStart = i + 1;
+      if (start === null) start = i + 1;
       return;
     }
-    close(i);
+    if (start !== null) out.push({ start, end: i });
+    start = null;
   });
-  close(lines.length);
-  return inFooter;
+  if (start !== null) out.push({ start, end: lines.length });
+  return out;
 }
 
 // paragraphs — the 1-based line ranges of every comment PARAGRAPH: a maximal
@@ -184,6 +217,15 @@ export function paragraphs(lines) {
   });
   flush(lines.length);
   return out;
+}
+
+// paragraphText — one comment range as a single line of prose, with the `//`
+// markers stripped, so a sentence that wraps reads as one string.
+export function paragraphText(lines, { start, end }) {
+  return lines
+    .slice(start - 1, end)
+    .map((l) => l.trim().replace(/^\/\/\s?/, ''))
+    .join(' ');
 }
 
 // mutatorVocabulary — the enabled gremlins mutators, as the UPPER_SNAKE names
@@ -265,18 +307,27 @@ function citationsIn({ root, file, lines, range, load }) {
 export function collectFile({ root, file, load, vocabulary }) {
   const lines = readFileSync(resolve(root, file), 'utf8').split('\n');
   const footer = footerRegion(lines);
+  // The mutator vocabulary of each enclosing note, for the inheritance rule
+  // described in the file header. Only an unambiguous run (exactly one
+  // mutator) lends it to a paragraph that names none.
+  const runMutators = commentRuns(lines).map((run) => ({
+    ...run,
+    mutators: namedMutators(paragraphText(lines, run), vocabulary),
+  }));
+  const inherited = (range) => {
+    const run = runMutators.find((r) => range.start >= r.start && range.end <= r.end);
+    return run && run.mutators.size === 1 ? run.mutators : new Set();
+  };
   const kills = [];
   const equivalents = [];
   for (const range of paragraphs(lines)) {
-    const text = lines
-      .slice(range.start - 1, range.end)
-      .map((l) => l.trim().replace(/^\/\/\s?/, ''))
-      .join(' ');
+    const text = paragraphText(lines, range);
     const isKill = KILL_CLAIM.test(text);
     const underFooter = footer.has(range.start);
     const isEquiv = !isKill && (underFooter || EQUIV_VERDICT.test(text));
     if (!isKill && !isEquiv) continue;
-    const mutators = namedMutators(text, vocabulary);
+    const own = namedMutators(text, vocabulary);
+    const mutators = own.size > 0 ? own : inherited(range);
     for (const c of citationsIn({ root, file, lines, range, load })) {
       (isKill ? kills : equivalents).push({ ...c, mutators });
     }

@@ -406,9 +406,20 @@ what actually runs.
   resolves the construct each cites through `verify-code-citations.mjs`'s own
   resolver, and fails when one construct carries both. Two mutants on `main`
   did, and the mutation lane recorded each of them LIVED (#2958).
-  - The unit is a comment PARAGRAPH, not a comment block: one footer in this
-    tree names three mutators across nine citations, and attributing a whole
-    run's vocabulary to every citation in it would smear the evidence.
+  - The VERDICT is per comment PARAGRAPH, not per block: one footer in this
+    tree names three mutators across nine citations, and letting a whole run
+    cast a verdict would make a disclaimer ("this test does NOT kill …") or a
+    neighbouring note read as one.
+  - Which MUTATOR a verdict is about is a property of the whole note, though,
+    because a good footer states the rewrite once and then enumerates the sites
+    it applies to. So a citation paragraph that names no mutator inherits its
+    comment run's — and only when the run names exactly one, since an ambiguous
+    preamble lends nothing. This widens the evidence, never the verdict.
+    Measured over the tree: 10 equivalence paragraphs need it, all under a run
+    naming exactly one mutator, with none naming more; no kill paragraph
+    qualifies, so the rule is symmetric at zero cost. A paragraph that still
+    names nothing matches ANY mutator, which is the fail-closed reading — no
+    evidence is not a defence.
   - One construct is not one mutant, so two refinements apply. By POSITION,
     `best < 0 || r < best` hosts an independent CONDITIONALS_BOUNDARY per
     operand — verdicts conflict only when their constructs OVERLAP by
@@ -417,6 +428,9 @@ what actually runs.
     mutants a test kills and an INVERT_LOGICAL mutant a footer proves
     equivalent — two notes naming disjoint mutators describe different mutants.
     Naming nothing is no evidence, and the pair is still reported.
+    A real pair in `internal/promql` is exactly this shape: a
+    CONDITIONALS_NEGATION kill and an INVERT_LOGICAL equivalence on one guard,
+    both true.
   - One mutator striking one construct TWICE (`*2` and `+6` in
     `len(groupAliases)*2+6`) is deliberately not discriminated: keying on the
     `` `X` -> `Y` `` rewrite a note spells was tried and rejected, because two
@@ -433,15 +447,16 @@ what actually runs.
   - Exit: `0` when no mutant carries two verdicts, `1` otherwise — including a
     pathspec that matched no file (a green over zero files is not evidence) and
     an unreadable mutator vocabulary.
-  - Pins: `forbid-contradicted-mutants.test.mjs` (`node --test`), 19 cases
+  - Pins: `forbid-contradicted-mutants.test.mjs` (`node --test`), 22 cases
     driving the real CLI over a throwaway git repository and pairing every
     rejection with its nearest-miss acceptance — the sibling-mutants-on-one-line
     and different-mutators shapes that must stay green, each beside the
     one-token variant that must fail; a footer paragraph that never says
     "equivalent" and must still count; a ledger outside any footer that must
     count; the disclaiming test that defers to a footer; a `kill-switch` that
-    is not a claim; and the empty vocabulary and empty scan that must both be
-    errors.
+    is not a claim; a citation list that inherits its note's single mutator
+    beside the ambiguous note that must lend nothing; and the empty vocabulary
+    and empty scan that must both be errors.
 - **`generated-baseline-structural-guard.mjs`** — `ci.yml`, the `forbid-skip`
   job step "Structural sanity check over generated baseline shapes (#1568)".
   A fast, dependency-free structural pre-filter (unique key, sorted order,

@@ -1150,7 +1150,8 @@ jobs:
       # simply confidently wrong. A prose gate finds the first and misses the
       # second, so the signature this gate uses is structural: the same cited
       # construct carrying two verdicts, adjudicated per comment PARAGRAPH and
-      # discriminated by the mutator each side names. It runs after the
+      # discriminated by the mutator each side names — inherited from the note
+      # when a citation list sits under a preamble that names exactly one. It runs after the
       # citation gate, which owns every "this citation does not resolve"
       # failure. The suite runs first: it is what proves the gate can go red,
       # and it pins the shapes that must stay green — sibling mutants on one
