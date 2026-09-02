@@ -233,15 +233,36 @@ jobs:
       # takes, under internal/promql's real per-mutant recompile+link+run, and
       # the leg reported 0.00% efficacy (#2692).
       #
-      # A bound is needed at all because a mutant that inverts a scanner's
-      # loop-advance (i++ -> i--) never terminates and allocates per iteration,
-      # so an unbounded leash lets it exhaust the runner's memory. The OOM
-      # killer then reaps the runner agent and the job dies with no verdict at
-      # all, which reads as flake rather than as a missing bound.
+      # The budget bounds TIME. It does not, and cannot, bound ALLOCATION, and
+      # the lane needs both. A mutant that inverts or removes a scanner's
+      # loop-advance never terminates and allocates per iteration:
+      # internal/logql/logpattern's `i += size` -> `i = size` mutant reaches
+      # 5 GiB of RSS in 3.3s, so it exhausts a 16 GB runner in about ten seconds
+      # — UNDER the 15s floor above, and far under the ~63s that leg's own
+      # compile cycle makes the derivation ask for. There is no leash value that
+      # is both long enough for the compile and short enough for the memory; the
+      # window is empty, not narrow, so capping MUTANT_TIMEOUT_MAX cannot be the
+      # fix (#2919). GOMEMLIMIT cannot either — it is soft, and Go's GC CPU
+      # limiter guarantees the mutator half the CPU, so a live heap still grows
+      # (measured: 2.6x slower, not bounded).
+      #
+      # mutation-run.mjs therefore wires .github/scripts/mutant-memory-guard.mjs
+      # in front of every test binary gremlins launches, as a `go test -exec`
+      # supervisor, and gives it a per-mutant RSS ceiling. A mutant that breaches
+      # it is killed and then HELD, so gremlins' own deadline records it as
+      # TIMED OUT — unadjudicated, counted in the denominator, credited to
+      # nobody. It is deliberately not allowed to reach gremlins as an exit
+      # code: `go test` collapses every test-binary failure into its own exit 1,
+      # which gremlins reads as a KILL, and paying a leg efficacy for a mutant
+      # nobody adjudicated is the accounting #2903 removed.
+      #
+      # The clean fix is upstream of all of this: #2910 splits gremlins' single
+      # deadline into an overall one and a run-only one, and a run-only leash is
+      # tight enough to bound allocation without starving an honest mutant.
       #
       # Do NOT "fix" a recurrence by excluding whichever file the log names:
       # that relocates the file's runaway mutants into whichever leg still owns
-      # it, and burns real mutation coverage. The budget is the fix.
+      # it, and burns real mutation coverage. The two bounds are the fix.
       # mutation-run.mjs owns the changed-line/full decision and validates that
       # the final report executed at least one mutant. Keeping the zero-mutant
       # fallback out of shell prevents a missing or malformed JSON field from

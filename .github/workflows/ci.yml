@@ -953,6 +953,20 @@ jobs:
       - name: Assert the mutation runner's env contract and fallback
         run: node --test .github/scripts/mutation-run.test.mjs
 
+      # The third half of the same lane: the per-mutant MEMORY bound. The leash
+      # gremlins enforces bounds time and nothing else, and a mutant that
+      # allocates without terminating exhausts the runner in about ten seconds
+      # — under the lane's own budget floor (#2919). The guard is what stops
+      # that, and its failure mode is the quiet one: a wrapper that let a
+      # breached mutant EXIT would have `go test` collapse the kill into its own
+      # exit 1, and gremlins would book a mutant nobody adjudicated as a KILL.
+      # These tests pin that it holds instead, and that an unbreached mutant's
+      # exit code reaches gremlins byte-for-byte — the guard sits in front of
+      # every test binary on every leg, so a perturbed exit code would rewrite
+      # every leg's efficacy at once.
+      - name: Assert the per-mutant memory guard records rather than kills
+        run: node --test .github/scripts/mutant-memory-guard.test.mjs
+
       # Whether a job that pulls an image logged in first. An anonymous pull is
       # not an error: it succeeds until the shared per-runner-IP quota happens to
       # be spent, and then reads as flake — which is how #1572 fixed the class by
