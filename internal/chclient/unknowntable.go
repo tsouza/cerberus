@@ -25,7 +25,7 @@ const chCodeUnknownTable = 60
 // 502.
 //
 // Detection is typed first — errors.As against *clickhouse.Exception,
-// mirroring isDatabaseAbsent / isMemoryLimitExceeded / IsQueryTimeout — with
+// mirroring isDatabaseAbsent / classifyBreakerOutcome / IsQueryTimeout — with
 // a narrow string-matching fallback for the case where the driver wraps the
 // exception opaquely enough to defeat errors.As. The phrases are
 // deliberately narrow to the UNKNOWN_TABLE vocabulary so a successful query

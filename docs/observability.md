@@ -285,6 +285,47 @@ MeterProvider is installed before any instrument is minted: OTel's
 package-global provider is a delegating shim, and a synchronous `Add`
 recorded before delegation is dropped with no buffering and no error.
 
+#### ClickHouse circuit breaker
+
+The same `internal/chclient` meter scope carries the circuit breaker's own
+instruments. One breaker fronts each logical head, so every series is keyed on
+`head` (`prom` / `loki` / `tempo` / `probe`).
+
+| Metric                                           | Type    | Attributes      | Meaning                                                                          |
+| ------------------------------------------------ | ------- | --------------- | -------------------------------------------------------------------------------- |
+| `cerberus_ch_breaker_state`                      | gauge   | `head`          | Lifecycle phase: `0` closed, `1` open, `2` half-open.                            |
+| `cerberus_ch_breaker_trips_total`                | counter | `head`, `cause` | Cumulative CLOSED→OPEN trips, split by why the breaker tripped.                  |
+| `cerberus_ch_breaker_statement_rejections_total` | counter | `head`          | ClickHouse rejections classified as statement-scoped and deliberately uncounted. |
+
+The phase rides the gauge's numeric LEVEL, never a `state` label: an OTel
+observable gauge only overwrites the series it re-observes, so a phase-keyed
+label would orphan the previous phase's series and leave a recovered breaker
+still exporting `state="open"=1` forever.
+
+A trip is the highest-blast-radius event cerberus has — it fast-fails every
+query behind that head with a 503 and flips `/readyz` — so `cause` names which
+kind of backend trouble caused it:
+
+- `no-server-answer` — ClickHouse never answered: a refused dial, a dropped
+  connection, a socket timeout, an unrecognised driver failure.
+- `server-condition` — ClickHouse answered, but with a code naming a condition
+  of the server or its cluster (saturation, coordination loss, allocator
+  failure). The trip's WARN log additionally names the code and its symbolic
+  name.
+
+Statement-scoped rejections — a syntax error, an unknown column, an
+unsatisfiable setting combination — can never trip the breaker. ClickHouse
+answering a statement with a typed exception is positive proof it is serving,
+and counting those turns a handful of bad queries into a shed-everything
+outage: exactly what happened when ~21 code-704 rejections became 1015 compat
+divergences and read like a total engine regression for 32 hours. They are
+counted separately instead, and the pair is what makes triage decidable:
+
+- rising `statement_rejections_total` with a flat `trips_total` — cerberus is
+  emitting SQL ClickHouse declines. The backend is fine; look at the query
+  pipeline.
+- rising `trips_total` — the backend is in trouble; `cause` says which kind.
+
 #### Failure classification
 
 `result` alone answers "did the query fail", never "whose fault was

@@ -352,6 +352,58 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 			in:   `{a='b.c', d.e="f"}`,
 			want: `{a='b.c', d_e="f"}`,
 		},
+		// The four cases below pin the two ASCII class predicates the
+		// walker delegates to — lokiIsIdentStart and lokiIsIdentCont —
+		// at each of their range ENDPOINTS. Every other test in this
+		// file starts its label keys with a mid-range letter, so a
+		// CONDITIONALS_BOUNDARY mutant narrowing a class by exactly
+		// one character changed nothing any assertion could see.
+		//
+		// A byte excluded from lokiIsIdentStart cannot open a label
+		// key, so the walker's default arm writes it verbatim and
+		// clears keyStart — the whole dotted token then survives
+		// unrewritten, which is the observable difference below.
+		{
+			// lokiIsIdentStart's `b <= 'z'`. A boundary mutant `b <
+			// 'z'` drops the last lower-case letter from the class,
+			// so `z.a` stops being a rewritable key.
+			name: "ident_start_lowercase_upper_endpoint",
+			in:   `{z.a="1"}`,
+			want: `{z_a="1"}`,
+		},
+		{
+			// lokiIsIdentStart's `b >= 'A'`. A boundary mutant `b >
+			// 'A'` drops the first upper-case letter.
+			name: "ident_start_uppercase_lower_endpoint",
+			in:   `{A.b="1"}`,
+			want: `{A_b="1"}`,
+		},
+		{
+			// lokiIsIdentStart's `b <= 'Z'`, which carries TWO
+			// survivors: the boundary mutant `b < 'Z'` and the
+			// negation mutant `b > 'Z'`. Both make `Z` fail the
+			// upper-case arm, and `Z != '_'` finishes the predicate
+			// false either way.
+			name: "ident_start_uppercase_upper_endpoint",
+			in:   `{Z.b="1"}`,
+			want: `{Z_b="1"}`,
+		},
+		{
+			// lokiIsIdentCont's `b >= '0'`. A boundary mutant `b >
+			// '0'` stops the token scan at the digit, so
+			// lokiConsumeIdentToken emits the bare `a` and the
+			// rest of the dotted token falls through verbatim.
+			name: "ident_cont_digit_lower_endpoint",
+			in:   `{a0.b="1"}`,
+			want: `{a0_b="1"}`,
+		},
+		{
+			// lokiIsIdentCont's `b <= '9'`, the other digit
+			// endpoint, mutated to `b < '9'`.
+			name: "ident_cont_digit_upper_endpoint",
+			in:   `{a9.b="1"}`,
+			want: `{a9_b="1"}`,
+		},
 	}
 
 	for _, tc := range cases {

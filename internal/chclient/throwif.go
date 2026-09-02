@@ -79,26 +79,6 @@ func wrapThrowIf(err error) error {
 	return err
 }
 
-// isThrowIfGuard reports whether err carries one of cerberus's own emitted
-// throwIf guards (ClickHouse code 395).
-//
-// Used by the circuit breaker to keep a guard rejection out of the
-// CH-health failure count: cerberus planted the guard, and the server
-// raising it proves the backend is alive and answering.
-//
-// Detection is on the *clickhouse.Exception code rather than on
-// *ThrowIfError, because the breaker observes the RAW driver error: every
-// data-plane method calls br.record(ctx, err) with what the driver returned
-// and only wraps through classifyDriverErr on its RETURN path, so a
-// *ThrowIfError does not exist yet at the point the breaker classifies.
-// Reading the code directly is correct at both layers — errors.As still
-// reaches the exception through ThrowIfError.Unwrap — and it matches how
-// isMemoryLimitExceeded already handles the identical ordering.
-func isThrowIfGuard(err error) bool {
-	var ex *clickhouse.Exception
-	return errors.As(err, &ex) && ex.Code == chCodeThrowIf
-}
-
 // ThrowIfMessage returns the guard message ClickHouse decoded for an emitted
 // throwIf rejection, and whether err is one at all.
 //

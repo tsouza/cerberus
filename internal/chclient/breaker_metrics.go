@@ -23,6 +23,20 @@ const breakerMeterName = "github.com/tsouza/cerberus/internal/chclient"
 // bare-metric / `sum()`-style panels that don't pivot on it.
 const attrBreakerHead = attribute.Key("head")
 
+// attrBreakerCause labels every trip sample with WHY the breaker tripped —
+// `no-server-answer` (the backend never answered) or `server-condition` (it
+// answered with a code naming a server/cluster condition). See
+// [breakerOutcome.tripCause].
+//
+// It exists because a trip's blast radius (503 on every query behind that
+// head) makes misattribution expensive: during #2895 a score that looked like
+// a total engine regression masked ~21 bad statements for 32 hours. Statement
+// rejections can no longer trip the breaker at all, so a trip is always a
+// backend problem — this label says which KIND, and
+// cerberus_ch_breaker_statement_rejections_total carries the other side of the
+// picture so "we sent bad statements" is visible even when nothing trips.
+const attrBreakerCause = attribute.Key("cause")
+
 // breakerState gauge values. The gauge is a single 0/1/2 level so a dashboard
 // can render the current phase as a state-timeline without needing three
 // separate boolean series; the numeric mapping matches the breakerState iota
@@ -69,8 +83,20 @@ type breakerMetrics struct {
 	// trips is the cumulative count of CLOSED->OPEN trips — the
 	// highest-blast-radius event (one trip 503s all three heads and
 	// flips /readyz). Monotonic counter so `increase(...[5m])` resolves
-	// to the number of outages in the window.
+	// to the number of outages in the window. Attributed by `head` and by
+	// `cause` (see attrBreakerCause), so a panel says not just that a head
+	// tripped but whether the backend went silent or answered with a
+	// server-condition code.
 	trips metric.Int64Counter
+	// statementRejections is the cumulative count of per-statement ClickHouse
+	// rejections the breaker classified as breakerScopeStatement and did NOT
+	// count (see breaker_classify.go). It is the "we sent bad statements"
+	// signal, and it is deliberately a STANDING stream rather than a field on
+	// a trip event: after #2900 a statement-rejection storm produces no trip
+	// at all, so a trip-only signal would show a flat, silent, entirely
+	// healthy-looking breaker while the heads returned wrong answers. During
+	// #2895 exactly that class of defect stayed invisible for 32 hours.
+	statementRejections metric.Int64Counter
 }
 
 // newBreakerMetrics builds the breaker instrument set off mp. The trips
@@ -118,15 +144,40 @@ func newBreakerMetrics(mp metric.MeterProvider) *breakerMetrics {
 	if err != nil {
 		panic("chclient: build breaker trips counter: " + err.Error())
 	}
-	m := &breakerMetrics{meter: meter, state: state, trips: trips}
-	// Zero-init the trips counter so increase() has a baseline — for EVERY
-	// head (#94). OTel sync counters export nothing until their first Add, so
-	// without a per-head seed a healthy replica whose loki breaker never trips
-	// would export NO head="loki" trips series at all and a `sum by(head)`
-	// panel would silently miss the healthy heads. The state gauge needs no
-	// such seed: its observable callback reports every head every interval.
+	rejections, err := meter.Int64Counter(
+		"cerberus_ch_breaker_statement_rejections_total",
+		metric.WithDescription(
+			"Cumulative per-statement ClickHouse rejections the circuit "+
+				"breaker classified as statement-scoped and did NOT count "+
+				"toward tripping. A rising rate here with a flat "+
+				"cerberus_ch_breaker_trips_total means cerberus is sending "+
+				"statements ClickHouse declines, NOT that the backend is "+
+				"unhealthy.",
+		),
+		metric.WithUnit("{rejection}"),
+	)
+	if err != nil {
+		panic("chclient: build breaker statement-rejections counter: " + err.Error())
+	}
+	m := &breakerMetrics{meter: meter, state: state, trips: trips, statementRejections: rejections}
+	// Zero-init the counters so increase() has a baseline — for EVERY head
+	// (#94), and for every trip cause. OTel sync counters export nothing until
+	// their first Add, so without a per-head seed a healthy replica whose loki
+	// breaker never trips would export NO head="loki" trips series at all and
+	// a `sum by(head)` panel would silently miss the healthy heads. The same
+	// argument applies per `cause`: a replica that has only ever tripped on
+	// no-server-answer must still render a flat 0 for server-condition rather
+	// than "No data", or a triager cannot tell "never happened" from "not
+	// instrumented". The state gauge needs no such seed: its observable
+	// callback reports every head every interval.
 	for _, h := range allHeads {
-		m.trips.Add(context.Background(), 0, metric.WithAttributes(
+		for _, cause := range allTripCauses {
+			m.trips.Add(context.Background(), 0, metric.WithAttributes(
+				attrBreakerHead.String(h.String()),
+				attrBreakerCause.String(cause),
+			))
+		}
+		m.statementRejections.Add(context.Background(), 0, metric.WithAttributes(
 			attrBreakerHead.String(h.String()),
 		))
 	}
@@ -177,15 +228,31 @@ func (m *breakerMetrics) registerStateCallback(breakers ...*breaker) {
 	}
 }
 
-// recordTrip increments the CLOSED->OPEN trip counter for head. A nil receiver
-// is the no-telemetry no-op for the zero-value breaker. Increment is on the
-// CLOSED->OPEN edge ONLY (not the HALF-OPEN->OPEN re-open), so rate() over the
-// counter reads as "new outages/sec per head".
-func (m *breakerMetrics) recordTrip(head Head) {
+// recordTrip increments the CLOSED->OPEN trip counter for head, attributed by
+// the cause of the failure that crossed the threshold (see
+// [breakerOutcome.tripCause]). A nil receiver is the no-telemetry no-op for
+// the zero-value breaker. Increment is on the CLOSED->OPEN edge ONLY (not the
+// HALF-OPEN->OPEN re-open), so rate() over the counter reads as "new
+// outages/sec per head".
+func (m *breakerMetrics) recordTrip(head Head, cause string) {
 	if m == nil {
 		return
 	}
 	m.trips.Add(context.Background(), 1, metric.WithAttributes(
+		attrBreakerHead.String(head.String()),
+		attrBreakerCause.String(cause),
+	))
+}
+
+// recordStatementRejection increments the per-statement-rejection counter for
+// head — a ClickHouse exception the breaker classified as statement-scoped and
+// deliberately did not count. A nil receiver is the no-telemetry no-op for the
+// zero-value breaker.
+func (m *breakerMetrics) recordStatementRejection(head Head) {
+	if m == nil {
+		return
+	}
+	m.statementRejections.Add(context.Background(), 1, metric.WithAttributes(
 		attrBreakerHead.String(head.String()),
 	))
 }
