@@ -401,7 +401,6 @@ label_replace_regex_capture.txtar
 label_replace_shared_capture_name.txtar
 label_replace_truncated_shared_capture_name.txtar
 lag_adjacency_changes_nan_run.txtar
-lag_adjacency_idelta_duplicate_ts.txtar
 lag_adjacency_irate_delta_temporality_range.txtar
 lag_adjacency_resets_range_step.txtar
 last_over_time_exp_histogram_preserves.txtar
@@ -575,8 +574,6 @@ sort_by_label_natural_order.txtar
 sort_by_label_no_label.txtar
 sort_desc_descending.txtar
 sort_of_dropping_binop_exp_histogram.txtar
-sorted_slab_avg_over_time_range_step.txtar
-sorted_slab_sum_over_time_range_step.txtar
 sqrt_metric.txtar
 stddev_by_job.txtar
 stddev_over_time_window.txtar
