@@ -49,7 +49,7 @@ because that rule has no auto-fixer of its own.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume
 ```
 
 The fixes it carries defend one thing between them: that the number a run reports is a number the
@@ -103,13 +103,29 @@ status. `TIMED OUT` stays in the efficacy denominator and credits nobody, so a s
 a score. The scan is streaming and retains only enough bytes to recognise a marker split across two
 writes, so a mutant that prints without bound cannot exhaust memory.
 
+**Prefix operators read as prefix operators.** gremlins maps each `token.Token` to the mutations
+that make sense for it, and that table describes the operator's *infix* meaning — but the same walk
+reads `*ast.UnaryExpr` too. Go spells four operators identically in both positions and means
+something different by each, so two of them were mutated against the wrong meaning: `&x` is
+address-of rather than bitwise AND, and `INVERT_BITWISE` rewrote it to `|x`, which does not parse;
+`^x` is bitwise complement rather than XOR, and the same rule rewrote it to `&x`, which no longer has
+the operand's type. On this tree, whose plan-building code is largely `&chplan.Foo{...}` composite
+literals, that was most of a package's mutants — and every one of them arrived as exit status 1 and
+was booked `KILLED`, so each leg was paid efficacy for work the compiler did. The fork consults the
+table only for the prefix operators whose infix mutations carry over unchanged, `+x` and `-x`.
+
+Removing those mutants rather than reclassifying them is what makes a mutant set mean something: a
+leg's honest score is identical either way, since `NOT VIABLE` leaves both sides of the ratio, but a
+set padded with entries no compiler accepts measures nothing. The `NOT VIABLE` classification stays
+for a genuine build failure from any other source.
+
 `.gremlins.yaml`'s `exclude-files` paths are interpreted relative to the run's scope, not the repo
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
-The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag `v0.6.0-cerberus-run-leash`
-is the branch the upstream pull request is built from, and keeps the upstream module path
-`github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-run-leash-consume` is the branch
+The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag
+`v0.6.0-cerberus-unary-operators` is the branch the upstream pull request is built from, and keeps
+the upstream module path `github.com/go-gremlins/gremlins` so the diff stays reviewable.
+`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-unary-operators-consume` is the branch
 `mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
 `github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
 rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes
