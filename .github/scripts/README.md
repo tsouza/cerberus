@@ -261,6 +261,25 @@ what actually runs.
   `internal/chsql/fnresolution.go`. The companion Node test pins tracked,
   untracked, dynamic-conversion, and boundary behavior.
   - Exit: `0` clean, `1` on any raw literal construction.
+- **`forbid-parity-duplicate-samples.mjs`** — `ci.yml`, the `forbid-skip` job
+  step "Reject parity-enrolled fixtures seeding differing-value duplicate
+  timestamps", and the matching pre-push lefthook. Walks `test/spec/promql`,
+  `test/spec/logql` and `test/spec/traceql`, and fails when a fixture carrying
+  `-- parity --` also seeds two metric samples at one `(MetricName, labels,
+  TimeUnix)` carrying different payloads. Which of two samples at a timestamp
+  survives is implementation-defined on both sides — Prometheus's TSDB appender
+  keeps the first ingested, ClickHouse keeps both — so such a fixture asserts
+  what neither engine promises (#2905). Identical-value duplicates are allowed:
+  they have a right answer to converge on, and
+  `increase_duplicate_timestamp_dedup.txtar` deliberately seeds one to pin the
+  rate family's dedup contract against the reference. Metric tables are
+  recognised structurally (a DDL declaring both `MetricName` and `TimeUnix`),
+  and a classic-histogram table is grouped apart because its rows reach the
+  reference as `_bucket`/`_count`/`_sum` series. A scan that finds no
+  metric-shaped seed at all fails as a broken scan.
+  - Env: `REPO_ROOT` (default `process.cwd()`), `SPEC_DIRS` (default
+    `test/spec/promql,test/spec/logql,test/spec/traceql`).
+  - Exit: `0` clean, `1` on any violation or a vacuous scan.
 - **`crawl-surface-inventory-guard.mjs`** — `ci.yml`, the `forbid-skip` job
   step "Crawl surface inventory canonical-form ratchet (#1674)". The PR-time
   content ratchet over

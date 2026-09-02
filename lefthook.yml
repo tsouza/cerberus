@@ -194,6 +194,14 @@ pre-push:
     forbid-chplan-fn-literal:
       tags: discipline
       run: node .github/scripts/forbid-chplan-fn-literal.mjs
+    # Mirrors the CI gate of the same name: a `-- parity --` fixture must not
+    # seed two metric samples at one (series, timestamp) carrying different
+    # payloads. A pure-JS walk of the three spec corpora, comparable in cost
+    # to the chplan gate above, and it catches the mistake while the fixture
+    # is still being written rather than a CI round trip later. See #2905.
+    forbid-parity-duplicate-samples:
+      tags: discipline
+      run: node .github/scripts/forbid-parity-duplicate-samples.mjs
     # Mirrors the CI `repo-hygiene` gate's two checks:
     #   - binary:         rejects committed ELF/Mach-O/PE executables and
     #                     other binary artefacts tracked in git

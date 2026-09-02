@@ -11,14 +11,22 @@
 # identical row (see range_window_lag_adjacency.go's doc). Window for the
 # 00:05:00 anchor is (00:00:00, 00:05:00]: samples 1.0, 2.0, 5.0, 10.0
 # sorted — idelta is the last two: 10.0 - 5.0 = 5.0 (NOT 10.0 - 2.0).
+#
+# That survivor selection is the whole subject of this fixture, and it is
+# also why it is parity-EXEMPT rather than enrolled (cerberus issue #2905):
+# Prometheus's TSDB appender keeps one sample per (series, timestamp), drops
+# 5.0 at commit and answers 10.0 - 2.0 = 8.0. Neither engine promises which
+# of the two survives, so agreement between them would be an accident. The
+# contract this fixture exists for is pinned instead, over this very seed, by
+# internal/promql/duplicate_timestamp_seed_chdb_test.go, which holds the
+# lag-adjacency answer against the fan-out array-fold answer it must equal.
 -- query.promql --
 idelta(temperature[5m])
 -- range_step --
 5m
--- parity --
-oracle: prometheus
-endpoint: /api/v1/query_range
-scope: full
+-- parity_exempt --
+reason: duplicate-timestamp-seed
+detail: host 'a' seeds 00:02:00 twice with 2.0 and 5.0 so the lagInFrame survivor flag must pick the same duplicate the array-fold path's arraySort tuple order picks; the reference engine's appender keeps only the first-ingested one and answers 8.0, a survivor neither engine promises.
 -- experimental_lag_adjacency_idelta --
 -- seed --
 CREATE TABLE otel_metrics_gauge (

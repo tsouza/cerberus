@@ -1096,6 +1096,20 @@ jobs:
       - name: Reject raw chplan Fn literal construction
         run: node .github/scripts/forbid-chplan-fn-literal.mjs
 
+      # #2905: a parity-enrolled fixture that also seeds a differing-value
+      # duplicate (series, timestamp) asserts two things that cannot both
+      # hold — "every sample counts" (cerberus) and "matches the reference"
+      # (whose TSDB appender keeps one, chosen by ingestion order). Three
+      # such fixtures reached main and one was a live red `roundtrip-promql`
+      # lane. The suite runs first because the gate's negative controls (an
+      # identical-value duplicate, a classic-histogram decoy) are what keep
+      # it from failing good fixtures.
+      - name: Assert the parity duplicate-sample gate fires and spares its controls
+        run: node --test .github/scripts/forbid-parity-duplicate-samples.test.mjs
+
+      - name: Reject parity-enrolled fixtures seeding differing-value duplicate timestamps
+        run: node .github/scripts/forbid-parity-duplicate-samples.mjs
+
       # #1568: GitHub's server-side merge does NOT honour the `-merge`
       # .gitattributes driver (verified empirically — see the script's own
       # doc comment for the experiment). Most `-merge`-marked generated
