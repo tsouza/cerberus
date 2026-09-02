@@ -162,6 +162,88 @@ func TestMetricsCompareScanBoundRequiresBothEnds(t *testing.T) {
 	}
 }
 
+// TestExemplarsRateAndCountIgnoreAttr pins the two-site agreement that
+// makes the exemplar Value column well-formed for the counting ops:
+// EmitMetricsExemplars's inner SELECT projects the metric operand as
+// `metric_arg` ONLY when the op is neither rate nor count_over_time, so
+// its Value expression must reach for `argMax(1, ts)` — never
+// `argMax(metric_arg, ts)` — for exactly those two ops. The two guards
+// are a pair: whichever one moves, the other has to move with it.
+// Whether the caller left Attr set is irrelevant:
+// rate and count_over_time count rows, and the operand a caller may have
+// attached is deliberately ignored.
+//
+// Inverting the `||` on the Value-expression guard makes it
+// unsatisfiable. A rate/count_over_time node carrying an Attr then falls into the
+// `else if m.Attr != nil` arm and emits `argMax(metric_arg, ts)` against
+// a column the inner SELECT never projected — SQL ClickHouse rejects at
+// parse time. Nothing in the suite asked, because every test built the
+// counting ops with a nil Attr, where both forms collapse onto the same
+// `argMax(1, ts)` else-arm (cerberus issue #2943; the mutant reached a
+// verdict for the first time once #2940 stopped `go vet`'s bools
+// analyzer rejecting it as "suspect and").
+//
+// EmitMetricsExemplars is an exported emitter entrypoint whose input is
+// a *chplan.MetricsAggregate, so "no lowering builds that combination
+// today" is not a property of this package and cannot be what keeps the
+// emitted SQL well-formed. The guard is.
+func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 5, 0, 0, time.UTC)
+
+	emit := func(t *testing.T, op chplan.MetricsOp, attr chplan.Expr) string {
+		t.Helper()
+		m := &chplan.MetricsAggregate{
+			Op:             op,
+			Attr:           attr,
+			GroupBy:        []chplan.Expr{&chplan.ColumnRef{Name: "resource.service.name"}},
+			GroupByAliases: []string{"resource.service.name"},
+			ValueAlias:     "Value",
+			Inner:          &chplan.Scan{Table: "otel_traces"},
+		}
+		rw := &chplan.RangeWindow{
+			Input:           m,
+			Step:            time.Minute,
+			Range:           time.Minute,
+			Start:           start,
+			End:             end,
+			TimestampColumn: "Timestamp",
+		}
+		sql, _, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
+		if err != nil {
+			t.Fatalf("EmitMetricsExemplars(op=%v): %v", op, err)
+		}
+		return sql
+	}
+
+	for _, op := range []chplan.MetricsOp{chplan.MetricsOpRate, chplan.MetricsOpCountOverTime} {
+		op := op
+		t.Run(op.String(), func(t *testing.T) {
+			t.Parallel()
+			sql := emit(t, op, &chplan.ColumnRef{Name: "Duration"})
+			if !strings.Contains(sql, "toFloat64(argMax(1, `ts`))") {
+				t.Errorf("%v with an Attr must still count rows via argMax(1, ts):\n%s", op, sql)
+			}
+			if strings.Contains(sql, "metric_arg") {
+				t.Errorf("%v must never reference metric_arg — the inner SELECT does not project it:\n%s", op, sql)
+			}
+		})
+	}
+
+	// Counter-case: an op that DOES read the operand projects metric_arg
+	// and reduces over it, so the two assertions above are discriminating
+	// rather than true of every emitted exemplar statement.
+	t.Run("sum_over_time reads the operand", func(t *testing.T) {
+		t.Parallel()
+		sql := emit(t, chplan.MetricsOpSumOverTime, &chplan.ColumnRef{Name: "Duration"})
+		if !strings.Contains(sql, "toFloat64(argMax(`metric_arg`, `ts`))") {
+			t.Errorf("sum_over_time must reduce over the projected metric_arg:\n%s", sql)
+		}
+	})
+}
+
 // NOT KILLABLE — documented, not defended by a test.
 //
 // exemplars.go:292:18 (CONDITIONALS_BOUNDARY, `if maxPerSeries > 0` ->

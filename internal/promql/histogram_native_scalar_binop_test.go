@@ -431,3 +431,95 @@ func TestLower_ExpHistogram_ScalarBinopScalesOnlyTheCountFields(t *testing.T) {
 		})
 	}
 }
+
+// TestLower_ExpHistogram_ScaledOperandIsHistogramValuedToWrappers pins
+// the MUL/DIV arm of [isExpHistogramValuedShape]
+// (histogram_native_scalar_binop.go):
+//
+//	if (b.Op == parser.MUL || b.Op == parser.DIV) && isExpHistogramValuedShape(b.LHS, s, ctx) {
+//	    _, scalar := tryScalarLiteral(b.RHS)
+//	    return scalar
+//	}
+//
+// That arm is what tells every OTHER recognizer in this package that
+// `<exp-hist> * <scalar>` and `<exp-hist> / <scalar>` are themselves
+// histogram-valued, so a wrapper around one keeps the histogram
+// lowering instead of falling through to the float path. It is reached
+// only through a WRAPPER: the bare `<exp-hist> * 2` root goes through
+// [expHistogramScalarBinop]'s own scalar-on-the-right arm, which is
+// what the tests above cover, and which is why inverting this arm's
+// `||` to `&&` — making the operator test unsatisfiable and the whole
+// arm dead — left the package's untagged suite green (cerberus issue
+// #2943; the mutant reached a verdict for the first time once #2940
+// stopped `go vet`'s bools analyzer rejecting it as "suspect and").
+//
+// Each case below silently degraded to a float/sample-shaped plan with
+// the arm dead — no error, just the wrong lowering — so the assertion
+// is on the published row shape, not on an error string. The bare
+// `<exp-hist> * <scalar>` control at the end does NOT depend on this
+// arm and stays histogram-valued either way; it is included so a
+// wholesale regression of exp-histogram scaling is distinguishable from
+// the wrapper-only gap this test exists for.
+func TestLower_ExpHistogram_ScaledOperandIsHistogramValuedToWrappers(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelMetrics()
+	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		// Unary minus over a scaled operand — the widening
+		// histogram_native_unary.go's own doc comment names.
+		{name: "unary minus over scaled", query: `-(latency_exp_hist * 2)`},
+		{name: "unary minus over divided", query: `-(latency_exp_hist / 4)`},
+		// label_replace forwards the histogram shape of its first arg.
+		{name: "label_replace over scaled", query: `label_replace(latency_exp_hist * 2, "svc", "$1", "service", "(.*)")`},
+		{name: "label_replace over divided", query: `label_replace(latency_exp_hist / 4, "svc", "$1", "service", "(.*)")`},
+		// <exp-hist>+<exp-hist> merge with a scaled operand on one side.
+		{name: "scaled plus histogram", query: `(latency_exp_hist * 2) + other_exp_hist`},
+		{name: "divided plus histogram", query: `(latency_exp_hist / 4) + other_exp_hist`},
+		// Set ops over a scaled operand.
+		{name: "scaled and histogram", query: `(latency_exp_hist * 2) and other_exp_hist`},
+		{name: "divided unless histogram", query: `(latency_exp_hist / 4) unless other_exp_hist`},
+		// A second scaling applied to an already-scaled operand.
+		{name: "scaled times scalar again", query: `(latency_exp_hist * 2) * 3`},
+		{name: "divided by scalar again", query: `(latency_exp_hist / 4) / 5`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expr, err := p.ParseExpr(tc.query)
+			if err != nil {
+				t.Fatalf("ParseExpr(%q): %v", tc.query, err)
+			}
+			plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+			if err != nil {
+				t.Fatalf("LowerAt(%q): unexpected error: %v", tc.query, err)
+			}
+			if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+				t.Fatalf("lower(%q): plan root publishes %s, want %s — the wrapper stopped seeing the scaled operand as histogram-valued",
+					tc.query, shape, chplan.HistogramRowShape)
+			}
+		})
+	}
+
+	t.Run("control: bare scaled operand does not depend on this arm", func(t *testing.T) {
+		t.Parallel()
+		const query = `latency_exp_hist * 2`
+		expr, err := p.ParseExpr(query)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", query, err)
+		}
+		plan, err := promql.LowerAt(context.Background(), expr, s, at, at)
+		if err != nil {
+			t.Fatalf("LowerAt(%q): unexpected error: %v", query, err)
+		}
+		if shape := chplan.RowShapeOf(plan); shape != chplan.HistogramRowShape {
+			t.Fatalf("lower(%q): plan root publishes %s, want %s", query, shape, chplan.HistogramRowShape)
+		}
+	})
+}
