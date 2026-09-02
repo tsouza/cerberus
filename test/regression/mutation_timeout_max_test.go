@@ -40,18 +40,34 @@ const (
 	timeoutMinDeclaration    = "MUTANT_TIMEOUT_MIN:"
 )
 
-// gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag AND
-// spends it on the right quantity. A tag from before the flag landed makes
-// gremlins reject the argument outright; a tag from the `timeout-max` family
-// accepts it but charges compilation to it, which is #2910: the deadline wrapped
-// the whole `go test` child, so on a package that takes 13-16s to compile
-// against a 15s budget a mutant whose test decides in 0.3s was recorded TIMED
-// OUT having never run. The `run-leash` family passes the bound to
-// `go test -timeout`, which the Go toolchain starts when the test binary starts,
-// and reads the verdict from the child's output rather than its exit status --
-// `go test` reports a failing test, a build failure and a test timeout all as
-// exit 1, so taking that at face value credits a timeout as a detection.
-const gremlinsForkTagPrefix = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash"
+// gremlinsForkTag is the exact fork build this lane has been verified against.
+// It is pinned whole rather than by family prefix because a tag name carries no
+// ordering: "which tags are new enough" is not something a prefix can express,
+// and every fork family so far has changed a verdict semantic this lane's
+// numbers depend on. Bumping the fork therefore has to touch this line, which
+// is the point -- the bump gets read against the list below rather than sliding
+// through on a matching prefix.
+//
+// What each family in that history fixed, oldest first:
+//
+//   - before --timeout-max: gremlins rejects the argument outright, so the lane
+//     fails on every leg. Loud, but still broken.
+//   - the `timeout-max` family: accepts the bound and then charges compilation
+//     to it (#2910). The deadline wrapped the whole `go test` child, so on a
+//     package taking 13-16s to compile against a 15s budget, a mutant whose
+//     test decides in 0.3s was recorded TIMED OUT having never run.
+//   - the `run-leash` family: passes the bound to `go test -timeout`, which the
+//     Go toolchain starts when the test BINARY starts, and reads the verdict
+//     from the child's output rather than its exit status. `go test` reports a
+//     failing test, a build failure and a test timeout all as exit 1, so taking
+//     that at face value credits both of the latter as detections.
+//   - the `unary-operators` family (#2930): stops mutating a prefix operator
+//     against the infix meaning of its token. INVERT_BITWISE was rewriting
+//     every `&chplan.Foo{...}` to `|chplan.Foo{...}`, which does not parse, and
+//     the exit-status collapse above then booked each one KILLED. `Not viable:
+//     0` on every leg was the tell: the status had never once been reported,
+//     and three legs measured 52, 57 and 88 lost kills apiece once it was.
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
@@ -114,11 +130,13 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(body, gremlinsForkTagPrefix) {
-		t.Errorf("%s does not install a %s* build of gremlins. Fork tags older than the flag reject %s "+
-			"outright, so the lane fails on every leg — loud, but still broken. Tags between the flag "+
-			"and the run-only leash are worse than loud: they accept the bound and then spend it on the "+
-			"compiler, so a mutant times out having never run a line of test code and the leg loses "+
-			"efficacy points it earned (#2910).", mutationWorkflowPath, gremlinsForkTagPrefix, timeoutMaxFlag)
+	if !strings.Contains(body, gremlinsForkTag) {
+		t.Errorf("%s does not install %s. Fork tags older than the flag reject %s outright, so the lane "+
+			"fails on every leg — loud, but still broken. Every tag after it is worse than loud: the "+
+			"`timeout-max` family spends the bound on the compiler, so a mutant times out having never "+
+			"run a line of test code (#2910), and everything before `unary-operators` mutates a prefix "+
+			"`&` as if it were bitwise AND, so mutants that cannot parse are booked as detections and "+
+			"the leg is paid efficacy for the compiler's work (#2930).",
+			mutationWorkflowPath, gremlinsForkTag, timeoutMaxFlag)
 	}
 }
