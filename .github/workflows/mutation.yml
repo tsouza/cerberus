@@ -164,7 +164,7 @@ jobs:
       # opaque `gremlins exited N` with no artifact and no measured-vs-threshold
       # numbers.
       #
-      # We consume gremlins via the tsouza/gremlins fork, which carries three
+      # We consume gremlins via the tsouza/gremlins fork, which carries five
       # fixes cerberus needs:
       #
       #   --on-shutdown-status=not-run   in-flight mutants killed by the
@@ -192,6 +192,37 @@ jobs:
       #     the compiler did: `Not viable: 0` on every leg was the tell that the
       #     status had never once been reported. The fork no longer generates
       #     them (#2930).
+      #
+      #   a candidate mutant is type-checked before it is emitted
+      #     The line above is one instance of a wider gap: a token table says
+      #     what a rewrite MEANS for a token read on its own, and whether the
+      #     result is a program depends on the operand types, the constant
+      #     values around it, and what statements the enclosing function
+      #     admits. `a + "-" + b` has no `-` on this tree either; `const week
+      #     = 7 * 24 * time.Hour` mutates into a legal constant expression
+      #     whose `d / week` further down is a division by zero; and
+      #     INVERT_LOOPCTRL turns the `continue` that keeps a `for {}` from
+      #     terminating into a `break` that leaves the function missing a
+      #     return. The fork type-checks the candidate's whole PACKAGE — the
+      #     package, because the error need not appear where the mutation is —
+      #     and does not emit it if that fails (#2933). A package it cannot
+      #     load and type-check as it stands is not used as an oracle at all:
+      #     its mutants are generated and left to the compiler, as before.
+      #
+      #   the mutated tests run with `-vet=off`
+      #     `go test` runs a subset of `go vet` before it builds anything and
+      #     reports a finding as `FAIL pkg [build failed]`, which from the
+      #     outside is source that does not compile. Its bools analyzer rejects
+      #     exactly what INVERT_LOGICAL produces from `name == a || name == b`
+      #     — a conjunction of equalities against distinct constants, "suspect
+      #     and". Those mutants are legal Go and a real change of behaviour, so
+      #     the fix is not to stop generating them (that would drop mutants the
+      #     suite ought to be asked about) but to stop letting a style analyzer
+      #     decide whether a mutant may be adjudicated. This is the one entry
+      #     in this list that can MOVE a leg's number rather than only correct
+      #     its meaning: 78 mutants that used to leave the ratio as NOT VIABLE
+      #     now get a real verdict, and one that nothing kills is a genuine gap
+      #     in the suite (#2933).
       # Routed through go-module-fetch.mjs because gremlins is NOT in go.mod, so
       # the warm step in ./.github/actions/setup-go — which runs
       # `go mod download` over the main module's own requirements — does not
@@ -204,7 +235,7 @@ jobs:
       - name: install gremlins
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.

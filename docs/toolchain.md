@@ -49,7 +49,7 @@ because that rule has no auto-fixer of its own.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume
 ```
 
 The fixes it carries defend one thing between them: that the number a run reports is a number the
@@ -119,13 +119,44 @@ leg's honest score is identical either way, since `NOT VIABLE` leaves both sides
 set padded with entries no compiler accepts measures nothing. The `NOT VIABLE` classification stays
 for a genuine build failure from any other source.
 
+**A candidate mutant is type-checked before it is emitted.** Reading a prefix operator as a prefix
+operator is one instance of a wider gap: the mutation table describes what a rewrite *means* for a
+token read on its own, and whether the result is a program depends on the operand types, on the
+constant values around it, and on what statements the enclosing function admits — none of which is
+in the token. Three shapes of that survived on this tree. `hint.Name + "=" + hint.Value.String()`
+became `operator - not defined on ... (variable of type string)`, since Go defines `+` on strings
+and nothing else; `const week = 7 * 24 * time.Hour` became a legal constant expression whose `d /
+week` three lines down is a division by zero; and `INVERT_LOOPCTRL` turned the `continue` that keeps
+a `for {}` from terminating into a `break` (`missing return`), and a `break` inside a `switch` no
+loop encloses into a `continue` that is not in a loop.
+
+The fork type-checks the candidate's whole **package** before emitting it — the package, because the
+error a mutation causes need not appear where the mutation is, as the constant case shows. One
+type-check (~100ms on `internal/promql`) buys back a whole recompile-link-run cycle (~10s) whenever
+it rejects, and generation runs on its own goroutine behind the executor pool, so the lane pays
+nothing for it. A package that cannot be loaded and type-checked as it stands is not used as an
+oracle at all: its mutants are generated and left to the compiler exactly as before, and a log line
+names the package. Dropping a mutant nobody proved illegal would shrink the set a score is measured
+against, which is the one direction a mutation tool must not move in.
+
+**`go vet` does not decide whether a mutant may be adjudicated.** `go test` runs a subset of `go
+vet` before it builds anything and reports a finding as `FAIL pkg [build failed]` — from the outside
+indistinguishable from source that does not compile. Its `bools` analyzer rejects exactly what
+`INVERT_LOGICAL` produces from `name == a || name == b`: a conjunction of equalities against
+distinct constants, which it calls "suspect and". Those mutants are legal Go and a real change of
+behaviour — the predicate becomes unsatisfiable, and any test exercising either operand kills it —
+so the fork keeps generating them and runs the mutated tests with `-vet=off`. This is the one fix in
+this list that can MOVE a leg's number rather than only correct its meaning: mutants that used to
+leave the ratio as `NOT VIABLE` now get a real verdict, and one that nothing kills is a genuine gap
+in the suite rather than an artefact.
+
 `.gremlins.yaml`'s `exclude-files` paths are interpreted relative to the run's scope, not the repo
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
 The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag
-`v0.6.0-cerberus-unary-operators` is the branch the upstream pull request is built from, and keeps
+`v0.6.0-cerberus-viable-mutants` is the branch the upstream pull request is built from, and keeps
 the upstream module path `github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-unary-operators-consume` is the branch
+`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-viable-mutants-consume` is the branch
 `mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
 `github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
 rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes
