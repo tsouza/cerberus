@@ -1,35 +1,22 @@
-# The chopt.FeatureClassicBucketMergeSumMap counterpart of
-# histogram_quantile_classic_range_step_native.txtar's SIBLING shape (a
-# plain range-mode `sum by(le)(rate(...))`, no
-# `experimental_quantile_prom_histogram` marker): byte-identical query, seed
-# and grid, but the `experimental_classic_bucket_merge_summap` marker
-# section opts the fixture into promql.NativeClassicBucketMergeLowerer, so
+# The HETEROGENEOUS counterpart of histogram_quantile_sum_by_le_summap.txtar:
+# byte-identical query, grid and marker section, but the two seeded series
+# report DIFFERENT ExplicitBounds ([0.1, 0.5, 1.0] against [0.1, 5.0]), so
 # the cross-series merge (lowerHistogramQuantileClassicAggRange,
-# histogram_quantile_range.go) renders as sumMap(bounds, counts) +
-# arrayCumSum (classic_bucket_merge_summap.go) instead of the groupArray +
-# per-rung arrayFilter-rescan fold.
+# histogram_quantile_range.go) has to combine layouts that only partly
+# overlap.
 #
-# The seed carries a HOMOGENEOUS bucket layout (every row shares
-# ExplicitBounds [0.1, 0.5, 1.0]) — the simplest case for the merge, and the
-# one this feature's own win estimate is calibrated on, so the
-# `expected_rows` cells are expected to match a plain fan-out fixture over
-# the same query/seed exactly; that identity is the point. This is the
-# [promql.ClassicBucketMergeLowerer] entry in the spec lane's native-
-# strategy coverage ratchet (TestNativeStrategies_CoverEveryRangeLowerersField
-# / TestNativeStrategies_HaveNativeSideFixtures), not a new numeric case.
+# That is the shape cerberus issue #2817 was filed against, and the reason
+# this fixture is enrolled against the real Prometheus oracle rather than
+# only against `expected_rows`: `sum by(le)` has ONE right answer for
+# mismatched bucket boundaries — sum each `le` rung over the series that
+# actually report it, then repair monotonicity — and the sumMap merge's
+# first shipped form did not give it. The parity section is what makes this
+# fixture unable to absorb a wrong answer: RunParity has no GOLDEN_UPDATE
+# branch (test/spec/parity.go), so `just update-golden promql` cannot re-pin
+# whatever cerberus currently emits here.
 #
-# Range mode (a `range_step:` section) is required here — the instant-mode
-# lowering path (promql.LowerAt, lower_test.go's `default` arm with no
-# `range_step:` section) never threads a RangeLowerers table through at
-# all, so an instant-mode fixture's marker section would be silently
-# ignored and always lower through the fan-out default.
-#
-# A HETEROGENEOUS layout — where the merge has to combine layouts that only
-# partly overlap, and where the construction this feature first shipped
-# answered differently from Prometheus (cerberus issue #2817) — is covered by
-# this fixture's `_heterogeneous` sibling, which carries the same marker and
-# the same `parity:` enrolment over a mismatched seed.
-
+# Range mode (a `range_step:` section) matches the sibling: the merge stage
+# this exercises is the range-mode one.
 -- query.promql --
 histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))
 -- parity --
@@ -49,20 +36,21 @@ CREATE TABLE otel_metrics_histogram (
 ) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
 INSERT INTO otel_metrics_histogram VALUES
     ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
-    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0], [0.1, 5.0]),
     ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
-    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:30', 9), [3, 4, 3], [0.1, 0.5, 1.0]);
+    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:30', 9), [3, 4], [0.1, 5.0]);
+
 -- expected_rows --
 [
-  ["", {}, "2026-01-01T00:00:30Z", 0.9333333333333333],
-  ["", {}, "2026-01-01T00:01:00Z", 0.9333333333333333],
-  ["", {}, "2026-01-01T00:01:30Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:02:00Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:02:30Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:03:00Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:03:30Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:04:00Z", 0.9333333333333331],
-  ["", {}, "2026-01-01T00:04:30Z", 0.9333333333333331]
+  ["", {}, "2026-01-01T00:00:30Z", 5],
+  ["", {}, "2026-01-01T00:01:00Z", 5],
+  ["", {}, "2026-01-01T00:01:30Z", 5],
+  ["", {}, "2026-01-01T00:02:00Z", 5],
+  ["", {}, "2026-01-01T00:02:30Z", 5],
+  ["", {}, "2026-01-01T00:03:00Z", 5],
+  ["", {}, "2026-01-01T00:03:30Z", 5],
+  ["", {}, "2026-01-01T00:04:00Z", 5],
+  ["", {}, "2026-01-01T00:04:30Z", 5]
 ]
 -- args --
 [0] string = ""

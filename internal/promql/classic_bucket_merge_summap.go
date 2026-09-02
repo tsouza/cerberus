@@ -10,21 +10,88 @@ import (
 // arrayFilter rescan (classic_bucket_merge_bound.go's own audited cost
 // finding — see that file's header). It replaces the per-rung rescan with
 // one ClickHouse sumMap aggregate: a single linear key-wise pass over every
-// row's (bound, per-bucket count) pairs, plus arrayCumSum to turn the
-// resulting per-bucket sums into the cumulative ladder HistogramQuantile
-// expects. It is selected ONLY for the SUM fold — see
-// ClassicBucketMergeLowerer (lower_strategy.go) and chopt.FeatureClassicBucketMergeSumMap.
+// row's (bound, that row's CUMULATIVE count at that bound) pairs, whose
+// key-wise sums ARE the merged per-`le` ladder. It is selected ONLY for the
+// SUM fold — see ClassicBucketMergeLowerer (lower_strategy.go) and
+// chopt.FeatureClassicBucketMergeSumMap.
+//
+// # Why each ROW cumulates before the merge, not the GROUP after it
+//
+// Reference Prometheus never sees a bucket layout: a classic histogram
+// reaches it as one already-cumulative float series per `le`, so
+// `sum by(le)` sums, at each bound u, ONLY the series that actually report
+// `{le=u}` — a producer whose own layout has no u contributes nothing to
+// rung u, however close its neighbouring bounds sit.
+// classicBucketMergedLadderExpr reproduces that with its `has(pbs, u)`
+// filter, and this file has to answer identically or it is a second, quieter
+// answer to the same query.
+//
+// Cumulating each ROW over its own buckets first and keying the result by
+// that row's OWN bounds is exactly that semantic, expressed as a key-wise
+// sum: the row offers its cumulative count at u to key u for every u IT
+// carries, and offers nothing at all at a union bound it does not carry. So
+//
+//	rung(u) = sum over the rows carrying u of that row's cumulative count at u
+//
+// which is classicBucketMergedLadderExpr's own definition, term for term,
+// for ANY mix of layouts — homogeneous or not.
+//
+// Cumulating the GROUP afterward instead — sumMap over per-BUCKET counts,
+// then arrayCumSum along the union, which is how this file first shipped —
+// is a different quantity: it sums, at each union bound u, EVERY row's
+// sub-cumulative count over its own buckets <= u, including rows with no u
+// at all. The two agree only when every row carries every union bound.
+// Cerberus issue #2817's worked case is the counterexample: for bounds
+// [1,2,3]/counts [10,5,0] merged with bounds [1,5]/counts [7,0],
+// histogram_quantile(0.95, sum by(le)(...)) answered 1.78 where Prometheus
+// (and the has-filter fold) answers 5.0.
+//
+// The quadratic term the old fold pays is its per-RUNG rescan of every
+// contributing row; a per-row prefix sum is one pass over that row's own
+// buckets, so moving the cumulation here keeps the linear cost this feature
+// exists for.
+//
+// # The merged ladder still owes the monotonic repair
+//
+// Rungs folded independently per bound can DIP — a bound only one narrow
+// producer carries sits below the rung beneath it — so this ladder, exactly
+// like classicBucketMergedLadderExpr's, is handed to
+// classicBucketMonotonicLadderExpr (Prometheus's own
+// ensureMonotonicAndIgnoreSmallDeltas). classicBucketShaping.reshape runs
+// BOTH ladders through that one repair layer rather than either path keeping
+// its own copy.
+//
+// # Bound ORDER and repeated bounds inside one row
+//
+// The has-filter fold defines a row's contribution by `b <= u` over that
+// row's raw (bound, count) pairs: independent of the order the row stores
+// its bounds in, and counting a repeated bound's buckets exactly once. A
+// prefix sum is neither, so the row's kept indices are ordered BY BOUND
+// (classicBucketSumMapRowOrderedIndicesExpr) before the prefix sum, and
+// every position but the LAST of an equal-bound run contributes 0
+// (classicBucketSumMapRowCumulativeExpr). sumMap merges a row's repeated
+// keys by SUMMING them (confirmed against chDB: sumMap([1,1,2],[3,4,5]) =
+// ([1,2],[7,5])), so zeroing all but the last of a run is what makes the
+// merged key hold that row's cumulative count at the repeated bound rather
+// than a prefix of it counted several times.
+//
+// Neither step is defensive: the spec corpus carries a
+// Prometheus-parity-enrolled fixture whose row reports the bound 1.0 twice
+// (histogram_quantile_classic_duplicate_bounds), and the merge's own output
+// layout is arraySort-ed (classicBucketUnionBoundsExpr) precisely because
+// the fold it must match answers a row whose stored bounds are not
+// ascending.
 //
 // # A real ClickHouse quirk this design works around
 //
 // sumMap(keys, values) DROPS any key whose summed value across the group is
 // exactly zero — confirmed against real chDB execution (sumMap([1,2,3],
-// [10,0,5]) over a single row returns keys=[1,3], NOT [1,2,3]; bound 2's
-// zero-valued bucket silently vanishes). This is disqualifying on its own:
-// ExplicitBounds defines the interpolation GEOMETRY HistogramQuantile walks,
-// and any bucket with a zero net count in the merge window — extremely
-// common in real traffic — would otherwise silently disappear from the
-// node's own output layout.
+// [0,0,5]) over a single row returns keys=[3], NOT [1,2,3]). In the
+// cumulative domain that is a LEADING run of empty buckets, which real
+// traffic produces constantly: every bound below the smallest observation
+// carries a cumulative count of exactly zero. Left alone the bound would
+// vanish from the node's own output layout, and ExplicitBounds is the
+// interpolation GEOMETRY HistogramQuantile walks.
 //
 // The fix keeps a SEPARATE, independent union-of-bounds construction (the
 // existing linear groupArray + arrayFlatten + arrayDistinct + arraySort —
@@ -38,54 +105,43 @@ import (
 //
 // indexOf returns 0 (not found), and the leading zero pad shifts every
 // found position by one, so a miss reads the pad's 0.0 and a hit reads
-// sm.values at its true position — one indexOf call, no branch. This costs
-// O(W) per union bound (W = merged bucket-ladder width) against sumMap's own
-// compact output, never against the T contributing rows — the quadratic
-// T-row rescan classic_bucket_merge_bound.go's own doc audited is gone.
+// sm.values at its true position — one indexOf call, no branch. Zero is also
+// the RIGHT value for a dropped key, not merely a safe one: sumMap drops it
+// only when every row carrying that bound reports a cumulative count of
+// zero there, which is precisely what the has-filter fold sums to.
+//
+// This costs O(W) per union bound (W = merged bucket-ladder width) against
+// sumMap's own compact output, never against the T contributing rows — the
+// quadratic T-row rescan classic_bucket_merge_bound.go's own doc audited is
+// gone.
 //
 // # -0.0 / 0.0 key identity
 //
-// sumMap itself already merges -0.0 and 0.0 as one aggregate key (confirmed:
-// sumMap([-0.0,1],[3,4]) unioned with a same-group 0.0-keyed row's own entry
-// rather than keeping two). arrayDistinct — the union-bounds construction's
-// own dedup step — does NOT (arrayDistinct([-0.0, 0.0]) keeps BOTH,
-// confirmed against chDB), so a group whose rows report -0.0 from one row
-// and 0.0 from another would otherwise surface as two distinct union rungs.
-// indexOf treats -0.0 and 0.0 as equal for lookup purposes either way, so
-// BOTH of those rungs would resolve to the SAME sumMap entry — double-
-// counting it once per duplicate rung after arrayCumSum. Canonicalising
-// every row's zero bound to +0.0 BEFORE either aggregate sees it
-// (classicBucketZeroCanonicalExpr) removes the duplicate at the source
-// rather than trying to de-duplicate the union afterward.
+// sumMap merges -0.0 and 0.0 as ONE aggregate key while arrayDistinct — the
+// union-bounds dedup — keeps both (both confirmed against chDB by
+// TestClassicBucketMergeSumMap_ZeroKeyIdentity), so a group whose rows
+// report -0.0 from one row and 0.0 from another surfaces two union rungs
+// resolving, via indexOf's own -0.0/0.0 equality, to the SAME sumMap entry.
+// In the cumulative domain that is not a defect and needs no normalisation:
+// two rungs at the same bound carrying the same cumulative count is exactly
+// what the has-filter fold produces for that input (`has` matches both), and
+// emitHistogramQuantile's own adjacent-duplicate-bound dedup collapses them
+// downstream. It WAS a defect for the per-bucket-then-arrayCumSum shape this
+// file first shipped, where the shared entry was ADDED once per duplicate
+// rung — which is why the zero-canonicalising step that guarded it went away
+// with the arrayCumSum it guarded.
 //
-// # NaN propagation (documented, not a bug)
+// # NaN
 //
-// arrayCumSum propagates a NaN forward to EVERY higher rung once it appears
-// (confirmed: arrayCumSum([1, nan, 2, 3]) = [1, nan, nan, nan]), whereas the
-// old has-filter fold only poisons the rungs a NaN row's own layout
-// contains. This is issue #2756's own documented, accepted risk — pinned by
-// TestClassicBucketMergeSumMapDifferential's NaN case, not glossed over.
-//
-// # Heterogeneous bucket layouts (scoped OUT of AutoSelect)
-//
-// For a HOMOGENEOUS group (every contributing row shares the same
-// ExplicitBounds — the overwhelmingly common real shape, and the one this
-// issue's own ~50x estimate is calibrated on) this construction is provably
-// identical to the has-filter fold: every row carries every union bound, so
-// the has-filter is a no-op and both reduce to the same per-bound sum. For a
-// HETEROGENEOUS group (rows reporting genuinely different bucket
-// boundaries) the two constructions diverge for real: sumMap+arrayCumSum
-// sums, at each union bound u, EVERY row's own sub-cumulative count over its
-// OWN buckets <= u, while reference Prometheus's sum by(le) — and the
-// has-filter fold that reproduces it — only sums rows whose OWN layout
-// contains u exactly. A chDB differential probe confirmed a measurable
-// divergence on a two-row disjoint-layout fixture. See
-// https://github.com/tsouza/cerberus/issues/2817, filed to investigate
-// restricting the sumMap path to provably-homogeneous groups. Until that
-// lands, chopt.FeatureClassicBucketMergeSumMap ships AutoSelect: false —
-// opt-in only, mirroring quantile_prom_histogram's and ts_grid_changes'
-// posture for a feature with a proven, real divergence on a specific input
-// shape.
+// arrayCumSum propagates a NaN forward through the rest of the ROW it
+// appears in (confirmed: arrayCumSum([1, nan, 2, 3]) = [1, nan, nan, nan]),
+// which is the same reach classicBucketRowCumulativeExpr's arraySum gives it
+// on the fold path: both poison that row's rungs at and above the NaN
+// bucket, and neither reaches a bound the row does not carry. The repair
+// layer both paths now share then answers the poisoned rungs identically
+// (arrayMax ignores NaN — confirmed: arrayMax([1, nan, 2]) = 2). The
+// asymmetric NaN reach #2756 documented as an accepted risk belonged to the
+// union-wide arrayCumSum this file no longer performs.
 const (
 	// hqAggSumMapAlias holds the group's sumMap(bounds, counts) result — a
 	// Tuple(Array(Float64) keys sorted ascending, Array(Float64) values),
@@ -100,17 +156,17 @@ const (
 	hqAggInfTotalAlias = "_hq_inf_total"
 )
 
-// classicBucketZeroCanonicalExpr normalises a float bound to +0.0 when it
-// compares equal to zero, folding -0.0 into +0.0. See this file's header for
-// why: sumMap merges -0.0/0.0 as one key but arrayDistinct (the union-bounds
-// dedup) does not, so an unnormalised zero bound can double-count.
-func classicBucketZeroCanonicalExpr(v chplan.Expr) chplan.Expr {
-	return &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
-		&chplan.Binary{Op: chplan.OpEq, Left: v, Right: &chplan.LitFloat{V: 0}},
-		&chplan.LitFloat{V: 0},
-		v,
-	}}
-}
+// Lambda parameter names for this file's per-row expressions. `i` indexes a
+// row's own ExplicitBounds / BucketCounts (the role paramLadderIdx plays over
+// the merged ladder, one scope down); `smb` / `smc` are the
+// single-evaluation bindings of one row's bound-ordered bounds and its
+// prefix-summed counts; `smp` indexes those two in lockstep.
+const (
+	paramBucketIndex     = "i"
+	paramSumMapRowBounds = "smb"
+	paramSumMapRowCum    = "smc"
+	paramSumMapRowPos    = "smp"
+)
 
 // classicBucketFiniteBoundKeptIndicesExpr returns the 1-based positions in
 // eb (an ExplicitBounds-shaped expression) whose bound is finite (see
@@ -123,50 +179,124 @@ func classicBucketFiniteBoundKeptIndicesExpr(eb chplan.Expr) chplan.Expr {
 	n := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{eb}}
 	return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{"i"},
+			Params: []string{paramBucketIndex},
 			Body: classicBucketFiniteExpr(&chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: "i"},
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			}),
 		},
 		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{&chplan.LitInt{V: 1}, addExpr(n, &chplan.LitInt{V: 1})}},
 	}}
 }
 
-// classicBucketSumMapRowArgs renders the per-row (bounds, counts) pair fed
-// to BOTH the sumMap aggregate and the union-bounds groupArray: every
-// INTERIOR non-finite bound dropped (its paired count dropped in lockstep,
-// preserving the #2495 -Inf guard the has-filter path applies at read time
-// instead), every finite bound zero-canonicalised, and counts cast to
-// Float64 (the ladder is float-domain throughout — see
-// classicBucketRowCumulativeExpr's identical reasoning). The trailing
-// overflow element BucketCounts may carry (one longer than ExplicitBounds)
-// is excluded here — sumMap requires equal-length key/value arrays per row —
-// and folded separately into hqAggInfTotalAlias via the RAW, unfiltered
-// column instead.
+// classicBucketSumMapRowOrderedIndicesExpr returns the same kept (finite-
+// bound) 1-based positions classicBucketFiniteBoundKeptIndicesExpr selects,
+// permuted into ASCENDING BOUND order rather than stored-array order.
+//
+// The has-filter fold reads a row through `b <= u`, which does not care what
+// order the row stores its bounds in; a prefix sum does, so this is what
+// makes the two agree for a row whose ExplicitBounds is not ascending. It is
+// also what puts an equal-bound run in ADJACENT positions, which is the
+// precondition classicBucketSumMapRowCumulativeExpr's run collapse reads.
+func classicBucketSumMapRowOrderedIndicesExpr(eb chplan.Expr) chplan.Expr {
+	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
+		&chplan.Lambda{
+			Params: []string{paramBucketIndex},
+			Body: &chplan.Subscript{
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
+			},
+		},
+		classicBucketFiniteBoundKeptIndicesExpr(eb),
+	}}
+}
+
+// classicBucketSumMapRowCumulativeExpr renders ONE row's per-bound
+// CUMULATIVE counts — the values sumMap keys by that row's own bounds — from
+// its already bound-ordered bounds and per-bucket counts.
+//
+// It is a plain prefix sum with one correction: every position but the LAST
+// of an equal-bound run contributes 0 instead of its own prefix. sumMap sums
+// a row's repeated keys, so a run whose entries sum to the run's FINAL
+// prefix is what makes the merged key hold "this row's count at or below
+// that bound" once, rather than a prefix of it counted once per repeat. See
+// this file's header.
+//
+// Both arrays are bound once (hqLet) because the run test reads the bounds
+// twice and the prefix sum is read once per position: inlining either inside
+// the arrayMap lambda would re-derive the whole per-row expression tree per
+// element.
+func classicBucketSumMapRowCumulativeExpr(orderedBounds, orderedCounts chplan.Expr) chplan.Expr {
+	return hqLet(paramSumMapRowBounds, orderedBounds, func(bounds chplan.Expr) chplan.Expr {
+		prefix := &chplan.FuncCall{Fn: chplan.FnArrayCumSum, Args: []chplan.Expr{orderedCounts}}
+		return hqLet(paramSumMapRowCum, prefix, func(cum chplan.Expr) chplan.Expr {
+			pos := chplan.Expr(&chplan.BareIdent{Name: paramSumMapRowPos})
+			// pos < length(bounds) guards the lookahead: at the last
+			// position bounds[pos+1] reads past the end, which ClickHouse
+			// answers with the element type's default rather than an error
+			// (confirmed against chDB), and that default is 0 — a real bound
+			// value a row's highest bucket can legitimately carry.
+			repeatsNext := &chplan.Binary{
+				Op: chplan.OpAnd,
+				Left: &chplan.Binary{
+					Op:    chplan.OpLt,
+					Left:  pos,
+					Right: &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{bounds}},
+				},
+				Right: &chplan.Binary{
+					Op:    chplan.OpEq,
+					Left:  &chplan.Subscript{Container: bounds, Key: pos},
+					Right: &chplan.Subscript{Container: bounds, Key: addExpr(pos, &chplan.LitInt{V: 1})},
+				},
+			}
+			return &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+				&chplan.Lambda{
+					Params: []string{paramSumMapRowPos},
+					Body: &chplan.FuncCall{Fn: chplan.FnIf, Args: []chplan.Expr{
+						repeatsNext,
+						&chplan.LitFloat{V: 0},
+						&chplan.Subscript{Container: cum, Key: pos},
+					}},
+				},
+				&chplan.FuncCall{Fn: chplan.FnArrayEnumerate, Args: []chplan.Expr{bounds}},
+			}}
+		})
+	})
+}
+
+// classicBucketSumMapRowArgs renders the per-row (bounds, cumulative counts)
+// pair fed to the sumMap aggregate — the bounds half also feeding the
+// union-bounds groupArray. Every INTERIOR non-finite bound is dropped (its
+// paired count dropped in lockstep, preserving the #2495 -Inf guard the
+// has-filter path applies at read time instead), the surviving pairs are put
+// in ascending-bound order, and counts are cast to Float64 (the ladder is
+// float-domain throughout — see classicBucketRowCumulativeExpr's identical
+// reasoning) before the per-row prefix sum. The trailing overflow element
+// BucketCounts may carry (one longer than ExplicitBounds) is excluded here —
+// sumMap requires equal-length key/value arrays per row — and folded
+// separately into hqAggInfTotalAlias via the RAW, unfiltered column instead.
 func classicBucketSumMapRowArgs(s schema.Metrics) (bounds, counts chplan.Expr) {
 	eb := chplan.Expr(&chplan.ColumnRef{Name: s.ExplicitBoundsColumn})
 	bc := chplan.Expr(&chplan.ColumnRef{Name: s.BucketCountsColumn})
-	keptIdx := classicBucketFiniteBoundKeptIndicesExpr(eb)
+	orderedIdx := classicBucketSumMapRowOrderedIndicesExpr(eb)
 
 	bounds = &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{"i"},
-			Body: classicBucketZeroCanonicalExpr(&chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: "i"},
-			}),
+			Params: []string{paramBucketIndex},
+			Body: &chplan.Subscript{
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
+			},
 		},
-		keptIdx,
+		orderedIdx,
 	}}
-	counts = &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+	orderedCounts := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{"i"},
+			Params: []string{paramBucketIndex},
 			Body: toFloat64Expr(&chplan.Subscript{
-				Container: bc, Key: &chplan.BareIdent{Name: "i"},
+				Container: bc, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			}),
 		},
-		keptIdx,
+		orderedIdx,
 	}}
-	return bounds, counts
+	return bounds, classicBucketSumMapRowCumulativeExpr(bounds, orderedCounts)
 }
 
 // classicBucketRowTotalColumnExpr renders ONE row's +Inf rung — its total
@@ -182,13 +312,13 @@ func classicBucketRowTotalColumnExpr(s schema.Metrics) chplan.Expr {
 	})
 }
 
-// classicBucketSumMapLookupExpr reconstructs the merged per-bucket value at
+// classicBucketSumMapLookupExpr reconstructs the merged ladder's rung at
 // union bound u from the group's sumMap result: sm.1 (keys) / sm.2 (values),
 // via arrayConcat([0.0], sm.2)[indexOf(sm.1, u) + 1] — see this file's
 // header for why a plain subscript into sm.2 at indexOf(sm.1, u) is unsafe
 // (indexOf returns 0, an invalid subscript, on a miss — which sumMap's own
 // zero-value key drop makes a real, expected case, not a defensive-only
-// branch).
+// branch) and why 0.0 is the rung's correct value on such a miss.
 func classicBucketSumMapLookupExpr(u chplan.Expr) chplan.Expr {
 	sm := chplan.Expr(&chplan.ColumnRef{Name: hqAggSumMapAlias})
 	keys := &chplan.FuncCall{Fn: chplan.FnTupleElement, Args: []chplan.Expr{sm, &chplan.LitInt{V: 1}}}
@@ -204,24 +334,25 @@ func classicBucketSumMapLookupExpr(u chplan.Expr) chplan.Expr {
 	return &chplan.Subscript{Container: paddedVals, Key: pos}
 }
 
-// classicBucketSumMapLadderExpr renders the group's cumulative per-`le`
-// ladder over the union layout via arrayCumSum, plus the trailing +Inf rung
+// classicBucketSumMapLadderExpr renders the group's merged, NOT-yet-repaired
+// cumulative per-`le` ladder over the union layout — one rung per union
+// bound, read straight out of the sumMap result, plus the trailing +Inf rung
 // (hqAggInfTotalAlias, an independent unconditional sum — see that alias'
 // doc comment for why it needs no separate "add the last cumulative rung"
-// step). Every element the cumsum walks is a non-negative per-bucket delta
-// count (or NaN — see this file's header), so the result is monotonically
-// non-decreasing by construction: unlike classicBucketMergedLadderExpr's
-// independently-folded-per-rung ladder, this one needs no
-// classicBucketMonotonicLadderExpr repair pass.
+// step).
+//
+// This is classicBucketMergedLadderExpr's counterpart and stands in exactly
+// the same place: classicBucketShaping.reshape aliases it to
+// hqAggLadderAlias and hands it to classicBucketMonotonicLadderExpr, because
+// per-bound rungs folded independently can dip. See this file's header.
 func classicBucketSumMapLadderExpr() chplan.Expr {
 	unionBounds := classicBucketUnionBoundsExpr()
-	perBucket := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
+	perBound := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{Params: []string{paramUnionBound}, Body: classicBucketSumMapLookupExpr(&chplan.BareIdent{Name: paramUnionBound})},
 		unionBounds,
 	}}
-	cumulative := &chplan.FuncCall{Fn: chplan.FnArrayCumSum, Args: []chplan.Expr{perBucket}}
 	return &chplan.FuncCall{Fn: chplan.FnArrayConcat, Args: []chplan.Expr{
-		cumulative,
+		perBound,
 		&chplan.FuncCall{Fn: chplan.FnArray, Args: []chplan.Expr{&chplan.ColumnRef{Name: hqAggInfTotalAlias}}},
 	}}
 }
@@ -251,11 +382,12 @@ func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
 				Alias: hqAggInfTotalAlias,
 			},
 		},
-		// fold is never invoked by the sumMap reshape branch — set purely so
-		// classicBucketShaping.reshape's nil check (the argMax newest-row
-		// path, which has no layouts to merge) keeps routing this shaping
-		// through the merge branch, exactly as the groupArray-fold shaping
-		// does.
+		// fold is never invoked when sumMap is set — classicBucketShaping
+		// .reshape swaps in classicBucketSumMapLadderExpr for the ladder it
+		// would otherwise build. It is set purely so that reshape's nil
+		// check (the argMax newest-row path, which has no layouts to merge)
+		// keeps routing this shaping through the merge branch, exactly as
+		// the groupArray-fold shaping does.
 		fold:   arrayFoldSum,
 		sumMap: true,
 	}
@@ -266,7 +398,8 @@ func classicBucketMergeShapingSumMap(s schema.Metrics) classicBucketShaping {
 // case. classicBucketMergeShapingSumMap only ever carries the sum fold (the
 // dispatcher never selects this shaping for another operator), so this is a
 // placeholder satisfying classicBucketShaping.reshape's nil check, never
-// actually invoked — the sumMap reshape branch computes the ladder itself.
+// actually invoked — reshape builds this shaping's ladder from the sumMap
+// aggregate instead of folding collected rungs.
 func arrayFoldSum(rungs chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArraySum, Args: []chplan.Expr{rungs}}
 }
@@ -278,7 +411,8 @@ func arrayFoldSum(rungs chplan.Expr) chplan.Expr {
 // lowerHistogramQuantileClassicAggRange) collects and merges every
 // contributing row's bucket layout: the groupArray + per-rung
 // arrayFilter-rescan fold (every fold operator), or this file's linear
-// sumMap + arrayCumSum reshape (SUM fold only, chopt.FeatureClassicBucketMergeSumMap).
+// sumMap reshape over per-row cumulative counts (SUM fold only,
+// chopt.FeatureClassicBucketMergeSumMap).
 //
 // isSum (histogramAggShape.classicFoldIsSum) is intrinsic query SHAPE, not
 // feature state — passing it is how the interface method decides WHETHER
