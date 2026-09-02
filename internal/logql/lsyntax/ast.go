@@ -212,6 +212,9 @@ func validateRegexpParser(re string) error {
 			return fmt.Errorf("duplicate extracted label name '%s'", n)
 		}
 		seen[n] = struct{}{}
+		// `named--` here is indistinguishable from `named++`: the only
+		// read is the `named == 0` post-condition below, and +k and -k
+		// are zero for the same k. See ast_test.go's NOT KILLABLE footer.
 		named++
 	}
 	if named == 0 {

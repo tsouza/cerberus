@@ -537,3 +537,14 @@ func TestMustNewVectorAggregationExpr_UnparseableTopKParameter(t *testing.T) {
 		t.Fatal("Selector() = nil error, want an invalid-parameter error")
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// ast.go:218:8 (INCREMENT_DECREMENT, validateExtractedLabels' `named++` ->
+// `named--`). `named` is initialised to 0, is written only by this statement,
+// and is read only by the `if named == 0` post-condition three lines later.
+// The original leaves it at +k and the mutant at -k, where k is the number of
+// non-empty entries in regex.SubexpNames(); both are zero exactly when k is
+// zero, so the post-condition returns errMissingCapture for the same inputs.
+// k is bounded by regex.NumSubexp()+1, so the mutant cannot wrap into 0
+// either. Re-applied and confirmed to survive the whole package suite.
