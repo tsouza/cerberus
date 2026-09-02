@@ -125,7 +125,7 @@ func writeNightlyBaselineFile(bounds []nightlyBound) error {
 		return fmt.Errorf("marshal baseline: %w", err)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(nightlyBaselinePath, buf, 0o644); err != nil {
+	if err := os.WriteFile(nightlyBaselinePath, buf, 0o600); err != nil {
 		return fmt.Errorf("write baseline: %w", err)
 	}
 	return nil

@@ -145,7 +145,7 @@ func writePerfSmokeBaselineFile(bounds []sentinelBound) error {
 		return fmt.Errorf("marshal baseline: %w", err)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(perfSmokeBaselinePath, buf, 0o644); err != nil {
+	if err := os.WriteFile(perfSmokeBaselinePath, buf, 0o600); err != nil {
 		return fmt.Errorf("write baseline: %w", err)
 	}
 	return nil
