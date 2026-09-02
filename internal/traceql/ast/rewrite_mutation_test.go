@@ -130,3 +130,57 @@ func TestArrayFoldNotAppliedAcrossOperators(t *testing.T) {
 		t.Errorf("Op = %v; want OpOr (no fold for mixed =/!=)", bin.Op)
 	}
 }
+
+// TestStaticTypeAllowedMatchesExactly pins staticTypeAllowed's membership
+// test. It is the gate on the two regex fold rules' `restrict` lists, and a
+// negated comparison (`t == a` -> `t != a`) turns it inside out: the loop then
+// returns true on the FIRST entry that does not match, so a single-entry
+// allow-list reports the opposite answer for both a member and a non-member.
+func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
+	t.Parallel()
+	stringFamily := []StaticType{TypeString, TypeStringArray}
+	tests := []struct {
+		name    string
+		t       StaticType
+		allowed []StaticType
+		want    bool
+	}{
+		{"first entry matches", TypeString, stringFamily, true},
+		{"later entry matches", TypeStringArray, stringFamily, true},
+		{"no entry matches", TypeInt, stringFamily, false},
+		{"single-entry allow-list, member", TypeString, []StaticType{TypeString}, true},
+		{"single-entry allow-list, non-member", TypeInt, []StaticType{TypeString}, false},
+		{"empty allow-list admits nothing", TypeString, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := staticTypeAllowed(tc.t, tc.allowed); got != tc.want {
+				t.Fatalf("staticTypeAllowed(%v, %v) = %v; want %v", tc.t, tc.allowed, got, tc.want)
+			}
+		})
+	}
+}
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// rewrite.go:115:4 (INVERT_LOOPCTRL, the `continue` under `if !ok || attrL !=
+// attrR`). Reaching that branch means attrLiteralOperands accepted op.LHS
+// against the CURRENT rule, so op.LHS's operator is that rule's `scalar` or
+// `array`. arrayFoldRules pairs the only two rules that share an outer
+// operator as {OpEqual, OpIn} with {OpRegex, OpRegexMatchAny} under `||`, and
+// {OpNotEqual, OpNotIn} with {OpNotRegex, OpRegexMatchNone} under `&&` — two
+// disjoint operand sets each time. Every later rule therefore fails at the
+// EARLIER `continue` (the op.LHS extraction) or at the outer-operator match,
+// so a `break` here reaches the same `return nil, false`.
+//
+// rewrite.go:123:52 (INVERT_LOGICAL, `if !staticTypeAllowed(valL.Type,
+// rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)` -> `&&`).
+// Both rules that carry a `restrict` list carry the same one — the string
+// family, {TypeString, TypeStringArray} — and that family is exactly the set
+// staticMerge will merge a string with. So the two operands are either both
+// allowed (the mutant and the original both fall through to staticMerge and
+// fold) or at least one is outside the string family, in which case
+// staticMerge's own family check rejects the pair and the mutant reaches the
+// `continue` two branches later. There is no static type that is disallowed
+// by `restrict` yet mergeable with an allowed one.

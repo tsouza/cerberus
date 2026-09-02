@@ -1276,6 +1276,38 @@ Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
 
+### Non-terminating mutants and a leg's irreducible ceiling
+
+A hand-written scanner — a lexer, a regex source walk, a replacement
+template parser — advances an induction variable by hand. Every mutation
+that stops that variable advancing (`i++` -> `i--`, `i += n` -> `i = n`,
+`break` -> `continue`, a loop guard negated, an offset arithmetic flipped)
+turns the loop into a non-terminating one. The mutated program does not
+compute a wrong answer; it computes no answer. Some spin on the CPU, and
+some append to a buffer inside the loop and grow without bound, which the
+per-mutant memory ceiling stops as a TIMED OUT verdict rather than a
+detection.
+
+Such a mutant is a PERMANENT cost with the same shape as a proven
+equivalent, and for the arithmetic it is worse: an equivalent is at least
+diluted by a bigger leg, and a timeout is too, but neither can ever be
+converted into a kill by writing a test. No assertion runs against a
+program that never returns. The consequence is a hard ceiling, and it is
+arithmetic rather than judgement: a leg whose TIMED OUT count plus its
+documented-equivalent count exceeds 5% of its own attempted total cannot
+reach the 95% floor however strong its assertions are. The remedy is the
+same dilution lever the surviving-mutant policy names — re-partition the
+leg wider against `gremlins unleash --dry-run` — applied to the package's
+scanner-bearing files, and it works only while the combined permanent cost
+stays under the margin.
+
+Recognising the class matters because it is easy to misread as budget
+starvation and answer with a bigger `--timeout-max`. It is not: the
+mutants below are non-terminating against any finite budget. The tell is
+the per-mutant memory notice the lane emits — a mutant that reaches the
+1GiB ceiling in a package whose whole test binary peaks near 100MiB is
+running away, not running slowly.
+
 ## Grafana surface crawler (Layer 9 extension)
 
 `test/e2e/playwright/crawl/` extends Layer 9 from *enumerated* UX

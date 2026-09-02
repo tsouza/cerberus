@@ -213,6 +213,11 @@ func (s Static) Elements() iter.Seq2[int, Static] {
 // line with the language's loose numeric comparison rules. A nil operand
 // on either side is never equal.
 func (s Static) Equals(o *Static) bool {
+	// An `&&` in place of this `||` is not observable. With exactly one nil
+	// operand the function falls through to the `s.Type != o.Type` check
+	// below, which is true for every mixed-nil pair and returns the same
+	// false; with two nil operands the `&&` is true anyway. See
+	// static_mutation_test.go's NOT KILLABLE footer.
 	if s.Type == TypeNil || o.Type == TypeNil {
 		return false
 	}

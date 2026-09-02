@@ -139,3 +139,30 @@ func TestTopKBottomKString(t *testing.T) {
 		t.Errorf("TopKBottomK.String() = %q; want bottomk(9)", got)
 	}
 }
+
+// TestAggregateImpliedTypeCountIsInt pins Aggregate's two-step inference:
+// count() is an integer regardless of its (absent) inner expression, and every
+// other aggregate takes the inner expression's type. Negating the count guard
+// (`a.op == AggregateCount` -> `!=`) swaps the arms, which makes count() type
+// as TypeAttribute (its inner expression is nil) and max(<float>) type as
+// TypeInt.
+func TestAggregateImpliedTypeCountIsInt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		agg  Aggregate
+		want StaticType
+	}{
+		{"count has no inner expression and is an integer", newAggregate(AggregateCount, nil), TypeInt},
+		{"max takes the inner expression's type", newAggregate(AggregateMax, NewStaticFloat(1.5)), TypeFloat},
+		{"a nil inner expression on a non-count aggregate is unresolved", newAggregate(AggregateMax, nil), TypeAttribute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.agg.impliedType(); got != tc.want {
+				t.Fatalf("(%s).impliedType() = %v; want %v", tc.agg.String(), got, tc.want)
+			}
+		})
+	}
+}
