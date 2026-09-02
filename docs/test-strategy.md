@@ -1321,6 +1321,56 @@ suite carry the discipline:
    distinguishable.** This is pattern #11 (DEFEAT-MUTANT) — the
    codebase loses clarity to satisfy the mutation tool. Don't do it.
 
+Remedies 1 and 2 are opposite verdicts on one mutant, so recording both
+means one of them is false — and it is almost always the kill, because a
+`// TestX kills …` header costs nothing to write. Two mutants on `main`
+carried both, in one file, and the lane recorded each of them LIVED
+while a header claimed the kill: `exemplars.go`'s Attributes-map
+capacity hint, whose "kill" conceded in its own prose that it gave the
+tool "a path to call it dead anyway", and `exemplars.go`'s
+`maxPerSeries` guard, whose "kill" asserted the mutated form would emit
+`LIMIT 0 BY ...` when `Limit(0)` in fact leaves the statement
+byte-identical. The second is why grepping for hedged prose is not the
+answer: it was confidently worded and simply wrong. The required
+`forbid-skip` job therefore runs
+`.github/scripts/forbid-contradicted-mutants.mjs`, which resolves the
+construct each verdict cites and fails when one construct carries both
+(cerberus issue #2958). A false kill is worth retiring on its own
+terms: it never earned the leg an efficacy point, because the mutant it
+named was already counted as LIVED.
+
+One construct is not one mutant, so two verdicts on one construct are
+not automatically a contradiction. `prewhere.go`'s
+`best < 0 || r < best` hosts one CONDITIONALS_BOUNDARY per operand, one
+killed and one proven equivalent; and `builder.go`'s
+`err != nil && srcErr == nil` carries CONDITIONALS_NEGATION mutants a
+test kills alongside an INVERT_LOGICAL mutant a footer proves
+equivalent. Both pairings are legitimate.
+
+Keeping them legible costs two habits. **Cite the operand, not the
+expression** — a citation spanning both halves of a `||` adjudicates
+neither, and narrowing it is what lets the two notes stand side by side.
+**Name the mutator** when a construct carries more than one: two notes
+naming disjoint mutators are describing different mutants, and a note
+that names none cannot claim that defence. Both habits make the note
+more useful to the next reader, which is why the gate asks for them
+rather than for an exemption.
+
+Naming the mutator once per note is enough. A footer that states the
+rewrite in its opening paragraph and then enumerates the sites it
+applies to — as `internal/promql`'s `||` -> `&&` INVERT_LOGICAL ledger
+does across ten citations — is the clearer way to write it, and the gate
+reads the preamble's mutator for the citations it introduces. That
+inheritance needs the note to be unambiguous: a preamble discussing two
+mutators lends neither, because it cannot say which one the list is
+about.
+
+A mutator can also strike one construct twice — `*2` and `+6` in
+`len(groupAliases)*2+6` — and there the gate reports the pair even
+though both verdicts are true. Narrowing both citations to the operand
+each is about is the remedy; it is the same habit as the first, and the
+note ends up saying something definite instead of something ambiguous.
+
 Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.

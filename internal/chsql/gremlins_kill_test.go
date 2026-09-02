@@ -46,8 +46,11 @@ func TestSortRankFor_ContinueVsBreak(t *testing.T) {
 }
 
 // TestSortRankFor_BestNegativeBoundary kills the `<` ↔ `<=` boundary
-// flip on `best < 0` in prewhere.go:`best < 0 || r < best`. With the
-// mutant `best <= 0`
+// flip on prewhere.go:`best < 0`. The citation names that operand alone:
+// the `||` it sits in hosts a SECOND, independent CONDITIONALS_BOUNDARY on
+// `r < best` that prewhere_mutation_test.go's NOT KILLABLE footer proves
+// equivalent, and a citation covering both would adjudicate two mutants at
+// once. With the mutant `best <= 0`
 // the loop overwrites the rank-0 best when it sees any larger rank,
 // returning the wrong (later) sort column.
 func TestSortRankFor_BestNegativeBoundary(t *testing.T) {
@@ -60,11 +63,16 @@ func TestSortRankFor_BestNegativeBoundary(t *testing.T) {
 	}
 }
 
-// TestOrderedConjuncts_StableSortLogicalOr kills the flips of the
-// insertion-sort swap condition
+// TestOrderedConjuncts_StableSortLogicalOr kills the CONDITIONALS_BOUNDARY
+// and CONDITIONALS_NEGATION flips of the insertion-sort swap condition
 // prewhere.go:`prefix[j-1].rank > prefix[j].rank`. When the rank
 // comparison holds the original swaps the pair; a flipped comparison
 // never swaps, so an out-of-order pair is left in input order.
+//
+// The mutators are named because that line also hosts the INVERT_LOOPCTRL
+// mutant of the `break` below it, which prewhere_mutation_test.go's
+// NOT KILLABLE footer proves equivalent. Naming both sides is what keeps the
+// two verdicts on one line legible as the different mutants they are.
 func TestOrderedConjuncts_StableSortLogicalOr(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
@@ -661,56 +669,6 @@ func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestEmitMetricsExemplars_MaxPerSeriesBoundary kills the boundary
-// flip at exemplars.go:`maxPerSeries > 0`. maxPerSeries=0 must
-// disable LIMIT BY; the mutant `>= 0` would emit `LIMIT 0 BY ...`.
-func TestEmitMetricsExemplars_MaxPerSeriesBoundary(t *testing.T) {
-	t.Parallel()
-
-	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
-	end := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
-	m := &chplan.MetricsAggregate{
-		Op:         chplan.MetricsOpRate,
-		ValueAlias: "Value",
-		Inner:      &chplan.Scan{Table: "otel_traces"},
-	}
-	rw := &chplan.RangeWindow{
-		Input: m, Step: time.Minute, Range: time.Minute,
-		Start: start, End: end, TimestampColumn: "Timestamp",
-	}
-
-	t.Run("maxPerSeries=0 → no LIMIT BY", func(t *testing.T) {
-		t.Parallel()
-		sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 0, "")
-		if err != nil {
-			t.Fatalf("Emit: %v", err)
-		}
-		if strings.Contains(sql, "LIMIT") && strings.Contains(sql, " BY ") {
-			t.Errorf("expected no LIMIT BY for maxPerSeries=0.\nSQL: %s", sql)
-		}
-	})
-	t.Run("maxPerSeries=1 → LIMIT 1 BY ...", func(t *testing.T) {
-		t.Parallel()
-		sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
-		if err != nil {
-			t.Fatalf("Emit: %v", err)
-		}
-		if !strings.Contains(sql, "LIMIT 1") {
-			t.Errorf("expected LIMIT 1 in SQL.\nSQL: %s", sql)
-		}
-	})
-	t.Run("maxPerSeries=5 → LIMIT 5 BY ...", func(t *testing.T) {
-		t.Parallel()
-		sql, _, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 5, "")
-		if err != nil {
-			t.Fatalf("Emit: %v", err)
-		}
-		if !strings.Contains(sql, "LIMIT 5") {
-			t.Errorf("expected LIMIT 5 in SQL.\nSQL: %s", sql)
-		}
-	})
 }
 
 // TestEmitMetricsAggregate_GroupByBoundary kills the boundary and
@@ -1863,67 +1821,6 @@ func TestEmitMetricsExemplars_ArithmeticBoundary118(t *testing.T) {
 	// Defensive: neither `least(5, ...)` nor an absurdly large literal.
 	if strings.Contains(sql, "least(5, intDiv(dateDiff('nanosecond'") {
 		t.Errorf("got least(5, ...) — `+ 1` may have flipped to `- 1`. SQL=%s", sql)
-	}
-}
-
-// TestEmitMetricsExemplars_AttributesMapCapacity185 kills the
-// ARITHMETIC_BASE mutant at exemplars.go:`len(groupAliases)*2+6`.
-// That value sizes the attrMapFrags slice; the slice still grows
-// implicitly under append, so the capacity expression is observation-
-// equivalent to the original at the SQL surface — the eventual map(...)
-// call lays out the same key/value pairs regardless. Pinning the exit
-// map shape forces the test to fail if the slice capacity arithmetic
-// regression somehow truncated content (which we don't expect, but
-// the assertion still raises the bar for the mutant).
-//
-// To make this test materially distinguish original vs mutant, we
-// project two group-by labels and check both keys appear; if a slice-
-// truncation bug ever sneaked in, this would catch it. (The mutant
-// is plausibly equivalent in practice; the test gives gremlins a path
-// to call it dead anyway.)
-func TestEmitMetricsExemplars_AttributesMapCapacity185(t *testing.T) {
-	t.Parallel()
-	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
-	end := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
-	m := &chplan.MetricsAggregate{
-		Op: chplan.MetricsOpRate,
-		GroupBy: []chplan.Expr{
-			&chplan.ColumnRef{Name: "ServiceName"},
-			&chplan.ColumnRef{Name: "SpanName"},
-		},
-		GroupByAliases:      []string{"svc", "span"},
-		GroupByDisplayNames: []string{"service", "span"},
-		ValueAlias:          "Value",
-		Inner:               &chplan.Scan{Table: "otel_traces"},
-	}
-	rw := &chplan.RangeWindow{
-		Input: m, Step: time.Minute, Range: time.Minute,
-		Start: start, End: end, TimestampColumn: "Timestamp",
-	}
-	sql, args, err := EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
-	if err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
-	// Both display names must show up as bound args.
-	wantLabels := []string{"service", "span", "trace:id", "span:id"}
-	for _, want := range wantLabels {
-		found := false
-		for _, a := range args {
-			if s, ok := a.(string); ok && s == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected %q in bound args; got %v", want, args)
-		}
-	}
-	// And toString(<alias>) renders for each group key.
-	if !strings.Contains(sql, "toString(`svc`)") {
-		t.Errorf("expected toString(svc), SQL=%s", sql)
-	}
-	if !strings.Contains(sql, "toString(`span`)") {
-		t.Errorf("expected toString(span), SQL=%s", sql)
 	}
 }
 

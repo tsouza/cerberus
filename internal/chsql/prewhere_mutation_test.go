@@ -106,14 +106,17 @@ func TestOrderedConjunctsSingleFastPath(t *testing.T) {
 	}
 }
 
-// TestSortRankForMinimum defends sortRankFor's running-minimum update
-// (prewhere.go:`best < 0 || r < best`). It pins that sortRankFor returns the LOWEST matching
+// TestSortRankForMinimum defends sortRankFor's running-minimum update at
+// prewhere.go:`best < 0`. It pins that sortRankFor returns the LOWEST matching
 // rank across a predicate's columns regardless of the order the columns are
 // discovered — i.e. a later, larger rank never overwrites an earlier rank-0
-// (and would catch a `best < 0`→`best <= 0` flip, which lets a larger rank
-// clobber an existing rank-0 minimum). The `r < best`→`r <= best` boundary in
-// that same condition is a separate, genuinely equivalent mutation — see this
-// file's own "NOT KILLABLE" footer below for why.
+// (and would catch the CONDITIONALS_BOUNDARY flip to `best <= 0`, which lets a
+// larger rank clobber an existing rank-0 minimum).
+//
+// The citation names that operand alone. The `||` it sits in carries a SECOND,
+// independent CONDITIONALS_BOUNDARY on the other operand, which this file's
+// own "NOT KILLABLE" footer proves equivalent; a citation spanning both would
+// adjudicate two mutants at once and say nothing definite about either.
 func TestSortRankForMinimum(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "SeverityText", "Timestamp"}} // ranks 0,1,2
@@ -191,10 +194,18 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 //
 // NOT KILLABLE — documented, not defended by a test.
 //
-// The INVERT_LOOPCTRL mutants of the three terminal `break`s —
-// prewhere.go:`touchesWide = true`, prewhere.go:`hitsSkip = true` and the
-// stable-insertion-sort early exit at
-// prewhere.go:`if prefix[j-1].rank > prefix[j].rank` — each swap that `break`
+// The INVERT_LOOPCTRL mutants of the three terminal `break`s in prewhere.go.
+// The first is prewhere.go:classifyPredicate:`break`, guarding the
+// `touchesWide` latch. The other two both sit in orderedConjuncts — the
+// `hitsSkip` latch and the stable-insertion-sort early exit — and are named
+// in prose rather than cited, because the mutated token is a bare `break` and
+// that func contains two of them, so no construct citation can distinguish
+// one from the other. Citing an enclosing line instead would be worse than
+// leaving them uncited: `if prefix[j-1].rank > prefix[j].rank` carries the
+// sort's own comparison mutants, which
+// TestOrderedConjuncts_StableSortLogicalOr kills, so a note about the
+// `break` that cited it would read as adjudicating a mutant it says nothing
+// about. Each mutant swaps its `break`
 // for a `continue`, guarding a "found it, stop" boolean latch (touchesWide /
 // hitsSkip) or the sort's early exit. In
 // every case the flag is set exactly once and never reset, or (for the
@@ -212,7 +223,7 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 // the branch this condition guards can only ever produce the SAME final
 // (columnOK, literalOK) pair whether or not the swap runs.
 //
-// prewhere.go:`best < 0 || r < best` (CONDITIONALS_BOUNDARY, `r < best` →
+// prewhere.go:`r < best` (CONDITIONALS_BOUNDARY, `r < best` →
 // `r <= best` in
 // sortRankFor's running-minimum update) is equivalent because the boundary
 // (`r == best`) is unreachable for two DISTINCT columns under any
