@@ -11,10 +11,16 @@ import (
 // reported on [nonRootCmpConstant] from the phase4-traceql-lower leg
 // (cerberus issue #2949):
 //
-//	lower.go:2399:8  `v <= 1` in the OpLt arm
-//	lower.go:2403:8  `v < 1`  in the OpLe arm
-//	lower.go:2407:8  `v < 1`  in the OpGt arm
-//	lower.go:2411:8  `v <= 1` in the OpGe arm
+//	lower.go:nonRootCmpConstant:`case chplan.OpLt:`  the `v <= 1` guard in that arm
+//	lower.go:nonRootCmpConstant:`case chplan.OpLe:`  the `v < 1` guard in that arm
+//	lower.go:nonRootCmpConstant:`case chplan.OpGt:`  the `v < 1` guard in that arm
+//	lower.go:nonRootCmpConstant:`case chplan.OpGe:`  the `v <= 1` guard in that arm
+//
+// Each citation names the arm's `case` label rather than the guard itself: the
+// four guards are spelled with only two distinct texts between them (`v <= 1`
+// twice, `v < 1` four times counting the OpEq and OpNe arms), so no substring
+// of a guard singles one out. The `case` label immediately above it does, and
+// the guard is the single `if` inside that arm.
 //
 // Every one of them is a boundary AT v == 1, and the existing tests never
 // asked the function about v == 1 — only about values where the two readings

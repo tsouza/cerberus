@@ -24,7 +24,7 @@ func resourceAllowlistSchema(allowlist []string) schema.Metrics {
 }
 
 // TestConfiguredResourceKeysFor_SpellingMatchIsEitherNotBoth kills the
-// INVERT_LOGICAL mutant at metadata_catalog.go:331:45 — the `&&` of
+// INVERT_LOGICAL mutant on the `&&` of
 //
 //	if sanitizePromLabelChars(k) != promLabel && format.OTelToPromLabel(k) != promLabel {
 //
@@ -58,16 +58,21 @@ func TestConfiguredResourceKeysFor_SpellingMatchIsEitherNotBoth(t *testing.T) {
 	if len(got) != 1 || got[0] != digitInitialKey {
 		t.Fatalf("configuredResourceKeysFor(allowlist=[%q], promLabel=%q) = %v; want [%q] — the key "+
 			"matches on its OTel spelling (%q) even though its sanitised spelling (%q) differs, "+
-			"and either match is enough (mutant `&&`->`||` at metadata_catalog.go:331 would "+
+			"and either match is enough (the `&&`->`||` mutant on "+
+			"metadata_catalog.go:`sanitizePromLabelChars(k) != promLabel && format.OTelToPromLabel(k) != promLabel` would "+
 			"require both and drop it)",
 			digitInitialKey, otelSpelling, got, digitInitialKey, otelSpelling, digitInitialKey)
 	}
 }
 
 // TestConfiguredResourceKeysFor_NonMatchingKeySkipsNotStops kills the
-// INVERT_LOOPCTRL mutant at metadata_catalog.go:332:4 — the `continue` that
-// the spelling-match guard above executes for a key that addresses a
-// different label.
+// INVERT_LOOPCTRL mutant on the `continue` that the spelling-match guard
+//
+//	metadata_catalog.go:`sanitizePromLabelChars(k) != promLabel && format.OTelToPromLabel(k) != promLabel`
+//
+// executes for a key that addresses a different label. The citation names
+// that guard rather than the mutated statement, which is a bare `continue`
+// no substring singles out.
 //
 // The allowlist is walked in configured order and a key that does not match
 // is simply not this label's, so the walk must go on. `break` would abandon
@@ -90,15 +95,20 @@ func TestConfiguredResourceKeysFor_NonMatchingKeySkipsNotStops(t *testing.T) {
 	if len(got) != 1 || got[0] != wanted {
 		t.Fatalf("configuredResourceKeysFor(allowlist=[unrelated %q], promLabel=%q) = %v; want "+
 			"[%q] — a non-matching key must be SKIPPED, not end the walk (mutant "+
-			"`continue`->`break` at metadata_catalog.go:332 would return nothing because the "+
+			"`continue`->`break` under "+
+			"metadata_catalog.go:`sanitizePromLabelChars(k) != promLabel && format.OTelToPromLabel(k) != promLabel` would return nothing because the "+
 			"non-matching key is listed first)",
 			wanted, promLabel, got, wanted)
 	}
 }
 
 // TestConfiguredResourceKeysFor_ExcludedKeySkipsNotStops kills the
-// INVERT_LOOPCTRL mutant at metadata_catalog.go:339:4 — the `continue` taken
-// for a key that a dedicated top-level column already backs.
+// INVERT_LOOPCTRL mutant on the `continue` taken under
+//
+//	metadata_catalog.go:`if _, drop := excluded[k]; drop {`
+//
+// for a key that a dedicated top-level column already backs. The citation
+// names that guard because the mutated statement is a bare `continue`.
 //
 // "service.name" is excluded because [excludedResourceKeys] lists it whenever
 // ServiceNameColumn is configured: the dedicated column owns that key and the
@@ -128,15 +138,22 @@ func TestConfiguredResourceKeysFor_ExcludedKeySkipsNotStops(t *testing.T) {
 	if len(got) != 1 || got[0] != siblingKey {
 		t.Fatalf("configuredResourceKeysFor(allowlist=[%q %q], promLabel=%q) = %v; want [%q] — a "+
 			"key excluded by its dedicated column must be SKIPPED, not end the walk (mutant "+
-			"`continue`->`break` at metadata_catalog.go:339 would return nothing because the "+
+			"`continue`->`break` under "+
+			"metadata_catalog.go:`if _, drop := excluded[k]; drop {` would return nothing because the "+
 			"excluded key is listed first)",
 			excludedKey, siblingKey, promLabel, got, siblingKey)
 	}
 }
 
 // TestSanitizedResourceKeyPairs_DuplicateSkipsNotStops kills the
-// INVERT_LOOPCTRL mutant at metadata_catalog.go:358:4 — the `continue` taken
-// for a repeated allowlist entry inside [sanitizedResourceKeyPairs].
+// INVERT_LOOPCTRL mutant on the `continue` taken under
+//
+//	metadata_catalog.go:sanitizedResourceKeyPairs:`if _, dup := seen[k]; dup {`
+//
+// for a repeated allowlist entry inside [sanitizedResourceKeyPairs]. The
+// citation names that guard because the mutated statement is a bare
+// `continue`, and scopes it to the function because
+// [configuredResourceKeysFor] carries the identical duplicate check.
 //
 // The loop de-duplicates a configured allowlist that may legitimately repeat
 // a key; a repeat carries no information and the remaining entries still do.
@@ -153,7 +170,8 @@ func TestSanitizedResourceKeyPairs_DuplicateSkipsNotStops(t *testing.T) {
 	if len(keys) != 2 || keys[0] != "alpha" || keys[1] != "beta" {
 		t.Fatalf("sanitizedResourceKeyPairs(allowlist=[alpha alpha beta]) keys = %v; want "+
 			"[alpha beta] — a repeated key must be SKIPPED, not end the walk (mutant "+
-			"`continue`->`break` at metadata_catalog.go:358 would drop beta)", keys)
+			"`continue`->`break` under "+
+			"metadata_catalog.go:sanitizedResourceKeyPairs:`if _, dup := seen[k]; dup {` would drop beta)", keys)
 	}
 	if len(sanitized) != len(keys) {
 		t.Fatalf("sanitizedResourceKeyPairs returned %d keys and %d sanitised spellings; the two "+
@@ -169,15 +187,16 @@ func mixedOrFloatOnlyAggQuery(agg string) string {
 }
 
 // TestFloatOnlyAggOverMixedExpHistogramSetOp_ParamlessOpsAccepted kills TWO
-// mutants on histogram_native_mixed_or_aggregate_float_only.go:91,
+// mutants on
 //
-//	if agg.Op != parser.QUANTILE && agg.Param != nil {
+//	histogram_native_mixed_or_aggregate_float_only.go:`agg.Op != parser.QUANTILE && agg.Param != nil`
 //
 // the guard that rejects an aggregation carrying a parameter it has no
-// meaning for:
+// meaning for. All three of this guard's mutants share that construct, so
+// each is named by the operator it rewrites:
 //
-//   - 91:44 CONDITIONALS_NEGATION, `agg.Param != nil` -> `agg.Param == nil`.
-//   - 91:31 INVERT_LOGICAL, the `&&` -> `||`.
+//   - CONDITIONALS_NEGATION, `agg.Param != nil` -> `agg.Param == nil`.
+//   - INVERT_LOGICAL, the `&&` -> `||`.
 //
 // `min` is one of the histogram-dropping ops [expHistogramAggDropsHistogramSamples]
 // admits, it is not QUANTILE, and the parser gives it a nil Param. Under the
@@ -210,9 +229,12 @@ func TestFloatOnlyAggOverMixedExpHistogramSetOp_ParamlessOpsAccepted(t *testing.
 }
 
 // TestFloatOnlyAggOverMixedExpHistogramSetOp_QuantileKeepsItsParam kills the
-// CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_aggregate_float_only.go:91:12 — `agg.Op !=
-// parser.QUANTILE` -> `agg.Op == parser.QUANTILE`.
+// CONDITIONALS_NEGATION mutant on
+//
+//	histogram_native_mixed_or_aggregate_float_only.go:`agg.Op != parser.QUANTILE && agg.Param != nil`
+//
+// that rewrites its `agg.Op != parser.QUANTILE` half to
+// `agg.Op == parser.QUANTILE`.
 //
 // QUANTILE is the one admitted op for which a parameter is REQUIRED, which is
 // exactly why it is named as the exception: the guard means "a parameter is

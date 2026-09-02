@@ -15,9 +15,11 @@ import (
 )
 
 // TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable kills the
-// CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_subquery_range_fn.go:114:25 —
-// `s.ExpHistogramTable == ""` -> `s.ExpHistogramTable != ""` inside
+// CONDITIONALS_NEGATION mutant on
+//
+//	histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == ""`
+//
+// which rewrites it to `s.ExpHistogramTable != ""` inside
 // [mixedOrSubqueryOuterFn].
 //
 // The guard reads "bail when the schema declares NO exp-histogram table".
@@ -53,7 +55,7 @@ func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
 	if !ok {
 		t.Fatalf("mixedOrSubqueryOuterFn(%q) = ok false; want true — the schema DOES declare an "+
 			"exp-histogram table, so the table guard must not fire (mutant `==`->`!=` at "+
-			"histogram_native_mixed_or_subquery_range_fn.go:114:25 makes it fire on every "+
+			"histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == \"\"` makes it fire on every "+
 			"configured deployment)", q)
 	}
 	if sub == nil || b == nil || rebuild == nil {
@@ -63,9 +65,9 @@ func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
 }
 
 // TestIsSyntheticScalarPlan_RejectsANonEmptyMetricName kills the
-// INVERT_LOGICAL mutant at synthetic.go:182:49 — the `||` of
+// INVERT_LOGICAL mutant on the `||` of
 //
-//	if lit, ok := mn.Expr.(*chplan.LitString); !ok || lit.V != "" {
+//	synthetic.go:`lit, ok := mn.Expr.(*chplan.LitString); !ok || lit.V != ""`
 //
 // inside [isSyntheticScalarPlan].
 //
@@ -89,7 +91,8 @@ func TestIsSyntheticScalarPlan_RejectsANonEmptyMetricName(t *testing.T) {
 	if isSyntheticScalarPlan(syntheticScalarPlan(s, &chplan.LitString{V: "some_metric"}), s) {
 		t.Fatal("isSyntheticScalarPlan reported a plan whose MetricName projection is " +
 			"LitString(\"some_metric\") as synthetic; a synthetic scalar plan carries no " +
-			"identifying labels (mutant `||`->`&&` at synthetic.go:182:49 stops the non-empty " +
+			"identifying labels (the `||`->`&&` mutant on " +
+			"synthetic.go:`lit, ok := mn.Expr.(*chplan.LitString); !ok || lit.V != \"\"` stops the non-empty " +
 			"literal disqualifying on its own)")
 	}
 }
@@ -110,9 +113,11 @@ func syntheticScalarPlan(s schema.Metrics, metricName chplan.Expr) chplan.Node {
 }
 
 // TestSortOverMixedExpHistogramSetOp_TakesExactlyOneArgument kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_mixed_or_sort.go:68:17 —
-// `len(c.Args) != 1` -> `len(c.Args) == 1` inside
-// [sortOverMixedExpHistogramSetOp].
+// CONDITIONALS_NEGATION mutant on
+//
+//	histogram_native_mixed_or_sort.go:`len(c.Args) != 1`
+//
+// rewritten to `len(c.Args) == 1` inside [sortOverMixedExpHistogramSetOp].
 //
 // `sort` / `sort_desc` take exactly one argument, so the guard rejects
 // everything else. Negated, it rejects exactly the arity the function exists
@@ -132,16 +137,15 @@ func TestSortOverMixedExpHistogramSetOp_TakesExactlyOneArgument(t *testing.T) {
 	if !ok || b == nil {
 		t.Fatalf("sortOverMixedExpHistogramSetOp(%q) = ok %v; want true — `sort` takes exactly "+
 			"one argument and this call has one (mutant `!=`->`==` at "+
-			"histogram_native_mixed_or_sort.go:68:17 rejects precisely the admitted arity)",
+			"histogram_native_mixed_or_sort.go:`len(c.Args) != 1` rejects precisely the admitted arity)",
 			q, ok)
 	}
 }
 
 // TestExpHistogramWindowTemporalityExpr_BothConditionsDisqualify kills the
-// INVERT_LOGICAL mutant at histogram_quantile_native_window.go:127:36 — the
-// `||` of
+// INVERT_LOGICAL mutant on the `||` of
 //
-//	if !needsTemporalityAgg(windowFn) || s.AggregationTemporalityColumn == "" {
+//	histogram_quantile_native_window.go:`!needsTemporalityAgg(windowFn) || s.AggregationTemporalityColumn == ""`
 //
 // inside [expHistogramWindowTemporalityExpr].
 //
@@ -176,15 +180,18 @@ func TestExpHistogramWindowTemporalityExpr_BothConditionsDisqualify(t *testing.T
 	if got := expHistogramWindowTemporalityExpr(s, lastOverTimeWindowFn); got != nil {
 		t.Fatalf("expHistogramWindowTemporalityExpr(%q) = %#v; want nil — a window function that "+
 			"needs no temporality aggregate must not reference the column even when the schema "+
-			"configures one (mutant `||`->`&&` at histogram_quantile_native_window.go:127:36 "+
+			"configures one (the `||`->`&&` mutant on "+
+			"histogram_quantile_native_window.go:`!needsTemporalityAgg(windowFn) || s.AggregationTemporalityColumn == \"\"` "+
 			"stops that disqualifying on its own)", lastOverTimeWindowFn, got)
 	}
 }
 
 // TestLabelCallOverExpHistogram_LabelJoinAcceptsThreeArguments kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_label_replace.go:27:21 —
-// `len(call.Args) < 3` -> `len(call.Args) <= 3` inside
-// [labelCallOverExpHistogram].
+// CONDITIONALS_BOUNDARY mutant on
+//
+//	histogram_native_label_replace.go:`len(call.Args) < 3`
+//
+// rewritten to `len(call.Args) <= 3` inside [labelCallOverExpHistogram].
 //
 // `label_join(v, dst, sep)` with no source labels is a well-formed call: the
 // separator-joined result of zero sources is the empty string, and PromQL
@@ -203,7 +210,7 @@ func TestLabelCallOverExpHistogram_LabelJoinAcceptsThreeArguments(t *testing.T) 
 	if !ok || call == nil {
 		t.Fatalf("labelCallOverExpHistogram(%q) = ok %v; want true — three arguments is "+
 			"`label_join`'s minimum, not a rejected arity (mutant `<`->`<=` at "+
-			"histogram_native_label_replace.go:27:21 rejects it)", q, ok)
+			"histogram_native_label_replace.go:`len(call.Args) < 3` rejects it)", q, ok)
 	}
 	if len(call.Args) != 3 {
 		t.Fatalf("the query under test parsed to %d arguments, not the 3 the boundary is about; "+
@@ -212,9 +219,12 @@ func TestLabelCallOverExpHistogram_LabelJoinAcceptsThreeArguments(t *testing.T) 
 }
 
 // TestIsExpHistogramValuedShape_ScalarLiteralOnTheLeftIsMulOnly kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_scalar_binop.go:235:11 —
-// `b.Op == parser.MUL` -> `b.Op != parser.MUL` inside
-// [isExpHistogramValuedShape]'s binary-operand arm.
+// CONDITIONALS_NEGATION mutant on
+//
+//	histogram_native_scalar_binop.go:isExpHistogramValuedShape:`if b.Op == parser.MUL {`
+//
+// rewritten to `b.Op != parser.MUL` inside [isExpHistogramValuedShape]'s
+// binary-operand arm.
 //
 // A scalar literal on the LEFT composes with a histogram-valued right operand
 // for MUL only: multiplication is commutative, so `2 * hist` scales the
@@ -232,7 +242,7 @@ func TestIsExpHistogramValuedShape_ScalarLiteralOnTheLeftIsMulOnly(t *testing.T)
 	if !isExpHistogramValuedShape(mustParse(t, mul), s, lowerCtx{}) {
 		t.Fatalf("isExpHistogramValuedShape(%q) = false; want true — a scalar literal times a "+
 			"histogram-valued operand scales it (mutant `==`->`!=` at "+
-			"histogram_native_scalar_binop.go:235:11 rejects MUL and admits DIV instead)", mul)
+			"histogram_native_scalar_binop.go:isExpHistogramValuedShape:`if b.Op == parser.MUL {` rejects MUL and admits DIV instead)", mul)
 	}
 	const div = `2 / latency_exp_hist`
 	if isExpHistogramValuedShape(mustParse(t, div), s, lowerCtx{}) {
@@ -242,8 +252,11 @@ func TestIsExpHistogramValuedShape_ScalarLiteralOnTheLeftIsMulOnly(t *testing.T)
 }
 
 // TestLowerExpHistogramSetOp_OnClauseReachesTheVectorMatch kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_set_op.go:113:22 —
-// `b.VectorMatching != nil` -> `b.VectorMatching == nil`.
+// CONDITIONALS_NEGATION mutant on
+//
+//	histogram_native_set_op.go:`if b.VectorMatching != nil {`
+//
+// rewritten to `b.VectorMatching == nil`.
 //
 // The guard decides whether the parser's matching clause is copied into the
 // emitted [chplan.VectorSetOp]'s Match. Negated, the copy happens only when
@@ -281,7 +294,7 @@ func TestLowerExpHistogramSetOp_OnClauseReachesTheVectorMatch(t *testing.T) {
 	if len(setOp.Match.Labels) != 1 || setOp.Match.Labels[0] != "service" || !setOp.Match.On {
 		t.Fatalf("lowerExpHistogramSetOp(%q) produced Match %#v; want On=true with labels "+
 			"[service] — the query's own `on(service)` clause (mutant `!=`->`==` at "+
-			"histogram_native_set_op.go:113:22 copies it only when there is nothing to copy, "+
+			"histogram_native_set_op.go:`if b.VectorMatching != nil {` copies it only when there is nothing to copy, "+
 			"leaving the zero Match)", q, setOp.Match)
 	}
 }

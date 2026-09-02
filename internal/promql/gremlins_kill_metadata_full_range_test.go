@@ -51,10 +51,12 @@ import (
 )
 
 // TestLastFirstOverExpHistogram_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_last_first_over_time.go:54:31 —
-// the `||` of `s.ExpHistogramTable == "" || ctx.metadataFullRange` inside
-// [lastFirstOverExpHistogram], the `last_over_time` / `first_over_time`
-// recognizer.
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_last_first_over_time.go:lastFirstOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
+// inside [lastFirstOverExpHistogram], the `last_over_time` /
+// `first_over_time` recognizer.
 //
 // The recognizer's only other schema question is
 // `s.IsExpHistogramMetric(...)`, which is true here regardless of `ctx`, so
@@ -79,7 +81,10 @@ func TestLastFirstOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 }
 
 // TestOverTimeOverExpHistogram_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_over_time.go:28:31 — the `||` of
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_over_time.go:overTimeOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
 // the same guard inside [overTimeOverExpHistogram], the `sum_over_time` /
 // `avg_over_time` recognizer.
 func TestOverTimeOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
@@ -101,7 +106,10 @@ func TestOverTimeOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 }
 
 // TestResetsOrChangesOverExpHistogram_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_resets.go:121:31 — the `||` of
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_resets.go:resetsOrChangesOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
 // the same guard inside [resetsOrChangesOverExpHistogram], the `resets` /
 // `changes` recognizer.
 func TestResetsOrChangesOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
@@ -123,9 +131,13 @@ func TestResetsOrChangesOverExpHistogram_MetadataFullRangeRejects(t *testing.T) 
 }
 
 // TestBareExpHistogramSelector_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_bare.go:68:31 — the `||` of the
-// same guard inside [bareExpHistogramSelector], the bare-selector recognizer
-// every composite shape's `isExpHistogramValuedShape` eventually reaches.
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_bare.go:bareExpHistogramSelector:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
+// the same guard inside [bareExpHistogramSelector], the bare-selector
+// recognizer every composite shape's `isExpHistogramValuedShape` eventually
+// reaches.
 func TestBareExpHistogramSelector_MetadataFullRangeRejects(t *testing.T) {
 	t.Parallel()
 
@@ -145,8 +157,11 @@ func TestBareExpHistogramSelector_MetadataFullRangeRejects(t *testing.T) {
 }
 
 // TestTsOfFirstLastOverExpHistogram_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_ts_of_first_last_over_time.go:81:31
-// — the `||` of the same guard inside [tsOfFirstLastOverExpHistogram], the
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_ts_of_first_last_over_time.go:tsOfFirstLastOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
+// the same guard inside [tsOfFirstLastOverExpHistogram], the
 // `ts_of_first_over_time` / `ts_of_last_over_time` recognizer.
 func TestTsOfFirstLastOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	t.Parallel()
@@ -167,9 +182,12 @@ func TestTsOfFirstLastOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 }
 
 // TestSumOrAvgOverExpHistogram_MetadataFullRangeRejects kills the
-// INVERT_LOGICAL mutant at histogram_native_sum.go:106:31 — the `||` of the
-// same guard inside [sumOrAvgOverExpHistogram], the mergeable-aggregation
-// recognizer.
+// INVERT_LOGICAL mutant on the `||` of
+//
+//	histogram_native_sum.go:sumOrAvgOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//
+// the same guard inside [sumOrAvgOverExpHistogram], the
+// mergeable-aggregation recognizer.
 func TestSumOrAvgOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	t.Parallel()
 
@@ -197,20 +215,21 @@ func TestSumOrAvgOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 // is EQUIVALENT at every COMPOSITE recognizer, and ten of the mutants on
 // cerberus issue #2949's legs are of that kind:
 //
-//	histogram_native_float_vector_scaling_binop.go:85:31  expHistogramFloatVectorScalingBinop
-//	histogram_native_dropping_shape.go:156:31             aggregationOverExpHistogramDroppingShape
-//	histogram_native_dropping_shape.go:204:31             labelCallOverExpHistogramDroppingShape
-//	histogram_native_range_fn.go:210:31                   rangeFnOverExpHistogramSubquery
-//	histogram_native_mixed_or_subquery_range_fn.go:114:31 mixedOrSubqueryOuterFn
-//	histogram_native_subquery_select.go:102:31            selectFnOverExpHistogramSubquery
-//	histogram_native_float_vector_binop.go:50:31          expHistogramDroppingVectorBinop
-//	histogram_native_scalar_binop.go:73:31                expHistogramScalarBinop
-//	histogram_native_scalar_binop.go:101:31               expHistogramDroppingScalarBinop
-//	histogram_native_set_op.go:78:31                      expHistogramSetOp
+//	histogram_native_float_vector_scaling_binop.go:expHistogramFloatVectorScalingBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_dropping_shape.go:aggregationOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_range_fn.go:rangeFnOverExpHistogramSubquery:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_subquery_select.go:selectFnOverExpHistogramSubquery:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_float_vector_binop.go:expHistogramDroppingVectorBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_scalar_binop.go:expHistogramScalarBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_scalar_binop.go:expHistogramDroppingScalarBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_set_op.go:expHistogramSetOp:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
 //
 // (gremlins_kill_histogram_binop_count_test.go's header already records the
-// same verdict, on the same ground, for histogram_native_binop_eq.go:119:31
-// and :191:31.)
+// same verdict, on the same ground, for the identical guard in
+// histogram_native_binop_eq.go's expHistogramHistogramCompareBinop and
+// expHistogramHistogramCompareBoolBinop.)
 //
 // THE ARGUMENT
 //

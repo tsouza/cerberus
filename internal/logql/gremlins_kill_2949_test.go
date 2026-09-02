@@ -16,8 +16,11 @@ import (
 // #2949).
 
 // TestAbsentSynthLabels_DroppedNameSkipsNotStops kills the INVERT_LOOPCTRL
-// mutant at range_aggregation.go:361:4 — the `continue` taken for a dropped
-// name in [absentSynthLabels]'s emit loop.
+// mutant on the `continue` taken for a dropped name in [absentSynthLabels]'s
+// emit loop, guarded by range_aggregation.go:`if dropped[name] {`.
+//
+// The citation names that neighbouring `if` rather than the mutated statement
+// itself: the mutant is a bare `continue`, which no substring singles out.
 //
 // The function mirrors reference Loki's `absentLabels`: an equality matcher
 // pins its (name, value) on first sight, and ANY second occurrence of that
@@ -47,13 +50,14 @@ func TestAbsentSynthLabels_DroppedNameSkipsNotStops(t *testing.T) {
 	if len(got) != 1 || got[0].Key != "app" || got[0].Value != "a" {
 		t.Fatalf("absentSynthLabels(%q) = %#v; want the single synthesised label app=\"a\" — "+
 			"`job` is duplicated and so is deleted, but the labels behind it in the selector "+
-			"survive (mutant `continue`->`break` at range_aggregation.go:361:4 stops at the "+
+			"survive (mutant `continue`->`break` under "+
+			"range_aggregation.go:`if dropped[name] {` stops at the "+
 			"dropped name and emits nothing)", q, got)
 	}
 }
 
 // TestLowerVectorSetOp_MatchingClauseReachesTheSetOp kills the
-// CONDITIONALS_NEGATION mutant at binary.go:250:8 — `vm != nil` ->
+// CONDITIONALS_NEGATION mutant at binary.go:`if vm != nil {` — rewritten to
 // `vm == nil` inside [lowerVectorSetOp].
 //
 // The guard decides whether the query's own `on(...)` / `ignoring(...)`
@@ -86,7 +90,8 @@ func TestLowerVectorSetOp_MatchingClauseReachesTheSetOp(t *testing.T) {
 	}
 	if !setOp.Match.On || len(setOp.Match.Labels) != 1 || setOp.Match.Labels[0] != "app" {
 		t.Fatalf("LowerAtRange(%q) produced Match %#v; want On=true with labels [app] — the "+
-			"query's own `on(app)` clause (mutant `!=`->`==` at binary.go:250:8 copies it only "+
+			"query's own `on(app)` clause (mutant `!=`->`==` at "+
+			"binary.go:`if vm != nil {` copies it only "+
 			"when there is nothing to copy, leaving the zero Match)", q, setOp.Match)
 	}
 }

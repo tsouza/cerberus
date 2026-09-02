@@ -14,9 +14,12 @@ import (
 const readsRangeSampleTimestampStep = 30 * time.Second
 
 // TestReadsRangeSampleTimestamp_OnlyTheTimestampFunction kills the
-// INVERT_LOGICAL mutant at date_fns.go:192:25 — the FIRST `||` of
+// INVERT_LOGICAL mutant on the FIRST `||` of
 //
-//	if name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector {
+//	date_fns.go:`name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector`
+//
+// All three of this guard's mutants live on that one construct, so each note
+// names the operator it rewrites rather than a position within the line.
 //
 // Call the three disqualifications A (wrong function), B (not a range
 // evaluation) and C (inside a range-vector descent). Go binds `&&` tighter
@@ -31,8 +34,8 @@ const readsRangeSampleTimestampStep = 30 * time.Second
 // `day_of_week` call reads the range sample's own timestamp, which is a
 // different function's semantics entirely.
 //
-// (The mutant on the SECOND `||`, 192:42, becomes `A || (B && C)` for the same
-// precedence reason, so it is A that keeps working and B that stops
+// (The mutant on the SECOND `||` of the same construct becomes `A || (B && C)`
+// for the same precedence reason, so it is A that keeps working and B that stops
 // disqualifying alone. That one is killed by
 // TestReadsRangeSampleTimestamp_RequiresPositiveStep below, whose input trips
 // B alone.)
@@ -48,16 +51,20 @@ func TestReadsRangeSampleTimestamp_OnlyTheTimestampFunction(t *testing.T) {
 	}
 	if readsRangeSampleTimestamp("day_of_week", arg, ctx) {
 		t.Fatal("readsRangeSampleTimestamp(\"day_of_week\", <selector>, step>0) = true; only " +
-			"`timestamp` reads the range sample's own timestamp (mutants `||`->`&&` at " +
-			"date_fns.go:192:25 and :192:42 both stop the name check disqualifying on its own)")
+			"`timestamp` reads the range sample's own timestamp (the `||`->`&&` mutants on " +
+			"date_fns.go:`name != \"timestamp\" || ctx.step <= 0 || ctx.inRangeVector` both " +
+			"stop the name check disqualifying on its own)")
 	}
 }
 
 // TestReadsRangeSampleTimestamp_RequiresPositiveStep kills TWO mutants on
-// date_fns.go:192, both of which stop a zero step disqualifying on its own:
 //
-//   - 192:37 CONDITIONALS_BOUNDARY, `ctx.step <= 0` -> `ctx.step < 0`.
-//   - 192:42 INVERT_LOGICAL, the SECOND `||`, which under Go's precedence
+//	date_fns.go:`name != "timestamp" || ctx.step <= 0 || ctx.inRangeVector`
+//
+// both of which stop a zero step disqualifying on its own:
+//
+//   - CONDITIONALS_BOUNDARY, `ctx.step <= 0` -> `ctx.step < 0`.
+//   - INVERT_LOGICAL on the SECOND `||`, which under Go's precedence
 //     (`&&` binds tighter) yields `A || (B && C)`: the step disqualification B
 //     now needs the range-vector descent C alongside it.
 //
@@ -80,7 +87,8 @@ func TestReadsRangeSampleTimestamp_RequiresPositiveStep(t *testing.T) {
 	if readsRangeSampleTimestamp("timestamp", arg, lowerCtx{step: 0}) {
 		t.Fatal("readsRangeSampleTimestamp(\"timestamp\", <selector>, step=0) = true; a zero step " +
 			"is the instant lowering, which has no per-step grid to read a sample timestamp " +
-			"against (mutant `<=`->`<` at date_fns.go:192:37 admits it, since a step is never " +
-			"negative)")
+			"against (the `<=`->`<` mutant on " +
+			"date_fns.go:`name != \"timestamp\" || ctx.step <= 0 || ctx.inRangeVector` " +
+			"admits it, since a step is never negative)")
 	}
 }

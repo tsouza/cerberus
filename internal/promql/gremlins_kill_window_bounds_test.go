@@ -35,10 +35,12 @@ func zeroRangeExpHistogramCall(t *testing.T, fn string) *parser.Call {
 
 // TestLastFirstOverExpHistogram_ZeroRangeRejected kills the
 // CONDITIONALS_BOUNDARY mutant at
-// histogram_native_last_first_over_time.go:62:21 — `ms.Range <= 0` ->
-// `ms.Range < 0` inside [lastFirstOverExpHistogram]. A range is never
-// negative, so `< 0` can only ever be false and the zero-width window is
-// admitted.
+//
+//	histogram_native_last_first_over_time.go:lastFirstOverExpHistogram:`ms.Range <= 0`
+//
+// rewritten to `ms.Range < 0` inside [lastFirstOverExpHistogram]. A range is
+// never negative, so `< 0` can only ever be false and the zero-width window
+// is admitted.
 func TestLastFirstOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -46,14 +48,16 @@ func TestLastFirstOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	if _, _, _, ok := lastFirstOverExpHistogram(zeroRangeExpHistogramCall(t, "last_over_time"), s, lowerCtx{}); ok {
 		t.Fatal("lastFirstOverExpHistogram accepted a zero-range matrix selector; a window of no " +
 			"width has no samples to reduce (mutant `<=`->`<` at " +
-			"histogram_native_last_first_over_time.go:62:21 admits it)")
+			"histogram_native_last_first_over_time.go:lastFirstOverExpHistogram:`ms.Range <= 0` admits it)")
 	}
 }
 
 // TestOverTimeOverExpHistogram_ZeroRangeRejected kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_over_time.go:36:21 —
-// the same `ms.Range <= 0` -> `ms.Range < 0` inside
-// [overTimeOverExpHistogram].
+// CONDITIONALS_BOUNDARY mutant on
+//
+//	histogram_native_over_time.go:overTimeOverExpHistogram:`ms.Range <= 0`
+//
+// the same rewrite to `ms.Range < 0` inside [overTimeOverExpHistogram].
 func TestOverTimeOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -61,14 +65,16 @@ func TestOverTimeOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	if _, ok := overTimeOverExpHistogram(zeroRangeExpHistogramCall(t, "sum_over_time"), s, lowerCtx{}); ok {
 		t.Fatal("overTimeOverExpHistogram accepted a zero-range matrix selector; a window of no " +
 			"width has no samples to reduce (mutant `<=`->`<` at " +
-			"histogram_native_over_time.go:36:21 admits it)")
+			"histogram_native_over_time.go:overTimeOverExpHistogram:`ms.Range <= 0` admits it)")
 	}
 }
 
 // TestResetsOrChangesOverExpHistogram_ZeroRangeRejected kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_resets.go:133:21 — the
-// same `ms.Range <= 0` -> `ms.Range < 0` inside
-// [resetsOrChangesOverExpHistogram].
+// CONDITIONALS_BOUNDARY mutant on
+//
+//	histogram_native_resets.go:resetsOrChangesOverExpHistogram:`ms.Range <= 0`
+//
+// the same rewrite inside [resetsOrChangesOverExpHistogram].
 func TestResetsOrChangesOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -76,14 +82,16 @@ func TestResetsOrChangesOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	if _, ok := resetsOrChangesOverExpHistogram(zeroRangeExpHistogramCall(t, "resets"), s, lowerCtx{}); ok {
 		t.Fatal("resetsOrChangesOverExpHistogram accepted a zero-range matrix selector; a window " +
 			"of no width has no samples to reduce (mutant `<=`->`<` at " +
-			"histogram_native_resets.go:133:21 admits it)")
+			"histogram_native_resets.go:resetsOrChangesOverExpHistogram:`ms.Range <= 0` admits it)")
 	}
 }
 
 // TestTsOfFirstLastOverExpHistogram_ZeroRangeRejected kills the
 // CONDITIONALS_BOUNDARY mutant at
-// histogram_native_ts_of_first_last_over_time.go:89:21 — the same
-// `ms.Range <= 0` -> `ms.Range < 0` inside [tsOfFirstLastOverExpHistogram].
+//
+//	histogram_native_ts_of_first_last_over_time.go:tsOfFirstLastOverExpHistogram:`ms.Range <= 0`
+//
+// the same rewrite inside [tsOfFirstLastOverExpHistogram].
 func TestTsOfFirstLastOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -92,15 +100,14 @@ func TestTsOfFirstLastOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 	if _, _, _, ok := tsOfFirstLastOverExpHistogram(call, s, lowerCtx{}); ok {
 		t.Fatal("tsOfFirstLastOverExpHistogram accepted a zero-range matrix selector; a window of " +
 			"no width has no samples to reduce (mutant `<=`->`<` at " +
-			"histogram_native_ts_of_first_last_over_time.go:89:21 admits it)")
+			"histogram_native_ts_of_first_last_over_time.go:tsOfFirstLastOverExpHistogram:`ms.Range <= 0` admits it)")
 	}
 }
 
 // TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments kills the
-// INVERT_LOGICAL mutant at histogram_native_value_producing_call.go:41:25 —
-// the `||` of
+// INVERT_LOGICAL mutant on the `||` of
 //
-//	if len(call.Args) < 1 || len(call.Args) > 2 {
+//	histogram_native_value_producing_call.go:`len(call.Args) < 1 || len(call.Args) > 2`
 //
 // inside [histogramValuedProducerCall].
 //
@@ -133,28 +140,33 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 	if _, ok := histogramValuedProducerCall(threeArg, s, lowerCtx{}); ok {
 		t.Fatal("histogramValuedProducerCall accepted a three-argument `info`; the arity bounds " +
 			"are independent and either one disqualifies (mutant `||`->`&&` at " +
-			"histogram_native_value_producing_call.go:41:25 makes the pair unsatisfiable)")
+			"histogram_native_value_producing_call.go:`len(call.Args) < 1 || len(call.Args) > 2` " +
+			"makes the pair unsatisfiable)")
 	}
 }
 
 // NOT KILLABLE — documented, not defended by a test.
 //
 // The remaining survivors on cerberus issue #2949's phase4-promql-* legs fall
-// into five equivalence classes. Each mutant is named by `file:line:col` AND
-// by the construct it rewrites, because bare line numbers drift.
+// into six equivalence classes. Each mutant is named by the construct it
+// rewrites — a line number cannot be machine-verified and rots on every
+// insertion above it (#2953) — scoped to its enclosing function wherever the
+// construct repeats within the file.
 //
 // 1. CAPACITY HINTS — ARITHMETIC_BASE inside a `make(T, 0, <cap>)` argument.
 //
-//	schema_lookup.go:133:43                  `len(pairs)*2`
-//	resource_attributes.go:73:61             `len(dedicatedResourceKeys)*2`
-//	histogram_quantile_native_window.go:299:65 and :299:83
-//	                                         `len(keyAliases)+len(aggs)+len(extraAliases)+1`
-//	histogram_quantile_native_window.go:380:55 `len(keyAliases)+len(scalars)+7`
-//	histogram_native_resets.go:298:55        `len(keyAliases)+1`
-//	histogram_native_scalar_binop.go:345:60 and :345:62
-//	                                         `len(passthroughCols)+1+5`
-//	histogram_quantile.go:1537:63            `len(passthrough)+2`
-//	histogram_quantile.go:1874:47            `len(labels)*2`
+//	schema_lookup.go:`make([]chplan.Expr, 0, len(pairs)*2)`
+//	resource_attributes.go:`make(map[string]struct{}, len(dedicatedResourceKeys)*2)`
+//	histogram_quantile_native_window.go:`len(keyAliases)+len(aggs)+len(extraAliases)+1`
+//	histogram_quantile_native_window.go:`len(keyAliases)+len(scalars)+7`
+//	histogram_native_resets.go:`make([]chplan.Projection, 0, len(keyAliases)+1)`
+//	histogram_native_scalar_binop.go:`len(passthroughCols)+1+5`
+//	histogram_quantile.go:`projections := make([]chplan.Projection, 0, len(passthrough)+2)`
+//	histogram_quantile.go:`make([]chplan.Expr, 0, len(labels)*2)`
+//
+// The first two `+` expressions each carry TWO mutants, one per operator; the
+// `passthrough+2` citation names its assignment because two sibling statements
+// in the same method allocate with the identical capacity expression.
 //
 // A slice's capacity is not observable behaviour: `append` grows past a short
 // one, and every element, ordering and identity is unchanged. The one way a
@@ -162,71 +174,76 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // panic — so each site was checked for that rather than waved through:
 //
 //   - The `*2` and `/2` forms cannot go negative from a length.
-//   - `len(passthroughCols)+1+5` (scalar_binop.go:345) reads a slice literal
-//     built two lines above with exactly six elements, so the two rewrites
-//     compute 10 and 2. Neither is negative.
-//   - `len(passthrough)+2` (histogram_quantile.go:1537) sits in
-//     classicBucketShaping.reshape's `sh.fold == nil` branch. The only
-//     shaping constructed with a nil fold is histogram_quantile_range.go:280's
-//     bare-selector shaping, and both of its reshape call sites
-//     (histogram_quantile_range.go:348 and :395) pass a TWO-element
+//   - `len(passthroughCols)+1+5` reads the `passthroughCols` slice literal
+//     built immediately above it with exactly six elements, so the two
+//     rewrites compute 10 and 2. Neither is negative.
+//   - `projections := make(..., len(passthrough)+2)` sits in
+//     classicBucketShaping.reshape's `sh.fold == nil` branch. The only shaping
+//     constructed with a nil fold is
+//     histogram_quantile_range.go:`classicBucketShaping{aggs: classicBucketLatestAggs(s)}`,
+//     and both of its reshape call sites —
+//     histogram_quantile_range.go:`shaping.reshape(guardedCollapse,` and
+//     histogram_quantile_range.go:`shaping.reshape(agg,` — pass a TWO-element
 //     passthrough, so the rewrite computes 0. Instrumenting the branch across
 //     the whole package suite observed `foldNil: true` only ever with
-//     `passthrough: 2`; the one-element call site
-//     (histogram_quantile.go:1301) never reaches the nil-fold branch.
+//     `passthrough: 2`; the one-element call site,
+//     histogram_quantile.go:`shaping.reshape(guardedAgg,`, never reaches the
+//     nil-fold branch.
 //   - `len(keyAliases)+1` and the `+len(...)+N` forms are reached only with
 //     the aggregation's own alias set, which the emitting code has already
 //     populated.
 //
 // 2. A BOUND THE ENCLOSING CODE HAS ALREADY NORMALISED.
 //
-//	histogram_native_range_fn.go:249:10       `step < 0` in subqueryHasEvalAnchor
-//	histogram_native_range_fn.go:269:10       `step < 0` in lowerExpHistogramRangeFnOverSubquery
-//	histogram_native_subquery_select.go:170:10 `step < 0` in lowerSelectFnOverExpHistogramSubquery
-//	scalar.go:98:11                            `lhs < 0` in the DIV-by-zero arm
+//	histogram_native_range_fn.go:subqueryHasEvalAnchor:`step < 0`
+//	histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery:`step < 0`
+//	histogram_native_subquery_select.go:lowerSelectFnOverExpHistogramSubquery:`step < 0`
+//	scalar.go:`if lhs < 0 {`
 //
-// `<` -> `<=` differs only at zero, and zero cannot reach these lines. Each
+// `<` -> `<=` differs only at zero, and zero cannot reach these guards. Each
 // `step` is assigned `defaultSubqueryStep` (a positive constant) by an
-// immediately preceding `if step == 0`. `scalar.go:98` sits inside
+// immediately preceding `if step == 0`. The `lhs` guard sits inside
 // `if rhs == 0 { if lhs == 0 { return NaN } ... }`, so `lhs` is non-zero — and
 // a negative zero is caught by that `lhs == 0` too, since IEEE equality holds
 // for it.
 //
 // 3. A GUARD WHOSE CONDITION IS INVARIANTLY TRUE.
 //
-//	histogram_quantile.go:1257:23  `shape.windowRange > 0` in lowerHistogramQuantileAgg
-//	histogram_quantile.go:2207:23  the same guard in the exp-histogram sibling
+//	histogram_quantile.go:lowerHistogramQuantileAgg:`shape.windowRange > 0`
+//	histogram_quantile.go:lowerHistogramQuantileNativeAgg:`shape.windowRange > 0`
 //
 // `> 0` -> `>= 0` widens a test that already always holds. histogramAggShape's
-// windowRange is set at exactly two places in the shape's construction
-// (histogram_quantile.go:1149 and :1191): `instantLookback`, which is
-// qlcommon.InstantLookback = 5m, or `ms.Range`, which the PromQL grammar
+// windowRange is set at exactly two places in the shape's construction,
+// histogram_quantile.go:`windowRange: instantLookback` — which is
+// qlcommon.InstantLookback = 5m — and
+// histogram_quantile.go:`windowRange: ms.Range`, which the PromQL grammar
 // refuses to parse as anything but strictly positive ("duration must be
-// greater than 0"). Instrumenting both lines across the package suite
-// observed no zero. The surrounding comment describing a "shape.windowRange
-// == 0" bare-selector case predates that construction and no longer describes
-// a reachable state; cerberus issue #2961 tracks the stale comment and the
-// guard it describes.
+// greater than 0"). Instrumenting both guards across the package suite
+// observed no zero. The comment beside each one, describing a
+// `shape.windowRange == 0` bare-selector case, predates that construction and
+// no longer describes a reachable state; cerberus issue #2961 tracks the stale
+// comment and the guard it describes.
 //
 // 4. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
 //
-//	schema_lookup.go:67:4         `continue` in promqlTopLevelKeys
-//	resource_attributes.go:76:4   `continue` in excludedResourceKeys
+//	schema_lookup.go:promqlTopLevelKeys:`if col == "" {`
+//	resource_attributes.go:excludedResourceKeys:`if d.column(s) == "" {`
 //
-// Both loops range over `dedicatedResourceKeys`, which is declared in
-// resource_attributes.go:61 with exactly one element (service.name). Over a
-// one-element range `continue` and `break` both leave the loop after the same
-// single iteration, so the rewrite cannot change what either function
-// returns. This equivalence is a property of the registry's current size, and
-// it dissolves the moment a second dedicated key is added — at which point
-// both mutants become killable and should be killed rather than re-adjudicated.
+// Each citation names the guard whose body is the mutated statement, because
+// that statement is a bare `continue` and no substring of it singles one out.
+// Both loops range over
+// resource_attributes.go:`var dedicatedResourceKeys = []dedicatedResourceKey{`,
+// which holds exactly one element (service.name). Over a one-element range
+// `continue` and `break` both leave the loop after the same single iteration,
+// so the rewrite cannot change what either function returns. This equivalence
+// is a property of the registry's current size, and it dissolves the moment a
+// second dedicated key is added — at which point both mutants become killable
+// and should be killed rather than re-adjudicated.
 //
 // 5. A REWRITE THE LANGUAGE MAKES A NO-OP.
 //
-//	histogram_native_mixed_or_vector_plain_comparison.go:99:36
-//	                              `len(b.VectorMatching.Include) > 0`
-//	histogram_native_mixed_or_vector_comparison.go:163:36
-//	                              the same guard in the vector-vector sibling
+//	histogram_native_mixed_or_vector_plain_comparison.go:`len(b.VectorMatching.Include) > 0`
+//	histogram_native_mixed_or_vector_comparison.go:`len(b.VectorMatching.Include) > 0`
 //
 // Both guard `include = append([]string(nil), b.VectorMatching.Include...)`.
 // `>= 0` makes the guard always true, so the append runs even for an empty
@@ -237,8 +254,8 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 //
 // 6. AN INTERNAL-INVARIANT ERROR PATH.
 //
-//	histogram_native_range_fn.go:284:14        `!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
-//	histogram_native_subquery_select.go:185:14 the same guard in the select sibling
+//	histogram_native_range_fn.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
+//	histogram_native_subquery_select.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
 //
 // `||` -> `&&` narrows a check that reports "internal invariant violated".
 // The two readings differ only when exactly one disjunct holds, and neither

@@ -172,14 +172,23 @@ func TestWidenNestedCallSubqueryInner_GridModes(t *testing.T) {
 		// expressions.
 		//
 		// That gap is what left four gremlins mutants alive on the
-		// phase4-promql-i leg (cerberus issue #2949): the INVERT_NEGATIVES
-		// and ARITHMETIC_BASE pair reported on the `-anchor.Offset` term of
-		// histogram_native_subquery_call_subquery_outer_fn.go:92 (the
-		// `@`-pinned query_range branch) and of :99 (the plain query_range
-		// branch). Both rewrites of that unary term collapse it to
-		// `+anchor.Offset`, which is indistinguishable from `-anchor.Offset`
-		// at offset zero and shifts the grid by twice the offset otherwise.
-		// The two cases below are what make it non-zero in each branch.
+		// phase4-promql-i leg (cerberus issue #2949): an INVERT_NEGATIVES and
+		// an ARITHMETIC_BASE on the `-anchor.Offset` term of each range-mode
+		// branch's widening call —
+		//
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`case ctx.rangeMode() && subqueryPinned(sub) && !anchor.End.IsZero():`
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`ctx.start.Add(-anchor.Offset-sub.Range), ctx.end`
+		//
+		// The `@`-pinned branch is cited by its `case` label rather than by
+		// its widening call, because that call is spelled identically in the
+		// instant branch below it and no substring of it tells the two apart;
+		// the mutants are on the single `widenSubquerySpine` line inside that
+		// arm. The plain query_range branch's call is unique as written.
+		//
+		// Both rewrites of that unary term collapse it to `+anchor.Offset`,
+		// which is indistinguishable from `-anchor.Offset` at offset zero and
+		// shifts the grid by twice the offset otherwise. The two cases below
+		// are what make it non-zero in each branch.
 		{
 			name: "query_range fan-out with offset", rangeMode: true,
 			suffix:    " offset 30s",
