@@ -39,8 +39,11 @@ package promql_test
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,7 +157,10 @@ func runDupTSQuery(
 	t *testing.T, fixture *chdbFixture, query string, step time.Duration, lowerers promql.RangeLowerers,
 ) dupTSAnswer {
 	t.Helper()
-	p := promparser.NewParser(promparser.Options{})
+	// EnableExperimentalFunctions so the family table can cover
+	// mad_over_time, which upstream still gates behind that flag. It changes
+	// nothing for the non-experimental calls.
+	p := promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
 	expr, err := p.ParseExpr(query)
 	if err != nil {
 		t.Fatalf("ParseExpr(%q): %v", query, err)
@@ -354,4 +360,278 @@ func TestDuplicateTimestampSeed_IdeltaLagAdjacencyMatchesFanout(t *testing.T) {
 		dupTSValueAt(t, native, dupTSHostAAttributes, dupTSFinalAnchor),
 		ideltaNoDedup, ideltaIfDuplicateDeduped,
 		"lag-adjacency idelta at the final anchor")
+}
+
+// ---------------------------------------------------------------------------
+// The IDENTICAL-value duplicate — cerberus issue #2914
+// ---------------------------------------------------------------------------
+//
+// Everything above seeds a duplicate whose two rows carry DIFFERENT values.
+// There, "which value survives" is implementation-defined on both sides, so
+// only cerberus's own deterministic tie-break can be pinned and the fixtures
+// are parity-exempt.
+//
+// This section seeds the other shape: two rows at one (series, timestamp)
+// carrying the SAME value. No survivor question arises, so the answer is
+// determinate and both engines can agree on it — Prometheus's TSDB stores at
+// most one sample per (series, timestamp), so the window holds one logical
+// sample there, not two.
+//
+// That is the same contract PR #1092 already gave the rate family, via
+// chsql's dedupWindowPairsByTsFrag: one sample per distinct timestamp, the
+// max-valued one where the rows disagree. These cases pin that the
+// *_over_time family answers under the SAME contract rather than a second,
+// contradictory one — and pin, per function, which reducers the collapse can
+// move at all.
+
+// dupTSIdenticalMetric is the identical-value seed's own metric name, distinct
+// from every other name sharing this package's chDB session.
+const dupTSIdenticalMetric = "duplicate_ts_identical_over_time_test_metric"
+
+// dupTSIdenticalSeed is dupTSOverTimeSeed's shape with the 00:02:00 duplicate
+// carrying 2.0 TWICE instead of 2.0 and 3.0.
+const dupTSIdenticalSeed = dupTSMetricsDDL + `
+INSERT INTO otel_metrics_sum (MetricName, Attributes, TimeUnix, Value) VALUES
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:00:00', 9), 10.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:01:00', 9), 20.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:02:00', 9), 30.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:03:00', 9), 40.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:04:00', 9), 50.0),
+    ('` + dupTSIdenticalMetric + `', map('job', 'web'), toDateTime64('2026-01-01 00:05:00', 9), 60.0);
+`
+
+// The two candidate sample multisets for job 'api' over the final anchor's
+// (00:00:00, 00:05:00] window, both in ascending timestamp order:
+//
+//	dupTSContractWindow — the contract's window: one sample per distinct
+//	  timestamp, so the 00:02:00 pair contributes a single 2.0. This is also
+//	  exactly what Prometheus's own head storage would hold for this seed.
+//	dupTSBothRowsWindow — the window cerberus's *_over_time family built
+//	  before this issue: both stored ROWS, so 2.0 appears twice.
+//
+// Each case below reduces both with the same Go reducer, which makes the
+// expectation a property of the SAMPLE SET rather than a transcription of any
+// SQL. A function whose two reductions coincide is inherently immune to the
+// collapse; the table declares that per function and the runner checks the
+// declaration against the arithmetic, so neither can drift alone.
+var (
+	dupTSContractWindow = []float64{5, 2, 8, 1, 6}
+	dupTSBothRowsWindow = []float64{5, 2, 2, 8, 1, 6}
+)
+
+// dupTSMedianPhi is the quantile the quantile_over_time and mad_over_time
+// cases probe with — the median, where a one-element change in an even/odd
+// -length window moves the answer the most visibly.
+const dupTSMedianPhi = 0.5
+
+func dupTSSum(vals []float64) float64 {
+	total := 0.0
+	for _, v := range vals {
+		total += v
+	}
+	return total
+}
+
+func dupTSCount(vals []float64) float64 { return float64(len(vals)) }
+
+func dupTSMean(vals []float64) float64 { return dupTSSum(vals) / dupTSCount(vals) }
+
+func dupTSMin(vals []float64) float64 {
+	out := vals[0]
+	for _, v := range vals[1:] {
+		out = math.Min(out, v)
+	}
+	return out
+}
+
+func dupTSMax(vals []float64) float64 {
+	out := vals[0]
+	for _, v := range vals[1:] {
+		out = math.Max(out, v)
+	}
+	return out
+}
+
+// dupTSLast reads the time-LATEST sample: the slices are in ascending
+// timestamp order, so that is the final element.
+func dupTSLast(vals []float64) float64 { return vals[len(vals)-1] }
+
+// dupTSPresent is present_over_time's reducer: 1 for any non-empty window.
+func dupTSPresent([]float64) float64 { return 1 }
+
+// dupTSPopVariance is the POPULATION variance (divisor N, not N-1) — the
+// definition PromQL's stdvar_over_time uses.
+func dupTSPopVariance(vals []float64) float64 {
+	mean := dupTSMean(vals)
+	total := 0.0
+	for _, v := range vals {
+		total += (v - mean) * (v - mean)
+	}
+	return total / dupTSCount(vals)
+}
+
+func dupTSPopStddev(vals []float64) float64 { return math.Sqrt(dupTSPopVariance(vals)) }
+
+// dupTSQuantileInclusive is the linearly-interpolating quantile ClickHouse's
+// quantileExactInclusive and Prometheus's own quantile_over_time both compute:
+// rank phi*(N-1) into the ascending-sorted values, interpolating between the
+// two neighbouring ranks.
+func dupTSQuantileInclusive(vals []float64, phi float64) float64 {
+	sorted := append([]float64(nil), vals...)
+	sort.Float64s(sorted)
+	rank := phi * float64(len(sorted)-1)
+	lo := int(math.Floor(rank))
+	hi := int(math.Ceil(rank))
+	return sorted[lo] + (sorted[hi]-sorted[lo])*(rank-float64(lo))
+}
+
+func dupTSMedian(vals []float64) float64 { return dupTSQuantileInclusive(vals, dupTSMedianPhi) }
+
+// dupTSMAD is mad_over_time: the median of the absolute deviations from the
+// window's own median.
+func dupTSMAD(vals []float64) float64 {
+	median := dupTSMedian(vals)
+	deviations := make([]float64, len(vals))
+	for i, v := range vals {
+		deviations[i] = math.Abs(v - median)
+	}
+	return dupTSMedian(deviations)
+}
+
+// dupTSOverTimeCase is one *_over_time function under test: the PromQL call
+// (with `%s` for the metric name), the Go reducer that defines its answer
+// over a sample multiset, and whether collapsing the duplicate is expected to
+// leave the answer untouched.
+type dupTSOverTimeCase struct {
+	call   string
+	reduce func([]float64) float64
+	// immune declares that this reducer cannot see the duplicate collapse.
+	// The runner recomputes that from the reducer and fails on disagreement,
+	// so the declaration is an assertion rather than a comment.
+	immune bool
+}
+
+// dupTSOverTimeFamily is the whole *_over_time family, each with the reducer
+// that defines its answer. The immune ones are exactly the order statistics
+// and the presence flag: repeating a value that is already in the multiset
+// cannot move a minimum, a maximum, the time-latest sample, or "is the window
+// non-empty". Every counting, summing, averaging or rank-based reducer can.
+var dupTSOverTimeFamily = []dupTSOverTimeCase{
+	{call: "sum_over_time(%s[5m])", reduce: dupTSSum},
+	{call: "avg_over_time(%s[5m])", reduce: dupTSMean},
+	{call: "count_over_time(%s[5m])", reduce: dupTSCount},
+	{call: "stddev_over_time(%s[5m])", reduce: dupTSPopStddev},
+	{call: "stdvar_over_time(%s[5m])", reduce: dupTSPopVariance},
+	{call: "quantile_over_time(0.5, %s[5m])", reduce: dupTSMedian},
+	{call: "mad_over_time(%s[5m])", reduce: dupTSMAD},
+	{call: "min_over_time(%s[5m])", reduce: dupTSMin, immune: true},
+	{call: "max_over_time(%s[5m])", reduce: dupTSMax, immune: true},
+	{call: "last_over_time(%s[5m])", reduce: dupTSLast, immune: true},
+	{call: "present_over_time(%s[5m])", reduce: dupTSPresent, immune: true},
+}
+
+// dupTSCaseName renders a case's subtest name: the PromQL function it calls.
+func (c dupTSOverTimeCase) name() string {
+	if idx := strings.IndexByte(c.call, '('); idx > 0 {
+		return c.call[:idx]
+	}
+	return c.call
+}
+
+// query renders the case's full PromQL, wrapped in `sum by(job)` so the
+// emitted projection carries the same grouped Attributes shape the
+// differing-value cases above read. The wrap is an identity for this seed:
+// each job holds exactly one series.
+func (c dupTSOverTimeCase) query() string {
+	return "sum by(job) (" + fmt.Sprintf(c.call, dupTSIdenticalMetric) + ")"
+}
+
+// assertIdenticalDuplicateContract pins one function's answer against the
+// contract window, and — for a reducer the collapse can move — additionally
+// pins that the answer is NOT the both-rows one. The second assertion is what
+// makes the case fail on a lowering that counts the duplicated row twice.
+func assertIdenticalDuplicateContract(t *testing.T, c dupTSOverTimeCase, got float64, what string) {
+	t.Helper()
+	wantContract := c.reduce(dupTSContractWindow)
+	bothRows := c.reduce(dupTSBothRowsWindow)
+	coincide := math.Abs(wantContract-bothRows) <= dupTSFloatTolerance
+	if coincide != c.immune {
+		t.Fatalf("%s: case declares immune=%v, but the contract answer %v and the both-rows "+
+			"answer %v %s — the declaration and the arithmetic disagree",
+			what, c.immune, wantContract, bothRows,
+			map[bool]string{true: "coincide", false: "differ"}[coincide])
+	}
+	if math.Abs(got-wantContract) > dupTSFloatTolerance {
+		t.Errorf("%s = %v, want %v (the duplicated (series, timestamp) counted ONCE, as "+
+			"Prometheus stores it and as the rate family already counts it)", what, got, wantContract)
+	}
+	if !c.immune && math.Abs(got-bothRows) <= dupTSFloatTolerance {
+		t.Errorf("%s = %v, which is the answer over BOTH stored rows — the duplicate at 00:02:00 "+
+			"was counted twice, the divergence cerberus issue #2914 exists to close", what, got)
+	}
+}
+
+// TestIdenticalDuplicateTimestamp_OverTimeFamilyCountsItOnce runs the whole
+// *_over_time family over the identical-value seed on the DEFAULT fan-out
+// lowering and pins each answer to the one-sample-per-timestamp contract.
+func TestIdenticalDuplicateTimestamp_OverTimeFamilyCountsItOnce(t *testing.T) {
+	fixture := newChDBFixture(t, dupTSIdenticalSeed)
+	for _, c := range dupTSOverTimeFamily {
+		t.Run(c.name(), func(t *testing.T) {
+			answer := runDupTSQuery(t, fixture, c.query(), dupTSOverTimeStep, promql.RangeLowerers{})
+			assertIdenticalDuplicateContract(t, c,
+				dupTSValueAt(t, answer, dupTSAPIAttributes, dupTSFinalAnchor),
+				"fan-out "+c.name()+" at the final anchor")
+		})
+	}
+}
+
+// dupTSSortedSlabEligible is the set of *_over_time functions
+// promql.SortedSlabOverTimeLowerer actually decomposes — its scope is
+// sum_over_time / avg_over_time (internal/chsql/range_window_sorted_slab.go).
+// The cross-strategy test asserts the emitted SQL differs for EXACTLY these
+// and for no others, so an eligibility change cannot quietly turn a
+// cross-strategy comparison into a comparison of an answer with itself.
+var dupTSSortedSlabEligible = map[string]bool{
+	"sum_over_time": true,
+	"avg_over_time": true,
+}
+
+// TestIdenticalDuplicateTimestamp_EveryLoweringAgrees runs the same family
+// through the sorted-slab strategy as well, and asserts that wherever that
+// strategy actually engages it lands on the SAME contract as the fan-out fold
+// — so the fix is one contract across every lowering of one query, not a
+// per-path patch.
+func TestIdenticalDuplicateTimestamp_EveryLoweringAgrees(t *testing.T) {
+	fixture := newChDBFixture(t, dupTSIdenticalSeed)
+	for _, c := range dupTSOverTimeFamily {
+		t.Run(c.name(), func(t *testing.T) {
+			slab := runDupTSQuery(t, fixture, c.query(), dupTSOverTimeStep, promql.RangeLowerers{
+				OverTime: promql.SortedSlabOverTimeLowerer{Fallback: promql.FanoutOverTimeLowerer{}},
+			})
+			fanout := runDupTSQuery(t, fixture, c.query(), dupTSOverTimeStep, promql.RangeLowerers{})
+
+			engaged := slab.sql != fanout.sql
+			if engaged != dupTSSortedSlabEligible[c.name()] {
+				t.Fatalf("sorted-slab %s: emitted %s SQL than the fan-out, but the eligible set says "+
+					"engaged=%v; update dupTSSortedSlabEligible or the eligibility predicate",
+					c.name(), map[bool]string{true: "different", false: "identical"}[engaged],
+					dupTSSortedSlabEligible[c.name()])
+			}
+			if !engaged {
+				return
+			}
+			assertDupTSStrategiesAgree(t, slab, fanout)
+			assertIdenticalDuplicateContract(t, c,
+				dupTSValueAt(t, slab, dupTSAPIAttributes, dupTSFinalAnchor),
+				"sorted-slab "+c.name()+" at the final anchor")
+		})
+	}
 }
