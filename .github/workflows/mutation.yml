@@ -209,6 +209,18 @@ jobs:
       #     load and type-check as it stands is not used as an oracle at all:
       #     its mutants are generated and left to the compiler, as before.
       #
+      #   the two per-mutant bounds report which of them claimed a mutant
+      #     A mutant is leashed twice — `go test -timeout` bounds the RUN, and a
+      #     context deadline covering compile+run is the backstop no -timeout can
+      #     be — but both produced one verdict, TIMED OUT. So a mutant that
+      #     genuinely does not terminate was indistinguishable from a compile
+      #     that hung and from one the memory guard below reaped. The fork now
+      #     reports RUN TIMED OUT when the test BINARY's own watchdog fired and
+      #     said so in its output, and keeps TIMED OUT for the backstop. It takes
+      #     no position on which is a detection — neither appears in
+      #     `test_efficacy` — so the policy stays in gremlins-threshold.mjs,
+      #     which credits the run-phase one and not the backstop (#2944).
+      #
       #   the mutated tests run with `-vet=off`
       #     `go test` runs a subset of `go vet` before it builds anything and
       #     reports a finding as `FAIL pkg [build failed]`, which from the
@@ -235,7 +247,7 @@ jobs:
       - name: install gremlins
         run: >
           node .github/scripts/go-module-fetch.mjs --
-          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume
+          go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume
       # `workers: 0` keeps gremlins' default (runtime.NumCPU()); a
       # non-zero value caps the parallel `go test` fan-out per the
       # comment above the matrix entry.
@@ -307,12 +319,16 @@ jobs:
       # mutation-run.mjs therefore wires .github/scripts/mutant-memory-guard.mjs
       # in front of every test binary gremlins launches, as a `go test -exec`
       # supervisor, and gives it a per-mutant RSS ceiling. A mutant that breaches
-      # it is killed and then HELD, so gremlins' own deadline records it as
-      # TIMED OUT — unadjudicated, counted in the denominator, credited to
-      # nobody. It is deliberately not allowed to reach gremlins as an exit
-      # code: `go test` collapses every test-binary failure into its own exit 1,
-      # which gremlins reads as a KILL, and paying a leg efficacy for a mutant
-      # nobody adjudicated is the accounting #2903 removed.
+      # it is killed and then HELD, so the deadline that records it is the
+      # compile+run BACKSTOP — status TIMED OUT, unadjudicated, counted in the
+      # denominator, credited to nobody. It is deliberately not allowed to reach
+      # gremlins as an exit code: `go test` collapses every test-binary failure
+      # into its own exit 1, which gremlins reads as a KILL, and paying a leg
+      # efficacy for a mutant nobody adjudicated is the accounting #2903 removed.
+      # It stays uncredited now that a RUN-phase timeout is credited (#2944),
+      # and not by a second rule: killing the child destroys the only evidence
+      # that credit is read from — the test binary's own timeout panic — so a
+      # reaped mutant cannot be scored as a detection (#2921).
       #
       # The clean fix is upstream of all of this: #2910 splits gremlins' single
       # deadline into an overall one and a run-only one, and a run-only leash is
