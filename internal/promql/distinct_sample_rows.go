@@ -77,10 +77,24 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     divergence on the arms that do not (the lagInFrame adjacency shape,
 //     chplan.RangeWindow.LagAdjacency, reduces rows rather than an array and
 //     reads no sample-array assembly at all).
-//   - changes / resets / deriv / predict_linear / holt_winters — neither
-//     family. They are not what this issue governs and they share the
-//     lagInFrame arm's problem or, for the regression-fitting pair, would
-//     need their own contract pinned before their weighting changes.
+//   - changes / resets — neither family, and inherently immune besides:
+//     repeating a value creates neither a value change nor a counter reset.
+//   - deriv / predict_linear — neither family, and each has a native
+//     timeSeries*ToGrid competitor (timeSeriesDerivToGrid,
+//     timeSeriesPredictLinearToGrid, chplan.RangeWindowGridNative) that
+//     aggregates server-side and could not pick up a rule applied at the
+//     array-assembly gate, so setting the field would answer one way on the
+//     fan-out arm and another on the native one.
+//   - holt_winters — neither family, and the only one of these with no arm
+//     that blocks it; it is left out because its weighting has no pinned
+//     contract to change it against, not because it is unaffected.
+//
+// Those five, plus irate / idelta above, are tracked together in cerberus
+// issue #2927, which enumerates them from the emitter's own dispatch so the
+// remainder is a closed list rather than a sample. Two further shapes need no
+// entry at all: LogQL's log_rate reduces log entries rather than metric
+// samples (see this file's doc), and the bare-subquery `identity` shape reads
+// the time-latest sample, which no collapse can move.
 var distinctSampleRowsFuncs = map[string]bool{
 	"sum_over_time":         true,
 	"avg_over_time":         true,
