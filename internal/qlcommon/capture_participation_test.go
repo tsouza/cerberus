@@ -513,3 +513,25 @@ func firstNonEmptyDisagreement(re *regexp.Regexp, inputs []string) string {
 	}
 	return ""
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// capture_participation.go:181:38 (CONDITIONALS_BOUNDARY, the SECOND `>=` in
+// mutuallyExclusive's `if shared >= len(a.spine) || shared >= len(b.spine)`
+// -> `>`). The loop above increments `shared` only while it is below BOTH
+// lengths, so shared <= min(len(a.spine), len(b.spine)) on exit and
+// `shared > len(b.spine)` is unsatisfiable: the mutant simply deletes that
+// half of the guard.
+//
+// The case it deletes is shared == len(b.spine) < len(a.spine) — b's spine is
+// a strict prefix of a's. Both spines are root-down paths through one parse
+// tree that agreed at every step, so a.spine[shared] is the node reached by
+// walking the WHOLE of b's spine, which is b's own capture. Its Op is
+// syntax.OpCapture, never syntax.OpAlternate, so the `fork.node.Op !=
+// syntax.OpAlternate` disjunct on the next line is true and `||` short-
+// circuits before `b.spine[shared]` is ever indexed. The mutant returns
+// false without panicking, which is the answer the deleted guard gave.
+//
+// Killing it would need a captureShape whose spine puts an OpAlternate one
+// step past a prefix of another shape's spine — a value captureShapes cannot
+// build, since the spine is that node's own ancestry.

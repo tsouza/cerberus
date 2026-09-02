@@ -355,3 +355,15 @@ func TestEmptyCapturesReplacement(t *testing.T) {
 		})
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// label_replace.go:770:10 (CONDITIONALS_BOUNDARY, extractRef's
+// `for end < len(rest)` -> `<=`). The extra iteration the mutant admits runs
+// at end == len(rest), where `rest[end:]` is the empty string — a legal
+// slice — and utf8.DecodeRuneInString("") returns (utf8.RuneError, 0).
+// utf8.RuneError is U+FFFD, category So: unicode.IsLetter and unicode.IsDigit
+// are both false for it and it is not '_', so the body breaks before reaching
+// `end += size`. The mutant therefore leaves `end` where the original's loop
+// condition stopped it, and every read below — the empty-name check, `name`,
+// `width`, the closing-brace check — sees the same value.
