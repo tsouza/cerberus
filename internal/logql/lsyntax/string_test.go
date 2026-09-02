@@ -230,8 +230,29 @@ func TestGroupingString(t *testing.T) {
 func TestBinOpExprString_IncompleteNodeRendersEmpty(t *testing.T) {
 	// An errored BinOpExpr carries nil legs (mustNewBinOpExpr stashes the
 	// error instead of the operands); String must not dereference them.
-	if got := (&BinOpExpr{Op: OpTypeAdd}).String(); got != "" {
-		t.Errorf("String() on a leg-less BinOpExpr = %q, want %q", got, "")
+	//
+	// The guard is a DISJUNCTION over the two legs, so it has to be
+	// exercised with each leg nil ON ITS OWN as well as with both. A
+	// both-nil case alone leaves `SampleExpr == nil || RHS == nil`
+	// indistinguishable from `&&`: with the conjunction the guard still
+	// fires when both are nil, and String still returns "". A half-built
+	// node is the shape that separates them — under `&&` the guard is
+	// false and String dereferences the nil leg.
+	present := mustNewLiteralExpr("1", false)
+	cases := []struct {
+		name string
+		expr *BinOpExpr
+	}{
+		{"both legs nil", &BinOpExpr{Op: OpTypeAdd}},
+		{"left leg nil", &BinOpExpr{Op: OpTypeAdd, RHS: present}},
+		{"right leg nil", &BinOpExpr{Op: OpTypeAdd, SampleExpr: present}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.expr.String(); got != "" {
+				t.Errorf("String() on a leg-less BinOpExpr = %q, want %q", got, "")
+			}
+		})
 	}
 }
 
