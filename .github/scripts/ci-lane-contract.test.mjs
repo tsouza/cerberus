@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import {
   CANONICAL_HEAD_ORACLE_FLOORS,
+  CANONICAL_HEAD_QUERY_PATH_ROOTS,
   ContractError,
   MERGE_P95_SLO_MINUTES,
   RELEASE_QUALIFICATION_SLO_MINUTES,
@@ -456,22 +457,33 @@ test("a reference lane that stops naming its own head query path is rejected", (
   // of the packages a lane's globs name, so dropping the head's API package or
   // its query language narrows the lane back to seeing only its own harness —
   // which is exactly how PR #2824 moved the shared pipeline with no reference
-  // lane considering itself touched. Both roots are controlled independently:
-  // covering one must not excuse the other.
-  for (const dropped of ["internal/api/loki/**", "internal/logql/**"]) {
+  // lane considering itself touched. The roots are driven from the exported
+  // constant, and controlled one at a time: covering one must not excuse the
+  // other.
+  assert.ok(
+    CANONICAL_HEAD_QUERY_PATH_ROOTS.logql.length > 1,
+    "a single-root head would let this loop pass without testing independence",
+  );
+  for (const queryPathRoot of CANONICAL_HEAD_QUERY_PATH_ROOTS.logql) {
     const narrowed = registryFixture();
     const provider = narrowed.lanes.find(
       (candidate) => candidate.id === "oracle-reference",
     );
     provider.package_globs = provider.package_globs.filter(
-      (glob) => glob !== dropped,
+      (glob) => glob !== `${queryPathRoot}/**`,
     );
-    expectContractError(
-      () => validateRegistry(narrowed, { root }),
-      new RegExp(
-        `canonical head logql reference provider oracle-reference does not cover ` +
-          `${dropped.replace("/**", "").replace(/\//g, "\\/")} in package_globs`,
-      ),
+    // Matched as an exact substring rather than through a RegExp built by
+    // hand-escaping a path: the escaping is unnecessary here and reads as a
+    // real sanitizer, which is what CodeQL's js/incomplete-sanitization saw.
+    const caught = expectContractError(() =>
+      validateRegistry(narrowed, { root }),
+    );
+    const expected =
+      `canonical head logql reference provider oracle-reference does not cover ` +
+      `${queryPathRoot} in package_globs`;
+    assert.ok(
+      caught.message.includes(expected),
+      `expected the contract to name ${queryPathRoot}; got:\n${caught.message}`,
     );
   }
 });
