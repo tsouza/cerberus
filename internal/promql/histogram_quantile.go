@@ -761,14 +761,21 @@ func openMetricsFloatExpr(newPhi func() (chplan.Expr, error)) (chplan.Expr, erro
 // aggregated-input plan for `histogram_quantile(phi, <agg>(rate(<sel>[range])))`.
 //
 // `selector` is the underlying bare VectorSelector (carrying the metric
-// name + label matchers). `windowRange` is the `[range]` duration from
-// the wrapping `rate`/`increase` (zero if there's no range-vector
-// function — currently always set when this struct is built, but
-// kept explicit for clarity). `agg` carries
+// name + label matchers). `agg` carries
 // the AggregateExpr metadata (Op, Grouping, Without) when a wrapping
 // aggregation is present; nil means "no aggregation wrap, just rate(...)".
 type histogramAggShape struct {
-	selector    *parser.VectorSelector
+	selector *parser.VectorSelector
+	// windowRange is the window the shape reduces over, and every shape
+	// matchHistogramAggIdiom yields carries a STRICTLY POSITIVE one: the
+	// `[range]` of the wrapping rate / increase / sum_over_time, which the
+	// PromQL grammar's positive_duration_expr refuses to parse as anything
+	// else, or instantLookback (5m) for the #1692 no-range-wrapper shape.
+	// lowerHistogramQuantileAgg and lowerHistogramQuantileNativeAgg bind the
+	// window's left bound and its staleness lower bound from it
+	// unconditionally, and
+	// histogram_quantile_window_range_test.go:`func TestMatchHistogramAggIdiomAlwaysYieldsPositiveWindowRange(`
+	// pins that positivity at both sources.
 	windowRange time.Duration
 	// windowFn is the matched range-vector function name. It decides
 	// both how a series' in-window samples reduce to one value per `le`
@@ -1249,15 +1256,11 @@ func lowerHistogramQuantileAgg(shape histogramAggShape, phi phiArg, s schema.Met
 	rangeEnd := windowRightBoundExpr(anchor)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
 	// Lower bound: TimeUnix > anchor - Range (Prom's left-open window).
-	// rangeStart defaults to rangeEnd (a zero-width window) for the #1692
-	// bare-selector shape (shape.windowRange == 0): classicBucketWindowStage's
-	// fold is latestSampleFold there, which ignores both bounds, so the
-	// placeholder never reaches SQL.
-	rangeStart := rangeEnd
-	if shape.windowRange > 0 {
-		rangeStart = windowLeftBoundExpr(anchor, shape.windowRange)
-		pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
-	}
+	// shape.windowRange is strictly positive on every shape
+	// matchHistogramAggIdiom produces — see [histogramAggShape.windowRange] —
+	// so the window always has a real left bound.
+	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
+	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
 
 	var input chplan.Node = scan
 	if pred != nil {
@@ -2201,13 +2204,10 @@ func lowerHistogramQuantileNativeAgg(shape histogramAggShape, phi phiArg, s sche
 	}
 	rangeEnd := windowRightBoundExpr(anchor)
 	pred = andExpr(pred, timeBoundExpr(s.TimestampColumn, anchor))
-	// rangeStart defaults to rangeEnd for the #1692 bare-selector shape —
-	// see lowerHistogramQuantileAgg's identical comment.
-	rangeStart := rangeEnd
-	if shape.windowRange > 0 {
-		rangeStart = windowLeftBoundExpr(anchor, shape.windowRange)
-		pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
-	}
+	// The window's left bound, from the same always-positive windowRange
+	// lowerHistogramQuantileAgg binds it from.
+	rangeStart := windowLeftBoundExpr(anchor, shape.windowRange)
+	pred = andExpr(pred, stalenessLowerBoundExpr(s.TimestampColumn, anchor, shape.windowRange))
 
 	var input chplan.Node = scan
 	if pred != nil {
