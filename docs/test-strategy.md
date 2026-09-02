@@ -1076,15 +1076,46 @@ Each mutant's `go test` child runs under a deadline, because a mutant that
 inverts a loop advance never terminates and allocates per iteration; without a
 deadline the OOM killer reaps the runner and the leg reports no verdict at all.
 
-That deadline is a declared value, not a measured one. gremlins computes it as
+That deadline is MEASURED, per leg, per run. `.github/scripts/mutation-run.mjs`
+times one mutant's worth of work before gremlins starts — it appends a byte to
+the largest production file in the leg's scope, runs the scope's tests exactly
+as gremlins runs them for a mutant (`-count=1 -failfast`), and restores the file
+— then scales what it measured by the number of mutants gremlins will run
+concurrently and by a named headroom multiple. The result is clamped into
+`[MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX]`, both declared in
+`.github/workflows/mutation.yml`. The edit is load-bearing: Go's build cache is
+keyed on content, so timing an unedited package times a cache hit and measures
+nothing a mutant will ever pay.
+
+It is measured because the thing the deadline has to cover is a COMPILE, and a
+compile's cost is a property of the package and the runner rather than of the
+test suite. Measured per mutant on an 8-core machine, against the flat 15s the
+lane used to declare:
+
+| scope             | compile + link | test run |
+| ----------------- | -------------- | -------- |
+| `internal/chsql`  | 12.7-14.4s     | 0.31s    |
+| `internal/promql` | 8.4-8.7s       | 2.07s    |
+
+80-98% of the budget went to the compiler, so every contended runner pushed
+ordinary mutants over it and gremlins recorded them as `TIMED OUT` — which the
+gate then scored as detections (#2903, and the "Timed-out mutants" section
+below).
+
+`MUTANT_TIMEOUT_MIN` is the floor a measurement may raise but never lower, so a
+probe that cannot measure anything leaves the lane exactly where it was.
+`MUTANT_TIMEOUT_MAX` is the ceiling, so one pathological measurement cannot
+spend the job's whole `timeout-minutes` on hung mutants — and a leg that hits
+that job timeout reports `cancelled`, which the `mutation` aggregator fails.
+
+gremlins itself computes the deadline as
 `min(timeout-coefficient x max(coverage_elapsed, 1s), timeout-max)`, where
-`coverage_elapsed` is the wall time of its own coverage pass — a number
-dominated by COMPILATION, not by test time, and therefore a function of how warm
-the Go build cache happened to be. `.github/scripts/mutation-run.mjs` neutralises
-that input: it derives `--timeout-coefficient` from `MUTANT_TIMEOUT_MAX` as
-`ceil(ceiling / 1s)`, so `coefficient x max(elapsed, 1s)` is at least the ceiling
-for any elapsed time and the budget is exactly `MUTANT_TIMEOUT_MAX` on every
-invocation. `.github/workflows/mutation.yml` declares that ceiling.
+`coverage_elapsed` is the wall time of its own coverage pass — the same
+compile-dominated quantity, but taken on whatever build-cache warmth the
+invocation happened to inherit. `mutation-run.mjs` neutralises that input: it
+derives `--timeout-coefficient` as `ceil(budget / 1s)`, so
+`coefficient x max(elapsed, 1s)` is at least the budget for any elapsed time and
+the measured budget is the sole budget on every invocation.
 
 The coefficient is passed on BOTH of `mutation-run.mjs`'s invocations, and the
 second is why this matters. When the changed-line run finds zero executable
@@ -1096,6 +1127,44 @@ times out, and because gremlins counts a timed-out mutant in neither the efficac
 ratio nor `mutants_total`, the leg reported `Timed out: 295 / Test efficacy:
 0.00%` on pull requests while the identical leg on push-to-main — one
 cold-cache invocation, the intended budget — reported 99.65% (#2692).
+
+### Timed-out mutants are unadjudicated, and count against the leg
+
+`.github/scripts/gremlins-threshold.mjs` scores a leg as
+`killed / (killed + lived + timedOut)` — the kill rate over every mutant the
+runner ATTEMPTED to adjudicate. gremlins' own `test_efficacy` is
+`killed / (killed + lived)`, which drops a timeout from BOTH sides, so this gate
+is strictly the stricter of the two and gremlins' number is reported rather than
+compared against.
+
+The rule that formula encodes: **the score must be monotone non-increasing in
+the timeout count.** Moving a mutant into `TIMED OUT` may never raise the number
+the gate reads. A gate that breaks that rule pays a slower runner in efficacy
+points, and a green run then proves the machine was busy rather than that the
+tests are strong.
+
+The gate used to break it — it counted a timeout as a DETECTION, on the premise
+that a mutant exhausting the budget broke termination rather than lost a race
+with the compiler. The per-mutant costs in "Per-mutant time budget" above
+falsify that premise, and two signatures in the reports confirm it:
+
+- Runs 33542904091 (red) and 33551271099 (green) recorded the SAME 486 kills on
+  `phase4-promql-lower`. The whole 94.00% -> 97.01% swing was 16 mutants moving
+  `LIVED` -> `TIMED OUT`, on a runner that was 44% slower (coverage 53.2s vs
+  36.8s). Matching mutants across the two revisions by source text, 18 of the
+  red run's 31 survivors — short-circuit boolean guards and slice-capacity
+  arithmetic, none of which can unbound a loop — were booked as detections.
+- gremlins runs each mutant with `-failfast`, so a killed mutant exits at its
+  first failing test while a survivor must run the suite to the end. Starvation
+  therefore converts SURVIVORS preferentially, which makes the bias monotone
+  rather than noisy. Run 33522074818 is the endpoint: all four `internal/chsql`
+  legs reported 100.00% with `lived: 0`, over 1266 mutants of which 1230 timed
+  out.
+
+The two halves are paired. The measured budget keeps an honest leg from timing
+out for the compiler's sake; this formula is what makes it safe to get that
+measurement wrong in the tight direction, because an undersized budget now shows
+up as a RED leg instead of a flattering one.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs

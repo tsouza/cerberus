@@ -17,17 +17,27 @@ const mutationRunnerPath = "../../.github/scripts/mutation-run.mjs"
 // mutated package's own tests are.
 const timeoutMaxFlag = "--timeout-max"
 
-// The runner must pass the flag AND source its value from the env var. Pinned
-// as two independent substrings rather than as one adjacent `'--timeout-max',
-// required('MUTANT_TIMEOUT_MAX'),` phrase: that spelling broke the moment the
-// value was hoisted into a local to be reused by --timeout-coefficient, which
-// is a refactor this pin has no business rejecting. What it must still catch is
-// the flag disappearing, or its value coming from somewhere other than the
-// declared ceiling.
+// The runner must pass the flag AND bound its value by the declared ceiling.
+// Pinned as independent substrings rather than as one adjacent phrase: the
+// spelling of how the value reaches the argv has already changed twice — once
+// when it was hoisted into a local to be reused by --timeout-coefficient, and
+// again when cerberus issue #2903 made the budget MEASURED, so the argv now
+// carries a derived number that the ceiling clamps rather than the ceiling
+// itself. Neither is a refactor this pin has any business rejecting. What it
+// must still catch is the flag disappearing, or the bounds it is clamped into
+// no longer coming from the workflow's declared envelope.
+//
+// Both bounds are pinned because they fail in opposite directions and only one
+// of them is this test's own subject. Losing the ceiling removes the OOM bound
+// this test exists for. Losing the floor lets a mismeasured cycle hand out a
+// budget SMALLER than the lane's analysed value, which is #2692's collapse.
 const (
 	mutationRunnerInvocation = "run: node .github/scripts/mutation-run.mjs"
 	timeoutMaxArg            = "'--timeout-max',"
-	timeoutMaxValue          = "required('MUTANT_TIMEOUT_MAX')"
+	timeoutMaxValue          = "'MUTANT_TIMEOUT_MAX'"
+	timeoutMinValue          = "'MUTANT_TIMEOUT_MIN'"
+	timeoutMaxDeclaration    = "MUTANT_TIMEOUT_MAX:"
+	timeoutMinDeclaration    = "MUTANT_TIMEOUT_MIN:"
 )
 
 // gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag.
@@ -76,10 +86,24 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 	}
 	runnerBody := string(runner)
 	if !strings.Contains(runnerBody, timeoutMaxArg) || !strings.Contains(runnerBody, timeoutMaxValue) {
-		t.Errorf("%s does not pass %s from MUTANT_TIMEOUT_MAX to gremlins unleash. Without an absolute "+
-			"ceiling a mutant that inverts a scanner loop-advance runs until the runner is out of memory, "+
-			"and the job dies with no verdict — which reads as flake, not as a missing bound.",
+		t.Errorf("%s does not pass %s bounded by MUTANT_TIMEOUT_MAX to gremlins unleash. Without an "+
+			"absolute ceiling a mutant that inverts a scanner loop-advance runs until the runner is out "+
+			"of memory, and the job dies with no verdict — which reads as flake, not as a missing bound.",
 			mutationRunnerPath, timeoutMaxFlag)
+	}
+	if !strings.Contains(runnerBody, timeoutMinValue) {
+		t.Errorf("%s does not floor the measured per-mutant budget at MUTANT_TIMEOUT_MIN. The budget is "+
+			"derived from a timed probe (#2903), and a probe that measures nothing must fall back to the "+
+			"lane's analysed value rather than to whatever small number it happened to record — that is "+
+			"#2692's budget collapse, where every mutant times out and the leg reports 0.00%%.",
+			mutationRunnerPath)
+	}
+	for _, declaration := range []string{timeoutMinDeclaration, timeoutMaxDeclaration} {
+		if !strings.Contains(body, declaration) {
+			t.Errorf("%s does not declare %s for the gremlins unleash step. Both bounds are required env, "+
+				"so a missing one fails every leg rather than running unbounded — loud, but still broken.",
+				mutationWorkflowPath, declaration)
+		}
 	}
 
 	if !strings.Contains(body, gremlinsForkTagPrefix) {

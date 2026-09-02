@@ -915,7 +915,12 @@ what actually runs.
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
-  `enforce efficacy threshold` step.
+  `enforce efficacy threshold` step. Gates on `killed / (killed + lived +
+  timedOut)`, the kill rate over every mutant the runner ATTEMPTED to
+  adjudicate, rather than on gremlins' own `killed / (killed + lived)`. A
+  timed-out mutant is unadjudicated, not detected, so moving one into
+  `TIMED OUT` can never raise the score and a starved runner reads as red
+  rather than as a flattering green (#2903).
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
 - **`mutation-phases.mjs`** — data, imported by `mutation-matrix.mjs`. The single
@@ -961,9 +966,20 @@ what actually runs.
   phase. A non-empty `DIFF_REF` first invokes gremlins' native merge-base
   `--diff` filter; if that report executed zero mutants (a comment-only or
   otherwise mutation-free edit), it deletes the report and reruns the phase in
-  full rather than letting a hollow incremental run report green.
-  - Env: `SCOPE`, `REPORT`, `MUTANT_TIMEOUT_MAX` (required); `WORKERS`,
-    `EXCLUDE_FILES`, `DIFF_REF` (optional).
+  full rather than letting a hollow incremental run report green. Also derives
+  the per-mutant budget by MEASURING this leg's own recompile+link+run cycle on
+  this runner — it edits a byte of the scope's largest production file, times
+  the scope's tests as gremlins runs them for a mutant, restores the file, and
+  scales the result by the concurrent-mutant count and a named headroom. The
+  flat budget it replaced bounded a `go test` child that is 80-98%
+  COMPILATION, so a contended runner starved ordinary mutants into `TIMED OUT`
+  (#2903).
+  - Env: `SCOPE`, `REPORT`, `MUTANT_TIMEOUT_MIN`, `MUTANT_TIMEOUT_MAX`
+    (required); `WORKERS`, `EXCLUDE_FILES`, `DIFF_REF` (optional).
+    `MUTANT_TIMEOUT_MIN` is the floor the measurement may raise but never
+    lower, so an unmeasurable cycle leaves the lane where it was;
+    `MUTANT_TIMEOUT_MAX` is the ceiling, so one pathological measurement
+    cannot spend the job's whole wall clock on hung mutants.
   - Exit: `0` when the final report executed at least one mutant; `1` on a bad
     env value, a pre-existing report at `REPORT`, a gremlins invocation
     failure, or zero mutants surviving the full fallback.
