@@ -106,3 +106,10 @@ test/e2e/playwright/playwright-report/
 # drift in post-merge-golden-drift.mjs's own untracked-file scan.
 /patches/
 /patches-out/
+
+# Session-local runtime state written by the Claude Code scheduled-task
+# machinery: a session id, a pid and a proc-start stamp. It is rewritten on
+# every session start, so tracking it dirties every checkout and every
+# worktree against a value that is meaningless anywhere but the machine that
+# wrote it.
+.claude/scheduled_tasks.lock
