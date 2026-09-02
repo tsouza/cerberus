@@ -1,6 +1,6 @@
 // mutation-run.mjs — run one mutation phase with safe changed-line fallback,
-// under a per-mutant budget MEASURED from this leg's own recompile+link+run
-// cycle on this runner.
+// under per-mutant bounds MEASURED from this leg's own recompile+link+run cycle
+// on this runner.
 //
 // Required env: SCOPE, REPORT, MUTANT_TIMEOUT_MIN, MUTANT_TIMEOUT_MAX.
 // Optional env: WORKERS, EXCLUDE_FILES, DIFF_REF.
@@ -22,12 +22,15 @@ import { fileURLToPath } from 'node:url';
 
 import { error, notice } from './lib/gh.mjs';
 
-// gremlins derives each mutant's deadline as
-// `min(timeout-coefficient * max(coverage_elapsed, 1s), timeout-max)`, and that
-// deadline wraps the WHOLE `go test` child — recompile, link and run. But
-// `coverage_elapsed` is the wall time of gremlins' own coverage pass, which is
-// dominated by COMPILATION, not by test time. So the derived budget tracks how
-// warm the Go build cache happened to be rather than anything about the tests:
+// gremlins derives each mutant's RUN bound as
+// `min(timeout-coefficient * max(coverage_elapsed, 1s), timeout-max)` and hands
+// it to `go test -timeout`, which the Go toolchain starts when the test binary
+// starts; the compile is charged to --compile-allowance instead, and the two
+// together are the context deadline that also bounds a hung compile (#2910).
+// But `coverage_elapsed` is the wall time of gremlins' own coverage pass, which
+// is dominated by COMPILATION, not by test time. So the derived budget tracks
+// how warm the Go build cache happened to be rather than anything about the
+// tests:
 // the zero-mutant fallback below re-invokes gremlins in the same job with the
 // cache already warmed by the first invocation, the coverage pass collapses
 // from ~50s to ~0.4s, `baseTime` clamps to gremlins' own 1s floor, and the
@@ -54,19 +57,37 @@ const gremlinsCoverageBaselineFloorSeconds = 1;
 // the honest direction.
 const perMutantRunnerVarianceHeadroom = 2;
 
+// perMutantBounds turns the one measured cycle into the two bounds gremlins
+// takes, and the deadline they add up to.
+//
+// The probe times a whole recompile+link+run cycle and cannot separate the run
+// from the compile inside it, so the same number serves both roles. That is
+// sound in both directions rather than merely convenient: the cycle is an UPPER
+// bound on the run it contains, so no honest mutant can be starved by the run
+// bound, and it is an upper bound on the compile too, so no honest compile can
+// reach the deadline. Erring high costs wall clock only on a mutant that has
+// already stopped being adjudicable.
+//
+// deadlineSeconds is what the guard's hold has to outlast, which is why it is
+// derived here rather than recomputed at each use.
+function perMutantBounds(budgetSeconds) {
+  const runSeconds = budgetSeconds;
+  const compileSeconds = budgetSeconds;
+  return { runSeconds, compileSeconds, deadlineSeconds: runSeconds + compileSeconds };
+}
+
 // perMutantResidentMemoryMax is the ceiling on ONE mutant's test binary,
 // enforced by .github/scripts/mutant-memory-guard.mjs (which see for the
 // mechanism and for why the breach is recorded as TIMED OUT rather than as a
 // kill).
 //
-// The wall-clock budget above bounds TIME and nothing else, and the two bounds
-// cannot be collapsed into one: `internal/logql/logpattern`'s
-// REMOVE_SELF_ASSIGNMENTS mutant at pattern.go:129 allocates at ~1.5 GiB/s
-// (measured: 5 GiB of RSS in 3.3s), so it exhausts a 16 GB runner in about ten
-// seconds — under MUTANT_TIMEOUT_MIN, and far under the ~63s its own compile
-// cycle makes the derivation ask for. Lowering the leash until it is memory-safe
-// would starve every honest mutant on the leg, which is the failure #2903 fixed
-// (#2919).
+// The wall-clock bounds above bound TIME and nothing else, and time cannot
+// stand in for memory: `internal/logql/logpattern`'s REMOVE_SELF_ASSIGNMENTS
+// mutant at pattern.go:129 allocates at ~1.5 GiB/s (measured: 5 GiB of RSS in
+// 3.3s), so it exhausts a 16 GB runner in about ten seconds — under
+// MUTANT_TIMEOUT_MIN, and far under the ~63s its own compile cycle makes the
+// derivation ask for. Lowering the leash until it is memory-safe would starve
+// every honest mutant on the leg, which is the failure #2903 fixed (#2919).
 //
 // The value is measured, not guessed. Peak RSS of an UNMUTATED test binary,
 // per mutation-phases.mjs scope, on an 8-core machine:
@@ -85,6 +106,12 @@ const perMutantResidentMemoryMax = '1GiB';
 // process group when its deadline fires, so the guard is normally reaped well
 // inside this; the grace exists only so a breach on a path with no deadline
 // behind it (gremlins' unmutated coverage run) cannot wedge the job.
+//
+// The deadline it is added to is the RUN bound plus the COMPILE allowance, not
+// the run bound alone. Adding the grace to only one of the two would leave the
+// hold expiring first, and a guard that gives up before gremlins does exits 0 —
+// booking a memory runaway as LIVED, a survivor nobody detected, instead of
+// TIMED OUT.
 const perMutantMemoryHoldGraceSeconds = 30;
 
 const goDurationUnitSeconds = { ns: 1e-9, us: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
@@ -187,7 +214,8 @@ function measurePerMutantCycleSeconds(scope, capSeconds) {
   return Number(process.hrtime.bigint() - started) / 1e9;
 }
 
-// perMutantBudgetSeconds is the deadline handed to gremlins, in seconds.
+// perMutantBudgetSeconds is the measured per-mutant cycle, in seconds, from
+// which perMutantBounds derives both of gremlins' bounds.
 //
 // It is measured rather than declared because the thing it has to cover is a
 // COMPILE, and a compile's cost is a property of the package and the runner,
@@ -248,7 +276,7 @@ function reportTotal(path) {
 // enforce the bound. That is a hard failure rather than a silent unguarded run:
 // an unenforced memory ceiling is exactly the state #2919 describes, and it is
 // worse than no ceiling because it looks like one.
-function memoryGuardedEnv(budgetSeconds, ledger) {
+function memoryGuardedEnv(deadlineSeconds, ledger) {
   const guard = resolve(dirname(fileURLToPath(import.meta.url)), 'mutant-memory-guard.mjs');
   if (/\s/.test(guard)) {
     throw new Error(`the memory guard's path contains whitespace, which GOFLAGS cannot express: ${guard}`);
@@ -261,7 +289,7 @@ function memoryGuardedEnv(budgetSeconds, ledger) {
     ...process.env,
     GOFLAGS: `${goFlags === '' ? '' : `${goFlags} `}-exec=${guard}`,
     MUTANT_MEMORY_MAX: perMutantResidentMemoryMax,
-    MUTANT_MEMORY_HOLD: `${budgetSeconds + perMutantMemoryHoldGraceSeconds}s`,
+    MUTANT_MEMORY_HOLD: `${deadlineSeconds + perMutantMemoryHoldGraceSeconds}s`,
     MUTANT_MEMORY_LEDGER: ledger,
   };
 }
@@ -287,15 +315,18 @@ function reportMemoryBreaches(ledger) {
 }
 
 function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
+  const bounds = perMutantBounds(budgetSeconds);
   const args = [
     'unleash',
     '--output',
     report,
     '--on-shutdown-status=not-run',
     '--timeout-max',
-    `${budgetSeconds}s`,
+    `${bounds.runSeconds}s`,
+    '--compile-allowance',
+    `${bounds.compileSeconds}s`,
     '--timeout-coefficient',
-    perMutantBudgetIsTheCeilingCoefficient(budgetSeconds),
+    perMutantBudgetIsTheCeilingCoefficient(bounds.runSeconds),
   ];
   const workers = String(process.env.WORKERS ?? '').trim();
   if (workers !== '' && workers !== '0') {
@@ -309,7 +340,7 @@ function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
 
   const result = spawnSync('gremlins', args, {
     stdio: 'inherit',
-    env: memoryGuardedEnv(budgetSeconds, ledger),
+    env: memoryGuardedEnv(bounds.deadlineSeconds, ledger),
   });
   if (result.error) throw new Error(`cannot execute gremlins: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`gremlins exited ${result.status}`);
