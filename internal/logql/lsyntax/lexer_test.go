@@ -479,3 +479,54 @@ func TestLexScanIdentToEOF(t *testing.T) {
 		t.Errorf("final token kind = %v, want tkEOF", toks[1].kind)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// Five surviving mutants in lexer.go for which no input distinguishes the
+// mutated form from the original. Each was re-applied and the whole package
+// suite re-run to confirm it survives rather than merely lacking a test.
+//
+// lexer.go:556:8 (CONDITIONALS_BOUNDARY, `if b >= utf8.RuneSelf` -> `>`). The
+// two forms differ on exactly one byte value, b == 0x80, which is not a legal
+// UTF-8 start byte. The original decodes it to (utf8.RuneError, 1) and asks
+// runeOK; the mutant falls through to the ASCII arm and asks
+// runeOK(rune(0x80)). trySuffix has ONE call site (scanNumber) and it passes
+// durationRune, whose nine accepted runes are 'n', 'u', 'µ', 'm', 's', 'h',
+// 'd', 'w' and 'y' — neither U+FFFD nor U+0080 is among them, so both forms
+// take their break with j unchanged, and the ASCII arm's other two tests
+// (isDigit, `b == '.'`) are false for 0x80 as well.
+//
+// lexer.go:606:8 (CONDITIONALS_BOUNDARY, scanIdent's `for j < len(l.src)` ->
+// `<=`). The extra iteration the mutant admits runs at j == len(l.src), where
+// `l.src[j:]` is the empty string — a legal slice, not a panic — and
+// utf8.DecodeRuneInString("") returns (utf8.RuneError, 0). isIdentPart
+// rejects U+FFFD (it is neither ASCII alphanumeric nor `_`, it is not below
+// utf8.RuneSelf, and unicode.IsLetter and unicode.IsDigit are both false for
+// it), so the mutant breaks at the same j the original's loop condition
+// stopped at.
+//
+// lexer.go:706:11 (CONDITIONALS_BOUNDARY `if end < len(l.src)` -> `<=`, and
+// CONDITIONALS_NEGATION -> `>=`). `end` is `i + len(kw)` guarded by a
+// HasPrefix on `l.src[i:]`, so end > len(l.src) is unreachable and both
+// mutants differ from the original only over end <= len(l.src).
+//   - At end == len(l.src) the `<=` and `>=` forms enter the whole-word
+//     check, which decodes the empty string to (utf8.RuneError, 0) and finds
+//     it is not an identPart, so no `continue` fires and control reaches the
+//     same trailing scan the original reached by skipping the block.
+//   - At end < len(l.src) the `>=` form skips the whole-word check. When
+//     l.src[end] does not begin an identPart the original skips it too. When
+//     it does, the original `continue`s (see the entry below, which shows
+//     that is indistinguishable from returning false) while the mutant runs
+//     the trailing scan — but that scan advances only over ' ', '\t', '\n'
+//     and '\r', none of which is an identPart, so it stops at end and returns
+//     `l.src[end] == '('`. '(' is not an identPart either, so the mutant
+//     returns false as well.
+//
+// lexer.go:709:6 (INVERT_LOOPCTRL, isFunction's whole-word `continue` ->
+// `break`). The `continue` advances to the next keyword in
+// []string{"by", "without"}, and reaching it means HasPrefix already matched
+// the current one. "by" and "without" share no prefix, so a source that
+// matched one cannot match the other; and a `continue` out of the last
+// element ends the loop outright. The `continue` is therefore equivalent to
+// `break` for every input, both falling through to the function's trailing
+// `return false`.

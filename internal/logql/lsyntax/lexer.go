@@ -548,6 +548,11 @@ func (l *lexer) trySuffix(num string, runeOK func(rune) bool, parse func(string)
 	j := l.pos
 	for j < len(l.src) {
 		b := l.src[j]
+		// `>` here would be indistinguishable from `>=`: the forms differ
+		// only at b == 0x80, and durationRune — the only runeOK this
+		// function is ever passed — rejects both the U+FFFD that byte
+		// decodes to and U+0080 itself. See lexer_test.go's NOT KILLABLE
+		// footer.
 		if b >= utf8.RuneSelf {
 			rr, sz := utf8.DecodeRuneInString(l.src[j:])
 			if runeOK(rr) {
@@ -595,6 +600,9 @@ func (l *lexer) tryBytesSuffix(num string) (uint64, int, bool) {
 func (l *lexer) scanIdent() {
 	start := l.pos
 	j := l.pos
+	// `<=` here would be indistinguishable from `<`: the extra iteration
+	// decodes the empty string to utf8.RuneError, which isIdentPart
+	// rejects. See lexer_test.go's NOT KILLABLE footer.
 	for j < len(l.src) {
 		r, sz := utf8.DecodeRuneInString(l.src[j:])
 		if isIdentPart(r) {
@@ -688,6 +696,13 @@ func (l *lexer) isFunction() bool {
 		if strings.HasPrefix(strings.ToLower(l.src[i:]), kw) {
 			end := i + len(kw)
 			// Ensure it's a whole word.
+			//
+			// Neither `<=` nor `>=` here is distinguishable from `<`, and
+			// neither is `break` in place of the `continue` below: "by" and
+			// "without" share no prefix, so a source matching one cannot
+			// match the other and the `continue` only ever reaches the
+			// trailing `return false`. See lexer_test.go's NOT KILLABLE
+			// footer.
 			if end < len(l.src) {
 				r, _ := utf8.DecodeRuneInString(l.src[end:])
 				if isIdentPart(r) {
