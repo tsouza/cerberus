@@ -81,10 +81,18 @@ per-layer "catches X / misses Y" guidance.
 
 ## Hard invariants (non-negotiable)
 
-1. **PR-per-change.** Branch protection rejects direct pushes to `main` and requires a large set of
-   status checks. The source of truth for that set is
-   `gh api repos/tsouza/cerberus/branches/main/protection --jq '.required_status_checks.contexts[]'`;
-   `docs/test-strategy.md` is the per-gate reference. **Never `gh pr merge --admin`** — if a required
+1. **PR-per-change.** A repository ruleset rejects direct pushes to `main` and requires a large set
+   of status checks. The source of truth for that set is the ruleset API — the legacy
+   `branches/main/protection` endpoint was deleted with the object and now answers `404`:
+
+   ```bash
+   gh api repos/tsouza/cerberus/rules/branches/main \
+     --jq '[.[] | select(.type == "required_status_checks")
+                | .parameters.required_status_checks[].context] | unique[]'
+   ```
+
+   More than one ruleset can govern a branch, so the union across every `required_status_checks`
+   rule is what a merge must pass. `docs/test-strategy.md` is the per-gate reference. **Never `gh pr merge --admin`** — if a required
    check is red, fix the code or fix the workflow. Ship with
    `gh pr merge --squash --delete-branch`.
 2. **A pushed branch gets a PR in the same breath.** The push and the `gh pr create` are one step. A

@@ -9,10 +9,12 @@
 // the inventory). Those ratchets are strong, and they all share one blind spot:
 // they run against the tree AS THE PR SAW IT.
 //
-// Branch protection has `require branches to be up to date before merging` OFF:
+// The ruleset governing `main` has `require branches to be up to date before
+// merging` OFF:
 //
-//   $ gh api repos/tsouza/cerberus/branches/main/protection \
-//       --jq '.required_status_checks.strict'
+//   $ gh api repos/tsouza/cerberus/rules/branches/main \
+//       --jq '.[] | select(.type == "required_status_checks")
+//                 | .parameters.strict_required_status_checks_policy'
 //   false
 //
 // so a PR's squash-merge computes its diff against a `main` that has since

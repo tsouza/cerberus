@@ -1116,35 +1116,57 @@ what actually runs.
   `RELEASE_REQUIRED_CHECKS` + `RELEASE_INFORMATIONAL_CHECKS` out of release.yml
   itself (one copy of the data, one parser; an empty parse throws rather than
   comparing against nothing) and checks two directions the preflight structurally
-  cannot see from the inside. PROTECTION DRIFT: a live branch-protection required
-  context in neither list is a lane every PR must pass and the release does not
-  wait for — the dangerous direction, and invisible to an allow-list of names to
-  wait for. LANE DRIFT: a required name that posted no check-run anywhere in the
-  scanned commit window no longer matches a lane, so the next release waits out
-  its full window and aborts mid-publish. The window spans many commits because a
-  single commit's check-runs are a subset of the lane inventory (a docs-only push
-  skips `check`); absent from every commit means dead, not skipped. PIN DRIFT:
-  set equality between the live contexts and `branchProtectionContexts`, the
-  repo's own pin of them in `test/regression/release_required_checks_test.go`.
-  Every in-tree gate reasons off that pin because the endpoint needs repo-admin
-  rights no test token has, so a pinned-but-unenforced context is a lane that
-  posts green on every PR while contributing nothing to the merge decision — and
-  nothing else in the tree can tell. Pure exported `parseBlockScalar` /
-  `parseCheckLists` / `parsePinnedContexts` / `protectionDrift` / `laneDrift` /
-  `pinnedProtectionDrift` / `readBranchProtection` plus a `--self-test` the job
-  runs first. The self-test rejects missing credentials, HTTP 403, empty, and
-  malformed protection data rather than treating any as a clean empty set.
-  - Env: `GITHUB_TOKEN` (least-privilege commit/check/status reads),
-    `BRANCH_PROTECTION_TOKEN` (dedicated repository-administration read
-    credential, confined to the protection request), `GITHUB_REPOSITORY`,
-    `GITHUB_API_URL` (default
+  cannot see from the inside. PROTECTION DRIFT: a live required context in
+  neither list is a lane every PR must pass and the release does not wait for —
+  the dangerous direction, and invisible to an allow-list of names to wait for.
+  LANE DRIFT: a required name that posted no check-run anywhere in the scanned
+  commit window no longer matches a lane, so the next release waits out its full
+  window and aborts mid-publish. The window spans many commits because a single
+  commit's check-runs are a subset of the lane inventory (a docs-only push skips
+  `check`); absent from every commit means dead, not skipped. It also spans every
+  PAGE of each commit's check-runs — a busy `main` commit carries ~150 across
+  ~26 check suites, and a first-page-only read reported the healthy
+  `forbid-deferral` lane as dead. PIN DRIFT: set equality between the live
+  contexts and `branchProtectionContexts`, the repo's own pin of them in
+  `test/regression/release_required_checks_test.go`. Every in-tree gate reasons
+  off that pin because a Go test does not reach the network, so a
+  pinned-but-unenforced context is a lane that posts green on every PR while
+  contributing nothing to the merge decision — and nothing else in the tree can
+  tell.
+  The live set is read from `GET /repos/{owner}/{repo}/rules/branches/{branch}`,
+  the RULESET API: this repository's legacy branch-protection object was replaced
+  by a ruleset and deleted, so `branches/{branch}/protection` answers `404`. That
+  endpoint returns the flattened rules in force, each tagged with the
+  `ruleset_id` that contributed it, and more than one ruleset can match a branch
+  (a second one governs `refs/heads/release/*.x`) — so the governing set is the
+  UNION across every `required_status_checks` rule, and rule types the script
+  does not model (`deletion`, `non_fast_forward`, `pull_request`, `merge_queue`)
+  are ignored by type rather than by position. It needs no elevated credential:
+  the read is served to `${{ github.token }}`, so the lane depends on NO secret.
+  It used to depend on a `BRANCH_PROTECTION_TOKEN` that was never provisioned,
+  which left the pin comparison without a single verdict from 2026-08-04 to
+  2026-09-01; `TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly` now
+  rejects any secret reference or `if:` guard in the workflow for that reason.
+  Pure exported `parseBlockScalar` / `parseCheckLists` / `parsePinnedContexts` /
+  `protectionDrift` / `laneDrift` / `pinnedProtectionDrift` / `describeRulesets`
+  / `rulesetContexts` / `apiPaged` / `readRequiredContexts` plus a `--self-test`
+  the job runs first, and `ci.yml` runs on every PR. The self-test pins a
+  RECORDED rules-endpoint response so a further shape change fails a test rather
+  than a Monday cron nobody reads, and rejects a missing token, HTTP 403, a
+  non-list payload, a branch with no `required_status_checks` rule, malformed
+  parameters, a non-string context and a zero-context rule rather than treating
+  any of them as a clean empty set.
+  - Env: `GITHUB_TOKEN` (the only credential — least-privilege workflow token,
+    used for the ruleset read as well as the commit/check/status reads),
+    `GITHUB_REPOSITORY`, `GITHUB_API_URL` (default
     `https://api.github.com`), `DRIFT_BRANCH` (default `main`), `DRIFT_HISTORY`
     (default 20 commits), `RELEASE_WORKFLOW` (default
     `.github/workflows/release.yml`), `PROTECTION_PIN_FILE` (default
     `test/regression/release_required_checks_test.go`).
   - Exit: `0` when all three directions are clean; `1` on any drift, an API read
-    failure, an unparseable release.yml, or protection reporting zero contexts
-    (fails closed — unreadable protection is not a clean bill of health).
+    failure, an unparseable release.yml, or the rules endpoint reporting no
+    `required_status_checks` rule or zero contexts (fails closed — an unreadable
+    live set is not a clean bill of health).
 - **`release-preflight.mjs`** — `release.yml`, the `preflight` job. The
   green-check guard for BOTH release paths, gated on the publish decision rather
   than on the branch: it runs whenever `app_publish` or `chart_publish` is true,

@@ -7,8 +7,8 @@ name: release-gate-drift
 # hand-maintained and only ever exercised mid-publish, so it rots in two
 # directions the preflight cannot see from the inside:
 #
-#   - branch protection gains a required context nobody added to the list, and
-#     the release publishes past a lane every PR has to pass;
+#   - the ruleset governing `main` gains a required context nobody added to the
+#     list, and the release publishes past a lane every PR has to pass;
 #   - a required name stops matching any lane that posts (a job renamed, a
 #     matrix leg reworded), and the next release waits out its full window on a
 #     check-run that never arrives, then aborts with the tag already cut.
@@ -43,13 +43,22 @@ jobs:
       - name: drift self-test
         run: node .github/scripts/release-gate-drift.mjs --self-test
 
-      # Branch protection needs repository-administration read permission,
-      # which the workflow token cannot receive. Keep that dedicated credential
-      # confined to this trusted scheduled/manual job and to that one API read;
-      # ordinary history/check reads use the least-privilege workflow token.
-      - name: Compare the release gate against live branch protection
+      # NO SECRET, AND NO `if:` GUARD ON ONE. This step used to carry a
+      # `BRANCH_PROTECTION_TOKEN` because the legacy branch-protection endpoint
+      # needed repository `administration:read`, which the workflow token cannot
+      # receive. That secret was never provisioned, so every scheduled run from
+      # 2026-08-04 to 2026-09-01 aborted before the API call and the only
+      # automated check that the repo's pinned required-context list matches
+      # reality never once produced a verdict.
+      #
+      # The read is now `GET /repos/{owner}/{repo}/rules/branches/{branch}`,
+      # which any credential that can read the repository may call, so
+      # `${{ github.token }}` is sufficient and there is nothing left to
+      # provision. Do not reintroduce a secret here, and never guard this step
+      # on one — a step that skips itself when a credential is absent reports
+      # the same green as a step that compared and agreed.
+      - name: Compare the release gate against the live branch ruleset
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node .github/scripts/release-gate-drift.mjs

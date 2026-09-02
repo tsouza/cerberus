@@ -38,21 +38,26 @@ import (
 // These pins close both: totality against a checked-in copy of the branch
 // protection contexts, and trigger-coverage against the workflow files.
 
-// branchProtectionContexts is the required status-check set on `main`. The
-// live source of truth is
+// branchProtectionContexts is the required status-check set on `main`. It is
+// enforced by a repository RULESET — the legacy branch-protection object was
+// replaced by one and deleted, so `branches/main/protection` answers
+// `404 Branch not protected` — and the live source of truth is
 //
-//	gh api repos/tsouza/cerberus/branches/main/protection \
-//	  --jq '.required_status_checks.contexts[]'
+//	gh api repos/tsouza/cerberus/rules/branches/main \
+//	  --jq '[.[] | select(.type == "required_status_checks")
+//	             | .parameters.required_status_checks[].context] | unique[]'
 //
-// and this copy exists so the totality assertion below has something to be
-// total OVER. Adding it here without wiring it into release.yml fails
-// immediately.
+// The name is unchanged because what it denotes is: the set of contexts a merge
+// into `main` must pass. Only the endpoint that reports it moved.
 //
-// This copy and the live setting cannot be compared from here — that endpoint
-// needs repo-admin rights, which no test token carries — so the comparison
-// runs where a token that does exist: `pinnedProtectionDrift` in
-// .github/scripts/release-gate-drift.mjs asserts set EQUALITY between this
-// slice and the live contexts, on the scheduled drift lane. Both halves matter
+// This copy exists so the totality assertion below has something to be total
+// OVER. Adding it here without wiring it into release.yml fails immediately.
+//
+// This copy and the live setting cannot be compared from here — a Go test does
+// not reach the network — so the comparison runs where the API does:
+// `pinnedProtectionDrift` in .github/scripts/release-gate-drift.mjs asserts set
+// EQUALITY between this slice and the live contexts, on the scheduled drift
+// lane. Both halves matter
 // and both have bitten. A context enforced live but missing here is certified
 // by absence on the maintenance path. A context named here but not enforced
 // live is worse, because nothing in the tree can see it: the lane keeps posting

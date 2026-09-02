@@ -68,11 +68,21 @@ A one-commit PR squashes the **commit** subject, not the PR title, so a `chore:`
 
 ## Required checks and the gate posture
 
-The authoritative list of required contexts is the API, not any document:
+The authoritative list of required contexts is the API, not any document. `main` is governed by a
+repository **ruleset**; the legacy `branches/main/protection` endpoint was deleted along with the
+object it described and now answers `404 Branch not protected`:
 
 ```bash
-gh api repos/tsouza/cerberus/branches/main/protection --jq '.required_status_checks.contexts[]'
+gh api repos/tsouza/cerberus/rules/branches/main \
+  --jq '[.[] | select(.type == "required_status_checks")
+             | .parameters.required_status_checks[].context] | unique[]'
 ```
+
+That endpoint returns the flattened rules in force on the branch, one entry per rule, each tagged
+with the `ruleset_id` that contributed it. More than one ruleset can match a branch — this
+repository runs a second one over `refs/heads/release/*.x` — so the union across every
+`required_status_checks` rule is the set a merge must pass, which is why the `jq` above collects
+rather than picks.
 
 `docs/test-strategy.md` carries the per-gate reference: what each context proves, what it cannot see,
 and which layer covers the residue. Three postures are worth knowing:

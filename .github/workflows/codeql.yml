@@ -20,9 +20,9 @@ name: CodeQL
 # of the umbrella job below), so no branch-protection edit is needed.
 #
 # REQUIRED CONTEXT: `CodeQL` — produced by the umbrella job below, which
-# depends on all per-language analyze jobs. Branch protection requires this
-# name; any rename here must be accompanied by an update to the required-checks
-# list (`gh api repos/tsouza/cerberus/branches/main/protection`).
+# depends on all per-language analyze jobs. The ruleset governing `main`
+# requires this name; any rename here must be accompanied by an update to the
+# required-checks list (`gh api repos/tsouza/cerberus/rules/branches/main`).
 #
 # LANGUAGES: the same set default setup was scanning:
 #   go, javascript-typescript, actions, python
