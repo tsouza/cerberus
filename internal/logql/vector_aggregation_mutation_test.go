@@ -35,8 +35,10 @@ import (
 // whether the synthesised augmented-identity map carries `target` as a
 // surfaced key. A top-level outer-by column (e.g. ServiceName) is
 // surfaced into that map ONLY when sortableShapedInner threads it down
-// via withOuterByLabels — which is exactly the behaviour line 390
-// guards.
+// via withOuterByLabels — which is exactly the behaviour the outer-by
+// threading guard
+// vector_aggregation.go:sortableShapedInner:`e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0`
+// controls.
 //
 // The identity projection shape is
 //
@@ -102,13 +104,10 @@ func lowerTopKIdentityExpr(t *testing.T, query string, s schema.Logs) chplan.Exp
 	return idProj.Projections[0].Expr
 }
 
-// TestSortableShapedInnerThreadsOuterByColumn kills the mutants on
-// vector_aggregation.go:390
-//
-//	if e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0 {
-//		innerLc = lc.withOuterByLabels(e.Grouping.Groups)
-//	}
-//
+// TestSortableShapedInnerThreadsOuterByColumn kills the mutants on the
+// outer-by threading guard
+// vector_aggregation.go:sortableShapedInner:`e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0`,
+// which guards `innerLc = lc.withOuterByLabels(e.Grouping.Groups)`,
 // in sortableShapedInner (the shared topk/sort front half). For
 // `topk(K, rate(...)) by (ServiceName)` all three sub-conditions are
 // true, so the outer-by label `ServiceName` (a top-level OTel-CH column)
@@ -133,22 +132,23 @@ func TestSortableShapedInnerThreadsOuterByColumn(t *testing.T) {
 
 	identity := requireCanonicalIdentity(t, lowerTopKIdentityExpr(t, query, s))
 	if !surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
-		t.Fatalf("topk by (ServiceName): inner identity map is missing the surfaced %q key — outer-by threading guard (line 390) leaked: a NEGATION mutant skipped withOuterByLabels", s.ServiceNameColumn)
+		t.Fatalf("topk by (ServiceName): inner identity map is missing the surfaced %q key — outer-by threading guard leaked: a NEGATION mutant skipped withOuterByLabels", s.ServiceNameColumn)
 	}
 }
 
 // TestSortableShapedInnerSkipsThreadingForWithout kills the
-// INVERT_LOGICAL mutants on vector_aggregation.go:390.
+// INVERT_LOGICAL mutants on
+// vector_aggregation.go:sortableShapedInner:`e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0`.
 //
 // For `topk(K, rate(...)) without (ServiceName)` the `without` clause
 // makes !e.Grouping.Without false, so the ORIGINAL guard is false and
 // ServiceName is NOT threaded into the inner identity map.
 //
 // Mutants this pins:
-//   - 390:23 INVERT_LOGICAL (first `&&` → `||`): Grouping != nil is true,
+//   - INVERT_LOGICAL on the first `&&` (→ `||`): Grouping != nil is true,
 //     so `nil!=… || …` short-circuits true ⇒ withOuterByLabels(Groups)
 //     runs ⇒ ServiceName surfaced. Assertion (absent) fails.
-//   - 390:46 INVERT_LOGICAL (second `&&` → `||`): becomes
+//   - INVERT_LOGICAL on the second `&&` (→ `||`): becomes
 //     `Grouping!=nil && (!Without || len>0)` = `true && (false || true)`
 //     = true ⇒ withOuterByLabels runs ⇒ ServiceName surfaced. Assertion
 //     (absent) fails.
@@ -160,17 +160,13 @@ func TestSortableShapedInnerSkipsThreadingForWithout(t *testing.T) {
 
 	identity := requireCanonicalIdentity(t, lowerTopKIdentityExpr(t, query, s))
 	if surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
-		t.Fatalf("topk without (ServiceName): inner identity map unexpectedly surfaced the %q key — the without-clause must NOT thread outer-by labels (line 390 INVERT_LOGICAL mutant flipped && to ||)", s.ServiceNameColumn)
+		t.Fatalf("topk without (ServiceName): inner identity map unexpectedly surfaced the %q key — the without-clause must NOT thread outer-by labels (an INVERT_LOGICAL mutant flipped && to ||)", s.ServiceNameColumn)
 	}
 }
 
-// TestTopKPartitionNilForUngrouped kills the INVERT_LOGICAL mutant on
-// vector_aggregation.go:337
-//
-//	if g == nil || (!g.Without && len(g.Groups) == 0) {
-//		return nil
-//	}
-//
+// TestTopKPartitionNilForUngrouped kills the INVERT_LOGICAL mutant on the
+// early-return guard
+// vector_aggregation.go:`g == nil || (!g.Without && len(g.Groups) == 0)`
 // in topKPartition. The LogQL parser materialises a non-nil empty
 // Grouping for an ungrouped `topk(K, v)` (mustNewVectorAggregationExpr
 // defaults gr = &Grouping{}), so for `topk(2, rate(...))`:
@@ -198,6 +194,6 @@ func TestTopKPartitionNilForUngrouped(t *testing.T) {
 
 	got := topKPartition(vae)
 	if got != nil {
-		t.Fatalf("topKPartition(ungrouped topk) = %#v (len %d), want nil — the no-meaningful-grouping guard (line 337) was inverted, building a spurious partition slice", got, len(got))
+		t.Fatalf("topKPartition(ungrouped topk) = %#v (len %d), want nil — the no-meaningful-grouping guard was inverted, building a spurious partition slice", got, len(got))
 	}
 }

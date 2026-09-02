@@ -73,10 +73,10 @@ func gremlinsFanoutAggAliases(rbf *chplan.RangeBucketFanout) map[string]bool {
 	return aliases
 }
 
-// TestGremlinsKill_CallSubqueryLastFirst_HistVsMixedRouting kills
-// histogram_native_subquery_call_subquery.go:125:12 (CONDITIONALS_NEGATION
-// on `if shape == chplan.HistogramRowShape` in the last_over_time /
-// first_over_time case). A HistogramRowShape inner must route through
+// TestGremlinsKill_CallSubqueryLastFirst_HistVsMixedRouting kills the
+// CONDITIONALS_NEGATION mutant on the `if shape == chplan.HistogramRowShape`
+// guard of histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`.
+// A HistogramRowShape inner must route through
 // [lowerSelectFnOverCallSubqueryInput] ([nativeHistogramProjection], a
 // *chplan.HistogramProjection — chplan.HistogramRowShape); a MixedRowShape
 // inner must route through [lowerMixedLastFirstOverCallSubqueryInput]
@@ -100,10 +100,10 @@ func TestGremlinsKill_CallSubqueryLastFirst_HistVsMixedRouting(t *testing.T) {
 	}
 }
 
-// TestGremlinsKill_CallSubqueryFold_HistVsMixedRouting kills
-// histogram_native_subquery_call_subquery.go:139:12 (CONDITIONALS_NEGATION
-// on the identical guard in the FOLD-family case). A HistogramRowShape
-// inner routes through [lowerExpHistogramFoldOverCallSubqueryInput]
+// TestGremlinsKill_CallSubqueryFold_HistVsMixedRouting kills the
+// CONDITIONALS_NEGATION mutant on the identical guard in the FOLD-family arm,
+// histogram_native_subquery_call_subquery.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`.
+// A HistogramRowShape inner routes through [lowerExpHistogramFoldOverCallSubqueryInput]
 // ([aggregatedHistogramProjection], chplan.HistogramRowShape); a
 // MixedRowShape inner routes through [lowerMixedFoldOverCallSubqueryInput]
 // ([combineMixedAggregateBranches], which republishes the
@@ -124,9 +124,10 @@ func TestGremlinsKill_CallSubqueryFold_HistVsMixedRouting(t *testing.T) {
 	}
 }
 
-// TestGremlinsKill_CallSubqueryResetsChanges_HistVsMixedRouting kills
-// histogram_native_subquery_call_subquery.go:132:12 (CONDITIONALS_NEGATION
-// on the identical guard in the resets/changes case). Both branches wrap
+// TestGremlinsKill_CallSubqueryResetsChanges_HistVsMixedRouting kills the
+// CONDITIONALS_NEGATION mutant on the identical guard in the resets/changes
+// arm, histogram_native_subquery_call_subquery.go:lowerHistogramOrMixedCallSubqueryInput:`case resetsWindowFn, changesWindowFn:`.
+// Both branches wrap
 // their result in the SAME [expHistogramPairCountProjection] outer node,
 // so chplan.RowShapeOf cannot distinguish them — the two branches differ
 // only in the underlying RangeBucketFanout's own AggFuncs:
@@ -156,10 +157,11 @@ func TestGremlinsKill_CallSubqueryResetsChanges_HistVsMixedRouting(t *testing.T)
 	}
 }
 
-// TestGremlinsKill_CallSubqueryFold_AnchorErrorPropagates kills
-// histogram_native_subquery_call_subquery.go:236:9 (CONDITIONALS_NEGATION
-// on `if err != nil` inside [lowerExpHistogramFoldOverCallSubqueryInput]'s
-// own subqueryAnchor(grid.outerSub, ctx) call — the FOLD-family sibling of
+// TestGremlinsKill_CallSubqueryFold_AnchorErrorPropagates kills the
+// CONDITIONALS_NEGATION mutant at
+// histogram_native_subquery_call_subquery.go:lowerExpHistogramFoldOverCallSubqueryInput:`if err != nil`,
+// which guards that function's own subqueryAnchor(grid.outerSub, ctx) call
+// — the FOLD-family sibling of
 // the identical guard in [lowerSelectFnOverCallSubqueryInput] /
 // [lowerMixedLastFirstOverCallSubqueryInput] /
 // [lowerMixedResetsOrChangesOverCallSubqueryInput]. An outer subquery

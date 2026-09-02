@@ -3,13 +3,14 @@
 // an input that observably differentiates the original code from the
 // mutated branch, so the test fails when the mutant is applied and the
 // mutant is reported KILLED. See gremlins_kill_test.go's own header for
-// the file:line:col convention.
+// the mutant-citation convention.
 //
 // Two CONDITIONALS_BOUNDARY mutants reported for this file are NOT
 // addressed here (subquery.go:`if step < 0` and subquery.go:`if ns%stepNS != 0 && ns < 0`): both are
-// mathematically equivalent mutants, not coverage gaps. At subquery.go:`if step < 0`
-// (`if step < 0`), `step` is reassigned to the positive
-// `defaultSubqueryStep` constant whenever it was zero (lines 33-36), so
+// mathematically equivalent mutants, not coverage gaps. At
+// subquery.go:`if step < 0`, `step` is reassigned to the positive
+// `defaultSubqueryStep` constant whenever it was zero (the
+// `if step == 0` arm just above it), so
 // `step` can never be exactly 0 by the time the boundary check runs —
 // `<` and `<=` decide identically over every reachable value. At
 // subquery.go:`if ns%stepNS != 0 && ns < 0`, the `<`/`<=`
@@ -33,10 +34,10 @@ import (
 )
 
 // TestLowerOuterRangeFnOverSubquery_PinnedRangeModeWidensByOffsetPlusRange
-// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair at subquery.go:1034:44
-// — the `-rw.Offset` term inside the `@`-pinned + range-mode arm's
+// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair on the `-rw.Offset`
+// term of the `@`-pinned + range-mode arm's
 // `widenSubquerySpine(inner, anchor.End.Add(-rw.Offset-sub.Range), anchor.End)`
-// call. Both mutants flip the Offset term's sign (one by swapping the
+// call, subquery.go:`case rangeMode && pinned:`. Both mutants flip the Offset term's sign (one by swapping the
 // arithmetic operator, one by inverting the unary negation — the
 // observable effect is identical: the inner spine gets widened starting
 // `+rw.Offset` early instead of `-rw.Offset` late).
@@ -44,7 +45,7 @@ import (
 // TestLowerOuterRangeFnOverSubquery_WidensInnerByOffsetPlusRange
 // (subquery_time_offset_test.go) already pins the neighbouring
 // "range mode, not pinned" arm; this test is its `@`-pinned sibling,
-// the one branch that actually reaches line 1034.
+// the one branch that actually reaches that call.
 func TestLowerOuterRangeFnOverSubquery_PinnedRangeModeWidensByOffsetPlusRange(t *testing.T) {
 	t.Parallel()
 
@@ -84,15 +85,16 @@ func TestLowerOuterRangeFnOverSubquery_PinnedRangeModeWidensByOffsetPlusRange(t 
 	wantStart := pinnedTS.Add(-offset).Add(-subRange)
 	if !inner.Start.Equal(wantStart) {
 		t.Errorf("inner.Start = %s, want %s (pinnedTS - offset - subRange) — "+
-			"mutants at subquery.go:1034:44 would yield %s (pinnedTS + offset - subRange)",
+			"mutants on subquery.go:`case rangeMode && pinned:`'s widenSubquerySpine call "+
+			"would yield %s (pinnedTS + offset - subRange)",
 			inner.Start, wantStart, pinnedTS.Add(offset).Add(-subRange))
 	}
 }
 
 // TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange
-// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair at subquery.go:1980:45
-// — the `-a.Offset` term in the range-mode (not pinned) arm of
-// lowerAbsentOverTimeOverSubquery's widenSubquerySpine call.
+// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair on the `-a.Offset`
+// term of lowerAbsentOverTimeOverSubquery's range-mode (not pinned) arm,
+// subquery.go:`widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)`.
 func TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange(t *testing.T) {
 	t.Parallel()
 
@@ -123,15 +125,15 @@ func TestLowerAbsentOverTimeOverSubquery_RangeModeWidensByOffsetPlusRange(t *tes
 	wantStart := start.Add(-offset).Add(-subRange)
 	if !inner.Start.Equal(wantStart) {
 		t.Errorf("inner.Start = %s, want %s (ctx.start - offset - subRange) — "+
-			"mutants at subquery.go:1980:45 would yield %s (ctx.start + offset - subRange)",
+			"mutants on subquery.go:`widenSubquerySpine(a.Input, ctx.start.Add(-a.Offset-sub.Range), ctx.end)` would yield %s (ctx.start + offset - subRange)",
 			inner.Start, wantStart, start.Add(offset).Add(-subRange))
 	}
 }
 
 // TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange
-// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair at subquery.go:1986:42
-// — the `-a.Offset` term in the default (instant-mode) arm's
-// widenSubquerySpine call.
+// kills the ARITHMETIC_BASE + INVERT_NEGATIVES pair on the `-a.Offset`
+// term of the default (instant-mode) arm's widenSubquerySpine call,
+// subquery.go:`widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)`.
 func TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange(t *testing.T) {
 	t.Parallel()
 
@@ -161,14 +163,15 @@ func TestLowerAbsentOverTimeOverSubquery_InstantModeWidensByOffsetPlusRange(t *t
 	wantStart := evalTS.Add(-offset).Add(-subRange)
 	if !inner.Start.Equal(wantStart) {
 		t.Errorf("inner.Start = %s, want %s (a.End - offset - subRange) — "+
-			"mutants at subquery.go:1986:42 would yield %s (a.End + offset - subRange)",
+			"mutants on subquery.go:`widenSubquerySpine(a.Input, a.End.Add(-a.Offset-sub.Range), a.End)` would yield %s (a.End + offset - subRange)",
 			inner.Start, wantStart, evalTS.Add(offset).Add(-subRange))
 	}
 }
 
 // TestLowerAbsentOverTimeOverSubquery_InstantModeKeepsExistingPin kills the
-// INVERT_LOGICAL mutant at subquery.go:1982:21 — the `&&` in
-// `if a.End.IsZero() && !ctx.end.IsZero()`. That guard only fills a.End
+// INVERT_LOGICAL mutant on the `&&` of
+// subquery.go:lowerAbsentOverTimeOverSubquery:`if a.End.IsZero() && !ctx.end.IsZero()`.
+// That guard only fills a.End
 // from ctx.end when a.End was NOT already set (i.e. the subquery has no
 // `@` pin of its own). Flipping `&&` to `||` makes the guard fire whenever
 // ctx.end is merely non-zero, unconditionally overwriting an existing `@`
@@ -198,7 +201,8 @@ func TestLowerAbsentOverTimeOverSubquery_InstantModeKeepsExistingPin(t *testing.
 		t.Fatalf("no chplan.AbsentOverTime under the lowered %q", query)
 	}
 	if !a.End.Equal(pinnedTS) {
-		t.Errorf("AbsentOverTime.End = %s, want %s (the `@` pin) — mutant `&&`->`||` at subquery.go:1982:21 "+
+		t.Errorf("AbsentOverTime.End = %s, want %s (the `@` pin) — mutant `&&`->`||` at "+
+			"subquery.go:lowerAbsentOverTimeOverSubquery:`if a.End.IsZero() && !ctx.end.IsZero()` "+
 			"would overwrite the pin with the eval timestamp %s", a.End, pinnedTS, evalTS)
 	}
 }
@@ -235,7 +239,8 @@ func TestLowerSubqueryOverCall_UnsafeInstantTransformSkipsIdentityWrap(t *testin
 	if _, isRW := plan.(*chplan.RangeWindow); isRW {
 		t.Fatalf("plan = *chplan.RangeWindow (the Identity wrap); want the per-anchor *chplan.Project " +
 			"fallback (subqueryInstantSafe must be false for abs(rate(...)), so the && must skip the " +
-			"Identity branch — mutant `&&`->`||` at subquery.go:487:34 would take it anyway)")
+			"Identity branch — mutant `&&`->`||` at " +
+			"subquery.go:`if isInstantTransformCall(call) && subqueryInstantSafe(call)` would take it anyway)")
 	}
 	if _, isProj := plan.(*chplan.Project); !isProj {
 		t.Fatalf("plan = %T, want *chplan.Project (subqueryAnchorShape's per-anchor fallback)", plan)
@@ -243,8 +248,8 @@ func TestLowerSubqueryOverCall_UnsafeInstantTransformSkipsIdentityWrap(t *testin
 }
 
 // TestNodeCarriesMetricName_VectorSetOp_OrChecksBothSidesAndUnlessDoesNot
-// kills the CONDITIONALS_NEGATION mutant at subquery.go:1373:11 — the
-// `==` in `if v.Op == chplan.VectorSetOr && !nodeCarriesMetricName(v.Right, s)`.
+// kills the CONDITIONALS_NEGATION mutant on the `==` of
+// subquery.go:`if v.Op == chplan.VectorSetOr && !nodeCarriesMetricName(v.Right, s)`.
 // `or` must check BOTH arms (it unions rows from both); `and`/`unless`
 // must check ONLY the left arm (they only ever emit LHS rows). Flipping
 // `==` to `!=` swaps which operator gets the Right-arm check.
@@ -258,19 +263,23 @@ func TestNodeCarriesMetricName_VectorSetOp_OrChecksBothSidesAndUnlessDoesNot(t *
 	orOp := &chplan.VectorSetOp{Op: chplan.VectorSetOr, Left: named, Right: unnamed}
 	if nodeCarriesMetricName(orOp, s) {
 		t.Fatalf("or: Left carries a name but Right does not; `or` must check BOTH sides and answer " +
-			"false (mutant `==`->`!=` at subquery.go:1373:11 would only check Left here)")
+			"false (mutant `==`->`!=` at " +
+			"subquery.go:`if v.Op == chplan.VectorSetOr && !nodeCarriesMetricName(v.Right, s)` " +
+			"would only check Left here)")
 	}
 
 	andOp := &chplan.VectorSetOp{Op: chplan.VectorSetAnd, Left: named, Right: unnamed}
 	if !nodeCarriesMetricName(andOp, s) {
 		t.Fatalf("and: Left carries a name; `and`/`unless` must ignore Right and answer true " +
-			"(mutant `==`->`!=` at subquery.go:1373:11 would incorrectly also check Right here)")
+			"(mutant `==`->`!=` at " +
+			"subquery.go:`if v.Op == chplan.VectorSetOr && !nodeCarriesMetricName(v.Right, s)` " +
+			"would incorrectly also check Right here)")
 	}
 }
 
 // TestSubqueryInstantSafe_PiExceptionNotRejected kills the
-// CONDITIONALS_NEGATION mutant at subquery.go:1744:49 — the `!=` in
-// `if !isInstantTransformCall(v) && v.Func.Name != "pi"`. pi() is the
+// CONDITIONALS_NEGATION mutant on the `!=` of
+// subquery.go:`if !isInstantTransformCall(v) && v.Func.Name != "pi"`. pi() is the
 // documented parse-time-constant exception: a zero-arg call that is not
 // itself an instant-transform call, but must still be treated as safe.
 // Flipping `!=` to `==` rejects any call subtree containing pi().
@@ -283,7 +292,8 @@ func TestSubqueryInstantSafe_PiExceptionNotRejected(t *testing.T) {
 	}
 	if !subqueryInstantSafe(call) {
 		t.Fatalf("subqueryInstantSafe(clamp_min(demo_cpu, pi())) = false, want true — pi() is the " +
-			"documented exception (mutant `!=`->`==` at subquery.go:1744:49 would reject any call " +
+			"documented exception (mutant `!=`->`==` at " +
+			"subquery.go:`if !isInstantTransformCall(v) && v.Func.Name != \"pi\"` would reject any call " +
 			"tree containing pi())")
 	}
 }
@@ -318,8 +328,8 @@ func TestLowerSubqueryOverBinary_PlainShapeSucceedsWithNoEvalAnchor(t *testing.T
 }
 
 // TestSubqueryOffsetCtx_NonZeroOffsetShiftsBothBounds kills the
-// CONDITIONALS_NEGATION mutant at subquery.go:804:24 — the `==` in
-// `if sub.OriginalOffset == 0 { return ctx }`. With a non-zero offset and
+// CONDITIONALS_NEGATION mutant on the `==` of
+// subquery.go:`if sub.OriginalOffset == 0`. With a non-zero offset and
 // non-zero start/end bounds, the function must shift both bounds by
 // -offset. Flipping `==` to `!=` returns ctx UNSHIFTED whenever the
 // offset is non-zero — the one case where a shift is actually required.
@@ -338,14 +348,14 @@ func TestSubqueryOffsetCtx_NonZeroOffsetShiftsBothBounds(t *testing.T) {
 			got.start, wantStart, start)
 	}
 	if !got.end.Equal(wantEnd) {
-		t.Errorf("end = %s, want %s (mutant `==`->`!=` at subquery.go:804:24 would leave it at %s)",
+		t.Errorf("end = %s, want %s (mutant `==`->`!=` at subquery.go:`if sub.OriginalOffset == 0` would leave it at %s)",
 			got.end, wantEnd, end)
 	}
 }
 
 // TestProjectCarriesMetricName_ContinuesPastNonMatchingProjections kills
-// the INVERT_LOOPCTRL mutant at subquery.go:1408:4 — the `continue` inside
-// projectCarriesMetricName's loop over p.Projections. The MetricName
+// the INVERT_LOOPCTRL mutant at subquery.go:projectCarriesMetricName:`continue`
+// — the `continue` inside its loop over p.Projections. The MetricName
 // projection is deliberately placed SECOND so the loop must skip past a
 // non-matching first entry to find it. Flipping `continue` to `break`
 // stops at the first non-matching projection and falls through to
@@ -362,16 +372,16 @@ func TestProjectCarriesMetricName_ContinuesPastNonMatchingProjections(t *testing
 	}
 	if !projectCarriesMetricName(p, s) {
 		t.Fatalf("projectCarriesMetricName = false, want true — the MetricName projection is the " +
-			"SECOND entry and carries a real name; mutant `continue`->`break` at subquery.go:1408:4 " +
+			"SECOND entry and carries a real name; mutant `continue`->`break` at " +
+			"subquery.go:projectCarriesMetricName:`continue` " +
 			"would stop at the first (non-matching) entry and answer false")
 	}
 }
 
 // TestLowerSubqueryOverCountValues_MapArgsCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at subquery.go:2546:58 inside
-// lowerSubqueryOverCountValues's `by(...)` capacity hint:
-//
-//	mapArgs := make([]chplan.Expr, 0, (len(agg.Grouping)+1)*2)
+// ARITHMETIC_BASE mutant on lowerSubqueryOverCountValues's `by(...)`
+// capacity hint,
+// subquery.go:`mapArgs := make([]chplan.Expr, 0, (len(agg.Grouping)+1)*2)`.
 //
 // With 2 grouping labels, the original pre-allocates exactly enough room
 // for all 6 appends (2 labels * 2 + the synthetic value-as-label pair),
@@ -412,16 +422,16 @@ func TestLowerSubqueryOverCountValues_MapArgsCapacityIsTight(t *testing.T) {
 		t.Fatalf("len(Args) = %d, want %d", got, wantArgs)
 	}
 	if got := cap(fc.Args); got != wantArgs {
-		t.Fatalf("cap(Args) = %d, want %d (mutant `*`->`/` at subquery.go:2546:58 would yield a "+
+		t.Fatalf("cap(Args) = %d, want %d (mutant `*`->`/` at "+
+			"subquery.go:`mapArgs := make([]chplan.Expr, 0, (len(agg.Grouping)+1)*2)` would yield a "+
 			"different cap via append's reallocation growth path)", got, wantArgs)
 	}
 }
 
 // TestBuildAttributesFromAggregate_ArgsCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at subquery.go:2725:50 inside
-// buildAttributesFromAggregate's `by(...)` capacity hint:
-//
-//	args := make([]chplan.Expr, 0, len(agg.Grouping)*2)
+// ARITHMETIC_BASE mutant on buildAttributesFromAggregate's `by(...)`
+// capacity hint,
+// subquery.go:`args := make([]chplan.Expr, 0, len(agg.Grouping)*2)`.
 //
 // With 3 grouping labels, the original pre-allocates exactly enough room
 // for all 6 appends, so cap stays at 6. The `*` -> `/` mutant starts at
@@ -457,14 +467,16 @@ func TestBuildAttributesFromAggregate_ArgsCapacityIsTight(t *testing.T) {
 		t.Fatalf("len(Args) = %d, want %d", got, wantArgs)
 	}
 	if got := cap(fc.Args); got != wantArgs {
-		t.Fatalf("cap(Args) = %d, want %d (mutant `*`->`/` at subquery.go:2725:50 would yield a "+
+		t.Fatalf("cap(Args) = %d, want %d (mutant `*`->`/` at "+
+			"subquery.go:`args := make([]chplan.Expr, 0, len(agg.Grouping)*2)` would yield a "+
 			"different cap via append's reallocation growth path)", got, wantArgs)
 	}
 }
 
 // TestLowerSubqueryOverCallSubquery_WidensToSumOfBothRanges kills the
-// ARITHMETIC_BASE mutant at subquery.go:2871:28 — the `+` in
-// `widened.Range = sub.Range + innerSub.Range`. The nested-subquery shape
+// ARITHMETIC_BASE mutant on the `+` of
+// subquery.go:lowerSubqueryOverCallSubquery:`widened.Range = sub.Range + innerSub.Range`.
+// The nested-subquery shape
 // `max_over_time(rate(m[1m])[5m:30s])[1h:5m]` must widen the inner
 // subquery's own matrix to cover the OUTER range PLUS the inner range,
 // which surfaces as the widened RangeWindow's OuterRange field. Flipping
@@ -494,6 +506,7 @@ func TestLowerSubqueryOverCallSubquery_WidensToSumOfBothRanges(t *testing.T) {
 	const want = time.Hour + 5*time.Minute
 	if wideInner.OuterRange != want {
 		t.Fatalf("wideInner.OuterRange = %s, want %s (sub.Range + innerSub.Range) — mutant `+`->`-` "+
-			"at subquery.go:lowerSubqueryOverSubquery:`StepAlign: true, // epoch-align inner subquery sample grid (PromQL)` would yield %s", wideInner.OuterRange, want, time.Hour-5*time.Minute)
+			"at subquery.go:lowerSubqueryOverCallSubquery:`widened.Range = sub.Range + innerSub.Range` "+
+			"would yield %s", wideInner.OuterRange, want, time.Hour-5*time.Minute)
 	}
 }

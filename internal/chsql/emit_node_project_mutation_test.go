@@ -50,8 +50,8 @@ func TestMutation_EmitProject_ReplacementsOnlyRenderStarReplace(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// emit_node.go:504:52 (CONDITIONALS_BOUNDARY, `len(p.Replacements) > 0` ->
-// `>= 0`) is EQUIVALENT. The two guards can only disagree on a Project with
+// emit_node.go:`len(p.Replacements) > 0` (CONDITIONALS_BOUNDARY,
+// `len(p.Replacements) > 0` -> `>= 0`) is EQUIVALENT. The two guards can only disagree on a Project with
 // NO projections and NO replacements, and there both renderings are the same
 // bytes:
 //

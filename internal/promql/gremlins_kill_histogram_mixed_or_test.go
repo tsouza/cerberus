@@ -63,7 +63,7 @@ func TestLabelCallOverMixedExpHistogramSetOp_LabelJoinMinArity(t *testing.T) {
 	if _, _, ok := labelCallOverMixedExpHistogramSetOp(call, s, lowerCtx{}); !ok {
 		t.Fatalf("expected minimum-arity (3-arg) label_join wrapping a mixed histogram/float `or` " +
 			"to be recognised; got ok=false (mutant `<`->`<=` at " +
-			"histogram_native_mixed_or_label.go:61:21)")
+			"histogram_native_mixed_or_label.go:`if len(call.Args) < 3`)")
 	}
 }
 
@@ -134,7 +134,7 @@ func TestLowerMixedVVCompareBool_HistCmpNegationMatchesOp(t *testing.T) {
 	}
 	if got := histCmpCombine(t, chplan.OpNe); got != chplan.OpOr {
 		t.Fatalf("op=NE: histCmp top combine = %s, want OR (ne=true) — mutant `==`->`!=` at "+
-			"histogram_native_mixed_or_vector_comparison.go:357:44 would pass ne=false here and use AND",
+			"histogram_native_mixed_or_vector_comparison.go:lowerMixedVVCompareBool:`histCmp := mixedVVHistogramFieldsExpr(op == chplan.OpNe)` would pass ne=false here and use AND",
 			got)
 	}
 }

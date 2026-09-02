@@ -3199,10 +3199,11 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// Name-drop collision guard. When the function drops `__name__` and the
 	// selector spans several metrics, two source series that differ only by
 	// name land on one label set — the case reference Prometheus refuses
-	// (engine.go:2295) and cerberus used to answer with a silently merged
-	// series. Widening the window's grouping key with MetricName is what
-	// makes the collision observable at all; the wrap below re-collapses the
-	// widened rows and aborts on any group that held more than one name.
+	// (engine.go's `ContainsSameLabelset` guard) and cerberus used to answer
+	// with a silently merged series. Widening the window's grouping key with
+	// MetricName is what makes the collision observable at all; the wrap below
+	// re-collapses the widened rows and aborts on any group that held more
+	// than one name.
 	// This runs BEFORE the shape switch so the fan-out, native and
 	// `@`-broadcast lowerings all inherit the widened key.
 	guardNameCollision := rangeFnCollidesOnNameDrop(c.Func.Name, vs.LabelMatchers, inner, s)
@@ -3272,7 +3273,7 @@ func lowerRangeVectorCall(c *parser.Call, s schema.Metrics, ctx lowerCtx) (chpla
 	// increase, delta, sum_over_time, ...) produces a derived sample
 	// and Prom drops `__name__` for them. See upstream:
 	//
-	//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+	//	prometheus/prometheus@cerberus-parser/promql/engine.go
 	//	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
 	//
 	// The RangeWindow output schema is (Attributes, [anchor_ts,] Value)
@@ -4124,7 +4125,7 @@ func isIdentityColumnRef(x chplan.Expr, name string) bool {
 // rangeFnPreservesName reports whether a PromQL range function keeps
 // `__name__` on its output. Mirrors upstream:
 //
-//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+//	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
 func rangeFnPreservesName(fn string) bool {
 	return fn == "last_over_time" || fn == "first_over_time"
@@ -4231,7 +4232,7 @@ func wrapRangeWindowPreserveName(rw *chplan.RangeWindow, s schema.Metrics, name 
 // collapse two distinct series onto one label set by dropping `__name__`,
 // which is the condition reference Prometheus refuses to answer:
 //
-//	prometheus/prometheus@cerberus-parser/promql/engine.go:2295
+//	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`if !ev.enableDelayedNameRemoval && mat.ContainsSameLabelset() {
 //	     ev.errorf("vector cannot contain metrics with the same labelset") }`
 //

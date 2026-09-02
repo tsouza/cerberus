@@ -15,11 +15,14 @@ import (
 // is white-box (package chsql) so it can reach unexported emitter methods
 // where the public Emit surface alone wouldn't isolate the boundary.
 //
-// Mutant inventory (file:line:col → what the flip does):
-//   - range_window.go:423:28 / 425:28 — `1 - sf` / `1 - tf` → `1 + sf` / `1 + tf`
-//     (holt_winters smoothing weights): wrong (1∓w) factor in the recurrence.
-//   - range_window.go:662:19 — `minWindowSize > 0` → `>= 0`: spuriously emits the
-//     window-length WHERE filter when no minimum was requested.
+// Mutant inventory (construct → what the flip does):
+//   - range_window.go:`InlineLit(sf), InlineLit(1-sf)` and
+//     range_window.go:`InlineLit(tf), InlineLit(1-tf)` — `1 - sf` / `1 - tf` →
+//     `1 + sf` / `1 + tf` (holt_winters smoothing weights): wrong (1∓w) factor
+//     in the recurrence.
+//   - range_window.go:emitWindowedArrayPairsMatrix:`minWindowSize > 0` → `>= 0`:
+//     spuriously emits the window-length WHERE filter when no minimum was
+//     requested.
 //   - range_window.go, emitRangeWindowOverTimeDirect — `r.Step <= 0` → `< 0`: stops
 //     rejecting OuterRange>0 subqueries that forgot Step (would divide by zero /
 //     emit a degenerate grid).
@@ -69,7 +72,9 @@ func fusedOuter() *chplan.RangeWindow {
 	}
 }
 
-// TestHoltWintersSmoothingWeightsEmit kills range_window.go:423 + 425.
+// TestHoltWintersSmoothingWeightsEmit kills the flips on
+// range_window.go:`InlineLit(sf), InlineLit(1-sf)` and
+// range_window.go:`InlineLit(tf), InlineLit(1-tf)`.
 // With sf=0.25, tf=0.125 the (1−w) weights render as the exact literals
 // 0.75 and 0.875; the ARITHMETIC_BASE / INVERT_NEGATIVES flips (1+w) would
 // render 1.25 / 1.125 instead.
@@ -89,21 +94,24 @@ func TestHoltWintersSmoothingWeightsEmit(t *testing.T) {
 	}
 	// 1 - sf = 0.75 must appear; the +sf flip's 1.25 must not.
 	if !strings.Contains(sql, "0.75 *") {
-		t.Errorf("missing `1 - sf` weight (0.75 *) — line 423 flipped?\nSQL: %s", sql)
+		t.Errorf("missing `1 - sf` weight (0.75 *) — "+
+			"range_window.go:`InlineLit(sf), InlineLit(1-sf)` flipped?\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "1.25") {
-		t.Errorf("found 1.25 — `1 - sf` mutated to `1 + sf` (line 423)\nSQL: %s", sql)
+		t.Errorf("found 1.25 — `1 - sf` mutated to `1 + sf`\nSQL: %s", sql)
 	}
 	// 1 - tf = 0.875 must appear; the +tf flip's 1.125 must not.
 	if !strings.Contains(sql, "0.875 *") {
-		t.Errorf("missing `1 - tf` weight (0.875 *) — line 425 flipped?\nSQL: %s", sql)
+		t.Errorf("missing `1 - tf` weight (0.875 *) — "+
+			"range_window.go:`InlineLit(tf), InlineLit(1-tf)` flipped?\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "1.125") {
-		t.Errorf("found 1.125 — `1 - tf` mutated to `1 + tf` (line 425)\nSQL: %s", sql)
+		t.Errorf("found 1.125 — `1 - tf` mutated to `1 + tf`\nSQL: %s", sql)
 	}
 }
 
-// TestWindowedArrayPairsMatrixMinWindowBoundary kills range_window.go:662.
+// TestWindowedArrayPairsMatrixMinWindowBoundary kills
+// range_window.go:emitWindowedArrayPairsMatrix:`minWindowSize > 0`.
 // minWindowSize=0 must NOT emit the `length(window_pairs) >= 0` WHERE filter;
 // minWindowSize=2 must. The `> 0` → `>= 0` boundary flip adds the no-op
 // filter at 0, so the filter's presence is pinned to the boundary.
@@ -134,7 +142,7 @@ func TestWindowedArrayPairsMatrixMinWindowBoundary(t *testing.T) {
 		t.Fatalf("emitWindowedArrayPairsMatrix(min=0): %v", err)
 	}
 	if got := e0.b.String(); strings.Contains(got, lenFilterPrefix) {
-		t.Errorf("min=0 emitted a window-length filter (%q) — line 662 `> 0` flipped to `>= 0`\nSQL: %s",
+		t.Errorf("min=0 emitted a window-length filter (%q) — `minWindowSize > 0` flipped to `>= 0`\nSQL: %s",
 			lenFilterPrefix, got)
 	}
 
@@ -148,7 +156,8 @@ func TestWindowedArrayPairsMatrixMinWindowBoundary(t *testing.T) {
 	}
 }
 
-// TestOverTimeDirectRejectsZeroStepSubquery kills range_window.go:2346.
+// TestOverTimeDirectRejectsZeroStepSubquery kills
+// range_window.go:`r.OuterRange > 0 && r.Step <= 0`.
 // OuterRange>0 with Step==0 is the exact boundary: original (`<= 0`) returns
 // ErrUnsupported; the `< 0` flip would accept Step==0 and divide by zero.
 func TestOverTimeDirectRejectsZeroStepSubquery(t *testing.T) {
@@ -317,19 +326,21 @@ func TestFusedSubqueryOuterShapeGuard(t *testing.T) {
 }
 
 // TestFusedInstantInnerGate kills the inner-matrix gate in
-// tryEmitFusedSubquery (range_window_fused.go:102/113/122). Each case
-// starts from the fully-fusible fusedOuter() and perturbs ONE inner field so
-// the gate should reject (handled=false); the flip would proceed to fuse
-// (handled=true). The clean baseline fuses (handled=true).
+// tryEmitFusedSubquery. Each case starts from the fully-fusible fusedOuter()
+// and perturbs ONE inner field so the gate should reject (handled=false); the
+// flip would proceed to fuse (handled=true). The clean baseline fuses
+// (handled=true).
 //
-//   - 102:20 `inner.Identity || …` `||`→`&&`: Identity=true still rejects.
-//   - 102:40 `inner.OuterRange <= 0` `<=`→`<`: OuterRange==0 still rejects.
-//   - 102:45 `… || inner.Step <= 0` `||`→`&&`, and
-//     102:59 `inner.Step <= 0` `<=`→`<`: Step==0 still rejects.
-//   - 113:33 `TimestampColumn == "" || ValueColumn == ""` `||`→`&&`: an empty
-//     TimestampColumn (ValueColumn still set) still rejects.
-//   - 122:26 `inner.Start.IsZero() || inner.End.IsZero()` `||`→`&&`: a zero
-//     inner Start (End still set) still rejects.
+//   - range_window_fused.go:`inner.Identity || inner.OuterRange <= 0 || inner.Step <= 0`:
+//     the leading `||`→`&&` (Identity=true still rejects), the
+//     `inner.OuterRange <= 0` `<=`→`<` (OuterRange==0 still rejects), the
+//     second `||`→`&&` and the `inner.Step <= 0` `<=`→`<` (Step==0 still
+//     rejects).
+//   - range_window_fused.go:`inner.TimestampColumn == "" || inner.ValueColumn == ""`
+//     `||`→`&&`: an empty TimestampColumn (ValueColumn still set) still
+//     rejects.
+//   - range_window_fused.go:`inner.Start.IsZero() || inner.End.IsZero()`
+//     `||`→`&&`: a zero inner Start (End still set) still rejects.
 func TestFusedInstantInnerGate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -365,11 +376,12 @@ func TestFusedInstantInnerGate(t *testing.T) {
 	}
 }
 
-// TestFusedInstantAnchorCount kills range_window_fused.go:158
-// `inner.OuterRange.Nanoseconds()/stepNS + 1`. With OuterRange=10m and Step=1m
-// the fused anchor grid is `range(11)`. The `/`→`*` flip (@158:46) overflows to
-// a wildly different count and the `+`→`-` flip (@158:54) yields `range(9)`, so
-// pinning the exact `range(11)` literal kills both arithmetic mutants.
+// TestFusedInstantAnchorCount kills
+// range_window_fused.go:`inner.OuterRange.Nanoseconds()/stepNS + 1`. With
+// OuterRange=10m and Step=1m the fused anchor grid is `range(11)`. The `/`→`*`
+// flip overflows to a wildly different count and the `+`→`-` flip yields
+// `range(9)`, so pinning the exact `range(11)` literal kills both arithmetic
+// mutants.
 func TestFusedInstantAnchorCount(t *testing.T) {
 	t.Parallel()
 	sql, _, err := Emit(context.Background(), fusedOuter())
@@ -378,15 +390,17 @@ func TestFusedInstantAnchorCount(t *testing.T) {
 	}
 	// OuterRange 10m / Step 1m + 1 = 11 anchors.
 	if !strings.Contains(sql, "range(11)") {
-		t.Errorf("fused anchor grid must be range(11) (OuterRange/Step + 1) — line 158 arithmetic flipped\nSQL: %s", sql)
+		t.Errorf("fused anchor grid must be range(11) (OuterRange/Step + 1) — "+
+			"`inner.OuterRange.Nanoseconds()/stepNS + 1` arithmetic flipped\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "range(9)") {
-		t.Errorf("found range(9) — `+ 1` mutated to `- 1` (line 158)\nSQL: %s", sql)
+		t.Errorf("found range(9) — `+ 1` mutated to `- 1`\nSQL: %s", sql)
 	}
 }
 
-// TestOverTimeDirectMatrixNoGroupBy kills range_window.go:2465. With an empty
-// GroupBy the regroup-key slice cap is `len(groupFrags)+1` = 1; the
+// TestOverTimeDirectMatrixNoGroupBy kills
+// range_window.go:emitRangeWindowOverTimeDirectMatrix:`len(groupFrags)+1`.
+// With an empty GroupBy the regroup-key slice cap is `len(groupFrags)+1` = 1; the
 // ARITHMETIC_BASE flip to `-1` makes `make([]Frag, 0, -1)`, which panics
 // (cap out of range) on this exact path. The original must emit clean SQL.
 func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
@@ -414,8 +428,8 @@ func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
 }
 
 // TestFusedSamplesQueryTemporalityGate kills the CONDITIONALS_NEGATION
-// mutant at range_window_fused.go:`g.temporality != nil` (`g.temporality != nil`, inside
-// samplesQuery). When the inner window carries a TemporalityColumn, the
+// mutant at range_window_fused.go:`g.temporality != nil`, inside
+// samplesQuery. When the inner window carries a TemporalityColumn, the
 // fused samples layer must read the series' single AggregationTemporality
 // via `any(...)` under windowTemporalityAlias; when it doesn't, that
 // projection must be absent entirely. The `!=` → `==` flip would invert
@@ -435,7 +449,8 @@ func TestFusedSamplesQueryTemporalityGate(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if !strings.Contains(sql, wantProjection) {
-			t.Errorf("expected %q in the fused samples layer (line 234 flipped?)\nSQL: %s", wantProjection, sql)
+			t.Errorf("expected %q in the fused samples layer "+
+				"(`g.temporality != nil` flipped?)\nSQL: %s", wantProjection, sql)
 		}
 	})
 
@@ -446,15 +461,16 @@ func TestFusedSamplesQueryTemporalityGate(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if strings.Contains(sql, wantProjection) {
-			t.Errorf("unexpected %q with no TemporalityColumn set (line 234 flipped?)\nSQL: %s", wantProjection, sql)
+			t.Errorf("unexpected %q with no TemporalityColumn set "+
+				"(`g.temporality != nil` flipped?)\nSQL: %s", wantProjection, sql)
 		}
 	})
 }
 
 // TestFusedMatrixOuterAnchorCount kills the ARITHMETIC_BASE mutants at
-// range_window_fused.go:408 (`r.OuterRange.Nanoseconds()/outerStepNS + 1`,
+// range_window_fused.go:`r.OuterRange.Nanoseconds()/outerStepNS + 1`,
 // emitFusedMatrixSubquery's OUTER anchor grid — distinct from the INNER
-// grid TestFusedInstantAnchorCount already pins at line 158). Choosing an
+// grid TestFusedInstantAnchorCount already pins. Choosing an
 // outer OuterRange/Step pair (6m / 2m) that differs from fusibleInner's
 // (10m / 1m) makes the outer count's literal unambiguous: a `/`→`*` flip
 // or a `+`→`-` flip on the outer arithmetic cannot hide behind the inner

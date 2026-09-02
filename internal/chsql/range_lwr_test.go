@@ -107,10 +107,10 @@ func TestEmitRangeLWR_RejectsZeroStep(t *testing.T) {
 }
 
 // TestEmitRangeLWR_FanoutLimitIsMaxRowsPlusOne kills the two ARITHMETIC_BASE
-// mutants at lwr_fanout_bound.go:213:24 and :224:22 (`maxRows + 1`, in
-// lwrFanoutBoundedSourceFrag's bounded-read LIMIT and its independent
-// truncation-probe LIMIT). The "+1" is the whole truncation-detection
-// mechanism: a returned probe count landing exactly on maxRows+1 can only
+// mutants on `maxRows + 1` in lwrFanoutBoundedSourceFrag's bounded-read LIMIT
+// (lwr_fanout_bound.go:`bounded.Limit(maxRows + 1)`) and its independent
+// truncation-probe LIMIT (lwr_fanout_bound.go:`probe.Limit(maxRows + 1)`).
+// The "+1" is the whole truncation-detection mechanism: a returned probe count landing exactly on maxRows+1 can only
 // happen if the true fanned-out row count reached or exceeded that LIMIT. A
 // `+`->`-` flip renders `maxRows - 1` instead, a directly observable
 // literal change in the emitted SQL (maxRangeLWRFanoutRows = 40_000_000, so

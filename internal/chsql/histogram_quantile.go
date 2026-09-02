@@ -72,7 +72,8 @@ type hqClassicHelperColumns struct {
 // (see the helper-column block above); step 5's interpolation reads them
 // as plain columns.
 //
-// Prom edge cases mirrored (quantile.go:114-119):
+// Prom edge cases mirrored (`bucketQuantile`'s domain guards in
+// quantile.go):
 //
 //   - total = 0 (empty histogram) → NaN.
 //   - phi < 0 → -Inf (out of domain).
@@ -269,8 +270,8 @@ func histogramQuantileValueFrag(h *chplan.HistogramQuantile, helpers hqClassicHe
 	//         if(phi < 0, -inf,
 	//            if(phi > 1, inf, idxBranch))))
 	//
-	// Prometheus semantics (quantile.go:114-119): phi < 0 → -Inf, phi > 1
-	// → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
+	// Prometheus semantics (`bucketQuantile`'s domain guards in quantile.go):
+	// phi < 0 → -Inf, phi > 1 → +Inf are OUT of domain. phi == 0 and phi == 1 are IN domain and
 	// fall through to idxBranch: phi == 0 → target 0 → idx 1 → lower edge
 	// 0.0; phi == 1 → target observations → idx == length(cum) → highest finite
 	// bound. ClickHouse parses the bare `inf` / `-inf` tokens as Float64.

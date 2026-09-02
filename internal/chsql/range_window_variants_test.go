@@ -171,7 +171,8 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"stepless anchor grid": func(r *chplan.RangeWindow) {
 			r.Step = 0
 		},
-		// checkFusedVariants.go:92 — the fused emitter drives only the
+		// range_window_variants.go:`len(r.Scalars) > 0 || len(r.ScalarExprs) > 0`
+		// (checkFusedVariants) — the fused emitter drives only the
 		// *_over_time array reducers, which take no scalar parameters.
 		// A scalar argument here is untested territory: the guard's
 		// condition is EVALUATED on every fused Emit (both operands are
@@ -181,7 +182,8 @@ func TestEmitFusedVariantsRejectsIllFormed(t *testing.T) {
 		"scalar argument present": func(r *chplan.RangeWindow) {
 			r.Scalars = []float64{1}
 		},
-		// checkFusedVariants.go:95 — the fused emitter consults no
+		// range_window_variants.go:`r.TemporalityColumn != ""`
+		// (checkFusedVariants) — the fused emitter consults no
 		// temporality column (each arm's own reducer never reads
 		// windowTemporalityRef). Same coverage gap as the scalar case.
 		"temporality column present": func(r *chplan.RangeWindow) {
@@ -368,9 +370,9 @@ func TestGroupArrayVariantTupleFrag_EmptyValCols(t *testing.T) {
 }
 
 // TestEmitFusedVariantsInstant_CompletesAllSteps kills the four
-// CONDITIONALS_NEGATION mutants at range_window_variants.go:232:9, 236:9,
-// 249:9 and 256:66 — the four `if err != nil { return err }` guards inside
-// emitRangeWindowVariantsInstant. Every one of those checks genuinely
+// CONDITIONALS_NEGATION mutants on the four `if err != nil { return err }`
+// guards inside range_window_variants.go:emitRangeWindowVariantsInstant.
+// Every one of those checks genuinely
 // succeeds on this well-formed plan, so a `!= nil` -> `== nil` mutant at any
 // one of them turns "keep going on success" into "return nil immediately
 // after this step succeeds" — the function would return before ever

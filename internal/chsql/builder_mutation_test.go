@@ -15,13 +15,13 @@ func renderFragToSQL(f Frag) string {
 
 // TestMutation_WriteCTEs_NonRecursiveHead pins the WITH-head selection for a
 // chain that holds ONLY a non-recursive (Body-only) CTE: Anchor == nil and
-// Recursive == nil, so the recursive-detection condition at builder.go:2073
-// (`c.Anchor != nil || c.Recursive != nil`) must evaluate false and the head
-// must render bare "WITH " (never "WITH RECURSIVE ").
+// Recursive == nil, so the recursive-detection condition
+// builder.go:`c.Anchor != nil || c.Recursive != nil` must evaluate false and
+// the head must render bare "WITH " (never "WITH RECURSIVE ").
 //
-// Kills builder.go:2073:15 (CONDITIONALS_NEGATION `c.Anchor != nil` ->
-// `c.Anchor == nil`) and 2073:37 (CONDITIONALS_NEGATION `c.Recursive != nil`
-// -> `c.Recursive == nil`): under either negation both operands of the OR flip
+// Kills both CONDITIONALS_NEGATION mutants of that condition
+// (`c.Anchor != nil` -> `c.Anchor == nil`, `c.Recursive != nil` ->
+// `c.Recursive == nil`): under either negation both operands of the OR flip
 // from false to true, so `recursive` becomes true and the head wrongly renders
 // "WITH RECURSIVE ".
 func TestMutation_WriteCTEs_NonRecursiveHead(t *testing.T) {
@@ -51,10 +51,12 @@ func TestMutation_WriteCTEs_NonRecursiveHead(t *testing.T) {
 // With the original `Anchor != nil || Recursive != nil` the left operand is
 // true, so `recursive` is true and the head renders "WITH RECURSIVE ".
 //
-// Kills builder.go:2073:22 (INVERT_LOGICAL `||` -> `&&`): `true && false`
-// becomes false, dropping the RECURSIVE keyword. Also kills 2073:15
-// (CONDITIONALS_NEGATION `Anchor != nil` -> `Anchor == nil`): `false || false`
-// becomes false, likewise dropping RECURSIVE.
+// Kills INVERT_LOGICAL (`||` -> `&&`) on
+// builder.go:`c.Anchor != nil || c.Recursive != nil`: `true && false`
+// becomes false, dropping the RECURSIVE keyword. Also kills the
+// CONDITIONALS_NEGATION on the same condition (`Anchor != nil` ->
+// `Anchor == nil`): `false || false` becomes false, likewise dropping
+// RECURSIVE.
 func TestMutation_WriteCTEs_RecursiveOrLeftBranch(t *testing.T) {
 	t.Parallel()
 
@@ -73,14 +75,15 @@ func TestMutation_WriteCTEs_RecursiveOrLeftBranch(t *testing.T) {
 }
 
 // TestMutation_ArrayJoin_CommaSeparator pins the comma-joining of a multi-term
-// ARRAY JOIN. With two terms the loop at builder.go:2153 must emit the first
-// term with no leading comma (i == 0) and the second with ", " (i > 0),
-// producing "ARRAY JOIN <a>, <b>".
+// ARRAY JOIN. With two terms the loop
+// builder.go:`for i, f := range s.arrayJoin` must emit the first term with no
+// leading comma (i == 0) and the second with ", " (i > 0), producing
+// "ARRAY JOIN <a>, <b>".
 //
-// Kills builder.go:2154:9 CONDITIONALS_BOUNDARY (`i > 0` -> `i >= 0`: a comma
-// is wrongly prefixed before the first term -> "ARRAY JOIN , a, b") and
-// CONDITIONALS_NEGATION (`i > 0` -> `i <= 0`: comma before first term and none
-// between -> "ARRAY JOIN , ab").
+// Kills that loop's separator guard under CONDITIONALS_BOUNDARY (`i > 0` ->
+// `i >= 0`: a comma is wrongly prefixed before the first term -> "ARRAY JOIN
+// , a, b") and CONDITIONALS_NEGATION (`i > 0` -> `i <= 0`: comma before first
+// term and none between -> "ARRAY JOIN , ab").
 func TestMutation_ArrayJoin_CommaSeparator(t *testing.T) {
 	t.Parallel()
 

@@ -7,15 +7,16 @@ import (
 )
 
 // TestMutation_VectorSetOpOutputCols_MixedOrVsMixedAnd pins
-// vectorSetOpOutputCols's own guard at vector_set_op.go:710
-// (`s.Mixed && s.Op != chplan.VectorSetOr`): a Mixed VectorSetOr never
+// vectorSetOpOutputCols's own guard
+// vector_set_op.go:`s.Mixed && s.Op != chplan.VectorSetOr`: a Mixed
+// VectorSetOr never
 // widens the column list here — real callers always render that shape
 // through emitMixedVectorSetOp instead, whose own
 // mixedVectorSetOpOutputCols does the widening — while a Mixed
 // VectorSetAnd (the forwarded-Left shape cerberus issue #2555 added)
 // DOES widen here, since it never reaches emitMixedVectorSetOp.
 //
-// Kills vector_set_op.go:710:21 (CONDITIONALS_NEGATION `s.Op !=
+// Kills the CONDITIONALS_NEGATION on that guard (`s.Op !=
 // chplan.VectorSetOr` -> `s.Op == chplan.VectorSetOr`): under that
 // mutation a Mixed VectorSetOr would ALSO widen (the guard flips to
 // true), which this test's Or case catches, and a Mixed VectorSetAnd

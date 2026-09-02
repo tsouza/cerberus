@@ -22,9 +22,9 @@
 // own — it delegates to leaf recognizers (bareExpHistogramSelector,
 // sumOrAvgOverExpHistogram, rangeFnOverExpHistogram, and every other
 // producer isExpHistogramValuedShape tries), and EVERY one of those
-// leaves carries the identical `s.ExpHistogramTable == "" ||
-// ctx.metadataFullRange` guard (see e.g. bareExpHistogramSelector,
-// histogram_native_bare.go:68). So isExpHistogramValuedShape(expr, s,
+// leaves carries the identical guard (see e.g.
+// histogram_native_bare.go:bareExpHistogramSelector:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`).
+// So isExpHistogramValuedShape(expr, s,
 // ctx) is unconditionally false for ANY expr whenever ctx.metadataFullRange
 // is true and s.ExpHistogramTable is non-empty — exactly the one
 // scenario where this function's own early `||`-vs-`&&` guard could

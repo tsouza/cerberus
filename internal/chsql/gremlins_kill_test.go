@@ -27,7 +27,7 @@ import (
 //     scope and gets killed.
 
 // TestSortRankFor_ContinueVsBreak kills the `continue` → `break` flip
-// at prewhere.go:128. Input order matters: an unknown column ahead of
+// in prewhere.go:`r < 0`. Input order matters: an unknown column ahead of
 // a known one only resolves to the known column's rank if the loop
 // keeps iterating (continue) rather than bailing on the first miss
 // (break).
@@ -46,7 +46,8 @@ func TestSortRankFor_ContinueVsBreak(t *testing.T) {
 }
 
 // TestSortRankFor_BestNegativeBoundary kills the `<` ↔ `<=` boundary
-// flip at prewhere.go:130:11 (`best < 0`). With the mutant `best <= 0`
+// flip on `best < 0` in prewhere.go:`best < 0 || r < best`. With the
+// mutant `best <= 0`
 // the loop overwrites the rank-0 best when it sees any larger rank,
 // returning the wrong (later) sort column.
 func TestSortRankFor_BestNegativeBoundary(t *testing.T) {
@@ -59,11 +60,11 @@ func TestSortRankFor_BestNegativeBoundary(t *testing.T) {
 	}
 }
 
-// TestOrderedConjuncts_StableSortLogicalOr kills the `||` → `&&` flip
-// at prewhere.go:183:23 inside the insertion-sort swap condition. When
-// the rank-comparison conjunct disagrees with the index-tiebreaker the
-// original `||` swaps; the mutant `&&` requires both, which never
-// holds at the same time, so the swap never happens.
+// TestOrderedConjuncts_StableSortLogicalOr kills the flips of the
+// insertion-sort swap condition
+// prewhere.go:`prefix[j-1].rank > prefix[j].rank`. When the rank
+// comparison holds the original swaps the pair; a flipped comparison
+// never swaps, so an out-of-order pair is left in input order.
 func TestOrderedConjuncts_StableSortLogicalOr(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
@@ -79,7 +80,8 @@ func TestOrderedConjuncts_StableSortLogicalOr(t *testing.T) {
 }
 
 // TestIsCheapPredicate_AsymmetricBinary kills the `&&` → `||` flip in
-// `isCheapPredicate` for `Binary` (prewhere.go:90). Setting one side
+// prewhere.go:`isCheapPredicate(v.Left) && isCheapPredicate(v.Right)`.
+// Setting one side
 // cheap and the other side not-cheap distinguishes:
 //   - original (&&): false (not both cheap → predicate not cheap)
 //   - mutant   (||): true  (at least one side cheap → wrongly cheap)
@@ -106,8 +108,8 @@ func TestIsCheapPredicate_AsymmetricBinary(t *testing.T) {
 }
 
 // TestIsCheapPredicate_AsymmetricMapAccess kills the `&&` → `||` flip
-// at prewhere.go:92 — same pattern as the Binary case but for the
-// MapAccess shape. Synthesising a non-cheap Map side requires a
+// at prewhere.go:`isCheapPredicate(v.Map) && isCheapPredicate(v.Key)` —
+// same pattern as the Binary case but for the MapAccess shape. Synthesising a non-cheap Map side requires a
 // FuncCall in the Map slot.
 func TestIsCheapPredicate_AsymmetricMapAccess(t *testing.T) {
 	t.Parallel()
@@ -205,7 +207,7 @@ func TestClassifyPredicate_CheapAndWide(t *testing.T) {
 }
 
 // TestPartitionPrewhere_EmptyConjunctsBoundary kills the
-// `len(prewhere) > 0` boundary at prewhere.go:225. With empty
+// prewhere.go:`len(prewhere) > 0` boundary. With empty
 // conjuncts, the post-loop guard must NOT enter; the mutant `>= 0`
 // would index prewhere[-1] and panic.
 func TestPartitionPrewhere_EmptyConjunctsBoundary(t *testing.T) {
@@ -278,7 +280,7 @@ func TestProjectionTouchesWide_BoundaryCases(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_StepBoundary kills the `<=` ↔ `<` boundary
-// flip at exemplars.go:58 (`rw.Step <= 0`). The boundary case Step=0
+// flip at exemplars.go:`rw.Step <= 0`. The boundary case Step=0
 // must error; the mutant `< 0` would let it through.
 func TestEmitMetricsExemplars_StepBoundary(t *testing.T) {
 	t.Parallel()
@@ -302,8 +304,8 @@ func TestEmitMetricsExemplars_StepBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsExemplars_NilInner pins the `m.Inner == nil` guard
-// (exemplars.go:63). Killing both negation and the implied boundary
+// TestEmitMetricsExemplars_NilInner pins the
+// exemplars.go:`m.Inner == nil` guard. Killing both negation and the implied boundary
 // requires asserting the error AND asserting success when Inner is
 // supplied.
 func TestEmitMetricsExemplars_NilInner(t *testing.T) {
@@ -326,7 +328,7 @@ func TestEmitMetricsExemplars_NilInner(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_NilMetricsAggregate pins the early-return
-// on m==nil (exemplars.go:48).
+// on exemplars.go:`m == nil`.
 func TestEmitMetricsExemplars_NilMetricsAggregate(t *testing.T) {
 	t.Parallel()
 	rw := &chplan.RangeWindow{
@@ -361,7 +363,7 @@ func TestEmitMetricsExemplars_EmptyTimestampColumn(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_RangeDurationFallback kills the `==` flip
-// at exemplars.go:104 (`rangeDur == 0`). When Range is unset, the
+// at exemplars.go:`rangeDur == 0`. When Range is unset, the
 // fallback uses Step. With the negation-mutant the fallback runs when
 // Range is set instead, producing a different windowTsLowerBound.
 func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
@@ -427,8 +429,8 @@ func TestEmitMetricsExemplars_RangeDurationFallback(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_NumAnchorsBoundary kills both
-// CONDITIONAL_BOUNDARY at exemplars.go:115 and ARITHMETIC mutators at
-// 118 (`span/stepNS + 1` and surrounds). End == Start hits the
+// CONDITIONAL_BOUNDARY at exemplars.go:`span < 0` and the ARITHMETIC
+// mutators at exemplars.go:`span/stepNS + 1`. End == Start hits the
 // boundary: span == 0 → numAnchors = 0/step + 1 = 1.
 func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 	t.Parallel()
@@ -489,9 +491,9 @@ func TestEmitMetricsExemplars_NumAnchorsBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsExemplars_GroupByDisplayNamesFallback kills the `!=
-// ""` mutant at exemplars.go:`numAnchors, err := exemplarNumAnchors(rw, stepNS)`. The branch falls back to the SQL
-// alias only when the display name slot is empty; when both alias and
+// TestEmitMetricsExemplars_GroupByDisplayNamesFallback kills the `!= ""`
+// mutant at exemplars.go:`m.GroupByDisplayNames[i] != ""`. The branch
+// falls back to the SQL alias only when the display name slot is empty; when both alias and
 // display name are present, the display name wins. The check inspects
 // the bound args (the labels render as `?` placeholders bound to
 // string args).
@@ -551,10 +553,11 @@ func TestEmitMetricsExemplars_GroupByDisplayNamesFallback(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsExemplars_MetricArgEmission_Op154 kills the three
-// `==` ↔ `!=` flips and the `&&` ↔ `||` flip at exemplars.go:154 —
-// `m.Op != Rate && m.Op != CountOverTime && m.Attr != nil`. The
-// boundary is whether `metric_arg` appears in the inner SELECT.
+// TestEmitMetricsExemplars_MetricArgEmission_Op154 kills the flips of
+// exemplars.go:`!metricsOpCountsRowsRatherThanOperand(m.Op) && m.Attr != nil`
+// — the gate deciding whether the exemplar stream reduces over the
+// operand column. The boundary is whether `metric_arg` appears in the
+// inner SELECT.
 func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 	t.Parallel()
 
@@ -661,7 +664,7 @@ func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_MaxPerSeriesBoundary kills the boundary
-// flip at exemplars.go:229 (`maxPerSeries > 0`). maxPerSeries=0 must
+// flip at exemplars.go:`maxPerSeries > 0`. maxPerSeries=0 must
 // disable LIMIT BY; the mutant `>= 0` would emit `LIMIT 0 BY ...`.
 func TestEmitMetricsExemplars_MaxPerSeriesBoundary(t *testing.T) {
 	t.Parallel()
@@ -710,10 +713,11 @@ func TestEmitMetricsExemplars_MaxPerSeriesBoundary(t *testing.T) {
 	})
 }
 
-// TestEmitMetricsAggregate_GroupByBoundary kills both mutants at
-// range_window.go:85 — boundary `>` ↔ `>=` and negation `>` ↔ `<=` on
-// `len(m.GroupBy) > 0`. Distinguishes the path that emits a `GROUP
-// BY` head (groupBy=[X]) from the empty-groupBy path.
+// TestEmitMetricsAggregate_GroupByBoundary kills the boundary and
+// negation mutants of the empty-GroupBy decision
+// range_window.go:groupKeyFrags:`len(groupBy) == 0`. Distinguishes the
+// path that emits a `GROUP BY` head (groupBy=[X]) from the empty-groupBy
+// path.
 func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -732,7 +736,7 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 			plan := &chplan.MetricsAggregate{
 				Op:         chplan.MetricsOpQuantileOverTime,
 				Attr:       &chplan.ColumnRef{Name: "Duration"},
-				Quantiles:  []float64{0.5, 0.9}, // multi-quantile → exercises the GroupBy branch in range_window.go:85
+				Quantiles:  []float64{0.5, 0.9}, // multi-quantile → exercises the GroupBy branch
 				GroupBy:    c.groupBy,
 				ValueAlias: "Value",
 				Inner:      &chplan.Scan{Table: "otel_traces"},
@@ -750,9 +754,10 @@ func TestEmitMetricsAggregate_GroupByBoundary(t *testing.T) {
 }
 
 // TestOuterGroupAliases_AliasFallback kills the boundary and negation
-// mutants at range_window.go:1037 (`i < len(aliases) && aliases[i] !=
-// ""`). The function falls back to `g<i>` when either the slice runs
-// out OR the alias is empty.
+// mutants at
+// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`.
+// The function falls back to `g<i>` when either the slice runs out OR
+// the alias is empty.
 func TestOuterGroupAliases_AliasFallback(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -805,8 +810,9 @@ func TestOuterGroupAliases_AliasFallback(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_GroupAliasFallback_Iter1039 hits the
-// INVERT_LOOPCTRL at range_window.go:1039 (`continue` flip inside
-// outerGroupAliases) by exercising the second branch — empty alias →
+// INVERT_LOOPCTRL on the `continue` in
+// range_window.go:outerGroupAliases:`i < len(aliases) && aliases[i] != ""`
+// by exercising the second branch — empty alias →
 // fallback to "g<i>". A break-mutant would terminate the loop early
 // and leave the second entry unfilled (panic on out-of-range slice
 // access in the caller).
@@ -841,11 +847,11 @@ func TestEmitMetricsExemplars_GroupAliasFallback_Iter1039(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsAggregate_LogicalAndOnMetricArg kills three negation
-// mutants and one logical mutant at range_window.go:767 (mirror of
-// the exemplars.go:154 cluster). Same matrix-path branch: emit
-// `metric_arg` only when Op is neither Rate nor CountOverTime AND Attr
-// is non-nil.
+// TestEmitMetricsAggregate_LogicalAndOnMetricArg kills the negation and
+// logical mutants of range_window.go:`!zeroFill && m.Attr != nil` — the
+// matrix-path mirror of exemplars.go's own metric_arg gate. Same branch:
+// emit `metric_arg` only when the Op does not zero-fill empty buckets AND
+// Attr is non-nil.
 func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 	t.Parallel()
 
@@ -892,8 +898,9 @@ func TestEmitMetricsAggregate_LogicalAndOnMetricArg(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsAggregate_BadStartEndPin kills the boundary mutants
-// on `span < 0` at range_window.go:736 (mirror of exemplars.go:`span < 0`).
+// TestEmitMetricsAggregate_BadStartEndPin kills the boundary mutants on
+// range_window.go:emitRangeWindowMetrics:`span < 0` (mirror of
+// exemplars.go:`span < 0`).
 // End < Start must error; End == Start must succeed (boundary case).
 func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
 	t.Parallel()
@@ -937,7 +944,8 @@ func TestEmitMetricsAggregate_BadStartEndPin(t *testing.T) {
 }
 
 // TestEmitStructuralJoin_RequiredColumnsTriple kills both
-// INVERT_LOGICAL mutants at structural_join.go:48 (`||` flips). With
+// INVERT_LOGICAL mutants (`||` flips) at
+// structural_join.go:`j.TraceIDColumn == "" || j.SpanIDColumn == ""`. With
 // exactly one of the three columns empty, the original returns
 // ErrUnsupported; the `&&` mutants would let it through.
 func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
@@ -976,9 +984,11 @@ func TestEmitStructuralJoin_RequiredColumnsTriple(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback covers the
-// `BucketAlias == ""` boundary at histogram_over_time.go:69 and 76
-// (mirror checks for valueAlias). The negation mutant `BucketAlias !=
-// ""` would skip the default, producing an unquoted empty alias.
+// histogram_over_time.go:emitMetricsHistogramOverTime:`bucketAlias == ""`
+// boundary and its mirror
+// histogram_over_time.go:emitMetricsHistogramOverTime:`valueAlias == ""`.
+// The negation mutant `bucketAlias != ""` would skip the default,
+// producing an unquoted empty alias.
 func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1043,7 +1053,7 @@ func TestEmitMetricsHistogramOverTimeBucketAliasFallback(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_GroupAliasFallback exercises the
-// `i < len(m.GroupByAliases)` guard at histogram_over_time.go:62 — the
+// histogram_over_time.go:`i < len(m.GroupByAliases)` guard — the
 // boundary mutant turns into `<=`, causing an out-of-range
 // slice access on the boundary index when fewer aliases are supplied.
 func TestEmitMetricsHistogramOverTime_GroupAliasFallback(t *testing.T) {
@@ -1076,7 +1086,7 @@ func TestEmitMetricsHistogramOverTime_GroupAliasFallback(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_RangeFallback kills the negation
-// mutant at histogram_over_time.go:178 (`rangeDur == 0`). When Range
+// mutant at histogram_over_time.go:`rangeDur == 0`. When Range
 // is unset, the fallback uses Step; otherwise Range is used directly.
 func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 	t.Parallel()
@@ -1126,7 +1136,7 @@ func TestEmitMetricsHistogramOverTime_RangeFallback(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_NumAnchorsBoundary kills the
-// histogram_over_time.go:189 boundary on `span < 0` (mirror of the
+// histogram_over_time.go:`span < 0` boundary (mirror of the
 // exemplars / range_window check).
 func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 	t.Parallel()
@@ -1171,7 +1181,7 @@ func TestEmitMetricsHistogramOverTime_NumAnchorsBoundary(t *testing.T) {
 }
 
 // TestEmitMetricsHistogramOverTime_BadStartEndErrors kills the matrix
-// negation at histogram_over_time.go:189 by hitting the error path.
+// negation at histogram_over_time.go:`span < 0` by hitting the error path.
 func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 	t.Parallel()
 	inner := &chplan.MetricsHistogramOverTime{
@@ -1196,9 +1206,9 @@ func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 }
 
 // TestEmitMetricsSecondStage_PartitionByBoundary kills the boundary
-// at metrics_second_stage.go:69 (`len(m.PartitionBy) > 0`). The
-// mutant `>= 0` would emit a LIMIT BY clause even when
-// PartitionBy is empty, breaking the global top-K shape.
+// on metrics_second_stage.go:`sb.LimitBy(parts...)`. An empty
+// PartitionBy must render no `LIMIT … BY` keys at all; emitting one
+// would break the global top-K shape.
 func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1245,8 +1255,8 @@ func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 }
 
 // TestEmitVectorJoin_LogicalOr kills the INVERT_LOGICAL at
-// vector_join.go:362 (`manySide == "" || len(j.Include) == 0`). With
-// the `&&` mutant only one side suffices for the "OneToOne / bare
+// vector_join.go:`manySide == ""` and vector_join.go:`len(j.Include) == 0`.
+// With the `&&` mutant only one side suffices for the "OneToOne / bare
 // group" branch; we verify the asymmetric case.
 func TestEmitVectorJoin_LogicalOr(t *testing.T) {
 	t.Parallel()
@@ -1284,10 +1294,10 @@ func TestEmitVectorJoin_LogicalOr(t *testing.T) {
 	}
 }
 
-// TestEmitScan_NoColumnsBoundary kills the boundary at emit_node.go:66
-// (`len(s.Columns) > 0`). Without explicit Columns, the SELECT must be
-// the bare `SELECT *`; the mutant `>= 0` would emit an empty SELECT
-// list (invalid SQL).
+// TestEmitScan_NoColumnsBoundary kills the boundary mutants on
+// emit_node.go:`make([]Frag, 0, len(s.Columns))`. Without explicit
+// Columns, the SELECT must be the bare `SELECT *`; a mutated column
+// list would emit an empty SELECT list (invalid SQL).
 func TestEmitScan_NoColumnsBoundary(t *testing.T) {
 	t.Parallel()
 	t.Run("no columns → SELECT *", func(t *testing.T) {
@@ -1314,9 +1324,9 @@ func TestEmitScan_NoColumnsBoundary(t *testing.T) {
 	})
 }
 
-// TestEmitProject_NoProjectionsBoundary kills emit_node.go:300 — `if
-// len(p.Projections) > 0`. With no projections the SELECT degenerates
-// to bare `SELECT *`.
+// TestEmitProject_NoProjectionsBoundary kills the mutants of
+// emit_node.go:`for _, pr := range p.Projections`. With no projections
+// the SELECT degenerates to bare `SELECT *`.
 func TestEmitProject_NoProjectionsBoundary(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.Project{
@@ -1332,9 +1342,9 @@ func TestEmitProject_NoProjectionsBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitLimit_NonPositiveBoundary kills emit_node.go:487 — `if
-// l.Count > 0`. Count==0 must skip the LIMIT clause; the mutant `>=`
-// would emit `LIMIT 0`.
+// TestEmitLimit_NonPositiveBoundary kills the boundary mutants reaching
+// emit_node.go:`sb.Limit(l.Count)`. Count==0 must skip the LIMIT clause;
+// a `>=`-style flip would emit `LIMIT 0`.
 func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1373,7 +1383,7 @@ func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 }
 
 // TestEmitAggregateNoGroup_BoundaryAt245 kills the boundary at
-// emit_node.go:245 (`len(scan.Columns) > 0` inside emitFilter). A
+// emit_node.go:`make([]Frag, 0, len(scan.Columns))` (inside emitFilter). A
 // Filter on a Scan with no explicit Columns must omit the SELECT list;
 // with explicit Columns those names appear.
 func TestEmitAggregateNoGroup_BoundaryAt245(t *testing.T) {
@@ -1409,7 +1419,7 @@ func TestEmitAggregateNoGroup_BoundaryAt245(t *testing.T) {
 }
 
 // TestHistogramQuantileNative_AliasFallback kills the boundary at
-// histogram_quantile_native.go:106 (`i < len(h.GroupByAliases)`). With
+// histogram_quantile_native.go:`i < len(h.GroupByAliases)`. With
 // fewer aliases than group keys, the missing-alias entry must render
 // bare.
 func TestHistogramQuantileNative_AliasFallback(t *testing.T) {
@@ -1443,9 +1453,9 @@ func TestHistogramQuantileNative_AliasFallback(t *testing.T) {
 }
 
 // TestWithRecursive_AnchorOrRecursiveNil kills the INVERT_LOGICAL
-// mutant at builder.go:1654 (`c.Anchor == nil || c.Recursive == nil`).
-// The original panics if either is nil; the `&&` mutant requires
-// both, so a single-nil call slips through.
+// mutant at builder.go:`case c.Anchor != nil && c.Recursive != nil`.
+// The original panics if either is nil; the `||` mutant accepts a
+// single non-nil, so a single-nil call slips through.
 func TestWithRecursive_AnchorOrRecursiveNil(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1473,7 +1483,8 @@ func TestWithRecursive_AnchorOrRecursiveNil(t *testing.T) {
 }
 
 // TestEmitWindowedExtrapolated_StepBoundary kills the
-// `r.Step <= 0` boundary at range_window.go:1437. Triggered by a
+// range_window.go:emitWindowedArrayExtrapolated:`r.Step <= 0` boundary.
+// Triggered by a
 // `rate()` lowering with OuterRange > 0 but Step missing.
 func TestEmitWindowedExtrapolated_StepBoundary(t *testing.T) {
 	t.Parallel()
@@ -1496,8 +1507,8 @@ func TestEmitWindowedExtrapolated_StepBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArray_StepBoundary kills the matching
-// `r.Step <= 0` boundary at range_window.go:1810 inside
-// emitWindowedArray (the values-only / matrix path). Triggered by a
+// range_window.go:emitWindowedArray:`r.Step <= 0` boundary (the
+// values-only / matrix path). Triggered by a
 // `sum_over_time` lowering with OuterRange > 0 but Step missing.
 func TestEmitWindowedArray_StepBoundary(t *testing.T) {
 	t.Parallel()
@@ -1517,8 +1528,9 @@ func TestEmitWindowedArray_StepBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedExtrapolated_GroupByBoundary kills the
-// `len(groupFrags) > 0` boundary at range_window.go:1463 inside
-// emitWindowedArrayExtrapolated. Two cases: with and without GroupBy.
+// mutants of the innermost GROUP BY
+// range_window.go:emitWindowedArrayExtrapolated:`innermost.GroupBy(groupFrags...)`.
+// Two cases: with and without GroupBy.
 func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1610,8 +1622,8 @@ func TestEmitWindowedArrayMatrix_GroupByBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArrayMatrix_MinWindowBoundary kills the
-// `minWindowSize > 0` boundary at range_window.go:1947 inside
-// emitWindowedArrayMatrix. The matrix-path mirror of
+// range_window.go:emitWindowedArrayMatrix:`minWindowSize > 0` boundary.
+// The matrix-path mirror of
 // TestEmitWindowedArray_MinWindowBoundary.
 func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 	t.Parallel()
@@ -1644,9 +1656,9 @@ func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsMatrix_GroupByBoundary kills the
-// boundary at range_window.go:487 (emitWindowedArrayPairs inside the
-// pairs-path matrix variant). The condition mirrors the
-// values-only emission.
+// boundary on the pairs-path matrix regroup
+// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`.
+// The condition mirrors the values-only emission.
 func TestEmitWindowedArrayPairsMatrix_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1682,9 +1694,9 @@ func TestEmitWindowedArrayPairsMatrix_GroupByBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArray_MinWindowBoundary kills the
-// `minWindowSize > 0` boundary at range_window.go:504 inside
-// emitWindowedArrayPairs. `changes` / `resets` use minWindowSize 0
-// (no drop), while `deriv` uses 2.
+// range_window.go:emitWindowedArrayPairsAnchoredWithExtra:`minWindowSize > 0`
+// boundary. `changes` / `resets` use minWindowSize 0 (no drop), while
+// `deriv` uses 2.
 func TestEmitWindowedArray_MinWindowBoundary(t *testing.T) {
 	t.Parallel()
 	t.Run("deriv → window_pairs >= 2 emitted", func(t *testing.T) {
@@ -1726,7 +1738,7 @@ func TestEmitWindowedArray_MinWindowBoundary(t *testing.T) {
 }
 
 // TestEmitAggregate_LogicalAndOnEmptyGuard kills the INVERT_LOGICAL
-// at emit_node.go:337 (`len(a.GroupBy) == 0 && len(a.AggFuncs) == 0`).
+// at emit_node.go:`len(a.GroupBy) == 0 && len(a.AggFuncs) == 0`.
 // With the `||` mutant, asking for an aggregate with GroupBy populated
 // but no AggFuncs would still error; original would proceed.
 func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
@@ -1771,8 +1783,9 @@ func TestEmitAggregate_LogicalAndOnEmptyGuard(t *testing.T) {
 }
 
 // TestEmitAggregate_DropEmptyGuard kills the INVERT_LOGICAL +
-// CONDITIONALS_NEGATION at emit_node.go:353 (`len(a.GroupBy) == 0 &&
-// a.DropEmptyOnNoGroup`). The branch selects the count-guarded shape
+// CONDITIONALS_NEGATION at
+// emit_node.go:`if len(a.GroupBy) == 0 && a.DropEmptyOnNoGroup`.
+// The branch selects the count-guarded shape
 // only when both conditions hold; otherwise the plain aggregate path
 // runs.
 func TestEmitAggregate_DropEmptyGuard(t *testing.T) {
@@ -1854,8 +1867,8 @@ func TestEmitMetricsExemplars_ArithmeticBoundary118(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_AttributesMapCapacity185 kills the
-// ARITHMETIC_BASE mutant at exemplars.go:185 (`len(groupAliases)*2 +
-// 4`). That value sizes the attrMapFrags slice; the slice still grows
+// ARITHMETIC_BASE mutant at exemplars.go:`len(groupAliases)*2+6`.
+// That value sizes the attrMapFrags slice; the slice still grows
 // implicitly under append, so the capacity expression is observation-
 // equivalent to the original at the SQL surface — the eventual map(...)
 // call lays out the same key/value pairs regardless. Pinning the exit
@@ -1915,8 +1928,9 @@ func TestEmitMetricsExemplars_AttributesMapCapacity185(t *testing.T) {
 }
 
 // TestEmitVectorJoin_OutputAttrsBareVsMerge kills the INVERT_LOGICAL
-// flip at vector_join.go:362 (`manySide == "" || len(j.Include) == 0`).
-// Original `||` takes the bare-side branch when EITHER cardinality is
+// flip on vector_join.go:`manySide == ""` /
+// vector_join.go:`len(j.Include) == 0`. Original `||` takes the bare-side
+// branch when EITHER cardinality is
 // OneToOne OR no Include labels are supplied; the `&&` mutant only
 // takes that branch when BOTH hold. We drive a `CardOneToOne` plan
 // with a non-empty Include slice and pin that the bare branch fires:
@@ -1953,9 +1967,9 @@ func TestEmitVectorJoin_OutputAttrsBareVsMerge(t *testing.T) {
 
 // TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct kills
 // the two CONDITIONALS_NEGATION mutants at
-// histogram_over_time.go:203 (`bucketAlias == ""`) and 207
-// (`valueAlias == ""`) inside the matrix path
-// (emitRangeWindowHistogram). The pre-existing
+// histogram_over_time.go:emitRangeWindowHistogram:`bucketAlias == ""`
+// and histogram_over_time.go:emitRangeWindowHistogram:`valueAlias == ""`
+// inside the matrix path. The pre-existing
 // TestEmitMetricsHistogramOverTimeBucketAliasFallback hits only the
 // INSTANT path; the matrix mutants survived because no test wraps a
 // MetricsHistogramOverTime in a RangeWindow while supplying
@@ -2041,7 +2055,7 @@ func TestEmitMetricsHistogramOverTimeMatrix_AliasFallbackDistinct(t *testing.T) 
 }
 
 // TestEmitAggregateNoGroup_AliasPreservation kills the
-// CONDITIONALS_NEGATION at emit_node.go:409 (`alias == ""`). With the
+// CONDITIONALS_NEGATION at emit_node.go:`alias == ""`. With the
 // `!=` mutant: a non-empty user alias is OVERWRITTEN by the synthetic
 // `_cerb_agg_<i>` fallback (the assignment now runs for non-empty
 // strings), and the outer SELECT references the synthetic name. With
@@ -2074,9 +2088,9 @@ func TestEmitAggregateNoGroup_AliasPreservation(t *testing.T) {
 }
 
 // TestWithRecursive_NilPanicMessage kills the INVERT_LOGICAL flip at
-// builder.go:1654:23 (`c.Anchor == nil || c.Recursive == nil`). The
+// builder.go:`case c.Anchor != nil && c.Recursive != nil`. The
 // pre-existing TestWithRecursive_AnchorOrRecursiveNil only checks that
-// SOME panic happens — with the `&&` mutant, the "anchor nil only"
+// SOME panic happens — with the `||` mutant, the "anchor nil only"
 // case skips the explicit guard, falls through to `c.Anchor.writeInto`
 // and panics on the nil dereference instead. Both original and mutant
 // panic; gremlins called the mutant LIVED. Pinning the panic MESSAGE
@@ -2117,7 +2131,7 @@ func TestWithRecursive_NilPanicMessage(t *testing.T) {
 }
 
 // TestPartitionPrewhere_LastWhereRetainsExactConjunct kills the
-// CONDITIONALS_BOUNDARY at emit_node.go:262 (`len(whereExprs) > 0`)
+// CONDITIONALS_BOUNDARY at emit_node.go:`len(whereExprs) > 0`
 // and indirectly hardens partitionPrewhere's "promote-all-but-last"
 // guard. The mutant `>= 0` would emit an empty `WHERE` clause as
 // `WHERE ` (no operand) which CH rejects. We assert the SQL contains
@@ -2207,8 +2221,8 @@ func TestEmitWindowedArrayMatrix_LogRateMinWindowOne(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsAnchored_MinWindowZero kills the
-// `minWindowSize > 0` boundary at range_window.go:504 inside
-// emitWindowedArrayPairsAnchored. The instant pairs path is
+// range_window.go:emitWindowedArrayPairsAnchoredWithExtra:`minWindowSize > 0`
+// boundary. The instant pairs path is
 // reached by deriv / irate / last_over_time / predict_linear /
 // holt_winters, all of which pass minWindowSize ∈ {1, 2}. Every
 // production call exercises the >0 branch, so the mutant `>= 0`
@@ -2243,7 +2257,8 @@ func TestEmitWindowedArrayPairsAnchored_MinWindowZero(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard kills the
-// `r.Step <= 0` boundary at range_window.go:463. The OuterRange>0 path
+// range_window.go:emitWindowedArrayPairsAnchoredWithExtra:`r.Step <= 0`
+// boundary. The OuterRange>0 path
 // requires Step>0 to drive the anchor fanout; the guard rejects Step=0
 // loudly so the downstream `OuterRange.Nanoseconds() / stepNS` doesn't
 // divide by zero. The boundary mutant `< 0` lets Step=0 slip through
@@ -2280,8 +2295,9 @@ func TestEmitWindowedArrayPairsAnchored_OuterRangeStepGuard(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsMatrix_AnchorArithmetic kills two
-// ARITHMETIC_BASE mutants at range_window.go:542
-// (`r.OuterRange.Nanoseconds()/stepNS + 1`). The `/` becomes `*` /
+// ARITHMETIC_BASE mutants at
+// range_window.go:emitWindowedArrayPairsMatrix:`r.OuterRange.Nanoseconds()/stepNS + 1`.
+// The `/` becomes `*` /
 // `%` / `-` / `+`; the `+` becomes `-` / `*` / `%` / `/`. The matrix
 // emitter rendered by emitWindowedArrayPairsMatrix is reached from
 // predict_linear / holt_winters / deriv when OuterRange>0; pinning the
@@ -2328,8 +2344,9 @@ func TestEmitWindowedArrayPairsMatrix_AnchorArithmetic(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsMatrix_GroupByNegation kills the
-// CONDITIONALS_NEGATION at range_window.go:559 (`len(groupFrags) > 0`
-// inverted). With a non-empty GroupBy the original emits `GROUP BY`
+// CONDITIONALS_NEGATION reaching
+// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`.
+// With a non-empty GroupBy the original emits `GROUP BY`
 // in the innermost SELECT so the per-series groupArray collapses each
 // series into one array; the mutant `<= 0` skips the GROUP BY and
 // rolls every input row into a single super-series — wrong shape, no
@@ -2362,8 +2379,9 @@ func TestEmitWindowedArrayPairsMatrix_GroupByNegation(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsMatrix_MinWindowNegation kills the
-// CONDITIONALS_NEGATION at range_window.go:592 (`minWindowSize > 0`
-// inverted). Every production caller passes minWindowSize ∈ {1, 2},
+// CONDITIONALS_NEGATION at
+// range_window.go:emitWindowedArrayPairsMatrix:`minWindowSize > 0`
+// (inverted). Every production caller passes minWindowSize ∈ {1, 2},
 // so the original emits a `WHERE length(window_pairs) >= N` clause to
 // drop empty-window anchors. The mutant `<= 0` evaluates false for
 // every production minWindowSize and skips the WHERE, leaking empty
@@ -2392,7 +2410,8 @@ func TestEmitWindowedArrayPairsMatrix_MinWindowNegation(t *testing.T) {
 }
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary kills the
-// CONDITIONALS_BOUNDARY at range_window.go:911 (`if span < 0`). The
+// CONDITIONALS_BOUNDARY at
+// range_window.go:emitRangeWindowMetricsQuantileBuckets:`span < 0`. The
 // mutant flips `<` to `<=`, which rejects Start == End (span == 0) — a
 // legitimate single-anchor grid the original accepts. We assert that
 // Start == End succeeds (the original branch) and Start > End errors
@@ -2451,8 +2470,9 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanBoundary(t *testing.T) {
 }
 
 // TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic kills
-// the two ARITHMETIC_BASE mutants at range_window.go:914
-// (`span/stepNS + 1`). The `/` mutates to `*` / `%` / `-` / `+`; the
+// the two ARITHMETIC_BASE mutants at
+// range_window.go:emitRangeWindowMetricsQuantileBuckets:`span/stepNS + 1`.
+// The `/` mutates to `*` / `%` / `-` / `+`; the
 // `+` mutates to `-` / `*` / `%` / `/`. Setup: Start=t0, End=t0+4m,
 // Step=1m → span = 240s (in ns), span/stepNS = 4, numAnchors = 5.
 // Pinning the `range(0, 5)` literal in the emitted SQL distinguishes
@@ -2496,7 +2516,8 @@ func TestEmitRangeWindowMetricsQuantileBuckets_SpanAnchorArithmetic(t *testing.T
 }
 
 // TestEmitWindowedArray_MinWindowZeroBoundary kills the
-// CONDITIONALS_BOUNDARY at range_window.go:2098 (`minWindowSize > 0`).
+// CONDITIONALS_BOUNDARY at
+// range_window.go:emitWindowedArray:`minWindowSize > 0`.
 // The mutant flips `>` to `>=`; with minWindowSize=0 the mutant adds
 // `WHERE length(window_vals) >= 0` (always true) while the original
 // skips the WHERE entirely. Production callers all pass minWindowSize
@@ -2526,8 +2547,9 @@ func TestEmitWindowedArray_MinWindowZeroBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedArrayMatrix_MinWindowZeroBoundary kills the
-// CONDITIONALS_BOUNDARY at range_window.go:2192 (`minWindowSize > 0`)
-// inside emitWindowedArrayMatrix. Same shape as the non-matrix kill
+// CONDITIONALS_BOUNDARY at
+// range_window.go:emitWindowedArrayMatrix:`minWindowSize > 0`.
+// Same shape as the non-matrix kill
 // above: with minWindowSize=0 the mutant `>= 0` leaks an
 // always-true `WHERE length(window_vals) >= 0`; the original skips
 // the WHERE entirely. Reached via OuterRange > 0 with Step > 0 so the
@@ -2556,10 +2578,11 @@ func TestEmitWindowedArrayMatrix_MinWindowZeroBoundary(t *testing.T) {
 }
 
 // TestValidateScanShape_BothEmpty kills the CONDITIONALS_NEGATION at
-// emit_node.go:86 (`len(s.UnionTables) == 0`). With both Table and
-// UnionTables empty the emitter has nothing to read from and must
-// reject the Scan. The mutant flips the equality so the both-empty
-// case slips through, then L89's check also passes (Table is "") and
+// emit_node.go:`s.Table == "" && len(s.UnionTables) == 0`. With both
+// Table and UnionTables empty the emitter has nothing to read from and
+// must reject the Scan. The mutant flips the equality so the both-empty
+// case slips through, then the both-set check also passes (Table is "")
+// and
 // validateScanShape returns nil — the emitter then renders an empty
 // FROM clause that ClickHouse parses as `SELECT *` over the literal
 // “ (the bare Col(""))` which CH rejects at parse time with a
@@ -2577,7 +2600,8 @@ func TestValidateScanShape_BothEmpty(t *testing.T) {
 }
 
 // TestValidateScanShape_BothSet kills the CONDITIONALS_NEGATION at
-// emit_node.go:89 (`s.Table != ""`). The mutant flips the inequality
+// emit_node.go:`s.Table != "" && len(s.UnionTables) > 0`. The mutant
+// flips the inequality
 // so a Scan with BOTH Table and UnionTables set is no longer rejected
 // — the emitter would then route to the merge() table function and
 // silently drop the Table field, masking a planning bug. Asserting
@@ -2597,7 +2621,8 @@ func TestValidateScanShape_BothSet(t *testing.T) {
 }
 
 // TestValidateScanShape_BothSet_FilterScan kills the same
-// CONDITIONALS_NEGATION at emit_node.go:89 reached via the
+// CONDITIONALS_NEGATION at
+// emit_node.go:`s.Table != "" && len(s.UnionTables) > 0` reached via the
 // emitFilterScan path (which re-validates so a Filter(Scan{...})
 // node can't smuggle a malformed Scan past). Filter-with-Scan input
 // is the codegen-specialised PREWHERE shape and a separate caller of
@@ -2625,7 +2650,9 @@ func TestValidateScanShape_BothSet_FilterScan(t *testing.T) {
 }
 
 // TestValidateScanShape_BothEmpty_FilterScan kills the
-// CONDITIONALS_NEGATION at emit_node.go:`sql, args, err := b.Build()` reached via emitFilterScan.
+// CONDITIONALS_NEGATION at
+// emit_node.go:`s.Table == "" && len(s.UnionTables) == 0` reached via
+// emitFilterScan.
 // With both Table and UnionTables empty the Filter path must surface
 // the same error as the bare-Scan path.
 func TestValidateScanShape_BothEmpty_FilterScan(t *testing.T) {
@@ -2648,31 +2675,18 @@ func TestValidateScanShape_BothEmpty_FilterScan(t *testing.T) {
 }
 
 // TestEmitFilterScan_UnionTablesShapeLookup kills the cluster of
-// mutants at emit_node.go:341 — the `shapeKey == "" && len(scan.
-// UnionTables) > 0` guard that resolves the table shape from the
-// first member of a UnionTables Scan. The mutants:
-//
-//   - CONDITIONALS_NEGATION col 14 (`==` → `!=`): with Table empty,
-//     mutant condition becomes false; shapeKey stays "" and
-//     tableShapeFor("") returns the zero TableShape. No wide columns
-//     means projectionTouchesWide returns false → all conjuncts route
-//     to WHERE and no PREWHERE is emitted.
-//   - CONDITIONALS_NEGATION col 45 (`>` → `<=`): same observable —
-//     the guard becomes false, shapeKey stays "", PREWHERE drops.
+// mutants at emit_node.go:`shapeKey == ""` — the guard that resolves the
+// table shape from the first member of a UnionTables Scan. Under
+// CONDITIONALS_NEGATION (`==` → `!=`) and with Table empty the mutated
+// condition is false, so shapeKey stays "" and tableShapeFor("") returns
+// the zero TableShape. No wide columns means projectionTouchesWide
+// returns false → all conjuncts route to WHERE and no PREWHERE is
+// emitted.
 //
 // The original behaviour shape-looks-up against UnionTables[0]
 // (otel_metrics_gauge — registered with the metrics shape) so a cheap
 // non-wide predicate is promoted to PREWHERE. Asserting the PREWHERE
-// keyword in the rendered SQL kills both mutants in one shot.
-//
-// The companion INVERT_LOGICAL col 20 (`&&` → `||`) and
-// CONDITIONALS_BOUNDARY col 45 (`>` → `>=`) at the same site cannot
-// observationally diverge from the original after validateScanShape:
-// the Table-empty path forces both conjuncts true, the Table-set path
-// is rejected outright when UnionTables is also set, and the
-// Table-set + UnionTables-empty path leaves the second conjunct false
-// either way. Killing the two reachable mutants is sufficient to drop
-// LIVED below the phase2 threshold.
+// keyword in the rendered SQL kills the mutant.
 func TestEmitFilterScan_UnionTablesShapeLookup(t *testing.T) {
 	t.Parallel()
 	// A wide-column-touching projection (no explicit Columns →
@@ -2814,8 +2828,10 @@ func compareNodeInternal() *chplan.MetricsCompare {
 }
 
 // TestCompareOutAliasFallbacks kills the four CONDITIONALS_NEGATION
-// mutants at metrics_compare.go:126,133,140,147 — the `m.SelAlias != ""`
-// / `AttrAlias` / `ValAlias` / `ValueAlias` guards that fall back to the
+// mutants at metrics_compare.go:`m.SelAlias != ""`,
+// metrics_compare.go:`m.AttrAlias != ""`,
+// metrics_compare.go:`m.ValAlias != ""` and
+// metrics_compare.go:`m.ValueAlias != ""` — the guards that fall back to the
 // canonical default name when the alias is empty. The mutant `== ""`
 // would return the (empty) alias instead of the default; we assert both
 // the empty→default mapping AND the explicit→passthrough mapping so the
@@ -2862,7 +2878,7 @@ func TestCompareOutAliasFallbacks(t *testing.T) {
 }
 
 // TestEmitRangeWindowCompare_RangeFallback kills the
-// CONDITIONALS_NEGATION at metrics_compare.go:212 (`if rangeDur == 0`).
+// CONDITIONALS_NEGATION at metrics_compare.go:`rangeDur == 0`.
 // When the RangeWindow carries no explicit Range, rangeDur falls back to
 // Step, so the inner scan-bound pushdown subtracts one Step (60s) from
 // End. The mutant `!= 0` would skip the fallback, leaving rangeDur=0 and
@@ -2992,8 +3008,9 @@ func TestEmitRangeWindowCompare_OuterRangePath(t *testing.T) {
 }
 
 // TestEmitRangeWindowCompare_RootLookupTraceIDGuard covers + kills the
-// NOT_COVERED CONDITIONALS_NEGATION at metrics_compare.go:95
-// (`if m.TraceIDColumn == ""` inside the RootLookup branch). With a
+// NOT_COVERED CONDITIONALS_NEGATION at
+// metrics_compare.go:`m.TraceIDColumn == ""` (inside the RootLookup
+// branch). With a
 // RootLookup set but no TraceIDColumn the emitter must error; a non-empty
 // TraceIDColumn must render the LEFT JOIN on the qualified id columns.
 func TestEmitRangeWindowCompare_RootLookupTraceIDGuard(t *testing.T) {
@@ -3046,9 +3063,10 @@ func exemplarArgsContain(args []any, want string) bool {
 }
 
 // TestEmitMetricsExemplars_OuterRangeNumAnchors covers + kills the
-// CONDITIONALS_BOUNDARY/NEGATION at exemplars.go:112 (`case rw.OuterRange
-// > 0`) and the ARITHMETIC_BASE at 113 (`OuterRange.Nanoseconds()/stepNS
-// + 1`). The existing NumAnchorsBoundary test only exercises the
+// CONDITIONALS_BOUNDARY/NEGATION at exemplars.go:`case rw.OuterRange > 0`
+// and the ARITHMETIC_BASE at
+// exemplars.go:`rw.OuterRange.Nanoseconds()/stepNS + 1`.
+// The existing NumAnchorsBoundary test only exercises the
 // Start/End span branch; this one drives the OuterRange branch.
 //
 // OuterRange=4m, Step=1m → numAnchors = 4/1 + 1 = 5 → `least(5,`.
@@ -3076,9 +3094,9 @@ func TestEmitMetricsExemplars_OuterRangeNumAnchors(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_QuantileKeyBranch covers + kills the
-// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at exemplars.go:215
-// (`m.Op == QuantileOverTime && len(m.Quantiles) == 1`) and the
-// ARITHMETIC/format at 219. A single-quantile quantile_over_time exemplar
+// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at
+// exemplars.go:`m.Op == chplan.MetricsOpQuantileOverTime && len(m.Quantiles) == 1`
+// and the phi formatting it guards. A single-quantile quantile_over_time exemplar
 // must carry a `p="<phi>"` Attributes entry; a non-quantile op must NOT.
 func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 	t.Parallel()
@@ -3131,8 +3149,9 @@ func TestEmitMetricsExemplars_QuantileKeyBranch(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_UngroupedNameKeyBranch covers + kills the
-// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at exemplars.go:221
-// (`len(groupAliases) == 0 && m.Op != QuantileOverTime`). An ungrouped
+// CONDITIONALS_NEGATION / INVERT_LOGICAL mutants at
+// exemplars.go:`len(groupAliases) == 0 && m.Op != chplan.MetricsOpQuantileOverTime`.
+// An ungrouped
 // non-quantile op must carry a `__name__="<op>"` Attributes entry; a
 // grouped op must NOT (the group labels key the series instead).
 func TestEmitMetricsExemplars_UngroupedNameKeyBranch(t *testing.T) {
@@ -3194,9 +3213,10 @@ func nsAnnotateInternal() *chplan.NestedSetAnnotate {
 }
 
 // TestEmitNestedSetAnnotate_ColumnGuardDisjunction kills the four
-// INVERT_LOGICAL mutants at nested_set_annotate.go:108-109 — the
-// `SpansTable == "" || TraceIDColumn == "" || SpanIDColumn == "" ||
-// ParentSpanIDColumn == "" || TimestampColumn == ""` guard. Each `||`
+// INVERT_LOGICAL mutants of the required-column guard
+// nested_set_annotate.go:`n.SpansTable == ""` (`SpansTable == "" ||
+// TraceIDColumn == "" || SpanIDColumn == "" || ParentSpanIDColumn == "" ||
+// TimestampColumn == ""`). Each `||`
 // flip to `&&` is killed by an input that blanks exactly ONE column:
 // with the disjunction the emitter must still error (one empty column is
 // enough); the `&&` mutant would require ALL columns empty to error, so
@@ -3237,8 +3257,9 @@ func TestEmitNestedSetAnnotate_ColumnGuardDisjunction(t *testing.T) {
 }
 
 // TestProjectsBareColumn_ContinueScansAllProjections kills the
-// INVERT_LOOPCTRL mutant at nested_set_annotate.go:379 (`continue` →
-// `break` inside projectsBareColumn). A non-matching projection AHEAD of
+// INVERT_LOOPCTRL mutant (`continue` → `break`) on
+// nested_set_annotate.go:`ref.Name != col || ref.Qualifier != ""` inside
+// projectsBareColumn. A non-matching projection AHEAD of
 // the matching one must be passed over (continue), not abort the scan
 // (break). The break mutant returns false because it bails at the first
 // non-match before ever reaching the bare column.
@@ -3270,7 +3291,7 @@ func TestProjectsBareColumn_ContinueScansAllProjections(t *testing.T) {
 }
 
 // TestWriteOptQualCol_QualifierBranch kills the CONDITIONALS_NEGATION
-// mutant at nested_set_annotate.go:391 (`if qual == ""`). The empty-qual
+// mutant at nested_set_annotate.go:writeOptQualCol:`qual == ""`. The empty-qual
 // branch must emit a BARE backtick-quoted identifier; the non-empty
 // branch a `qual`.`col` pair. The `!=` mutant swaps the two, so the
 // empty-qual call would render the broken “ “.`col` “ form.
@@ -3299,9 +3320,10 @@ func TestWriteOptQualCol_QualifierBranch(t *testing.T) {
 // --- prewhere.go survivors ------------------------------------------------
 
 // TestOrderedConjuncts_SkipBucketContinue kills the INVERT_LOOPCTRL
-// mutant at prewhere.go:193 (`continue` → `break` after appending a
-// skip-index conjunct). A skip-bucket conjunct ahead of a plain "rest"
-// conjunct must NOT abort the loop — the `break` mutant would drop every
+// mutant (`continue` → `break`) after
+// prewhere.go:`skip = append(skip, c)` appends a skip-index conjunct. A
+// skip-bucket conjunct ahead of a plain "rest" conjunct must NOT abort the
+// loop — the `break` mutant would drop every
 // conjunct after the first skip hit, losing them from the output.
 //
 // The shape registers a SkipIndexColumn but no SortColumns, so the first
@@ -3323,14 +3345,14 @@ func TestOrderedConjuncts_SkipBucketContinue(t *testing.T) {
 }
 
 // TestOrderedConjuncts_StableSameRankTiebreak kills the insertion-sort
-// tiebreaker mutants at prewhere.go:201 (CONDITIONALS_NEGATION on the
-// `rank ==` equality + CONDITIONALS_BOUNDARY on the `idx >` tiebreaker)
-// and the INVERT_LOOPCTRL at 203 (`continue` → `break` after a swap).
+// mutants of prewhere.go:`prefix[j-1].rank > prefix[j].rank` — the
+// comparison flips plus the INVERT_LOOPCTRL on the `continue` after a
+// swap.
 //
 // Three conjuncts all reference the SAME sort column (ServiceName, rank
-// 0), so the rank comparison is always a tie and the stable sort must
-// fall back to the idx (input-order) tiebreaker. The original keeps them
-// in input order; a broken tiebreaker or an early `break` permutes them.
+// 0), so the rank comparison is always a tie and the strict `>` must
+// leave them alone. The original keeps them in input order; a flipped
+// comparison or an early `break` permutes them.
 func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName"}}
@@ -3345,9 +3367,9 @@ func TestOrderedConjuncts_StableSameRankTiebreak(t *testing.T) {
 }
 
 // TestIsSkipIndexColumn_Match kills the CONDITIONALS_NEGATION at
-// tableshape.go:60 (`c == name` → `!=`). With a matching name the lookup
-// must report true; a non-member must report false. Also covers the same
-// equality flip at tableshape.go:26 (IsSortColumn) below.
+// tableshape.go:IsSkipIndexColumn:`c == name` (→ `!=`). With a matching
+// name the lookup must report true; a non-member must report false. Also
+// covers the same equality flip in IsSortColumn below.
 func TestIsSkipIndexColumn_Match(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SkipIndexColumns: []string{"TraceId", "SpanId"}}
@@ -3360,7 +3382,7 @@ func TestIsSkipIndexColumn_Match(t *testing.T) {
 }
 
 // TestIsSortColumn_Match kills the CONDITIONALS_NEGATION at
-// tableshape.go:26 (`c == name` → `!=`) in IsSortColumn.
+// tableshape.go:IsSortColumn:`c == name` (→ `!=`).
 func TestIsSortColumn_Match(t *testing.T) {
 	t.Parallel()
 	shape := TableShape{SortColumns: []string{"ServiceName", "Timestamp"}}
@@ -3375,9 +3397,10 @@ func TestIsSortColumn_Match(t *testing.T) {
 // --- vector_join.go / vector_set_op.go column-validation switches ---------
 
 // TestValidateVectorJoinCols_EachEmptyErrors covers + kills the four
-// CONDITIONALS_NEGATION mutants at vector_join.go:97-103 — the
+// CONDITIONALS_NEGATION mutants of the validateVectorJoinCols switch
+// starting at vector_join.go:`case j.AttributesColumn == ""` — the
 // `AttributesColumn`/`MetricNameColumn`/`TimestampColumn`/`ValueColumn ==
-// ""` switch cases. Each blank-one-column variant must surface
+// ""` cases. Each blank-one-column variant must surface
 // ErrUnsupported; the fully-populated control must not.
 func TestValidateVectorJoinCols_EachEmptyErrors(t *testing.T) {
 	t.Parallel()
@@ -3426,9 +3449,9 @@ func TestValidateVectorJoinCols_EachEmptyErrors(t *testing.T) {
 }
 
 // TestValidateVectorSetOpCols_EachEmptyErrors covers + kills the four
-// CONDITIONALS_NEGATION mutants at vector_set_op.go:371-377 plus the
-// `if err != nil` guard at 50 — the column-validation switch on a
-// VectorSetOp. Same blank-one-column shape as the VectorJoin test.
+// CONDITIONALS_NEGATION mutants of the column-validation switch on a
+// VectorSetOp, starting at vector_set_op.go:`case s.AttributesColumn == ""`,
+// plus the `if err != nil` guard on its caller. Same blank-one-column shape as the VectorJoin test.
 func TestValidateVectorSetOpCols_EachEmptyErrors(t *testing.T) {
 	t.Parallel()
 	base := func() *chplan.VectorSetOp {
@@ -3662,9 +3685,9 @@ func TestEmitStructuralRecursiveUnion_InverseClosureMaxDepth(t *testing.T) {
 }
 
 // TestEmitStructuralSiblingJoin_Succeeds covers + kills the
-// CONDITIONALS_NEGATION mutants at structural_join.go:184 and 188 (the
-// `if err != nil` guards around the left/right subqueryFrag calls in
-// emitStructuralSiblingJoin). A valid sibling (`~`) join must emit
+// CONDITIONALS_NEGATION mutants on the `if err != nil` guards around the
+// left/right subqueryFrag calls in
+// structural_join.go:emitStructuralSiblingJoin. A valid sibling (`~`) join must emit
 // non-empty SQL that joins L and R on shared parent; the `err == nil`
 // mutant would return early (empty SQL) on the success path.
 func TestEmitStructuralSiblingJoin_Succeeds(t *testing.T) {
@@ -4017,7 +4040,7 @@ func TestWindowFrag_PartitionByBoundary(t *testing.T) {
 // --- range_window.go predict_linear slope-column dispatch (411:5) ---
 
 // TestPredictLinear_SlopeColumnDispatch kills the CONDITIONALS_NEGATION
-// mutant at range_window.go:411 (`r.PredictLinearSlopeColumn == ""`).
+// mutant at range_window.go:`r.PredictLinearSlopeColumn == ""`.
 // An empty slope column must route through the plain single-value writer
 // (only the `Value` column projected); a non-empty one must route through
 // the "with extra" writer, projecting a SECOND column that reads the
@@ -4075,7 +4098,7 @@ func TestPredictLinear_SlopeColumnDispatch(t *testing.T) {
 // --- range_window.go anchorGridCeilIdxFrag arithmetic (1812:41) ---
 
 // TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne kills the ARITHMETIC_BASE
-// mutant at range_window.go:1812 (`addNS-1` → `addNS+1`) inside
+// mutant at range_window.go:`addNS-1` (→ `addNS+1`) inside
 // anchorGridCeilIdxFrag. The ceiling index is documented to equal the
 // floor index with its addend shifted down by exactly one nanosecond;
 // this pins that relationship directly against anchorGridFloorIdxFrag
@@ -4109,8 +4132,9 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 // --- range_window.go prefixAnchorIndexFrag arithmetic (1733:37) ---
 
 // TestPrefixAnchorIndexFrag_NegatesRangeNS kills both the INVERT_NEGATIVES
-// and ARITHMETIC_BASE mutants at range_window.go:1733:37 (the `-rangeNS`
-// unary expression passed as anchorGridFloorIdxFrag's addNS argument). A
+// and ARITHMETIC_BASE mutants at
+// range_window.go:prefixAnchorIndexFrag:`-rangeNS` (the unary expression
+// passed as anchorGridFloorIdxFrag's addNS argument). A
 // mutant that drops or otherwise flips that sign feeds anchorGridFloorIdxFrag
 // a POSITIVE offset instead — its own `addNS > 0` branch then renders an
 // ADDITION (`dist + rangeNS`) instead of the correct SUBTRACTION
@@ -4140,7 +4164,8 @@ func TestPrefixAnchorIndexFrag_NegatesRangeNS(t *testing.T) {
 			Sub(anchorGridFloorIdxFrag(dist, rangeNS, stepNS), InlineLit(int64(1)))),
 	))
 	if got == positiveOffset {
-		t.Errorf("prefixAnchorIndexFrag matches the POSITIVE-rangeNS form (line 1733 sign flipped?): %s", got)
+		t.Errorf("prefixAnchorIndexFrag matches the POSITIVE-rangeNS form "+
+			"(the `-rangeNS` sign flipped?): %s", got)
 	}
 }
 
@@ -4156,11 +4181,13 @@ func instantDeltaPrefixSourceStubWindow() *QueryBuilder {
 }
 
 // TestInstantDeltaPrefixSource_GuardNilBranch kills the CONDITIONALS_NEGATION
-// mutant at range_window.go:3562:11 (`guard != nil` -> `== nil`). Production
+// mutant at range_window.go:instantDeltaPrefixSource:`guard != nil`
+// (-> `== nil`). Production
 // never reaches instantDeltaPrefixSource with an empty TemporalityColumn
 // (emitWindowedArrayExtrapolated's needsDeltaFirstLevel gate requires
 // hasTemporality), so this calls it directly to force
-// deltaPresenceGuardFrag's nil branch (range_window.go:3498-3499) and
+// deltaPresenceGuardFrag's nil branch
+// (range_window.go:deltaPresenceGuardFrag:`r.TemporalityColumn == ""`) and
 // exercise the guard==nil path the mutant inverts. A `== nil` mutant would
 // instead call prefix.Where(nil) here, and that nil Frag panics the moment
 // it is invoked during Build() — a difference this test would catch as a
@@ -4196,7 +4223,9 @@ func TestInstantDeltaPrefixSource_GuardNilBranch(t *testing.T) {
 }
 
 // TestInstantDeltaPrefixSource_JoinDispatch kills the CONDITIONALS_NEGATION
-// mutant at range_window.go:3574:23 (`len(groupColumns) == 0` -> `!= 0`). A
+// mutant at
+// range_window.go:instantDeltaPrefixSource:`len(groupColumns) == 0`
+// (-> `!= 0`). A
 // grouped call must LEFT JOIN the prefix scan back keyed on the group
 // columns; an ungrouped call must CROSS JOIN it (there is nothing to key
 // on). The mutant swaps which shape each case takes.
@@ -4256,7 +4285,8 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 // --- range_window.go plainGroupColumnNames validation (5104:10, 5104:33) ---
 
 // TestPlainGroupColumnNames_EmptyNameRejected kills the INVERT_LOGICAL
-// mutant at range_window.go:5104:33 (the outer `||` between
+// mutant on the outer `||` of
+// range_window.go:`!ok || ref.Qualifier != "" || ref.Name == ""` (between
 // `ref.Qualifier != ""` and `ref.Name == ""`). A bare ColumnRef with an
 // empty Name is otherwise well-formed (ok==true, Qualifier==""), so only
 // the third disjunct can catch it; an `&&` mutant there requires the first
@@ -4271,8 +4301,10 @@ func TestPlainGroupColumnNames_EmptyNameRejected(t *testing.T) {
 }
 
 // TestPlainGroupColumnNames_NonColumnRefNoPanic kills the INVERT_LOGICAL
-// mutant at range_window.go:5104:10 (the inner `||` between `!ok` and
-// `ref.Qualifier != ""`). When the group key is not a *chplan.ColumnRef at
+// mutant on the inner `||` of
+// range_window.go:`!ok || ref.Qualifier != "" || ref.Name == ""` (between
+// `!ok` and `ref.Qualifier != ""`). When the group key is not a
+// *chplan.ColumnRef at
 // all, `ref` is a nil *chplan.ColumnRef and only short-circuit evaluation
 // (the original `||`) keeps `ref.Qualifier` from ever being dereferenced.
 // An `&&` mutant forces evaluation of the second operand whenever `!ok` is

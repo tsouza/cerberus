@@ -139,7 +139,7 @@ func cat2Histogram() []exoticCase {
 		{name: "cat2/hq_p90", promql: "histogram_quantile(0.9, sum by(le)(rate(" + h + "[5m])))"},
 		{name: "cat2/hq_p95", promql: "histogram_quantile(0.95, sum by(le)(rate(" + h + "[5m])))"},
 		{name: "cat2/hq_by_path", promql: "histogram_quantile(0.9, sum by(le, path)(rate(" + h + "[5m])))"},
-		// phi out of domain (Prometheus quantile.go:114-119): phi < 0 ->
+		// phi out of domain (Prometheus quantile.go): phi < 0 ->
 		// -Inf, phi > 1 -> +Inf. Pinned by Wave-0 fix (b); phi == 0 / 1
 		// stay in domain and fall through to the normal bucket search.
 		{name: "cat2/hq_phi_neg", promql: "histogram_quantile(-0.1, sum by(le)(rate(" + h + "[5m])))"},

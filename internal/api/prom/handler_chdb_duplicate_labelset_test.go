@@ -6,8 +6,8 @@
 //
 // Reference Prometheus refuses that query rather than answering it:
 // `Matrix.ContainsSameLabelset()` → `ev.errorf("vector cannot contain
-// metrics with the same labelset")` (promql/engine.go:2295, and the three
-// sibling sites at :1531 / :1552 / :4109). Cerberus reduces in ClickHouse,
+// metrics with the same labelset")` in promql/engine.go, and the three
+// sibling `ev.errorf` sites there. Cerberus reduces in ClickHouse,
 // where `GROUP BY Attributes` merges the two series by construction — so
 // without a guard the query returns a plausible-looking single row for a
 // question upstream declines to answer.

@@ -30,7 +30,8 @@ func histogramProjectionPlan(groupBy []chplan.Expr, aliases []string) *chplan.Hi
 // so a plan carrying more keys than aliases must render the surplus keys bare
 // rather than indexing off the end of the alias slice.
 //
-// Kills histogram_projection.go:54:8 under BOTH mutators of `i < len(...)`:
+// Kills histogram_projection.go:`i < len(h.GroupByAliases)` under BOTH of its
+// mutators:
 //
 //   - CONDITIONALS_BOUNDARY (`i <= len(...)`): at i == 1 with one alias the
 //     mutated guard is `1 <= 1`, so it reads GroupByAliases[1] out of a
@@ -55,7 +56,8 @@ func TestMutation_HistogramProjection_FewerAliasesThanGroupKeys(t *testing.T) {
 // list, because that alias is the label name the decode side binds the group
 // column by.
 //
-// Kills histogram_projection.go:54:8 CONDITIONALS_NEGATION (`i >= len(...)`)
+// Kills histogram_projection.go:`i < len(h.GroupByAliases)` under
+// CONDITIONALS_NEGATION (`i >= len(...)`)
 // without relying on an out-of-range panic: with two keys and two aliases the
 // inverted guard is false at every index, so both keys render bare.
 func TestMutation_HistogramProjection_EveryAliasProjected(t *testing.T) {

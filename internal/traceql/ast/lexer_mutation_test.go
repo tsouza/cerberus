@@ -138,8 +138,8 @@ func TestParentScopedAttribute(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// lexer.go:`if sb.Len() > longestScopePrefix` (CONDITIONALS_BOUNDARY, `if sb.Len() > longestScopePrefix`
-// -> `>=`). tryScopeAttribute only ever ACTS on the two keywords that map to
+// lexer.go:`sb.Len() > longestScopePrefix` (CONDITIONALS_BOUNDARY, `>` ->
+// `>=`). tryScopeAttribute only ever ACTS on the two keywords that map to
 // tokSpanDot / tokResourceDot — "span." (5 bytes) and "resource." (9) — and
 // the '.' arm two branches above fires before this length check, so sb holds
 // at most 4 and 8 bytes respectively when the check runs. Both forms build
@@ -150,8 +150,8 @@ func TestParentScopedAttribute(t *testing.T) {
 // exhaustive check of keywordTokens confirms no key mapping to tokSpanDot or
 // tokResourceDot exceeds longestScopePrefix.
 //
-// lexer.go:554:23 (INVERT_LOGICAL, `if r == scanner.EOF ||
-// unicode.IsSpace(r)` -> `&&`). This arm is subsumed by the character test on
+// lexer.go:`r == scanner.EOF || unicode.IsSpace(r)` (INVERT_LOGICAL, `||` ->
+// `&&`). This arm is subsumed by the character test on
 // the next branch: `!unicode.IsNumber(r) && !isDurationRune(r) && r != '.'`
 // breaks for every rune the EOF/space arm catches, because no rune is at once
 // a space and a digit, one of isDurationRune's nine letters, or '.'. Under

@@ -60,8 +60,9 @@ func fusedIntersectWindowedArm(col, val string) chplan.Node {
 }
 
 // TestMutation_FusedIntersect_UnfilteredArmDoesNotEndTheGateLoop defends
-// set_op.go:436 (the `continue` that skips an arm whose residual predicate is
-// nil while emitting the QUALIFY gate for every other arm).
+// the `continue` in set_op.go:`for _, pred := range residuals` that skips an
+// arm whose residual predicate is nil while emitting the QUALIFY gate for
+// every other arm.
 //
 // Mutation INVERT_LOOPCTRL turns that `continue` into `break`, which abandons
 // the whole gate loop at the FIRST nil residual instead of skipping just that

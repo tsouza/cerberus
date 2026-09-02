@@ -11,8 +11,9 @@
 //   - histogram_native_subquery_select.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange` (INVERT_LOGICAL,
 //     `s.ExpHistogramTable == "" || ctx.metadataFullRange` -> `&&` inside
 //     selectFnOverExpHistogramSubquery). This function re-validates the
-//     identical condition one level down at line 118's
-//     `!isExpHistogramValuedShape(sub.Expr, s, ctx)` — and EVERY leaf
+//     identical condition one level down, in the
+//     `!isExpHistogramValuedShape(sub.Expr, s, ctx)` disjunct of
+//     histogram_native_subquery_select.go:`sub.Range <= 0` — and EVERY leaf
 //     recognizer isExpHistogramValuedShape dispatches to carries the same
 //     guard, so whenever the top guard's condition holds,
 //     isExpHistogramValuedShape is unconditionally false regardless of
@@ -27,13 +28,13 @@
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
 //     defaultSubqueryStep }` (defaultSubqueryStep = time.Minute, a positive
 //     constant) already eliminates step == 0 as a reachable value by the
-//     time line 170 runs — step is either the caller's own non-zero
+//     time `if step < 0` runs — step is either the caller's own non-zero
 //     sub.Step or the positive default. `<` and `<=` decide identically
 //     over every value except exactly 0, so no reachable input can make
 //     the two operators disagree (the same reasoning
 //     gremlins_kill_subquery_test.go's header gives for subquery.go:`step < 0`).
-//   - histogram_native_subquery_select.go:`!matched` (INVERT_LOGICAL, `!matched
-//     || chplan.RowShapeOf(input) != chplan.HistogramRowShape` -> `&&`).
+//   - histogram_native_subquery_select.go:`if !matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
+//     (INVERT_LOGICAL, `||` -> `&&`).
 //     lowerExpHistogramValuedShape's own contract (histogram_native_float_
 //     fn.go) guarantees `matched == false` if and only if its very last
 //     fallback ran, which always returns `input == nil` — and
@@ -92,7 +93,7 @@ func TestSelectFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 	ctx := lowerCtx{start: at, end: at}
 	if _, ok := selectFnOverExpHistogramSubquery(call, s, ctx); ok {
 		t.Fatalf("expected zero-range subquery to be rejected; got ok=true " +
-			"(mutant `<=`->`<` at histogram_native_subquery_select.go:118:22)")
+			"(mutant `<=`->`<` at histogram_native_subquery_select.go:`sub.Range <= 0`)")
 	}
 }
 
@@ -118,8 +119,8 @@ func TestLowerSelectFnOverExpHistogramSubquery_ZeroStepDefaults(t *testing.T) {
 }
 
 // TestLowerSelectFnOverExpHistogramSubquery_InstantPinDoesNotBroadcast
-// kills the INVERT_LOGICAL mutant at histogram_native_subquery_select.go:
-// 200:21 (`ctx.rangeMode() && subqueryPinned(sub)` -> `||`). An
+// kills the INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_subquery_select.go:`if ctx.rangeMode() && subqueryPinned(sub)`. An
 // `@`-pinned histogram-preserving subquery (last_over_time) reached via a
 // plain instant LowerAt (ctx.rangeMode() == false) must take the ordinary
 // single-window branch. With OR, subqueryPinned(sub) alone satisfies the
@@ -159,7 +160,7 @@ func TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits(t *testin
 	expr := mustParse(t, `latency_exp_hist[5m]`)
 	if _, _, ok := bareExpHistogramMatrixSelector(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true " +
-			"(mutant `||`->`&&` at histogram_native_bare.go:225:31)")
+			"(mutant `||`->`&&` at histogram_native_bare.go:bareExpHistogramMatrixSelector:`if s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
 	}
 }
 

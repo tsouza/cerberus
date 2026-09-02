@@ -4,8 +4,7 @@
 // phase4-promql-* mutation run (mutation.yml). Each test constructs an
 // input that observably differentiates the original code from the
 // mutated branch. See gremlins_kill_test.go's header for the shared
-// conventions (mutant IDs in each test's doc comment are gremlins's
-// `file:line:col`).
+// conventions, including how each doc comment cites its mutant's construct.
 package promql
 
 import (
@@ -71,9 +70,8 @@ func clampFamilyNewValue(t *testing.T, q string) chplan.Expr {
 // ---------------------------------------------------------------------
 
 // TestIsVectorTypedSyntheticOperand_ConjunctsAndGuard kills two mutants
-// on the same line, binary.go:`call, ok := e.(*parser.Call)`:
-//
-//	return ok && call.Func != nil && call.Func.Name == "vector"
+// on the same line,
+// binary.go:`return ok && call.Func != nil && call.Func.Name == "vector"`:
 //
 // INVERT_LOGICAL at col 14 flips the first `&&` to `||`. Go's `&&`/`||`
 // precedence is equal-left-to-right for this expression's grouping
@@ -112,19 +110,18 @@ func TestIsVectorTypedSyntheticOperand_ConjunctsAndGuard(t *testing.T) {
 	// make this false unconditionally.
 	vectorCall := mustParse(t, `vector(1)`)
 	if !isVectorTypedSyntheticOperand(vectorCall) {
-		t.Fatalf("isVectorTypedSyntheticOperand(vector(1)) = false, want true (mutant `!=`→`==` at binary.go:289:27 would always return false)")
+		t.Fatalf("isVectorTypedSyntheticOperand(vector(1)) = false, want true (mutant `!=`→`==` at " +
+			"binary.go:`return ok && call.Func != nil && call.Func.Name == \"vector\"` would always return false)")
 	}
 }
 
 // TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons kills the
-// INVERT_LOGICAL mutant at binary.go:423:22:
+// INVERT_LOGICAL mutant at
+// binary.go:foldSyntheticVectorBinary:`if isComparison(op) && returnBool`,
+// which wraps newValue in a `chplan.FnToFloat64` FuncCall.
 //
-//	if isComparison(op) && returnBool {
-//	    newValue = &chplan.FuncCall{Fn: chplan.FnToFloat64, Args: ...}
-//	}
-//
-// Every REAL caller reaches this line only after the early return on
-// line 418 (`isComparison(op) && !returnBool` already handled) combined
+// Every REAL caller reaches that guard only after the early return on
+// `isComparison(op) && !returnBool` above it, combined
 // with PromQL's grammar-level invariant that `bool` only parses after a
 // comparison operator (returnBool=true implies isComparison(op)=true).
 // Together those two facts mean the only states reachable via normal
@@ -151,8 +148,9 @@ func TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons(t *testing.T) 
 	// op=OpAdd (arithmetic) with returnBool=true never occurs via
 	// lowerVectorVector's real call path. Original:
 	// isComparison(false) && returnBool(true) = false, so newValue stays
-	// the raw Binary. Mutant `&&`→`||` at binary.go:423:22 would wrap it
-	// in toFloat64 regardless.
+	// the raw Binary. Mutant `&&`→`||` at
+	// binary.go:foldSyntheticVectorBinary:`if isComparison(op) && returnBool`
+	// would wrap it in toFloat64 regardless.
 	plan := foldSyntheticVectorBinary(synth, vec, vecExpr, chplan.OpAdd, true, true, s, lowerCtx{})
 	proj, ok := plan.(*chplan.Project)
 	if !ok {
@@ -163,7 +161,9 @@ func TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons(t *testing.T) 
 	}
 	valueExpr := proj.Projections[len(proj.Projections)-1].Expr
 	if _, wrapped := valueExpr.(*chplan.FuncCall); wrapped {
-		t.Fatalf("Value = %#v, want *chplan.Binary (mutant `&&`→`||` at binary.go:423:22 wraps arithmetic ops in toFloat64 too when returnBool=true)", valueExpr)
+		t.Fatalf("Value = %#v, want *chplan.Binary (mutant `&&`→`||` at "+
+			"binary.go:foldSyntheticVectorBinary:`if isComparison(op) && returnBool` "+
+			"wraps arithmetic ops in toFloat64 too when returnBool=true)", valueExpr)
 	}
 	if _, ok := valueExpr.(*chplan.Binary); !ok {
 		t.Fatalf("Value = %T, want *chplan.Binary", valueExpr)
@@ -172,8 +172,9 @@ func TestFoldSyntheticVectorBinary_ReturnBoolOnlyWrapsComparisons(t *testing.T) 
 
 // TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons is the
 // vector-scalar sibling of the synthetic-vector-binary test above,
-// killing the INVERT_LOGICAL mutant at binary.go:856:22. The same
-// reachability argument applies: line 842's early return plus PromQL's
+// killing the INVERT_LOGICAL mutant at
+// binary.go:lowerVectorScalar:`if isComparison(op) && returnBool`. The same
+// reachability argument applies: that function's own early return plus PromQL's
 // grammar invariant means `isComparison(op) && returnBool` only ever
 // observes (true,true) or (false,false) via real parsing, so the kill
 // calls lowerVectorScalar directly with the otherwise-unreachable
@@ -195,7 +196,9 @@ func TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons(t *testing.T) {
 	}
 	valueExpr := proj.Projections[len(proj.Projections)-1].Expr
 	if _, wrapped := valueExpr.(*chplan.FuncCall); wrapped {
-		t.Fatalf("Value = %#v, want *chplan.Binary (mutant `&&`→`||` at binary.go:856:22 wraps arithmetic ops in toFloat64 too when returnBool=true)", valueExpr)
+		t.Fatalf("Value = %#v, want *chplan.Binary (mutant `&&`→`||` at "+
+			"binary.go:lowerVectorScalar:`if isComparison(op) && returnBool` "+
+			"wraps arithmetic ops in toFloat64 too when returnBool=true)", valueExpr)
 	}
 	if _, ok := valueExpr.(*chplan.Binary); !ok {
 		t.Fatalf("Value = %T, want *chplan.Binary", valueExpr)
@@ -204,12 +207,9 @@ func TestLowerVectorScalar_ReturnBoolOnlyWrapsComparisons(t *testing.T) {
 
 // TestLowerVectorSetOp_MixedOr_StepAlignedTracksStep kills the
 // CONDITIONALS_BOUNDARY (`>`→`>=`) and CONDITIONALS_NEGATION (`>`→`<=`)
-// mutants at binary.go:593:32:
-//
-//	StepAligned: ctx.step > 0,
-//
-// This line sits inside lowerVectorSetOp's `case leftMixed ||
-// rightMixed` arm (binary.go:578), reached only when at least one
+// mutants on the `StepAligned: ctx.step > 0` field of the
+// *chplan.VectorSetOp built in lowerVectorSetOp's
+// binary.go:`case leftMixed || rightMixed:` arm — reached only when at least one
 // operand of the `or` is ITSELF already a Mixed VectorSetOp (cerberus
 // issue #2555) — a bare `<histogram> or <float>` lands in the sibling
 // `leftHistogram != rightHistogram` case instead. The query below
@@ -239,7 +239,8 @@ func TestLowerVectorSetOp_MixedOr_StepAlignedTracksStep(t *testing.T) {
 		t.Fatalf("lower(%q) instant plan = %T, want *chplan.VectorSetOp", query, instantPlan)
 	}
 	if instantSetOp.StepAligned {
-		t.Fatalf("instant-mode (step=0) StepAligned = true, want false (mutants at binary.go:593:32 would set true)")
+		t.Fatalf("instant-mode (step=0) StepAligned = true, want false (the `StepAligned: ctx.step > 0` mutants in " +
+			"binary.go:`case leftMixed || rightMixed:` would set true)")
 	}
 
 	end := start.Add(5 * time.Minute)
@@ -252,7 +253,8 @@ func TestLowerVectorSetOp_MixedOr_StepAlignedTracksStep(t *testing.T) {
 		t.Fatalf("lower(%q) range plan = %T, want *chplan.VectorSetOp", query, rangePlan)
 	}
 	if !rangeSetOp.StepAligned {
-		t.Fatalf("range-mode (step=1m) StepAligned = false, want true (CONDITIONALS_NEGATION mutant `>`→`<=` at binary.go:593:32 would set false)")
+		t.Fatalf("range-mode (step=1m) StepAligned = false, want true (the CONDITIONALS_NEGATION `>`→`<=` mutant on " +
+			"`StepAligned: ctx.step > 0` in binary.go:`case leftMixed || rightMixed:` would set false)")
 	}
 }
 
@@ -261,10 +263,8 @@ func TestLowerVectorSetOp_MixedOr_StepAlignedTracksStep(t *testing.T) {
 // ---------------------------------------------------------------------
 
 // TestNativeTemporalityFilter_ProjectionsCapacityIsTight kills the two
-// adjacent mutants at lower_strategy.go:349:81 inside
-// nativeTemporalityFilter's slice-capacity hint:
-//
-//	projectCopy.Projections = make([]chplan.Projection, 0, len(project.Projections)-1)
+// adjacent mutants on nativeTemporalityFilter's slice-capacity hint,
+// lower_strategy.go:`projectCopy.Projections = make([]chplan.Projection, 0, len(project.Projections)-1)`.
 //
 // ARITHMETIC_BASE (`-`→`+`) and INVERT_NEGATIVES (`-1`→`+1`) both
 // enlarge the capacity by 2 relative to the tight fit (removing exactly
@@ -297,16 +297,16 @@ func TestNativeTemporalityFilter_ProjectionsCapacityIsTight(t *testing.T) {
 	// Original: cap == len(project.Projections)-1 == 3-1 == 2.
 	// Both mutants: cap == 3+1 == 4.
 	if got := cap(proj.Projections); got != wantLen {
-		t.Fatalf("cap(Projections) = %d, want %d (mutants `-`→`+` and `-1`→`+1` at lower_strategy.go:349:81 would yield cap=4)", got, wantLen)
+		t.Fatalf("cap(Projections) = %d, want %d (mutants `-`→`+` and `-1`→`+1` at "+
+			"lower_strategy.go:`projectCopy.Projections = make([]chplan.Projection, 0, len(project.Projections)-1)` "+
+			"would yield cap=4)", got, wantLen)
 	}
 }
 
 // TestNativePredictLinearHorizonEligible_GuardIsDisjunctive kills the
-// INVERT_LOGICAL mutant at lower_strategy.go:581:30:
-//
-//	if len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 1 {
-//	    return false
-//	}
+// INVERT_LOGICAL mutant at
+// lower_strategy.go:`if len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 1`,
+// whose body returns false.
 //
 // Each case below satisfies exactly one disjunct while leaving the
 // other false, so `||` (short-circuit: reject) and `&&` (mutant: only
@@ -339,7 +339,8 @@ func TestNativePredictLinearHorizonEligible_GuardIsDisjunctive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := nativePredictLinearHorizonEligible(tc.rw); got != tc.want {
-				t.Fatalf("nativePredictLinearHorizonEligible(ScalarExprs=%d, Scalars=%v) = %v, want %v (mutant `||`→`&&` at lower_strategy.go:581:30 would flip the first two cases)",
+				t.Fatalf("nativePredictLinearHorizonEligible(ScalarExprs=%d, Scalars=%v) = %v, want %v (mutant `||`→`&&` at "+
+					"lower_strategy.go:`if len(rw.ScalarExprs) != 0 || len(rw.Scalars) != 1` would flip the first two cases)",
 					len(tc.rw.ScalarExprs), tc.rw.Scalars, got, tc.want)
 			}
 		})
@@ -347,9 +348,8 @@ func TestNativePredictLinearHorizonEligible_GuardIsDisjunctive(t *testing.T) {
 }
 
 // TestNativePredictLinearHorizonEligible_ZeroHorizonIsEligible kills the
-// CONDITIONALS_BOUNDARY mutant at lower_strategy.go:585:11:
-//
-//	return t >= 0 && t == math.Trunc(t)
+// CONDITIONALS_BOUNDARY mutant at
+// lower_strategy.go:`return t >= 0 && t == math.Trunc(t)`.
 //
 // t=0 sits exactly on the boundary: `>= 0` is true (0 is a valid
 // non-negative horizon — `predict_linear(m[5m], 0)` is legal PromQL),
@@ -359,7 +359,8 @@ func TestNativePredictLinearHorizonEligible_ZeroHorizonIsEligible(t *testing.T) 
 
 	rw := &chplan.RangeWindow{Scalars: []float64{0}}
 	if !nativePredictLinearHorizonEligible(rw) {
-		t.Fatalf("nativePredictLinearHorizonEligible(t=0) = false, want true (mutant `>=`→`>` at lower_strategy.go:585:11 would reject t=0)")
+		t.Fatalf("nativePredictLinearHorizonEligible(t=0) = false, want true (mutant `>=`→`>` at " +
+			"lower_strategy.go:`return t >= 0 && t == math.Trunc(t)` would reject t=0)")
 	}
 }
 
@@ -385,13 +386,15 @@ func TestLowerClampOverMixedExpHistogramSetOp_ClampMinMaxPickCorrectFn(t *testin
 	minValue := clampFamilyNewValue(t, `clamp_min(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`)
 	fc, ok := minValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnGreatest {
-		t.Fatalf("clamp_min newValue = %#v, want FuncCall{Fn: FnGreatest} (mutant `==`→`!=` at histogram_native_mixed_or_math_fn.go:270:21 would pick FnLeast)", minValue)
+		t.Fatalf("clamp_min newValue = %#v, want FuncCall{Fn: FnGreatest} (mutant `==`→`!=` at "+
+			"histogram_native_mixed_or_math_fn.go:`if call.Func.Name == \"clamp_min\"` would pick FnLeast)", minValue)
 	}
 
 	maxValue := clampFamilyNewValue(t, `clamp_max(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5)`)
 	fc, ok = maxValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnLeast {
-		t.Fatalf("clamp_max newValue = %#v, want FuncCall{Fn: FnLeast} (mutant `==`→`!=` at histogram_native_mixed_or_math_fn.go:270:21 would pick FnGreatest)", maxValue)
+		t.Fatalf("clamp_max newValue = %#v, want FuncCall{Fn: FnLeast} (mutant `==`→`!=` at "+
+			"histogram_native_mixed_or_math_fn.go:`if call.Func.Name == \"clamp_min\"` would pick FnGreatest)", maxValue)
 	}
 }
 
@@ -413,14 +416,13 @@ func TestLowerClampOverMixedExpHistogramSetOp_MixedBoundsTakeRuntimePath(t *test
 	newValue := clampFamilyNewValue(t, `clamp(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5, scalar(sum(up)))`)
 	fc, ok := newValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnIf {
-		t.Fatalf("mixed literal/computed clamp newValue = %#v, want FuncCall{Fn: FnIf} (runtime-bounds path; mutant `&&`→`||` at histogram_native_mixed_or_math_fn.go:293:12 would take the literal degenerate-fold path instead)", newValue)
+		t.Fatalf("mixed literal/computed clamp newValue = %#v, want FuncCall{Fn: FnIf} (runtime-bounds path; mutant `&&`→`||` at "+
+			"histogram_native_mixed_or_math_fn.go:`if okMin && okMax` would take the literal degenerate-fold path instead)", newValue)
 	}
 }
 
 // TestLowerClampOverMixedExpHistogramSetOp_EqualLiteralBoundsNonDegenerate
-// kills both mutants at histogram_native_mixed_or_math_fn.go:298:12:
-//
-//	if maxB < minB {
+// kills both mutants at histogram_native_mixed_or_math_fn.go:`if maxB < minB`.
 //
 // minB == maxB == 5: equality is NOT less-than, so the original takes
 // the non-degenerate literal path (FuncCall{Fn: FnGreatest}).
@@ -433,7 +435,8 @@ func TestLowerClampOverMixedExpHistogramSetOp_EqualLiteralBoundsNonDegenerate(t 
 	newValue := clampFamilyNewValue(t, `clamp(latency_exp_hist or histogram_quantile(0.5, latency_exp_hist), 5, 5)`)
 	fc, ok := newValue.(*chplan.FuncCall)
 	if !ok || fc.Fn != chplan.FnGreatest {
-		t.Fatalf("equal-bounds clamp newValue = %#v, want FuncCall{Fn: FnGreatest} (mutants `<`→`<=` and `<`→`>=` at histogram_native_mixed_or_math_fn.go:298:12 would take the degenerate empty-clamp fold)", newValue)
+		t.Fatalf("equal-bounds clamp newValue = %#v, want FuncCall{Fn: FnGreatest} (mutants `<`→`<=` and `<`→`>=` at "+
+			"histogram_native_mixed_or_math_fn.go:`if maxB < minB` would take the degenerate empty-clamp fold)", newValue)
 	}
 }
 
@@ -478,12 +481,15 @@ func TestCountValuesOverMixedExpHistogramSetOp_RecognizesOnlyCountValues(t *test
 
 	cvExpr := mustParseExperimental(t, `count_values("v", `+mixedOrQuery+`)`)
 	if _, _, ok := countValuesOverMixedExpHistogramSetOp(cvExpr, s, lowerCtx{}); !ok {
-		t.Fatalf("count_values(...) over mixed-or not recognized (mutant `!=`→`==` at histogram_native_mixed_or_aggregate_count_values.go:76:19 would reject it)")
+		t.Fatalf("count_values(...) over mixed-or not recognized (mutant `!=`→`==` at " +
+			"histogram_native_mixed_or_aggregate_count_values.go:`if !ok || agg.Op != parser.COUNT_VALUES` would reject it)")
 	}
 
 	sumExpr := mustParseExperimental(t, `sum(`+mixedOrQuery+`)`)
 	if _, _, ok := countValuesOverMixedExpHistogramSetOp(sumExpr, s, lowerCtx{}); ok {
-		t.Fatalf("sum(...) over mixed-or wrongly recognized as count_values (mutant `!=`→`==` at histogram_native_mixed_or_aggregate_count_values.go:76:19 would accept any non-count_values aggregate)")
+		t.Fatalf("sum(...) over mixed-or wrongly recognized as count_values (mutant `!=`→`==` at " +
+			"histogram_native_mixed_or_aggregate_count_values.go:`if !ok || agg.Op != parser.COUNT_VALUES` " +
+			"would accept any non-count_values aggregate)")
 	}
 }
 
@@ -493,11 +499,8 @@ func TestCountValuesOverMixedExpHistogramSetOp_RecognizesOnlyCountValues(t *test
 
 // TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup
 // kills the three CONDITIONALS_NEGATION mutants on
-// histogram_native_mixed_or_aggregate_presence.go:`agg.Op != parser.COUNT`:
-//
-//	if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil {
-//	    return nil, nil, false
-//	}
+// histogram_native_mixed_or_aggregate_presence.go:`if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil`,
+// whose body returns the zero-value rejection tuple.
 //
 // col 20 (`agg.Op != parser.COUNT` → `==`): with Op=COUNT, the mutated
 // first conjunct becomes true, and (true && (COUNT != GROUP = true)) =
@@ -520,12 +523,18 @@ func TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup(t *testi
 
 	countExpr := mustParseExperimental(t, `count(`+mixedOrQuery+`)`)
 	if _, _, ok := countOrGroupOverMixedExpHistogramSetOp(countExpr, s, lowerCtx{}); !ok {
-		t.Fatalf("count(...) over mixed-or not recognized (mutants at histogram_native_mixed_or_aggregate_presence.go:66:20 / :66:76 would reject it)")
+		t.Fatalf("count(...) over mixed-or not recognized (the `agg.Op != parser.COUNT` and " +
+			"`agg.Param != nil` mutants on " +
+			"histogram_native_mixed_or_aggregate_presence.go:`if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil` " +
+			"would reject it)")
 	}
 
 	groupExpr := mustParseExperimental(t, `group(`+mixedOrQuery+`)`)
 	if _, _, ok := countOrGroupOverMixedExpHistogramSetOp(groupExpr, s, lowerCtx{}); !ok {
-		t.Fatalf("group(...) over mixed-or not recognized (mutants at histogram_native_mixed_or_aggregate_presence.go:66:46 / :66:76 would reject it)")
+		t.Fatalf("group(...) over mixed-or not recognized (the `agg.Op != parser.GROUP` and " +
+			"`agg.Param != nil` mutants on " +
+			"histogram_native_mixed_or_aggregate_presence.go:`if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil` " +
+			"would reject it)")
 	}
 
 	// Negative control: an aggregate op that is neither COUNT nor GROUP
@@ -580,11 +589,17 @@ func TestDateFnOverMixedExpHistogramSetOp_ArgCountAndTimestampExclusion(t *testi
 
 	yearCall := &parser.Call{Func: parser.MustGetFunction("year"), Args: parser.Expressions{binExpr}}
 	if _, ok := dateFnOverMixedExpHistogramSetOp(yearCall, s, lowerCtx{}); !ok {
-		t.Fatalf("year(<mixed or>) not recognized (mutants `!=`→`==` at histogram_native_mixed_or_datefn.go:58:17 or `==`→`!=` at :58:37 would reject it)")
+		t.Fatalf("year(<mixed or>) not recognized (the `len(c.Args) != 1`→`==` or " +
+			"`c.Func.Name == \"timestamp\"`→`!=` mutants on " +
+			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"` " +
+			"would reject it)")
 	}
 
 	tsCall := &parser.Call{Func: parser.MustGetFunction("timestamp"), Args: parser.Expressions{binExpr}}
 	if _, ok := dateFnOverMixedExpHistogramSetOp(tsCall, s, lowerCtx{}); ok {
-		t.Fatalf("timestamp(<mixed or>) wrongly recognized (mutant `||`→`&&` at histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"`, or `==`→`!=` at :58:37, would accept it)")
+		t.Fatalf("timestamp(<mixed or>) wrongly recognized (the `||`→`&&` or " +
+			"`c.Func.Name == \"timestamp\"`→`!=` mutants on " +
+			"histogram_native_mixed_or_datefn.go:`if len(c.Args) != 1 || c.Func.Name == \"timestamp\"` " +
+			"would accept it)")
 	}
 }

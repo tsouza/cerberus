@@ -3758,8 +3758,8 @@ func (e *emitter) emitRangeWindowQuantileOverTime(r *chplan.RangeWindow) error {
 //  3. whether the factor is per-second (rate only — Prom's isRate
 //     branch).
 //
-// Mirrors prometheus/promql/functions.go::extrapolatedRate, lines
-// 188-314 (the helper funcDelta / funcRate / funcIncrease share).
+// Mirrors prometheus/promql/functions.go::extrapolatedRate (the helper
+// funcDelta / funcRate / funcIncrease share).
 type extrapolationKind int
 
 const (
@@ -4187,7 +4187,7 @@ func (e *emitter) deltaPrefixAggregateSource(
 //
 // The `<factor>` is `(sampled_interval + duration_to_start + duration_to_end) / sampled_interval`,
 // matching Prom's `factor := (sampledInterval + durationToStart + durationToEnd) / sampledInterval`
-// at functions.go:304.
+// in functions.go's `extrapolatedRate`.
 //
 // `<raw_result>` is `counter_delta` for rate / increase (Prom's
 // counter-reset-aware accumulator) and `(last_val - first_val)` for
@@ -5064,7 +5064,8 @@ func deltaFirstValFrag(temporality, reconstructedLevel, rawFirst Frag) Frag {
 
 // rangeStartFrag renders `<end> - toIntervalNanosecond(<rangeNS>)` —
 // Prom's `rangeStart = enh.Ts - durationMilliseconds(ms.Range+vs.Offset)`
-// (functions.go:197). end may render arbitrary CH expressions; the
+// (functions.go's `extrapolatedRate`). end may render arbitrary CH
+// expressions; the
 // rangeNS bound is inline.
 func rangeStartFrag(end Frag, rangeNS int64) Frag {
 	return Sub(end, Call("toIntervalNanosecond", InlineLit(rangeNS)))
@@ -5086,7 +5087,8 @@ func secondsBetweenFrag(from, to Frag) Frag {
 // sampledIntervalFrag renders the per-window sampled interval in
 // seconds (Float64): `dateDiff('nanosecond', first_ts, last_ts) / 1e9`.
 // Mirrors Prom's `sampledInterval := float64(lastT-firstT) / 1000`
-// (functions.go:258), substituting nanosecond precision for the
+// (functions.go's `extrapolatedRate`), substituting nanosecond precision
+// for the
 // millisecond timebase Prom carries.
 func sampledIntervalFrag() Frag {
 	return secondsBetweenFrag(BareIdent("first_ts"), BareIdent("last_ts"))
@@ -5207,7 +5209,7 @@ func durationToEndRawFrag(rangeEnd Frag) Frag {
 // projecting a separate `last_val` alias.
 //
 // The optional `/ <range_seconds>` only applies to rate (Prom's
-// `isRate` branch at functions.go:305-307).
+// `isRate` branch in functions.go's `extrapolatedRate`).
 //
 // The parenthesisation is load-bearing, not cosmetic. Reference builds the
 // whole FACTOR first and applies it in a single multiplication

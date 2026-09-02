@@ -4,9 +4,9 @@
 // mutated branch, so the test fails when the mutant is applied and the
 // mutant is reported KILLED.
 //
-// See `.gremlins.yaml` for the mutation operators in play; the mutant
-// IDs in each test's doc comment refer to gremlins's `file:line:col`
-// notation as printed in the workflow logs.
+// See `.gremlins.yaml` for the mutation operators in play; each test's
+// doc comment names the construct the gremlins report's `file:line:col`
+// pointed at.
 package optimizer_test
 
 import (
@@ -17,11 +17,9 @@ import (
 )
 
 // TestFilterAggregateTranspose_SkipsNonColumnRefGroupKeyButKeepsLater
-// pins the `continue` at filter_aggregate_transpose.go:99 inside
-// passthroughGroupKeys. The check
-//
-//	if !ok || cr.Qualifier != "" { continue }
-//
+// pins the `continue` under the
+// filter_aggregate_transpose.go:`!ok || cr.Qualifier != ""` check inside
+// passthroughGroupKeys. That check
 // skips one ill-shaped group key while still considering the remaining
 // keys; flipping the `continue` to `break` (gremlins INVERT_LOOPCTRL)
 // would abort the loop on the first non-bare key and drop every later
@@ -70,11 +68,8 @@ func TestFilterAggregateTranspose_SkipsNonColumnRefGroupKeyButKeepsLater(t *test
 }
 
 // TestFilterAggregateTranspose_EmptyAliasIsTreatedAsNoRename pins the
-// `alias != ""` half of the alias-mismatch guard at
-// filter_aggregate_transpose.go:103. The check
-//
-//	if alias != "" && alias != cr.Name { continue }
-//
+// `alias != ""` half of the alias-mismatch guard
+// filter_aggregate_transpose.go:`alias != "" && alias != cr.Name`, which
 // treats the empty string as "no rename" — the key still flows into
 // passthrough. Flipping `alias != ""` to `alias == ""` (gremlins
 // CONDITIONALS_NEGATION) would swap the meaning: an empty alias would
@@ -119,12 +114,9 @@ func TestFilterAggregateTranspose_EmptyAliasIsTreatedAsNoRename(t *testing.T) {
 }
 
 // TestFilterAggregateTranspose_RenamedAliasSkipsKeyButKeepsLater pins
-// the `continue` at filter_aggregate_transpose.go:104 inside the alias
-// branch:
-//
-//	if alias != "" && alias != cr.Name { continue }
-//
-// The loop must skip the renamed key but keep iterating; a `break`
+// the `continue` under
+// filter_aggregate_transpose.go:`alias != "" && alias != cr.Name` in the
+// alias branch. The loop must skip the renamed key but keep iterating; a `break`
 // mutant (gremlins INVERT_LOOPCTRL) would abort on the first renamed
 // key and drop every later valid bare-column entry from passthrough.
 //
@@ -170,8 +162,8 @@ func TestFilterAggregateTranspose_RenamedAliasSkipsKeyButKeepsLater(t *testing.T
 }
 
 // TestConstantFoldSemantic_MapAccessFoldsWhenOnlyMapChanges pins the
-// `if !mc && !kc` early-return guard at constant_fold.go:144 inside
-// foldExprSemantic's MapAccess case. The condition is "neither child
+// constant_fold.go:`!mc && !kc` early-return guard in the MapAccess case
+// of foldExprWith, reached here through foldExprSemantic. The condition is "neither child
 // changed — return the original Node unchanged"; flipping `&&` to `||`
 // (gremlins INVERT_LOGICAL) would early-return whenever EITHER child
 // is unchanged, which means a MapAccess whose Map sub-expression
@@ -224,8 +216,9 @@ func TestConstantFoldSemantic_MapAccessFoldsWhenOnlyMapChanges(t *testing.T) {
 }
 
 // TestConstantFoldHeuristic_MapAccessFoldsWhenOnlyMapChanges pins the
-// `if !mc && !kc` early-return guard at constant_fold.go:190 inside
-// foldExprHeuristic's MapAccess case. Same shape as the semantic test
+// constant_fold.go:`!mc && !kc` early-return guard in the MapAccess case
+// of foldExprWith, reached here through foldExprHeuristic. Same shape as
+// the semantic test
 // above, but exercises the boolean-identity heuristic instead of the
 // pure-literal arithmetic semantic pass.
 //
@@ -271,10 +264,9 @@ func TestConstantFoldHeuristic_MapAccessFoldsWhenOnlyMapChanges(t *testing.T) {
 	}
 }
 
-// TestCapturePattern_PreservesInnerBindings pins the `inner == nil`
-// branch at pattern.go:140 inside capturePattern.Match:
-//
-//	if inner == nil { inner = Bindings{} }
+// TestCapturePattern_PreservesInnerBindings pins the
+// pattern.go:`inner == nil` branch — whose body is `inner = Bindings{}`
+// — inside capturePattern.Match.
 //
 // Capture wraps an inner pattern and adds its own (name, node)
 // binding. When the inner pattern returns a non-nil Bindings map
@@ -316,8 +308,9 @@ func TestCapturePattern_PreservesInnerBindings(t *testing.T) {
 	}
 }
 
-// TestConstantFold_FloatLtIsStrictAtEquality pins the `l < r` fold at
-// constant_fold.go:327 inside foldFloatFloat's OpLt case. A gremlins
+// TestConstantFold_FloatLtIsStrictAtEquality pins the
+// constant_fold.go:`l < r` fold in foldNumeric's OpLt case, reached
+// through foldFloatFloat. A gremlins
 // CONDITIONALS_BOUNDARY mutant flips `<` to `<=`, which only changes the
 // result when the two operands are EQUAL: `5.0 < 5.0` is false but
 // `5.0 <= 5.0` is true. Every non-equal operand pair folds identically
@@ -359,7 +352,8 @@ func TestConstantFold_FloatLtIsStrictAtEquality(t *testing.T) {
 }
 
 // TestRunBatch_AnalyzerBranchCountsEachChange pins the `rulesApplied++`
-// at rule.go:187 inside runBatch's analyzer branch. A gremlins
+// that follows rule.go:`plan, changed = applyAnalyzerRule(plan, rule)`,
+// in runBatch's analyzer branch. A gremlins
 // INCREMENT_DECREMENT mutant flips `++` to `--`, so a changing analyzer
 // rule would DECREMENT the counter (driving it negative) rather than
 // incrementing it. Driver.Run only surfaces the counter via telemetry,
@@ -386,7 +380,8 @@ func TestRunBatch_AnalyzerBranchCountsEachChange(t *testing.T) {
 }
 
 // TestRunBatch_FixedPointBranchCountsEachChange pins the `rulesApplied++`
-// at rule.go:200 inside runBatch's FixedPoint branch. Same INCREMENT_
+// that follows rule.go:`iterationChanged = iterationChanged || changed`,
+// in runBatch's FixedPoint branch. Same INCREMENT_
 // DECREMENT mutant class as the analyzer-branch test above, but on the
 // iterative branch.
 //
@@ -410,7 +405,8 @@ func TestRunBatch_FixedPointBranchCountsEachChange(t *testing.T) {
 }
 
 // matchAllPattern is a Pattern that matches EVERY node, including nil,
-// recording nothing. It exists to witness the rule_pattern.go:`if n == nil || r == nil || r.Match == nil || r.Transform == nil` guard:
+// recording nothing. It exists to witness the nil-guard
+// rule_pattern.go:`n == nil || r == nil || r.Match == nil || r.Transform == nil`:
 // stock kindPattern.Match(nil) returns (nil,false), so it can't reveal
 // whether Apply's nil-guard short-circuited before calling Match. A
 // pattern that matches nil makes the difference observable.
@@ -421,11 +417,9 @@ func (matchAllPattern) Match(_ chplan.Node) (optimizer.Bindings, bool) {
 }
 
 // TestPatternRule_ApplyNilShortCircuitsBeforeMatch pins the leading
-// `n == nil ||` term of the nil-guard at rule_pattern.go:`n == nil ||`:
-//
-//	if n == nil || r == nil || r.Match == nil || r.Transform == nil {
-//		return n, false
-//	}
+// `n == nil` term of the nil-guard
+// rule_pattern.go:`n == nil || r == nil || r.Match == nil || r.Transform == nil`,
+// whose body is `return n, false`.
 //
 // A gremlins INVERT_LOGICAL mutant flips the first `||` to `&&`, yielding
 // `(n == nil && r == nil) || r.Match == nil || r.Transform == nil`. With

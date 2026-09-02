@@ -50,11 +50,13 @@ const hqFirstIteratedEdge = "if(if(length(`NegativeBucketCounts`) > 0 OR `ZeroCo
 // emit time — a literal phi is query shape, not per-row data, so no runtime
 // branch belongs in the SQL.
 //
-// Kills histogram_quantile_native.go:645:13 CONDITIONALS_NEGATION
-// (`h.Phi < reverseWalkPhi` -> `>=`), which picks the backward arm's
-// firstIterated edge for phi = 0.25, and :644:16 CONDITIONALS_NEGATION
-// (`h.PhiExpr == nil` -> `!= nil`), which drops through to the computed-phi
-// form and emits a runtime `if(0.25 < 0.5, …)` over two constant-folded arms.
+// Kills, in
+// histogram_quantile_native.go:`w.armSelectFiniteSum = func(fwd, rev Frag) Frag`,
+// the CONDITIONALS_NEGATION on `h.Phi < reverseWalkPhi` (-> `>=`), which picks
+// the backward arm's firstIterated edge for phi = 0.25, and the
+// CONDITIONALS_NEGATION on `h.PhiExpr == nil` (-> `!= nil`), which drops
+// through to the computed-phi form and emits a runtime `if(0.25 < 0.5, …)`
+// over two constant-folded arms.
 func TestMutation_HQNativeArmSelectFiniteSum_ForwardBelowReverseWalkPhi(t *testing.T) {
 	t.Parallel()
 
@@ -70,10 +72,12 @@ func TestMutation_HQNativeArmSelectFiniteSum_ForwardBelowReverseWalkPhi(t *testi
 // `q < 0.5` test, so phi EQUAL to it belongs to the backward arm — its
 // fallback edge is the FIRST position the walk order yields.
 //
-// Kills histogram_quantile_native.go:645:13 CONDITIONALS_BOUNDARY
-// (`h.Phi < reverseWalkPhi` -> `<=`), the only mutant that changes behaviour
-// at exactly phi == 0.5, and again :645:13 CONDITIONALS_NEGATION (`>=`, also
-// forward here) and :644:16 CONDITIONALS_NEGATION (which emits the runtime
+// Kills, in the same
+// histogram_quantile_native.go:`w.armSelectFiniteSum = func(fwd, rev Frag) Frag`,
+// the CONDITIONALS_BOUNDARY on `h.Phi < reverseWalkPhi` (-> `<=`), the only
+// mutant that changes behaviour at exactly phi == 0.5, and again its
+// CONDITIONALS_NEGATION (`>=`, also forward here) and the
+// CONDITIONALS_NEGATION on `h.PhiExpr == nil` (which emits the runtime
 // `if(0.5 < 0.5, …)` form instead).
 func TestMutation_HQNativeArmSelectFiniteSum_BackwardAtReverseWalkPhi(t *testing.T) {
 	t.Parallel()
@@ -97,8 +101,10 @@ func TestMutation_HQNativeArmSelectFiniteSum_BackwardAtReverseWalkPhi(t *testing
 // to avoid.
 //
 // Kills the three surviving CONDITIONALS_NEGATION mutants of that test:
-// :775:21 (`helpers.revCum != ""`), :838:23 (`helpers.valueIdx != ""`) and
-// :851:17 (`helperCol != ""`, shared by firstPopulated and lastPopulated).
+// histogram_quantile_native.go:`helpers.revCum != ""`,
+// histogram_quantile_native.go:`helpers.valueIdx != ""` and
+// histogram_quantile_native.go:`helperCol != ""` (shared by firstPopulated
+// and lastPopulated).
 //
 // phi is at reverseWalkPhi so reachesReverseArm holds and the revCum stage is
 // actually projected.

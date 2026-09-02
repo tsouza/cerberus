@@ -18,7 +18,7 @@ import (
 // that cap.
 //
 // It does NOT kill the CONDITIONALS_BOUNDARY mutant on the guard it
-// exercises (exemplars.go:`if maxPerSeries > 0`, `if maxPerSeries > 0` -> `>= 0`); see the
+// exercises (exemplars.go:`if maxPerSeries > 0` -> `>= 0`); see the
 // NOT KILLABLE note at the foot of this file for why that mutant is
 // equivalent. The contract is worth pinning regardless — it is the
 // difference between "uncapped" and "every bucket capped to zero rows".
@@ -64,7 +64,7 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 }
 
 // TestRangeBucketFanoutEmptyGroupBy kills the ARITHMETIC_BASE mutant at
-// range_bucket_fanout.go:160 (`make([]Frag, 0, len(r.GroupBy)+1)` ->
+// range_bucket_fanout.go:`make([]Frag, 0, len(r.GroupBy)+1)` (->
 // `... len(r.GroupBy)-1`).
 //
 // The collapse GROUP BY slot is pre-sized to len(GroupBy)+1 (the user
@@ -246,8 +246,8 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// exemplars.go:`if maxPerSeries > 0` (CONDITIONALS_BOUNDARY, `if maxPerSeries > 0` ->
-// `>= 0`). The two forms differ only at maxPerSeries == 0, where the mutant
+// exemplars.go:`if maxPerSeries > 0` (CONDITIONALS_BOUNDARY, `>` -> `>=`).
+// The two forms differ only at maxPerSeries == 0, where the mutant
 // enters the block and calls `outerSb.Limit(0)` followed by
 // `outerSb.LimitBy(...)`. QueryBuilder.Limit records `hasLimit = n > 0`, so
 // Limit(0) leaves hasLimit false, and the renderer emits the whole LIMIT /
@@ -256,8 +256,8 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 // byte-identical statement and an identical args slice; only two dead
 // allocations differ. (A negative maxPerSeries fails both forms alike.)
 //
-// exemplars.go:235:51 (ARITHMETIC_BASE, `make([]Frag, 0,
-// len(groupAliases)*2+6)` -> `len(groupAliases)/2+6`). The mutated operand
+// exemplars.go:`len(groupAliases)*2+6` (ARITHMETIC_BASE,
+// `make([]Frag, 0, len(groupAliases)*2+6)` -> `len(groupAliases)/2+6`). The mutated operand
 // is the Attributes-map slice's capacity HINT, which append grows on
 // demand; `len/2 + 6` is non-negative for every input, so it cannot even
 // panic the way the sibling `+6` -> `-6` mutant does. Capacity is

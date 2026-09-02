@@ -82,8 +82,8 @@ func matrixDeltaGuardEmit(t *testing.T, r *chplan.RangeWindow) string {
 }
 
 // TestDeltaMatrixAggregateDailyFanout_GuardAppliedToAggregateTableScan kills
-// range_window.go:4067:11 (CONDITIONALS_NEGATION on `guard != nil` inside
-// deltaMatrixLevelSourceAggregateDailyFanout): for this window,
+// range_window.go:deltaMatrixLevelSourceAggregateDailyFanout:`guard != nil`
+// (CONDITIONALS_NEGATION): for this window,
 // r.TemporalityColumn is always set, so deltaPresenceGuardFrag always
 // returns a non-nil guard — flipping the check to `guard == nil` means
 // aggDaily.Where(guard) is never called, silently dropping the guard from
@@ -114,10 +114,11 @@ func TestDeltaMatrixAggregateDailyFanout_GuardAppliedToAggregateTableScan(t *tes
 }
 
 // TestApplyMatrixFanoutScanBoundAggregate_OrGuardAppliedToFanout kills BOTH
-// range_window.go:4324:9 (CONDITIONALS_NEGATION on `err != nil` — flipping it
-// to `err == nil` makes the error-free case return early, before the guard
-// clause is ever appended) and range_window.go:4327:11 (CONDITIONALS_NEGATION
-// on `guard != nil` — flipping it to `guard == nil` skips the same append,
+// range_window.go:applyMatrixFanoutScanBoundAggregate:`err != nil`
+// (CONDITIONALS_NEGATION — flipping it to `err == nil` makes the error-free
+// case return early, before the guard clause is ever appended) and
+// range_window.go:applyMatrixFanoutScanBoundAggregate:`guard != nil`
+// (CONDITIONALS_NEGATION — flipping it to `guard == nil` skips the same append,
 // since guard is always non-nil here). Either mutation removes the
 // `OR \`AggregationTemporality\` != 1` disjunct this PR's HIGH-severity fix
 // added to the raw sample fanout's own scan bound — see
@@ -172,9 +173,9 @@ func intervalNanosecondsAfter(t *testing.T, sqlText, marker string, n int) []int
 }
 
 // TestMatrixWindowScanBoundsFrags_EarliestAnchorArithmetic kills
-// range_window.go:4239:79 (ARITHMETIC_BASE and INVERT_NEGATIVES on the `-`
-// in `numAnchors-1`) and 4239:82 (ARITHMETIC_BASE on the `*` in
-// `(numAnchors-1)*stepNS`). matrixWindowScanBoundsFrags computes
+// range_window.go:matrixWindowScanBoundsFrags:`(numAnchors-1)*stepNS` under
+// ARITHMETIC_BASE and INVERT_NEGATIVES on the `-` in `numAnchors-1`, and
+// ARITHMETIC_BASE on the `*`. matrixWindowScanBoundsFrags computes
 // earliestAnchor = end - (numAnchors-1)*stepNS, consumed as the guard
 // subquery's own windowLo probe (`\`TimeUnix\` > <end literal> -
 // toIntervalNanosecond((numAnchors-1)*stepNS) - toIntervalNanosecond
@@ -208,8 +209,9 @@ func TestMatrixWindowScanBoundsFrags_EarliestAnchorArithmetic(t *testing.T) {
 }
 
 // TestApplyMatrixFanoutScanBoundAggregate_EarliestDayArithmetic kills
-// range_window.go:4316:79 (ARITHMETIC_BASE and INVERT_NEGATIVES on the `-`
-// in `numAnchors-1`) and 4316:82 (ARITHMETIC_BASE on the `*`) —
+// range_window.go:applyMatrixFanoutScanBoundAggregate:`(numAnchors-1)*stepNS`
+// under ARITHMETIC_BASE and INVERT_NEGATIVES on the `-` in `numAnchors-1`, and
+// ARITHMETIC_BASE on the `*` —
 // applyMatrixFanoutScanBoundAggregate's OWN local earliestAnchor
 // (identical source shape to matrixWindowScanBoundsFrags', but a distinct
 // call site / distinct mutant), which derives the raw fanout's own

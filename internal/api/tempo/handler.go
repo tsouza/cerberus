@@ -1003,7 +1003,7 @@ const (
 	// spans into one ScopeSpans per distinct (name, version) pair and
 	// emits a non-nil *commonv1.InstrumentationScope — Grafana 12's
 	// server-side trace transform dereferences ils.Scope.Name with no
-	// nil check (pkg/tsdb/tempo/trace_transform.go:137), so a nil
+	// nil check (pkg/tsdb/tempo/trace_transform.go), so a nil
 	// Scope panics the whole /api/ds/query trace-detail request.
 	// Reference Tempo always rehydrates a non-nil scope
 	// (tempodb/encoding/vparquet4/schema.go

@@ -6,8 +6,8 @@ package chsql
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// emit_size_bound.go:`d > deepest` (CONDITIONALS_BOUNDARY, `d > deepest` ->
-// `d >= deepest` in gridCarrierNesting's per-child running-maximum update)
+// emit_size_bound.go:`d > deepest` (CONDITIONALS_BOUNDARY, `>` -> `>=` in
+// gridCarrierNesting's per-child running-maximum update)
 // is EQUIVALENT. The mutation only changes behaviour when `d == deepest`:
 // the original skips the assignment (already equal, nothing to update) and
 // the mutant runs `deepest = d`, which assigns the SAME int value back to

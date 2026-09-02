@@ -29,7 +29,7 @@ import (
 // equal_invariants_test.go; they sit here as a single mutation-budget
 // file so the kill set is easy to audit against the gremlins report.
 
-// --- cross_join.go:27:30 — `Left.Equal(o.Left) && Right.Equal(o.Right)` ---
+// --- cross_join.go:`c.Left.Equal(o.Left) && c.Right.Equal(o.Right)` ---
 
 // TestCrossJoin_Equal_Negative_RightOnly / _LeftOnly exercise the
 // `Left && Right` tail of CrossJoin.Equal. A mutant flipping `&&` to
@@ -87,10 +87,13 @@ func TestNaryVectorSetOp_Equal_Positive(t *testing.T) {
 
 // TestNaryVectorSetOp_Equal_Negative_Fields exercises each disjunct in
 // NaryVectorSetOp.Equal individually:
-//   - nary_vector_set_op.go:72 — `Op != || !Match.Equal || StepAligned !=`
-//   - nary_vector_set_op.go:75/76/77 — the
-//     `MetricNameColumn != || AttributesColumn != || TimestampColumn !=
-//     || ValueColumn !=` chain
+//   - nary_vector_set_op.go:`s.Op != o.Op || !s.Match.Equal(o.Match)` — the
+//     Op / Match / StepAligned disjunct chain
+//   - nary_vector_set_op.go:`s.MetricNameColumn != o.MetricNameColumn`,
+//     nary_vector_set_op.go:`s.AttributesColumn != o.AttributesColumn`,
+//     nary_vector_set_op.go:`s.TimestampColumn != o.TimestampColumn` and
+//     nary_vector_set_op.go:`s.ValueColumn != o.ValueColumn` — the column
+//     chain
 //
 // Each row diverges in exactly ONE field; with `||` → `&&` the mutant
 // would require every column to differ before reporting not-Equal, so a
@@ -191,10 +194,11 @@ func TestRangeBucketFanout_Equal_Negative_Fields(t *testing.T) {
 	}
 }
 
-// TestRangeBucketFanout_Equal_Negative_InputOneNil pins the `Input ==
-// nil || o.Input == nil` short-circuit (range_bucket_fanout.go:129). A
-// `||` → `&&` flip would skip the early-out when exactly one Input is
-// nil, walking into Input.Equal on a nil receiver / mis-reporting.
+// TestRangeBucketFanout_Equal_Negative_InputOneNil pins the
+// range_bucket_fanout.go:`r.Input == nil || o.Input == nil`
+// short-circuit. A `||` → `&&` flip would skip the early-out when
+// exactly one Input is nil, walking into Input.Equal on a nil receiver
+// / mis-reporting.
 func TestRangeBucketFanout_Equal_Negative_InputOneNil(t *testing.T) {
 	t.Parallel()
 	a := fanoutFixture()
@@ -208,7 +212,7 @@ func TestRangeBucketFanout_Equal_Negative_InputOneNil(t *testing.T) {
 	}
 }
 
-// --- step_grid.go:38 — `Start.Equal && End.Equal && Step ==` ---
+// --- step_grid.go:`s.Start.Equal(o.Start) && s.End.Equal(o.End) && s.Step == o.Step` ---
 
 func TestStepGrid_Equal_Positive(t *testing.T) {
 	t.Parallel()
@@ -259,7 +263,7 @@ func TestStepGrid_Equal_Negative_Fields(t *testing.T) {
 // --- reanchor.go widen arithmetic + grid-prediction guards ---
 
 // TestReanchorRange_LWRWidenArithmetic kills the membership-window widen
-// math at reanchor.go:126 — `start.Add(-v.Offset - v.Lookback)`. The
+// math at reanchor.go:`c.Start.Add(-v.Offset-v.Lookback)`. The
 // outer RangeLWR's Input is itself an (unpinned) RangeLWR, so the
 // widened start is RECORDED as the inner node's Start and can be
 // asserted exactly. Offset and Lookback are distinct non-zero durations
@@ -321,11 +325,11 @@ func TestReanchorRange_LWRWidenArithmetic(t *testing.T) {
 }
 
 // TestReanchorRange_RejectsPartialPin kills the matrix-window grid guards
-// at reanchor.go:185 (`Start.IsZero() && End.IsZero()`). A partially-
-// pinned node — Start zero, End pinned OFF the predicted grid — must be
-// rejected with ErrReanchorGridMismatch. With `&&` → `||` the unpinned
-// early-return would fire (Start.IsZero() alone is enough), wrongly
-// accepting the off-grid End.
+// at reanchor.go:checkPredictedGrid:`r.Start.IsZero() && r.End.IsZero()`.
+// A partially-pinned node — Start zero, End pinned OFF the predicted grid
+// — must be rejected with ErrReanchorGridMismatch. With `&&` → `||` the
+// unpinned early-return would fire (Start.IsZero() alone is enough),
+// wrongly accepting the off-grid End.
 func TestReanchorRange_RejectsPartialPin(t *testing.T) {
 	t.Parallel()
 
@@ -340,8 +344,8 @@ func TestReanchorRange_RejectsPartialPin(t *testing.T) {
 	}
 }
 
-// TestReanchorRange_LWRRejectsPartialPinZeroStart kills the LWR
-// unpinned guard at reanchor.go:209 (`Start.IsZero() && End.IsZero()`):
+// TestReanchorRange_LWRRejectsPartialPinZeroStart kills the LWR unpinned
+// guard reanchor.go:checkPredictedGridLWR:`r.Start.IsZero() && r.End.IsZero()`:
 // Start zero, End off-grid → reject. `&&` → `||` would accept on the
 // zero Start alone.
 func TestReanchorRange_LWRRejectsPartialPinZeroStart(t *testing.T) {
@@ -356,8 +360,9 @@ func TestReanchorRange_LWRRejectsPartialPinZeroStart(t *testing.T) {
 }
 
 // TestReanchorRange_LWRRejectsGriddedStartOffGridEnd kills the LWR
-// already-gridded guard at reanchor.go:212 (`Start.Equal(predStart) &&
-// End.Equal(predEnd)`): Start sits exactly on the predicted grid but End
+// already-gridded guard
+// reanchor.go:checkPredictedGridLWR:`r.Start.Equal(predStart) && r.End.Equal(predEnd)`:
+// Start sits exactly on the predicted grid but End
 // diverges → reject. With `&&` → `||` the matching Start alone would
 // satisfy the guard and wrongly accept the off-grid End.
 func TestReanchorRange_LWRRejectsGriddedStartOffGridEnd(t *testing.T) {

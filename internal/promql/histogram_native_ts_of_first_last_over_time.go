@@ -44,7 +44,7 @@ import (
 // ...}` appearing to keep it: reference Prometheus's engine strips
 // `__name__` from EVERY range-vector function's output except literally
 // `last_over_time` / `first_over_time` (tsouza/prometheus's
-// promql/engine.go:2114 — `dropName := (e.Func.Name != "last_over_time" &&
+// promql/engine.go — `dropName := (e.Func.Name != "last_over_time" &&
 // e.Func.Name != "first_over_time")` — this cerberus package's own
 // [rangeFnPreservesName] already encodes that exact exception list for the
 // classic float path), so `ts_of_first_over_time` / `ts_of_last_over_time`

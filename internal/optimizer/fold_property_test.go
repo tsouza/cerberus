@@ -347,7 +347,7 @@ func TestFoldFloatFloat_Comparison(t *testing.T) {
 
 // TestFoldFloatFloat_Division pins float64 division semantics. Unlike
 // the int helper, the float helper still declines the rewrite when the
-// divisor is exactly zero (`r == 0`) — see constant_fold.go:317. That
+// divisor is exactly zero — see constant_fold.go:`r == 0`. That
 // keeps the IEEE-754 ±Inf / NaN result out of the plan IR: the
 // emitter handles division-by-zero at execution time so the runtime
 // vector engine and the plan-time fold stay in sync.

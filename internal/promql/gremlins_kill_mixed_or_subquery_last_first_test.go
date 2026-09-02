@@ -15,8 +15,9 @@ import (
 )
 
 // TestLowerMixedOrSubqueryLastFirstInput_RangeModePinnedTakesBroadcast
-// kills the INVERT_LOGICAL mutant at :106:21 (`&&` -> `||`) inside
-// lowerMixedOrSubqueryLastFirstInput:
+// kills the INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_mixed_or_subquery_last_first.go:`if ctx.rangeMode() && !subqueryPinned(sub)`,
+// inside lowerMixedOrSubqueryLastFirstInput:
 //
 //	if ctx.rangeMode() && !subqueryPinned(sub) {
 //	    return lowerMixedOrSubqueryLastFirstRange(...)
@@ -53,13 +54,15 @@ func TestLowerMixedOrSubqueryLastFirstInput_RangeModePinnedTakesBroadcast(t *tes
 	})
 	if !found {
 		t.Fatalf("expected a CrossJoin (broadcast path) for a range-mode query over an " +
-			"@-pinned mixed-or subquery; mutant `&&`->`||` at :106:21 would route to the " +
+			"@-pinned mixed-or subquery; mutant `&&`->`||` at " +
+			"histogram_native_mixed_or_subquery_last_first.go:`if ctx.rangeMode() && !subqueryPinned(sub)` would route to the " +
 			"true fan-out lowering instead")
 	}
 }
 
 // TestMixedLastFirstAggs_PickDirection kills the CONDITIONALS_NEGATION
-// mutant at :175:14 (`==` -> `!=`) inside mixedLastFirstAggs:
+// mutant (`==` -> `!=`) at
+// histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`, inside mixedLastFirstAggs:
 //
 //	pick := latestArgMax
 //	if windowFn == firstOverTimeWindowFn {
@@ -76,17 +79,20 @@ func TestMixedLastFirstAggs_PickDirection(t *testing.T) {
 
 	last := mixedLastFirstAggs(lastOverTimeWindowFn, histSchema)
 	if last[0].Fn != chplan.FnArgMax {
-		t.Fatalf("last_over_time first agg Fn = %v, want FnArgMax (mutant `==`->`!=` at :175:14)", last[0].Fn)
+		t.Fatalf("last_over_time first agg Fn = %v, want FnArgMax (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`)", last[0].Fn)
 	}
 	first := mixedLastFirstAggs(firstOverTimeWindowFn, histSchema)
 	if first[0].Fn != chplan.FnArgMin {
-		t.Fatalf("first_over_time first agg Fn = %v, want FnArgMin (mutant `==`->`!=` at :175:14)", first[0].Fn)
+		t.Fatalf("first_over_time first agg Fn = %v, want FnArgMin (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_last_first.go:`if windowFn == firstOverTimeWindowFn`)", first[0].Fn)
 	}
 }
 
 // TestMixedLastFirstProjection_PublishesZeroThresholdColumn kills the
-// CONDITIONALS_NEGATION mutant at :206:36 (`!=` -> `==`) inside
-// mixedLastFirstProjection — the last_first sibling of
+// CONDITIONALS_NEGATION mutant (`!=` -> `==`) at
+// histogram_native_mixed_or_subquery_last_first.go:`if histSchema.ZeroThresholdColumn != ""`,
+// inside mixedLastFirstProjection — the last_first sibling of
 // gremlins_kill_mixed_or_subquery_further_setop_test.go's identical
 // splitMixedRelByDiscriminator kill: histSchema always comes from
 // histogramProjectionSchema(s), which unconditionally sets
@@ -112,7 +118,8 @@ func TestMixedLastFirstProjection_PublishesZeroThresholdColumn(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected a %q projection; got %#v (mutant `!=`->`==` at :206:36)",
+		t.Fatalf("expected a %q projection; got %#v (mutant `!=`->`==` at "+
+			"histogram_native_mixed_or_subquery_last_first.go:`if histSchema.ZeroThresholdColumn != \"\"`)",
 			histSchema.ZeroThresholdColumn, proj.Projections)
 	}
 }

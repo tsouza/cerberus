@@ -37,8 +37,9 @@ import (
 
 // hqFanoutNonFiniteQuery is the issue's own PromQL repro: a classic-bucket
 // selector, summed by(le) over a sum_over_time window — the shape that
-// lowers through lowerHistogramQuantileAgg's classicBucketMergeShaping
-// merge fold (histogram_quantile.go:1412 / :1462), not the native path.
+// lowers through lowerHistogramQuantileAgg's merge fold
+// (internal/promql/histogram_quantile.go:classicBucketMergeShaping), not
+// the native path.
 const hqFanoutNonFiniteQuery = `histogram_quantile(0.5, sum by(le) (sum_over_time(http_server_request_duration_bucket[5m])))`
 
 // hqFanoutNonFiniteRows is the issue's own repro data: row 2's

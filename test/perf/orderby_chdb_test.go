@@ -2,11 +2,13 @@
 
 // Deliverable 1 (task #70): quantify the metrics-table ORDER BY decision.
 //
-// Production renders the OTel-CH metrics tables with
+// The OTel-CH default renders the metrics tables with
 //
 //	ORDER BY (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix))
 //
-// (ServiceName FIRST — see internal/chsql/tableshape.go:136). A
+// (ServiceName FIRST; cerberus now patches that in the cerberus-ddl fork,
+// so internal/chsql/tableshape.go:`metrics.MetricNameColumn,` leads the
+// metrics sort key). A
 // metric-name-first PromQL instant query with NO service.name matcher —
 // the common Grafana / Drilldown-Metrics case — cannot PK-range-prune on
 // the leading ServiceName key, so ClickHouse falls back to a generic

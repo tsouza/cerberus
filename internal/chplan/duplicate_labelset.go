@@ -4,7 +4,7 @@ package chplan
 // construct raises when two input series that differed ONLY by `__name__`
 // collapse onto one label set. It is the verbatim reference-engine text:
 //
-//	prometheus/prometheus@cerberus-parser/promql/engine.go:2295
+//	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`ev.errorf("vector cannot contain metrics with the same labelset")`
 //
 // Upstream reaches it from `Matrix.ContainsSameLabelset()` right after a

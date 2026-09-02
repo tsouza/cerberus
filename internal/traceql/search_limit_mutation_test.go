@@ -86,12 +86,12 @@ func TestWithSearchTraceLimit_ZeroStoresNothing(t *testing.T) {
 	}
 }
 
-// TestSearchTraceLimit_NegativeStoredValueGuarded pins the `ok && n > 0`
-// conjunction in searchTraceLimit (search_limit.go:41). A negative int stored
-// directly under the key (bypassing WithSearchTraceLimit's own guard) must read
-// back as 0: `ok` is true but `n > 0` is false, so the AND is false. The
-// INVERT_LOGICAL mutant `ok || n > 0` would be true (ok alone) and return the
-// negative value verbatim.
+// TestSearchTraceLimit_NegativeStoredValueGuarded pins the
+// search_limit.go:`ok && n >= 1` conjunction in searchTraceLimit. A negative
+// int stored directly under the key (bypassing WithSearchTraceLimit's own
+// guard) must read back as 0: `ok` is true but `n >= 1` is false, so the AND
+// is false. The INVERT_LOGICAL mutant `ok || n >= 1` would be true (ok alone)
+// and return the negative value verbatim.
 func TestSearchTraceLimit_NegativeStoredValueGuarded(t *testing.T) {
 	t.Parallel()
 	const storedNegative = -5
@@ -105,8 +105,8 @@ func TestSearchTraceLimit_NegativeStoredValueGuarded(t *testing.T) {
 	}
 }
 
-// TestSearchTraceLimit_MinimumPositiveRoundTrips pins the exact `n >= 1` boundary
-// in searchTraceLimit (search_limit.go:41). A limit of 1 — the smallest positive
+// TestSearchTraceLimit_MinimumPositiveRoundTrips pins the exact boundary of
+// search_limit.go:`ok && n >= 1` in searchTraceLimit. A limit of 1 — the smallest positive
 // value — must read back as 1, not fall through to 0. The CONDITIONALS_BOUNDARY
 // mutant `n > 1` would reject the boundary value and return 0.
 func TestSearchTraceLimit_MinimumPositiveRoundTrips(t *testing.T) {
@@ -119,8 +119,8 @@ func TestSearchTraceLimit_MinimumPositiveRoundTrips(t *testing.T) {
 }
 
 // TestStampRecursiveScanWindow_EndOnlyStillStamps pins the
-// `startNano == 0 && endNano == 0` guard in stampRecursiveScanWindow
-// (search_limit.go:181). An end-only window (start zero, end set) has exactly one
+// search_limit.go:`startNano == 0 && endNano == 0` guard in
+// stampRecursiveScanWindow. An end-only window (start zero, end set) has exactly one
 // operand true, so the AND is false and the walk proceeds to stamp the window
 // onto the StructuralJoin. The INVERT_LOGICAL mutant `||` would be true and
 // short-circuit the stamp, leaving the recursive step scan windowless (full-
@@ -158,8 +158,9 @@ func rootFilterOverScan(op chplan.BinaryOp, left, right chplan.Expr) *chplan.Fil
 	}
 }
 
-// TestIsRootSpanFilter_NonEqOpRejected pins the `!ok || b.Op != OpEq` disjunction
-// in isRootSpanFilter (search_limit.go:399). The predicate here IS a *Binary
+// TestIsRootSpanFilter_NonEqOpRejected pins the
+// search_limit.go:`!ok || b.Op != chplan.OpEq` disjunction in
+// isRootSpanFilter. The predicate here IS a *Binary
 // (`!ok` false) but its op is `<`, not `=` (`b.Op != OpEq` true), so the OR is
 // true and the shape is rejected. The INVERT_LOGICAL mutant `&&` would be false
 // (one operand false) and fall through to accept a NON-equality predicate as a
@@ -182,8 +183,9 @@ func TestIsRootSpanFilter_NonEqOpRejected(t *testing.T) {
 	}
 }
 
-// TestIsRootSpanFilter_WrongColumnRejected pins the FIRST `&&` on
-// search_limit.go:407 (`ok && col.Name == parentSpanIDCol`). The predicate is a
+// TestIsRootSpanFilter_WrongColumnRejected pins the FIRST `&&` of
+// search_limit.go:`ok && col.Name == parentSpanIDCol && lit.V == rootParentSpanID`.
+// The predicate is a
 // well-formed `<col> = ""` over the WRONG column: `ok` true, the column check
 // false, the empty-string check true. The AND chain is false (rejected). The
 // INVERT_LOGICAL mutant `ok || col.Name == parentSpanIDCol && lit.V == ""`
@@ -199,8 +201,9 @@ func TestIsRootSpanFilter_WrongColumnRejected(t *testing.T) {
 	}
 }
 
-// TestIsRootSpanFilter_NonEmptyLiteralRejected pins the SECOND `&&` on
-// search_limit.go:407 (`... && lit.V == ""`). The predicate is `<parentCol> =
+// TestIsRootSpanFilter_NonEmptyLiteralRejected pins the SECOND `&&` of
+// search_limit.go:`ok && col.Name == parentSpanIDCol && lit.V == rootParentSpanID`
+// (`rootParentSpanID` is `""`). The predicate is `<parentCol> =
 // "srv"`: `ok` true, column matches, but the literal is NON-empty. The AND chain
 // is false (rejected). The INVERT_LOGICAL mutant `(ok && col.Name == …) ||
 // lit.V == ""` is true on the left conjunction alone and would ACCEPT a

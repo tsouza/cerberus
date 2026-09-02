@@ -8,7 +8,7 @@
 //
 // See gremlins_kill_test.go for the shared convention this file follows:
 // one Test... per mutant (or per tightly-related cluster of mutants), with
-// the gremlins `file:line:col` id named in the doc comment and in the
+// the construct the mutant lives on named in the doc comment and in the
 // failure message.
 package promql
 
@@ -69,10 +69,9 @@ func assertNoCrossJoin(t *testing.T, plan chplan.Node, label string) {
 }
 
 // TestSelectExpHistogramWindowSamples_ProjectionCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at histogram_native_range_fn.go:546:65 inside
-// selectExpHistogramWindowSamples's slice-capacity hint:
-//
-//	projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)
+// ARITHMETIC_BASE mutant on selectExpHistogramWindowSamples's
+// slice-capacity hint,
+// histogram_native_range_fn.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)`.
 //
 // The function always appends exactly len(keyAliases) + 1 (the times
 // alias) + len(aggs) projections — one per keyAlias, one for
@@ -103,7 +102,9 @@ func TestSelectExpHistogramWindowSamples_ProjectionCapacityIsTight(t *testing.T)
 		t.Fatalf("len(Projections) = %d, want %d", got, want)
 	}
 	if got := cap(proj.Projections); got != want {
-		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at histogram_native_range_fn.go:546:65 under-allocates and forces a reallocation, leaving cap != %d)",
+		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at "+
+			"histogram_native_range_fn.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+len(aggs)+1)` "+
+			"under-allocates and forces a reallocation, leaving cap != %d)",
 			got, want, want)
 	}
 }
@@ -157,7 +158,8 @@ func TestCountPresentOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.
 	s := schema.DefaultOTelMetrics()
 	expr := mustParse(t, `count_over_time(latency_exp_hist[5m])`)
 	if _, _, _, ok := countPresentOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
-		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at histogram_native_count_present_over_time.go:65:31)")
+		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at " +
+			"histogram_native_count_present_over_time.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
 	}
 }
 
@@ -182,8 +184,9 @@ func TestCountPresentOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 }
 
 // TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits kills the
-// INVERT_LOGICAL mutant at histogram_native_range_fn.go:157:31. Like
-// countPresentOverExpHistogram above, rangeFnOverExpHistogram has no
+// INVERT_LOGICAL mutant at
+// histogram_native_range_fn.go:rangeFnOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`.
+// Like countPresentOverExpHistogram above, rangeFnOverExpHistogram has no
 // downstream call re-checking the same guard, so this is a clean,
 // unmasked differentiator.
 func TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
@@ -192,7 +195,8 @@ func TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
 	s := schema.DefaultOTelMetrics()
 	expr := mustParse(t, `rate(latency_exp_hist[5m])`)
 	if _, ok := rangeFnOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
-		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at histogram_native_range_fn.go:157:31)")
+		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at " +
+			"histogram_native_range_fn.go:rangeFnOverExpHistogram:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
 	}
 }
 
@@ -210,7 +214,7 @@ func TestRangeFnOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 		},
 	}
 	if _, ok := rangeFnOverExpHistogram(call, s, lowerCtx{}); ok {
-		t.Fatalf("expected zero-range matrix selector to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_range_fn.go:170:21)")
+		t.Fatalf("expected zero-range matrix selector to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_range_fn.go:`ms.Range <= 0`)")
 	}
 }
 
@@ -238,7 +242,7 @@ func TestRangeFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 	}
 	ctx := lowerCtx{start: at, end: at}
 	if _, ok := rangeFnOverExpHistogramSubquery(call, s, ctx); ok {
-		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_range_fn.go:223:22)")
+		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutant `<=`->`<` at histogram_native_range_fn.go:`sub.Range <= 0`)")
 	}
 }
 
@@ -263,9 +267,9 @@ func TestLowerExpHistogramRangeFnOverSubquery_ZeroStepDefaults(t *testing.T) {
 }
 
 // TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd kills
-// the INVERT_LOGICAL mutant at histogram_native_range_fn.go:427:25
-// (`anchor.End.IsZero() && !ctx.end.IsZero()` -> `||`) inside
-// expHistogramRangeFnWindowed.
+// the INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_range_fn.go:`anchor.End.IsZero() && !ctx.end.IsZero()`,
+// inside expHistogramRangeFnWindowed.
 //
 // The original AND only back-fills anchor.End from ctx.end when the
 // selector carries NO pin of its own. An `@`-pinned selector already has
@@ -301,17 +305,21 @@ func TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd(t *testing
 		t.Fatalf("expected the pinned @ timestamp (2026-01-01) among the emitted parameters, got:\n%s\nSQL:\n%s", got, sql)
 	}
 	if strings.Contains(got, "2030-05-05") {
-		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ timestamp (mutant `&&`->`||` at histogram_native_range_fn.go:427:25 overwrites the pin with ctx.end):\n%s", got)
+		t.Fatalf("emitted parameters leaked the query end (2030-05-05) instead of the pinned @ timestamp (mutant `&&`->`||` at histogram_native_range_fn.go:`anchor.End.IsZero() && !ctx.end.IsZero()` overwrites the pin with ctx.end):\n%s", got)
 	}
 }
 
 // TestLabelCallOverExpHistogramDroppingShape_LabelReplaceExactArity kills
-// two mutants at once, both on histogram_native_dropping_shape.go:`len(call.Args) != 5`:
-//   - CONDITIONALS_NEGATION at :204:25 (`s.ExpHistogramTable == ""` ->
-//     `!= ""`): with the negation, ANY non-empty ExpHistogramTable — the
-//     normal, default schema — makes the guard bail, so this test's
-//     ordinary DefaultOTelMetrics() schema alone differentiates.
-//   - CONDITIONALS_NEGATION at :213:21 (`len(call.Args) != 5` -> `== 5`):
+// two mutants at once, both inside
+// histogram_native_dropping_shape.go's labelCallOverExpHistogramDroppingShape:
+//   - CONDITIONALS_NEGATION on
+//     histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//     (`s.ExpHistogramTable == ""` -> `!= ""`): with the negation, ANY
+//     non-empty ExpHistogramTable — the normal, default schema — makes the
+//     guard bail, so this test's ordinary DefaultOTelMetrics() schema alone
+//     differentiates.
+//   - CONDITIONALS_NEGATION on
+//     histogram_native_dropping_shape.go:`len(call.Args) != 5` (-> `== 5`):
 //     with the negation, exactly-5-args (the only valid label_replace
 //     shape) is rejected instead of accepted.
 //
@@ -324,7 +332,9 @@ func TestLabelCallOverExpHistogramDroppingShape_LabelReplaceExactArity(t *testin
 	expr := mustParse(t, `label_replace(latency_exp_hist + 1, "copy", "$1", "service", "(.*)")`)
 	call, ok := labelCallOverExpHistogramDroppingShape(expr, s, lowerCtx{})
 	if !ok {
-		t.Fatalf("expected 5-arg label_replace wrapping a drop-family binop to be recognised under the default schema; got ok=false (mutants at histogram_native_dropping_shape.go:204:25 and :213:21)")
+		t.Fatalf("expected 5-arg label_replace wrapping a drop-family binop to be recognised under the default schema; got ok=false (mutants at " +
+			"histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` and " +
+			"histogram_native_dropping_shape.go:`len(call.Args) != 5`)")
 	}
 	if call.Func.Name != fnLabelReplace {
 		t.Fatalf("call.Func.Name = %q, want %q", call.Func.Name, fnLabelReplace)
@@ -346,26 +356,27 @@ func TestLabelCallOverExpHistogramDroppingShape_LabelJoinMinArity(t *testing.T) 
 		Args: parser.Expressions{binExpr, &parser.StringLiteral{Val: "copy"}, &parser.StringLiteral{Val: "-"}},
 	}
 	if _, ok := labelCallOverExpHistogramDroppingShape(call, s, lowerCtx{}); !ok {
-		t.Fatalf("expected minimum-arity (3-arg) label_join wrapping a drop-family binop to be recognised; got ok=false (mutant `<`->`<=` at histogram_native_dropping_shape.go:217:21)")
+		t.Fatalf("expected minimum-arity (3-arg) label_join wrapping a drop-family binop to be recognised; got ok=false (mutant `<`->`<=` at histogram_native_dropping_shape.go:`len(call.Args) < 3`)")
 	}
 }
 
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_ZeroRangeRejected kills two
-// mutants on histogram_native_mixed_or_subquery_aggregate_range_fn.go's
-// line 124 at once:
-//   - CONDITIONALS_BOUNDARY at :124:22 (`sub.Range <= 0` -> `< 0`).
-//   - INVERT_LOGICAL at :124:27 (the second `||`, between the Range check
-//     and `!subqueryHasEvalAnchor(sub, ctx)`, flipped to `&&`).
+// mutants on
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`
+// at once:
+//   - CONDITIONALS_BOUNDARY on `sub.Range <= 0` (-> `< 0`).
+//   - INVERT_LOGICAL on the second `||`, between the Range check and
+//     `!subqueryHasEvalAnchor(sub, ctx)`, flipped to `&&`.
 //
 // sub.Range = 0 with everything else valid (a real mixed-or inner,
 // eval-anchor-resolvable ctx) makes the ORIGINAL code reject via the
 // Range check alone (short-circuiting subqueryHasEvalAnchor away
 // entirely). subqueryGridCtx tolerates a zero Range via its own
 // sub-step-window clamp, so subqueryHasEvalAnchor(sub, ctx) genuinely
-// returns true here — which is exactly what lets the :124:27 AND-mutant
+// returns true here — which is exactly what lets the second-`||` AND-mutant
 // (needing BOTH operands true) fall through to a false "not rejected"
-// verdict, and what lets the :124:22 boundary-mutant do the same once the
-// Range check alone no longer rejects.
+// verdict, and what lets the `sub.Range <= 0` boundary-mutant do the same
+// once the Range check alone no longer rejects.
 func TestSumOrAvgMixedOrSubqueryOuterFnRecognized_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -382,14 +393,15 @@ func TestSumOrAvgMixedOrSubqueryOuterFnRecognized_ZeroRangeRejected(t *testing.T
 	}
 	ctx := lowerCtx{start: at, end: at}
 	if _, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(call, s, ctx); ok {
-		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutants at histogram_native_mixed_or_subquery_aggregate_range_fn.go:124:22 and :124:27)")
+		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutants on " +
+			"histogram_native_mixed_or_subquery_aggregate_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`)")
 	}
 }
 
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_NonSubqueryArgNoPanic kills
 // the INVERT_LOGICAL mutant at
-// histogram_native_mixed_or_subquery_aggregate_range_fn.go:124:9 — the
-// FIRST `||` on that line (`!ok || sub.Range <= 0 ...`), flipped to `&&`.
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`
+// — the FIRST `||` on that line, flipped to `&&`.
 //
 // When c.Args[0] is not a *parser.SubqueryExpr, the failed type assertion
 // leaves `sub` nil. The original `||` short-circuits on `!ok` and never
@@ -413,8 +425,9 @@ func TestSumOrAvgMixedOrSubqueryOuterFnRecognized_NonSubqueryArgNoPanic(t *testi
 
 // TestLowerSumOrAvgMixedOrSubqueryOuterFn_ZeroStepDefaults kills the
 // CONDITIONALS_NEGATION mutant at
-// histogram_native_mixed_or_subquery_aggregate_range_fn.go:168:10
-// (`step == 0` -> `step != 0`), the sibling of the range_fn.go:266:10
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if step == 0`
+// (`step == 0` -> `step != 0`), the sibling of the
+// histogram_native_range_fn.go:lowerExpHistogramRangeFnOverSubquery:`if step == 0`
 // kill above but inside lowerSumOrAvgMixedOrSubqueryOuterFn. Same
 // divide-by-zero-in-epochFloor signature: the original lowers cleanly,
 // the mutant panics.
@@ -430,10 +443,9 @@ func TestLowerSumOrAvgMixedOrSubqueryOuterFn_ZeroStepDefaults(t *testing.T) {
 }
 
 // TestLowerSumOrAvgMixedOrSubquerySelectFn_InstantPinDoesNotBroadcast
-// kills the INVERT_LOGICAL mutant at
-// histogram_native_mixed_or_subquery_aggregate_range_fn.go:223:21
-// (`ctx.rangeMode() && subqueryPinned(sub)` -> `||`) inside
-// lowerSumOrAvgMixedOrSubquerySelectFn.
+// kills the INVERT_LOGICAL mutant (`&&` -> `||`) on the broadcast guard
+// lowerSumOrAvgMixedOrSubquerySelectFn reaches,
+// histogram_native_subquery_select.go:`if ctx.rangeMode() && subqueryPinned(sub)`.
 //
 // An `@`-pinned mixed-or subquery reached via a plain instant LowerAt
 // (ctx.rangeMode() == false) must take the ordinary single-window branch.
@@ -457,9 +469,10 @@ func TestLowerSumOrAvgMixedOrSubquerySelectFn_InstantPinDoesNotBroadcast(t *test
 // two mutants at once, both `ctx.rangeMode() && subqueryPinned(sub)` ->
 // `||` guards reached from lowerSumOrAvgMixedOrSubqueryFoldFn for the
 // SAME query:
-//   - :335:21 inside lowerHistFoldOverPureSubqueryBranch (the histogram
-//     arm).
-//   - :374:21 inside lowerFloatFoldOverPureSubqueryBranch (the float arm).
+//   - histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerHistFoldOverPureSubqueryBranch:`if ctx.rangeMode() && subqueryPinned(sub)`
+//     (the histogram arm).
+//   - histogram_native_mixed_or_subquery_aggregate_range_fn.go:lowerFloatFoldOverPureSubqueryBranch:`if ctx.rangeMode() && subqueryPinned(sub)`
+//     (the float arm).
 //
 // sum_over_time reaches the FOLD family (as opposed to the SELECT family
 // count_over_time exercises above), which runs BOTH arms and recombines
@@ -480,9 +493,8 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_InstantPinDoesNotBroadcast(t *testin
 }
 
 // TestMixedOrSubqueryOuterFn_ArgCountVsNameGuard kills the INVERT_LOGICAL
-// mutant at histogram_native_mixed_or_subquery_range_fn.go:116:22
-// (`len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name)` ->
-// `&&`).
+// mutant (`||` -> `&&`) at
+// histogram_native_mixed_or_subquery_range_fn.go:`len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name)`.
 //
 // A 2-arg call to a recognised name (count_over_time takes exactly 1
 // argument) must reject on arity alone. With AND, a recognised name
@@ -506,7 +518,8 @@ func TestMixedOrSubqueryOuterFn_ArgCountVsNameGuard(t *testing.T) {
 	}
 	ctx := lowerCtx{start: at, end: at}
 	if _, _, _, ok := mixedOrSubqueryOuterFn(call, s, ctx); ok {
-		t.Fatalf("expected a 2-arg call to a 1-arg function to be rejected; got ok=true (mutant `||`->`&&` at histogram_native_mixed_or_subquery_range_fn.go:116:22)")
+		t.Fatalf("expected a 2-arg call to a 1-arg function to be rejected; got ok=true (mutant `||`->`&&` at " +
+			"histogram_native_mixed_or_subquery_range_fn.go:`len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name)`)")
 	}
 }
 
@@ -514,8 +527,10 @@ func TestMixedOrSubqueryOuterFn_ArgCountVsNameGuard(t *testing.T) {
 // histogram_native_mixed_or_subquery_range_fn.go sibling of
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_ZeroRangeRejected above,
 // killing:
-//   - CONDITIONALS_BOUNDARY at :120:22 (`sub.Range <= 0` -> `< 0`).
-//   - INVERT_LOGICAL at :120:27 (the second `||` -> `&&`).
+// both on
+// histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`:
+//   - CONDITIONALS_BOUNDARY on `sub.Range <= 0` (-> `< 0`).
+//   - INVERT_LOGICAL on the second `||` (-> `&&`).
 func TestMixedOrSubqueryOuterFn_ZeroRangeRejected(t *testing.T) {
 	t.Parallel()
 
@@ -532,16 +547,18 @@ func TestMixedOrSubqueryOuterFn_ZeroRangeRejected(t *testing.T) {
 	}
 	ctx := lowerCtx{start: at, end: at}
 	if _, _, _, ok := mixedOrSubqueryOuterFn(call, s, ctx); ok {
-		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutants at histogram_native_mixed_or_subquery_range_fn.go:120:22 and :120:27)")
+		t.Fatalf("expected zero-range subquery to be rejected; got ok=true (mutants on " +
+			"histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`)")
 	}
 }
 
 // TestMixedOrSubqueryOuterFn_NonSubqueryArgNoPanic is the
 // histogram_native_mixed_or_subquery_range_fn.go sibling of
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_NonSubqueryArgNoPanic
-// above, killing the INVERT_LOGICAL mutant at :120:9 (the first `||` on
-// that line -> `&&`, causing a nil-pointer panic on `sub.Range` when
-// c.Args[0] is not a subquery).
+// above, killing the INVERT_LOGICAL mutant on the first `||` of
+// histogram_native_mixed_or_subquery_range_fn.go:`!ok || sub.Range <= 0 || !subqueryHasEvalAnchor(sub, ctx)`
+// (-> `&&`, causing a nil-pointer panic on `sub.Range` when c.Args[0] is
+// not a subquery).
 func TestMixedOrSubqueryOuterFn_NonSubqueryArgNoPanic(t *testing.T) {
 	t.Parallel()
 

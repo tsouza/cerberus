@@ -65,7 +65,7 @@ func lowerBinary(b *syntax.BinOpExpr, s schema.Logs, lc lowerCtx) (chplan.Node, 
 	switch {
 	case lhsIsLit && rhsIsLit:
 		// Upstream Loki's parser folds literal-vs-literal at parse
-		// time via reduceBinOp (see syntax/ast.go:1817 mustNewBinOpExpr).
+		// time via reduceBinOp (see mustNewBinOpExpr in syntax/ast.go).
 		// If one reaches us anyway it's an internal invariant break — surface
 		// rather than silently re-folding.
 		return nil, fmt.Errorf("logql: scalar-only binary expression not folded (op %s) — internal invariant violation", b.Op)
