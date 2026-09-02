@@ -1,42 +1,65 @@
 //go:build chdb
 
-// Deliverable 1 (task #70): quantify the metrics-table ORDER BY decision.
+// Metrics-table ORDER BY: the standing execution proof that leading the
+// metrics sort key with MetricName still buys the granule-prune win (#791).
 //
-// The OTel-CH default renders the metrics tables with
+// Cerberus does not ship the stock OTel-CH metrics layout. The
+// tsouza/opentelemetry-collector-contrib:cerberus-ddl fork carries one
+// deliberate divergence (docs/upstream-forks.md): the five metrics tables lead
+// their sort key with MetricName, where upstream leads with ServiceName. The
+// reason is granule pruning. A metric-name-first PromQL instant query with NO
+// service.name matcher — the common Grafana / Drilldown-Metrics case — cannot
+// PK-range-prune against a leading ServiceName key, so ClickHouse falls back to
+// a generic exclusion search that touches granules from every ServiceName
+// block.
 //
-//	ORDER BY (ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix))
+// That divergence is a permanent maintenance cost, so the win it buys has to
+// stay MEASURED rather than remembered. Three layers pin different halves of
+// it, and only this one executes ClickHouse:
 //
-// (ServiceName FIRST; cerberus now patches that in the cerberus-ddl fork,
-// so internal/chsql/tableshape.go:`metrics.MetricNameColumn,` leads the
-// metrics sort key). A
-// metric-name-first PromQL instant query with NO service.name matcher —
-// the common Grafana / Drilldown-Metrics case — cannot PK-range-prune on
-// the leading ServiceName key, so ClickHouse falls back to a generic
-// exclusion search that touches granules from every ServiceName block.
+//   - internal/schema/ddl renders the CREATE TABLE from the fork's own
+//     templates — the layout production is actually created with.
+//   - internal/chsql/tableshape_orderby_test.go:`TestMetricsTableShapeLeadsWithMetricName`
+//     pins cerberus's granule-pruning MODEL of that key. Always-on, pure
+//     function, no libchdb.so.
+//   - this harness runs both keys over byte-identical data and measures the
+//     pruning difference the other two layers only assert.
 //
-// This bench seeds two parallel MergeTree tables with byte-identical data
-// and contrasting sort keys:
+// So the question it answers is live, not settled: ClickHouse index behaviour
+// is what makes the leading column matter, and if a future version pruned a
+// ServiceName-first key just as well, the fork patch would be paying
+// maintenance for nothing. The ratio this harness reports is the evidence that
+// keeps the divergence justified.
 //
-//	svcfirst : (ServiceName, MetricName, Attributes, ts)  — production
-//	metric   : (MetricName, Attributes, ServiceName, ts)  — proposed fork patch
+// The production sort key is READ OUT of the rendered DDL by
+// `productionMetricsSortKey` rather than written down here, so this file cannot
+// come to disagree with the schema it claims to measure. The comparison key is
+// that same key with ServiceName hoisted to the front — the stock upstream
+// layout — built by `serviceNameFirst`. If the fork patch were ever dropped the
+// two keys would coincide, and `TestOrderByDecision_ChDB` fails on that rather
+// than quietly measuring one table against itself.
 //
-// then runs EXPLAIN indexes=1 (parts/granules pruned) + wall-clock timing
-// for two query shapes:
+// Two parallel MergeTree tables are seeded with byte-identical data under the
+// two keys, then EXPLAIN indexes=1 (parts / granules pruned) and wall-clock
+// timing run over two query shapes:
 //
 //	metric-only : WHERE MetricName = ?                    (no service filter)
 //	svc+metric  : WHERE ServiceName = ? AND MetricName = ?
 //
-// The numbers feed the RC1 accept-OTel-default vs patch-cerberus-ddl-fork
-// decision. Build-tagged `chdb`, same lane as the rest of the chDB execs.
+// Build-tagged `chdb`, same lane as the rest of the chDB execs.
 package perf
 
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/chdb-io/chdb-go/chdb/driver" // registers "chdb" sql driver
+
+	"github.com/tsouza/cerberus/internal/schema"
+	"github.com/tsouza/cerberus/internal/schema/ddl"
 )
 
 // Data shape — representative of a mid-size OTel deployment:
@@ -178,13 +201,29 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 
 	total := nServices * nMetrics * nAttr * nTime
 
+	m := schema.DefaultOTelMetrics()
+	prodKey := productionMetricsSortKey(t)
+	upstreamKey := serviceNameFirst(t, prodKey, m.ServiceNameColumn)
+
+	// The whole comparison is meaningful only while cerberus actually diverges
+	// from upstream. If the rendered DDL ever leads with ServiceName, the two
+	// keys below are the same key and the ratio assertion would compare a table
+	// against itself and pass on 1x. Fail on that here instead.
+	if prodKey[0] == m.ServiceNameColumn {
+		t.Fatalf("the rendered metrics DDL leads its sort key with %q (full key %v): "+
+			"the cerberus-ddl fork's MetricName-first patch is absent from the DDL "+
+			"this build renders, so the granule-prune win this harness exists to "+
+			"keep measured has been lost at the schema layer",
+			m.ServiceNameColumn, prodKey)
+	}
+
 	tables := []struct {
 		name    string
 		orderBy string
 		label   string
 	}{
-		{"m_svcfirst", "(ServiceName, MetricName, Attributes, toUnixTimestamp64Nano(TimeUnix))", "ServiceName-first (PRODUCTION)"},
-		{"m_metricfirst", "(MetricName, Attributes, ServiceName, toUnixTimestamp64Nano(TimeUnix))", "MetricName-first (PROPOSED)"},
+		{"m_production", sortKeyClause(prodKey), productionKeyLabel},
+		{"m_svcfirst", sortKeyClause(upstreamKey), upstreamKeyLabel},
 	}
 
 	for _, tb := range tables {
@@ -235,11 +274,11 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 		}
 	}
 
-	t.Logf("%-12s | %-32s | %-12s | %-16s | %-10s | %s",
-		"shape", "ORDER BY", "PK keys", "parts", "granules", "best wall")
-	t.Log("-------------+----------------------------------+--------------+------------------+------------+----------")
+	t.Logf("%-12s | %-38s | %-12s | %-16s | %-10s | %s",
+		"shape", "sort key", "PK keys", "parts", "granules", "best wall")
+	t.Log("-------------+----------------------------------------+--------------+------------------+------------+----------")
 	for _, r := range results {
-		t.Logf("%-12s | %-32s | %-12s | %-16s | %-10s | %v",
+		t.Logf("%-12s | %-38s | %-12s | %-16s | %-10s | %v",
 			r.shape, r.variant, r.st.keys,
 			stripPrefix(r.st.parts, "Parts: "),
 			stripPrefix(r.st.granules, "Granules: "),
@@ -261,42 +300,161 @@ func TestOrderByDecision_ChDB(t *testing.T) {
 
 	// --- ASSERTION: granule-prune ratio floor (guards #791) ---------------
 	//
-	// The landed cerberus-ddl fork patch leads the metrics ORDER BY with
-	// MetricName so the common metric-name-first query (NO service.name
-	// matcher — the Grafana / Drilldown-Metrics default) binary-searches
-	// the PK instead of falling to a generic-exclusion scan that touches
-	// granules from every ServiceName block. The measured win on this grid
-	// is 8–17× fewer granules read on the metric-only shape.
+	// On the metric-only shape (NO service.name matcher — the Grafana /
+	// Drilldown-Metrics default) the production key binary-searches the PK,
+	// while the stock upstream key falls to a generic-exclusion scan that
+	// touches granules from every ServiceName block.
 	//
-	// We assert a generous ratio FLOOR (≥4×), not an absolute granule
+	// The floor is a RATIO between the two keys, not an absolute granule
 	// count: the absolute number is index_granularity-dependent and would
-	// drift if CH changed the default or the grid scaled, but the *ratio*
-	// between the two sort keys on byte-identical data is the structural
+	// drift if ClickHouse changed the default or the grid scaled, but the
+	// ratio between two sort keys over byte-identical data is the structural
 	// property the fork patch buys. The fixed-grid OPTIMIZE … FINAL
-	// single-part setup above makes both granule counts deterministic. A
-	// regression that re-led the sort key with ServiceName (the OTel
-	// upstream default) collapses the ratio toward 1× and trips this floor.
-	svcFirstGranules := selectedGranulesFor(t, results, "metric-only", "ServiceName-first (PRODUCTION)")
-	metricFirstGranules := selectedGranulesFor(t, results, "metric-only", "MetricName-first (PROPOSED)")
+	// single-part setup above makes both counts deterministic.
+	//
+	// Because the production key is derived from the rendered DDL, this is a
+	// real regression guard rather than a statement about a hard-coded key:
+	// drop the fork patch and the leading-column check above fails, and change
+	// ClickHouse's index behaviour so the leading column stops mattering and
+	// the ratio collapses into this floor.
+	prodGranules := selectedGranulesFor(t, results, "metric-only", productionKeyLabel)
+	upstreamGranules := selectedGranulesFor(t, results, "metric-only", upstreamKeyLabel)
 
-	t.Logf("metric-only granule prune: svcfirst=%d  metricfirst=%d  ratio=%.1fx",
-		svcFirstGranules, metricFirstGranules, float64(svcFirstGranules)/float64(maxInt1(metricFirstGranules)))
+	t.Logf("metric-only granule prune: production=%d  upstream-default=%d  ratio=%.1fx",
+		prodGranules, upstreamGranules, float64(upstreamGranules)/float64(maxInt1(prodGranules)))
 
-	if metricFirstGranules <= 0 {
-		t.Fatalf("metric-first metric-only query read %d granules — EXPLAIN parse is "+
-			"degenerate (expected ≥1 selected granule); cannot evaluate the prune ratio",
-			metricFirstGranules)
+	if prodGranules <= 0 {
+		t.Fatalf("the production-key metric-only query read %d granules — the EXPLAIN "+
+			"parse is degenerate (expected ≥1 selected granule); the prune ratio "+
+			"cannot be evaluated", prodGranules)
 	}
-	const minRatio = 4 // generous floor vs the measured 8–17×
-	if metricFirstGranules*minRatio > svcFirstGranules {
-		t.Fatalf("metrics ORDER BY granule-prune regression: the metric-name-first key "+
-			"read %d granules and the service-name-first key read %d — only %.1f× fewer, "+
-			"below the %d× floor. The cerberus-ddl fork's MetricName-first ORDER BY win "+
-			"(measured 8–17× on this grid) has regressed; the leading sort key is no "+
-			"longer letting a no-service.name query PK-range-prune.",
-			metricFirstGranules, svcFirstGranules,
-			float64(svcFirstGranules)/float64(metricFirstGranules), minRatio)
+	// A floor well under the ratio this grid actually produces: the assertion
+	// is meant to catch the win COLLAPSING, not to pin a measurement that
+	// legitimately moves with ClickHouse's index implementation.
+	const minRatio = 4
+	if prodGranules*minRatio > upstreamGranules {
+		t.Fatalf("metrics ORDER BY granule-prune regression: the production key %v "+
+			"read %d granules and the stock upstream key %v read %d — only %.1f× "+
+			"fewer, below the %d× floor. Leading the metrics sort key with %q has "+
+			"stopped letting a no-service.name query PK-range-prune, which is the "+
+			"entire justification for the cerberus-ddl fork's divergence.",
+			prodKey, prodGranules, upstreamKey, upstreamGranules,
+			float64(upstreamGranules)/float64(prodGranules), minRatio, prodKey[0])
 	}
+}
+
+// The two sort-key variants under test, named once so the label a result row
+// carries and the label the assertions look it up by cannot drift apart.
+const (
+	productionKeyLabel = "production (from the rendered DDL)"
+	upstreamKeyLabel   = "stock OTel default (ServiceName-first)"
+)
+
+// orderByPrefix opens the ORDER BY line of a rendered CREATE TABLE statement.
+const orderByPrefix = "ORDER BY "
+
+// productionMetricsSortKey returns the ORDER BY elements the OTel-CH metrics
+// tables are actually created with, read out of the DDL internal/schema/ddl
+// renders from the cerberus-ddl fork's own templates.
+//
+// Reading the key rather than restating it is the point. A hand-written copy is
+// a claim that can quietly stop describing production — and when it does, the
+// harness goes on measuring a layout nobody runs while still reporting a
+// healthy ratio.
+func productionMetricsSortKey(t *testing.T) []string {
+	t.Helper()
+
+	m := schema.DefaultOTelMetrics()
+	stmts, err := ddl.RenderAll(ddl.Config{}, []ddl.Signal{ddl.Metrics})
+	if err != nil {
+		t.Fatalf("render the metrics DDL: %v", err)
+	}
+	for _, stmt := range stmts {
+		if !strings.Contains(stmt, m.GaugeTable) {
+			continue
+		}
+		for _, line := range strings.Split(stmt, "\n") {
+			line = trimSpace(line)
+			if !hasPrefix(line, orderByPrefix) {
+				continue
+			}
+			return splitSortKey(t, stripPrefix(line, orderByPrefix))
+		}
+	}
+	t.Fatalf("no %s line in the rendered DDL for %q — the metrics table template "+
+		"changed shape and the production sort key can no longer be read from it",
+		orderByPrefix, m.GaugeTable)
+	return nil
+}
+
+// splitSortKey turns the `(a, b, f(c))` expression list of an ORDER BY clause
+// into its top-level elements. A comma inside a function call is not a
+// separator, so the scan tracks parenthesis depth.
+func splitSortKey(t *testing.T, clause string) []string {
+	t.Helper()
+
+	clause = trimSpace(clause)
+	if !hasPrefix(clause, "(") || !strings.HasSuffix(clause, ")") {
+		t.Fatalf("ORDER BY clause %q is not a parenthesised expression list", clause)
+	}
+	inner := clause[1 : len(clause)-1]
+
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, trimSpace(inner[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	out = append(out, trimSpace(inner[start:]))
+
+	for _, c := range out {
+		if c == "" {
+			t.Fatalf("ORDER BY clause %q has an empty element: %v", clause, out)
+		}
+	}
+	return out
+}
+
+// serviceNameFirst returns key with its ServiceName element hoisted to the
+// front — the stock upstream metrics layout, expressed as a PERMUTATION of
+// whatever cerberus actually ships rather than as a second hand-written key.
+// Deriving the comparison this way keeps the two tables byte-comparable: they
+// differ in the position of one column and in nothing else.
+func serviceNameFirst(t *testing.T, key []string, serviceNameCol string) []string {
+	t.Helper()
+
+	idx := -1
+	for i, c := range key {
+		if c == serviceNameCol {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("the metrics sort key %v has no %q element, so the stock upstream "+
+			"comparison key cannot be built from it", key, serviceNameCol)
+	}
+
+	out := make([]string, 0, len(key))
+	out = append(out, key[idx])
+	out = append(out, key[:idx]...)
+	out = append(out, key[idx+1:]...)
+	return out
+}
+
+// sortKeyClause renders sort-key elements back into the parenthesised
+// expression list a CREATE TABLE ORDER BY takes.
+func sortKeyClause(key []string) string {
+	return "(" + strings.Join(key, ", ") + ")"
 }
 
 // selectedGranulesFor pulls the count of SELECTED granules (the
@@ -349,7 +507,11 @@ func maxInt1(n int) int {
 	return n
 }
 
-// --- tiny string helpers (avoid importing strings for two calls) ---
+// --- EXPLAIN-line string helpers, shared across package perf ---
+//
+// Kept as package-local helpers rather than folded into `strings` calls at
+// every site: the chDB EXPLAIN harnesses in this package all trim and
+// prefix-match the same way, and several of them predate any `strings` import.
 
 func trimSpace(s string) string {
 	i, j := 0, len(s)
