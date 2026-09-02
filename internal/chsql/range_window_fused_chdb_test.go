@@ -146,16 +146,16 @@ func fusedDiffSQL(t *testing.T, r *chplan.RangeWindow) string {
 // matrix under the direct-aggregate outer regroup.
 func materializedDiffSQL(t *testing.T, r *chplan.RangeWindow) string {
 	t.Helper()
-	agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn)
+	aggFor, ok := overTimeDirectAggFrag(r)
 	if !ok {
 		t.Fatalf("%s is not a direct-aggregate reducer", r.Func)
 	}
 	e := &emitter{}
 	var err error
 	if r.OuterRange > 0 {
-		err = e.emitRangeWindowOverTimeDirectMatrix(r, agg)
+		err = e.emitRangeWindowOverTimeDirectMatrix(r, aggFor)
 	} else {
-		err = e.emitRangeWindowOverTimeDirectInstant(r, agg)
+		err = e.emitRangeWindowOverTimeDirectInstant(r, aggFor)
 	}
 	if err != nil {
 		t.Fatalf("materialized emit: %v", err)

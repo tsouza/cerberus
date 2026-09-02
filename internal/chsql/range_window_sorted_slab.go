@@ -39,13 +39,16 @@ import "github.com/tsouza/cerberus/internal/chplan"
 // summation and break byte-identity with the array-fold — see
 // chplan.RangeWindow.SortedSlabOverTime's own doc).
 //
-// No dedup: unlike the extrapolated/fused matrix emitters
-// (dedupWindowPairsByTsFrag), the array-fold path this narrows
-// (windowValsFrag, range_window.go) does NOT collapse duplicate-timestamp
-// samples before reducing — every sample counts individually. This emitter
-// reproduces that exactly: the slab is a plain arraySort(groupArray(...))
-// with no dedup layer, so a duplicate-timestamp pair sums/averages the same
-// as the array-fold's own window_vals would.
+// Duplicate rows: the slab is assembled through the SAME windowSamplePairsFrag
+// gate the array-fold path uses (range_window.go), so it answers under the
+// identical rule — the distinct (timestamp, value) rows when the window
+// declares chplan.RangeWindow.DistinctSampleRows (cerberus issue #2914), every
+// stored row otherwise. It deliberately does NOT apply the rate family's
+// stronger per-timestamp collapse (dedupWindowPairsByTsFrag), which the
+// extrapolated/fused matrix emitters carry and this family does not: a
+// same-timestamp pair carrying DIFFERENT values still contributes both samples
+// here, exactly as the array-fold's own window_vals does (cerberus issue
+// #2905).
 //
 // Deliberately arrayFilter, not arraySlice-via-binary-search: `samples` is
 // NOT anchor-grid-aligned (raw sample timestamps), so cutting an anchor's
@@ -110,11 +113,13 @@ func (e *emitter) emitRangeWindowSortedSlabOverTime(r *chplan.RangeWindow) error
 	innerSub, srcTs := fanoutTsSource(innerSub, r.TimestampColumn)
 
 	// Layer 1 — per-series sorted (ts, value) samples slab, ONE GROUP BY
-	// series (vs. emitWindowedArrayMatrix's GROUP BY (series, anchor)). No
-	// dedup — see this file's doc comment.
+	// series (vs. emitWindowedArrayMatrix's GROUP BY (series, anchor)),
+	// assembled through the shared windowSamplePairsFrag gate so this
+	// lowering answers under the same duplicate-row rule the array-fold does
+	// — see this file's doc comment.
 	samplesQ := NewQuery().From(innerSub)
 	samplesQ.Select(groupFrags...)
-	samplesQ.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "samples"))
+	samplesQ.Select(As(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "samples"))
 	maybePushInnerScanTimeBounds(samplesQ, r, srcTs, rangeNS)
 	samplesQ.GroupBy(groupFrags...)
 

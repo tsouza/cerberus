@@ -50,6 +50,7 @@ func Lower(ctx context.Context, expr parser.Expr, s schema.Metrics) (chplan.Node
 		span.RecordError(err)
 		return nil, err
 	}
+	plan = stampDistinctSampleRows(plan)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
@@ -163,6 +164,7 @@ func LowerAtRangeOpts(ctx context.Context, expr parser.Expr, s schema.Metrics, s
 		span.RecordError(err)
 		return nil, err
 	}
+	plan = stampDistinctSampleRows(plan)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }
@@ -198,6 +200,7 @@ func LowerMetadataRange(ctx context.Context, expr parser.Expr, s schema.Metrics,
 		span.RecordError(err)
 		return nil, err
 	}
+	plan = stampDistinctSampleRows(plan)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
 }

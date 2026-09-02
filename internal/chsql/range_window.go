@@ -704,7 +704,7 @@ func (e *emitter) emitWindowedArrayPairsAnchoredWithExtra(
 	hasTemporality := windowTemporalityProjected(r)
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(RawAs(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(RawAs(windowSamplePairsFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
 	if hasTemporality {
 		innermost.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
@@ -830,7 +830,7 @@ func (e *emitter) emitWindowedArrayPairsMatrix(r *chplan.RangeWindow, valueWrite
 	if hasTemporality {
 		regroup.Select(As(Call("any", Col(r.TemporalityColumn)), windowTemporalityAlias))
 	}
-	regroup.Select(RawAs(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
+	regroup.Select(RawAs(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -2254,6 +2254,62 @@ func seriesArrayPairFrag(r *chplan.RangeWindow, tsCol, valCol string) Frag {
 	return groupArrayPairFrag(tsCol, valCol)
 }
 
+// distinctSampleRowsFrag collapses an `arraySort`-ordered
+// `Array(Tuple(ts, value))` down to one tuple per distinct (ts, value) PAIR
+// — cerberus issue #2914's contract that two stored rows carrying the same
+// timestamp AND the same value are one metric sample written twice.
+//
+// `arrayCompact(arr)` (the no-lambda form) drops every element equal to its
+// predecessor. That is exactly a distinct-element collapse HERE and only
+// here, because the input is `arraySort`-ordered: arraySort compares tuples
+// lexicographically, so equal (ts, value) tuples are always adjacent. The
+// same linear, single-pass reason dedupWindowPairsByTsFrag gives for its own
+// arrayCompact applies — the lambda-free form never captures `arr`, so
+// ClickHouse does not replicate the window array once per element.
+//
+// Deliberately keyed on the WHOLE tuple rather than on the timestamp:
+//
+//   - a same-timestamp pair carrying DIFFERENT values keeps both rows, the
+//     cerberus issue #2905 contract this must not disturb;
+//   - two rows carrying the same value at DIFFERENT timestamps keep both,
+//     which a value-keyed collapse would wrongly merge.
+//
+// Both, and the NaN case below, verified against this repository's pinned
+// chDB substrate: `arrayCompact` compares Float64 tuple elements with
+// ClickHouse's total column ordering, under which NaN equals NaN — so an
+// identical NaN-valued duplicate collapses too, matching the
+// math.Float64bits comparison Prometheus's own appender makes.
+func distinctSampleRowsFrag(arr Frag) Frag {
+	return Call("arrayCompact", arr)
+}
+
+// windowSamplePairsFrag assembles a per-window (timestamp, value) sample
+// array for r — groupArrayPairFrag, plus the distinct-rows collapse when r
+// declares its rows to be metric samples (chplan.RangeWindow.DistinctSampleRows,
+// cerberus issue #2914).
+//
+// This is the single gate for that rule across every array-shaped lowering
+// of one query: the windowed-array instant and matrix paths, their
+// pairs-carrying siblings, and the sorted-slab decomposition all assemble
+// their sample array through here, so none of them can answer under a
+// different rule than the others. The count-shaped lowering (the direct CH
+// group aggregate, overTimeDirectAggFrag) materialises no array and states
+// the same rule as `uniqExact` over the pair.
+//
+// The rate family's assemblies deliberately do NOT route through here: they
+// apply dedupWindowPairsByTsFrag (or the self-deduping native
+// timeSeriesGroupArray) downstream, a collapse to one sample per distinct
+// TIMESTAMP that strictly subsumes this one — see
+// chplan.RangeWindow.DistinctSampleRows for why the two rules agree
+// wherever the question has a defined answer.
+func windowSamplePairsFrag(r *chplan.RangeWindow, tsCol, valCol string) Frag {
+	pairs := groupArrayPairFrag(tsCol, valCol)
+	if r.DistinctSampleRows {
+		return distinctSampleRowsFrag(pairs)
+	}
+	return pairs
+}
+
 // groupArrayPairIfFrag returns a Frag rendering
 // `arraySort(groupArrayIf((<ts>, <val>), <cond>))` — groupArrayPairFrag's
 // split-window sibling, used where a single fan-out row must land in one of
@@ -2662,8 +2718,8 @@ func (e *emitter) emitRangeWindowOverTime(r *chplan.RangeWindow) error {
 	// values; first/last_over_time keep the array's deterministic
 	// duplicate-ts tie-break (window_vals[1] / window_vals[N] over the
 	// arraySort-by-(ts, value) order) that argMin/argMax don't replicate.
-	if agg, ok := overTimeDirectAggFrag(r.Func, r.ValueColumn); ok {
-		return e.emitRangeWindowOverTimeDirect(r, agg)
+	if aggFor, ok := overTimeDirectAggFrag(r); ok {
+		return e.emitRangeWindowOverTimeDirect(r, aggFor)
 	}
 	// SortedSlabOverTime (cerberus issue #2761, sum_over_time /
 	// avg_over_time only — see chopt.FeatureSortedSlabOverTime) is set only
@@ -2982,16 +3038,48 @@ func tsOfExtremeFrag(wantMax bool) Frag {
 //
 // quantile/stddev/stdvar/first/last_over_time also return ok=false and
 // stay on the array path (see emitRangeWindowOverTime for why).
-func overTimeDirectAggFrag(fn, valueCol string) (Frag, bool) {
-	switch fn {
+//
+// # Why a factory over the timestamp column rather than a ready Frag
+//
+// count_over_time is the one member here whose aggregate READS the sample
+// timestamp: under chplan.RangeWindow.DistinctSampleRows (cerberus issue
+// #2914) it counts distinct (timestamp, value) pairs rather than stored
+// rows, which is the same rule windowSamplePairsFrag states for the array
+// paths. The matrix variant's timestamp column is not always
+// r.TimestampColumn — fanoutTsSource renames it to `_src_ts` for a NESTED
+// matrix shape, precisely because the fan-out layer's own arrayJoin output
+// is ALSO called `anchor_ts` there. A timestamp-reading aggregate built
+// against the pre-rename name would resolve one subquery up to the regroup's
+// GROUP BY key instead of the sample's own timestamp and return one distinct
+// value per group — silently, with no ClickHouse error (observed: a
+// count_over_time of 1 where 5 was expected). Handing each variant a factory
+// forces it to name the column that is actually in scope where it builds.
+//
+// min / max / present read no timestamp and so ignore the parameter; they
+// are also inherently immune to the collapse (repeating a value already in
+// the multiset cannot move a minimum, a maximum, or "is the window
+// non-empty"), which is why they need no DistinctSampleRows branch at all.
+func overTimeDirectAggFrag(r *chplan.RangeWindow) (func(tsCol string) Frag, bool) {
+	switch r.Func {
 	case "min_over_time":
-		return Call("min", Col(valueCol)), true
+		return func(string) Frag { return Call("min", Col(r.ValueColumn)) }, true
 	case "max_over_time":
-		return Call("max", Col(valueCol)), true
+		return func(string) Frag { return Call("max", Col(r.ValueColumn)) }, true
 	case "count_over_time":
-		return Call("toFloat64", Call("count")), true
+		return func(tsCol string) Frag {
+			if r.DistinctSampleRows {
+				// uniqExact over the PAIR, not over the timestamp: a
+				// same-timestamp pair carrying different values is two
+				// samples (cerberus issue #2905), so counting distinct
+				// timestamps would over-collapse it. uniqExact rather than
+				// uniq because a sample count is the divisor of every
+				// averaging reducer and must be exact, not estimated.
+				return Call("toFloat64", Call("uniqExact", Col(tsCol), Col(r.ValueColumn)))
+			}
+			return Call("toFloat64", Call("count"))
+		}, true
 	case "present_over_time":
-		return Call("toFloat64", InlineLit(int64(1))), true
+		return func(string) Frag { return Call("toFloat64", InlineLit(int64(1))) }, true
 	}
 	return nil, false
 }
@@ -3013,7 +3101,7 @@ func overTimeDirectAggFrag(fn, valueCol string) (Frag, bool) {
 //	GROUP BY <series>
 //
 // Matrix mode (OuterRange > 0) is delegated to the matrix variant.
-func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag) error {
+func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, aggFor func(tsCol string) Frag) error {
 	if r.TimestampColumn == "" {
 		return fmt.Errorf("%w: RangeWindow.TimestampColumn unset", ErrUnsupported)
 	}
@@ -3039,16 +3127,16 @@ func (e *emitter) emitRangeWindowOverTimeDirect(r *chplan.RangeWindow, agg Frag)
 	}
 
 	if r.OuterRange > 0 {
-		return e.emitRangeWindowOverTimeDirectMatrix(r, agg)
+		return e.emitRangeWindowOverTimeDirectMatrix(r, aggFor)
 	}
-	return e.emitRangeWindowOverTimeDirectInstant(r, agg)
+	return e.emitRangeWindowOverTimeDirectInstant(r, aggFor)
 }
 
 // emitRangeWindowOverTimeDirectInstant is the OuterRange == 0 variant of
 // emitRangeWindowOverTimeDirect — the single-anchor shape described there,
 // split out so the fused emitter's differential coverage can render the
 // materialized shape a fusible instant subquery would otherwise never reach.
-func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, agg Frag) error {
+func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, aggFor func(tsCol string) Frag) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
@@ -3063,7 +3151,9 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
 
 	sb := NewQuery().From(inner)
 	sb.Select(groupFrags...)
-	sb.Select(As(agg, r.ValueColumn))
+	// No fan-out layer in the instant shape, so the sample timestamp is
+	// r.TimestampColumn under its own name (see overTimeDirectAggFrag).
+	sb.Select(As(aggFor(r.TimestampColumn), r.ValueColumn))
 	// The (end - range, end] window predicate the array path applied via
 	// arrayFilter over the (ts, value) tuples becomes a row-level WHERE:
 	// left-open / right-closed, identical bounds. This direct path is an
@@ -3104,7 +3194,7 @@ func (e *emitter) emitRangeWindowOverTimeDirectInstant(r *chplan.RangeWindow, ag
 //	  FROM (<input>)
 //	)
 //	GROUP BY <series>, anchor_ts
-func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg Frag) error {
+func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, aggFor func(tsCol string) Frag) error {
 	end := endExprFrag(r)
 	rangeNS := r.Range.Nanoseconds()
 	stepNS := r.Step.Nanoseconds()
@@ -3141,11 +3231,15 @@ func (e *emitter) emitRangeWindowOverTimeDirectMatrix(r *chplan.RangeWindow, agg
 	// projectAnchorAsTimestampColumn for the anchor_ts-as-TimestampColumn
 	// fallback.
 	projectAnchorAsTimestampColumn(regroup, r)
-	// The aggregate references srcTs/ValueColumn; in the nested-matrix
-	// rename case (fanoutTsSource) it operates over Value only, so the
-	// rename of the timestamp column doesn't affect these order-free
-	// reducers.
-	regroup.Select(As(agg, r.ValueColumn))
+	// The aggregate is built against srcTs — fanoutTsSource's RESOLVED
+	// timestamp column, which is `_src_ts` in the nested-matrix rename case
+	// and r.TimestampColumn otherwise. min / max / present read no timestamp
+	// and are indifferent to the rename; count_over_time under
+	// DistinctSampleRows does read it, and `anchor_ts` is in scope here as
+	// this layer's own GROUP BY key, so naming the pre-rename column would
+	// resolve to that key and count one distinct value per group instead of
+	// one per sample — see overTimeDirectAggFrag's own doc.
+	regroup.Select(As(aggFor(srcTs), r.ValueColumn))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
@@ -5081,7 +5175,7 @@ func (e *emitter) emitWindowedArray(r *chplan.RangeWindow, value Frag, minWindow
 	// Innermost SELECT — groupArray of (ts, value), sorted.
 	innermost := NewQuery()
 	innermost.Select(groupFrags...)
-	innermost.Select(As(groupArrayPairFrag(r.TimestampColumn, r.ValueColumn), "series_array"))
+	innermost.Select(As(windowSamplePairsFrag(r, r.TimestampColumn, r.ValueColumn), "series_array"))
 	innerSub, err := e.subqueryFrag(r.Input)
 	if err != nil {
 		return err
@@ -5204,7 +5298,7 @@ func (e *emitter) emitWindowedArrayMatrix(r *chplan.RangeWindow, value Frag, min
 	regroup := NewQuery().From(fanout.Frag())
 	regroup.Select(groupFrags...)
 	regroup.Select(Col("anchor_ts"))
-	regroup.Select(As(groupArrayPairFrag(srcTs, r.ValueColumn), "window_pairs"))
+	regroup.Select(As(windowSamplePairsFrag(r, srcTs, r.ValueColumn), "window_pairs"))
 	regroupKeys := make([]Frag, 0, len(groupFrags)+1)
 	regroupKeys = append(regroupKeys, groupFrags...)
 	regroupKeys = append(regroupKeys, Col("anchor_ts"))
