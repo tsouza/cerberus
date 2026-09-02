@@ -23,11 +23,15 @@ import { attemptedEfficacy, countMutationStatuses } from './gremlins-threshold.m
 const script = new URL('./gremlins-threshold.mjs', import.meta.url).pathname;
 
 // mutations builds a files[] block with the given per-status counts.
-function mutations({ killed = 0, lived = 0, timedOut = 0 }) {
+function mutations({ killed = 0, lived = 0, timedOut = 0, runTimedOut = 0, unknown = 0 }) {
   const out = [];
   for (let i = 0; i < killed; i++) out.push({ type: 'X', status: 'KILLED', line: i, column: 1 });
   for (let i = 0; i < lived; i++) out.push({ type: 'X', status: 'LIVED', line: i, column: 1 });
   for (let i = 0; i < timedOut; i++) out.push({ type: 'X', status: 'TIMED OUT', line: i, column: 1 });
+  for (let i = 0; i < runTimedOut; i++) {
+    out.push({ type: 'X', status: 'RUN TIMED OUT', line: i, column: 1 });
+  }
+  for (let i = 0; i < unknown; i++) out.push({ type: 'X', status: 'SOMETHING NEW', line: i, column: 1 });
   return [{ file_name: 'a.go', mutations: out }];
 }
 
@@ -107,32 +111,125 @@ test('a leg that adjudicated 6% of its mutants cannot report 100%', () => {
   assert.equal(gremlinsReported(counts), 100);
   const r = run(counts, 95);
   assert.equal(r.code, 1, `100% over 22 of 345 mutants must not pass: ${r.out}`);
-  assert.match(r.out, /killed 22 of 345 attempted/);
+  assert.match(r.out, /detected 22 of 345 attempted/);
 });
 
 // The rule the whole gate rests on, checked as a property rather than on one
-// report: moving a mutant into TIMED OUT may never raise the score. Under the
-// reading this replaced — timeouts as detections — every one of these pairs
-// moved the wrong way.
-test('moving any mutant into TIMED OUT never raises the score', () => {
-  for (const [killed, lived, timedOut] of [
-    [486, 31, 4],
-    [39, 1, 279],
-    [5, 40, 5],
-    [1, 1, 0],
-    [0, 7, 3],
-    [990, 32, 0],
+// report: moving a mutant into the UNADJUDICATED status may never raise the
+// score. Under the reading #2903 replaced — every timeout a detection — each of
+// these pairs moved the wrong way, and that reading is what a starved runner
+// exploits. It stays closed: the backstop status is the one a starved compile,
+// a hung compile and a memory reap all land in.
+test('moving any mutant into the backstop TIMED OUT never raises the score', () => {
+  for (const [killed, lived, timedOut, runTimedOut] of [
+    [486, 31, 4, 0],
+    [39, 1, 279, 0],
+    [5, 40, 5, 0],
+    [1, 1, 0, 0],
+    [0, 7, 3, 0],
+    [990, 32, 0, 0],
+    [361, 13, 11, 14],
+    [280, 14, 9, 8],
   ]) {
-    const base = attemptedEfficacy({ killed, lived, timedOut });
+    const base = attemptedEfficacy({ killed, lived, timedOut, runTimedOut });
     if (lived > 0) {
-      const fromLived = attemptedEfficacy({ killed, lived: lived - 1, timedOut: timedOut + 1 });
+      const fromLived = attemptedEfficacy({ killed, lived: lived - 1, timedOut: timedOut + 1, runTimedOut });
       assert.ok(fromLived <= base, `LIVED -> TIMED OUT raised ${base} to ${fromLived}`);
     }
     if (killed > 0) {
-      const fromKilled = attemptedEfficacy({ killed: killed - 1, lived, timedOut: timedOut + 1 });
+      const fromKilled = attemptedEfficacy({ killed: killed - 1, lived, timedOut: timedOut + 1, runTimedOut });
       assert.ok(fromKilled <= base, `KILLED -> TIMED OUT raised ${base} to ${fromKilled}`);
     }
+    if (runTimedOut > 0) {
+      const fromRun = attemptedEfficacy({ killed, lived, timedOut: timedOut + 1, runTimedOut: runTimedOut - 1 });
+      assert.ok(fromRun <= base, `RUN TIMED OUT -> TIMED OUT raised ${base} to ${fromRun}`);
+    }
   }
+});
+
+// #2944. The one asymmetry the narrow reading introduces, pinned so it is a
+// decision rather than an accident: a survivor that stops terminating stops
+// being a survivor, so LIVED -> RUN TIMED OUT DOES raise the score. Nothing
+// else does, which is why the two timeout kinds may not be collapsed.
+test('LIVED -> RUN TIMED OUT raises the score, and KILLED -> RUN TIMED OUT leaves it alone', () => {
+  for (const [killed, lived, timedOut, runTimedOut] of [
+    [361, 13, 11, 14],
+    [280, 14, 9, 8],
+    [221, 6, 5, 3],
+  ]) {
+    const base = attemptedEfficacy({ killed, lived, timedOut, runTimedOut });
+    const fromLived = attemptedEfficacy({ killed, lived: lived - 1, timedOut, runTimedOut: runTimedOut + 1 });
+    assert.ok(fromLived > base, `LIVED -> RUN TIMED OUT did not raise ${base} (got ${fromLived})`);
+    const fromKilled = attemptedEfficacy({
+      killed: killed - 1,
+      lived,
+      timedOut,
+      runTimedOut: runTimedOut + 1,
+    });
+    assert.equal(fromKilled, base, 'KILLED and RUN TIMED OUT are both detections, so the ratio is unchanged');
+  }
+});
+
+// The distinction stated at the level the gate actually reads: two reports with
+// the same total timeout count score differently only because of WHICH bound
+// claimed them, and the backstop one is the lower.
+test('a leg whose timeouts are all backstop scores below one whose timeouts all ran', () => {
+  const backstop = { killed: 361, lived: 13, timedOut: 25, runTimedOut: 0 };
+  const ranOut = { killed: 361, lived: 13, timedOut: 0, runTimedOut: 25 };
+  assert.ok(attemptedEfficacy(backstop) < attemptedEfficacy(ranOut));
+  assert.equal(run(backstop, 95).code, 1, 'backstop timeouts must not carry a leg over the floor');
+  assert.equal(run(ranOut, 95).code, 0, 'run-phase timeouts are detections (#2944)');
+});
+
+// A memory reap reaches the gate as a BACKSTOP timeout, because the guard kills
+// the child and then holds so that no exit status of its own can be read as a
+// verdict, and gremlins' compile+run deadline is what finally claims it. #2921
+// must not regress through the run-phase credit: the arithmetic below is the
+// same leg with the same 25 unadjudicated mutants either way.
+test('a memory-reaped mutant is still not a kill', () => {
+  const reaped = { killed: 361, lived: 13, timedOut: 25, runTimedOut: 0 };
+  const r = run(reaped, 95);
+  assert.equal(r.code, 1, `a leg carried over the floor by reaped mutants: ${r.out}`);
+  assert.match(r.out, /timed out 25/);
+});
+
+// The closed status set. A fork that adds or renames a status must fail loudly:
+// an unrecognised status counted as nothing leaves those mutants out of BOTH
+// sides of the ratio, which raises the leg's score for free. This is the exact
+// failure an older gate would have hit against the fork that introduced RUN
+// TIMED OUT.
+test('an unrecognised status fails the gate instead of vanishing from the ratio', () => {
+  const r = run({ killed: 100, lived: 0, unknown: 40 }, 95);
+  assert.equal(r.code, 1, `a report with an unknown status must not pass: ${r.out}`);
+  assert.match(r.out, /does not know/);
+  assert.match(r.out, /SOMETHING NEW/);
+});
+
+test('the statuses that carry no verdict stay outside both sides of the ratio', () => {
+  const c = countMutationStatuses({
+    files: [
+      {
+        mutations: [
+          { status: 'NOT COVERED' },
+          { status: 'NOT VIABLE' },
+          { status: 'SKIPPED' },
+          { status: 'RUNNABLE' },
+          { status: 'KILLED' },
+        ],
+      },
+    ],
+  });
+  assert.equal(c.unknown.size, 0, 'the unscored statuses are known, just not counted');
+  assert.equal(attemptedEfficacy(c), 100);
+});
+
+// A run bound that collapsed manufactures RUN TIMED OUT specifically, so the
+// budget-collapse floor is computed over NORMAL verdicts only. Crediting run
+// timeouts must not turn that signature into a perfect leg.
+test('a leg whose every mutant run-timed-out is a collapsed budget, not a perfect suite', () => {
+  const r = run({ killed: 0, lived: 0, runTimedOut: 295 }, 95);
+  assert.equal(r.code, 1, `295 run timeouts and no normal verdict must not report 100%: ${r.out}`);
+  assert.match(r.out, /budget collapsing/);
 });
 
 test('the gated rate is never above the rate gremlins reported', () => {
@@ -168,18 +265,28 @@ test('countMutationStatuses matches only the exact status strings', () => {
         mutations: [
           { status: 'TIMED OUT' },
           { status: 'TIMEDOUT' },
+          { status: 'RUN TIMED OUT' },
           { status: 'KILLED' },
           { status: 'LIVED' },
         ],
       },
     ],
   });
-  assert.deepEqual(c, { total: 4, timedOut: 1, killed: 1, lived: 1 });
+  assert.equal(c.total, 5);
+  assert.equal(c.timedOut, 1);
+  assert.equal(c.runTimedOut, 1);
+  assert.equal(c.killed, 1);
+  assert.equal(c.lived, 1);
+  // A near-miss spelling is not silently folded into the status it resembles;
+  // it is collected as unknown, and main() fails on it.
+  assert.deepEqual([...c.unknown.entries()], [['TIMEDOUT', 1]]);
 });
 
 test('attemptedEfficacy reports null when the runner attempted nothing', () => {
   assert.equal(attemptedEfficacy({ killed: 0, lived: 0, timedOut: 0 }), null);
+  assert.equal(attemptedEfficacy({ killed: 0, lived: 0, timedOut: 0, runTimedOut: 0 }), null);
   assert.equal(attemptedEfficacy({ killed: 1, lived: 1, timedOut: 2 }), 25);
+  assert.equal(attemptedEfficacy({ killed: 1, lived: 1, timedOut: 1, runTimedOut: 1 }), 50);
 });
 
 test('a report with no per-mutation records falls back to the reported ratio', () => {

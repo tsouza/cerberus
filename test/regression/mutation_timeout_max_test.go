@@ -78,7 +78,17 @@ const (
 //     change of behaviour — now reach a test binary and are adjudicated.
 //     Reverting to an earlier tag puts them back outside the denominator,
 //     which reads as a leg getting easier when it has only stopped asking.
-const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume"
+//   - the `run-phase-timeout` family (#2944): reports WHICH of the two bounds
+//     claimed a timed-out mutant. `go test -timeout` bounds the run and the
+//     context deadline bounds compile+run, but both used to produce one status,
+//     so a mutant that genuinely does not terminate was indistinguishable from a
+//     compile that hung and from one the memory guard reaped. The fork now emits
+//     RUN TIMED OUT when the test BINARY's own watchdog fired and printed so,
+//     and .github/scripts/gremlins-threshold.mjs credits that and only that.
+//     Reverting to an earlier tag makes every report carry the undifferentiated
+//     status, and the gate FAILS on it rather than silently scoring the union:
+//     the closed status set there refuses to score a report it cannot read.
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
@@ -150,7 +160,9 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 			"the leg is paid efficacy for the compiler's work (#2930); and everything before "+
 			"`viable-mutants` emits 156 more mutants no compiler accepts and lets `go vet` withhold a "+
 			"verdict from 78 that are legal Go, shrinking the denominator a leg is measured against "+
-			"(#2933).",
+			"(#2933); and everything before `run-phase-timeout` reports one undifferentiated TIMED "+
+			"OUT for both of the two bounds, so a mutant that genuinely does not terminate cannot be "+
+			"told from a compile that hung or from one the memory guard reaped (#2944).",
 			mutationWorkflowPath, gremlinsForkTag, timeoutMaxFlag)
 	}
 }

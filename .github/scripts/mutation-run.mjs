@@ -78,8 +78,8 @@ function perMutantBounds(budgetSeconds) {
 
 // perMutantResidentMemoryMax is the ceiling on ONE mutant's test binary,
 // enforced by .github/scripts/mutant-memory-guard.mjs (which see for the
-// mechanism and for why the breach is recorded as TIMED OUT rather than as a
-// kill).
+// mechanism, and for why the breach is recorded as a BACKSTOP TIMED OUT rather
+// than as a kill or as the run-phase timeout that IS credited).
 //
 // The wall-clock bounds above bound TIME and nothing else, and time cannot
 // stand in for memory: `internal/logql/logpattern`'s REMOVE_SELF_ASSIGNMENTS
@@ -310,7 +310,8 @@ function reportMemoryBreaches(ledger) {
   notice(
     `${breaches.length} mutant(s) hit the ${perMutantResidentMemoryMax} per-mutant memory ceiling and ` +
       `were stopped there (worst observed ${(worst / 1024 ** 2).toFixed(0)}MiB); each is recorded as ` +
-      'TIMED OUT — unadjudicated, counted in the denominator, credited to nobody',
+      'TIMED OUT on the compile+run backstop — unadjudicated, counted in the denominator, ' +
+      'credited to nobody, and specifically NOT the run-phase timeout the gate credits (#2944)',
   );
 }
 

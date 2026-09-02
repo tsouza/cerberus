@@ -1184,25 +1184,67 @@ ratio nor `mutants_total`, the leg reported `Timed out: 295 / Test efficacy:
 0.00%` on pull requests while the identical leg on push-to-main — one
 cold-cache invocation, the intended budget — reported 99.65% (#2692).
 
-### Timed-out mutants are unadjudicated, and count against the leg
+### Which timeout is which, and which one counts
 
-`.github/scripts/gremlins-threshold.mjs` scores a leg as
-`killed / (killed + lived + timedOut)` — the kill rate over every mutant the
-runner ATTEMPTED to adjudicate. gremlins' own `test_efficacy` is
-`killed / (killed + lived)`, which drops a timeout from BOTH sides, so this gate
-is strictly the stricter of the two and gremlins' number is reported rather than
-compared against.
+A mutant is leashed twice. `go test -timeout` bounds the RUN, on a clock the Go
+toolchain starts when the test binary starts; a context deadline covering
+compile AND run is the backstop, because no `-timeout` can bound a compile that
+has hung. The pinned fork reports which of the two claimed a mutant, and the two
+answers mean opposite things:
 
-The rule that formula encodes: **the score must be monotone non-increasing in
-the timeout count.** Moving a mutant into `TIMED OUT` may never raise the number
-the gate reads. A gate that breaks that rule pays a slower runner in efficacy
-points, and a green run then proves the machine was busy rather than that the
-tests are strong.
+| status          | what fired                                                                         | what it proves                                               | side of the ratio |
+| --------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------- |
+| `RUN TIMED OUT` | the test binary's own watchdog, which printed a `panic: test timed out after` line | the suite did not finish inside a bound no compile can spend | numerator         |
+| `TIMED OUT`     | the compile+run backstop                                                           | nothing about which phase spent it                           | denominator only  |
 
-The gate used to break it — it counted a timeout as a DETECTION, on the premise
-that a mutant exhausting the budget broke termination rather than lost a race
-with the compiler. The per-mutant costs in "Per-mutant time budget" above
-falsify that premise, and two signatures in the reports confirm it:
+`.github/scripts/gremlins-threshold.mjs` therefore scores a leg as
+
+```text
+efficacy = (killed + runTimedOut) / (killed + lived + timedOut + runTimedOut)
+```
+
+over every mutant the runner ATTEMPTED to adjudicate. gremlins' own
+`test_efficacy` is `killed / (killed + lived)`, which drops both timeout kinds
+from BOTH sides; the gate is the stricter of the two, and gremlins' number is
+reported rather than compared against.
+
+**A `RUN TIMED OUT` mutant is a detection because it changed observable
+behaviour.** The original suite finishes in a fraction of the bound — the bound
+is this leg's own measured recompile+link+run cycle, times the mutant fan-out,
+times 2 for runner variance — and the mutated one does not finish at all. The
+test binary itself reports that, in its own output. Nothing about the machine
+can manufacture it: compilation is charged to the allowance, not to this clock.
+That is the mutation-testing convention of counting a timeout as killed, applied
+only where the evidence supports it.
+
+**A `TIMED OUT` mutant is unadjudicated and credits nobody.** The backstop
+cannot say which phase spent it: a hung compile reaches it identically to a hung
+run, and so does a mutant `.github/scripts/mutant-memory-guard.mjs` reaped for
+breaching the per-mutant RSS ceiling — the guard kills the child and then HOLDS,
+precisely so that no exit status of its own can be read as a verdict, which also
+destroys the only evidence the run-phase credit is read from.
+
+The rule the formula encodes: **the score must be monotone non-increasing in
+the UNADJUDICATED count.** Moving a mutant into `TIMED OUT` may never raise the
+number the gate reads. A gate that breaks that rule pays a slower runner in
+efficacy points, and a green run then proves the machine was busy rather than
+that the tests are strong.
+
+The one asymmetry is deliberate and is pinned as its own test: moving a mutant
+`LIVED` -> `RUN TIMED OUT` DOES raise the score, because a survivor that stops
+terminating has stopped surviving. That is why the two statuses may not be
+collapsed, and why the gate's status set is CLOSED — a status it does not
+recognise fails the run rather than being dropped from both sides of the ratio,
+which would raise a leg's score for free.
+
+The gate used to break it — it counted EVERY timeout as a detection, on the
+premise that a mutant exhausting the budget broke termination rather than lost a
+race with the compiler. Under one undifferentiated budget that premise was
+false, and the per-mutant costs in "Per-mutant time budget" above falsify it.
+Two signatures in the reports confirm it, and every mutant in both would be a
+backstop `TIMED OUT` today — the compile is what consumed the budget, and the
+compile is what the backstop covers — so the narrow reading above credits none
+of them:
 
 - Runs 33542904091 (red) and 33551271099 (green) recorded the SAME 486 kills on
   `phase4-promql-lower`. The whole 94.00% -> 97.01% swing was 16 mutants moving
@@ -1217,10 +1259,14 @@ falsify that premise, and two signatures in the reports confirm it:
   legs reported 100.00% with `lived: 0`, over 1266 mutants of which 1230 timed
   out.
 
-The two halves are paired. The measured budget keeps an honest leg from timing
-out for the compiler's sake; this formula is what makes it safe to get that
-measurement wrong in the tight direction, because an undersized budget now shows
-up as a RED leg instead of a flattering one.
+The three halves are paired, and none of them is optional. The split leash
+(#2929) is what makes the run bound mean the run. The measured budget keeps an
+honest leg from timing out for the compiler's sake. The backstop's place in the
+denominator is what makes it safe to get that measurement wrong in the tight
+direction, because an undersized budget shows up as a RED leg instead of a
+flattering one — a collapsed run bound manufactures `RUN TIMED OUT`
+specifically, which is why the budget-collapse floor is computed over NORMAL
+verdicts (killed or lived) only.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
@@ -1283,30 +1329,43 @@ template parser — advances an induction variable by hand. Every mutation
 that stops that variable advancing (`i++` -> `i--`, `i += n` -> `i = n`,
 `break` -> `continue`, a loop guard negated, an offset arithmetic flipped)
 turns the loop into a non-terminating one. The mutated program does not
-compute a wrong answer; it computes no answer. Some spin on the CPU, and
-some append to a buffer inside the loop and grow without bound, which the
-per-mutant memory ceiling stops as a TIMED OUT verdict rather than a
-detection.
+compute a wrong answer; it computes no answer.
 
-Such a mutant is a PERMANENT cost with the same shape as a proven
-equivalent, and for the arithmetic it is worse: an equivalent is at least
-diluted by a bigger leg, and a timeout is too, but neither can ever be
-converted into a kill by writing a test. No assertion runs against a
-program that never returns. The consequence is a hard ceiling, and it is
-arithmetic rather than judgement: a leg whose TIMED OUT count plus its
-documented-equivalent count exceeds 5% of its own attempted total cannot
-reach the 95% floor however strong its assertions are. The remedy is the
-same dilution lever the surviving-mutant policy names — re-partition the
-leg wider against `gremlins unleash --dry-run` — applied to the package's
-scanner-bearing files, and it works only while the combined permanent cost
-stays under the margin.
+Which is a detection. The suite cannot finish, the test binary's own
+watchdog says so, and `RUN TIMED OUT` records it — see "Which timeout is
+which" above. No assertion will ever run against a program that never
+returns, and none needs to: the mutant already changed observable
+behaviour, and the suite's own runtime bound is what observed it.
+
+The class splits on HOW the mutant runs away, and only one half is a
+permanent cost:
+
+- **spins on the CPU** — reaches the run watchdog, prints the panic, and
+  is credited. Nothing to do.
+- **allocates inside the loop** — reaches the 1GiB per-mutant RSS ceiling
+  first, and `mutant-memory-guard.mjs` kills it there. The kill destroys
+  the evidence the credit is read from, so the mutant is claimed by the
+  compile+run backstop as `TIMED OUT`: unadjudicated, in the denominator,
+  credited to nobody. This half IS a permanent cost with the same shape as
+  a proven equivalent, and for the arithmetic it is worse, because neither
+  can be converted into a kill by writing a test.
+
+So a leg's ceiling is arithmetic rather than judgement: a leg whose
+BACKSTOP `TIMED OUT` count plus its documented-equivalent count exceeds 5%
+of its own attempted total cannot reach the 95% floor however strong its
+assertions are. `RUN TIMED OUT` no longer enters that sum. The remedy for
+what remains is the same dilution lever the surviving-mutant policy names
+— re-partition the leg wider against `gremlins unleash --dry-run` —
+applied to the package's scanner-bearing files, and it works only while
+the combined permanent cost stays under the margin.
 
 Recognising the class matters because it is easy to misread as budget
-starvation and answer with a bigger `--timeout-max`. It is not: the
-mutants below are non-terminating against any finite budget. The tell is
-the per-mutant memory notice the lane emits — a mutant that reaches the
-1GiB ceiling in a package whose whole test binary peaks near 100MiB is
-running away, not running slowly.
+starvation and answer with a bigger `--timeout-max`. It is not: these
+mutants are non-terminating against any finite budget, so a larger bound
+converts none of them — it only makes the leg slower. The tells are the
+status itself and the per-mutant memory notice the lane emits: a mutant
+that reaches the 1GiB ceiling in a package whose whole test binary peaks
+near 100MiB is running away, not running slowly.
 
 ## Grafana surface crawler (Layer 9 extension)
 

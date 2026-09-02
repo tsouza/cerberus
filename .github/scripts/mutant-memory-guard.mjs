@@ -57,9 +57,14 @@
 //   - Exiting 0 would record LIVED, which gremlins' own --on-shutdown-status
 //     work rejected for unadjudicated mutants: "reporting these as LIVED
 //     misrepresents the data — they were never tested".
-//   - Holding lets gremlins' existing deadline fire and record TIMED OUT, which
-//     .github/scripts/gremlins-threshold.mjs already scores as UNADJUDICATED:
-//     counted in the denominator, credited to nobody.
+//   - Holding lets gremlins' existing deadline fire. The deadline that fires is
+//     the compile+run BACKSTOP, not the run-phase watchdog: the test binary is
+//     already dead, so it never prints the `panic: test timed out after ` the
+//     run-phase verdict is read from. The status is therefore TIMED OUT, which
+//     .github/scripts/gremlins-threshold.mjs scores as UNADJUDICATED — counted
+//     in the denominator, credited to nobody. That is what keeps a reaped mutant
+//     out of the numerator now that a run-phase timeout IS credited (#2944):
+//     killing the child destroys the very evidence the credit requires (#2921).
 //
 // The hold costs no wall clock the lane was not already paying: the mutants
 // that trip this bound are the mutants that were already burning their whole

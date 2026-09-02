@@ -49,7 +49,7 @@ because that rule has no auto-fixer of its own.
 `mutation.yml` installs the `tsouza/gremlins` fork rather than upstream `go-gremlins/gremlins@v0.6.0`:
 
 ```bash
-go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume
+go install github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-phase-timeout-consume
 ```
 
 The fixes it carries defend one thing between them: that the number a run reports is a number the
@@ -97,11 +97,26 @@ Letting Go's `-timeout` win that race is only safe with the second half. `go tes
 failing test, a package that does not build and a test that ran past its `-timeout` into its own exit
 status 1; only the test *binary* exits 2, and what gremlins spawns is `go`. Reading that 1 at face
 value credits a timeout as a KILL and books a mutant that never compiled as one too. The fork scans
-the child's output instead — the `panic: test timed out after` line maps to `TIMED OUT`,
+the child's output instead — the `panic: test timed out after` line maps to `RUN TIMED OUT`,
 `[build failed]` and `[setup failed]` map to `NOT VIABLE`, and anything else is left to the exit
-status. `TIMED OUT` stays in the efficacy denominator and credits nobody, so a slow test cannot buy
-a score. The scan is streaming and retains only enough bytes to recognise a marker split across two
+status. The scan is streaming and retains only enough bytes to recognise a marker split across two
 writes, so a mutant that prints without bound cannot exhaust memory.
+
+**The two bounds report which of them claimed a mutant.** Splitting the leash gave the run bound and
+the backstop different meanings, but both still produced one status, so a mutant that genuinely does
+not terminate stayed indistinguishable from a compile that hung. The fork now reports them apart:
+
+| status          | what fired                                                         | what it proves                                               |
+| --------------- | ------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `RUN TIMED OUT` | the test binary's own `-timeout` watchdog, which printed the panic | the suite did not finish inside a bound no compile can spend |
+| `TIMED OUT`     | the context deadline over compile **and** run                      | nothing — a hung compile and a hung run reach it identically |
+
+The marker is read before either deadline, because a large goroutine dump can still be draining when
+the backstop expires, and it is guarded on the child having failed, so a suite that passes while
+printing those bytes stays `LIVED`. gremlins takes no position on which status is a detection —
+neither appears in its own `test_efficacy` — so the policy lives one layer up, in
+`.github/scripts/gremlins-threshold.mjs`, which counts `RUN TIMED OUT` as a detection and leaves
+`TIMED OUT` in the denominator crediting nobody. A slow compiler still cannot buy a score.
 
 **Prefix operators read as prefix operators.** gremlins maps each `token.Token` to the mutations
 that make sense for it, and that table describes the operator's *infix* meaning — but the same walk
@@ -154,9 +169,9 @@ in the suite rather than an artefact.
 root, and the matcher is RE2 with no lookahead. A path in the wrong form silently excludes nothing.
 
 The fork ships two branches on purpose. `cerberus-sigterm-fix` at tag
-`v0.6.0-cerberus-viable-mutants` is the branch the upstream pull request is built from, and keeps
+`v0.6.0-cerberus-run-phase-timeout` is the branch the upstream pull request is built from, and keeps
 the upstream module path `github.com/go-gremlins/gremlins` so the diff stays reviewable.
-`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-viable-mutants-consume` is the branch
+`cerberus-sigterm-fix-consume` at tag `v0.6.0-cerberus-run-phase-timeout-consume` is the branch
 `mutation.yml` installs; it adds one commit renaming the `go.mod` module path to
 `github.com/tsouza/gremlins` and rewriting the internal imports, because `go install` otherwise
 rejects the module with `module declares its path as: github.com/go-gremlins/gremlins`. The fixes
