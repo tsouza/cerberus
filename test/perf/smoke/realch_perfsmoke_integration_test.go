@@ -302,10 +302,18 @@ func runSentinelFloor(
 				t.Fatalf("%s: no committed bound in perf-smoke-baseline.json — run `just update-perf-smoke-baseline`", sentinel.Name)
 			}
 			if maxBytes > bound.CeilingBytes {
+				// The headroom reported is the committed ceiling's ACTUAL
+				// ratio to the calibration measurement, not
+				// sentinelBaselineHeadroom: a sentinel whose ceiling
+				// committedCeilingBytes clamped to the absolute one carries
+				// less than the nominal multiple, and printing the nominal
+				// figure would misreport how much margin the sentinel really
+				// had.
+				headroom := float64(bound.CeilingBytes) / float64(bound.MaxOfNBytes)
 				t.Errorf("%s: peak memory %d bytes exceeds the committed ceiling %d bytes (measured max-of-N was "+
 					"%d at calibration time, %.2fx headroom) — %s may have regressed; only run "+
 					"`just update-perf-smoke-baseline` if the increase is genuinely intended",
-					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, sentinelBaselineHeadroom, sentinel.Mechanism)
+					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, headroom, sentinel.Mechanism)
 			}
 		})
 	}

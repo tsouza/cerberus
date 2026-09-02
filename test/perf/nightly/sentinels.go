@@ -136,7 +136,9 @@ type Sentinel struct {
 	WindowEnd   time.Time
 	Step        time.Duration
 	// BaselineHeadroom is this sentinel's own committed-ceiling multiplier
-	// against the max-of-N calibration measurement — see the
+	// against the max-of-N calibration measurement — the NOMINAL multiple,
+	// before committedCeilingBytes clamps it to nightlyCapCeilingBytes; a
+	// sentinel close to the absolute ceiling ends up with less. See the
 	// *BaselineHeadroom constants above for the real, independent-process
 	// noise data each value is calibrated against, and why a single
 	// package-wide multiplier does not fit all four sentinels.

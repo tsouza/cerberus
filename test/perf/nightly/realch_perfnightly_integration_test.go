@@ -355,10 +355,15 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			result.BaselineCeilingBytes = bound.CeilingBytes
 			result.BaselineOK = maxBytes <= bound.CeilingBytes
 			if maxBytes > bound.CeilingBytes {
+				// The committed ceiling's ACTUAL ratio to the calibration
+				// measurement, not sentinel.BaselineHeadroom: a sentinel whose
+				// ceiling committedCeilingBytes clamped to the absolute one
+				// carries less than its nominal multiple.
+				headroom := float64(bound.CeilingBytes) / float64(bound.MaxOfNBytes)
 				t.Errorf("%s: peak memory %d bytes exceeds the committed ceiling %d bytes (measured max-of-N was "+
 					"%d at calibration time, %.2fx headroom) — %s may have regressed; only run "+
 					"`just update-nightly-perf-baseline` if the increase is genuinely intended",
-					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, sentinel.BaselineHeadroom, sentinel.Family)
+					sentinel.Name, maxBytes, bound.CeilingBytes, bound.MaxOfNBytes, headroom, sentinel.Family)
 			}
 
 			// Every check above passed — this is the ONLY place Pass is set

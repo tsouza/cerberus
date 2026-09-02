@@ -52,7 +52,10 @@ const sentinelMemoryCapFraction = 0.75
 
 // sentinelBaselineHeadroom multiplies each sentinel's calibrated max-of-N
 // measurement to derive its committed per-sentinel ceiling in
-// perf-smoke-baseline.json. 1.5x mirrors scale_wall_pin_chdb_test.go's
+// perf-smoke-baseline.json — the NOMINAL multiple, before
+// committedCeilingBytes clamps it to sentinelCapCeilingBytes; a sentinel close
+// to the absolute ceiling ends up with less. 1.5x mirrors
+// scale_wall_pin_chdb_test.go's
 // scanAmplificationHeadroom (its low-variance prong): real-CH memory_usage
 // across the calibration repeats varied by well under 2% run-to-run for
 // every sentinel (e.g. Sentinel 3's five repeats at its calibrated scale all
