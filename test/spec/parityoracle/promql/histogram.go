@@ -206,12 +206,19 @@ func trimEmptyBuckets(offset int32, buckets []float64) (int32, []float64) {
 
 // EqualHistograms reports whether two native-histogram samples agree.
 //
-// Every field is compared through [EqualValues], so the exact-equality
-// rule — and its single NaN==NaN allowance — governs a histogram's counts
-// and sum exactly as it governs a float sample's value. There is no
-// per-field tolerance and no ignored field: a histogram answer is only
-// equal when its scale, its zero bucket, its offsets and every bucket
-// count agree.
+// Every field is compared through [EqualValues], so that one comparator's
+// rule — [summationReorderRelativeTolerance], and its NaN==NaN allowance —
+// governs a histogram's counts and sum exactly as it governs a float
+// sample's value. There is no per-field tolerance and no ignored field: a
+// histogram answer is only equal when its scale, its zero bucket, its
+// offsets and every bucket count agree.
+//
+// Counts are integers carried in a float64, so the relative tolerance
+// cannot hide a real count disagreement: the nearest DISTINCT integer is a
+// whole unit away, which for any count this lane produces is many orders of
+// magnitude outside the tolerance. What it does absorb is a count that was
+// itself accumulated in a different order on the two sides — the same
+// reordering [EqualValues] exists for.
 //
 // Both sides are trimmed to the canonical encoding first, for the reason
 // [trimEmptyBuckets] gives.

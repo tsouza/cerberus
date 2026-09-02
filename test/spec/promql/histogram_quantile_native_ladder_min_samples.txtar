@@ -23,10 +23,10 @@
 # quantile interpolation then divides through the resulting ladder, carrying
 # the last-bit difference into the answer.
 #
-# Two ULP is exactly the band the parity corpus already documents for this
-# query class — see [oracle.EqualClassicHistogramRateQuantileValues] and its
-# classicHistogramRateQuantileULPTolerance = 2, whose own measured evidence is
-# THIS fixture's twin (0.29999999999999993 from reference Prometheus against
+# Two ULP is well inside the band the parity comparator covers for every
+# value — see [oracle.EqualValues] and its
+# summationReorderRelativeTolerance, whose enrolled evidence includes THIS
+# fixture's twin (0.29999999999999993 from reference Prometheus against
 # 0.30000000000000004 from the fan-out). The native ladder lands inside the
 # same band, on the Prometheus side of it at the 00:00:20 anchor.
 

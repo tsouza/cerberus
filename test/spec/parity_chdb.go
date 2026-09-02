@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -229,199 +228,6 @@ func RunParity(t *testing.T, c *Case, eval ParityEval, roundTrip RoundTripResult
 	}
 
 	compareAgainstReference(t, c, p, rt, sc, got, compareTimestamps, q.Expr)
-}
-
-// atan2QueryPattern matches PromQL's atan2 binary operator (`a atan2 b`) as
-// a whole word in a fixture's query text.
-//
-// # Why detection is automatic, and why it lives here rather than in a new
-// parity.go section key or scope value
-//
-// [oracle.EqualAtan2Values] documents the ONE proven case this tolerance
-// covers: real Prometheus (Go's math.Atan2) and cerberus (ClickHouse's own
-// atan2 libm) can legitimately disagree by 1 ULP. That is a fact about the
-// FUNCTION, not about any one fixture, so any fixture whose query invokes
-// atan2 needs the same tolerance — hand-flagging each one individually
-// would just be a slower, more error-prone way to spell the same rule.
-//
-// A new required `parity:` key was considered and rejected: LoadParity
-// treats every vocabulary key as required on every enrolled fixture (see
-// parity.go), so adding one would force an edit to all ~438 already-enrolled
-// fixtures for a property only one of them has. Reusing `scope:` was
-// rejected too — its own doc comment is explicit that scope excludes a named
-// AXIS of the answer and "is NOT a tolerance knob", which a per-value ULP
-// tolerance plainly is; bending it to fit here would be the exact
-// allow-list-in-disguise shape invariant 7 forbids.
-//
-// Detecting straight off the query text keeps the exception narrow in the
-// way that matters: nothing in a fixture's `-- parity --` section can turn
-// it on, the only trigger is the literal operator name in the query being
-// evaluated, and the regexp below matches nothing but that one operator.
-var atan2QueryPattern = regexp.MustCompile(`\batan2\b`)
-
-const exponentialHistogramSeedTable = "otel_metrics_exponential_histogram"
-
-const exponentialHistogramMetricSuffix = "_exp_hist"
-
-// compareValues selects the one comparator appropriate to the expression and
-// its actual seeded storage shape. Native exponential-histogram
-// interpolation and histogram_quantile over a rate()/increase()'d classic
-// bucket selector are the only classes besides atan2 and pow with measured
-// cross-implementation divergence.
-//
-// This selection runs for every head's RunParity call, not only PromQL's:
-// LogQL and TraceQL fixtures reach it too. A query that fails to parse as
-// PromQL is therefore not a comparator error — it is proof the query is not
-// PromQL, so none of the PromQL-specific tolerance shapes below can apply,
-// and the exact comparator is the correct answer.
-func compareValues(query, seed string) func(a, b float64) bool {
-	if atan2QueryPattern.MatchString(query) {
-		return oracle.EqualAtan2Values
-	}
-
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
-	expr, err := p.ParseExpr(query)
-	if err != nil {
-		return oracle.EqualValues
-	}
-	if usesPowOperator(expr) {
-		return oracle.EqualPowValues
-	}
-
-	hasExponential := strings.Contains(seed, "CREATE TABLE "+exponentialHistogramSeedTable)
-	hasClassic := strings.Contains(seed, "CREATE TABLE "+classicHistogramTable)
-	if !hasExponential && !hasClassic {
-		return oracle.EqualValues
-	}
-	if hasExponential && isExponentialHistogramInterpolation(expr) {
-		return oracle.EqualExponentialHistogramInterpolationValues
-	}
-	if hasClassic && isClassicHistogramRateQuantile(expr) {
-		return oracle.EqualClassicHistogramRateQuantileValues
-	}
-	return oracle.EqualValues
-}
-
-// usesPowOperator reports whether expr contains PromQL's `^` (pow) binary
-// operator anywhere in its tree — the same "anywhere, at any nesting depth"
-// reach atan2QueryPattern gets from grepping the whole query text.
-//
-// This is detected from the PARSED expression rather than from
-// atan2QueryPattern's plain regexp.MustCompile(`\b...\b`) style, because `^`
-// is not a word: unlike "atan2", which cannot appear inside a PromQL string
-// literal by coincidence in any fixture this repo has, `^` is the standard
-// PromQL/RE2 regex anchor and appears routinely inside a label matcher's
-// regex value, e.g. `up{job=~"^api$"}`. A plain `\^` text match would fire
-// on that anchor and silently relax an unrelated float comparison that has
-// nothing to do with the pow operator — exactly the "broader heuristic"
-// issue #2598's own acceptance criteria says this exception must not
-// become. Walking the already-parsed AST for a `*parser.BinaryExpr` with
-// `Op == parser.POW` finds the actual operator and nothing else, while still
-// being driven purely by the query under evaluation, never by fixture
-// metadata — the same property that makes atan2QueryPattern's detection
-// narrow in the first place (see that var's own doc comment).
-func usesPowOperator(expr parser.Expr) bool {
-	found := false
-	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
-		if bin, ok := node.(*parser.BinaryExpr); ok && bin.Op == parser.POW {
-			found = true
-		}
-		return nil
-	})
-	return found
-}
-
-// isExponentialHistogramInterpolation proves that a complete query result
-// involves at least one native exponential-histogram interpolation. A
-// comparator applies to the whole result vector, so merely finding an
-// interpolation below a binary or aggregation expression would also relax
-// unrelated output samples — the tolerance is still correct to apply to the
-// whole vector in that case, since the rows it doesn't need it for compare
-// exactly anyway (1-5 ULPs of headroom is negligible against an exact
-// match), and rows it DOES need it for are exactly the ones the tolerance
-// exists to cover.
-//
-// histogram_quantiles is the multi-phi sibling of histogram_quantile —
-// same interpolation math, same divergence source, over Args[0] rather than
-// Args[1] (histogram_quantiles(label, phi..., v) puts the label first).
-//
-// "At least one" rather than "every" selector must be exponential: a mixed
-// `(exp_hist_metric or plain_metric)` operand — histogram_quantiles(...) over
-// an `or` is a real, exercised shape (histogram_quantiles_mixed_or) — answers
-// SOME rows via the interpolation this tolerance covers and others via the
-// plain float side untouched by it, and compareValues selects one comparator
-// for the whole result vector, not per-row.
-func isExponentialHistogramInterpolation(expr parser.Expr) bool {
-	call, ok := expr.(*parser.Call)
-	if !ok {
-		return false
-	}
-
-	var histogramArg parser.Expr
-	switch call.Func.Name {
-	case "histogram_fraction":
-		histogramArg = call.Args[2]
-	case "histogram_quantile":
-		histogramArg = call.Args[1]
-	case "histogram_quantiles":
-		histogramArg = call.Args[0]
-	default:
-		return false
-	}
-
-	var selectors, exponential int
-	parser.Inspect(histogramArg, func(node parser.Node, _ []parser.Node) error {
-		selector, ok := node.(*parser.VectorSelector)
-		if !ok {
-			return nil
-		}
-		selectors++
-		if strings.HasSuffix(selector.Name, exponentialHistogramMetricSuffix) {
-			exponential++
-		}
-		return nil
-	})
-	return selectors > 0 && exponential > 0
-}
-
-// isClassicHistogramRateQuantile proves that a complete query result is a
-// histogram_quantile whose bucket argument passes through rate() or
-// increase() — the shape [oracle.EqualClassicHistogramRateQuantileValues]
-// documents the measured divergence for. As with
-// isExponentialHistogramInterpolation, this only inspects the OUTERMOST
-// call: a comparator applies to the whole result vector, so finding a
-// rate()'d histogram_quantile nested under a binary or another aggregation
-// would relax unrelated output samples too.
-func isClassicHistogramRateQuantile(expr parser.Expr) bool {
-	call, ok := expr.(*parser.Call)
-	if !ok || call.Func.Name != "histogram_quantile" {
-		return false
-	}
-
-	found := false
-	parser.Inspect(call.Args[1], func(node parser.Node, _ []parser.Node) error {
-		c, ok := node.(*parser.Call)
-		if !ok || (c.Func.Name != "rate" && c.Func.Name != "increase") {
-			return nil
-		}
-
-		selectors := 0
-		allClassicBuckets := true
-		parser.Inspect(c.Args[0], func(node parser.Node, _ []parser.Node) error {
-			selector, ok := node.(*parser.VectorSelector)
-			if !ok {
-				return nil
-			}
-			selectors++
-			if !strings.HasSuffix(selector.Name, bucketSuffix) {
-				allClassicBuckets = false
-			}
-			return nil
-		})
-		found = found || selectors > 0 && allClassicBuckets
-		return nil
-	})
-	return found
 }
 
 // atStartModifier / atEndModifier are the two `@` modifiers whose
@@ -966,8 +772,6 @@ func compareAgainstReference(
 		)
 	}
 
-	equalValues := compareValues(query, rt.Seed)
-
 	for i := range got {
 		g, w := got[i], want[i]
 		if labelKey(g.Labels) != labelKey(w.Labels) {
@@ -975,7 +779,7 @@ func compareAgainstReference(
 				c.Name, i, g.Labels, w.Labels)
 			continue
 		}
-		if err := compareSampleValue(g, w, equalValues); err != nil {
+		if err := compareSampleValue(g, w); err != nil {
 			t.Errorf("fixture %s sample %d (%v): %v", c.Name, i, g.Labels, err)
 		}
 		if compareTimestamps && g.TMillis != w.TMillis {
@@ -1012,9 +816,28 @@ const histogramRowValuePlaceholder = 0.0
 // When both sides ARE histograms the placeholder is asserted rather than
 // ignored, so a projection that started reporting something real in that
 // column turns this red instead of having it quietly dropped.
-func compareSampleValue(
-	reference, cerberus referenceSample, equalValues func(a, b float64) bool,
-) error {
+//
+// # Why there is exactly one float comparator, and no way for a fixture to
+// pick another
+//
+// Every float pair goes through [oracle.EqualValues], whose one relative
+// tolerance is derived, where it is declared, from the arithmetic it covers:
+// cerberus accumulates in ClickHouse and the reference accumulates in Go,
+// and floating-point addition is not associative, so the same samples folded
+// in two different orders land a few ULPs apart. That is a property of the
+// COMPARISON, not of any fixture and not of any one function, so it is
+// applied uniformly here rather than selected per query shape.
+//
+// Nothing in a fixture's `-- parity --` section can reach it. That is
+// deliberate: a new required `parity:` key was considered and rejected —
+// LoadParity treats every vocabulary key as required on every enrolled
+// fixture (see parity.go), so adding one would force an edit onto all the
+// already-enrolled fixtures for a property none of them individually has.
+// Reusing `scope:` was rejected too: its own doc comment is explicit that
+// scope excludes a named AXIS of the answer and "is NOT a tolerance knob",
+// which a numeric tolerance plainly is, and bending it to fit would be the
+// exact allow-list-in-disguise shape invariant 7 forbids.
+func compareSampleValue(reference, cerberus referenceSample) error {
 	switch {
 	case reference.Histogram != nil && cerberus.Histogram != nil:
 		if !oracle.EqualHistograms(reference.Histogram, cerberus.Histogram) {
@@ -1043,7 +866,7 @@ func compareSampleValue(
 			cerberus.Histogram, reference.Value,
 		)
 	default:
-		if !equalValues(reference.Value, cerberus.Value) {
+		if !oracle.EqualValues(reference.Value, cerberus.Value) {
 			return fmt.Errorf(
 				"value differs\n  reference: %v\n  cerberus:  %v", reference.Value, cerberus.Value,
 			)
@@ -1736,8 +1559,9 @@ func rowFloat(cell any, row int) (float64, error) {
 // stands for.
 //
 // This DECODES an encoding; it does not relax a comparison. The decoded
-// float goes through the same exact [oracle.EqualValues] every other value
-// does, and a fixture whose reference answer is +Inf still fails if
+// float goes through the same [oracle.EqualValues] every other value does —
+// and an infinity is compared there by identity, at no tolerance, so a
+// fixture whose reference answer is +Inf still fails if
 // cerberus answers -Inf or 3. Without it, every fixture whose honest answer
 // is non-finite — a quantile with phi outside [0,1], a clamp against a NaN
 // bound — is unreachable by the parity check purely because of how JSON

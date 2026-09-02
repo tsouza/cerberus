@@ -205,46 +205,53 @@ behaviour change after a Prom/Loki/Tempo bump), the fix is to update
 the reference image pin or the seeder — never to add a per-case
 exception.
 
-## Known transcendental-function divergence (PromQL `atan2`)
+## Floating-point comparison in the parity oracle
 
-One proven exception to "every diff is a real bug": PromQL's `atan2`
-binary operator, when it involves a vector (e.g. `2 atan2 up`), lowers
-to ClickHouse's own SQL `atan2`, evaluated by ClickHouse's libm.
-Real Prometheus evaluates the same expression with Go's `math.Atan2`,
-a different IEEE-754 double-precision implementation. IEEE-754
-requires each implementation to be *correctly rounded* for its own
-algorithm, but it does not require two independent implementations to
-agree bit-for-bit on a transcendental function — only "faithfully
-rounded" within a small ULP (unit-in-the-last-place) bound, typically
-one. `test/spec/promql/binop_atan2_scalar_vector.txtar` measured
-exactly that: two of its four series disagree with the reference
-engine by 1 ULP (e.g. reference `1.3734007669450157` vs. cerberus
-`1.373400766945016`) — adjacent `float64` values, not a lowering bug.
-See [issue #1985](https://github.com/tsouza/cerberus/issues/1985) for
-the full evidence and the decision record.
+Every diff against a reference backend is a real bug — with one
+qualification that is about the *comparison*, not about any case: two
+`float64` answers are compared with a relative tolerance, not with `==`.
 
-Production pushdown is unchanged: cerberus still evaluates
-vector-involving `atan2` in ClickHouse SQL rather than in Go, because
-buffering results client-side to chase bit-for-bit agreement on the
-17th significant digit would mean abandoning cerberus's
-push-down/never-buffer-unboundedly architecture for a divergence with
-no practical monitoring impact.
+Cerberus accumulates in ClickHouse and the reference engine accumulates
+in Go, and floating-point addition is not associative, so the same
+samples folded in a different order land a few ULPs (units in the last
+place) apart. Two independent libm implementations of a transcendental
+function are permitted the same freedom: IEEE-754 requires each to be
+*correctly rounded* for its own algorithm, not to agree bit-for-bit with
+the other. Both are facts about IEEE-754 arithmetic; neither is a
+lowering bug, and neither is chaseable in cerberus's SQL.
 
-The parity oracle (`test/spec/parity_chdb.go`,
-`test/spec/parityoracle/promql/oracle.go`) carries a **narrow, named,
-evidence-based exception** for exactly this case:
-`oracle.EqualAtan2Values` accepts values up to 1 ULP apart, and it is
-selected — automatically, from the fixture's own query text — only for
-a query that invokes the `atan2` operator. Every other fixture,
-including every other PromQL function named as a candidate for the
-same treatment in issue #1985 (`sin`, `cos`, `tan`, `asin`, `acos`,
-`atan`, `exp`, `ln`, `log2`, `log10`, `sqrt`), is still held to exact
-equality. **This does not extend to any other function without
-independent proof**: a function earns this treatment only by being
-enrolled at exact equality, run, and observed to diverge by a genuine
-small ULP distance, exactly as `atan2` was. Widening
-`atan2ULPTolerance`'s scope, or adding a second named tolerance without
-that evidence, defeats the whole point of it being narrow.
+`oracle.EqualValues` (`test/spec/parityoracle/promql/oracle.go`) is the
+single comparator, and `summationReorderRelativeTolerance` is the single
+number. It is derived, not fitted: the standard backward-error bound for
+summing *n* floats gives two different summation orders a relative
+separation of at most `2(n-1)u` with `u = 2^-53`, and the constant is
+that expression at a stated sample budget of 4096 samples per output
+value — about `9.09e-13`.
+
+- **This is not an allow-list.** One tolerance applies to every value on
+  every fixture. No fixture can opt into it, widen it, or be excused by
+  it; there is no `parity:` key and no `scope:` value that reaches it.
+- **It still catches real divergence.** The measured divergences it
+  accepts — for example `2 atan2 up`'s 1-ULP libm difference (reference
+  `1.3734007669450157` vs. cerberus `1.373400766945016`,
+  [#1985](https://github.com/tsouza/cerberus/issues/1985)), `^`'s 2-ULP
+  difference ([#2598](https://github.com/tsouza/cerberus/issues/2598)),
+  native exponential-histogram interpolation's 1-5 ULPs
+  ([#2024](https://github.com/tsouza/cerberus/issues/2024)), and native
+  `increase()`'s reordered window sums
+  ([#2909](https://github.com/tsouza/cerberus/issues/2909)) — all sit
+  three to four orders of magnitude *inside* the bound, while the
+  smallest genuine disagreement the round-trip lane has produced
+  (`3.03e-2` relative) sits ten orders *outside* it.
+  `TestEqualValuesRejectsRealDivergence` pins that separation with a
+  required headroom factor, so the tolerance cannot be widened toward a
+  real disagreement without a test going red.
+- **Production pushdown is unchanged.** Cerberus still evaluates
+  vector-involving `atan2`, `^`, and window sums in ClickHouse SQL
+  rather than in Go. Buffering results client-side to chase bit-for-bit
+  agreement on the 17th significant digit would mean abandoning
+  cerberus's push-down/never-buffer-unboundedly architecture for a
+  divergence with no practical monitoring impact.
 
 ## Upstream-skip baseline (LogQL)
 
