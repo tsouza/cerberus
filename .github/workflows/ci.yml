@@ -1140,6 +1140,28 @@ jobs:
       - name: Reject source citations that name a line instead of a construct
         run: node .github/scripts/verify-code-citations.mjs
 
+      # #2958: a mutant gets ONE verdict. `docs/test-strategy.md` §
+      # "Surviving-mutant policy" offers a surviving mutant two remedies —
+      # prove it equivalent and document it, or add a genuinely distinguishing
+      # test — and they are opposite conclusions about the same thing. Two
+      # mutants on `main` carried both, and the mutation lane recorded each of
+      # them LIVED while a `kills` header claimed otherwise; one conceded in
+      # its own prose that it existed to "give gremlins a path", the other was
+      # simply confidently wrong. A prose gate finds the first and misses the
+      # second, so the signature this gate uses is structural: the same cited
+      # construct carrying two verdicts, adjudicated per comment PARAGRAPH and
+      # discriminated by the mutator each side names. It runs after the
+      # citation gate, which owns every "this citation does not resolve"
+      # failure. The suite runs first: it is what proves the gate can go red,
+      # and it pins the shapes that must stay green — sibling mutants on one
+      # line, one construct carrying different mutators — each beside the
+      # one-token variant that must fail.
+      - name: Assert the contradicted-mutant gate fires and spares its controls
+        run: node --test .github/scripts/forbid-contradicted-mutants.test.mjs
+
+      - name: Reject a mutant adjudicated both killed and equivalent
+        run: node .github/scripts/forbid-contradicted-mutants.mjs
+
       # #1568: GitHub's server-side merge does NOT honour the `-merge`
       # .gitattributes driver (verified empirically — see the script's own
       # doc comment for the experiment). Most `-merge`-marked generated
