@@ -382,8 +382,10 @@ orphan `compat-scores` branch so the README badges refresh.
 `compatibility/<head>` checks (the three per-language legs plus
 `compatibility/prometheus-forced-route`) are **release-gate** lanes (#2230,
 the merge/release two-tier test fence), not required PR status checks —
-`gh api repos/tsouza/cerberus/branches/main/protection --jq
-'.required_status_checks.contexts[]'` does not list any of them. Instead,
+`gh api repos/tsouza/cerberus/rules/branches/main --jq '[.[] |
+select(.type == "required_status_checks") |
+.parameters.required_status_checks[].context] | unique[]'` does not list any
+of them. Instead,
 `release.yml`'s `RELEASE_REQUIRED_CHECKS` names each one and its preflight
 blocks a publish until every one has posted a green check-run on the commit
 being shipped: the gate moved from the PR to the release, it did not

@@ -443,9 +443,18 @@ func TestEOLRetireUsesTheTokenThatBypassesTheReleaseRuleset(t *testing.T) {
 //
 //   - the live comparison step dropped, leaving only `--self-test`: the weekly
 //     run goes green every week while comparing nothing;
-//   - the dedicated administration-read credential swapped for the default
-//     workflow token: branch protection is unreadable at any `permissions:`
-//     level, so the job reds every week until someone deletes it as noise;
+//   - the comparison made conditional on a secret. This is not hypothetical: it
+//     is what the lane DID. The legacy branch-protection endpoint needed
+//     repository administration:read, so the step carried a
+//     `BRANCH_PROTECTION_TOKEN` that was never provisioned, and every scheduled
+//     run from 2026-08-04 to 2026-09-01 aborted before reaching the API. The
+//     only automated check that the pin below matches reality had never once
+//     produced a verdict — which is exactly how `update-golden-guard` became a
+//     required context and stayed unpinned for a week. The ruleset endpoint the
+//     detector reads today needs no elevated credential, so the fix is
+//     structural: this lane must depend on NO secret at all, and must never
+//     guard its comparison on one, because a step that skips itself when a
+//     credential is absent posts the same green as a step that compared;
 //   - the schedule removed: the detector survives as a manual-dispatch button
 //     nobody presses.
 func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
@@ -479,15 +488,59 @@ func TestReleaseGateDriftDetectorRunsLiveAndNotSelfTestOnly(t *testing.T) {
 			driftWorkflowPath, driftScript, selfTestFlag)
 	}
 
-	if !strings.Contains(body, "BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN }}") {
-		t.Fatalf("%s no longer passes the dedicated branch-protection read credential. The default "+
-			"workflow token cannot receive repository-administration permission, so the live "+
-			"comparison would fail every scheduled run", driftWorkflowPath)
-	}
 	if !strings.Contains(body, "GITHUB_TOKEN: ${{ github.token }}") {
-		t.Fatalf("%s does not keep ordinary commit/check/status reads on the least-privilege workflow "+
-			"token; the administration-read credential must be confined to the protection request",
+		t.Fatalf("%s does not pass the least-privilege workflow token to the live comparison; every "+
+			"read it makes — the branch ruleset, the commit list, the check-runs — is served to it",
 			driftWorkflowPath)
+	}
+
+	// The inertness pin. A secret this repository has never provisioned is what
+	// kept the comparison from ever running, so the lane must reference no
+	// secret at all — and must not condition any step on one, which is how
+	// "no token, skip" is spelled in workflow YAML.
+	if strings.Contains(body, "secrets.") {
+		t.Fatalf("%s references a repository secret again. The ruleset read the detector performs is "+
+			"served to ${{ github.token }}, so a secret here can only be a credential that is absent "+
+			"on the runner — the state that left this lane without a single verdict between "+
+			"2026-08-04 and 2026-09-01", driftWorkflowPath)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "if:") {
+			t.Fatalf("%s conditions a step on %q. The comparison must run unconditionally: a step "+
+				"that skips itself reports the same green as a step that compared and agreed",
+				driftWorkflowPath, trimmed)
+		}
+	}
+
+	// The endpoint pin. `/branches/{branch}/protection` answers 404 for this
+	// repository — the legacy protection object was replaced by rulesets and
+	// deleted — so a detector that reads it compares against nothing at all.
+	//
+	// Judged on the URLs the script BUILDS — every request it makes is
+	// interpolated off `${apiBase}` — rather than on prose, so the header
+	// comment may go on explaining which endpoint died and why.
+	script := readFileString(t, "../../.github/scripts/"+driftScript)
+	const apiBaseInterpolation = "${apiBase}"
+	rulesRead := false
+	for _, line := range strings.Split(script, "\n") {
+		if !strings.Contains(line, apiBaseInterpolation) {
+			continue
+		}
+		if strings.Contains(line, "/rules/branches/") {
+			rulesRead = true
+		}
+		if strings.Contains(line, "/protection") {
+			t.Fatalf("%s builds a branch-protection request again (%q). `gh api "+
+				"repos/tsouza/cerberus/branches/main/protection` returns 404 Branch not protected: "+
+				"the legacy protection object was replaced by a ruleset and deleted, so that read "+
+				"compares the pin against nothing", driftScript, strings.TrimSpace(line))
+		}
+	}
+	if !rulesRead {
+		t.Fatalf("%s builds no request to /repos/{owner}/{repo}/rules/branches/{branch}. That is "+
+			"where the required-context set lives now, and it is the only endpoint that can tell "+
+			"branchProtectionContexts from reality", driftScript)
 	}
 
 	// The pure half has to stay on a PR lane, for the same reason

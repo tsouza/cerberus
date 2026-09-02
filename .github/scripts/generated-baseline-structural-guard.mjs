@@ -51,10 +51,10 @@
 // the merge commit and diffs it against the committed file") — they were
 // already there for most of the list.
 //
-// The residual gap is procedural, not a missing validator: with branch
-// protection's "require branches to be up to date before merging" OFF
-// (`strict: false` as of this writing — confirmed via
-// `gh api repos/tsouza/cerberus/branches/main/protection`), a stale PR's
+// The residual gap is procedural, not a missing validator: with "require
+// branches to be up to date before merging" OFF on the ruleset governing `main`
+// (`strict_required_status_checks_policy: false` as of this writing — confirmed
+// via `gh api repos/tsouza/cerberus/rules/branches/main`), a stale PR's
 // squash-merge computes its diff against a `main` that has since moved
 // WITHOUT ever re-running the checks above against the resulting content —
 // so a corrupted blend of one of these files can land on `main` with no CI
