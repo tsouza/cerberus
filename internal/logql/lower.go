@@ -334,9 +334,11 @@ func lowerPipelineWithLabels(e *syntax.PipelineExpr, s schema.Logs, lc lowerCtx)
 	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, nil
 }
 
-// isDynamicLabelStage reports whether stage is a `| unpack` / `|
-// pattern` parser stage — see [lowerPipelineWithLabels]'s dynamicLabels
-// gate.
+// isDynamicLabelStage reports whether stage is a `| pattern` parser
+// stage — see [lowerPipelineWithLabels]'s dynamicLabels gate. `| unpack`
+// is deliberately NOT one: its `__error__` markers come from SQL, so a
+// following `__error__` filter lowers normally and needs no Go-side
+// re-evaluation. internal/api/loki's pipelineSteps draws the same line.
 func isDynamicLabelStage(stage syntax.StageExpr) bool {
 	lp, ok := stage.(*syntax.LineParserExpr)
 	if !ok {
@@ -351,8 +353,8 @@ func isDynamicLabelStage(stage syntax.StageExpr) bool {
 // [lowerPipelineWithLabels]'s dynamicLabels gate, which only skips SQL
 // lowering for this family, not for arbitrary label names. Exported so
 // internal/api/loki's postProcessExtract can apply the exact same gate
-// when deciding which post-`| unpack` / `| pattern` label filters need
-// a Go-side re-evaluation (see post_process.go's newLabelFilterStep).
+// when deciding which post-`| pattern` label filters need a Go-side
+// re-evaluation (see post_process.go's newLabelFilterStep).
 func FiltersErrorLabel(lf syntax.LabelFilterer) bool {
 	switch f := lf.(type) {
 	case *syntax.StringLabelFilter:

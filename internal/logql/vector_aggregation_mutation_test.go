@@ -15,19 +15,26 @@ import (
 // is written so the mutated line produces a DIFFERENT lowered plan than
 // the original, making the assertion fail under mutation.
 //
-// Equivalence verdicts (no test can kill these — see reasoning in the
-// task return notes):
-//   - 46:72  CONDITIONALS_BOUNDARY (`> 0` → `>= 0`): the only
-//     distinguishing input is `by ()` (empty groups), and
-//     withOuterByLabels([]) ≡ withOuterByLabels(nil) because both
-//     topLevelColumnsReferencedBy and structuredOuterByKeys collapse a
-//     len-0 slice to nil. Byte-identical lowering ⇒ equivalent.
-//   - 390:72 CONDITIONALS_BOUNDARY (`> 0` → `>= 0`): same reasoning in
-//     sortableShapedInner ⇒ equivalent.
-//   - 454:56 ARITHMETIC_BASE (`len(...)*2` → `/2`/`+`/...): a make()
-//     capacity hint. The slice is built with append from len 0, so its
-//     final contents are identical regardless of the pre-sized cap; the
-//     cap is never observable in the returned plan ⇒ equivalent.
+// NOT KILLABLE — vector_aggregation.go:wrapVectorAggregateForSample:`len(e.Grouping.Groups)*2`
+// carries an ARITHMETIC_BASE mutant (`*2` -> `/2` and friends) that no
+// test can kill: it is a make() CAPACITY hint. The slice is built with
+// append from length 0, so its final contents and ordering are identical
+// whatever the pre-sized cap, and a cap is not reachable from the
+// returned plan. `len(...)` is never negative and the mutated forms stay
+// non-negative, so make() cannot panic either.
+//
+// The empty-`Grouping.Groups` CONDITIONALS_BOUNDARY mutants on the
+// outer-by threading guard were ADJUDICATED EQUIVALENT HERE AND THAT WAS
+// WRONG. The old argument was that the only distinguishing input is
+// `by ()` and that `withOuterByLabels([]) ≡ withOuterByLabels(nil)`. Both
+// halves fail. The parser materialises a non-nil EMPTY Grouping for a
+// plainly ungrouped `sum(v)` / `topk(K, v)`, so the distinguishing input
+// needs no `by ()` at all; and `withOuterByLabels` is an OVERWRITE, so
+// when `lc.OuterByLabels` is already non-empty — which is exactly what an
+// enclosing by-grouped aggregation makes it — threading an empty slice
+// ERASES the outer labels rather than reproducing them.
+// [TestUngroupedInnerAggregationKeepsOuterByLabels] and
+// [TestUngroupedInnerTopKKeepsOuterByLabels] below kill both mutants.
 
 // surfacedIdentityHasKey walks the lowered topk/sort plan
 // (TopK|OrderBy → Project(sampleShape) → RangeWindow → Project(identity))
@@ -195,5 +202,118 @@ func TestTopKPartitionNilForUngrouped(t *testing.T) {
 	got := topKPartition(vae)
 	if got != nil {
 		t.Fatalf("topKPartition(ungrouped topk) = %#v (len %d), want nil — the no-meaningful-grouping guard was inverted, building a spurious partition slice", got, len(got))
+	}
+}
+
+// innermostRangeWindowIdentity descends a lowered plan to the DEEPEST
+// [chplan.RangeWindow] and returns its identity projection expr. A nested
+// vector aggregation (`sum by (X) (sum(rate(...)))`) lowers to
+// Project → Aggregate → …outer shape… → RangeWindow → Project(identity),
+// and it is that innermost identity projection that records whether the
+// enclosing by-clause labels reached the range aggregation.
+func innermostRangeWindowIdentity(t *testing.T, plan chplan.Node) chplan.Expr {
+	t.Helper()
+	var found *chplan.RangeWindow
+	var walk func(chplan.Node)
+	walk = func(n chplan.Node) {
+		switch v := n.(type) {
+		case nil:
+			return
+		case *chplan.RangeWindow:
+			found = v
+			walk(v.Input)
+		case *chplan.Project:
+			walk(v.Input)
+		case *chplan.Aggregate:
+			walk(v.Input)
+		case *chplan.TopK:
+			walk(v.Input)
+		case *chplan.Filter:
+			walk(v.Input)
+		}
+	}
+	walk(plan)
+	if found == nil {
+		t.Fatalf("lowered plan has no *chplan.RangeWindow: %T", plan)
+	}
+	idProj, ok := found.Input.(*chplan.Project)
+	if !ok {
+		t.Fatalf("RangeWindow.Input = %T, want *chplan.Project (identity wrap)", found.Input)
+	}
+	if len(idProj.Projections) == 0 {
+		t.Fatalf("identity Project has no projections")
+	}
+	return idProj.Projections[0].Expr
+}
+
+// lowerNestedIdentity parses and lowers `query` in instant mode and
+// returns the innermost range aggregation's identity projection expr,
+// with the [canonicalIdentityExpr] key-order wrap already peeled.
+func lowerNestedIdentity(t *testing.T, query string, s schema.Logs) chplan.Expr {
+	t.Helper()
+	expr, err := syntax.ParseExpr(query)
+	if err != nil {
+		t.Fatalf("ParseExpr(%q): %v", query, err)
+	}
+	plan, err := lower(expr, s, lowerCtx{})
+	if err != nil {
+		t.Fatalf("lower(%q): %v", query, err)
+	}
+	return requireCanonicalIdentity(t, innermostRangeWindowIdentity(t, plan))
+}
+
+// TestUngroupedInnerAggregationKeepsOuterByLabels kills the
+// CONDITIONALS_BOUNDARY mutant on the outer-by threading guard
+// vector_aggregation.go:lowerVectorAggregation:`e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0`
+// (`> 0` -> `>= 0`).
+//
+// The distinguishing input is an UNGROUPED inner vector aggregation
+// nested inside a by-grouped outer one. The parser materialises a
+// non-nil empty Grouping for `sum(v)` (see
+// [TestTopKPartitionNilForUngrouped]), so at the inner call
+// `e.Grouping != nil` and `!e.Grouping.Without` both hold and only
+// `len(e.Grouping.Groups) > 0` is false. Crucially, `lc` is NOT empty
+// there: the outer `sum by (ServiceName)` already threaded
+// `[ServiceName]` through this very guard, so the inner call decides
+// whether that value SURVIVES.
+//
+//   - ORIGINAL: guard false => innerLc = lc, the outer `[ServiceName]`
+//     is preserved and the innermost range aggregation surfaces
+//     `ServiceName` into its identity map.
+//   - MUTANT `>= 0`: guard true => innerLc = lc.withOuterByLabels(nil),
+//     OVERWRITING the outer labels with the inner aggregation's empty
+//     ones. `ServiceName` is no longer surfaced and the assertion fails.
+func TestUngroupedInnerAggregationKeepsOuterByLabels(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	const query = `sum by (ServiceName) (sum(rate({app="api"}[5m])))`
+
+	identity := lowerNestedIdentity(t, query, s)
+	if !surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
+		t.Fatalf("%s: innermost identity map is missing the surfaced %q key — the ungrouped INNER aggregation overwrote the outer by-clause labels instead of leaving them alone (the outer-by threading guard's `len(Groups) > 0` was widened to `>= 0`)", query, s.ServiceNameColumn)
+	}
+}
+
+// TestUngroupedInnerTopKKeepsOuterByLabels kills the
+// CONDITIONALS_BOUNDARY mutant on the same guard in the topk/sort front
+// half,
+// vector_aggregation.go:sortableShapedInner:`e.Grouping != nil && !e.Grouping.Without && len(e.Grouping.Groups) > 0`
+// (`> 0` -> `>= 0`).
+//
+// Same shape as [TestUngroupedInnerAggregationKeepsOuterByLabels], with
+// the ungrouped inner aggregation being a `topk` so the inner lowering
+// routes through [sortableShapedInner] rather than the plain
+// vector-aggregation body. The outer `sum by (ServiceName)` supplies the
+// non-empty `lc.OuterByLabels` the mutant erases.
+func TestUngroupedInnerTopKKeepsOuterByLabels(t *testing.T) {
+	t.Parallel()
+
+	s := schema.DefaultOTelLogs()
+	const query = `sum by (ServiceName) (topk(2, rate({app="api"}[5m])))`
+
+	identity := lowerNestedIdentity(t, query, s)
+	if !surfacedIdentityHasKey(t, identity, s.ServiceNameColumn) {
+		t.Fatalf("%s: innermost identity map is missing the surfaced %q key — the ungrouped INNER topk overwrote the outer by-clause labels instead of leaving them alone (sortableShapedInner's `len(Groups) > 0` was widened to `>= 0`)", query, s.ServiceNameColumn)
 	}
 }
