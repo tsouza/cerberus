@@ -16,8 +16,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 import { error, notice } from './lib/gh.mjs';
 
@@ -52,6 +53,39 @@ const gremlinsCoverageBaselineFloorSeconds = 1;
 // is what #2903 fixed in gremlins-threshold.mjs — and still costs them, now in
 // the honest direction.
 const perMutantRunnerVarianceHeadroom = 2;
+
+// perMutantResidentMemoryMax is the ceiling on ONE mutant's test binary,
+// enforced by .github/scripts/mutant-memory-guard.mjs (which see for the
+// mechanism and for why the breach is recorded as TIMED OUT rather than as a
+// kill).
+//
+// The wall-clock budget above bounds TIME and nothing else, and the two bounds
+// cannot be collapsed into one: `internal/logql/logpattern`'s
+// REMOVE_SELF_ASSIGNMENTS mutant at pattern.go:129 allocates at ~1.5 GiB/s
+// (measured: 5 GiB of RSS in 3.3s), so it exhausts a 16 GB runner in about ten
+// seconds — under MUTANT_TIMEOUT_MIN, and far under the ~63s its own compile
+// cycle makes the derivation ask for. Lowering the leash until it is memory-safe
+// would starve every honest mutant on the leg, which is the failure #2903 fixed
+// (#2919).
+//
+// The value is measured, not guessed. Peak RSS of an UNMUTATED test binary,
+// per mutation-phases.mjs scope, on an 8-core machine:
+//
+//   internal/promql 112MiB   internal/chsql 44MiB   internal/engine 43MiB
+//   internal/logql   35MiB   internal/qlcommon 30MiB   internal/traceql 28MiB
+//   internal/optimizer 23MiB   internal/chplan 22MiB   internal/logql/lsyntax 10MiB
+//
+// 1 GiB is ~9x the heaviest of those, so no honest mutant can approach it, and
+// it is small enough that even gremlins' default fan-out (runtime.NumCPU()
+// concurrent mutants) cannot add up to the runner's ceiling.
+const perMutantResidentMemoryMax = '1GiB';
+
+// perMutantMemoryHoldGraceSeconds is how long the guard holds PAST the mutant's
+// own deadline before giving up and exiting. gremlins kills the whole `go test`
+// process group when its deadline fires, so the guard is normally reaped well
+// inside this; the grace exists only so a breach on a path with no deadline
+// behind it (gremlins' unmutated coverage run) cannot wedge the job.
+const perMutantMemoryHoldGraceSeconds = 30;
 
 const goDurationUnitSeconds = { ns: 1e-9, us: 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
 
@@ -201,7 +235,58 @@ function reportTotal(path) {
   return document.mutants_total;
 }
 
-function runGremlins({ report, budgetSeconds, diffRef = '' }) {
+// memoryGuardedEnv returns the environment gremlins runs under: this process's
+// own, plus the `go test -exec` hook that puts mutant-memory-guard.mjs in front
+// of every test binary gremlins launches, plus the two bounds the guard reads.
+//
+// -exec is reached through GOFLAGS because gremlins builds the `go test` argv
+// itself and takes no pass-through for extra flags. GOFLAGS is SPACE-separated
+// with no quoting, so the guard's path may not contain whitespace, and an
+// existing GOFLAGS is appended to rather than replaced.
+//
+// The guard reads the child's RSS from /proc, so a platform without it cannot
+// enforce the bound. That is a hard failure rather than a silent unguarded run:
+// an unenforced memory ceiling is exactly the state #2919 describes, and it is
+// worse than no ceiling because it looks like one.
+function memoryGuardedEnv(budgetSeconds, ledger) {
+  const guard = resolve(dirname(fileURLToPath(import.meta.url)), 'mutant-memory-guard.mjs');
+  if (/\s/.test(guard)) {
+    throw new Error(`the memory guard's path contains whitespace, which GOFLAGS cannot express: ${guard}`);
+  }
+  if (!existsSync('/proc/self/status')) {
+    throw new Error('no /proc: mutant-memory-guard.mjs cannot bound a mutant\'s memory on this platform');
+  }
+  const goFlags = String(process.env.GOFLAGS ?? '').trim();
+  return {
+    ...process.env,
+    GOFLAGS: `${goFlags === '' ? '' : `${goFlags} `}-exec=${guard}`,
+    MUTANT_MEMORY_MAX: perMutantResidentMemoryMax,
+    MUTANT_MEMORY_HOLD: `${budgetSeconds + perMutantMemoryHoldGraceSeconds}s`,
+    MUTANT_MEMORY_LEDGER: ledger,
+  };
+}
+
+// reportMemoryBreaches turns the guard's ledger into the one log line a reader
+// needs: how many mutants hit the ceiling, and how far past it they got before
+// they were stopped. Reported as a ::notice::, not an error — a breach is the
+// bound WORKING, and the mutant it stopped is already counted against the leg's
+// efficacy as TIMED OUT.
+function reportMemoryBreaches(ledger) {
+  if (!existsSync(ledger)) return;
+  const breaches = readFileSync(ledger, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line));
+  if (breaches.length === 0) return;
+  const worst = Math.max(...breaches.map((b) => b.resident_bytes));
+  notice(
+    `${breaches.length} mutant(s) hit the ${perMutantResidentMemoryMax} per-mutant memory ceiling and ` +
+      `were stopped there (worst observed ${(worst / 1024 ** 2).toFixed(0)}MiB); each is recorded as ` +
+      'TIMED OUT — unadjudicated, counted in the denominator, credited to nobody',
+  );
+}
+
+function runGremlins({ report, budgetSeconds, ledger, diffRef = '' }) {
   const args = [
     'unleash',
     '--output',
@@ -222,7 +307,10 @@ function runGremlins({ report, budgetSeconds, diffRef = '' }) {
   if (diffRef !== '') args.push('--diff', diffRef);
   args.push(required('SCOPE'));
 
-  const result = spawnSync('gremlins', args, { stdio: 'inherit' });
+  const result = spawnSync('gremlins', args, {
+    stdio: 'inherit',
+    env: memoryGuardedEnv(budgetSeconds, ledger),
+  });
   if (result.error) throw new Error(`cannot execute gremlins: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`gremlins exited ${result.status}`);
   if (!existsSync(report)) throw new Error(`gremlins produced no report at ${report}`);
@@ -242,13 +330,18 @@ function main() {
   // a second compile — and would take it against a cache the first invocation
   // warmed, which is the exact mismeasurement #2692 was.
   const budgetSeconds = perMutantBudgetSeconds(scope);
+  // One ledger for both invocations: a breach is a property of the leg, not of
+  // which of the two gremlins runs happened to draw the mutant.
+  const ledger = resolve(`${report}.memory-breaches.jsonl`);
+  if (existsSync(ledger)) unlinkSync(ledger);
 
-  runGremlins({ report, budgetSeconds, diffRef });
+  runGremlins({ report, budgetSeconds, ledger, diffRef });
   if (diffRef !== '' && reportTotal(report) === 0) {
     notice('changed-line mutation found zero executable mutants; rerunning the full phase');
     unlinkSync(report);
-    runGremlins({ report, budgetSeconds });
+    runGremlins({ report, budgetSeconds, ledger });
   }
+  reportMemoryBreaches(ledger);
   const total = reportTotal(report);
   if (total <= 0) throw new Error('mutation phase executed zero mutants after full fallback');
   notice(`mutation phase executed ${total} mutant(s)${diffRef === '' ? ' in full' : ''}`);
