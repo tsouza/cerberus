@@ -143,10 +143,10 @@ func TestExpHistogramResetMaskStage_ProjectionCapacityIsTight(t *testing.T) {
 // the INVERT_LOGICAL mutant at
 // histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
-//	if !expHistogramLoweringAvailable(s, ctx) {
+//	return s.ExpHistogramTable != "" && !ctx.metadataFullRange
 //
-// where availability requires BOTH halves of `s.ExpHistogramTable != "" &&
-// !ctx.metadataFullRange`, so the recognizer rejects when EITHER fails. countPresentOverExpHistogram has no
+// Availability requires BOTH halves, so the recognizer — which opens with
+// `if !expHistogramLoweringAvailable(s, ctx)` — rejects when EITHER fails. countPresentOverExpHistogram has no
 // downstream call that independently re-checks this same guard (unlike
 // its subquery-composing siblings), so metadataFullRange alone —
 // unaccompanied by an empty ExpHistogramTable — is a clean differentiator:

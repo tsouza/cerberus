@@ -136,10 +136,10 @@ func TestLowerSelectFnOverExpHistogramSubquery_InstantPinDoesNotBroadcast(t *tes
 // TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits kills
 // the INVERT_LOGICAL mutant at histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
-//	if !expHistogramLoweringAvailable(s, ctx) {
+//	return s.ExpHistogramTable != "" && !ctx.metadataFullRange
 //
-// where availability requires BOTH halves of `s.ExpHistogramTable != "" &&
-// !ctx.metadataFullRange`, so the recognizer rejects when EITHER fails. bareExpHistogramMatrixSelector has no
+// Availability requires BOTH halves, so the recognizer — which opens with
+// `if !expHistogramLoweringAvailable(s, ctx)` — rejects when EITHER fails. bareExpHistogramMatrixSelector has no
 // downstream call that independently re-checks this same guard (a plain
 // type assertion plus IsExpHistogramMetric, both guard-free), so
 // metadataFullRange alone is a clean, unmasked differentiator — mirrors
