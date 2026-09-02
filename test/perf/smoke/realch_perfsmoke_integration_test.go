@@ -109,10 +109,10 @@ const perfSmokeDB = "default"
 // Every number below was measured, not guessed, against a real
 // testcontainers ClickHouse on this branch. See each constant's own comment
 // for the specific run that produced it; the PR description carries the full
-// calibration log. The memory-cap fraction and the baseline headroom — the
-// two numbers the ceilings themselves are derived from — live in the untagged
-// baseline.go alongside that derivation, so the unit lane can assert the
-// derived bounds without Docker.
+// calibration log. The memory cap, its ceiling fraction and the baseline
+// headroom — the numbers the ceilings themselves are derived from — live in
+// the untagged baseline.go alongside that derivation, so the unit lane can
+// assert the derived bounds without Docker.
 
 // sentinelRepeats (N) is the max-of-N repeat count each sentinel's memory
 // measurement is taken over — a CEILING gate wants the worst observed case,
