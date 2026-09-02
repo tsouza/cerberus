@@ -737,3 +737,101 @@ func TestNestedMatrixCountOverTime_CountsSamplesNotItsGroupingKey(t *testing.T) 
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The subquery INTERIOR — cerberus issue #2914
+// ---------------------------------------------------------------------------
+//
+// A PromQL subquery lowers to two stacked range windows, and only the OUTER
+// one carries the duplicate-row contract. `sum_over_time(m[5m:1m])` builds a
+// sum_over_time window (DistinctSampleRows set) over an `Identity` window
+// (chplan.RangeWindow.Identity, Func empty, DistinctSampleRows unset) — and
+// it is the INTERIOR that aggregates raw rows keyed by the schema timestamp
+// column, which is exactly where a duplicate (series, timestamp) lives. The
+// emitted SQL shows the asymmetry plainly: the interior assembles a bare
+// `arraySort(groupArray((TimeUnix, Value)))` while the outer assembles
+// `arrayCompact(arraySort(groupArray((_src_ts, Value))))`.
+//
+// That asymmetry is deliberate and it is safe, for a structural reason: the
+// interior is PromQL's subquery resampling step, which reports the value of
+// its input AT each anchor. Its reducer is the time-latest sample of the
+// anchor's window — chsql's lastWindowValOrNaNFrag,
+// `window_vals[length(window_vals)]` over the arraySort-by-(ts, value) order
+// — so it emits exactly ONE row per (series, anchor) whatever the window
+// held, and repeating a value already present at the winning timestamp
+// cannot change which value that is. A duplicated raw row therefore cannot
+// reach the outer window as a second sample; there is nothing there for the
+// outer collapse to have missed.
+//
+// TestIdenticalDuplicateTimestamp_EveryLoweringAgrees does NOT cover this: it
+// compares two lowerings of one INSTANT-input query and never builds a
+// subquery interior. This case is what makes the claim executed rather than
+// argued.
+
+// dupTSSubqueryMetric is the subquery-interior case's own metric name,
+// distinct from every other name sharing this package's chDB session.
+const dupTSSubqueryMetric = "duplicate_ts_subquery_interior_test_metric"
+
+// dupTSSubquerySeedRows is the per-minute sample series both seeds below
+// share; dupTSSubqueryDuplicatedRow is the extra row that makes one of them
+// carry an identical duplicate at 00:02:00.
+const (
+	dupTSSubquerySeedRows = `
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:00:00', 9), 1.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:03:00', 9), 8.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:05:00', 9), 6.0)`
+	dupTSSubqueryDuplicatedRow = `,
+    ('` + dupTSSubqueryMetric + `', map('job', 'api'), toDateTime64('2026-01-01 00:02:00', 9), 2.0)`
+)
+
+// dupTSSubquerySeedWithDuplicate / dupTSSubquerySeedWithout are the same
+// series with and without the duplicated 00:02:00 row. They differ by exactly
+// one stored row, which is what the differential below turns on.
+const (
+	dupTSSubquerySeedWithDuplicate = dupTSMetricsDDL + `INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES` +
+		dupTSSubquerySeedRows + dupTSSubqueryDuplicatedRow + `;`
+	dupTSSubquerySeedWithout = dupTSMetricsDDL + `INSERT INTO otel_metrics_gauge (MetricName, Attributes, TimeUnix, Value) VALUES` +
+		dupTSSubquerySeedRows + `;`
+)
+
+// TestSubqueryInterior_DuplicateRowCannotReachTheOuterWindow executes a
+// subquery whose interior is the un-deduped Identity window and asserts that
+// adding an identical duplicate raw row changes NOTHING about the answer.
+//
+// The two seeds are asserted to actually differ first, so the differential
+// cannot pass by comparing two identical inputs — the hollow green a
+// same-shape comparison is otherwise open to.
+func TestSubqueryInterior_DuplicateRowCannotReachTheOuterWindow(t *testing.T) {
+	if dupTSSubquerySeedWithDuplicate == dupTSSubquerySeedWithout {
+		t.Fatal("the two seeds are identical, so this differential asserts nothing")
+	}
+	query := "sum_over_time(" + dupTSSubqueryMetric + "[5m:1m])"
+
+	withDup := runDupTSQuery(t, newChDBFixture(t, dupTSSubquerySeedWithDuplicate),
+		query, dupTSOverTimeStep, promql.RangeLowerers{})
+	without := runDupTSQuery(t, newChDBFixture(t, dupTSSubquerySeedWithout),
+		query, dupTSOverTimeStep, promql.RangeLowerers{})
+
+	if len(withDup.samples) != len(without.samples) {
+		t.Fatalf("the duplicated row changed the ROW COUNT: %d with it, %d without — it reached the "+
+			"outer window as a second sample through the un-deduped subquery interior",
+			len(withDup.samples), len(without.samples))
+	}
+	for i := range withDup.samples {
+		d, w := withDup.samples[i], without.samples[i]
+		if d.attributes != w.attributes || d.timestamp != w.timestamp {
+			t.Fatalf("row %d: with the duplicate (%s, %s), without it (%s, %s)",
+				i, d.attributes, d.timestamp, w.attributes, w.timestamp)
+		}
+		if math.Abs(d.value-w.value) > dupTSFloatTolerance {
+			t.Errorf("row %d (%s @ %s): %v with the duplicated row, %v without it. The subquery "+
+				"interior is the Identity resampling window and carries no duplicate-row collapse; "+
+				"it is safe only because it reports one time-latest sample per anchor. A difference "+
+				"here means that no longer holds and the interior needs the contract too",
+				i, d.attributes, d.timestamp, d.value, w.value)
+		}
+	}
+}

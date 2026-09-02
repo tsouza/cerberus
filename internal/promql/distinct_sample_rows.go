@@ -89,12 +89,24 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     that blocks it; it is left out because its weighting has no pinned
 //     contract to change it against, not because it is unaffected.
 //
-// Those five, plus irate / idelta above, are tracked together in cerberus
-// issue #2927, which enumerates them from the emitter's own dispatch so the
-// remainder is a closed list rather than a sample. Two further shapes need no
-// entry at all: LogQL's log_rate reduces log entries rather than metric
-// samples (see this file's doc), and the bare-subquery `identity` shape reads
-// the time-latest sample, which no collapse can move.
+// The three of those that a duplicate row can actually move — deriv,
+// predict_linear, holt_winters — plus irate and idelta above are tracked
+// together in cerberus issue #2927, which enumerates them from the emitter's
+// own dispatch so the remainder is a closed list rather than a sample. Two
+// further shapes need no entry at all: LogQL's log_rate reduces log entries
+// rather than metric samples (see this file's doc), and the bare-subquery
+// `identity` shape reads the time-latest sample, which no collapse can move.
+//
+// One member of the INCLUDED set carries a caveat worth naming rather than
+// discovering. last_over_time is the only `*_over_time` function with native
+// arms — chplan.RangeWindowStaleResample via NativeLastOverTimeLowerer, and
+// the downsample tier of cerberus issue #2751 — and neither reads this field,
+// because neither assembles a sample array for chsql's gate to wrap. They
+// agree with the fan-out arm regardless: all three resolve the time-latest
+// sample of the window, and dropping a row identical to that sample cannot
+// move it. So the declaration is safe here by IMMUNITY, not by the gate
+// reaching every arm — which is exactly the distinction to re-check before
+// adding any function whose reducer is not an order statistic.
 var distinctSampleRowsFuncs = map[string]bool{
 	"sum_over_time":         true,
 	"avg_over_time":         true,
