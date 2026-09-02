@@ -86,14 +86,19 @@ export function normalise(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-// unescape — undo the two Go interpreted-string escapes a citation can acquire
-// purely by being written inside one. A `t.Fatalf` message citing a construct
-// that contains a double quote has to spell it `\\"` for the Go compiler; the
-// gate reads the file as text and would otherwise compare the escape against a
-// source line that never had one. Nothing else is unescaped: this undoes the
-// literal's encoding, it does not interpret the construct.
+// unescape — undo the escapes a citation can acquire purely by being written
+// inside a Go string. A `t.Fatalf` message citing a construct that contains a
+// double quote has to spell it `\\"` for the compiler, and one citing a construct
+// that contains `%` — a modulo, as in `ns%stepNS != 0` — has to spell it `%%` or
+// `go vet` rejects the format string. The gate reads the file as text and would
+// otherwise compare those escapes against a source line that never had them.
+//
+// Both are safe to undo unconditionally rather than only inside a string: `%%`
+// is not valid Go anywhere a construct could legitimately contain it, so a
+// comment-borne citation cannot mean a literal `%%`. Nothing else is unescaped —
+// this undoes the literal's encoding, it does not interpret the construct.
 export function unescape(text) {
-  return text.replace(/\\(["\\])/g, '$1');
+  return text.replace(/\\(["\\])/g, '$1').replace(/%%/g, '%');
 }
 
 // isCodeLine — a line that a mutation operator could apply to. Blank lines and

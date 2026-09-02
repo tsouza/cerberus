@@ -41,6 +41,9 @@ const TARGET = [
   '\tif dupCond != nil {',
   '\t\treturn nil',
   '\t}',
+  '\tif ns%stepNS != 0 {',
+  '\t\treturn errModulo',
+  '\t}',
   '\treturn errQuoted // rejects `"` in a name',
   '}',
   '',
@@ -222,6 +225,16 @@ test('unescapes a construct written inside a Go string literal', () => {
   // citation of a quote-carrying construct would be unfixable.
   const f = fixture();
   f.write('note.go', 'package fixture\n\nfunc f() { panic("mutant at target.go:`errQuoted // rejects `+"`"+`\\"`+"`"+`` in a name`") }\n');
+  const r = run(f.dir);
+  assert.equal(r.status, 0, r.output);
+});
+
+test('unescapes a %% verb written inside a Go format string', () => {
+  // `go vet` rejects a lone `%` in a format string, so a construct containing a
+  // modulo has to be spelled `%%` there. Without the unescape it would be
+  // uncitable from the `t.Fatalf` messages that carry most of these notes.
+  const f = fixture();
+  f.write('note.go', 'package fixture\n\nfunc f() { panic("mutant at target.go:`ns%%stepNS != 0`") }\n');
   const r = run(f.dir);
   assert.equal(r.status, 0, r.output);
 });
