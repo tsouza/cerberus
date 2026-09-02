@@ -1,24 +1,28 @@
-// Tests in this file kill the `INVERT_LOGICAL` mutants that rewrite the `||`
-// of
+// Tests in this file kill the mutants on the exp-histogram availability rule
+// — the `INVERT_LOGICAL` rewrite of the `&&` and the `CONDITIONALS_NEGATION`
+// rewrite of the `!=` in
 //
-//	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
-// into `&&`, at the LEAF exp-histogram recognizers — the ones that decide a
-// shape by asking the SCHEMA whether the selected metric is an exp-histogram
+// — through the LEAF exp-histogram recognizers, the ones that decide a shape
+// by asking the SCHEMA whether the selected metric is an exp-histogram
 // (`s.IsExpHistogramMetric`), which reads nothing from `ctx`. See
 // gremlins_kill_test.go for the shared file-header convention this file
 // follows; cerberus issue #2949 owns the legs these mutants were reported on
-// (phase4-promql-b / -d / -f / -i / -other).
+// (phase4-promql-b / -d / -f / -i / -other), and cerberus issue #2963 is why
+// the rule now lives in one function instead of at 31 copied sites.
 //
 // Why the leaf/composite distinction is the whole story here
 // ---------------------------------------------------------
-// The guard is one condition with two independent reasons to bail: the schema
-// declares no exp-histogram table at all, or this lowering is a Prometheus
-// metadata full-range walk, which must never be answered from the
-// exp-histogram table. The original bails when EITHER holds. The `&&` mutant
-// bails only when BOTH hold, so the two differ exactly when one holds and the
-// other does not — and the reachable half of that is a metadata full-range
-// lowering against a schema that DOES declare the table.
+// The rule is one condition with two independent reasons to say no: the
+// schema declares no exp-histogram table at all, or this lowering is a
+// Prometheus metadata full-range walk, which must never be answered from the
+// exp-histogram table. [expHistogramLoweringAvailable] says yes only when
+// NEITHER holds. The `&&` -> `||` mutant says yes when either does, so the
+// two differ exactly when one holds and the other does not — and the
+// reachable half of that is a metadata full-range lowering against a schema
+// that DOES declare the table. The `!=` -> `==` mutant inverts the first
+// disjunct instead, and is caught by each test's positive control.
 //
 // At a leaf recognizer nothing downstream re-checks `ctx`: the remaining
 // guards are shape guards (is this a Call, a MatrixSelector, a positive
@@ -26,15 +30,20 @@
 // and the schema's suffix. So with `metadataFullRange: true` and a normal
 // schema the mutant runs the whole recognizer to completion and ACCEPTS a
 // shape the original rejects — an observable difference, and what each test
-// below pins.
+// below pins. Ten leaves apply the rule; six are pinned here, and the other
+// four in gremlins_kill_histogram_binop_count_test.go
+// ([countOverExpHistogram]), gremlins_kill_histogram_subquery_select_test.go
+// ([bareExpHistogramMatrixSelector]) and
+// histogram_native_range_family_gremlins_test.go
+// ([countPresentOverExpHistogram] and [rangeFnOverExpHistogram]).
 //
-// At a COMPOSITE recognizer the same mutation is equivalent, because the
-// composite re-validates the identical condition one level down through
-// `isExpHistogramValuedShape` / `isExpHistogramDroppingShape`, whose every
-// leaf carries this very guard. Those sites are adjudicated in this file's
-// NOT KILLABLE footer rather than tested, on the same ground
-// gremlins_kill_histogram_binop_count_test.go's header already records for
-// histogram_native_binop_eq.go's two.
+// At a COMPOSITE recognizer the rule is not applied at all, because it would
+// decide nothing there: a composite re-derives the identical verdict one
+// level down through [isExpHistogramValuedShape] /
+// [isExpHistogramDroppingShape], whose arms recurse on strict
+// sub-expressions and bottom out at those leaves. That asymmetry is the
+// whole reason the rule has one statement rather than 31 — see this file's
+// closing note, and [expHistogramLoweringAvailable]'s own doc.
 //
 // Each test asserts BOTH directions. The negative assertion alone would pass
 // vacuously against any expression the recognizer rejects for an unrelated
@@ -53,7 +62,7 @@ import (
 // TestLastFirstOverExpHistogram_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_last_first_over_time.go:lastFirstOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // inside [lastFirstOverExpHistogram], the `last_over_time` /
 // `first_over_time` recognizer.
@@ -76,14 +85,14 @@ func TestLastFirstOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	if _, _, _, ok := lastFirstOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("lastFirstOverExpHistogram(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
 // TestOverTimeOverExpHistogram_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_over_time.go:overTimeOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // the same guard inside [overTimeOverExpHistogram], the `sum_over_time` /
 // `avg_over_time` recognizer.
@@ -101,14 +110,14 @@ func TestOverTimeOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	if _, ok := overTimeOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("overTimeOverExpHistogram(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
 // TestResetsOrChangesOverExpHistogram_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_resets.go:resetsOrChangesOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // the same guard inside [resetsOrChangesOverExpHistogram], the `resets` /
 // `changes` recognizer.
@@ -126,14 +135,14 @@ func TestResetsOrChangesOverExpHistogram_MetadataFullRangeRejects(t *testing.T) 
 	if _, ok := resetsOrChangesOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("resetsOrChangesOverExpHistogram(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
 // TestBareExpHistogramSelector_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_bare.go:bareExpHistogramSelector:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // the same guard inside [bareExpHistogramSelector], the bare-selector
 // recognizer every composite shape's `isExpHistogramValuedShape` eventually
@@ -152,14 +161,14 @@ func TestBareExpHistogramSelector_MetadataFullRangeRejects(t *testing.T) {
 	if _, ok := bareExpHistogramSelector(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("bareExpHistogramSelector(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
 // TestTsOfFirstLastOverExpHistogram_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_ts_of_first_last_over_time.go:tsOfFirstLastOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // the same guard inside [tsOfFirstLastOverExpHistogram], the
 // `ts_of_first_over_time` / `ts_of_last_over_time` recognizer.
@@ -177,14 +186,14 @@ func TestTsOfFirstLastOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	if _, _, _, ok := tsOfFirstLastOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("tsOfFirstLastOverExpHistogram(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
 // TestSumOrAvgOverExpHistogram_MetadataFullRangeRejects kills the
 // INVERT_LOGICAL mutant on the `||` of
 //
-//	histogram_native_sum.go:sumOrAvgOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
 // the same guard inside [sumOrAvgOverExpHistogram], the
 // mergeable-aggregation recognizer.
@@ -202,81 +211,25 @@ func TestSumOrAvgOverExpHistogram_MetadataFullRangeRejects(t *testing.T) {
 	if _, _, ok := sumOrAvgOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("sumOrAvgOverExpHistogram(%q) = ok true under metadataFullRange; a metadata "+
 			"full-range lowering must never be answered from the exp-histogram table (mutant "+
-			"`||`->`&&` on the ExpHistogramTable/metadataFullRange guard would accept it)", q)
+			"`&&`->`||` in expHistogramLoweringAvailable would accept it)", q)
 	}
 }
 
-// NOT KILLABLE — documented, not defended by a test.
+// WHY THERE IS NO "NOT KILLABLE" FOOTER HERE ANY MORE (cerberus issue #2963).
 //
-// The same `||` -> `&&` INVERT_LOGICAL rewrite of
+// This file used to close with an equivalence adjudication covering twelve
+// COMPOSITE recognizers that carried a copy of the same guard: the `||` ->
+// `&&` rewrite could not be killed at any of them, because a composite
+// re-derives the identical condition one level down through
+// [isExpHistogramValuedShape] / [isExpHistogramDroppingShape]. Those copies
+// decided nothing, so the mutants on them were permanently equivalent and
+// consumed mutation denominator forever.
 //
-//	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-//
-// is EQUIVALENT at every COMPOSITE recognizer, and ten of the mutants on
-// cerberus issue #2949's legs are of that kind:
-//
-//	histogram_native_float_vector_scaling_binop.go:expHistogramFloatVectorScalingBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_dropping_shape.go:aggregationOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_range_fn.go:rangeFnOverExpHistogramSubquery:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_subquery_select.go:selectFnOverExpHistogramSubquery:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_float_vector_binop.go:expHistogramDroppingVectorBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_scalar_binop.go:expHistogramScalarBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_scalar_binop.go:expHistogramDroppingScalarBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//	histogram_native_set_op.go:expHistogramSetOp:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//
-// (gremlins_kill_histogram_binop_count_test.go's header already records the
-// same verdict, on the same ground, for the identical guard in
-// histogram_native_binop_eq.go's expHistogramHistogramCompareBinop and
-// expHistogramHistogramCompareBoolBinop.)
-//
-// THE ARGUMENT
-//
-// Write the guard's two disjuncts A (`s.ExpHistogramTable == ""`) and B
-// (`ctx.metadataFullRange`). The original bails on `A || B`; the mutant bails
-// on `A && B`. The two therefore differ only where exactly one of A, B holds,
-// and in that region the mutant does NOT bail where the original does. So the
-// mutant is equivalent iff, whenever `A || B` holds, the recognizer answers
-// false anyway for every input.
-//
-// Each function above answers by asking `isExpHistogramValuedShape` or
-// `isExpHistogramDroppingShape` about its operands, and every rejection path
-// returns that function's zero-value tuple, never a partially-populated one.
-// So it is enough that both predicates are UNCONDITIONALLY false whenever
-// `A || B` holds — and they are, by structural induction over a closed
-// dispatch set:
-//
-//   - Base cases. Every leaf `isExpHistogramValuedShape` and
-//     `isExpHistogramDroppingShape` dispatch to carries this identical guard
-//     as its own first statement: bareExpHistogramSelector,
-//     sumOrAvgOverExpHistogram, rangeFnOverExpHistogram,
-//     rangeFnOverExpHistogramSubquery, overTimeOverExpHistogram,
-//     lastFirstOverExpHistogram, unaryOverExpHistogram,
-//     expHistogramHistogramBinop, expHistogramSetOp,
-//     expHistogramFloatVectorScalingBinop, limitKOrRatioOverExpHistogram,
-//     droppingAggregationOverExpHistogram, expHistogramDroppingScalarBinop,
-//     expHistogramDroppingVectorBinop, expHistogramDroppingHistogramBinop,
-//     aggregationOverExpHistogramDroppingShape and
-//     labelCallOverExpHistogramDroppingShape. Each returns false under
-//     `A || B` before reading its input at all.
-//   - Inductive cases. The three members of the dispatch set that carry NO
-//     guard of their own do not decide anything themselves — each delegates
-//     the whole question back into the same set:
-//     labelCallOverExpHistogram and histogramValuedProducerCall both end in
-//     `isExpHistogramValuedShape(call.Args[0], s, ctx)`, and
-//     selectFnHistogramPreservingSubquery delegates to
-//     selectFnOverExpHistogramSubquery, which is guarded.
-//
-// The set is closed — those two predicates dispatch to nothing else — so
-// under `A || B` no branch can produce true, and the mutant's extra reachable
-// code is dead. Verified by applying each mutation by hand and confirming
-// `go test ./internal/promql/` stays green, and by driving both predicates
-// with `metadataFullRange: true` over the bare / aggregated / windowed /
-// unary / label-call / scalar-binop / vector-binop / set-op / dropping
-// shapes, all of which answer false.
-//
-// The LEAF recognizers are a different matter and are NOT covered by this
-// footer: they decide by asking the SCHEMA (`s.IsExpHistogramMetric`), which
-// never consults ctx, so the mutant genuinely accepts what the original
-// rejects. Those six are killed by the tests above.
+// The copies are gone. The rule is now stated once, in
+// [expHistogramLoweringAvailable], and the composites carry nothing to
+// mutate — so the adjudication has no mutants left to adjudicate and has
+// been retired rather than restated. What replaces it is proof rather than
+// prose: [TestExpHistogramRecognizersRejectWhenLoweringUnavailable] drives
+// every recognizer and both predicates across the whole shape matrix under
+// each disjunct, pinning the property the deleted copies used to assert
+// site by site.

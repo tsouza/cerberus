@@ -38,9 +38,6 @@ import (
 // droppingAggregationOverExpHistogram recognizes a histogram-dropping
 // aggregation directly over a bare exponential-histogram selector.
 func droppingAggregationOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, parser.Expr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false
-	}
 	agg, ok := unwrapAggregateExpr(expr)
 	if !ok || !histogramDroppingAggregationOp(agg.Op) {
 		return nil, nil, false

@@ -25,7 +25,7 @@ const (
 // histogram-aware parent and therefore remains on the explicit selector
 // rejection path.
 func overTimeOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return histogramAggShape{}, false
 	}
 	call, ok := peelWrappers(expr).(*parser.Call)

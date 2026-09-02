@@ -64,9 +64,6 @@ import (
 // histogram-valued operand at all; it keeps handling only the ordinary
 // float-Value case it always has.
 func unaryOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (operand parser.Expr, op parser.ItemType, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, 0, false
-	}
 	u, isUnary := peelWrappers(expr).(*parser.UnaryExpr)
 	if !isUnary || (u.Op != parser.SUB && u.Op != parser.ADD) {
 		return nil, 0, false

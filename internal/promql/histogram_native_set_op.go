@@ -75,9 +75,6 @@ import (
 // optimizer's FlattenVectorSetOp rule linearises the chain) compose the
 // same way `sum(rate(...))` does for the range-function shape.
 func expHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || !b.Op.IsSetOperator() {
 		return nil, false

@@ -15,14 +15,19 @@ import (
 // FloatHistogram.String rather than dropping them, so this is a value-aware
 // consumer rather than another presence-only count.
 func countValuesOverExpHistogramValue(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	agg, ok := unwrapAggregateExpr(expr)
 	if !ok || agg.Op != parser.COUNT_VALUES {
 		return nil, false
 	}
-	return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)
+	// A rejection answers the zero-value tuple, never a
+	// partially-populated one — the contract every sibling exp-histogram
+	// recognizer keeps. Until cerberus issue #2963 the copied availability
+	// guard this function opened with kept it here by accident; the
+	// explicit rejection keeps it on purpose.
+	if !isExpHistogramValuedShape(agg.Expr, s, ctx) {
+		return nil, false
+	}
+	return agg, true
 }
 
 func lowerExpHistogramCountValuesOverPlan(agg *parser.AggregateExpr, input chplan.Node, s schema.Metrics, ctx lowerCtx) (chplan.Node, error) {

@@ -116,9 +116,6 @@ import (
 // Having guard already proved it), so projecting the L-tagged value is
 // equally correct there — one projection shape serves both operators.
 func expHistogramHistogramCompareBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ne bool, vm *parser.VectorMatching, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false, nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.EQLC && b.Op != parser.NEQ) {
 		return nil, nil, false, nil, false
@@ -188,7 +185,7 @@ func lowerExpHistogramHistogramCompareBinop(lhsExpr, rhsExpr parser.Expr, ne boo
 // directly, mirroring how a plain (non-histogram) `bool`-compare reaches
 // `chplan.VectorJoin` with `ReturnBool: true` from the same call site.
 func expHistogramHistogramCompareBoolBinop(b *parser.BinaryExpr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ne bool, vm *parser.VectorMatching, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool {
+	if !b.ReturnBool {
 		return nil, nil, false, nil, false
 	}
 	if b.Op != parser.EQLC && b.Op != parser.NEQ {

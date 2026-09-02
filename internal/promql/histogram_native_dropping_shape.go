@@ -106,7 +106,17 @@ func lowerExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowe
 // relationship to [lowerExpHistogramValuedShape] — used by the two
 // recursive-composition recognisers below so shape membership can be
 // tested without lowering (and discarding) a plan.
+//
+// Its leading [expHistogramLoweringAvailable] check is the same COST gate
+// [isExpHistogramValuedShape] carries, for the same reason, with the same
+// proof and the same measured order of magnitude (quoted there): every arm
+// below recurses on a strict sub-expression or bottoms out in a leaf
+// recognizer that applies the rule itself, so removing the check changes no
+// answer and only changes what reaching it costs.
 func isExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	if !expHistogramLoweringAvailable(s, ctx) {
+		return false
+	}
 	if _, _, ok := droppingAggregationOverExpHistogram(expr, s, ctx); ok {
 		return true
 	}
@@ -153,9 +163,6 @@ func isExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowerCt
 // generic param validation ahead of their own K-domain-specific one and
 // skip the LIMIT/TopK node their own lowering emits for a non-degenerate K.
 func aggregationOverExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	agg, ok := unwrapAggregateExpr(expr)
 	if !ok || agg.Op == parser.LIMITK || agg.Op == parser.LIMIT_RATIO {
 		return nil, false
@@ -201,9 +208,6 @@ func lowerAggregationOverExpHistogramDroppingShape(agg *parser.AggregateExpr, s 
 // validation, exactly as [lowerLabelCallOverExpHistogram] validates them
 // for the preserve case.
 func labelCallOverExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.Call, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	call, ok := peelWrappers(expr).(*parser.Call)
 	if !ok {
 		return nil, false

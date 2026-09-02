@@ -111,9 +111,6 @@ import (
 // dedicated composer (histogram_native_mixed_or_subquery_aggregate_range_fn.go,
 // cerberus issue #2581) instead.
 func mixedOrSubqueryOuterFn(c *parser.Call, s schema.Metrics, ctx lowerCtx) (*parser.SubqueryExpr, *parser.BinaryExpr, func(parser.Expr) parser.Expr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, nil, false
-	}
 	if len(c.Args) != 1 || !isHistogramSubqueryOuterFnName(c.Func.Name) {
 		return nil, nil, nil, false
 	}

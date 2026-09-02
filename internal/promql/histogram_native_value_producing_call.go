@@ -48,7 +48,14 @@ func histogramValuedProducerCall(expr parser.Expr, s schema.Metrics, ctx lowerCt
 	default:
 		return nil, false
 	}
-	return call, isExpHistogramValuedShape(call.Args[0], s, ctx)
+	// A rejection answers the zero-value tuple, never a
+	// partially-populated one — the contract every exp-histogram
+	// recognizer keeps, pinned across the whole set by
+	// [TestExpHistogramRecognizersRejectWhenLoweringUnavailable].
+	if !isExpHistogramValuedShape(call.Args[0], s, ctx) {
+		return nil, false
+	}
+	return call, true
 }
 
 // lowerHistogramValuedProducerCall lowers the shape

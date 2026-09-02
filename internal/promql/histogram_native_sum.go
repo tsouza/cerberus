@@ -103,7 +103,7 @@ const (
 // by #2245). Keeping this recognizer narrow to the bare-selector fast path
 // keeps its byte-stable direct lowering unchanged by that composition.
 func sumOrAvgOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return nil, nil, false
 	}
 	agg, ok := unwrapAggregateExpr(expr)

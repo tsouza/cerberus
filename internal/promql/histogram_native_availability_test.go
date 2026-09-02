@@ -1,0 +1,439 @@
+package promql
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/schema"
+)
+
+// TestExpHistogramRecognizersRejectWhenLoweringUnavailable is the
+// behavioural pin under cerberus issue #2963's deletion of twenty-one
+// copied guards.
+//
+// Before that change, each exp-histogram recognizer asserted the
+// availability rule for itself, as its own first statement. Twenty-one of
+// those statements decided nothing — the recognizer re-derives the same
+// verdict through [isExpHistogramValuedShape] / [isExpHistogramDroppingShape]
+// — so deleting them changed no behaviour, which is exactly why nothing
+// would have caught it if they HAD changed behaviour. What the deleted
+// copies used to assert site by site, this test asserts for the whole set
+// at once: with exp-histogram lowering unavailable, for EITHER of the two
+// reasons, every recognizer and both predicates answer false and hand back
+// the zero value for every other return.
+//
+// The negative assertion alone would pass vacuously — a recognizer that
+// rejected every input for an unrelated reason would satisfy it. So each
+// query is first put through the same matrix with lowering AVAILABLE, and
+// EVERY recognizer must accept at least one shape there. That per-recognizer
+// positive control is what makes the negative half evidence: a whole-test
+// control would be satisfied by one accepting recognizer while the other
+// thirty-eight proved nothing.
+//
+// The available pass carries a second assertion of its own, so the name
+// undersells it slightly: the zero-value-tuple contract is not conditional
+// on the availability rule, and a rejection under the ORDINARY
+// configuration — where these recognizers reject far more often — must hand
+// back nothing either. That is the half pinning
+// [labelCallOverExpHistogram] and [histogramValuedProducerCall], which
+// reject a non-histogram-valued argument against a perfectly available
+// schema.
+func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
+	t.Parallel()
+
+	available := schema.DefaultOTelMetrics()
+	noTable := schema.DefaultOTelMetrics()
+	noTable.ExpHistogramTable = ""
+
+	unavailable := []struct {
+		name string
+		s    schema.Metrics
+		c    lowerCtx
+	}{
+		{"noExpHistogramTable", noTable, baseLowerCtx()},
+		{"metadataFullRange", available, metadataFullRangeLowerCtx()},
+		{"both", noTable, metadataFullRangeLowerCtx()},
+	}
+
+	accepts := map[string]int{}
+	for _, q := range expHistogramShapeMatrix() {
+		p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+		expr, err := p.ParseExpr(q)
+		if err != nil {
+			t.Fatalf("ParseExpr(%q): %v", q, err)
+		}
+
+		for _, r := range expHistogramRecognizers() {
+			// The verdict is the tuple's last entry, so a trailing "set" is
+			// this recognizer accepting q with lowering available.
+			av := r.call(expr, available, baseLowerCtx())
+			if strings.HasSuffix(av, "set") {
+				accepts[r.name]++
+			} else if av != zeroTuple(av) {
+				// The zero-value-tuple contract is not conditional on the
+				// availability rule: ANY rejection, for any reason, must hand
+				// back nothing. Asserting it only under the unavailable
+				// configurations would leave the ordinary path — where these
+				// recognizers reject far more often — unpinned.
+				t.Errorf("%s(%q) with lowering available = %s; it rejected, so every other "+
+					"return must be at its zero value — a rejection never hands back a "+
+					"partially-populated tuple", r.name, q, av)
+			}
+			for _, u := range unavailable {
+				if got := r.call(expr, u.s, u.c); got != zeroTuple(got) {
+					t.Errorf("%s(%q) under %s = %s; want every return at its zero value — "+
+						"exp-histogram lowering is unavailable, so no recognizer may accept "+
+						"(histogram_native_availability.go:expHistogramLoweringAvailable:"+
+						"`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange`)",
+						r.name, q, u.name, got)
+				}
+			}
+		}
+	}
+
+	// The positive control is PER RECOGNIZER, not per test run. A single
+	// accepting recognizer would satisfy a whole-test control while every
+	// other recognizer's negative assertions passed for an unrelated reason
+	// — it rejects that shape anyway. Requiring each one to accept at least
+	// one shape is what makes all of them evidence, and a recognizer that
+	// cannot means the matrix is missing its shape rather than that the bar
+	// is too high.
+	for _, r := range expHistogramRecognizers() {
+		if accepts[r.name] == 0 {
+			t.Errorf("positive control: %s accepted none of the %d shapes with lowering "+
+				"available, so its negative assertions above hold for the wrong reason — "+
+				"add the shape it recognises to expHistogramShapeMatrix",
+				r.name, len(expHistogramShapeMatrix()))
+		}
+	}
+}
+
+func baseLowerCtx() lowerCtx {
+	return lowerCtx{lowerers: RangeLowerers{}.withDefaults(), resourceBounds: DefaultResourceBounds()}
+}
+
+func metadataFullRangeLowerCtx() lowerCtx {
+	c := baseLowerCtx()
+	c.metadataFullRange = true
+	return c
+}
+
+// expHistogramRecognizer pairs a recognizer's name with a call that renders
+// its WHOLE return tuple comparably: "zero" or "set" per value, in order.
+// The bool verdict is the last entry, so an all-"zero" rendering is exactly
+// "rejected, and handed back nothing".
+type expHistogramRecognizer struct {
+	name string
+	call func(parser.Expr, schema.Metrics, lowerCtx) string
+}
+
+func tup(vals ...any) string {
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v == nil || reflect.ValueOf(v).IsZero() {
+			parts = append(parts, "zero")
+			continue
+		}
+		parts = append(parts, "set")
+	}
+	return strings.Join(parts, ",")
+}
+
+// zeroTuple is the all-rejected rendering of a tuple the same width as got.
+func zeroTuple(got string) string {
+	parts := strings.Split(got, ",")
+	for i := range parts {
+		parts[i] = "zero"
+	}
+	return strings.Join(parts, ",")
+}
+
+// expHistogramShapeMatrix spans every shape family the exp-histogram
+// recognizers cover — bare, aggregated, windowed, subquery, binop, set-op,
+// mixed-or, label-call and dropping — plus plain float controls.
+func expHistogramShapeMatrix() []string {
+	return []string{
+		// bare
+		`latency_exp_hist`,
+		`latency_exp_hist[5m]`,
+		`latency_exp_hist{job="a"}`,
+		// aggregated
+		`sum(latency_exp_hist)`,
+		`avg(latency_exp_hist)`,
+		`count(latency_exp_hist)`,
+		`group(latency_exp_hist)`,
+		`count_values("v", latency_exp_hist)`,
+		`min(latency_exp_hist)`,
+		`max(latency_exp_hist)`,
+		`topk(3, latency_exp_hist)`,
+		`quantile(0.9, latency_exp_hist)`,
+		`limitk(3, latency_exp_hist)`,
+		`limit_ratio(0.5, latency_exp_hist)`,
+		`sum by (job) (latency_exp_hist)`,
+		// windowed
+		`rate(latency_exp_hist[5m])`,
+		`increase(latency_exp_hist[5m])`,
+		`delta(latency_exp_hist[5m])`,
+		`irate(latency_exp_hist[5m])`,
+		`idelta(latency_exp_hist[5m])`,
+		`sum_over_time(latency_exp_hist[5m])`,
+		`avg_over_time(latency_exp_hist[5m])`,
+		`last_over_time(latency_exp_hist[5m])`,
+		`first_over_time(latency_exp_hist[5m])`,
+		`count_over_time(latency_exp_hist[5m])`,
+		`present_over_time(latency_exp_hist[5m])`,
+		`resets(latency_exp_hist[5m])`,
+		`changes(latency_exp_hist[5m])`,
+		`ts_of_first_over_time(latency_exp_hist[5m])`,
+		`ts_of_last_over_time(latency_exp_hist[5m])`,
+		`sum(rate(latency_exp_hist[5m]))`,
+		// subquery
+		`rate(latency_exp_hist[5m:1m])`,
+		`sum_over_time(latency_exp_hist[5m:1m])`,
+		`last_over_time(latency_exp_hist[5m:1m])`,
+		`count_over_time(latency_exp_hist[5m:1m])`,
+		`resets(latency_exp_hist[5m:1m])`,
+		`ts_of_last_over_time(latency_exp_hist[5m:1m])`,
+		`increase(sum(latency_exp_hist)[10m:1m])`,
+		// binop
+		`latency_exp_hist + latency_exp_hist`,
+		`latency_exp_hist - latency_exp_hist`,
+		`latency_exp_hist == latency_exp_hist`,
+		`latency_exp_hist != latency_exp_hist`,
+		`latency_exp_hist == bool latency_exp_hist`,
+		`latency_exp_hist * 2`,
+		`2 * latency_exp_hist`,
+		`latency_exp_hist / 2`,
+		`latency_exp_hist > 2`,
+		`latency_exp_hist * cpu_total`,
+		`cpu_total * latency_exp_hist`,
+		`latency_exp_hist / cpu_total`,
+		`latency_exp_hist * on (job) group_left () cpu_total`,
+		`latency_exp_hist * on (job) group_right () cpu_total`,
+		`latency_exp_hist > cpu_total`,
+		`-latency_exp_hist`,
+		`+latency_exp_hist`,
+		// set op
+		`latency_exp_hist or latency_exp_hist`,
+		`latency_exp_hist and latency_exp_hist`,
+		`latency_exp_hist unless latency_exp_hist`,
+		`latency_exp_hist or cpu_total`,
+		`cpu_total or latency_exp_hist`,
+		`sum(latency_exp_hist or cpu_total)`,
+		`label_replace(latency_exp_hist or cpu_total, "a", "b", "c", "d")`,
+		`count_over_time((latency_exp_hist or cpu_total)[5m:1m])`,
+		`rate((latency_exp_hist or cpu_total)[5m:1m])`,
+		`sum(count_over_time((latency_exp_hist or cpu_total)[5m:1m]))`,
+		// label calls / producers
+		`label_replace(latency_exp_hist, "a", "b", "c", "d")`,
+		`label_join(latency_exp_hist, "a", ",", "job")`,
+		`label_replace(sum(latency_exp_hist), "a", "b", "c", "d")`,
+		`sort_by_label(latency_exp_hist, "job")`,
+		`info(latency_exp_hist)`,
+		// dropping shapes nested
+		`sum(min(latency_exp_hist))`,
+		`sum(latency_exp_hist > 2)`,
+		`label_replace(min(latency_exp_hist), "a", "b", "c", "d")`,
+		`histogram_count(latency_exp_hist)`,
+		`histogram_sum(latency_exp_hist)`,
+		// @-pinned subqueries: subqueryHasEvalAnchor needs an anchor, and
+		// without one the whole subquery family rejects for an unrelated
+		// reason and its negative assertions would hold vacuously.
+		`rate(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`sum_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`last_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`count_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`last_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`count_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`sum(count_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000))`,
+		`count_over_time(sum((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`rate(avg((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		// histogram/histogram binops whose operator DROPS the sample —
+		// expHistogramDroppingHistogramBinop's own shape, disjoint from the
+		// `+`/`-` merge and the `==`/`!=` filter already above.
+		`latency_exp_hist / other_exp_hist`,
+		`latency_exp_hist > other_exp_hist`,
+		// non-exp-hist controls
+		`cpu_total`,
+		`sum(rate(cpu_total[5m]))`,
+		`cpu_total + cpu_total`,
+	}
+}
+
+// expHistogramRecognizers is every recognizer and predicate that consults
+// the availability rule, directly or through the two predicates.
+func expHistogramRecognizers() []expHistogramRecognizer {
+	return []expHistogramRecognizer{
+		{"bareExpHistogramSelector", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := bareExpHistogramSelector(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"bareExpHistogramMatrixSelector", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := bareExpHistogramMatrixSelector(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"aggregationOverExpHistogramDroppingShape", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := aggregationOverExpHistogramDroppingShape(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"labelCallOverExpHistogramDroppingShape", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := labelCallOverExpHistogramDroppingShape(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"countValuesOverExpHistogramValue", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := countValuesOverExpHistogramValue(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"expHistogramHistogramCompareBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, v3, ok := expHistogramHistogramCompareBinop(e, s, c)
+			return tup(v0, v1, v2, v3, ok)
+		}},
+		{"rangeFnOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := rangeFnOverExpHistogram(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"rangeFnOverExpHistogramSubquery", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := rangeFnOverExpHistogramSubquery(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"expHistogramSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := expHistogramSetOp(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"resetsOrChangesOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := resetsOrChangesOverExpHistogram(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"sumOrAvgOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := sumOrAvgOverExpHistogram(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"unaryOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := unaryOverExpHistogram(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"expHistogramFloatVectorScalingBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, v3, v4, v5, ok := expHistogramFloatVectorScalingBinop(e, s, c)
+			return tup(v0, v1, v2, v3, v4, v5, ok)
+		}},
+		{"droppingAggregationOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := droppingAggregationOverExpHistogram(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"expHistogramHistogramBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, v3, ok := expHistogramHistogramBinop(e, s, c)
+			return tup(v0, v1, v2, v3, ok)
+		}},
+		{"expHistogramDroppingHistogramBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := expHistogramDroppingHistogramBinop(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"countPresentOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, ok := countPresentOverExpHistogram(e, s, c)
+			return tup(v0, v1, v2, ok)
+		}},
+		{"expHistogramDroppingVectorBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := expHistogramDroppingVectorBinop(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"lastFirstOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, ok := lastFirstOverExpHistogram(e, s, c)
+			return tup(v0, v1, v2, ok)
+		}},
+		{"mixedExpHistogramSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := mixedExpHistogramSetOp(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"limitKOrRatioOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := limitKOrRatioOverExpHistogram(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"overTimeOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := overTimeOverExpHistogram(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"expHistogramScalarBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, ok := expHistogramScalarBinop(e, s, c)
+			return tup(v0, v1, v2, ok)
+		}},
+		{"expHistogramDroppingScalarBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := expHistogramDroppingScalarBinop(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"tsOfFirstLastOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, v2, ok := tsOfFirstLastOverExpHistogram(e, s, c)
+			return tup(v0, v1, v2, ok)
+		}},
+		{"selectFnOverExpHistogramSubquery", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := selectFnOverExpHistogramSubquery(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"countOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := countOverExpHistogram(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"countOrGroupOverExpHistogramValue", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := countOrGroupOverExpHistogramValue(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"isExpHistogramValuedShape", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			return tup(isExpHistogramValuedShape(e, s, c))
+		}},
+		{"isExpHistogramDroppingShape", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			return tup(isExpHistogramDroppingShape(e, s, c))
+		}},
+		{"isExpHistogramValuedOrForwarded", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			return tup(isExpHistogramValuedOrForwarded(e, s, c))
+		}},
+		{"isExpHistogramForwardedThroughSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			return tup(isExpHistogramForwardedThroughSetOp(e, s, c))
+		}},
+		{"selectFnHistogramPreservingSubquery", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := selectFnHistogramPreservingSubquery(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"labelCallOverExpHistogram", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := labelCallOverExpHistogram(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"histogramValuedProducerCall", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, ok := histogramValuedProducerCall(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"expHistogramHistogramCompareBoolBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			b, isBin := unwrapBinaryExpr(e)
+			if !isBin {
+				return "zero,zero,zero,zero,zero"
+			}
+			v0, v1, v2, v3, ok := expHistogramHistogramCompareBoolBinop(b, s, c)
+			return tup(v0, v1, v2, v3, ok)
+		}},
+		{"mixedOrSubqueryOuterFn", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			call, isCall := peelWrappers(e).(*parser.Call)
+			if !isCall {
+				return "zero,zero,zero,zero"
+			}
+			v0, v1, v2, ok := mixedOrSubqueryOuterFn(call, s, c)
+			return tup(v0, v1, v2 != nil, ok)
+		}},
+		{"sumOrAvgMixedOrSubqueryOuterFnRecognized", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			call, isCall := peelWrappers(e).(*parser.Call)
+			if !isCall {
+				return "zero,zero"
+			}
+			v0, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(call, s, c)
+			return tup(v0, ok)
+		}},
+		{"sumOrAvgOverMixedExpHistogramSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := sumOrAvgOverMixedExpHistogramSetOp(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+		{"labelCallOverMixedExpHistogramSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			v0, v1, ok := labelCallOverMixedExpHistogramSetOp(e, s, c)
+			return tup(v0, v1, ok)
+		}},
+	}
+}

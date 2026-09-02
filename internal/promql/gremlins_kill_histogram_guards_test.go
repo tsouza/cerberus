@@ -15,23 +15,25 @@ import (
 )
 
 // TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable kills the
-// CONDITIONALS_NEGATION mutant on
+// CONDITIONALS_NEGATION mutant on the `!=` of
 //
-//	histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == ""`
+//	histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
 //
-// which rewrites it to `s.ExpHistogramTable != ""` inside
-// [mixedOrSubqueryOuterFn].
+// which rewrites it to `==`.
 //
-// The guard reads "bail when the schema declares NO exp-histogram table".
-// Negated it reads "bail when the schema DOES declare one", which is every
-// real deployment: the recognizer then answers false for every input it
-// exists to accept, and the mixed-or subquery shape silently stops being
-// recognised.
+// The rule reads "exp-histogram lowering is available when the schema
+// DOES declare a table". Negated it reads "available only when it does
+// NOT", which is no real deployment: [mixedOrSubqueryOuterFn] reaches the
+// rule through [wrapMixedOrSubqueryInner] -> [mixedExpHistogramSetOp] ->
+// [isExpHistogramValuedShape], every one of which then answers false, and
+// the mixed-or subquery shape silently stops being recognised.
 //
 // The mutant is therefore killed by a POSITIVE recognition — the negative
-// direction is what the original already does. This is the only mutant on
-// this leg that a test can reach; the file's NOT KILLABLE footer adjudicates
-// the rest.
+// direction is what the original already does. Until cerberus issue #2963
+// this test named [mixedOrSubqueryOuterFn]'s own copy of the rule; that
+// copy decided nothing about the answer and was deleted with the other
+// twenty composite ones, so the citation now names the one place the rule
+// is stated. Nothing about what this test exercises changed.
 func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
 	t.Parallel()
 
@@ -54,8 +56,8 @@ func TestMixedOrSubqueryOuterFn_RequiresAConfiguredTable(t *testing.T) {
 	sub, b, rebuild, ok := mixedOrSubqueryOuterFn(call, s, lowerCtx{})
 	if !ok {
 		t.Fatalf("mixedOrSubqueryOuterFn(%q) = ok false; want true — the schema DOES declare an "+
-			"exp-histogram table, so the table guard must not fire (mutant `==`->`!=` at "+
-			"histogram_native_mixed_or_subquery_range_fn.go:mixedOrSubqueryOuterFn:`s.ExpHistogramTable == \"\"` makes it fire on every "+
+			"exp-histogram table, so availability must not be denied (mutant `!=`->`==` at "+
+			"histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange` denies it on every "+
 			"configured deployment)", q)
 	}
 	if sub == nil || b == nil || rebuild == nil {
