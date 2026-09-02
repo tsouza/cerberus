@@ -616,6 +616,21 @@ ts-grid-group-array-integration:
     @just _pull-retry {{CH_TEST_IMAGE}}
     go test -timeout 15m -tags=integration -count=1 -run '^(TestTimeSeriesGroupArray_|TestRate_NativeGroupArray_)' ./internal/chsql/...
 
+# Run the timeSeries*ToGrid duplicate-timestamp survivor pins (#2798): measures,
+# for every member of the emitter's own nativeTSGridFn registry, which sample
+# survives a NaN-bearing duplicate (series, timestamp) under each encounter
+# order; asserts the production dedupWindowPairsByTsFrag Frag elects the same
+# survivor under both; and reproduces the divergence end to end through
+# cerberus's own lowering + emitter over one MergeTree table holding two series
+# with the identical sample multiset. The family's own floor (25.9) is the
+# usual one, so this pins CH_TEST_IMAGE directly rather than reusing
+# CH_STRICT_SCAN_IMAGE's higher 26.6 pin. Requires Docker; gated behind the
+# `integration` build tag. See
+# internal/chsql/range_window_grid_native_nan_duplicate_realch_integration_test.go.
+ts-grid-nan-duplicate-integration:
+    @just _pull-retry {{CH_TEST_IMAGE}}
+    go test -timeout 15m -tags=integration -count=1 -run '^(TestTSGridFamily_NaNDuplicate|TestFanoutDedup_NaNDuplicate|TestRate_NativeGrid_NaNDuplicate)' ./internal/chsql/...
+
 # Run the FuzzParse target for one parser head for a bounded duration.
 # Usage: `just fuzz QL=promql DURATION=60s` (defaults).
 fuzz QL="promql" DURATION="60s":
