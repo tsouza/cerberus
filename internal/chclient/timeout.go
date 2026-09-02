@@ -42,8 +42,8 @@ const (
 // its wall-clock cap (CH error code 159, TIMEOUT_EXCEEDED). It is the
 // wall-clock sibling of [ErrMemoryLimitExceeded]: a per-query resource
 // rejection, NOT a transport failure — ClickHouse is alive and healthy
-// when it enforces a cap, so these errors are breaker-neutral (see
-// breaker.record) and the API heads map them onto the head-idiomatic
+// when it enforces a cap, so these errors are breaker-neutral (they classify
+// as breakerScopeStatement — see breaker_classify.go) and the API heads map them onto the head-idiomatic
 // timeout wire shapes (prom 503 errorType=timeout, loki/tempo
 // equivalents).
 //
@@ -106,19 +106,6 @@ func wrapQueryTimeout(err error, timeout time.Duration) error {
 		return &QueryTimeoutError{Timeout: timeout, Cause: err}
 	}
 	return err
-}
-
-// isQueryTimeoutExceeded reports whether err is a ClickHouse
-// TIMEOUT_EXCEEDED rejection — either already wrapped as a
-// *QueryTimeoutError or still the raw *clickhouse.Exception with code
-// 159 (the form breaker.record sees, since the breaker observes the
-// driver error before chclient wraps it).
-func isQueryTimeoutExceeded(err error) bool {
-	if errors.Is(err, ErrQueryTimeout) {
-		return true
-	}
-	var ex *clickhouse.Exception
-	return errors.As(err, &ex) && ex.Code == chCodeTimeoutExceeded
 }
 
 type queryTimeoutKeyType struct{}

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"sync"
 	"time"
-
-	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // ErrCircuitOpen is the sentinel returned by Client methods when the
@@ -111,6 +109,15 @@ type breaker struct {
 	// request should be admitted as the HALF-OPEN probe.
 	openedAt time.Time
 
+	// statementRejections counts the ClickHouse rejections classified as
+	// breakerScopeStatement (the server parsed and answered the statement)
+	// since the breaker last tripped. It never influences the state machine —
+	// that is the entire point of the classification — and exists so the trip
+	// log can say how many bad statements were in flight around the trip.
+	// Reset to 0 on each CLOSED->OPEN trip so the number a trip reports is
+	// scoped to the run-up to that trip and not to all of process history.
+	statementRejections int
+
 	// probeInFlight is set when a HALF-OPEN probe has been admitted
 	// and not yet completed. Concurrent allow() calls during the
 	// HALF-OPEN window see it set and short-circuit to
@@ -190,6 +197,18 @@ func (b *breaker) resolveOpenInterval() time.Duration {
 		return b.openInterval
 	}
 	return breakerOpenInterval
+}
+
+// noteStatementRejection records that ClickHouse rejected one statement while
+// remaining demonstrably alive. It takes b.mu because record's own critical
+// section has not begun at the point it is called (the classification runs
+// before the lock so the neutral paths never contend), and it deliberately
+// touches NOTHING but the counter: a statement rejection must not advance,
+// reset, or reorder any part of the state machine.
+func (b *breaker) noteStatementRejection() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.statementRejections++
 }
 
 // nowOrTime returns b.now() if set, otherwise time.Now(). Kept as a
@@ -338,67 +357,36 @@ func (b *breaker) record(ctx context.Context, err error) {
 		return
 	}
 
-	// A ClickHouse MEMORY_LIMIT_EXCEEDED rejection (code 241) is a
-	// per-query resource cap doing its job, not CH being down: the
-	// server answered with a typed exception, which is positive proof
-	// it is alive and healthy. Count it as a SUCCESS so a burst of
-	// over-broad queries (e.g. several wide-window matrix panels fired
-	// concurrently by a dashboard refresh) can never trip the breaker
-	// and 503 unrelated traffic. This mirrors the sample-budget
-	// contract (ErrTooManySamples), which stays out of the failure
-	// count by construction because it surfaces post-open via
-	// cursor.Err(); the memory cap can additionally reject at query
-	// open, so it needs the explicit filter here.
-	if err != nil && isMemoryLimitExceeded(err) {
-		err = nil
-	}
-
-	// A ClickHouse TIMEOUT_EXCEEDED rejection (code 159) is the
-	// wall-clock sibling of the memory cap above: the server enforcing
-	// the per-query `max_execution_time` cerberus stamps (with
-	// timeout_overflow_mode=throw) on a query that ran too long. The
-	// server answering with a typed exception is positive proof it is
-	// alive and healthy — a deliberately-slow / pathological query is
-	// not a CH outage. Count it as a SUCCESS so a burst of over-long
-	// queries can never trip the breaker and 503 unrelated traffic,
-	// exactly as the code-241 memory rejection is handled.
-	if err != nil && isQueryTimeoutExceeded(err) {
-		err = nil
-	}
-
-	// A deliberate, emitter-planted throwIf guard (code 395) is the clearest
-	// case of all: cerberus PUT that rejection in the SQL itself — the
-	// resource-bound ceilings, the shape-fault assertions — so the server
-	// raising it is not merely proof CH is alive, it is proof cerberus's own
-	// pre-flight logic worked exactly as designed.
+	// SCOPE CLASSIFICATION. Whose condition does this failure report? Only an
+	// error that is evidence about the SERVER may advance the failure counter;
+	// an error that is evidence about the STATEMENT (the server parsed it and
+	// answered with a typed code) or about this process (a local pool acquire
+	// timed out) is neutralised to a SUCCESS, exactly as the hand-enumerated
+	// code-241 / code-159 / code-395 / acquire-timeout arms this replaces did.
 	//
-	// This became load-bearing when the RangeBucketGridNative density bound
-	// was recalibrated to the measured OOM cliff (#2681). While that bound
-	// was several times too permissive, guard rejections were rare enough
-	// that counting them never tripped anything; an honest bound fires on
-	// every genuinely-oversized query, so a dashboard refresh with a few wide
-	// panels would open the breaker and 503 unrelated traffic — the same
-	// failure mode the code-241 carve-out above exists to prevent, reached by
-	// a different door.
-	if err != nil && isThrowIfGuard(err) {
-		err = nil
-	}
-
-	// A pool acquire-timeout (clickhouse.ErrAcquireConnTimeout) is NOT a
-	// ClickHouse-health failure: it means every connection in the local
-	// pool is busy and the acquire blocked past DialTimeout without one
-	// freeing up. That is a local pool-sizing signal — the cerberus
-	// replica is asking CH for more concurrency than MaxOpenConns
-	// allows — and says nothing about whether ClickHouse is alive. The
-	// sharded-pushdown solver's fan-out makes this reachable under
-	// healthy CH, so counting it would let a too-small pool trip the
-	// breaker and 503 traffic against a perfectly healthy backend. Treat
-	// it as a SUCCESS so it can never advance the failure counter, the
-	// same way the code-241 memory-limit rejection is handled above. The
-	// fix for a recurring acquire-timeout is to raise MaxOpenConns, not
-	// to fail CH health.
-	if err != nil && errors.Is(err, clickhouse.ErrAcquireConnTimeout) {
-		err = nil
+	// The arms were replaced because they were four instances of one argument
+	// — "the server answered, so it is alive" — rediscovered one incident at a
+	// time, and code 704 was the fifth instance nobody had had an incident for
+	// yet (#2900: ~21 statement rejections became 1015 divergences). The
+	// argument now lives in breaker_classify.go as the rule, so an unseen code
+	// is classified on arrival instead of after an outage.
+	//
+	// Neutralising to SUCCESS rather than to "no verdict" is the pre-existing
+	// contract and is deliberate: under HALF-OPEN, a server that answers a
+	// statement HAS demonstrated it is serving, which is what the probe asked.
+	outcome := breakerOutcome{Scope: breakerScopeServerHealth, Code: chCodeNoServerAnswer}
+	if err != nil {
+		outcome = classifyBreakerOutcome(err)
+		if outcome.Scope == breakerScopeStatement {
+			// Standing signal: statement rejections no longer trip anything,
+			// so without their own stream a storm of them is invisible in the
+			// telemetry — the 32-hour blind spot of #2895.
+			b.metrics.recordStatementRejection(b.head)
+			b.noteStatementRejection()
+		}
+		if outcome.Scope != breakerScopeServerHealth {
+			err = nil
+		}
 	}
 
 	// Client-initiated cancellation is not a ClickHouse health
@@ -505,11 +493,34 @@ func (b *breaker) record(ctx context.Context, err error) {
 			b.openedAt = now
 			b.failures = 0
 			b.failureWindowStart = time.Time{}
-			b.metrics.recordTrip(b.head)
-			breakerLogger().Warn("ch circuit breaker tripped OPEN: fast-failing all queries (503) until recovery",
+			b.metrics.recordTrip(b.head, outcome.tripCause())
+			// Name the cause on the trip line itself. A trip 503s every query
+			// behind this head, so misattributing it is expensive: during
+			// #2895 a compat score that read like a total engine regression
+			// masked ~21 bad statements for 32 hours. `cause` says whether the
+			// backend went silent or answered with a server-condition code;
+			// `statement_rejections_since_last_trip` says how many
+			// statement-scoped rejections were neutralised alongside, so a
+			// triager can see at a glance whether the two are related.
+			args := []any{
 				"from", "closed", "to", "open",
 				"threshold", b.resolveThreshold(),
-				"window", b.resolveWindow().String())
+				"window", b.resolveWindow().String(),
+				"cause", outcome.tripCause(),
+				"statement_rejections_since_last_trip", b.statementRejections,
+			}
+			// Only a server-condition trip HAS a ClickHouse code. Omitting the
+			// fields entirely on a no-answer trip beats logging `ch_code=0`,
+			// which reads as a real code and would send a triager looking up
+			// error 0.
+			if outcome.Code != chCodeNoServerAnswer {
+				args = append(args, "ch_code", int(outcome.Code), "ch_code_name", outcome.codeName())
+			}
+			breakerLogger().Warn(
+				"ch circuit breaker tripped OPEN: fast-failing all queries (503) until recovery",
+				args...,
+			)
+			b.statementRejections = 0
 		}
 		return
 
