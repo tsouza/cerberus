@@ -1419,6 +1419,59 @@ other than a digit or a construct carries no address and is left alone,
 which is what keeps `test/rejection-parity`'s `path.go:func#hash` site
 identifiers — a data format, not a citation — out of the gate's way.
 
+#### When the citation locates the mutant instead of hosting it
+
+A construct citation has to resolve to exactly one code line, and the
+mutated token frequently cannot. `INVERT_LOOPCTRL` rewrites a bare
+`continue` or `break`, which no substring singles out; a guard such as
+`if shape == chplan.HistogramRowShape` is often spelled identically in
+every arm of the switch it dispatches. In both cases the citation names
+the nearest construct that IS unique, and the note **says which
+relation it is naming**:
+
+```go
+// TestAbsentSynthLabels_DroppedNameSkipsNotStops kills the INVERT_LOOPCTRL
+// mutant on the `continue` taken for a dropped name, guarded by
+// range_aggregation.go:`if dropped[name] {`.
+//
+// The citation names that neighbouring `if` rather than the mutated statement
+// itself: the mutant is a bare `continue`, which no substring singles out.
+```
+
+Four anchors recur, and each is legitimate: the guard whose body is the
+mutated statement, the statement immediately above it, the assignment
+that opens the closure the mutant sits in, and the `case` label of the
+arm that holds it. What makes any of them honest is that the **mutated
+token is named in prose** — the mutator plus the expression it
+rewrites — while the citation supplies the address. A header that names
+only the anchor asserts a kill on a construct no mutator can touch, and
+is unfalsifiable by reading: the mutation lane reports per mutant and
+never per claim, so nothing contradicts it.
+
+The same sentence is what a reviewer checks. A `// TestX kills …`
+header is the only record that a mutant was adjudicated, so read it
+against the construct it points at: if that construct carries no
+comparison, no arithmetic operator and no loop-control token, the note
+must say what it is anchoring and where the real mutant sits, or it is
+claiming something no run can confirm.
+
+No gate enforces this either, and the mechanical version was built and
+measured before being rejected. Resolving every kill-claim citation
+through the resolver above and testing the resolved line against the
+mutant inventory a completed `mutation` run reports flags **16 of the
+235 citations** that land in a file the lane measures, across every
+phase of the lane — and all 16 are
+correct locator citations of the four kinds above, including every
+example in this section. Precision is zero, and the rule cannot be
+tightened into one a note could satisfy: the two ways to clear it are to
+drop the citation out of the sentence that claims the kill, which is the
+citation requirement this section exists to impose, or to invent a
+unique construct where the source deliberately repeats one. A gate whose
+only compliant forms are worse than the violation is a false-positive
+machine, and the residue it would catch — a kill claim naming an anchor
+without naming its mutant — is one sentence of reviewer attention
+(cerberus issue #2966).
+
 ### How a note states a number
 
 A citation that resolves is only half of a re-checkable note. The other

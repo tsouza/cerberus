@@ -951,23 +951,22 @@ func mixedDiscriminatorMarkerProject(input chplan.Node) *chplan.Project {
 	}
 }
 
-// TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop kills
-// the INVERT_LOOPCTRL mutant on the `continue` of
-// duplicate_labelset_guard.go:`if mixed && mixedPayload[name]`, inside
-// guardLabelRewriteCollision's per-projection switch:
-//
-//	default:
-//		if mixed && mixedPayload[name] {
-//			continue
-//		}
-//
-// flips to `break`. A single qualifying projection cannot distinguish
-// `continue` from `break` (the loop would end either way), so the
-// fixture needs a mixed-payload column FOLLOWED by another projection
-// that must still be reachable. This test forces `keyOnStep = true`
-// (via an Aggregate input whose GroupByAliases already names the
-// timestamp column, see guardKeysOnTimestamp) so the trailing
+// TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop pins that a
+// mixed-payload column does not swallow the projection after it: the
+// payload column is skipped by the `continue` under
+// duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` and the
+// trailing projection still reaches the group key. The fixture needs a
+// mixed-payload column FOLLOWED by another projection, and forces
+// `keyOnStep = true` (via an Aggregate input whose GroupByAliases already
+// names the timestamp column, see guardKeysOnTimestamp) so that trailing
 // projection lands in the group key, then asserts its alias survived.
+//
+// It does NOT kill the INVERT_LOOPCTRL mutant on that `continue`, and no
+// test can: the rewrite is equivalent, adjudicated in this package's NOT
+// KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7). The
+// `continue` sits inside a `switch` that is the whole body of the `for`,
+// so `break` binds to the switch rather than to the loop and control
+// reaches the next iteration either way.
 func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
@@ -998,28 +997,24 @@ func TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop(t *testing.T) 
 		}
 	}
 	if !found {
-		t.Fatalf("GroupByAliases = %#v; want %q present (mutant `continue` -> `break` at "+
-			"duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` "+
-			"would abandon the loop at the mixed-payload "+
-			"histogram column and never reach the projection after it)", agg.GroupByAliases, extraStepCol)
+		t.Fatalf("GroupByAliases = %#v; want %q present (the skip under "+
+			"duplicate_labelset_guard.go:`if mixed && mixedPayload[name]` must pass over the "+
+			"mixed-payload histogram column and still reach the projection after it)",
+			agg.GroupByAliases, extraStepCol)
 	}
 }
 
-// TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop kills the
-// INVERT_LOOPCTRL mutant on the `continue` of
-// duplicate_labelset_guard.go:`if keyOnStep`:
+// TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop pins that two
+// consecutive key-on-step projections BOTH reach the group key, rather
+// than the first one ending the walk. The fixture uses two non-payload,
+// non-canonical projections in a row and an Aggregate input that already
+// names the timestamp column, so `keyOnStep` is true and both take the
+// duplicate_labelset_guard.go:`if keyOnStep` branch.
 //
-//	if keyOnStep {
-//		groupBy = append(groupBy, &chplan.ColumnRef{Name: name})
-//		aliases = append(aliases, name)
-//		continue
-//	}
-//
-// flips to `break`. Two non-payload, non-canonical projections in a
-// row.Input needs `keyOnStep = true` (this test's Aggregate input
-// already names the timestamp column) so BOTH hit this branch; the
-// second is reachable only if the first's `continue` doesn't end the
-// loop.
+// Like its mixed-payload sibling above, it does NOT kill the
+// INVERT_LOOPCTRL mutant on that branch's `continue` — the rewrite is
+// equivalent for the same reason, and is adjudicated in this package's
+// NOT KILLABLE footer (gremlins_kill_window_bounds_test.go, class 7).
 func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	t.Parallel()
 
@@ -1048,9 +1043,9 @@ func TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop(t *testing.T) {
 	}
 	for name := range wantAliases {
 		if !gotAliases[name] {
-			t.Fatalf("GroupByAliases = %#v; want both %q and %q present (mutant `continue` "+
-				"-> `break` at duplicate_labelset_guard.go:`if keyOnStep` would abandon the loop after "+
-				"the first key-on-step projection and never reach the second)",
+			t.Fatalf("GroupByAliases = %#v; want both %q and %q present (the branch under "+
+				"duplicate_labelset_guard.go:`if keyOnStep` must key the first key-on-step "+
+				"projection and still reach the second)",
 				agg.GroupByAliases, colA, colB)
 		}
 	}

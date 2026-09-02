@@ -1163,10 +1163,15 @@ func TestEmitMetricsHistogramOverTime_BadStartEndErrors(t *testing.T) {
 	}
 }
 
-// TestEmitMetricsSecondStage_PartitionByBoundary kills the boundary
-// on metrics_second_stage.go:`sb.LimitBy(parts...)`. An empty
-// PartitionBy must render no `LIMIT … BY` keys at all; emitting one
-// would break the global top-K shape.
+// TestEmitMetricsSecondStage_PartitionByBoundary kills the
+// CONDITIONALS_BOUNDARY mutant on builder.go:`len(s.limitBy) > 0`. An
+// empty PartitionBy must render no `LIMIT … BY` keys at all; the `>=`
+// mutant opens the clause over an empty key list and emits a trailing
+// `LIMIT 5 BY `, breaking the global top-K shape.
+//
+// metrics_second_stage.go:`sb.LimitBy(parts...)` is the call site that
+// reaches the guard, not a mutant: a bare call expression has no operator
+// to rewrite.
 func TestEmitMetricsSecondStage_PartitionByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1252,11 +1257,19 @@ func TestEmitVectorJoin_LogicalOr(t *testing.T) {
 	}
 }
 
-// TestEmitScan_NoColumnsBoundary kills the boundary mutants on
-// emit_node.go:`make([]Frag, 0, len(s.Columns))`. Without explicit
-// Columns, the SELECT must be the bare `SELECT *`; a mutated column
-// list would emit an empty SELECT list (invalid SQL).
-func TestEmitScan_NoColumnsBoundary(t *testing.T) {
+// TestEmitScan_EmptySelectList kills the CONDITIONALS_NEGATION mutant on
+// builder.go:`len(s.selectList) == 0`, the guard that renders the bare
+// `SELECT *` when a Scan carries no explicit Columns.
+//
+// The behaviour is decided one call deeper than it is written:
+// emit_node.go:`make([]Frag, 0, len(s.Columns))` is a capacity hint, and a
+// capacity hint carries no comparison, no arithmetic on a variable and no
+// loop-control token, so no gremlins mutator has a surface there. What can
+// be rewritten is the builder guard the empty slice reaches. The `!=`
+// mutant renders the empty list in place of the star and emits
+// `SELECT  FROM ...` — invalid SQL — which the `SELECT *` assertion below
+// catches.
+func TestEmitScan_EmptySelectList(t *testing.T) {
 	t.Parallel()
 	t.Run("no columns → SELECT *", func(t *testing.T) {
 		t.Parallel()
@@ -1282,10 +1295,13 @@ func TestEmitScan_NoColumnsBoundary(t *testing.T) {
 	})
 }
 
-// TestEmitProject_NoProjectionsBoundary kills the mutants of
-// emit_node.go:`for _, pr := range p.Projections`. With no projections
-// the SELECT degenerates to bare `SELECT *`.
-func TestEmitProject_NoProjectionsBoundary(t *testing.T) {
+// TestEmitProject_EmptySelectList kills the same CONDITIONALS_NEGATION on
+// builder.go:`len(s.selectList) == 0` reached through emitProject: with no
+// projections the SELECT degenerates to the bare `SELECT *`. The range
+// statement emit_node.go:`for _, pr := range p.Projections` hosts no
+// mutant of its own — INVERT_LOOPCTRL rewrites a `break` or a `continue`,
+// and this loop body has neither.
+func TestEmitProject_EmptySelectList(t *testing.T) {
 	t.Parallel()
 	plan := &chplan.Project{
 		Projections: nil,
@@ -1300,9 +1316,13 @@ func TestEmitProject_NoProjectionsBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitLimit_NonPositiveBoundary kills the boundary mutants reaching
-// emit_node.go:`sb.Limit(l.Count)`. Count==0 must skip the LIMIT clause;
-// a `>=`-style flip would emit `LIMIT 0`.
+// TestEmitLimit_NonPositiveBoundary kills the CONDITIONALS_BOUNDARY mutant
+// on builder.go:`s.hasLimit = n > 0`. Count==0 must skip the LIMIT clause;
+// the `>=` mutant emits `LIMIT 0`, which truncates every result to nothing.
+//
+// emit_node.go:`sb.Limit(l.Count)` is the call site, not the mutant: it is
+// a bare call expression with no operator to rewrite. The comparison that
+// decides the clause lives in the builder method it calls.
 func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1340,11 +1360,14 @@ func TestEmitLimit_NonPositiveBoundary(t *testing.T) {
 	}
 }
 
-// TestEmitAggregateNoGroup_BoundaryAt245 kills the boundary at
-// emit_node.go:`make([]Frag, 0, len(scan.Columns))` (inside emitFilter). A
-// Filter on a Scan with no explicit Columns must omit the SELECT list;
-// with explicit Columns those names appear.
-func TestEmitAggregateNoGroup_BoundaryAt245(t *testing.T) {
+// TestEmitFilter_EmptySelectList kills the same CONDITIONALS_NEGATION on
+// builder.go:`len(s.selectList) == 0` reached through emitFilter, which
+// assembles its own SELECT list rather than delegating to scanQuery. A
+// Filter over a Scan with no explicit Columns must render `SELECT *`; with
+// explicit Columns those names must appear.
+// emit_node.go:`make([]Frag, 0, len(scan.Columns))` is again a capacity
+// hint and hosts no mutant.
+func TestEmitFilter_EmptySelectList(t *testing.T) {
 	t.Parallel()
 	t.Run("no columns → SELECT *", func(t *testing.T) {
 		t.Parallel()
@@ -1486,9 +1509,13 @@ func TestEmitWindowedArray_StepBoundary(t *testing.T) {
 }
 
 // TestEmitWindowedExtrapolated_GroupByBoundary kills the
-// mutants of the innermost GROUP BY
-// range_window.go:emitWindowedArrayExtrapolated:`innermost.GroupBy(groupFrags...)`.
-// Two cases: with and without GroupBy.
+// CONDITIONALS_BOUNDARY mutant on builder.go:`len(s.groupBy) > 0`, the
+// guard that decides whether a GROUP BY clause is opened at all, reached
+// here through the innermost GROUP BY of
+// range_window.go:emitWindowedArrayExtrapolated:`innermost.GroupBy(groupFrags...)`
+// — a call site, not a mutant. Two cases: with and without GroupBy. The
+// `>=` mutant opens the clause for an empty key list and emits a dangling
+// `GROUP BY `, which the no-GroupBy case rejects.
 func TestEmitWindowedExtrapolated_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1613,10 +1640,12 @@ func TestEmitWindowedArrayMatrix_MinWindowBoundary(t *testing.T) {
 	})
 }
 
-// TestEmitWindowedArrayPairsMatrix_GroupByBoundary kills the
-// boundary on the pairs-path matrix regroup
-// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`.
-// The condition mirrors the values-only emission.
+// TestEmitWindowedArrayPairsMatrix_GroupByBoundary kills the same
+// CONDITIONALS_BOUNDARY mutant on builder.go:`len(s.groupBy) > 0` reached
+// through the pairs-path matrix regroup,
+// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`
+// — again the call site rather than the mutant. The condition mirrors the
+// values-only emission.
 func TestEmitWindowedArrayPairsMatrix_GroupByBoundary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -2241,13 +2270,20 @@ func TestEmitWindowedArrayPairsMatrix_AnchorArithmetic(t *testing.T) {
 }
 
 // TestEmitWindowedArrayPairsMatrix_GroupByNegation kills the
-// CONDITIONALS_NEGATION reaching
-// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`.
-// With a non-empty GroupBy the original emits `GROUP BY`
-// in the innermost SELECT so the per-series groupArray collapses each
-// series into one array; the mutant `<= 0` skips the GROUP BY and
-// rolls every input row into a single super-series — wrong shape, no
-// per-series fanout.
+// CONDITIONALS_NEGATION mutant on builder.go:`len(s.groupBy) > 0`, reached
+// through the pairs-path matrix regroup,
+// range_window.go:emitWindowedArrayPairsMatrix:`regroup.GroupBy(regroupKeys...)`
+// — the call site, not the mutant. With a non-empty GroupBy the original
+// emits a KEYED `GROUP BY` so the per-series groupArray collapses each
+// series into one array; the `<= 0` mutant skips it and rolls every input
+// row into a single super-series — wrong shape, no per-series fanout.
+//
+// The assertion has to name the KEY, not the keyword. Under the mutant the
+// polarity inverts rather than disappearing: every builder holding keys
+// skips its clause and every builder holding none opens one, so the string
+// `GROUP BY` survives — the emitted SQL goes from one keyed clause to
+// three empty ones. A `strings.Contains(sql, "GROUP BY")` assertion is
+// satisfied by those empty clauses and adjudicates nothing.
 func TestEmitWindowedArrayPairsMatrix_GroupByNegation(t *testing.T) {
 	t.Parallel()
 	e := &emitter{}
@@ -2267,11 +2303,14 @@ func TestEmitWindowedArrayPairsMatrix_GroupByNegation(t *testing.T) {
 		t.Fatalf("emitWindowedArrayPairsMatrix: %v", err)
 	}
 	sql := e.b.String()
-	if !strings.Contains(sql, "GROUP BY") {
-		t.Errorf("expected GROUP BY clause for non-empty GroupBy (negation mutant dropped it).\nSQL=%s", sql)
+	if !strings.Contains(sql, "GROUP BY `Attributes`") {
+		t.Errorf("expected a GROUP BY keyed on `Attributes` for non-empty GroupBy "+
+			"(mutant `<= 0` at builder.go:`len(s.groupBy) > 0` drops the key and "+
+			"leaves only empty GROUP BY clauses).\nSQL=%s", sql)
 	}
-	if !strings.Contains(sql, "Attributes") {
-		t.Errorf("expected `Attributes` group key surfaced in the SQL.\nSQL=%s", sql)
+	if strings.Contains(sql, "GROUP BY )") {
+		t.Errorf("emitted an empty GROUP BY clause; the guard must open the clause "+
+			"only for a non-empty key list.\nSQL=%s", sql)
 	}
 }
 
@@ -3217,11 +3256,13 @@ func TestWriteOptQualCol_QualifierBranch(t *testing.T) {
 // --- prewhere.go survivors ------------------------------------------------
 
 // TestOrderedConjuncts_SkipBucketContinue kills the INVERT_LOOPCTRL
-// mutant (`continue` → `break`) after
-// prewhere.go:`skip = append(skip, c)` appends a skip-index conjunct. A
-// skip-bucket conjunct ahead of a plain "rest" conjunct must NOT abort the
-// loop — the `break` mutant would drop every
-// conjunct after the first skip hit, losing them from the output.
+// mutant (`continue` → `break`) on the statement immediately after
+// prewhere.go:`skip = append(skip, c)` appends a skip-index conjunct. The
+// citation names that append rather than the mutated statement, which is a
+// bare `continue` no substring singles out. A skip-bucket conjunct ahead
+// of a plain "rest" conjunct must NOT abort the loop — the `break` mutant
+// would drop every conjunct after the first skip hit, losing them from the
+// output.
 //
 // The shape registers a SkipIndexColumn but no SortColumns, so the first
 // conjunct lands in the skip bucket and the second in the rest bucket.
