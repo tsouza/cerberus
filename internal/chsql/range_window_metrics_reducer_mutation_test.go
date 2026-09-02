@@ -2,6 +2,7 @@ package chsql
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -73,9 +74,9 @@ func metricsReducerRoutePlan(op chplan.MetricsOp) *chplan.RangeWindow {
 	}
 }
 
-// TestMetricsMatrixCountingOpsTakeTheZeroFillReducer pins the routing fact the
-// NOT KILLABLE note at the foot of this file depends on: in the matrix path,
-// rate and count_over_time are answered by the zero-fill reducer
+// TestMetricsMatrixCountingOpsTakeTheZeroFillReducer pins the routing fact
+// metricsReducerFrag's guard depends on: in the matrix path, rate and
+// count_over_time are answered by the zero-fill reducer
 // (metricsSumWeightReducerFrag) and never reach metricsReducerFrag at all.
 //
 // The two are not interchangeable. metricsSumWeightReducerFrag sums the
@@ -139,8 +140,8 @@ func TestMetricsMatrixCountingOpsTakeTheZeroFillReducer(t *testing.T) {
 	// metricsReducerFrag, asserted directly and over the WHOLE enum rather
 	// than a hand-picked sample: an op added to chplan.MetricsOp later must
 	// have its zero-fill answer recorded here, or this fails. That is what
-	// keeps the equivalence note at the foot of this file from quietly going
-	// stale behind a new op.
+	// keeps a new op from quietly joining the observed-only branch without
+	// anyone deciding whether its empty buckets need filling.
 	t.Run("zero-fill op set", func(t *testing.T) {
 		t.Parallel()
 		for op := chplan.MetricsOpInvalid; op <= chplan.MetricsOpHistogramOverTime; op++ {
@@ -157,35 +158,102 @@ func TestMetricsMatrixCountingOpsTakeTheZeroFillReducer(t *testing.T) {
 	})
 }
 
-// NOT KILLABLE — documented, not defended by a test.
+// metricsReducerRowCountingOps are the MetricsAggregate ops whose value is the
+// NUMBER of matching rows rather than a reduction over an operand column.
+// metricsReducerFrag refuses them; emitRangeWindowMetrics never offers them.
+var metricsReducerRowCountingOps = []chplan.MetricsOp{
+	chplan.MetricsOpRate,
+	chplan.MetricsOpCountOverTime,
+}
+
+// metricsReducerOperandOps are the ops that DO reach metricsReducerFrag from
+// emitRangeWindowMetrics: the observed-only ops, which reduce over the operand
+// the sample SELECT projects as `metric_arg`. quantile_over_time is absent
+// because it leaves emitRangeWindowMetrics for the bucket-shape emitter before
+// any reducer is chosen; MetricsOpInvalid and histogram_over_time are absent
+// because metricsAggregateCH refuses them first.
+var metricsReducerOperandOps = []chplan.MetricsOp{
+	chplan.MetricsOpSumOverTime,
+	chplan.MetricsOpAvgOverTime,
+	chplan.MetricsOpMinOverTime,
+	chplan.MetricsOpMaxOverTime,
+}
+
+// TestMetricsReducerFragRefusesRowCountingOps reaches metricsReducerFrag's
+// guard by calling it directly with each row-counting op — the call
+// emitRangeWindowMetrics cannot make, since its `if zeroFill` branch sends both
+// ops to metricsSumWeightReducerFrag instead.
 //
-// range_window.go:2646:32 (INVERT_LOGICAL, `if op == chplan.MetricsOpRate ||
-// op == chplan.MetricsOpCountOverTime` -> `&&`, inside metricsReducerFrag).
-// The mutated conjunction is unsatisfiable, so the block never runs — but
-// neither does the original disjunction, because metricsReducerFrag is never
-// called with either of those two ops.
+// The guard replaced two arms that handled exactly these ops and that no input
+// could reach (cerberus issue #2945). It exists so the impossibility is
+// ENFORCED rather than merely commented: a later edit that widened the
+// observed-only branch to a row-counting op would otherwise emit
+// `count(metric_arg)` over a sample arm that projects `in_window` and no
+// `metric_arg` at all — SQL naming a column its own FROM does not expose.
 //
-// metricsReducerFrag has exactly ONE caller in the tree
-// (emitRangeWindowMetrics, range_window.go:1280), and that call sits in the
-// `else` of `if zeroFill`, where `zeroFill :=
-// metricsOpZeroFillsEmptyBuckets(m.Op)` was computed from the SAME m.Op a few
-// lines above. metricsOpZeroFillsEmptyBuckets returns true for exactly
-// count_over_time, rate and quantile_over_time, so the reachable op set at
-// line 1280 excludes rate and count_over_time outright. (quantile_over_time is
-// excluded twice over: emitRangeWindowMetrics routes it to
-// emitRangeWindowMetricsQuantileBuckets before the reducer choice is made.)
-// TestMetricsMatrixCountingOpsTakeTheZeroFillReducer above pins both halves of
-// that routing, so this equivalence claim fails loudly if it ever stops
-// holding — and the mutant becomes killable again at the same moment.
+// Calling the unexported function directly is the only way to reach that
+// guard, and reaching it is the point: an error branch nothing ever executes
+// would be the same unkillable dead code this change removed.
 //
-// Verified empirically as well as by construction: emitting every one of the
-// nine chplan.MetricsOp values through the matrix path, crossed with
-// Attr-set/Attr-nil and grouped/ungrouped (36 statements), produces
-// byte-identical SQL and identical argument slices with the mutation applied
-// and reverted.
-//
-// The same reachability makes the `case chplan.MetricsOpRate` arm of
-// metricsReducerFrag's own switch, and the rate half of its doc comment,
-// stale — tracked as a separate cleanup in cerberus issue #2945, because
-// deleting reachable-looking production code belongs in a change that is about
-// that code rather than in a mutation-coverage one.
+// The operand-op half keeps the assertion discriminating — a guard widened to
+// refuse everything fails there rather than passing vacuously.
+func TestMetricsReducerFragRefusesRowCountingOps(t *testing.T) {
+	t.Parallel()
+
+	// The aggregate call metricsAggregateCH hands the reducer, per op — so
+	// the guard is exercised against the real (fn, params, args) triple
+	// rather than a hand-made one that might not be what the emitter passes.
+	chFor := func(t *testing.T, op chplan.MetricsOp) (chplan.Fn, []chplan.Expr, []chplan.Expr) {
+		t.Helper()
+		fn, params, args, err := metricsAggregateCH(&chplan.MetricsAggregate{
+			Op:   op,
+			Attr: &chplan.ColumnRef{Name: "Duration"},
+		})
+		if err != nil {
+			t.Fatalf("metricsAggregateCH(%v): %v", op, err)
+		}
+		return fn, params, args
+	}
+
+	for _, op := range metricsReducerRowCountingOps {
+		t.Run("refuses "+op.String(), func(t *testing.T) {
+			t.Parallel()
+			fn, params, args := chFor(t, op)
+			frag, err := metricsReducerFrag(op, fn, params, args)
+			if err == nil {
+				t.Fatalf("metricsReducerFrag(%v) returned a reducer; %v counts rows and must be "+
+					"refused so it can never reduce over the unprojected metric_arg column", op, op)
+			}
+			if !errors.Is(err, ErrUnsupported) {
+				t.Errorf("metricsReducerFrag(%v) error = %v, want it to wrap ErrUnsupported", op, err)
+			}
+			if frag != nil {
+				t.Errorf("metricsReducerFrag(%v) returned a non-nil Frag alongside its refusal", op)
+			}
+		})
+	}
+
+	for _, op := range metricsReducerOperandOps {
+		t.Run("renders "+op.String(), func(t *testing.T) {
+			t.Parallel()
+			fn, params, args := chFor(t, op)
+			frag, err := metricsReducerFrag(op, fn, params, args)
+			if err != nil {
+				t.Fatalf("metricsReducerFrag(%v): %v — this op reaches the reducer from "+
+					"emitRangeWindowMetrics and must render", op, err)
+			}
+			if frag == nil {
+				t.Fatalf("metricsReducerFrag(%v) returned a nil Frag and no error", op)
+			}
+			b := NewBuilder()
+			frag(b)
+			sql, _, err := b.Build()
+			if err != nil {
+				t.Fatalf("Build(%v): %v", op, err)
+			}
+			if !strings.Contains(sql, "metric_arg") {
+				t.Errorf("metricsReducerFrag(%v) = %s, want it to reduce over the projected metric_arg", op, sql)
+			}
+		})
+	}
+}

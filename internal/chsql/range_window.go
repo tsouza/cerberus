@@ -1277,7 +1277,11 @@ func (e *emitter) emitRangeWindowMetrics(r *chplan.RangeWindow, m *chplan.Metric
 	if zeroFill {
 		outerSb.Select(As(metricsSumWeightReducerFrag(m.Op, rangeSeconds), m.ValueAlias))
 	} else {
-		outerSb.Select(As(metricsReducerFrag(m.Op, fn, params, args, rangeSeconds), m.ValueAlias))
+		reducer, err := metricsReducerFrag(m.Op, fn, params, args)
+		if err != nil {
+			return err
+		}
+		outerSb.Select(As(reducer, m.ValueAlias))
 	}
 
 	// GROUP BY group aliases + anchor_ts.
@@ -1419,6 +1423,31 @@ func metricsOpZeroFillsEmptyBuckets(op chplan.MetricsOp) bool {
 	case chplan.MetricsOpCountOverTime,
 		chplan.MetricsOpRate,
 		chplan.MetricsOpQuantileOverTime:
+		return true
+	}
+	return false
+}
+
+// metricsOpCountsRowsRatherThanOperand reports whether the given
+// MetricsAggregate.Op derives its value from the NUMBER of matching rows
+// rather than from a per-row operand column. rate and count_over_time do
+// (metricsAggregateCH maps both to `count(1)`); every other op reduces
+// over MetricsAggregate.Attr and therefore needs that operand projected
+// under the `metric_arg` alias first.
+//
+// This is deliberately NOT metricsOpZeroFillsEmptyBuckets: that predicate
+// also carries quantile_over_time, which reads an operand and merely
+// shares the zero-filling wire contract. The two sets answer different
+// questions and only overlap.
+//
+// The exemplars emitter branches on this twice — once to decide whether
+// to PROJECT `metric_arg` and once to decide whether to READ it — and
+// those two decisions must agree or the emitted SQL references an
+// unprojected column (see TestExemplarsRateAndCountIgnoreAttr). Naming
+// the predicate once is what makes the agreement structural.
+func metricsOpCountsRowsRatherThanOperand(op chplan.MetricsOp) bool {
+	switch op {
+	case chplan.MetricsOpRate, chplan.MetricsOpCountOverTime:
 		return true
 	}
 	return false
@@ -2621,39 +2650,43 @@ func windowValsFrag() Frag {
 	)
 }
 
-// metricsReducerFrag returns the per-bucket reducer Frag for the matrix
-// emission path. rate normalises `count(1)` by dividing through the
-// range duration in seconds (rendered as a literal — duration constants
-// are query-shape, not user-data).
+// metricsReducerFrag returns the per-bucket reducer Frag for the
+// OBSERVED-ONLY branch of the matrix emission path: the CH aggregate
+// metricsAggregateCH selected, applied to the operand column the sample
+// SELECT projects under the `metric_arg` alias.
 //
-// The reducer is always wrapped in `toFloat64(...)` so the projected
-// `Value` column has a uniform Float64 wire type — `chclient.Sample.Value`
-// is `float64`, and the CH Go driver refuses to coerce UInt64 (the
-// natural type of `count()`) or Int64 (the natural type of
-// `sum/min/max(Duration)`) into `*float64` at Scan time. Without the
-// cast, `| count_over_time() by (...)` against a real ClickHouse
-// surfaces as `engine: execute: chclient: scan: (Value) converting
-// UInt64 to *float64 is unsupported`. The rate case keeps the cast as
-// well even though `count() / N` already promotes to Float64 in CH —
-// the uniform wrap is cheaper to reason about than a per-op exception.
-func metricsReducerFrag(op chplan.MetricsOp, fn chplan.Fn, params, args []chplan.Expr, rangeSeconds float64) Frag {
+// Only the operand-reading ops reach here — sum / avg / min /
+// max_over_time. The row-counting ops (rate, count_over_time) and
+// quantile_over_time zero-fill their empty buckets, so
+// emitRangeWindowMetrics answers them with metricsSumWeightReducerFrag
+// or with the bucket-shape emitter before the reducer choice reaches
+// this function (see metricsOpZeroFillsEmptyBuckets). Their sample arm
+// projects no `metric_arg` at all — it projects the `in_window` weight
+// instead — so reducing over `metric_arg` here would emit SQL naming a
+// column the FROM does not expose. The guard below refuses rather than
+// renders that.
+//
+// The reducer is wrapped in `toFloat64(...)` so the projected `Value`
+// column has a uniform Float64 wire type — `chclient.Sample.Value` is
+// `float64`, and the CH Go driver refuses to coerce Int64 (the natural
+// type of `sum/min/max(Duration)`) into `*float64` at Scan time.
+// TestRangeWindowMetricsReducerIsFloat64 pins the wrap across the whole
+// op matrix.
+func metricsReducerFrag(op chplan.MetricsOp, fn chplan.Fn, params, args []chplan.Expr) (Frag, error) {
+	if metricsOpCountsRowsRatherThanOperand(op) {
+		return nil, fmt.Errorf(
+			"%w: MetricsAggregate op %s counts rows rather than reading an operand, so it is "+
+				"answered by the zero-fill reducer and never by the observed-only operand reducer",
+			ErrUnsupported, op,
+		)
+	}
 	// Translate Attr operand to a metric_arg reference (the alias the
 	// inner SELECT projects under) for *_over_time cases.
 	aggArgs := make([]chplan.Expr, len(args))
 	for i := range args {
 		aggArgs[i] = &chplan.ColumnRef{Name: "metric_arg"}
 	}
-	if op == chplan.MetricsOpRate || op == chplan.MetricsOpCountOverTime {
-		// args is [LitInt{1}] — pass through verbatim so we emit count(?).
-		aggArgs = args
-	}
-
-	agg := Call("toFloat64", aggFuncFrag(chplan.AggFunc{Fn: fn, Params: params, Args: aggArgs}))
-	switch op {
-	case chplan.MetricsOpRate:
-		return Div(agg, InlineLit(rangeSeconds))
-	}
-	return agg
+	return Call("toFloat64", aggFuncFrag(chplan.AggFunc{Fn: fn, Params: params, Args: aggArgs})), nil
 }
 
 // outerGroupAliases returns the SELECT-list aliases used to refer to

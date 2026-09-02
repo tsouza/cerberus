@@ -177,7 +177,14 @@ func (e *emitter) emitMetricsExemplars(
 	}
 	tsCol := rw.TimestampColumn
 	innerSb.SelectAs(func(b *Builder) { b.Ident(tsCol) }, "ts")
-	if m.Op != chplan.MetricsOpRate && m.Op != chplan.MetricsOpCountOverTime && m.Attr != nil {
+	// One decision, read twice: whether this exemplar stream reduces over
+	// the operand column or over a constant 1. The inner SELECT projects
+	// `metric_arg` iff readsOperand, and the outer SELECT reads
+	// `metric_arg` iff readsOperand — so the projection and the read
+	// cannot disagree and emit SQL naming an unprojected column (the
+	// failure TestExemplarsRateAndCountIgnoreAttr guards).
+	readsOperand := !metricsOpCountsRowsRatherThanOperand(m.Op) && m.Attr != nil
+	if readsOperand {
 		attr := m.Attr
 		innerSb.SelectAs(func(b *Builder) { _ = b.Expr(attr) }, "metric_arg")
 	}
@@ -271,13 +278,12 @@ func (e *emitter) emitMetricsExemplars(
 	))
 	outerSb.SelectAs(Col("anchor_ts"), "TimeUnix")
 
-	var valueFrag Frag
-	if m.Op == chplan.MetricsOpRate || m.Op == chplan.MetricsOpCountOverTime {
-		valueFrag = Call("toFloat64", Call("argMax", InlineLit(int64(1)), Col("ts")))
-	} else if m.Attr != nil {
+	// The row-counting ops carry no operand, and an operand-reading op
+	// whose Attr the lowering left unset has nothing to read — both fall
+	// back to a constant 1, which is the exemplar's own presence.
+	valueFrag := Call("toFloat64", Call("argMax", InlineLit(int64(1)), Col("ts")))
+	if readsOperand {
 		valueFrag = Call("toFloat64", Call("argMax", Col("metric_arg"), Col("ts")))
-	} else {
-		valueFrag = Call("toFloat64", Call("argMax", InlineLit(int64(1)), Col("ts")))
 	}
 	outerSb.Select(As(valueFrag, "Value"))
 
