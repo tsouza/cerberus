@@ -2376,12 +2376,62 @@ func matrixWindowPairsAlreadyDeduped(r *chplan.RangeWindow) bool {
 
 // dedupWindowPairsByTsFrag collapses a `arraySort`-ordered
 // `Array(Tuple(ts, value))` down to one tuple per distinct timestamp,
-// keeping the LAST tuple of each equal-ts run. Because the input is
-// sorted ascending by (ts, value), that last-of-run tuple is the
-// max-valued sample at the timestamp — byte-for-byte the choice the
-// ClickHouse-native `timeSeries*ToGrid` aggregates make (verified
-// insertion-order-independent against `timeSeriesRateToGrid`), and the
-// single-sample-per-timestamp invariant Prometheus assumes.
+// keeping the LAST tuple of each equal-ts run. It implements cerberus's
+// single duplicate-timestamp rule, and this comment is where that rule is
+// stated in full.
+//
+// # The rule
+//
+// One sample per distinct (series, timestamp), tie-broken to the max value.
+// That is the rule PR #1092 gave the rate family, and the rule cerberus
+// issue #2914 / PR #2920 pinned for the *_over_time family's identical-value
+// duplicate (see internal/promql's duplicate_timestamp_seed_chdb_test.go,
+// which is the authority on which shapes each family's lowerings collapse —
+// this comment states the rule, not its reach).
+//
+// "Max" is ClickHouse's TOTAL order over Float64 — the one arraySort imposes,
+// in which NaN ranks GREATEST. That clause is load-bearing rather than
+// pedantic: IEEE754 leaves `max` undefined the moment a NaN is involved
+// (every comparison against a NaN is false in both directions), so a rule
+// naming only "the max value" would say nothing about the one case where the
+// answer is actually in doubt — which is exactly the case this Frag and the
+// native family answer differently.
+//
+// The rule has two halves, and separating them is what makes it checkable:
+//
+//   - CARDINALITY — exactly one sample survives each distinct timestamp.
+//   - REPRESENTATIVE — the survivor is the greatest-ranked sample under that
+//     total order, and is therefore a function of the sample multiset alone,
+//     never of the order the rows arrived in.
+//
+// This Frag delivers both, measured rather than assumed: the input is sorted
+// ascending by (ts, value), so the last-of-run tuple is the greatest-ranked
+// sample at the timestamp, and arraySort's ordering does not depend on
+// insertion order. This is executed against a real ClickHouse over both
+// encounter orders of a NaN-bearing duplicate, asserting an identical
+// survivor, by
+// TestFanoutDedup_NaNDuplicateSurvivorIsOrderIndependent_RealCH.
+//
+// # Where the rule cannot be kept
+//
+// The ClickHouse-native `timeSeries*ToGrid` family keeps the cardinality half
+// and cannot keep the representative half. Its own documented rule is the
+// opposite one ("a NaN value loses to any other value"), and it delivers
+// NEITHER rule deterministically: the collapse is a running "replace the
+// current best only when the candidate compares greater" fold, so on a
+// NaN-bearing duplicate the survivor is whichever row the (multi-threaded,
+// multi-part) scan visits first. Measured family-wide against a real server
+// at the family's own 25.9 floor — including the split where the whole-window
+// members keep a FIRST-visited NaN while the instant members (irate / idelta)
+// keep a LAST-visited one — by
+// TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH, and end to
+// end through cerberus's own lowering by
+// TestRate_NativeGrid_NaNDuplicate_DivergesFromFanout_RealCH.
+//
+// The fold lives inside a ClickHouse builtin, so no emitted SQL can reorder
+// it; nativeTSGridFn's own doc records the emitter-side gate that was
+// measured and ruled out, and cerberus tracks the gap at
+// https://github.com/tsouza/cerberus/issues/2798.
 //
 // OTel/ClickHouse ingestion can write two rows with the same
 // (Attributes, TimeUnix); without this collapse `length(window_vals)`

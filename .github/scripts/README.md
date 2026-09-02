@@ -1013,7 +1013,11 @@ what actually runs.
   scales the result by the concurrent-mutant count and a named headroom. The
   flat budget it replaced bounded a `go test` child that is 80-98%
   COMPILATION, so a contended runner starved ordinary mutants into `TIMED OUT`
-  (#2903).
+  (#2903). The measured cycle is passed as BOTH of the fork's bounds — the
+  `--timeout-max` run leash and the `--compile-allowance` the compile is charged
+  to — because the probe cannot separate the run from the compile inside it and
+  the cycle is an upper bound on each (#2910). Their sum is the deadline
+  gremlins gives up at, which is what the memory guard's hold is sized from.
   - Env: `SCOPE`, `REPORT`, `MUTANT_TIMEOUT_MIN`, `MUTANT_TIMEOUT_MAX`
     (required); `WORKERS`, `EXCLUDE_FILES`, `DIFF_REF` (optional).
     `MUTANT_TIMEOUT_MIN` is the floor the measurement may raise but never

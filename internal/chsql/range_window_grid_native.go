@@ -101,6 +101,36 @@ type nativeTSGridAgg struct {
 // one uniform capability verdict. The emitter is version-agnostic and only
 // needs the name (plus predict_linear's offset scalar).
 //
+// # The duplicate-timestamp survivor, and why the emitter does not repair it
+//
+// Every member collapses a duplicate (series, timestamp) inside the ClickHouse
+// builtin, with a fold whose survivor follows scan order once a NaN is
+// involved. dedupWindowPairsByTsFrag's doc states cerberus's rule and where
+// this family departs from it; the gap is tracked at
+// https://github.com/tsouza/cerberus/issues/2798.
+//
+// The obvious emitter-side repair is available mechanically and unsound
+// numerically, and it is recorded here so it is not re-proposed as new. Its
+// shape: compute the grid over NaN-free rows with the `-If` combinator and
+// substitute NaN wherever a companion per-grid-point detector says the window
+// held a NaN sample. All three moving parts exist on a real 25.9 server —
+// `-If` applies to the parametric family (timeSeriesResetsToGridIf answers
+// over a predicate), a `-StateIf` form exists for the Recollapse tower, and
+// timeSeriesResetsToGrid's NULL-on-empty-window behaviour already serves as a
+// per-grid-point presence detector elsewhere (see range_bucket_grid_native.go's
+// bucketGridSeenFn).
+//
+// It is ruled out because its premise is false, measured rather than argued:
+// "a window holding a NaN sample answers NaN" does not hold. rate() over a
+// window whose NaN sits strictly between the first and last sample returns an
+// ordinary finite rate (0.829… for the probe seed), because the extrapolation
+// reads the window's endpoints and its sample count, and a NaN interior to
+// that never enters the arithmetic. The substitution would therefore NaN out
+// windows that today answer correctly on both paths — trading a rare
+// nondeterminism for a common wrong answer. changes/resets (integer counts,
+// which no NaN propagates into) and irate/idelta (trailing-pair folds, blind
+// to an interior NaN) break the premise a second and third way.
+//
 // StateFn / MergeFn name the aggregate's partial-state combinator pair, which
 // the deferred label-shaping shape (chplan.RangeWindowGridNative.Recollapse)
 // needs: the inner level emits <fn>ToGridState per RAW series and the middle
@@ -177,18 +207,32 @@ var nativeTSGridFn = map[string]nativeTSGridAgg{
 	// window-membership fix (the shared 25.9 floor) applies identically — a
 	// sample sitting exactly on the window's trailing edge is excluded.
 	//
-	// Both carry the SAME duplicate-timestamp "greatest value wins, NaN
-	// loses" dedup layer as the rest of the family, including the same
-	// order-dependent violation of that contract for a real-vs-NaN
-	// duplicate pair that cerberus issue #2798 already tracks as
-	// family-wide (confirmed to reproduce identically for irate/idelta).
-	// The fan-out has no dedup layer of its own for a duplicate-timestamp
-	// trailing pair either — it resolves by whatever order arraySort's
-	// stable tie-break happens to produce, itself unspecified — so the
-	// native path's deterministic-but-order-dependent dedup is not a
-	// regression against a well-defined fan-out contract, just the same
-	// #2798 gap surfacing through a different function. StateFn/MergeFn are
-	// deliberately left empty for the same reason delta's are: neither
+	// Both carry the family's duplicate-timestamp dedup layer, and both
+	// INVERT it relative to the whole-window members. Measured against a
+	// real ClickHouse at the family's own 25.9 floor
+	// (TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH): on a
+	// NaN-bearing duplicate timestamp, irate/idelta leave the FINITE sample
+	// standing when the NaN reaches the fold first and the NaN standing when
+	// it reaches the fold second — the exact opposite of
+	// rate/increase/delta/deriv/predict_linear/changes, because a
+	// trailing-pair fold lands the same always-false IEEE754 comparison on
+	// the other side. Either way the survivor follows scan order rather than
+	// the sample multiset: the family-wide gap cerberus tracks at
+	// https://github.com/tsouza/cerberus/issues/2798.
+	//
+	// The fan-out is NOT equally unspecified on this shape, and that
+	// asymmetry is why the gap is a real divergence rather than a wash. The
+	// pairs-shaped fan-out has no dedup layer of its own for a
+	// duplicate-timestamp trailing pair, but arraySort still imposes a total
+	// order in which NaN ranks greatest, and that order is a function of the
+	// sample multiset alone — so the trailing pair it selects is the same
+	// one whatever order the rows arrived in. dedupWindowPairsByTsFrag's doc
+	// states the rule in full and names the tests that execute it. What
+	// keeps irate/idelta on the same AutoSelect posture as their siblings is
+	// that the exposure is the family's rather than theirs — see
+	// chopt.FeatureTSGridIrate.
+	//
+	// StateFn/MergeFn are empty for the same reason delta's are: neither
 	// Native*Lowerer sets Recollapse for irate/idelta.
 	"irate":  {Fn: "timeSeriesInstantRateToGrid"},
 	"idelta": {Fn: "timeSeriesInstantDeltaToGrid"},

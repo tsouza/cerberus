@@ -535,24 +535,41 @@ const (
 	//     trailing edge (anchor - staleness) is excluded, matching
 	//     FeatureTSGridRange's own left-open fix.
 	//   - The doc's duplicate-timestamp "highest value wins, NaN loses"
-	//     rule reproduces the SAME order-dependence for a real-vs-NaN
-	//     duplicate pair that cerberus issue #2798 already tracks as
-	//     family-wide (NaN loses when inserted before the real sample, wins
-	//     when inserted after). Unlike rate/delta, irate reduces every
-	//     window to its trailing pair, so a duplicate-timestamp trailing
-	//     pair is not a rare edge of a summed window but the whole answer —
-	//     but the fan-out has no dedup layer of its own for this shape
-	//     either (a duplicate-ts trailing pair there resolves by whatever
-	//     order arraySort's stable tie-break happens to produce, itself
-	//     unspecified), so this is not a regression against a well-defined
-	//     fan-out contract, just the same #2798 gap surfacing through a
-	//     different function.
+	//     rule is order-dependent for a real-vs-NaN duplicate pair, the
+	//     family-wide gap cerberus tracks at
+	//     https://github.com/tsouza/cerberus/issues/2798. Re-measured
+	//     against a real ClickHouse at this feature's own 25.9 floor
+	//     (internal/chsql's
+	//     TestTSGridFamily_NaNDuplicateSurvivorIsOrderDependent_RealCH),
+	//     irate INVERTS the whole-window members' direction: the finite
+	//     sample survives when the NaN reaches the fold first, the NaN
+	//     survives when it reaches the fold second. Unlike rate/delta,
+	//     irate reduces every window to its trailing pair, so a
+	//     duplicate-timestamp trailing pair is not a rare edge of a summed
+	//     window but the whole answer.
+	//   - The array-fold fan-out this feature displaces does NOT share that
+	//     exposure, and the asymmetry is real rather than a wash: the
+	//     pairs-shaped fan-out carries no dedup layer for a duplicate-ts
+	//     trailing pair, but arraySort orders Float64 totally with NaN
+	//     ranked greatest, so the pair it selects is a function of the
+	//     sample multiset alone. Switching irate to the native aggregate
+	//     therefore trades a deterministic answer for a scan-order-dependent
+	//     one on that shape. internal/chsql.dedupWindowPairsByTsFrag's doc
+	//     states the rule and names the tests that execute both sides.
 	//
-	// AutoSelect is true: the sweep found no irate-specific divergence from
-	// PromQL — the one real gap it surfaced is the same pre-existing,
-	// family-wide ClickHouse tie-break bug already accepted for the
-	// auto-selected rate/increase/resets/deriv/predict_linear/delta
-	// siblings, not a reason to treat irate differently from them.
+	// AutoSelect is true, and the reason is exposure rather than harmlessness.
+	// The shape needed to reach the divergence is doubly degenerate — two
+	// samples at one series' exact timestamp, one of them NaN — and it is
+	// the FAMILY's shape, shared verbatim by the already-auto-selected
+	// rate/increase/resets/deriv/predict_linear/delta siblings; nothing about
+	// irate makes it likelier or worse there. The two family members that DO
+	// carry AutoSelect: false carry it for divergences ordinary data reaches:
+	// FeatureTSGridChanges diverges on any NaN-adjacent window with no
+	// duplicate involved at all (#1721), and FeatureTSGridGroupArray is a
+	// pure SQL-shape swap whose only effect would be to import this same
+	// nondeterminism into paths that today do not have it (#2749). Treating
+	// irate differently from its siblings would single out the member whose
+	// evidence is strongest, not the risk.
 	FeatureTSGridIrate = "ts_grid_irate"
 
 	// FeatureTSGridIdelta is FeatureTSGridIrate's sibling for

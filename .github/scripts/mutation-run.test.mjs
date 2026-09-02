@@ -105,6 +105,17 @@ function budgetOf(args) {
   return args[args.indexOf('--timeout-max') + 1];
 }
 
+function allowanceOf(args) {
+  return args[args.indexOf('--compile-allowance') + 1];
+}
+
+// The deadline gremlins actually gives up at: the run bound plus the compile
+// allowance. Read from the argv rather than recomputed, so a change to how the
+// two are derived is reflected here instead of being duplicated.
+function deadlineSecondsOf(args) {
+  return Number(budgetOf(args).replace('s', '')) + Number(allowanceOf(args).replace('s', ''));
+}
+
 function environments(f) {
   const raw = readFileSync(f.envCalls, 'utf8').trim();
   return raw === '' ? [] : raw.split('\n').map(JSON.parse);
@@ -221,6 +232,10 @@ test('both invocations pin the per-mutant budget to the derived value', (t) => {
   assert.equal(calls.length, 2);
   for (const args of calls) {
     assert.equal(budgetOf(args), '15s');
+    // The compile allowance must be pinned on BOTH invocations for the same
+    // reason the run bound is: the fallback invocation runs against the cache
+    // the first one warmed, and a bound that silently shrinks there is #2692.
+    assert.equal(allowanceOf(args), '15s');
     const at = args.indexOf('--timeout-coefficient');
     assert.notEqual(at, -1, `--timeout-coefficient missing from ${JSON.stringify(args)}`);
     // gremlins clamps its measured coverage time up to a 1s floor, so
@@ -302,12 +317,29 @@ test('every gremlins invocation runs its mutants under the memory guard', (t) =>
 // The hold has to outlast the deadline it defers to. If it expired FIRST the
 // guard would exit 0 while gremlins was still waiting, and a memory-runaway
 // mutant would be booked LIVED-by-accident instead of TIMED OUT-on-purpose.
-test('the guard holds strictly longer than the per-mutant budget', (t) => {
-  const f = fixture(t, [4], { probeSeconds: 0 });
-  assert.equal(run(f, { DIFF_REF: '' }).status, 0);
-  const budget = Number(budgetOf(invocations(f)[0]).replace('s', ''));
-  const hold = Number(environments(f)[0].MUTANT_MEMORY_HOLD.replace('s', ''));
-  assert.ok(hold > budget, `the hold (${hold}s) must outlast the budget (${budget}s)`);
+//
+// The deadline is the run bound PLUS the compile allowance (#2910), not the run
+// bound alone. Sizing the hold from the run bound was correct only while one
+// number bounded compile and run together; against the split it expires an
+// allowance early, on exactly the mutants this guard exists for.
+//
+// Exercised at the lane's ceiling as well as its floor, because the two regimes
+// fail differently. At a 15s floor the grace alone is wider than the compile
+// allowance, so a hold that forgot the allowance still clears the deadline by
+// accident; at a 120s ceiling it does not, and the accident becomes the bug.
+test('the guard holds strictly longer than the deadline gremlins gives up at', (t) => {
+  for (const floor of ['15s', '120s']) {
+    const f = fixture(t, [4], { probeSeconds: 0 });
+    assert.equal(run(f, { DIFF_REF: '', MUTANT_TIMEOUT_MIN: floor }).status, 0);
+    const args = invocations(f)[0];
+    const deadline = deadlineSecondsOf(args);
+    const hold = Number(environments(f)[0].MUTANT_MEMORY_HOLD.replace('s', ''));
+    assert.ok(
+      deadline > Number(budgetOf(args).replace('s', '')),
+      `at a ${floor} floor the deadline must exceed the run bound, or the compile allowance is not reaching gremlins`,
+    );
+    assert.ok(hold > deadline, `at a ${floor} floor the hold (${hold}s) must outlast the deadline (${deadline}s)`);
+  }
 });
 
 // An existing GOFLAGS belongs to the toolchain setup, not to us. Replacing it

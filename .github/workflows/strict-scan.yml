@@ -374,3 +374,17 @@ jobs:
       # internal/chsql/range_window_group_array_realch_integration_test.go.
       - name: Run ts_grid_group_array duplicate-timestamp + DateTime64 preconditions (real ClickHouse)
         run: just ts-grid-group-array-integration
+
+      # The timeSeries*ToGrid duplicate-timestamp survivor pins (#2798): for
+      # every member of the emitter's own nativeTSGridFn registry, which
+      # sample survives a NaN-bearing duplicate (series, timestamp) under each
+      # encounter order — including the split where the whole-window members
+      # keep a FIRST-visited NaN and the instant members (irate / idelta) keep
+      # a LAST-visited one; that the production dedupWindowPairsByTsFrag Frag
+      # elects the same survivor under both orders; and the divergence end to
+      # end through cerberus's own lowering + emitter. The family's own 25.9
+      # floor, so this boots its own container at CH_TEST_IMAGE rather than
+      # this job's higher CH_STRICT_SCAN_IMAGE pin. See internal/chsql/
+      # range_window_grid_native_nan_duplicate_realch_integration_test.go.
+      - name: Run timeSeries*ToGrid NaN-duplicate survivor pins (real ClickHouse)
+        run: just ts-grid-nan-duplicate-integration
