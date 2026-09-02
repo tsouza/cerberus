@@ -29,6 +29,12 @@
 //  5. Insufficient samples degrade to an ABSENT row (never a wrong value)
 //     for irate/idelta, while last_over_time still answers from a single
 //     sample — see host "single".
+//  6. A metric sample row stored TWICE with an identical value counts ONCE
+//     (cerberus issues #2914 / #2927): the tier's timeSeriesLastTwoSamples
+//     state collapses a duplicate (series, timestamp) as it folds, so the
+//     tier arm needs no distinct-rows layer of its own and agrees with the
+//     fan-out, which gets the rule at chsql's array-assembly gate — see
+//     host "duplicate".
 package chsql_test
 
 import (
@@ -119,6 +125,19 @@ var downsampleTierSeed = []downsampleTierHostSample{
 	// alone, not curr-prev.
 	{"delta", time.Date(2024, 1, 1, 0, 1, 0, 0, time.UTC), 30, 1},
 	{"delta", time.Date(2024, 1, 1, 0, 3, 0, 0, time.UTC), 45, 1},
+	// "duplicate": one stored row written TWICE at 00:03:00 with an
+	// IDENTICAL value — the shape cerberus issue #2927 is about. The tier
+	// arm reads pre-aggregated timeSeriesLastTwoSamples state rather than
+	// raw rows, so chsql's array-assembly gate and the lagInFrame shape's
+	// distinct-rows layer both miss it entirely; this host is what turns
+	// "the tier is immune because the aggregate collapses a duplicate
+	// (series, timestamp) as it folds" from a claim into a measurement. If
+	// the aggregate kept both rows the retained trailing pair would be the
+	// duplicate against ITSELF — idelta 0 and an irate over a zero-length
+	// interval — and the dual-emit parity below would catch it.
+	{"duplicate", time.Date(2024, 1, 1, 0, 1, 0, 0, time.UTC), 10, 2},
+	{"duplicate", time.Date(2024, 1, 1, 0, 3, 0, 0, time.UTC), 40, 2},
+	{"duplicate", time.Date(2024, 1, 1, 0, 3, 0, 0, time.UTC), 40, 2},
 	// "single": exactly one raw sample — irate/idelta must report absent,
 	// last_over_time must still answer.
 	{"single", time.Date(2024, 1, 1, 0, 2, 0, 0, time.UTC), 77, 2},
@@ -324,6 +343,10 @@ func TestDownsampleTier_ChdbCorrectness(t *testing.T) {
 		"reset":      -450, // 50 - 500, uncorrected
 		"delta":      15,   // 45 - 30, uncorrected (idelta never branches on temporality)
 		"multipart":  10,   // 30 - 20 (the TRUE last two across both parts)
+		// 40 - 10: the duplicated 40@00:03:00 row counts ONCE, so the
+		// trailing pair is (10@00:01:00, 40@00:03:00). Counting it twice
+		// would make the pair (40, 40) and the answer 0.
+		"duplicate": 30,
 	}
 	for host, want := range wantIdelta {
 		got, ok := ideltaTier[host]
@@ -340,6 +363,10 @@ func TestDownsampleTier_ChdbCorrectness(t *testing.T) {
 		"reset":      50.0 / 120, // reset detected: raw current / 120s
 		"delta":      45.0 / 120, // DELTA temporality: raw current / 120s
 		"multipart":  10.0 / 120, // TRUE last two across both parts
+		// The duplicated row counted once: (10@00:01:00, 40@00:03:00), a
+		// 120s interval. Counting it twice spans ZERO time, which is a
+		// division by zero rather than a merely wrong number.
+		"duplicate": 30.0 / 120,
 	}
 	for host, want := range wantIrate {
 		got, ok := irateTier[host]
