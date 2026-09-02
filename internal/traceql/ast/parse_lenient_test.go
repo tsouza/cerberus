@@ -110,3 +110,36 @@ func TestReplaceIncompleteMatchersRequiresOperandAndRightBoundary(t *testing.T) 
 		})
 	}
 }
+
+// TestReplaceIncompleteMatchersScansPastAnUnrepairableComparison pins that a
+// comparison with no operand to its left — one that sits directly on a matcher
+// start boundary, so the backward scan lands on the comparison itself — is
+// SKIPPED rather than ending the scan. Turning that `continue` into a `break`
+// abandons every later token, so the genuinely incomplete matcher after it is
+// left in place and the lenient parse reports no change at all.
+func TestReplaceIncompleteMatchersScansPastAnUnrepairableComparison(t *testing.T) {
+	t.Parallel()
+	// `{ = && .x = }`: the first `=` has no left operand; the second one has.
+	toks := []token{
+		{kind: tokOpenBrace},
+		{kind: tokEq},
+		{kind: tokAnd},
+		{kind: tokName},
+		{kind: tokEq},
+		{kind: tokCloseBrace},
+	}
+	want := []tokenKind{tokOpenBrace, tokEq, tokAnd, tokTrue, tokCloseBrace}
+
+	got, changed := replaceIncompleteMatchers(toks)
+	if !changed {
+		t.Fatalf("replaceIncompleteMatchers changed = false, want true: the second matcher is repairable")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("replaceIncompleteMatchers returned %d tokens, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].kind != w {
+			t.Fatalf("replaceIncompleteMatchers token %d = %v, want %v", i, got[i].kind, w)
+		}
+	}
+}

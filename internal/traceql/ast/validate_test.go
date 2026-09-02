@@ -394,3 +394,32 @@ func TestUnaryTypesValidSymmetryWithAttribute(t *testing.T) {
 		t.Error("OpNot.unaryTypesValid(TypeAttribute) = false, want true")
 	}
 }
+
+// TestValidateRegexPatternSkipsNonStringLiterals pins the type half of
+// validateRegexPattern's guard. The compile-time regex check is defined only
+// for a literal String pattern: every other static encodes to text that was
+// never written as a pattern, so feeding it to regexp.Compile would reject
+// queries on the strength of an encoding artefact.
+//
+// The array-valued node below is built directly rather than parsed, because
+// the grammar never puts an array literal on a scalar regex operator — which
+// is the point. The guard is what keeps such a node (from a future rewrite, a
+// lenient-parse path, or an in-package caller) out of regexp.Compile, and an
+// empty array encodes to "[]", which is not a valid regular expression. A
+// mutation that turns the guard's `||` into `&&` lets it through and turns
+// this valid-by-construction node into a validation error.
+func TestValidateRegexPatternSkipsNonStringLiterals(t *testing.T) {
+	t.Parallel()
+	attr := NewScopedAttribute(AttributeScopeSpan, false, "http.route")
+	for _, op := range []Operator{OpRegex, OpNotRegex} {
+		bin := &BinaryOperation{Op: op, LHS: attr, RHS: NewStaticStringArray(nil)}
+		if err := validateRegexPattern(bin); err != nil {
+			t.Errorf("validateRegexPattern(%s) = %v; want nil (a non-String static is not a pattern)", bin.String(), err)
+		}
+	}
+	// The String half of the guard still reaches the compiler.
+	bad := &BinaryOperation{Op: OpRegex, LHS: attr, RHS: NewStaticString("[")}
+	if err := validateRegexPattern(bad); err == nil {
+		t.Error("validateRegexPattern({ span.http.route =~ `[` }) = nil; want an invalid-regex rejection")
+	}
+}

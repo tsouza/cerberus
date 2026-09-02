@@ -130,3 +130,34 @@ func TestArrayFoldNotAppliedAcrossOperators(t *testing.T) {
 		t.Errorf("Op = %v; want OpOr (no fold for mixed =/!=)", bin.Op)
 	}
 }
+
+// TestStaticTypeAllowedMatchesExactly pins staticTypeAllowed's membership
+// test. It is the gate on the two regex fold rules' `restrict` lists, and a
+// negated comparison (`t == a` -> `t != a`) turns it inside out: the loop then
+// returns true on the FIRST entry that does not match, so a single-entry
+// allow-list reports the opposite answer for both a member and a non-member.
+func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
+	t.Parallel()
+	stringFamily := []StaticType{TypeString, TypeStringArray}
+	tests := []struct {
+		name    string
+		t       StaticType
+		allowed []StaticType
+		want    bool
+	}{
+		{"first entry matches", TypeString, stringFamily, true},
+		{"later entry matches", TypeStringArray, stringFamily, true},
+		{"no entry matches", TypeInt, stringFamily, false},
+		{"single-entry allow-list, member", TypeString, []StaticType{TypeString}, true},
+		{"single-entry allow-list, non-member", TypeInt, []StaticType{TypeString}, false},
+		{"empty allow-list admits nothing", TypeString, nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := staticTypeAllowed(tc.t, tc.allowed); got != tc.want {
+				t.Fatalf("staticTypeAllowed(%v, %v) = %v; want %v", tc.t, tc.allowed, got, tc.want)
+			}
+		})
+	}
+}
