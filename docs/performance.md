@@ -227,7 +227,14 @@ every PR) to *broad* (corpus-wide, nightly).
    reconciler uses. Two independent bounds per sentinel: an absolute,
    cap-relative ceiling, and a committed per-sentinel ceiling
    (`test/perf/perf-smoke-baseline.json`, max-of-N repeats with headroom,
-   `just update-perf-smoke-baseline` to regenerate). A sentinel whose
+   `just update-perf-smoke-baseline` to regenerate). The committed ceiling is
+   clamped to the absolute one, in this corpus and in `test/perf/nightly`
+   alike: a per-sentinel ceiling above the absolute ceiling can never fire,
+   because the absolute prong rejects any measurement that would have reached
+   it, so an unclamped "tighter" bound is a gate that silently never gates.
+   `test/perf/smoke`'s own unit lane asserts that invariant over the committed
+   file on every PR, so a ceiling that gates nothing fails without needing
+   Docker. A sentinel whose
    mechanism is a per-query ClickHouse SETTING carries a third bound, and it
    is the load-bearing one: `Sentinel.RequiredQuerySettings` names the
    settings that must appear in `system.query_log`'s `Settings` map on every

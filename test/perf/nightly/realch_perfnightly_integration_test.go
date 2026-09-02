@@ -88,9 +88,9 @@ package nightly
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,28 +117,10 @@ const perfNightlyCHImage = "clickhouse/clickhouse-server:25.9-alpine"
 
 const perfNightlyDB = "default"
 
-// perfNightlyMemoryCapBytes matches CERBERUS_CH_QUERY_MAX_MEMORY's default —
-// see test/perf/smoke's sentinelMemoryCapBytes for why this is the value a
-// real deployment runs under, not a value tuned for this test.
-const perfNightlyMemoryCapBytes int64 = 1 << 30 // 1 GiB
-
-// nightlyMemoryCapFraction is PRONG (a)'s absolute ceiling. Same rationale
-// as test/perf/smoke's sentinelMemoryCapFraction (above
-// spillThreshold(cap)'s implied 0.5, below 1.0's OOM boundary), but NOT the
-// same value — 0.75 (smoke's own midpoint pick) does not fit this lane's
-// real measured data. Calibrated against this lane's own real
-// post-#2429-fix, max-of-5 numbers: the two ExpectedStatus=200 sentinels
-// measured 0.9% and 76.2% of cap; the two ExpectedStatus=422 sentinels
-// (rejected BEFORE the expensive stage runs, by design) measured 25.9% and
-// 27.6% at rejection. pod_status_reason_gauge's 76.2% already exceeds
-// 0.75x — a plain `sum by (reason) (...)` gauge aggregation over this
-// sample's real 7,024-series cardinality (855 distinct pods, only 8
-// distinct `reason` values it collapses to) genuinely costs this much;
-// filed as issue #2435 for its own investigation rather than silently
-// absorbed into a looser fraction picked to avoid looking at it. 0.85
-// keeps real, verified margin (~8 points) above that measured cost while
-// staying meaningfully below ClickHouse's own 1.0 OOM boundary.
-const nightlyMemoryCapFraction = 0.85
+// perfNightlyMemoryCapBytes, nightlyMemoryCapFraction and the
+// nightlyCapCeilingBytes / committedCeilingBytes derivation they feed live in
+// the untagged baseline.go, so the unit lane can assert the derived bounds
+// without Docker.
 
 // Per-sentinel committed-ceiling headroom multipliers used to be one
 // package-wide nightlyBaselineHeadroom constant (1.5x, mirroring
@@ -331,12 +313,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			// this point is never reached (a mismatch is fatal).
 			result.StatusOK = true
 
-			// math.Round forces this through runtime float64 arithmetic rather
-			// than Go's exact-rational constant folding — (1<<30)*0.85 is not
-			// itself an exact integer, unlike smoke's own 0.75 (which happens
-			// to divide 2^30 evenly), so a bare uint64(...) conversion of the
-			// constant expression fails to compile.
-			capCeiling := uint64(math.Round(float64(perfNightlyMemoryCapBytes) * nightlyMemoryCapFraction))
+			capCeiling := nightlyCapCeilingBytes
 			t.Logf("%s (%s): max-of-%d peak memory_usage = %d bytes (%.1f%% of %d-byte cap; absolute ceiling %d), expected status %d",
 				sentinel.Name, sentinel.Family, nightlySentinelRepeats, maxBytes,
 				100*float64(maxBytes)/float64(perfNightlyMemoryCapBytes), perfNightlyMemoryCapBytes, capCeiling, sentinel.ExpectedStatus)
@@ -347,15 +324,9 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			result.CapOK = maxBytes <= capCeiling
 
 			if update {
-				// Clamp to capCeiling: for a sentinel already close to the
-				// absolute ceiling (pod_status_reason_gauge measured 76.6%
-				// against a 1.5x headroom — 1.5x of THAT already exceeds the
-				// 1 GiB cap outright), an unclamped committed ceiling would
-				// sit above PRONG (a)'s own bound, making PRONG (b)
-				// permanently unable to fire — a looser "tighter" check is a
-				// gate that silently never gates. PRONG (b) must never be
-				// looser than PRONG (a).
-				ceiling := min(uint64(float64(maxBytes)*sentinel.BaselineHeadroom), capCeiling)
+				// committedCeilingBytes clamps to capCeiling — see its own
+				// comment for why an unclamped PRONG (b) ceiling gates nothing.
+				ceiling := committedCeilingBytes(maxBytes, sentinel.BaselineHeadroom)
 				updated[sentinel.Name] = nightlyBound{
 					Name: sentinel.Name, ExpectedStatus: sentinel.ExpectedStatus,
 					MaxOfNBytes: maxBytes, CeilingBytes: ceiling,
@@ -505,75 +476,37 @@ func startPerfNightlyCH(ctx context.Context, t *testing.T) (*tcclickhouse.ClickH
 }
 
 // --- baseline load/write (invariant 9: never hand-edited) -----------------
-
-// nightlyBaselinePath is the committed bound file, a sibling of
-// perf-smoke-baseline.json one level up from this package.
-const nightlyBaselinePath = "../nightly-baseline.json"
-
-// nightlyBound is one sentinel's committed bound: the calibration-time
-// max-of-N measurement (kept for the diff/failure message), the
-// headroom-multiplied ceiling the gate actually asserts against, and the
-// HTTP status the sentinel was calibrated to expect (PRONG (b) itself
-// re-checks this against the sentinel's CURRENT ExpectedStatus, catching a
-// baseline gone stale relative to sentinels.go rather than silently
-// comparing memory across two different outcome classes).
-type nightlyBound struct {
-	Name           string `json:"name"`
-	ExpectedStatus int    `json:"expected_status"`
-	MaxOfNBytes    uint64 `json:"max_of_n_bytes"`
-	CeilingBytes   uint64 `json:"ceiling_bytes"`
-}
-
-type nightlyBaseline struct {
-	Sentinels []nightlyBound `json:"sentinels"`
-}
-
-func baselineFor(b nightlyBaseline, name string) (nightlyBound, bool) {
-	for _, s := range b.Sentinels {
-		if s.Name == name {
-			return s, true
-		}
-	}
-	return nightlyBound{}, false
-}
+//
+// The file format, the loader and the writer live in the untagged baseline.go;
+// these two wrappers add only this lane's test plumbing (t.Fatalf, and the
+// calibration path's tolerance for a not-yet-created file).
 
 func loadNightlyBaseline(t *testing.T) nightlyBaseline {
 	t.Helper()
-	buf, err := os.ReadFile(nightlyBaselinePath)
+	b, err := readNightlyBaseline()
 	if err != nil {
-		if os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1" {
+		if os.Getenv("UPDATE_NIGHTLY_PERF_BASELINE") == "1" && errors.Is(err, fs.ErrNotExist) {
 			return nightlyBaseline{}
 		}
-		t.Fatalf("read baseline %s: %v — run `just update-nightly-perf-baseline` to create it", nightlyBaselinePath, err)
-	}
-	var b nightlyBaseline
-	if err := json.Unmarshal(buf, &b); err != nil {
-		t.Fatalf("parse baseline %s: %v", nightlyBaselinePath, err)
+		t.Fatalf("%v — run `just update-nightly-perf-baseline` to create it", err)
 	}
 	return b
 }
 
-// writeNightlyBaseline serialises updated (keyed by sentinel name, in
-// Sentinels order) as pretty JSON with a trailing newline, so the committed
-// file diffs cleanly and is never hand-edited (invariant 9) — this is the
-// ONLY code path that writes nightly-baseline.json, gated on
-// UPDATE_NIGHTLY_PERF_BASELINE=1.
+// writeNightlyBaseline orders updated (keyed by sentinel name) by Sentinels and
+// hands it to writeNightlyBaselineFile — this is the ONLY code path that
+// writes nightly-baseline.json, gated on UPDATE_NIGHTLY_PERF_BASELINE=1.
 func writeNightlyBaseline(t *testing.T, updated map[string]nightlyBound) {
 	t.Helper()
-	out := nightlyBaseline{Sentinels: make([]nightlyBound, 0, len(Sentinels))}
+	bounds := make([]nightlyBound, 0, len(Sentinels))
 	for _, s := range Sentinels {
 		bound, ok := updated[s.Name]
 		if !ok {
 			t.Fatalf("writeNightlyBaseline: no measurement for sentinel %q", s.Name)
 		}
-		out.Sentinels = append(out.Sentinels, bound)
+		bounds = append(bounds, bound)
 	}
-	buf, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal baseline: %v", err)
-	}
-	buf = append(buf, '\n')
-	if err := os.WriteFile(nightlyBaselinePath, buf, 0o644); err != nil {
+	if err := writeNightlyBaselineFile(bounds); err != nil {
 		t.Fatalf("write baseline: %v", err)
 	}
 	t.Logf("wrote %s", nightlyBaselinePath)
