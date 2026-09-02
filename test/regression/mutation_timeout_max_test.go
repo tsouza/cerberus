@@ -40,10 +40,18 @@ const (
 	timeoutMinDeclaration    = "MUTANT_TIMEOUT_MIN:"
 )
 
-// gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag.
-// The flag landed in the fork; a tag from before it makes gremlins reject the
-// argument outright.
-const gremlinsForkTagPrefix = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-timeout-max"
+// gremlinsForkTagPrefix is the fork tag family that supports timeoutMaxFlag AND
+// spends it on the right quantity. A tag from before the flag landed makes
+// gremlins reject the argument outright; a tag from the `timeout-max` family
+// accepts it but charges compilation to it, which is #2910: the deadline wrapped
+// the whole `go test` child, so on a package that takes 13-16s to compile
+// against a 15s budget a mutant whose test decides in 0.3s was recorded TIMED
+// OUT having never run. The `run-leash` family passes the bound to
+// `go test -timeout`, which the Go toolchain starts when the test binary starts,
+// and reads the verdict from the child's output rather than its exit status --
+// `go test` reports a failing test, a build failure and a test timeout all as
+// exit 1, so taking that at face value credits a timeout as a detection.
+const gremlinsForkTagPrefix = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-run-leash"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
@@ -107,8 +115,10 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 	}
 
 	if !strings.Contains(body, gremlinsForkTagPrefix) {
-		t.Errorf("%s does not install a %s* build of gremlins. Earlier fork tags reject %s as an "+
-			"unknown flag, so the lane would fail on every leg rather than run unbounded — loud, but "+
-			"still broken.", mutationWorkflowPath, gremlinsForkTagPrefix, timeoutMaxFlag)
+		t.Errorf("%s does not install a %s* build of gremlins. Fork tags older than the flag reject %s "+
+			"outright, so the lane fails on every leg — loud, but still broken. Tags between the flag "+
+			"and the run-only leash are worse than loud: they accept the bound and then spend it on the "+
+			"compiler, so a mutant times out having never run a line of test code and the leg loses "+
+			"efficacy points it earned (#2910).", mutationWorkflowPath, gremlinsForkTagPrefix, timeoutMaxFlag)
 	}
 }
