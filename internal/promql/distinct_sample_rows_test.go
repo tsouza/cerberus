@@ -125,6 +125,70 @@ func TestDistinctSampleRows_StampedByEveryLoweringEntryPoint(t *testing.T) {
 	}
 }
 
+// distinctSampleRowsDeclaration is the whole declared set, one lowerable
+// query per range function, paired with the DistinctSampleRows value its
+// window must carry.
+//
+// It exists because the differential that MEASURES each function's answer is
+// chdb-tagged (internal/promql's duplicate_row_range_family_chdb_test.go) and
+// therefore runs on merge rather than on every pull request. This case is the
+// default-tag lane's own statement of the same contract: it cannot tell a
+// right answer from a wrong one, but it fails the moment a function silently
+// leaves the set — which is exactly how cerberus issue #2927's five legs went
+// unnoticed after #2914 closed the sixteenth.
+//
+// The `want: false` rows are as load-bearing as the true ones. rate /
+// increase / delta carry the STRICTLY STRONGER per-timestamp collapse of
+// cerberus issue #1092, so declaring this weaker rule for them would be inert
+// where that collapse runs and would state a second, contradictory rule for
+// the one shape the two disagree about.
+var distinctSampleRowsDeclaration = []struct {
+	fn    string
+	query string
+	want  bool
+}{
+	{fn: "sum_over_time", query: "sum_over_time(m[5m])", want: true},
+	{fn: "quantile_over_time", query: "quantile_over_time(0.5, m[5m])", want: true},
+	{fn: "ts_of_max_over_time", query: "ts_of_max_over_time(m[5m])", want: true},
+	{fn: "irate", query: "irate(m[5m])", want: true},
+	{fn: "idelta", query: "idelta(m[5m])", want: true},
+	{fn: "deriv", query: "deriv(m[5m])", want: true},
+	{fn: "predict_linear", query: "predict_linear(m[5m], 60)", want: true},
+	// double_exponential_smoothing lowers under the canonical "holt_winters"
+	// IR name (internal/promql/subquery.go), so this row pins that mapping
+	// too: naming the PromQL spelling in the declared set would silently
+	// match nothing.
+	{fn: "holt_winters", query: "double_exponential_smoothing(m[5m], 0.5, 0.5)", want: true},
+	{fn: "changes", query: "changes(m[5m])", want: true},
+	{fn: "resets", query: "resets(m[5m])", want: true},
+	{fn: "rate", query: "rate(m[5m])", want: false},
+	{fn: "increase", query: "increase(m[5m])", want: false},
+	{fn: "delta", query: "delta(m[5m])", want: false},
+}
+
+// TestDistinctSampleRows_WholeDeclaredSet lowers every row of
+// distinctSampleRowsDeclaration and pins the flag its window carries.
+func TestDistinctSampleRows_WholeDeclaredSet(t *testing.T) {
+	s := schema.DefaultOTelMetrics()
+	for _, c := range distinctSampleRowsDeclaration {
+		t.Run(c.fn, func(t *testing.T) {
+			plan, err := promql.LowerAtRange(context.Background(),
+				parseDistinctSampleRowsExpr(t, c.query), s,
+				distinctSampleRowsStart, distinctSampleRowsEnd, distinctSampleRowsStep)
+			if err != nil {
+				t.Fatalf("LowerAtRange(%q): %v", c.query, err)
+			}
+			got, ok := rangeWindowFuncFlags(t, plan)[c.fn]
+			if !ok {
+				t.Fatalf("%q lowered to no RangeWindow named %q", c.query, c.fn)
+			}
+			if got != c.want {
+				t.Errorf("%s window has DistinctSampleRows=%v, want %v", c.fn, got, c.want)
+			}
+		})
+	}
+}
+
 // TestDistinctSampleRows_StampedInsideAScalarSubquery pins the reason the
 // sweep uses chplan.WalkDeep rather than chplan.Walk: a per-step scalar
 // argument binds its vector as a chplan.ScalarSubquery, hanging that window
