@@ -102,6 +102,14 @@ func lagAdjacencyMatrixShapeCheck(r *chplan.RangeWindow) error {
 // too, and two rows agreeing on (timestamp, value) but differing elsewhere
 // would survive here while the fan-out's arrayCompact collapsed them.
 //
+// The AggregationTemporality column joins the DISTINCT key rather than being
+// carried past it, where the array gate collapses on (timestamp, value) alone
+// and picks the column up with `any()`. The two keys select the same rows:
+// temporality is a property of the metric STREAM, so two rows of one series
+// agreeing on (timestamp, value) cannot disagree on it, and a shape where
+// they did is one the array gate answers by an arbitrary `any()` pick rather
+// than by a rule this could be measured against.
+//
 // A conflicting-value duplicate is untouched, exactly as at the array gate:
 // the two rows differ in the value column, so DISTINCT keeps both and the
 // (ts, value) ORDER BY below still lands the max-valued row last — the

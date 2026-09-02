@@ -87,10 +87,15 @@ import "github.com/tsouza/cerberus/internal/chplan"
 //     weaker rule for the one shape the two rules disagree about.
 //   - log_rate — LogQL only, where a row's identity is the log entry rather
 //     than its (timestamp, value) projection (see this file's doc).
-//   - the bare-subquery `identity` and `absent_over_time` shapes, which carry
-//     no Func at all: identity reads the time-latest sample of its window,
-//     which no collapse can move, and absent_over_time asks only whether the
-//     window is empty.
+//   - the bare-subquery `identity` shape (chplan.RangeWindow.Identity, Func
+//     empty), whose reducer is the time-latest sample of its window — a value
+//     no collapse can move, since dropping a row identical to that sample
+//     leaves the sample standing.
+//
+// absent_over_time needs no entry rather than an exclusion: it lowers to its
+// own chplan.AbsentOverTime node instead of a RangeWindow (lowerAbsentOverTime,
+// internal/promql/absent.go), and asks only whether an anchor's window holds
+// any matching sample at all — which repeating a row cannot change.
 //
 // # Which arms the declaration actually reaches, and which are immune
 //
