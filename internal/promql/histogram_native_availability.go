@@ -52,12 +52,21 @@ import "github.com/tsouza/cerberus/internal/schema"
 // own doc comment carries the measurement.
 //
 // That asymmetry is also why the old inline form pinned two mutation legs
-// below their floor: gremlins' INVERT_LOGICAL rewrote each `||` to `&&`,
-// and at a composite the rewrite was PERMANENTLY equivalent — no test
-// could ever kill it — while consuming denominator forever. The rule now
-// has one mutation point, in this function's body, and it is killable
-// from either direction (see
-// gremlins_kill_metadata_full_range_test.go).
+// below their floor. The `||` hosted two mutators, and they behaved
+// differently: gremlins' INVERT_LOGICAL rewrote it to `&&`, which at a
+// composite was PERMANENTLY equivalent — no test could ever kill it —
+// while consuming denominator forever; CONDITIONALS_NEGATION rewrote
+// `s.ExpHistogramTable == ""` to `!= ""`, which makes the guard fire on
+// every configured deployment and was therefore killable everywhere. The
+// copies hosted one of each, so deleting them removes killed mutants as
+// well as unkillable ones.
+//
+// What survives is this body's own two mutation points, and both are
+// killable: `&&` -> `||` fails 12 tests, `!=` -> `==` fails 209. Neutering
+// the function outright fails the same two sets, and
+// [TestExpHistogramRecognizersRejectWhenLoweringUnavailable] alone catches
+// all four. See gremlins_kill_metadata_full_range_test.go for the
+// per-leaf pins.
 func expHistogramLoweringAvailable(s schema.Metrics, ctx lowerCtx) bool {
 	return s.ExpHistogramTable != "" && !ctx.metadataFullRange
 }

@@ -47,7 +47,7 @@ func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
 		{"both", noTable, metadataFullRangeLowerCtx()},
 	}
 
-	recognized := 0
+	accepts := map[string]int{}
 	for _, q := range expHistogramShapeMatrix() {
 		p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
 		expr, err := p.ParseExpr(q)
@@ -56,8 +56,10 @@ func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
 		}
 
 		for _, r := range expHistogramRecognizers() {
+			// The verdict is the tuple's last entry, so a trailing "set" is
+			// this recognizer accepting q with lowering available.
 			if strings.HasSuffix(r.call(expr, available, baseLowerCtx()), "set") {
-				recognized++
+				accepts[r.name]++
 			}
 			for _, u := range unavailable {
 				if got := r.call(expr, u.s, u.c); got != zeroTuple(got) {
@@ -71,10 +73,20 @@ func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
 		}
 	}
 
-	if recognized == 0 {
-		t.Fatalf("positive control: no recognizer accepted any of the %d shapes with lowering "+
-			"available; the negative assertions above would then hold for the wrong reason",
-			len(expHistogramShapeMatrix()))
+	// The positive control is PER RECOGNIZER, not per test run. A single
+	// accepting recognizer would satisfy a whole-test control while every
+	// other recognizer's negative assertions passed for an unrelated reason
+	// — it rejects that shape anyway. Requiring each one to accept at least
+	// one shape is what makes all of them evidence, and a recognizer that
+	// cannot means the matrix is missing its shape rather than that the bar
+	// is too high.
+	for _, r := range expHistogramRecognizers() {
+		if accepts[r.name] == 0 {
+			t.Errorf("positive control: %s accepted none of the %d shapes with lowering "+
+				"available, so its negative assertions above hold for the wrong reason — "+
+				"add the shape it recognises to expHistogramShapeMatrix",
+				r.name, len(expHistogramShapeMatrix()))
+		}
 	}
 }
 
@@ -206,6 +218,23 @@ func expHistogramShapeMatrix() []string {
 		`label_replace(min(latency_exp_hist), "a", "b", "c", "d")`,
 		`histogram_count(latency_exp_hist)`,
 		`histogram_sum(latency_exp_hist)`,
+		// @-pinned subqueries: subqueryHasEvalAnchor needs an anchor, and
+		// without one the whole subquery family rejects for an unrelated
+		// reason and its negative assertions would hold vacuously.
+		`rate(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`sum_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`last_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`count_over_time(latency_exp_hist[5m:1m] @ 1700000000)`,
+		`last_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`count_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`sum(count_over_time(((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000))`,
+		`count_over_time(sum((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		`rate(avg((latency_exp_hist) or (other_metric))[5m:1m] @ 1700000000)`,
+		// histogram/histogram binops whose operator DROPS the sample —
+		// expHistogramDroppingHistogramBinop's own shape, disjoint from the
+		// `+`/`-` merge and the `==`/`!=` filter already above.
+		`latency_exp_hist / other_exp_hist`,
+		`latency_exp_hist > other_exp_hist`,
 		// non-exp-hist controls
 		`cpu_total`,
 		`sum(rate(cpu_total[5m]))`,
@@ -351,6 +380,22 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 		}},
 		{"histogramValuedProducerCall", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
 			v0, ok := histogramValuedProducerCall(e, s, c)
+			return tup(v0, ok)
+		}},
+		{"mixedOrSubqueryOuterFn", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			call, isCall := peelWrappers(e).(*parser.Call)
+			if !isCall {
+				return "zero,zero,zero,zero"
+			}
+			v0, v1, v2, ok := mixedOrSubqueryOuterFn(call, s, c)
+			return tup(v0, v1, v2 != nil, ok)
+		}},
+		{"sumOrAvgMixedOrSubqueryOuterFnRecognized", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			call, isCall := peelWrappers(e).(*parser.Call)
+			if !isCall {
+				return "zero,zero"
+			}
+			v0, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(call, s, c)
 			return tup(v0, ok)
 		}},
 		{"sumOrAvgOverMixedExpHistogramSetOp", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {

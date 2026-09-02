@@ -21,8 +21,9 @@ func countValuesOverExpHistogramValue(expr parser.Expr, s schema.Metrics, ctx lo
 	}
 	// A rejection answers the zero-value tuple, never a
 	// partially-populated one — the contract every sibling exp-histogram
-	// recognizer keeps, and the one the guard this function used to open
-	// with used to keep for it (cerberus issue #2963).
+	// recognizer keeps. Until cerberus issue #2963 the copied availability
+	// guard this function opened with kept it here by accident; the
+	// explicit rejection keeps it on purpose.
 	if !isExpHistogramValuedShape(agg.Expr, s, ctx) {
 		return nil, false
 	}
