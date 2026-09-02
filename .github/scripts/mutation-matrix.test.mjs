@@ -39,7 +39,14 @@ import {
   selectPhases,
   tableViolations,
 } from './mutation-matrix.mjs';
-import { HARNESS_PATHS, MUTATION_PRODUCTION_GLOBS, PHASES } from './mutation-phases.mjs';
+import {
+  HARNESS_PATHS,
+  MUTATION_DATA_PATHS,
+  MUTATION_LANE_WORKFLOW,
+  MUTATION_PRODUCTION_GLOBS,
+  PHASES,
+} from './mutation-phases.mjs';
+import { laneHarnessClosure, resolveReference } from './lib/lane-harness.mjs';
 import { underPrefix } from './lib/scope-gate.mjs';
 
 const REGISTRY_SOURCE = readFileSync('.github/ci-lanes.json', 'utf8');
@@ -365,6 +372,159 @@ test('a change to the lane harness runs the full matrix', () => {
   for (const path of HARNESS_PATHS) {
     assert.equal(select([path]).phases.length, PHASES.length, path);
   }
+});
+
+// The derivation is only worth having if it reaches every kind of edge the lane
+// actually uses to get from mutation.yml to a file that decides a mutant's
+// fate. Each assertion below names ONE edge kind and one file that is reachable
+// ONLY through it, so losing that traversal fails here rather than showing up
+// as a matrix that silently selects nothing.
+//
+// `mutant-memory-guard.mjs` is the case that motivated all of this: a
+// `go test -exec` supervisor in front of every leg's test binary, absent from
+// the hand-written array for its whole life (cerberus #2948).
+test('HARNESS_PATHS is derived from what the lane executes, one entry per edge kind', () => {
+  const derived = new Set(laneHarnessClosure({ workflow: MUTATION_LANE_WORKFLOW }));
+
+  // the lane's own workflow — the single entry point everything else hangs off
+  assert.equal(derived.has('.github/workflows/mutation.yml'), true);
+  // a `run: node …` step in the workflow
+  assert.equal(derived.has('.github/scripts/mutation-matrix.mjs'), true);
+  assert.equal(derived.has('.github/scripts/mutation-run.mjs'), true);
+  assert.equal(derived.has('.github/scripts/gremlins-threshold.mjs'), true);
+  // a static `import … from` inside one of those scripts
+  assert.equal(derived.has('.github/scripts/mutation-phases.mjs'), true);
+  assert.equal(derived.has('.github/scripts/lib/scope-gate.mjs'), true);
+  assert.equal(derived.has('.github/scripts/lib/gh.mjs'), true);
+  // a spawn path: a bare literal resolved against the referring script's own
+  // directory and handed to `go test -exec`, reachable through no import
+  assert.equal(derived.has('.github/scripts/mutant-memory-guard.mjs'), true);
+  // a local composite action step, and the script ITS `run:` invokes through
+  // $GITHUB_WORKSPACE, plus that script's own transitive import
+  assert.equal(derived.has('.github/actions/setup-go/action.yml'), true);
+  assert.equal(derived.has('.github/scripts/go-module-fetch.mjs'), true);
+  assert.equal(derived.has('.github/scripts/lib/registry.mjs'), true);
+  // the derivation itself is reachable from mutation-phases.mjs, so a change to
+  // how the harness set is computed also sweeps the matrix
+  assert.equal(derived.has('.github/scripts/lib/lane-harness.mjs'), true);
+
+  // the shipped constant is exactly the closure plus the declared data inputs,
+  // with nothing appended by hand in between
+  assert.deepEqual(HARNESS_PATHS, [...derived, ...MUTATION_DATA_PATHS]);
+});
+
+// Before #2948 this exact diff selected 0 of 30 legs: the guard changed every
+// leg's adjudication and the matrix was skipped, so `mutation` reported green
+// over work that never ran. Asserted against the shipped constant rather than
+// against the closure, because it is the constant the selector reads.
+test('a diff touching only the per-mutant memory guard selects the FULL matrix', () => {
+  const result = select(['.github/scripts/mutant-memory-guard.mjs']);
+  assert.equal(result.phases.length, PHASES.length);
+  assert.equal(result.reason, "the lane's own harness changed (.github/scripts/mutant-memory-guard.mjs)");
+});
+
+// The other half of the bar: deriving must not degenerate into "every script in
+// the repository is harness". Each path below is a real file that the lane does
+// NOT execute, and one of them — compose-smoke-matrix.mjs — is named inside
+// mutation.yml's own header comment, which is precisely the reference a looser
+// scan would mistake for an edge.
+test('the derived harness set does not over-select scripts the lane never runs', () => {
+  for (const path of [
+    '.github/scripts/compose-smoke-matrix.mjs',
+    '.github/scripts/forbid-skip.mjs',
+    '.github/scripts/coverage-aggregate.mjs',
+    '.github/scripts/lib/golden-shards.mjs',
+  ]) {
+    assert.equal(HARNESS_PATHS.includes(path), false, path);
+    assert.deepEqual(select([path]).phases, [], path);
+  }
+
+  // A `*.test.mjs` suite is reachable from no entry point: it cannot change a
+  // mutant's verdict, so it must not spend all thirty legs proving that.
+  for (const path of HARNESS_PATHS) assert.equal(path.endsWith('.test.mjs'), false, path);
+  assert.deepEqual(select(['.github/scripts/mutant-memory-guard.test.mjs']).phases, []);
+  assert.deepEqual(select(['.github/scripts/mutation-matrix.test.mjs']).phases, []);
+
+  // and an ordinary production file still selects exactly its own leg
+  assert.deepEqual(names(select(['internal/chplan/plan.go'])), ['phase1']);
+});
+
+// The closure's own units, on a synthetic tree, so its edge rules are pinned
+// independently of whatever mutation.yml happens to contain today.
+test('laneHarnessClosure walks node steps, composite actions and module literals', () => {
+  const files = {
+    'wf.yml': [
+      '# a comment naming .github/scripts/unrelated.mjs proves prose is not an edge',
+      '      - uses: ./.github/actions/setup',
+      '      - run: node .github/scripts/entry.mjs',
+    ].join('\n'),
+    '.github/actions/setup/action.yml': 'run: node "$GITHUB_WORKSPACE/.github/scripts/warm.mjs"',
+    '.github/scripts/entry.mjs': [
+      "import { x } from './lib/shared.mjs';",
+      "const spawned = resolve(here, 'sidecar.mjs');",
+      "throw new Error('entry.mjs cannot reach unrelated.mjs from here');",
+    ].join('\n'),
+    '.github/scripts/lib/shared.mjs': '',
+    '.github/scripts/sidecar.mjs': '',
+    '.github/scripts/warm.mjs': '',
+    '.github/scripts/unrelated.mjs': '',
+  };
+  const closure = laneHarnessClosure({
+    workflow: 'wf.yml',
+    readFile: (p) => {
+      if (!(p in files)) throw new Error(`missing ${p}`);
+      return files[p];
+    },
+    fileExists: (p) => p in files,
+  });
+  assert.deepEqual(closure, [
+    '.github/actions/setup/action.yml',
+    '.github/scripts/entry.mjs',
+    '.github/scripts/lib/shared.mjs',
+    '.github/scripts/sidecar.mjs',
+    '.github/scripts/warm.mjs',
+    'wf.yml',
+  ]);
+
+  // A `node` step naming a script that is not there is a broken workflow, and
+  // saying so beats quietly shrinking the harness set — the failure mode this
+  // whole module exists to remove.
+  assert.throws(
+    () =>
+      laneHarnessClosure({
+        workflow: 'wf.yml',
+        readFile: () => '- run: node .github/scripts/gone.mjs',
+        fileExists: (p) => p === 'wf.yml',
+      }),
+    /runs ".github\/scripts\/gone\.mjs", which does not exist/,
+  );
+
+  // An entry point in a form the walk does not model must fail rather than be
+  // dropped: a shell script has no `.mjs` graph, and silently omitting it would
+  // reinstate exactly the under-reporting #2948 is about. `shell: bash`, which
+  // every composite `run:` step carries, is not an invocation and must not trip
+  // it.
+  assert.throws(
+    () =>
+      laneHarnessClosure({
+        workflow: 'wf.yml',
+        readFile: () => '- run: bash scripts/seed.sh',
+        fileExists: () => true,
+      }),
+    /runs "scripts\/seed\.sh" through a shell/,
+  );
+  assert.doesNotThrow(() =>
+    laneHarnessClosure({
+      workflow: 'wf.yml',
+      readFile: () => '      shell: bash\n      run: echo hello\n',
+      fileExists: () => true,
+    }),
+  );
+
+  assert.equal(resolveReference('.github/scripts/a.mjs', './lib/b.mjs'), '.github/scripts/lib/b.mjs');
+  assert.equal(resolveReference('.github/scripts/a.mjs', 'b.mjs'), '.github/scripts/b.mjs');
+  assert.equal(resolveReference('.github/scripts/lib/a.mjs', '../b.mjs'), '.github/scripts/b.mjs');
+  assert.equal(resolveReference('.github/workflows/w.yml', '.github/scripts/b.mjs'), '.github/scripts/b.mjs');
 });
 
 test('only the registry uses a semantic harness projection', () => {

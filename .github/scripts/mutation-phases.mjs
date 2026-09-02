@@ -50,6 +50,8 @@
 //
 // node: builtins only — no npm deps, no setup-node needed.
 
+import { laneHarnessClosure } from './lib/lane-harness.mjs';
+
 // Every leg clears the same bar, and this is the only place a bar is declared.
 // `.gremlins.yaml` carries none: its former top-level `threshold-efficacy` was
 // a key gremlins never read, so the whole-repo floor it advertised for `just
@@ -619,20 +621,35 @@ export const PHASES = [
   },
 ];
 
-// Paths that change the LANE ITSELF rather than a single scope: the phase table,
-// the selector, the threshold gate, the workflow, gremlins' own config, and the
-// module graph every leg's `go test` links. Registry changes use a semantic
-// projection in mutation-matrix.mjs, so unrelated metadata does not spend a
-// full matrix while mutation-relevant edits still do. Just recipes are local
-// entry points and do not select CI mutation work.
+// The workflow this lane IS. Everything the lane executes is reachable from it,
+// so it is the one entry point the derivation below needs.
+export const MUTATION_LANE_WORKFLOW = '.github/workflows/mutation.yml';
+
+// Inputs the lane READS rather than executes, and which therefore appear in no
+// source graph: gremlins' own configuration, and the module graph every leg's
+// `go test` links and mutates. Declared, because nothing can derive them — and
+// short enough to review, which is the property the old hand-written harness
+// list lost the moment it grew past what a reader could hold.
+//
+// `.github/ci-lanes.json` is deliberately NOT here: registry changes go through
+// the semantic projection in mutation-matrix.mjs, so unrelated metadata does not
+// spend a full matrix while mutation-relevant edits still do. Just recipes are
+// local entry points and do not select CI mutation work.
+export const MUTATION_DATA_PATHS = ['.gremlins.yaml', 'go.mod', 'go.sum'];
+
+// Paths that change the LANE ITSELF rather than a single scope, and therefore
+// force the FULL matrix.
+//
+// DERIVED, not listed. The executed half comes from lane-harness.mjs walking
+// mutation.yml's own `node` steps and composite actions into the module graph
+// reachable from them; only the read-only data inputs above are declared. A
+// hand-written array is the shape that rots: `mutant-memory-guard.mjs` sat in
+// front of every leg's test binary, deciding each mutant's fate, and was absent
+// from the array for its whole life (cerberus #2948) — as were `lib/gh.mjs`,
+// `go-module-fetch.mjs`, `lib/registry.mjs` and the `setup-go` action. Deriving
+// makes "the runner gained a file" and "the harness set gained a path" the same
+// event instead of two, the second of which nobody performs.
 export const HARNESS_PATHS = [
-  '.github/workflows/mutation.yml',
-  '.github/scripts/mutation-phases.mjs',
-  '.github/scripts/mutation-matrix.mjs',
-  '.github/scripts/mutation-run.mjs',
-  '.github/scripts/gremlins-threshold.mjs',
-  '.github/scripts/lib/scope-gate.mjs',
-  '.gremlins.yaml',
-  'go.mod',
-  'go.sum',
+  ...laneHarnessClosure({ workflow: MUTATION_LANE_WORKFLOW }),
+  ...MUTATION_DATA_PATHS,
 ];

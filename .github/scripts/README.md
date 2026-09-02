@@ -146,6 +146,30 @@ changed"), and segment-wise `underPrefix` / `matchesAny`.
 It exists so the two dangerous parts — the always-full event set and the
 uncomputable-diff fallback — cannot drift between the lanes that use it.
 
+`lib/lane-harness.mjs` answers the other half of that question: "which files
+does the lane ITSELF execute?" — the set that must force the FULL matrix,
+because a change to any of them reaches every leg. `laneHarnessClosure()`
+derives it from the workflow rather than from a hand-written array: the
+workflow's own `node …` steps and `uses: ./.github/actions/…` manifests are the
+entry points, and the transitive `.mjs` graph reachable from those — static
+`import` specifiers and equally the bare module literals a script resolves
+against its own directory to spawn — is the closure. Anchoring on the `node`
+verb is what keeps a script that a comment merely NAMES out of the graph, and
+whole-literal matching is what keeps prose that mentions a `.mjs` filename out
+of it. A hand-written list was the previous answer and it rotted exactly as
+lists do: `mutant-memory-guard.mjs` sat in front of every mutation leg's test
+binary deciding each mutant's fate and was never added, so a PR editing only the
+guard moved every leg's numbers while selecting no leg at all (cerberus #2948).
+Deriving makes "the runner gained a file" and "the harness set gained a path"
+one event instead of two. Only what the lane READS rather than executes — a
+tool's config, `go.mod` — is still declared by the caller, since no source scan
+can find it; `*.test.mjs` suites are reachable from no entry point and stay out,
+because a test-only edit cannot change a verdict and must not spend the matrix.
+An entry point in a form the walk does not model — a checked-in script run
+through a shell, which has no module graph — throws rather than being dropped,
+so the first one to appear extends the model instead of quietly shrinking the
+harness set.
+
 `lib/crawl-budget.mjs` owns the two nested time budgets the Grafana surface
 crawl runs under — the SPEC budget `crawl.spec.ts` sets on itself
 (`testInfo.setTimeout`) and the JOB cap the shard planners put on the runner —
@@ -978,8 +1002,14 @@ what actually runs.
   `mutation.yml`'s `strategy.matrix`. It carries the per-leg rationale — the
   logql/traceql OOM splits, the equivalent-mutant analysis behind each bar — that
   used to live in the workflow. Also exports `HARNESS_PATHS`: the paths that
-  change the lane itself and therefore force the FULL matrix.
-  - Env: none (pure data module).
+  change the lane itself and therefore force the FULL matrix. That set is
+  DERIVED, not listed — `lib/lane-harness.mjs` walks `mutation.yml`'s own `node`
+  steps and composite actions into the module graph reachable from them, and
+  only the read-only inputs no scan can find (`MUTATION_DATA_PATHS`:
+  `.gremlins.yaml`, `go.mod`, `go.sum`) are declared here.
+  - Env: none (the phase table is pure data; the harness closure reads the
+    workflow and script sources at import time, relative to this module's own
+    location rather than to `process.cwd()`).
 - **`mutation-matrix.mjs`** — `mutation.yml`, the `select` job. Decides WHICH
   phases run and emits them as the `mutate` `strategy.matrix`. On push /
   schedule / dispatch and on a `release/*` PR it selects every phase; on an
