@@ -87,6 +87,7 @@ delta_window.txtar
 deriv_linear_increase.txtar
 deriv_subscrape_drops.txtar
 double_exponential_smoothing.txtar
+duplicate_timestamp_identical_value_sum_over_time.txtar
 edge_abs_over_rate.txtar
 edge_absent_over_time_at_timestamp_range_pinned_absent.txtar
 edge_absent_over_time_at_timestamp_range_pinned_present.txtar
