@@ -1205,8 +1205,11 @@ efficacy = (killed + runTimedOut) / (killed + lived + timedOut + runTimedOut)
 
 over every mutant the runner ATTEMPTED to adjudicate. gremlins' own
 `test_efficacy` is `killed / (killed + lived)`, which drops both timeout kinds
-from BOTH sides; the gate is the stricter of the two, and gremlins' number is
-reported rather than compared against.
+from BOTH sides. The two are computed over different mutant sets, so neither
+bounds the other — with no run-phase timeouts the gate is the stricter, and with
+them it can read higher, because a mutant gremlins discards entirely is one the
+gate counts as a detection. gremlins' number is therefore reported alongside,
+never compared against.
 
 **A `RUN TIMED OUT` mutant is a detection because it changed observable
 behaviour.** The original suite finishes in a fraction of the bound — the bound

@@ -48,10 +48,11 @@
 //   TIMED OUT      the context deadline covering compile AND run expired. Which
 //                  phase spent it is unknown: a compile that hung reaches this
 //                  status identically to a run that did, and so does a mutant
-//                  killed by .github/scripts/mutant-memory-guard.mjs, which reaps a memory runaway and
-//                  then HOLDS precisely so that no exit status of its own can be
-//                  read as a verdict (#2919, #2921). Unadjudicated. Denominator
-//                  only, credited to nobody.
+//                  killed by the per-mutant memory guard, which reaps a memory
+//                  runaway and then HOLDS precisely so that no exit status of
+//                  its own can be read as a verdict — see
+//                  .github/scripts/mutant-memory-guard.mjs (#2919, #2921).
+//                  Unadjudicated. Denominator only, credited to nobody.
 //
 // Collapsing those two back into one number re-creates #2903 in a new place, so
 // an unrecognised status string is a hard failure below rather than a silent
@@ -108,10 +109,11 @@
 //     handed to `go test -timeout`, so compilation cannot spend it, and the
 //     verdict comes from the child's own output rather than from an exit status
 //     `go test` shares between a timeout, a build failure and a real failure.
-//   - the MEASURED budget in .github/scripts/mutation-run.mjs: the run bound is this leg's own
-//     recompile+link+run cycle, times the mutant fan-out, times 2 for runner
-//     variance, floored at MUTANT_TIMEOUT_MIN. It is an upper bound on the
-//     honest run several times over, so an honest suite cannot reach it.
+//   - the MEASURED budget in the lane's own runner script: the run bound is this
+//     leg's recompile+link+run cycle as measured on this runner, times the
+//     mutant fan-out, times 2 for runner variance, floored at
+//     MUTANT_TIMEOUT_MIN. It is an upper bound on the honest run several times
+//     over, so an honest suite cannot reach it.
 //     test/regression/mutation_timeout_max_test.go pins both bounds and the fork
 //     tag together for exactly this reason.
 //
@@ -123,7 +125,7 @@
 // its budget works, whatever its run timeouts say.
 //
 // Counts come from `files[].mutations[].status`, the per-mutant record, because
-// no aggregate field in the report exposes the timed-out total.
+// no aggregate field in the report exposes either timeout total.
 //
 // Env contract:
 //   REPORT     path to the gremlins JSON report   (default: gremlins.json)
@@ -250,9 +252,13 @@ function main() {
   }
 
   // Read but do not gate on gremlins' own ratio. It is killed/(killed+lived),
-  // which is always >= the ratio gated below, so a comparison against it could
-  // never fire where the one below passed. It is still parsed so that a rename
-  // or a malformed report fails loudly instead of being scored as zero
+  // computed over a DIFFERENT mutant set: it drops both timeout kinds from both
+  // sides. With no run-phase timeouts it is always >= the ratio gated below, so
+  // a comparison against it could never fire where the one below passed; with
+  // them it can be lower, because a mutant it discards entirely is one this gate
+  // counts as a detection. Neither direction is a bound on the other, which is
+  // why it is REPORTED and never compared against. It is still parsed so that a
+  // rename or a malformed report fails loudly instead of being scored as zero
   // timeouts, and it is reported so the log shows both numbers.
   const reported = Number(report.test_efficacy);
   if (!Number.isFinite(reported)) {

@@ -955,12 +955,18 @@ what actually runs.
     `run_heavy=true`, logged via `::notice::`, never a hard failure); `1` on an
     unrecognised `MODE`.
 - **`gremlins-threshold.mjs`** — `mutation.yml`, the
-  `enforce efficacy threshold` step. Gates on `killed / (killed + lived +
-  timedOut)`, the kill rate over every mutant the runner ATTEMPTED to
-  adjudicate, rather than on gremlins' own `killed / (killed + lived)`. A
-  timed-out mutant is unadjudicated, not detected, so moving one into
-  `TIMED OUT` can never raise the score and a starved runner reads as red
-  rather than as a flattering green (#2903).
+  `enforce efficacy threshold` step. Gates on `(killed + runTimedOut) /
+  (killed + lived + timedOut + runTimedOut)`, the detection rate over every
+  mutant the runner ATTEMPTED to adjudicate, rather than on gremlins' own
+  `killed / (killed + lived)`. The two timeout statuses mean opposite
+  things: `RUN TIMED OUT` is the test binary's own watchdog firing on a
+  clock no compile can spend, so the mutant stopped its suite terminating
+  and is a detection (#2944); `TIMED OUT` is the compile+run backstop,
+  which cannot say which phase spent it, so it is unadjudicated and moving
+  a mutant into it can never raise the score — a starved runner reads as
+  red rather than as a flattering green (#2903). The recognised status set
+  is CLOSED: an unknown status fails the gate rather than dropping those
+  mutants out of both sides of the ratio.
   - Env: `REPORT` (default `gremlins.json`), `THRESHOLD` (a number).
   - Exit: `0` when efficacy is `>=` threshold, `1` when below.
 - **`mutation-phases.mjs`** — data, imported by `mutation-matrix.mjs`. The single

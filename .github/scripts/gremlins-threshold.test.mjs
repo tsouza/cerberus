@@ -232,10 +232,10 @@ test('a leg whose every mutant run-timed-out is a collapsed budget, not a perfec
   assert.match(r.out, /budget collapsing/);
 });
 
-test('the gated rate is never above the rate gremlins reported', () => {
-  // gremlins drops timeouts from both sides; this gate keeps them in the
-  // denominator. So this gate is strictly the stricter of the two, which is
-  // why gremlins' own ratio is reported here but not compared against.
+test('with no run-phase timeouts the gated rate is never above gremlins own', () => {
+  // gremlins drops both timeout kinds from both sides; this gate keeps the
+  // backstop ones in the denominator. Over a report with no RUN TIMED OUT
+  // mutants this gate is therefore strictly the stricter of the two.
   for (const [killed, lived, timedOut] of [
     [486, 15, 36],
     [39, 1, 279],
@@ -247,6 +247,21 @@ test('the gated rate is never above the rate gremlins reported', () => {
     const gated = attemptedEfficacy({ killed, lived, timedOut });
     assert.ok(gated <= reported + Number.EPSILON, `gated ${gated} > reported ${reported}`);
   }
+});
+
+// …and the ordering does NOT hold once run-phase timeouts exist, which is why
+// gremlins' number is reported and never compared against. A mutant gremlins
+// discards from both sides is one this gate counts as a detection, so the two
+// ratios are computed over different mutant sets and neither bounds the other.
+// Pinned so the removed "always >= " claim cannot creep back as an assertion.
+test('the two ratios are computed over different mutant sets, so neither bounds the other', () => {
+  const runHeavy = { killed: 0, lived: 1, timedOut: 0, runTimedOut: 99 };
+  assert.equal(gremlinsReported(runHeavy), 0);
+  assert.equal(attemptedEfficacy(runHeavy), 99);
+
+  const backstopHeavy = { killed: 90, lived: 10, timedOut: 100, runTimedOut: 0 };
+  assert.equal(gremlinsReported(backstopHeavy), 90);
+  assert.equal(attemptedEfficacy(backstopHeavy), 45);
 });
 
 // The budget-collapse signature keeps its own message: 0/295 already fails the
