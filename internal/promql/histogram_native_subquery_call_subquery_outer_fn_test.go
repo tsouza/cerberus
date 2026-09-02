@@ -165,6 +165,42 @@ func TestWidenNestedCallSubqueryInner_GridModes(t *testing.T) {
 			// exactly one sub.Range wide regardless of the ambient window.
 			wantOuterR: outerFn2TestOuterRange,
 		},
+		// The two range-mode cases above carry no `offset`, so their
+		// Offset term is zero — and a rewrite of a term that is zero moves
+		// no window. The offset was therefore exercised only in instant
+		// mode, and the two range-mode branches compute it in their own
+		// expressions.
+		//
+		// That gap is what left four gremlins mutants alive on the
+		// phase4-promql-i leg (cerberus issue #2949): an INVERT_NEGATIVES and
+		// an ARITHMETIC_BASE on the `-anchor.Offset` term of each range-mode
+		// branch's widening call —
+		//
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`case ctx.rangeMode() && subqueryPinned(sub) && !anchor.End.IsZero():`
+		//	histogram_native_subquery_call_subquery_outer_fn.go:`ctx.start.Add(-anchor.Offset-sub.Range), ctx.end`
+		//
+		// The `@`-pinned branch is cited by its `case` label rather than by
+		// its widening call, because that call is spelled identically in the
+		// instant branch below it and no substring of it tells the two apart;
+		// the mutants are on the single `widenSubquerySpine` line inside that
+		// arm. The plain query_range branch's call is unique as written.
+		//
+		// Both rewrites of that unary term collapse it to `+anchor.Offset`,
+		// which is indistinguishable from `-anchor.Offset` at offset zero and
+		// shifts the grid by twice the offset otherwise. The two cases below
+		// are what make it non-zero in each branch.
+		{
+			name: "query_range fan-out with offset", rangeMode: true,
+			suffix:    " offset 30s",
+			wantStart: rangeStart.Add(-offset - outerFn2TestOuterRange), wantEnd: rangeEnd,
+			wantOuterR: rangeEnd.Sub(rangeStart.Add(-offset - outerFn2TestOuterRange)),
+		},
+		{
+			name: "query_range pinned broadcast with offset", rangeMode: true,
+			suffix:    " @ " + strconv.FormatInt(pin.Unix(), 10) + " offset 30s",
+			wantStart: pin.Add(-offset - outerFn2TestOuterRange), wantEnd: pin,
+			wantOuterR: offset + outerFn2TestOuterRange,
+		},
 	}
 
 	for _, tc := range cases {

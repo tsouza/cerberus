@@ -1410,6 +1410,52 @@ other than a digit or a construct carries no address and is left alone,
 which is what keeps `test/rejection-parity`'s `path.go:func#hash` site
 identifiers — a data format, not a citation — out of the gate's way.
 
+### How a note states a number
+
+A citation that resolves is only half of a re-checkable note. The other
+half is the sentence wrapped around it, and a note can carry a perfectly
+resolving citation while the prose asserts something the code stopped
+doing — the citation still reads as evidence (cerberus issue #2957).
+
+Prose is not machine-checkable in general, so the rule is not to check
+the sentence but to keep it from carrying load:
+
+- **A count the source can compute is never written down.** Derive it in
+  the test and name the derivation. `wantLen :=
+  multiIfArgCount(len(canonicalLevelGroups))` is re-checkable; "the 15
+  subsequent appends" is a second, unverified statement of the same fact,
+  free to disagree with the first. This is the technique
+  `.github/scripts/doc-counts.mjs` applies to documentation prose, applied
+  by hand where a gate cannot reach.
+- **A property the note claims is asserted, not narrated.** "Any
+  arithmetic mutation produces a different capacity" is the whole
+  equivalence argument; enumerate the mutations and assert it. A `NOT
+  KILLABLE` footer that ends in a testable claim usually means the claim
+  was testable all along.
+- **A fact the code already fixes is read, not restated.** Where the
+  production value is derivable in-repo — a rendered DDL, a registry, a
+  schema default — read it. `test/perf/orderby_chdb_test.go` takes the
+  metrics sort key it benchmarks out of the DDL `internal/schema/ddl`
+  renders, so the harness cannot come to disagree with the schema it
+  claims to measure.
+- **A measurement stays prose, with its context.** "8-17x fewer granules
+  on this grid", "95% efficacy floor" — these describe a run, not a
+  structure, and no derivation replaces them. Say what was measured and
+  on what, so a reader can re-measure rather than trust.
+
+No gate enforces this, and one was weighed and rejected on measurement
+rather than taste. Across the 340 adjudication blocks on `main`, the
+integers that restate a source-countable fact are outnumbered roughly
+three to one by digits that are simply operands of a quoted expression
+(`i == 1`, `Step=0`), and the same class of claim is written as a
+spelled-out numeral ("four conjuncts", "three join keys") more often
+than as a digit at all. A checker keyed on digits is therefore blind to
+most of what it would need to model, which is the one thing a gate here
+may not be: a set that silently shrinks is worse than no set. Reviewer
+attention plus the four rules above is the control, and the first rule
+is what makes the other three cheap — a number that lives in an
+assertion cannot rot without a test going red.
+
 ### Non-terminating mutants and a leg's irreducible ceiling
 
 A hand-written scanner — a lexer, a regex source walk, a replacement

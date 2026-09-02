@@ -426,11 +426,13 @@ func isMatchOp(op chplan.BinaryOp) bool {
 	return false
 }
 
-// canonicalLevelGroups mirrors the (variants, canonical) table inside
-// [normaliseLevelExpr] so the assertions below can pin the documented
-// 7-level order without re-importing the unexported `group` struct.
-// Order matches the source — upstream Loki's `normalizeLogLevel` switch
-// (trace / debug / info / warn / error / critical / fatal).
+// canonicalLevelGroups is an INDEPENDENT restatement of the
+// variant-to-canonical table [levelNormalizationGroups] holds. It is written
+// out again on purpose rather than read from the source: assertions that
+// derived their expectations from the very table under test would mirror a
+// wrong edit to it instead of failing on one. Order matches upstream Loki's
+// `normalizeLogLevel` switch — trace / debug / info / warn / error /
+// critical / fatal.
 var canonicalLevelGroups = []struct {
 	variants  []string
 	canonical string
@@ -444,35 +446,36 @@ var canonicalLevelGroups = []struct {
 	{[]string{"fatal"}, "fatal"},
 }
 
-// TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape kills the two
-// adjacent ARITHMETIC_BASE mutants reported by the gremlins phase-4
-// run on the slice-capacity hint
-// detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` — the `*`
-// and the trailing `+` of that expression. `*` flipping to `/` (or
-// `%`) and `+` flipping to `-` (or `*`) change the pre-allocated
-// capacity but `append` silently grows past it, so a semantic-only
-// test cannot observe the difference. This test pins:
+// TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape kills the
+// ARITHMETIC_BASE mutants gremlins reports on the slice-capacity hint
+// detected_level.go:`(len(levelNormalizationGroups)+1)*2+1`. Substituting an
+// operator there changes the PRE-ALLOCATED capacity, but `append` grows past
+// a too-small hint and simply under-fills a too-large one, so a semantic-only
+// test cannot observe the difference: the SQL the emitter prints from the
+// resulting FuncCall is byte-identical however the slice was allocated.
 //
-//  1. `len(Args) == 2*len(canonicalLevelGroups)+1` (the load-bearing
-//     count: 7 (cond, literal) pairs plus the trailing default
-//     branch) — documents the arithmetic so a structural mutation
-//     elsewhere shows up immediately.
-//  2. `cap(Args) == 2*len(canonicalLevelGroups)+1` (the direct kill:
-//     `make([]T, 0, N)` returns a slice with `cap == N` before any
-//     append, and the 15 subsequent appends never exceed that
-//     capacity — so the final `cap` equals the hint). Any
-//     ARITHMETIC_BASE mutation on that `*` or `+` shifts the
-//     allocated capacity, triggers an `append`-driven re-allocation
-//     with Go's runtime growth strategy, and produces a final `cap`
-//     that is NOT 15 (the original mutants would yield e.g. 4, 8,
-//     16, or 26 depending on the operator). Asserting `cap == 15`
-//     exactly catches each shift.
+// Both facts this test pins are COMPUTED from `canonicalLevelGroups` into
+// `wantLen`, never written down as an integer, so neither can be restated
+// wrongly here:
 //
-// The cap assertion is the only direct kill for a slice-capacity
+//  1. `len(fn.Args)` — the load-bearing count: one leading (empty, unknown)
+//     pair, one (cond, literal) pair per canonical group, and the trailing
+//     default branch. A structural mutation that drops or duplicates a slot
+//     shows up immediately.
+//  2. `cap(fn.Args)` — the direct kill. `make([]T, 0, N)` hands back a slice
+//     whose cap is exactly N, and the appends that follow fill it exactly, so
+//     the finished slice still reports the hint. Any ARITHMETIC_BASE mutation
+//     shifts the hint off that count, and `append`'s growth schedule never
+//     lands back on it.
+//
+// That last sentence is the claim an equivalence note has no way to prove on
+// its own, so it is not left as prose: `TestNormaliseLevelExpr_CapHintMutantsAreKilled`
+// replays every operator substitution and asserts the resulting capacity
+// differs from the unmutated one.
+//
+// The cap assertion is the only direct kill available for a slice-capacity
 // arithmetic mutant — append's growth strategy hides the change from
-// length-only tests, and the SQL the emitter prints from the
-// resulting FuncCall is byte-identical regardless of how the
-// underlying slice was allocated.
+// length-only tests.
 func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	t.Parallel()
 
@@ -490,32 +493,203 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	// The leading (empty → "unknown") pair — reference Loki stamps
 	// `detected_level="unknown"` when no level is detectable
 	// (pkg/distributor/field_detection.go, constants.LogLevelUnknown)
-	// — precedes the 7 canonical groups, then the lowercased default.
-	wantLen := 2*(len(canonicalLevelGroups)+1) + 1
+	// — precedes the canonical groups, then the lowercased default.
+	wantLen := multiIfArgCount(len(canonicalLevelGroups))
 	if got := len(fn.Args); got != wantLen {
-		t.Fatalf("len(multiIf.Args) = %d; want %d (1 (empty, unknown) pair + 7 (cond, literal) pairs + 1 default)", got, wantLen)
+		t.Fatalf("len(multiIf.Args) = %d; want %d (one (empty, unknown) pair, "+
+			"one (cond, literal) pair per canonical group, one default)", got, wantLen)
 	}
 
 	// Kill: any arithmetic mutation on the capacity hint either
-	// over-allocates (appends fit, final cap = the mutated hint) or
-	// under-allocates (append re-grows via the runtime's schedule) —
-	// both produce a final cap different from the exact arg count.
-	// Asserting cap == wantLen pins the arithmetic.
+	// over-allocates (the appends fit, and the final cap is the mutated
+	// hint) or under-allocates (append re-grows via the runtime's
+	// schedule) — both produce a final cap different from the exact arg
+	// count. Asserting cap == wantLen pins the arithmetic;
+	// `TestNormaliseLevelExpr_CapHintMutantsAreKilled` proves it
+	// discriminates every operator substitution.
 	if got, want := cap(fn.Args), wantLen; got != want {
 		t.Fatalf("cap(multiIf.Args) = %d; want %d (mutant `*` → `/`/`%%` or `+` → `-`/`*` in detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` would shift the capacity hint and re-allocate via append's growth schedule)", got, want)
 	}
 }
 
+// capHintOps are the binary arithmetic operators gremlins' ARITHMETIC_BASE
+// operator substitutes into an expression. Applying each of them to each
+// operator position of the capacity hint enumerates that hint's whole mutant
+// set.
+var capHintOps = []string{"+", "-", "*", "/", "%"}
+
+// applyCapHintOp evaluates `a op b` for the operators ARITHMETIC_BASE can
+// produce. Every b it is called with below is non-zero, so `/` and `%` are
+// total here.
+func applyCapHintOp(t *testing.T, a int, op string, b int) int {
+	t.Helper()
+
+	switch op {
+	case "+":
+		return a + b
+	case "-":
+		return a - b
+	case "*":
+		return a * b
+	case "/":
+		return a / b
+	case "%":
+		return a % b
+	}
+	t.Fatalf("unknown arithmetic operator %q", op)
+	return 0
+}
+
+// capHint evaluates the SHAPE of detected_level.go's capacity hint
+// `(len(levelNormalizationGroups)+1)*2+1` with each of its three operator
+// positions supplied explicitly: `(n innerOp 1) mulOp 2 tailOp 1`. Passing the
+// operators in is what lets the caller enumerate the mutants of the hint
+// without writing any of their values down.
+func capHint(t *testing.T, n int, innerOp, mulOp, tailOp string) int {
+	t.Helper()
+
+	return applyCapHintOp(t,
+		applyCapHintOp(t,
+			applyCapHintOp(t, n, innerOp, 1),
+			mulOp, 2),
+		tailOp, 1)
+}
+
+// multiIfArgCount derives the number of arguments normaliseLevelExpr's multiIf
+// carries for `groups` canonical level groups: one leading (empty, unknown)
+// pair, one (cond, literal) pair per group, and the trailing default branch.
+// Both tests below take their expected count from here rather than writing an
+// integer down, so the two cannot state it differently.
+func multiIfArgCount(groups int) int { return 2*(groups+1) + 1 }
+
+// capAfterBuild replays [normaliseLevelExpr]'s exact append sequence against a
+// slice pre-allocated with `hint`, and reports the length and the capacity the
+// finished slice carries.
+//
+// The element type has to be the real one. Go rounds a growing slice's
+// capacity up to an allocator size class measured in BYTES, so a slice whose
+// elements are a different width grows to different capacities and the
+// simulation would answer a question nobody asked.
+func capAfterBuild(hint, groups int) (length, capacity int) {
+	args := make([]chplan.Expr, 0, hint)
+	args = append(args, nil, nil) // leading (empty, unknown) pair
+	for i := 0; i < groups; i++ {
+		args = append(args, nil, nil) // (cond, canonical literal)
+	}
+	args = append(args, nil) // trailing default branch
+	return len(args), cap(args)
+}
+
+// TestNormaliseLevelExpr_CapHintMutantsAreKilled proves that the `cap`
+// assertion in [TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape] actually
+// discriminates. For every ARITHMETIC_BASE operator substitution gremlins can
+// make in detected_level.go:`(len(levelNormalizationGroups)+1)*2+1`, the
+// capacity the finished slice ends up with must differ from the capacity the
+// unmutated hint produces — otherwise that assertion passes on the mutant and
+// the equivalence note above is claiming a kill it does not deliver.
+//
+// This is the claim the note used to make in prose, with the mutants'
+// capacities written out by hand. Written out, they were free to drift from
+// the arithmetic they described, and they did. Computed here they cannot: if a
+// future edit to the append sequence, to the group table, or to the hint let
+// some mutant land back on the true capacity, this test goes red and names it.
+func TestNormaliseLevelExpr_CapHintMutantsAreKilled(t *testing.T) {
+	t.Parallel()
+
+	// The operators the unmutated hint uses, in the three positions
+	// `(n + 1) * 2 + 1`.
+	const (
+		origInnerOp = "+"
+		origMulOp   = "*"
+		origTailOp  = "+"
+	)
+	positions := []struct{ name, orig string }{
+		{"the inner `+1`", origInnerOp},
+		{"the `*2`", origMulOp},
+		{"the trailing `+1`", origTailOp},
+	}
+
+	n := len(canonicalLevelGroups)
+	trueHint := capHint(t, n, origInnerOp, origMulOp, origTailOp)
+	trueLen, trueCap := capAfterBuild(trueHint, n)
+
+	// The premise of the whole equivalence argument: the appends FILL the
+	// pre-allocation exactly — neither growing past it nor leaving slack. Only
+	// then does the finished cap read back the hint, and only then does
+	// asserting cap pin the hint's arithmetic. Checking capacity alone would
+	// miss the under-filling half: a slice that never grows keeps the cap it
+	// was made with however few elements are appended to it.
+	if trueLen != trueHint || trueCap != trueHint {
+		t.Fatalf("the unmutated hint %d does not exactly fit the append sequence "+
+			"(finished len %d, cap %d): the appends no longer fill the "+
+			"pre-allocation exactly, so cap() has stopped reading back the hint "+
+			"and asserting it has stopped being a capacity kill",
+			trueHint, trueLen, trueCap)
+	}
+
+	// …and the sequence replayed here has to be the one the sibling test pins
+	// on the real multiIf, or this whole test measures a slice nobody builds.
+	if want := multiIfArgCount(n); trueLen != want {
+		t.Fatalf("the replayed append sequence produces %d args, but the multiIf "+
+			"under test carries %d — the simulation has drifted from the builder "+
+			"it stands in for", trueLen, want)
+	}
+
+	mutants, checked, negative := 0, 0, 0
+	for i, pos := range positions {
+		for _, op := range capHintOps {
+			if op == pos.orig {
+				continue
+			}
+			mutants++
+
+			ops := []string{origInnerOp, origMulOp, origTailOp}
+			ops[i] = op
+			hint := capHint(t, n, ops[0], ops[1], ops[2])
+
+			if hint < 0 {
+				// `make` panics on a negative capacity, so this mutant dies in
+				// any test that reaches normaliseLevelExpr at all.
+				negative++
+				continue
+			}
+			checked++
+
+			if _, got := capAfterBuild(hint, n); got == trueCap {
+				t.Errorf("mutating %s to %q gives capacity hint %d, and the finished "+
+					"slice still ends at cap %d — identical to the unmutated build, so "+
+					"the `cap(fn.Args) == wantLen` assertion does NOT kill this mutant",
+					pos.name, op, hint, got)
+			}
+		}
+	}
+
+	// Anti-vacuity: a loop that enumerated nothing would report a clean run
+	// while proving nothing at all.
+	if want := len(positions) * (len(capHintOps) - 1); mutants != want {
+		t.Fatalf("enumerated %d hint mutants, want %d (one per operator substitution "+
+			"in each of the %d positions) — the enumeration is not covering the "+
+			"mutant set it claims to", mutants, want, len(positions))
+	}
+	if checked == 0 {
+		t.Fatalf("every one of the %d hint mutants was skipped as a negative capacity, "+
+			"so the discriminating comparison never ran", mutants)
+	}
+	t.Logf("hint mutants: %d enumerated, %d distinguished by capacity, %d killed by a "+
+		"negative make() capacity", mutants, checked, negative)
+}
+
 // TestNormaliseLevelExpr_CanonicalLevelOrder pins the exact (cond,
-// literal) pair structure of the multiIf chain. The 14 paired slots
-// follow the canonical 7-level enumeration trace / debug / info /
-// warn / error / critical / fatal — in that order — and the 15th
-// (default) slot is the lowercased pass-through. A regression that
-// drops a group, reorders the groups, or swaps an OR-chain for an
-// unrelated condition will fail here. Combined with the cap test
-// above this also serves as a structural backstop: it forces the
-// `args` slice to actually be built end-to-end, so a capacity
-// mutation can't quietly survive by also short-circuiting the loop.
+// literal) pair structure of the multiIf chain. After the leading
+// (empty, unknown) pair comes one (cond, literal) pair per canonical
+// group, in the enumeration order trace / debug / info / warn / error /
+// critical / fatal, and the final slot is the lowercased pass-through
+// default. A regression that drops a group, reorders the groups, or
+// swaps an OR-chain for an unrelated condition will fail here.
+// Combined with the cap test above this also serves as a structural
+// backstop: it forces the `args` slice to actually be built
+// end-to-end, so a capacity mutation can't quietly survive by also
+// short-circuiting the loop.
 func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 	t.Parallel()
 
@@ -576,11 +750,11 @@ func TestNormaliseLevelExpr_CanonicalLevelOrder(t *testing.T) {
 
 	// The trailing default branch is the lowercased pass-through —
 	// `lower(<source>)`, where <source> is the detected_level
-	// precedence cascade. A mutation on `+1` that drops the default
-	// slot would shorten Args to 14 and trip the len check above; this
-	// assertion pins the SHAPE of the default branch so a refactor that
-	// swaps it for something else (e.g. an empty string fall-through)
-	// still trips a test.
+	// precedence cascade. A mutation on the hint's trailing `+1` that
+	// dropped the default slot would shorten Args by one and trip the
+	// len check above; this assertion pins the SHAPE of the default
+	// branch so a refactor that swaps it for something else (e.g. an
+	// empty string fall-through) still trips a test.
 	defaultIdx := 2 * (len(canonicalLevelGroups) + 1)
 	defaultCall, ok := fn.Args[defaultIdx].(*chplan.FuncCall)
 	if !ok {
