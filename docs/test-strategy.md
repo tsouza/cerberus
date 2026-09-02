@@ -202,8 +202,17 @@ The gate also REPORTS, without blocking, the lanes that gate `main` yet declare
 `merge_posture: never` and so never run on a pull request — the compatibility
 harnesses, the chDB round-trip and perf-guard shards, `perf-nightly`, the e2e
 family — naming each one and the command that runs it, so a skipped lane is
-never read as a passing one. Attribution uses each lane's declared
-`package_globs` and is a floor rather than the whole risk.
+never read as a passing one. Attribution is the first-party dependency closure
+`go list` reports for the packages each lane's `package_globs` name, unioned
+with those globs so the non-Go inputs a lane also has stay covered
+(`.github/scripts/lib/lane-closure.mjs`). Reading the declaration alone was
+issue #2902's blind spot: a lane's globs name its own directories, so the shared
+`chplan` → `optimizer` → `chsql` → `chclient` pipeline every head runs through
+belonged to none of them, and PR #2824 moved exactly that pipeline without
+`compatibility.loki` considering itself touched — the lane #2895 then left red
+on `main` for 31 runs. The contract keeps the seeds honest: a `reference` lane
+must name its own head's `internal/<ql>` and `internal/api/<head>` packages,
+because the closure is only as wide as what it starts from.
 
 ### Test-fence enrollment contracts
 

@@ -81,6 +81,27 @@ const CANONICAL_HEAD_ORACLE_SOURCE_ROOTS = Object.freeze({
   }),
 });
 
+// The head packages a REFERENCE lane must name in its own `package_globs`
+// (#2902). A reference lane drives the real HTTP head against the reference
+// backend, so its query path starts at that head's API package and its query
+// language, and `lib/lane-closure.mjs` derives everything downstream — the
+// shared `chplan`/`optimizer`/`chsql`/`chclient`/`engine` pipeline — from
+// exactly these two roots. That is why they are a contract rather than a
+// convention: the closure is only as wide as the seeds it starts from, so a
+// lane that stops naming its own head silently narrows back to the pre-#2902
+// attribution, which is what let PR #2824 merge without `compatibility.loki`
+// considering itself touched.
+//
+// EXECUTION lanes are deliberately outside this rule rather than exempted from
+// it: a round-trip lane lowers and executes SQL without ever entering the HTTP
+// head, so requiring the API package of one would assert a dependency it does
+// not have.
+export const CANONICAL_HEAD_QUERY_PATH_ROOTS = Object.freeze({
+  promql: Object.freeze(["internal/promql", "internal/api/prom"]),
+  logql: Object.freeze(["internal/logql", "internal/api/loki"]),
+  traceql: Object.freeze(["internal/traceql", "internal/api/tempo"]),
+});
+
 const TOP_KEYS = new Set([
   "schema_version",
   "impact_selection",
@@ -599,6 +620,15 @@ function validateCanonicalHeadOracleFloors(lanes, root, recipeCommands, problems
           problems.push(
             `canonical head ${head} ${oracleClass} provider ${provider.id} has no real ` +
               `oracle/test source under ${sourceRoot} covered by package_globs`,
+          );
+        }
+        if (oracleClass !== "reference") continue;
+        for (const queryPathRoot of CANONICAL_HEAD_QUERY_PATH_ROOTS[head]) {
+          if (providerHasCanonicalSource(provider, root, queryPathRoot)) continue;
+          problems.push(
+            `canonical head ${head} reference provider ${provider.id} does not cover ` +
+              `${queryPathRoot} in package_globs, so the affected-path set derived from those ` +
+              `globs never reaches the shared query pipeline this lane runs through (#2902)`,
           );
         }
       }
