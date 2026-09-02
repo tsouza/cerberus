@@ -85,7 +85,8 @@ var summapDiffEvalTS = summapDiffSampleTS.Add(time.Second)
 
 // summapDiffLowerers is the two strategies under differential test:
 // fanout (the default groupArray-fold merge) and native (this issue's
-// sumMap + arrayCumSum merge), both with the OTHER family's fields left at
+// sumMap merge over per-row cumulative counts), both with the OTHER
+// family's fields left at
 // their own zero-value default (resolved by withDefaults at the lowering
 // entry — see RangeLowerers' own doc).
 func summapDiffLowerers(native bool) promql.RangeLowerers {
@@ -401,17 +402,29 @@ func TestClassicBucketMergeSumMap_NaNPrimitives(t *testing.T) {
 }
 
 // TestClassicBucketMergeSumMap_ZeroKeyIdentity pins, directly against real
-// ClickHouse, the two -0.0/0.0 primitives classic_bucket_merge_summap.go's
-// header and classicBucketZeroCanonicalExpr's own doc rely on:
+// ClickHouse, the four -0.0/0.0 primitives that together make the two merge
+// strategies agree on a group where one row reports a -0.0 bound and another
+// reports 0.0 — the case classic_bucket_merge_summap.go's header covers:
 //
-//   - sumMap merges -0.0 and 0.0 as ONE aggregate key (so canonicalising
-//     every row's bound to +0.0 before sumMap sees it cannot ITSELF split
-//     one logical bound into two sumMap keys).
+//   - sumMap merges -0.0 and 0.0 as ONE aggregate key, so the group holds a
+//     single entry for the logical zero bound.
 //   - arrayDistinct — the union-bounds dedup classicBucketUnionBoundsExpr
-//     applies — does NOT (so skipping the canonicalisation would let a
-//     -0.0-reporting row and a 0.0-reporting row surface as two distinct
-//     union rungs, double-counting whichever sumMap key indexOf resolves
-//     both to).
+//     applies — does NOT, so the merged LAYOUT carries both rungs. That is
+//     the same layout the fan-out path's own union produces from the same
+//     rows: the two strategies share this construction verbatim.
+//   - indexOf treats -0.0 and 0.0 as equal, so both of those rungs read the
+//     ONE sumMap entry — each getting that cumulative count once.
+//   - has treats them as equal too, so classicBucketMergedLadderExpr's own
+//     filter admits the same rows at both rungs and folds the same value
+//     into each.
+//
+// Reading the same cumulative count at two rungs of one bound is not a
+// double count in the cumulative domain — it is what BOTH constructions
+// produce, and emitHistogramQuantile's adjacent-duplicate-bound dedup
+// collapses it downstream. It WAS a double count for the per-bucket-counts
+// shape this feature first shipped, where the shared entry was ADDED once
+// per duplicate rung by the union-wide arrayCumSum; the zero-canonicalising
+// step that guarded that went away with the arrayCumSum itself.
 func TestClassicBucketMergeSumMap_ZeroKeyIdentity(t *testing.T) {
 	fixture := newChDBFixture(t, `
 CREATE OR REPLACE TABLE zero_key_identity_probe (bounds Array(Float64), counts Array(Float64)) ENGINE = Memory;
@@ -419,11 +432,10 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 `)
 
 	// TWO rows — one reporting a -0.0-keyed bucket, the other a 0.0-keyed
-	// one — is the load-bearing cross-row case
-	// classicBucketZeroCanonicalExpr's own rationale depends on: if sumMap
-	// treated -0.0 and 0.0 as DISTINCT keys, this would answer
-	// keys=[-0,0,1] vals=[3,1,6] (two separate zero-ish keys); instead it
-	// merges them into ONE key.
+	// one — is the load-bearing cross-row case: if sumMap treated -0.0 and
+	// 0.0 as DISTINCT keys, this would answer keys=[-0,0,1] vals=[3,1,6]
+	// (two separate zero-ish keys) and each union rung would resolve to its
+	// own partial sum instead of the merged one.
 	sumMapRows := fixture.queryOverEmitted(t,
 		"toString(sm.1), toString(sm.2)", "SELECT sumMap(bounds, counts) AS sm FROM zero_key_identity_probe", nil)
 	defer func() { _ = sumMapRows.Close() }()
@@ -437,8 +449,8 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 	if keys != "[-0,1]" || vals != "[4,6]" {
 		t.Fatalf("sumMap over a -0.0-keyed row and a 0.0-keyed row = keys=%s vals=%s, "+
 			"want keys=[-0,1] vals=[4,6] (merged into ONE key, summed 3+1=4) — sumMap no longer "+
-			"treats -0.0 and 0.0 as one key; classicBucketZeroCanonicalExpr's own rationale for "+
-			"canonicalising BEFORE sumMap sees it should be re-verified", keys, vals)
+			"treats -0.0 and 0.0 as one key, so the two union rungs a -0.0/0.0 layout produces no "+
+			"longer read one merged entry; classic_bucket_merge_summap.go's header needs revisiting", keys, vals)
 	}
 
 	distinctRows := fixture.queryOverEmitted(t, "toString(arrayDistinct([-0.0, 0.0, 1.0]))", "SELECT 1", nil)
@@ -452,9 +464,10 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 	}
 	const wantDistinct = "[-0,0,1]"
 	if distinct != wantDistinct {
-		t.Fatalf("arrayDistinct([-0.0, 0.0, 1.0]) = %s, want %s — if arrayDistinct now merges "+
-			"-0.0/0.0 too, classicBucketZeroCanonicalExpr's normalisation is no longer load-bearing "+
-			"(harmless either way, but its rationale should be re-verified)", distinct, wantDistinct)
+		t.Fatalf("arrayDistinct([-0.0, 0.0, 1.0]) = %s, want %s — the union layout a -0.0/0.0 group "+
+			"produces has changed shape; both merge strategies build it from this one construction, "+
+			"so they still agree, but classic_bucket_merge_summap.go's header needs revisiting",
+			distinct, wantDistinct)
 	}
 
 	indexOfRows := fixture.queryOverEmitted(t,
@@ -471,5 +484,24 @@ INSERT INTO zero_key_identity_probe VALUES ([-0.0, 1.0], [3.0, 4.0]), ([0.0, 1.0
 		t.Fatalf("indexOf(-0.0/0.0 cross-lookup) = (%d, %d), want (1, 1) — "+
 			"classicBucketSumMapLookupExpr's indexOf-based reconstruction assumes indexOf treats "+
 			"-0.0 and 0.0 as equal for lookup purposes", idxA, idxB)
+	}
+
+	// has is the fan-out path's own rung filter (classicBucketMergedLadderExpr).
+	// It has to agree with indexOf about -0.0/0.0 for the two strategies to
+	// admit the same rows at the same rungs.
+	hasRows := fixture.queryOverEmitted(t,
+		"has([-0.0, 1.0, 2.0], 0.0), has([0.0, 1.0, 2.0], -0.0)", "SELECT 1", nil)
+	defer func() { _ = hasRows.Close() }()
+	if !hasRows.Next() {
+		t.Fatal("no rows")
+	}
+	var hasA, hasB int
+	if err := hasRows.Scan(&hasA, &hasB); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if hasA != 1 || hasB != 1 {
+		t.Fatalf("has(-0.0/0.0 cross-lookup) = (%d, %d), want (1, 1) — the fan-out fold's own "+
+			"rung filter no longer agrees with indexOf about -0.0/0.0, so the two merge "+
+			"strategies would admit different rows at a zero bound", hasA, hasB)
 	}
 }

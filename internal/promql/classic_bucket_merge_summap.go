@@ -155,12 +155,12 @@ const (
 )
 
 // Lambda parameter names for this file's per-row expressions. `i` indexes a
-// row's ExplicitBounds / BucketCounts (the same role paramLadderIdx plays
-// over the merged ladder, in a different scope); `smb` / `smc` are the
+// row's own ExplicitBounds / BucketCounts (the role paramLadderIdx plays over
+// the merged ladder, one scope down); `smb` / `smc` are the
 // single-evaluation bindings of one row's bound-ordered bounds and its
 // prefix-summed counts; `smp` indexes those two in lockstep.
 const (
-	paramSumMapRowIdx    = "i"
+	paramBucketIndex     = "i"
 	paramSumMapRowBounds = "smb"
 	paramSumMapRowCum    = "smc"
 	paramSumMapRowPos    = "smp"
@@ -177,9 +177,9 @@ func classicBucketFiniteBoundKeptIndicesExpr(eb chplan.Expr) chplan.Expr {
 	n := &chplan.FuncCall{Fn: chplan.FnLength, Args: []chplan.Expr{eb}}
 	return &chplan.FuncCall{Fn: chplan.FnArrayFilter, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{"i"},
+			Params: []string{paramBucketIndex},
 			Body: classicBucketFiniteExpr(&chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: "i"},
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			}),
 		},
 		&chplan.FuncCall{Fn: chplan.FnRange, Args: []chplan.Expr{&chplan.LitInt{V: 1}, addExpr(n, &chplan.LitInt{V: 1})}},
@@ -198,9 +198,9 @@ func classicBucketFiniteBoundKeptIndicesExpr(eb chplan.Expr) chplan.Expr {
 func classicBucketSumMapRowOrderedIndicesExpr(eb chplan.Expr) chplan.Expr {
 	return &chplan.FuncCall{Fn: chplan.FnArraySort, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{paramSumMapRowIdx},
+			Params: []string{paramBucketIndex},
 			Body: &chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: paramSumMapRowIdx},
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			},
 		},
 		classicBucketFiniteBoundKeptIndicesExpr(eb),
@@ -278,18 +278,18 @@ func classicBucketSumMapRowArgs(s schema.Metrics) (bounds, counts chplan.Expr) {
 
 	bounds = &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{paramSumMapRowIdx},
+			Params: []string{paramBucketIndex},
 			Body: &chplan.Subscript{
-				Container: eb, Key: &chplan.BareIdent{Name: paramSumMapRowIdx},
+				Container: eb, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			},
 		},
 		orderedIdx,
 	}}
 	orderedCounts := &chplan.FuncCall{Fn: chplan.FnArrayMap, Args: []chplan.Expr{
 		&chplan.Lambda{
-			Params: []string{paramSumMapRowIdx},
+			Params: []string{paramBucketIndex},
 			Body: toFloat64Expr(&chplan.Subscript{
-				Container: bc, Key: &chplan.BareIdent{Name: paramSumMapRowIdx},
+				Container: bc, Key: &chplan.BareIdent{Name: paramBucketIndex},
 			}),
 		},
 		orderedIdx,
