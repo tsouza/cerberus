@@ -27,9 +27,8 @@
 # A HETEROGENEOUS layout — where the merge has to combine layouts that only
 # partly overlap, and where the construction this feature first shipped
 # answered differently from Prometheus (cerberus issue #2817) — is covered by
-# this fixture's sibling, histogram_quantile_sum_by_le_summap_heterogeneous
-# .txtar, which carries the same marker and the same `parity:` enrolment over
-# a mismatched seed.
+# this fixture's `_heterogeneous` sibling, which carries the same marker and
+# the same `parity:` enrolment over a mismatched seed.
 
 -- query.promql --
 histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))

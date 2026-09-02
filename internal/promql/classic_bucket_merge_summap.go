@@ -74,11 +74,12 @@ import (
 // merged key hold that row's cumulative count at the repeated bound rather
 // than a prefix of it counted several times.
 //
-// Neither step is defensive: test/spec/promql/histogram_quantile_classic_
-// duplicate_bounds.txtar is a Prometheus-parity-enrolled fixture whose row
-// reports the bound 1.0 twice, and the merge's own output layout is
-// arraySort-ed (classicBucketUnionBoundsExpr), which is what lets the fold
-// answer a row whose stored bounds are not ascending.
+// Neither step is defensive: the spec corpus carries a
+// Prometheus-parity-enrolled fixture whose row reports the bound 1.0 twice
+// (histogram_quantile_classic_duplicate_bounds), and the merge's own output
+// layout is arraySort-ed (classicBucketUnionBoundsExpr) precisely because
+// the fold it must match answers a row whose stored bounds are not
+// ascending.
 //
 // # A real ClickHouse quirk this design works around
 //
