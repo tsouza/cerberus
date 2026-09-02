@@ -9,26 +9,82 @@ import { byteSize, goDurationSeconds, residentBytes } from './mutant-memory-guar
 
 const guard = '.github/scripts/mutant-memory-guard.mjs';
 
-// A child that allocates past the ceiling the tests set, retaining every buffer
-// so the growth is LIVE — the shape of the mutant this guard exists for
-// (`i += size` -> `i = size` pins a scanner index and appends per iteration).
+// The ceiling every test in this file sets, in the two forms it is needed in.
+// One source, because a self-limit or an assertion that drifted from the
+// ceiling the guard was actually given would be silently comparing two
+// different runs.
+const ceilingMiB = 256;
+const ceilingSpec = `${ceilingMiB}MiB`;
+const ceilingBytes = ceilingMiB * 1024 ** 2;
+
+// The runaway child grows at a rate THIS TEST SETS: one allocationStepBytes
+// buffer per allocationStepIntervalMs tick, every one retained so the growth is
+// LIVE — the shape of the mutant this guard exists for (`i += size` ->
+// `i = size` pins a scanner index and appends per iteration).
 //
+// The rate is set here rather than left to a tight allocation loop because the
+// overshoot assertion below reads back as a LATENCY, and a tight loop runs at
+// whatever rate the machine happens to have left over. That made the assertion
+// measure runner load as much as it measured the guard: a full 30-leg mutation
+// matrix on the same runner was enough to fail it with no defect in the guard
+// (#2955). A timer-driven child stretches under load in the same direction as
+// the guard's own timer, so the ratio between them — which is what the bound is
+// about — survives a busy machine.
+const allocationStepBytes = 8 * 1024 ** 2;
+const allocationStepIntervalMs = 50;
+
 // It stops at 4x the ceiling under test rather than running away for real. That
 // self-limit is not decoration: this suite runs on a shared CI runner, and a
 // child that allocated without bound would take the runner down whenever the
 // guard is BROKEN — turning a test failure into the very outage the guard
 // exists to prevent, with no assertion to read afterwards. A working guard kills
-// it at the 256MiB ceiling long before the self-limit; a broken one lets the
-// child stop on its own and leaves the ledger empty, which is what the
-// assertions below read.
-const runawayChildCeilingBytes = 4 * 256 * 1024 * 1024;
+// it at the ceiling long before the self-limit; a broken one lets the child stop
+// on its own and leaves the ledger empty, which is what the assertions below
+// read.
+const runawayChildCeilingBytes = 4 * ceilingBytes;
 const runawayChild = `
 const held = [];
-while (held.length * 8 * 1024 * 1024 < ${runawayChildCeilingBytes}) {
-  held.push(Buffer.alloc(8 * 1024 * 1024, 1));
-}
-setTimeout(() => process.exit(0), 30_000);
+const step = () => {
+  held.push(Buffer.alloc(${allocationStepBytes}, 1));
+  if (held.length * ${allocationStepBytes} >= ${runawayChildCeilingBytes}) {
+    setTimeout(() => process.exit(0), 30_000);
+    return;
+  }
+  setTimeout(step, ${allocationStepIntervalMs});
+};
+step();
 `;
+
+// maxNoticeLatencyMs is the property the overshoot assertion pins: the guard
+// must kill within this long of the child's RSS crossing the ceiling. The guard
+// samples /proc every 50ms, so this grants it two sampling intervals of
+// lateness.
+//
+// Two intervals is headroom measured rather than guessed. Against this child a
+// healthy guard notices in ~1ms, on an idle machine and under 4x CPU
+// oversubscription alike: child and guard are both timer-driven, so load
+// stretches them together and the GAP between them — the only thing this bound
+// is about — does not move. Two orders of magnitude of headroom, and a guard
+// whose sampling interval is widened to 250ms still records ~160ms of lateness
+// and fails.
+//
+// It is deliberately NOT derived from the guard's own sampling interval. A bound
+// that moved with the number it is auditing could not fail when that number is
+// widened, which is the single defect this assertion exists to catch.
+const maxNoticeLatencyMs = 100;
+const maxOvershootBytes = (maxNoticeLatencyMs / allocationStepIntervalMs) * allocationStepBytes;
+
+// How long the runaway subtests wait for the guard to record a breach. At the
+// rate set above the child takes ~1.7s to cross the ceiling, so this is generous
+// by more than an order of magnitude: it detects a wedged guard, and a slow
+// runner cannot walk it into a failure the way a bound on the MEASUREMENT can.
+const breachRecordedTimeoutMs = 60_000;
+
+// How long the guard must still be running after a breach for the hold to be
+// real. Load can only ever make it MORE likely to still be there, so this bound
+// cannot fail on a busy runner; only a guard that exited instead of holding
+// trips it.
+const holdObservedMs = 1500;
 
 function workspace(t) {
   const root = mkdtempSync(join(tmpdir(), 'mutant-memory-guard-'));
@@ -45,7 +101,7 @@ function child(root, source) {
 function guardEnv(root, overrides = {}) {
   return {
     ...process.env,
-    MUTANT_MEMORY_MAX: '256MiB',
+    MUTANT_MEMORY_MAX: ceilingSpec,
     MUTANT_MEMORY_HOLD: '2s',
     MUTANT_MEMORY_LEDGER: join(root, 'ledger.jsonl'),
     ...overrides,
@@ -140,29 +196,37 @@ test('a runaway child is killed, recorded, and then HELD rather than exited', as
   t.after(() => proc.kill('SIGKILL'));
 
   const exited = new Promise((resolve) => proc.on('exit', (code, signal) => resolve({ code, signal })));
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + breachRecordedTimeoutMs;
   while (ledgerLines(root).length === 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
   const [breach] = ledgerLines(root);
   assert.ok(breach !== undefined, 'the runaway child was never recorded as a breach');
-  assert.equal(breach.limit_bytes, 256 * 1024 ** 2);
+  assert.equal(breach.limit_bytes, ceilingBytes);
   assert.ok(
     breach.resident_bytes > breach.limit_bytes,
     `a breach must record the RSS that crossed the line, got ${breach.resident_bytes}`,
   );
-  // The sampling interval bounds the overshoot; a guard that only noticed the
-  // runaway after it had taken the machine would pass the line above and still
-  // be useless.
+  // A guard that only noticed the runaway after it had taken the machine would
+  // pass the line above and still be useless, so the recorded overshoot is read
+  // back as the guard's NOTICE LATENCY. That conversion is exact because the
+  // child's rate is set by this test: every allocationStepIntervalMs of lateness
+  // costs exactly allocationStepBytes, so `resident_bytes - limit_bytes` over
+  // that rate IS the milliseconds the guard took, and the bound is a statement
+  // about the guard rather than about how much CPU the runner had spare.
+  const overshootBytes = breach.resident_bytes - breach.limit_bytes;
   assert.ok(
-    breach.resident_bytes < 2 * breach.limit_bytes,
-    `overshoot past the ceiling must stay small, got ${breach.resident_bytes} over ${breach.limit_bytes}`,
+    overshootBytes <= maxOvershootBytes,
+    `the guard must notice a crossing within ${maxNoticeLatencyMs}ms, which at this child's ` +
+      `${allocationStepBytes}B/${allocationStepIntervalMs}ms rate is ${maxOvershootBytes} bytes of ` +
+      `overshoot; it recorded ${overshootBytes} bytes past the ${breach.limit_bytes} ceiling ` +
+      `(~${Math.round((overshootBytes / allocationStepBytes) * allocationStepIntervalMs)}ms late)`,
   );
 
   const raced = await Promise.race([
     exited,
-    new Promise((resolve) => setTimeout(() => resolve('still-holding'), 1500)),
+    new Promise((resolve) => setTimeout(() => resolve('still-holding'), holdObservedMs)),
   ]);
   assert.equal(raced, 'still-holding', `the guard exited after a breach instead of holding: ${JSON.stringify(raced)}`);
 });

@@ -21,7 +21,7 @@ func chUnknownTableException() *clickhouse.Exception {
 }
 
 // TestIsUnknownTable_Code60 — a typed *clickhouse.Exception carrying code
-// 60 is recognised via errors.As, mirroring isMemoryLimitExceeded /
+// 60 is recognised via errors.As, mirroring serverExceptionCode /
 // IsQueryTimeout.
 func TestIsUnknownTable_Code60(t *testing.T) {
 	t.Parallel()

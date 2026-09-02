@@ -50,7 +50,7 @@ func histogramSample(ts time.Time, hv *chclient.HistogramValue) Sample {
 //     inclusive), one-sided-clamped exactly like the SQL emitter's
 //     zeroBandLower / zeroBandUpper when a distribution has
 //     observations on only one side of zero (reference Prometheus's
-//     promql/quantile.go:263-273 clamp): a distribution recording
+//     promql/quantile.go clamp): a distribution recording
 //     nothing on one side has no observation that could have produced
 //     a value there, so that edge collapses to 0 rather than spanning
 //     the full symmetric band.

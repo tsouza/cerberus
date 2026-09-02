@@ -57,9 +57,10 @@ func mixedDiscriminatorProjected(n chplan.Node) bool {
 }
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch
-// kills the CONDITIONALS_NEGATION mutant at :78:12 (`==` -> `!=`) inside
-// lowerHistogramOrMixedSubqueryOuterFnInput's last_over_time/first_over_time
-// case:
+// kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on the
+// `if shape == chplan.HistogramRowShape` guard of
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`,
+// inside lowerHistogramOrMixedSubqueryOuterFnInput:
 //
 //	if shape == chplan.HistogramRowShape {
 //	    node, err = lowerSelectFnOverExpHistogramSubqueryInput(...)
@@ -85,7 +86,8 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 		t.Fatalf("histogram-shape: %v", err)
 	}
 	if mixedDiscriminatorProjected(histPlan) {
-		t.Fatalf("histogram-shape last_over_time took the Mixed path (mutant `==`->`!=` at :78:12)")
+		t.Fatalf("histogram-shape last_over_time took the Mixed path (mutant `==`->`!=` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, lastOverTimeWindowFn, sub, s, ctx)
@@ -93,12 +95,14 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_LastFirstShapeDispatch(t *tes
 		t.Fatalf("mixed-shape: %v", err)
 	}
 	if !mixedDiscriminatorProjected(mixedPlan) {
-		t.Fatalf("mixed-shape last_over_time took the Histogram path (mutant `==`->`!=` at :78:12)")
+		t.Fatalf("mixed-shape last_over_time took the Histogram path (mutant `==`->`!=` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case lastOverTimeWindowFn, firstOverTimeWindowFn:`)")
 	}
 }
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch
-// kills the CONDITIONALS_NEGATION mutant at :85:12 (`==` -> `!=`), the
+// kills the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`, the
 // resets/changes sibling of the last_over_time/first_over_time dispatch
 // above. Both shapes ultimately produce the same four-column canonical
 // Project, so the two paths are told apart by whether the underlying
@@ -118,7 +122,8 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 		t.Fatalf("histogram-shape: %v", err)
 	}
 	if mixedPairAggAlias(histPlan, mixedPairValueArrayAlias) {
-		t.Fatalf("histogram-shape resets took the Mixed path (mutant `==`->`!=` at :85:12)")
+		t.Fatalf("histogram-shape resets took the Mixed path (mutant `==`->`!=` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, resetsWindowFn, sub, s, ctx)
@@ -126,12 +131,14 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_ResetsChangesShapeDispatch(t 
 		t.Fatalf("mixed-shape: %v", err)
 	}
 	if !mixedPairAggAlias(mixedPlan, mixedPairValueArrayAlias) {
-		t.Fatalf("mixed-shape resets took the Histogram path (mutant `==`->`!=` at :85:12)")
+		t.Fatalf("mixed-shape resets took the Histogram path (mutant `==`->`!=` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case resetsWindowFn, changesWindowFn:`)")
 	}
 }
 
 // TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch kills
-// the CONDITIONALS_NEGATION mutant at :92:12 (`==` -> `!=`), the
+// the CONDITIONALS_NEGATION mutant (`==` -> `!=`) on
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`, the
 // FOLD-family (rate/increase/delta/...) sibling of the two dispatches
 // above. Over a MixedRowShape input this case routes to
 // [lowerFurtherWrapMixedOrSubqueryFoldFn], whose own
@@ -152,7 +159,8 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 		t.Fatalf("histogram-shape: %v", err)
 	}
 	if _, ok := histPlan.(*chplan.VectorSetOp); ok {
-		t.Fatalf("histogram-shape rate took the Mixed path (mutant `==`->`!=` at :92:12)")
+		t.Fatalf("histogram-shape rate took the Mixed path (mutant `==`->`!=` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`)")
 	}
 
 	mixedPlan, _, err := lowerHistogramOrMixedSubqueryOuterFnInput(inner, chplan.MixedRowShape, rateWindowFn, sub, s, ctx)
@@ -160,16 +168,16 @@ func TestLowerHistogramOrMixedSubqueryOuterFnInput_FoldShapeDispatch(t *testing.
 		t.Fatalf("mixed-shape: %v", err)
 	}
 	if _, ok := mixedPlan.(*chplan.VectorSetOp); !ok {
-		t.Fatalf("mixed-shape rate = %T, want *chplan.VectorSetOp (mutant `==`->`!=` at :92:12)", mixedPlan)
+		t.Fatalf("mixed-shape rate = %T, want *chplan.VectorSetOp (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`case rateWindowFn, increaseWindowFn, deltaWindowFn, irateWindowFn, ideltaWindowFn, sumOverTimeWindowFn, avgOverTimeWindowFn:`)", mixedPlan)
 	}
 }
 
 // TestLowerFurtherWrapMixedOrSubqueryFoldFn_StepAligned kills both
-// mutants at :139:76 (`ctx.step > 0`, CONDITIONALS_BOUNDARY `>`->`>=` and
-// CONDITIONALS_NEGATION `>`->`<=`) inside
-// lowerFurtherWrapMixedOrSubqueryFoldFn:
-//
-//	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil
+// mutants on the `ctx.step > 0` argument (CONDITIONALS_BOUNDARY `>`->`>=`
+// and CONDITIONALS_NEGATION `>`->`<=`) of
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`,
+// inside lowerFurtherWrapMixedOrSubqueryFoldFn:
 //
 // stepAligned threads directly into the returned *chplan.VectorSetOp's own
 // StepAligned field with no other logic in between — see this file's
@@ -196,7 +204,8 @@ func TestLowerFurtherWrapMixedOrSubqueryFoldFn_StepAligned(t *testing.T) {
 		t.Fatalf("plan = %T, want *chplan.VectorSetOp", plan)
 	}
 	if vso.StepAligned {
-		t.Fatalf("instant-mode (step==0) StepAligned = true, want false (mutants at :139:76)")
+		t.Fatalf("instant-mode (step==0) StepAligned = true, want false (mutants on the `ctx.step > 0` argument of " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`)")
 	}
 
 	rangeCtx := lowerCtx{start: at, end: at.Add(10 * time.Minute), step: time.Minute}
@@ -214,8 +223,9 @@ func TestLowerFurtherWrapMixedOrSubqueryFoldFn_StepAligned(t *testing.T) {
 }
 
 // TestSplitMixedRelByDiscriminator_PublishesZeroThresholdColumn kills the
-// CONDITIONALS_NEGATION mutant at :177:36 (`!=` -> `==`) inside
-// splitMixedRelByDiscriminator:
+// CONDITIONALS_NEGATION mutant (`!=` -> `==`) at
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`if histSchema.ZeroThresholdColumn != ""`,
+// inside splitMixedRelByDiscriminator:
 //
 //	if histSchema.ZeroThresholdColumn != "" {
 //	    histProjs = append(histProjs, ...)
@@ -247,14 +257,16 @@ func TestSplitMixedRelByDiscriminator_PublishesZeroThresholdColumn(t *testing.T)
 		}
 	}
 	if !found {
-		t.Fatalf("expected a %q projection in histBranch; got %#v (mutant `!=`->`==` at :177:36)",
+		t.Fatalf("expected a %q projection in histBranch; got %#v (mutant `!=`->`==` at "+
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`if histSchema.ZeroThresholdColumn != \"\"`)",
 			histSchema.ZeroThresholdColumn, proj.Projections)
 	}
 }
 
 // TestLowerFloatFoldOverSubqueryInput_InstantPinnedNoCrossJoin kills the
-// INVERT_LOGICAL mutant at :224:21 (`&&` -> `||`) inside
-// lowerFloatFoldOverSubqueryInput:
+// INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_mixed_or_subquery_further_setop_range_fn.go:`if ctx.rangeMode() && subqueryPinned(sub)`,
+// inside lowerFloatFoldOverSubqueryInput:
 //
 //	if ctx.rangeMode() && subqueryPinned(sub) {
 //	    return wrapRangeWindowAtBroadcast(...) // builds a CrossJoin over a StepGrid
@@ -284,6 +296,7 @@ func TestLowerFloatFoldOverSubqueryInput_InstantPinnedNoCrossJoin(t *testing.T) 
 		return true
 	})
 	if found {
-		t.Fatalf("instant-mode pinned subquery built a CrossJoin (mutant `&&`->`||` at :224:21)")
+		t.Fatalf("instant-mode pinned subquery built a CrossJoin (mutant `&&`->`||` at " +
+			"histogram_native_mixed_or_subquery_further_setop_range_fn.go:`if ctx.rangeMode() && subqueryPinned(sub)`)")
 	}
 }

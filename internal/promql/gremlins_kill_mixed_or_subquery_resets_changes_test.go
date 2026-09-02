@@ -16,10 +16,9 @@ import (
 )
 
 // TestMixedPairCountStage_ProjectionsCapacityIsTight kills the
-// ARITHMETIC_BASE mutant at :158:55 (`+` -> `-`) inside
-// mixedPairCountStage's slice-capacity hint:
-//
-//	projs := make([]chplan.Projection, 0, len(keyAliases)+1)
+// ARITHMETIC_BASE mutant (`+` -> `-`) on mixedPairCountStage's
+// slice-capacity hint,
+// histogram_native_mixed_or_subquery_resets_changes.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+1)`.
 //
 // The function appends exactly one projection per keyAliases entry plus
 // one more for the value column — len(keyAliases)+1 appends total — so
@@ -48,7 +47,8 @@ func TestMixedPairCountStage_ProjectionsCapacityIsTight(t *testing.T) {
 		t.Fatalf("len(Projections) = %d, want %d", got, want)
 	}
 	if got := cap(proj.Projections); got != want {
-		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at :158:55 would force a "+
+		t.Fatalf("cap(Projections) = %d, want %d (mutant `+`->`-` at "+
+			"histogram_native_mixed_or_subquery_resets_changes.go:`projs := make([]chplan.Projection, 0, len(keyAliases)+1)` would force a "+
 			"reallocation, leaving cap != %d)", got, want, want)
 	}
 }
@@ -84,8 +84,8 @@ func innerPairLambdaParams(t *testing.T, e chplan.Expr) []string {
 }
 
 // TestMixedPairVerdictExpr_WindowFnSelectsBranch kills the
-// CONDITIONALS_NEGATION mutant at :194:14 (`==` -> `!=`) inside
-// mixedPairVerdictExpr:
+// CONDITIONALS_NEGATION mutant (`==` -> `!=`) at
+// histogram_native_mixed_or_subquery_resets_changes.go:mixedPairVerdictExpr:`if windowFn == changesWindowFn`:
 //
 //	prevParam, currParam := paramResetPrevRow, paramResetCurrRow
 //	histVerdict := expHistogramResetVerdictExpr()
@@ -108,18 +108,21 @@ func TestMixedPairVerdictExpr_WindowFnSelectsBranch(t *testing.T) {
 	changesParams := innerPairLambdaParams(t, mixedPairVerdictExpr(changesWindowFn, histSchema))
 
 	if resetsParams[0] != paramResetPrevRow || resetsParams[1] != paramResetCurrRow {
-		t.Fatalf("resets params = %v, want [%q %q] (mutant `==`->`!=` at :194:14)",
+		t.Fatalf("resets params = %v, want [%q %q] (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_resets_changes.go:mixedPairVerdictExpr:`if windowFn == changesWindowFn`)",
 			resetsParams, paramResetPrevRow, paramResetCurrRow)
 	}
 	if changesParams[0] != paramChangePrevRow || changesParams[1] != paramChangeCurrRow {
-		t.Fatalf("changes params = %v, want [%q %q] (mutant `==`->`!=` at :194:14)",
+		t.Fatalf("changes params = %v, want [%q %q] (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_resets_changes.go:mixedPairVerdictExpr:`if windowFn == changesWindowFn`)",
 			changesParams, paramChangePrevRow, paramChangeCurrRow)
 	}
 }
 
 // TestMixedFloatPairVerdictExpr_WindowFnSelectsShape kills the
-// CONDITIONALS_NEGATION mutant at :252:14 (`==` -> `!=`) inside
-// mixedFloatPairVerdictExpr: resets renders a bare `curr < prev` (a
+// CONDITIONALS_NEGATION mutant (`==` -> `!=`) at
+// histogram_native_mixed_or_subquery_resets_changes.go:mixedFloatPairVerdictExpr:`if windowFn == changesWindowFn`:
+// resets renders a bare `curr < prev` (a
 // top-level OpLt Binary); changes renders the NaN-aware `curr != prev &&
 // !bothNaN` (a top-level OpAnd Binary) — the negation swaps both.
 func TestMixedFloatPairVerdictExpr_WindowFnSelectsShape(t *testing.T) {
@@ -130,17 +133,20 @@ func TestMixedFloatPairVerdictExpr_WindowFnSelectsShape(t *testing.T) {
 
 	resetsExpr := mixedFloatPairVerdictExpr(resetsWindowFn, prev, curr)
 	if bin, ok := resetsExpr.(*chplan.Binary); !ok || bin.Op != chplan.OpLt {
-		t.Fatalf("resets shape = %#v, want top-level OpLt Binary (mutant `==`->`!=` at :252:14)", resetsExpr)
+		t.Fatalf("resets shape = %#v, want top-level OpLt Binary (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_resets_changes.go:mixedFloatPairVerdictExpr:`if windowFn == changesWindowFn`)", resetsExpr)
 	}
 
 	changesExpr := mixedFloatPairVerdictExpr(changesWindowFn, prev, curr)
 	if bin, ok := changesExpr.(*chplan.Binary); !ok || bin.Op != chplan.OpAnd {
-		t.Fatalf("changes shape = %#v, want top-level OpAnd Binary (mutant `==`->`!=` at :252:14)", changesExpr)
+		t.Fatalf("changes shape = %#v, want top-level OpAnd Binary (mutant `==`->`!=` at "+
+			"histogram_native_mixed_or_subquery_resets_changes.go:mixedFloatPairVerdictExpr:`if windowFn == changesWindowFn`)", changesExpr)
 	}
 }
 
 // TestLowerMixedOrSubqueryResetsOrChangesInput_RangeModePinnedTakesBroadcast
-// kills the INVERT_LOGICAL mutant at :301:21 (`&&` -> `||`) — the
+// kills the INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_mixed_or_subquery_resets_changes.go:`if ctx.rangeMode() && !subqueryPinned(sub)` — the
 // resets/changes sibling of
 // gremlins_kill_mixed_or_subquery_last_first_test.go's identical
 // last_first dispatch kill.
@@ -168,14 +174,16 @@ func TestLowerMixedOrSubqueryResetsOrChangesInput_RangeModePinnedTakesBroadcast(
 	})
 	if !found {
 		t.Fatalf("expected a CrossJoin (broadcast path) for a range-mode query over an " +
-			"@-pinned mixed-or subquery; mutant `&&`->`||` at :301:21 would route to the " +
+			"@-pinned mixed-or subquery; mutant `&&`->`||` at " +
+			"histogram_native_mixed_or_subquery_resets_changes.go:`if ctx.rangeMode() && !subqueryPinned(sub)` would route to the " +
 			"true fan-out lowering instead")
 	}
 }
 
 // TestLowerMixedOrSubqueryResetsOrChangesInput_InstantPinnedNoCrossJoin
-// kills the INVERT_LOGICAL mutant at :314:21 (`&&` -> `||`) inside
-// lowerMixedOrSubqueryResetsOrChangesInput:
+// kills the INVERT_LOGICAL mutant (`&&` -> `||`) at
+// histogram_native_mixed_or_subquery_resets_changes.go:`if ctx.rangeMode() && subqueryPinned(sub)`,
+// inside lowerMixedOrSubqueryResetsOrChangesInput:
 //
 //	if ctx.rangeMode() && subqueryPinned(sub) {
 //	    grid := &chplan.StepGrid{...}
@@ -208,6 +216,7 @@ func TestLowerMixedOrSubqueryResetsOrChangesInput_InstantPinnedNoCrossJoin(t *te
 		return true
 	})
 	if found {
-		t.Fatalf("instant-mode pinned subquery built a CrossJoin (mutant `&&`->`||` at :314:21)")
+		t.Fatalf("instant-mode pinned subquery built a CrossJoin (mutant `&&`->`||` at " +
+			"histogram_native_mixed_or_subquery_resets_changes.go:`if ctx.rangeMode() && subqueryPinned(sub)`)")
 	}
 }

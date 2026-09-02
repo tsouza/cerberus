@@ -101,7 +101,7 @@ func TestHistogramFromValue_ZeroBucketSymmetric(t *testing.T) {
 }
 
 // TestHistogramFromValue_ZeroBucketOneSidedClamp pins reference
-// Prometheus's one-sided clamp (promql/quantile.go:263-273): a
+// Prometheus's one-sided clamp (in promql/quantile.go): a
 // distribution with observations on only ONE side of zero has its zero
 // band collapsed on the side it never recorded, rather than spanning
 // the full symmetric [-ZeroThreshold, +ZeroThreshold] band.

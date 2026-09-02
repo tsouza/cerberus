@@ -140,7 +140,7 @@ func TestLower_ExpHistogram_TsOfFirstLastOverTime_AtPin(t *testing.T) {
 // __name__-handling half of cerberus issue #2482's finding: despite
 // reference Prometheus's funcTsOfFirstOverTime / funcTsOfLastOverTime
 // literally assigning `Sample{Metric: el.Metric, ...}`, the engine's
-// separate dropName gate (promql/engine.go:2114) strips it for every
+// separate dropName gate in promql/engine.go strips it for every
 // function except literally "last_over_time"/"first_over_time" — so the
 // projected MetricName here must be the empty-string literal, matching
 // cerberus's own existing (verified) classic float-selector lowering for

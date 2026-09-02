@@ -19,19 +19,20 @@ import (
 // EQUIVALENCE verdicts (no killing test possible — left documented here so
 // a future agent doesn't burn time re-attempting them):
 //
-//   - range_aggregation.go:438:36 CONDITIONALS_BOUNDARY
-//     `if len(e.Left.Unwrap.PostFilters) > 0` → `>= 0`. The mutant differs
-//     from the original ONLY at len==0. At that point `inner` is always a
-//     *chplan.Filter (line 432's andFilter unconditionally wraps it), so
-//     applyUnwrapPostFilters with an empty filter slice destructures that
-//     Filter (`pred = f.Predicate; inner = f.Input`) and reconstructs an
-//     identical `&chplan.Filter{Input: f.Input, Predicate: f.Predicate}`,
-//     while wrapLabelsWithMarks(labelsExpr, nil) returns labelsExpr
-//     verbatim (duration.go:288) and the hasMarks return stays false. The
-//     emitted plan is structurally identical, so no assertion can observe
-//     the flip. Genuinely equivalent.
+//   - range_aggregation.go:`len(e.Left.Unwrap.PostFilters) > 0`
+//     CONDITIONALS_BOUNDARY `> 0` → `>= 0`. The mutant differs from the
+//     original ONLY at len==0. At that point `inner` is always a
+//     *chplan.Filter (the andFilter call just above unconditionally wraps
+//     it), so applyUnwrapPostFilters with an empty filter slice
+//     destructures that Filter (`pred = f.Predicate; inner = f.Input`) and
+//     reconstructs an identical
+//     `&chplan.Filter{Input: f.Input, Predicate: f.Predicate}`, while
+//     wrapLabelsWithMarks(labelsExpr, nil) returns labelsExpr verbatim
+//     (duration.go:`len(marks) == 0`) and the hasMarks return stays false.
+//     The emitted plan is structurally identical, so no assertion can
+//     observe the flip. Genuinely equivalent.
 //
-//   - range_aggregation.go:797:55 ARITHMETIC_BASE
+//   - range_aggregation.go:`len(e.Grouping.Groups)*2` ARITHMETIC_BASE
 //     `make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)` → `/2`. The `*2`
 //     is a slice CAPACITY pre-allocation hint; the loop appends exactly
 //     two entries per group regardless, so the resulting slice's contents,
@@ -40,10 +41,8 @@ import (
 //     "slice-capacity hints are out of scope" rule).
 
 // TestAbsentOverTimeExtendsMatcherWindowByIntervalPlusOffset pins the
-// ARITHMETIC_BASE mutant at range_aggregation.go:291:59 inside
-// [lowerAbsentOverTime]:
-//
-//	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
+// ARITHMETIC_BASE mutant on
+// range_aggregation.go:lowerAbsentOverTime:`lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)`.
 //
 // This is the absent_over_time twin of the per-series window-extension
 // arithmetic already pinned for the ordinary path by
@@ -104,7 +103,8 @@ func TestAbsentOverTimeExtendsMatcherWindowByIntervalPlusOffset(t *testing.T) {
 }
 
 // TestAbsentSynthLabelsLogicalConjunction pins BOTH INVERT_LOGICAL mutants
-// on range_aggregation.go:347 inside [absentSynthLabels]:
+// on range_aggregation.go:`m.Type == labels.MatchEqual && !seen &&
+// !dropped[m.Name]` inside [absentSynthLabels]:
 //
 //	if _, seen := values[m.Name]; m.Type == labels.MatchEqual && !seen && !dropped[m.Name] {
 //	                                                          ^col61      ^col70
@@ -156,7 +156,8 @@ func TestAbsentSynthLabelsLogicalConjunction(t *testing.T) {
 }
 
 // TestAbsentSynthLabelsDuplicateEqualityDropped is a second, independent
-// guard on the same range_aggregation.go:347 conjunction, exercising the
+// guard on the same range_aggregation.go:`m.Type == labels.MatchEqual &&
+// !seen && !dropped[m.Name]` conjunction, exercising the
 // `!seen` operand directly (the col61/col70 fixture above only flexes the
 // non-equality path). A duplicate equality matcher on the same name must
 // drop the label entirely.
@@ -193,12 +194,13 @@ func TestAbsentSynthLabelsDuplicateEqualityDropped(t *testing.T) {
 }
 
 // isErrorBypassIdentity reports whether `e` is the exact
-// errorBypassIdentityExpr shape (range_aggregation.go:460):
+// errorBypassIdentityExpr shape:
 //
 //	if(mapContains(<fullLabels>, '__error__'), withDetectedLevel(...), identity)
 //
 // This shape is produced ONLY when applyUnwrapPostFilters returns
-// hasMarks=true (range_aggregation.go:509 -> :445 -> :147 -> :189). The
+// hasMarks=true (applyUnwrapPostFilters -> applyUnwrapRowSemantics ->
+// lowerRangeAggregation -> errorBypassIdentityExpr). The
 // ordinary identity projection is a `mapConcat(...)` from
 // withDetectedLevelAndColumns, which never matches this predicate, so the
 // helper cleanly distinguishes "error-bypass applied" from "not applied".
@@ -239,14 +241,13 @@ func rangeWindowIdentityExpr(t *testing.T, n chplan.Node) chplan.Expr {
 }
 
 // TestUnwrapPostFilterMarksGateErrorBypass_Negation pins the
-// CONDITIONALS_NEGATION half of range_aggregation.go:509:79 inside
-// [applyUnwrapPostFilters]:
+// CONDITIONALS_NEGATION half of the [applyUnwrapPostFilters] hasMarks
+// return
+// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`:
 //
-//	return &chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil
-//
-// The `len(marks) > 0` hasMarks return flows up to unwrapHasErrorMarks
-// (:445 -> :147), which gates wrapping the series identity in
-// errorBypassIdentityExpr (:189). A NEGATION flip `> 0` → `<= 0` reports
+// That `len(marks) > 0` hasMarks return flows up to unwrapHasErrorMarks
+// (via applyUnwrapRowSemantics), which gates wrapping the series identity
+// in errorBypassIdentityExpr. A NEGATION flip `> 0` → `<= 0` reports
 // hasMarks=false even though the numeric post-filter stamped a mark, so
 // the error-bypass identity wrapper disappears.
 //
@@ -292,15 +293,17 @@ func TestUnwrapPostFilterMarksGateErrorBypass_Negation(t *testing.T) {
 }
 
 // TestUnwrapPostFilterNoMarksSkipErrorBypass_Boundary pins the
-// CONDITIONALS_BOUNDARY half of range_aggregation.go:509:79. A flip
-// `len(marks) > 0` → `>= 0` reports hasMarks=true even when NO mark was
-// stamped, so the error-bypass wrapper is applied spuriously.
+// CONDITIONALS_BOUNDARY half of that same
+// range_aggregation.go:`&chplan.Filter{Input: inner, Predicate: pred}, labelsExpr, len(marks) > 0, nil`
+// return. A flip `len(marks) > 0` → `>= 0` reports hasMarks=true even
+// when NO mark was stamped, so the error-bypass wrapper is applied
+// spuriously.
 //
 // Fixture `sum_over_time({app="api"} | logfmt | unwrap latency | foo = "bar" [5m])`:
 //   - `| foo = "bar"` is a StringLabelFilter post-filter → produces NO
 //     marks (labelFiltererLower returns nil marks for string filters).
 //   - The post-filter slice is non-empty so applyUnwrapPostFilters is
-//     called and reaches the line-509 return with marks==0; `inner` is a
+//     called and reaches that return with marks==0; `inner` is a
 //     Filter so `pred` is non-nil and the `> 0` return path executes.
 //   - bare `unwrap latency` adds no mark either, so unwrapHasErrorMarks is
 //     false on the original → identity is NOT error-bypass-wrapped.

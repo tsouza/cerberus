@@ -25,9 +25,10 @@ func TestHistogramQuantileValueFrag_DividesRankBeforeWidth(t *testing.T) {
 }
 
 // TestHistogramQuantileValueFrag_PhiExprGating kills the two
-// CONDITIONALS_NEGATION mutants at histogram_quantile.go:457
-// (`h.PhiExpr != nil`, inside the arrayFirstIndex predicate) and :266
-// (`h.PhiExpr == nil`, the early return before the isNaN wrapper).
+// CONDITIONALS_NEGATION mutants on `h.PhiExpr != nil` inside the
+// arrayFirstIndex predicate (histogram_quantile.go:`w.idx = func() Frag`) and
+// on histogram_quantile.go:`h.PhiExpr == nil`, the early return before the
+// isNaN wrapper.
 //
 // The literal-Phi path (h.PhiExpr == nil) must render the BARE `c >=
 // <target>` comparison as the arrayFirstIndex predicate and must NOT
@@ -80,17 +81,19 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 			t.Errorf("computed phi must wrap the predicate as (if(c >= ..., 1, 0) = 1) (line 457 flipped?):\n%s", sql)
 		}
 		if !strings.Contains(sql, "= 1),") {
-			t.Errorf("computed phi predicate must close with `= 1)` (line 457 flipped?):\n%s", sql)
+			t.Errorf("computed phi predicate must close with `= 1)` "+
+				"(histogram_quantile.go:`w.idx = func() Frag` flipped?):\n%s", sql)
 		}
 		if !strings.HasPrefix(sql, "if(isNaN(") {
-			t.Errorf("computed phi must lead with the isNaN(phi) guard (line 266 flipped?):\n%s", sql)
+			t.Errorf("computed phi must lead with the isNaN(phi) guard "+
+				"(histogram_quantile.go:`h.PhiExpr == nil` flipped?):\n%s", sql)
 		}
 	})
 }
 
 // TestEmitHistogramQuantile_RequiredColumns kills the INVERT_LOGICAL mutant
-// at histogram_quantile.go:92:32 (`h.BucketCountsColumn == "" ||
-// h.ExplicitBoundsColumn == ""` -> `&&`). Each column empty ALONE must
+// at histogram_quantile.go:`h.BucketCountsColumn == "" ||
+// h.ExplicitBoundsColumn == ""` (`||` -> `&&`). Each column empty ALONE must
 // still error; an `&&` mutant would require BOTH to be empty
 // simultaneously, letting a plan missing just one of the two through.
 func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
@@ -126,9 +129,8 @@ func TestEmitHistogramQuantile_RequiredColumns(t *testing.T) {
 
 // TestEmitHistogramQuantile_GroupByAliasFallback kills both the
 // CONDITIONALS_BOUNDARY (`<` -> `<=`) and CONDITIONALS_NEGATION (`<` ->
-// `>=`) mutants at histogram_quantile.go:152:8 (`i <
-// len(h.GroupByAliases)`). Placing the alias slice ONE ENTRY SHORT of
-// GroupBy hits the exact boundary index (i == len(h.GroupByAliases)):
+// `>=`) mutants at histogram_quantile.go:`i < len(h.GroupByAliases)`.
+// Placing the alias slice ONE ENTRY SHORT of GroupBy hits the exact boundary index (i == len(h.GroupByAliases)):
 // under either mutant that index tries h.GroupByAliases[i], which is out
 // of range and panics; under the original code it falls back to an
 // unaliased projection.

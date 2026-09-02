@@ -46,8 +46,9 @@ import "context"
 // Lookback=5m [261 samples/series over a 1h05m seed window], 1h query
 // window, `histogram_quantile(0.95, sum by (le, route) (increase(<bucket>
 // [5m])))` — `by(le, ...)`, not a bare `by(route)`, is REQUIRED to reach
-// the array-domain groupArray path at all (histogramAggShapeLowerable,
-// histogram_quantile.go:1058); a by-clause omitting `le` legitimately
+// the array-domain groupArray path at all
+// (internal/promql/histogram_quantile.go:histogramAggShapeLowerable); a
+// by-clause omitting `le` legitimately
 // resolves to the empty ordinary-float-bucket fallback instead. A unique
 // query_id per run, per #2429's own harness-pitfall lesson):
 //

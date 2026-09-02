@@ -407,7 +407,7 @@ func TestSearchTagsV2_InvalidScope(t *testing.T) {
 // enum_attributes.go) maps only "", "none", "trace", "span",
 // "resource", "event", "link" and "instrumentation" to a real scope;
 // everything else folds to AttributeScopeUnknown, and
-// `pkg/api.ParseSearchTagsRequest` (pkg/api/search_tags.go:392) turns
+// `pkg/api.ParseSearchTagsRequest` (in pkg/api/search_tags.go) turns
 // that into `invalid scope: <v>` — the same shape it produces for
 // upstream's own `scope=blerg` test case.
 //

@@ -21,8 +21,8 @@ const chCodeMemoryLimitExceeded = 241
 // memory limit (CH error code 241, MEMORY_LIMIT_EXCEEDED). It is the
 // memory-side sibling of [ErrTooManySamples]: a per-query resource
 // rejection, NOT a transport failure — ClickHouse is alive and healthy
-// when it enforces a cap, so these errors are breaker-neutral (see
-// breaker.record) and the API heads map them onto the same
+// when it enforces a cap, so these errors are breaker-neutral (they classify
+// as breakerScopeStatement — see breaker_classify.go) and the API heads map them onto the same
 // resource-exhausted wire shapes as the sample budget (prom 422
 // errorType=execution, loki 400 limit-style, tempo 422).
 //
@@ -86,17 +86,4 @@ func wrapMemoryLimit(err error, limit int64) error {
 		return &MemoryLimitError{Limit: limit, Cause: err}
 	}
 	return err
-}
-
-// isMemoryLimitExceeded reports whether err is a ClickHouse
-// MEMORY_LIMIT_EXCEEDED rejection — either already wrapped as a
-// *MemoryLimitError or still the raw *clickhouse.Exception with code
-// 241 (the form breaker.record sees, since the breaker observes the
-// driver error before chclient wraps it).
-func isMemoryLimitExceeded(err error) bool {
-	if errors.Is(err, ErrMemoryLimitExceeded) {
-		return true
-	}
-	var ex *clickhouse.Exception
-	return errors.As(err, &ex) && ex.Code == chCodeMemoryLimitExceeded
 }

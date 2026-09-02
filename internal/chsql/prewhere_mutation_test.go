@@ -10,10 +10,11 @@ import (
 // PREWHERE-promotion helpers in prewhere.go so that the gremlins mutation
 // lane (phase2 scope ./internal/chsql) cannot flip an operator or a
 // loop-control token without a test going red. Each test names the
-// prewhere.go line it defends.
+// prewhere.go construct it defends.
 
-// TestOrderedConjunctsSortContinue defends prewhere.go:203 (the `continue`
-// inside the stable insertion sort over the sort-prefix bucket).
+// TestOrderedConjunctsSortContinue defends the `continue` inside the stable
+// insertion sort over the sort-prefix bucket
+// (prewhere.go:`if prefix[j-1].rank > prefix[j].rank`).
 //
 // Mutation INVERT_LOOPCTRL turns that `continue` into `break`. The original
 // keeps bubbling the inserted element left until it reaches its rank slot;
@@ -47,8 +48,8 @@ func TestOrderedConjunctsSortContinue(t *testing.T) {
 	}
 }
 
-// TestIsLeadingSortKeyEqualityLogical defends prewhere.go:269 (the
-// `!ok || bin.Op != chplan.OpEq` short-circuit).
+// TestIsLeadingSortKeyEqualityLogical defends the
+// prewhere.go:`!ok || bin.Op != chplan.OpEq` short-circuit.
 //
 // Mutation INVERT_LOGICAL turns `||` into `&&`. With `&&`, a binary whose
 // operator is NOT `=` no longer returns early as "not a leading-sort-key
@@ -80,8 +81,9 @@ func TestIsLeadingSortKeyEqualityLogical(t *testing.T) {
 	}
 }
 
-// TestOrderedConjunctsSingleFastPath defends prewhere.go:167
-// (`if len(conjuncts) <= 1 { return conjuncts }`).
+// TestOrderedConjunctsSingleFastPath defends
+// prewhere.go:`len(conjuncts) <= 1` (`if len(conjuncts) <= 1 { return
+// conjuncts }`).
 //
 // Mutation CONDITIONALS_BOUNDARY turns `<=` into `<`, so a single conjunct
 // no longer takes the fast path: it is rebuilt through the bucket/sort
@@ -105,12 +107,12 @@ func TestOrderedConjunctsSingleFastPath(t *testing.T) {
 }
 
 // TestSortRankForMinimum defends sortRankFor's running-minimum update
-// (prewhere.go:148). It pins that sortRankFor returns the LOWEST matching
+// (prewhere.go:`best < 0 || r < best`). It pins that sortRankFor returns the LOWEST matching
 // rank across a predicate's columns regardless of the order the columns are
 // discovered — i.e. a later, larger rank never overwrites an earlier rank-0
 // (and would catch a `best < 0`→`best <= 0` flip, which lets a larger rank
-// clobber an existing rank-0 minimum). The `r < best`→`r <= best` boundary at
-// this same line is a separate, genuinely equivalent mutation — see this
+// clobber an existing rank-0 minimum). The `r < best`→`r <= best` boundary in
+// that same condition is a separate, genuinely equivalent mutation — see this
 // file's own "NOT KILLABLE" footer below for why.
 func TestSortRankForMinimum(t *testing.T) {
 	t.Parallel()
@@ -130,7 +132,8 @@ func TestSortRankForMinimum(t *testing.T) {
 }
 
 // TestIsNarrowIntegerDiscriminatorFinalReturnLogical defends
-// isNarrowIntegerDiscriminator's final return (prewhere.go:287): the chain
+// isNarrowIntegerDiscriminator's final return
+// (prewhere.go:`columnOK && literalOK`): the chain
 // `columnOK && literalOK && column.Qualifier == "" && shape.IsInteger...
 // && sortRankFor(...) < 0`.
 //
@@ -171,7 +174,7 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 
 // CI-TIMING NOISE, not a test gap — cerberus issue #2741.
 //
-// prewhere.go:287:18 (INVERT_LOGICAL, the same mutation
+// prewhere.go:`columnOK && literalOK` (INVERT_LOGICAL, the same mutation
 // TestIsNarrowIntegerDiscriminatorFinalReturnLogical above defends) showed
 // LIVED on the v1.19.0 release-gate's phase2-other run despite this test
 // existing and being correct. Reproduced locally per cerberus issue #2730's
@@ -188,16 +191,19 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 //
 // NOT KILLABLE — documented, not defended by a test.
 //
-// prewhere.go:131:4, :187:5 and :207:4 (INVERT_LOOPCTRL) each swap a
-// terminal `break` for `continue` guarding a "found it, stop" boolean latch
-// (touchesWide / hitsSkip) or the stable-insertion-sort early exit. In
+// The INVERT_LOOPCTRL mutants of the three terminal `break`s —
+// prewhere.go:`touchesWide = true`, prewhere.go:`hitsSkip = true` and the
+// stable-insertion-sort early exit at
+// prewhere.go:`if prefix[j-1].rank > prefix[j].rank` — each swap that `break`
+// for a `continue`, guarding a "found it, stop" boolean latch (touchesWide /
+// hitsSkip) or the sort's early exit. In
 // every case the flag is set exactly once and never reset, or (for the
 // sort) the insertion-sort invariant guarantees every comparison below the
 // break point is already in order, so scanning further with `continue`
 // instead of `break` can never change the final return value — only the
 // iteration count. No observable-behaviour test can distinguish them.
 //
-// prewhere.go:283:15 (INVERT_LOGICAL, `||`→`&&` in
+// prewhere.go:`!columnOK || !literalOK` (INVERT_LOGICAL, `||`→`&&` in
 // isNarrowIntegerDiscriminator's swap guard) is equivalent for the same
 // structural reason as the min-tracking boundary above: a chplan.Expr value
 // has exactly one concrete type, so whichever of columnOK/literalOK is
@@ -206,7 +212,8 @@ func TestIsNarrowIntegerDiscriminatorFinalReturnLogical(t *testing.T) {
 // the branch this condition guards can only ever produce the SAME final
 // (columnOK, literalOK) pair whether or not the swap runs.
 //
-// prewhere.go:148:20 (CONDITIONALS_BOUNDARY, `r < best` → `r <= best` in
+// prewhere.go:`best < 0 || r < best` (CONDITIONALS_BOUNDARY, `r < best` →
+// `r <= best` in
 // sortRankFor's running-minimum update) is equivalent because the boundary
 // (`r == best`) is unreachable for two DISTINCT columns under any
 // TableShape: SortRank(name) returns the index of name's first match in

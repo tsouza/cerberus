@@ -4,7 +4,7 @@
 // `first_over_time` applied to a SUBQUERY.
 //
 // Prometheus keeps `__name__` on exactly two range functions
-// (promql/engine.go:2114, `dropName := (fn != "last_over_time" && fn !=
+// (promql/engine.go, `dropName := (fn != "last_over_time" && fn !=
 // "first_over_time")`) and resolves the surviving name PER SERIES from the
 // input series' own labels. For a subquery the input series come from
 // `evalSubquery`, so the outer reducer reads whatever name the INNER

@@ -57,7 +57,7 @@ func requireGridNativeRejected(t *testing.T, node *chplan.RangeBucketGridNative)
 }
 
 // TestEmitRangeBucketGridNativeRejectsZeroStep defends
-// range_bucket_grid_native.go:197 (`if r.Step <= 0`).
+// range_bucket_grid_native.go:`if r.Step <= 0`.
 //
 // Mutation CONDITIONALS_BOUNDARY turns `<=` into `<`, so Step == 0 no
 // longer trips the guard: the emitter would proceed to build a grid whose
@@ -71,7 +71,7 @@ func TestEmitRangeBucketGridNativeRejectsZeroStep(t *testing.T) {
 }
 
 // TestEmitRangeBucketGridNativeRejectsZeroRange defends
-// range_bucket_grid_native.go:200 (`if r.Range <= 0`).
+// range_bucket_grid_native.go:`if r.Range <= 0`.
 //
 // Mutation CONDITIONALS_BOUNDARY turns `<=` into `<`, so Range == 0 no
 // longer trips the guard: the emitter would proceed to build a lookback
@@ -85,7 +85,7 @@ func TestEmitRangeBucketGridNativeRejectsZeroRange(t *testing.T) {
 }
 
 // TestEmitRangeBucketGridNativeRejectsPartialZeroStartOrEnd defends
-// range_bucket_grid_native.go:203 (`if r.Start.IsZero() || r.End.IsZero()`).
+// range_bucket_grid_native.go:`if r.Start.IsZero() || r.End.IsZero()`.
 //
 // Mutation INVERT_LOGICAL turns `||` into `&&`, so the guard only fires
 // when BOTH Start and End are zero. A plan with exactly one endpoint zero
@@ -109,7 +109,7 @@ func TestEmitRangeBucketGridNativeRejectsPartialZeroStartOrEnd(t *testing.T) {
 }
 
 // TestEmitRangeBucketGridNativeRejectsPartialEmptyCols defends
-// range_bucket_grid_native.go:212
+// range_bucket_grid_native.go:`if r.BucketCountsCol == "" || r.ExplicitBoundsCol == ""`
 // (`if r.BucketCountsCol == "" || r.ExplicitBoundsCol == ""`).
 //
 // Mutation INVERT_LOGICAL turns `||` into `&&`, so the guard only fires

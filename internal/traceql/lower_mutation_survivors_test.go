@@ -11,25 +11,26 @@ import (
 
 // Mutation-coverage tests for the five `CONDITIONALS_NEGATION` survivors
 // tracked by #1524: gremlins-phase4-traceql-lower run 30695961440 recorded
-// nine LIVED mutants on lower.go, two of which (lower.go:651 / :655, inside
-// the now-deleted spansetArmExposesSpanID) no longer exist — #1413 removed
-// that function when it folded span-identity tracking into mapSetOp's own
+// nine LIVED mutants on lower.go, two of which (inside the now-deleted
+// spansetArmExposesSpanID) no longer exist — #1413 removed that function
+// when it folded span-identity tracking into mapSetOp's own
 // alignUnionArms call. The remaining five all still exist, unchanged in
-// substance, just renumbered by intervening edits:
+// substance:
 //
-//	lower.go:612  isNarrowSpanProjection  Replacements guard
-//	lower.go:620  isNarrowSpanProjection  Projections-length guard
-//	lower.go:1333 lowerInOperation        absentAttributePredicate guard
-//	lower.go:1417 attributeHasNoBacking   instrumentation-scope guard
-//	lower.go:1670 coerceBoolFieldAccess   op guard
+//	isNarrowSpanProjection  lower.go:`len(p.Replacements) != 0`
+//	isNarrowSpanProjection  lower.go:`len(p.Projections) != len(want)`
+//	lowerInOperation        lower.go:`absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent`
+//	attributeHasNoBacking   lower.go:`attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""`
+//	coerceBoolFieldAccess   lower.go:`op != chplan.OpEq && op != chplan.OpNe`
 //
 // Each test below calls the mutated function/call-site directly and asserts
 // the CONCRETE result on both sides of the guard, so a CONDITIONALS_NEGATION
 // mutant (which wraps the whole guard condition in `!(...)`) flips at least
 // one assertion's expected outcome.
 
-// TestIsNarrowSpanProjection_ReplacementsGuard pins the `len(p.Replacements)
-// != 0` guard (lower.go:613). The mutant flips it to `== 0`, which:
+// TestIsNarrowSpanProjection_ReplacementsGuard pins the
+// lower.go:`len(p.Replacements) != 0` guard. The mutant flips it to
+// `== 0`, which:
 //   - on the canonical envelope (Replacements empty) short-circuits false
 //     instead of falling through to the (matching) shape check;
 //   - on a Project WITH Replacements set skips the short-circuit and falls
@@ -51,7 +52,7 @@ func TestIsNarrowSpanProjection_ReplacementsGuard(t *testing.T) {
 }
 
 // TestIsNarrowSpanProjection_ProjectionCountGuard pins the
-// `len(p.Projections) != len(want)` guard (lower.go:620). The mutant flips it
+// lower.go:`len(p.Projections) != len(want)` guard. The mutant flips it
 // to `==`, which:
 //   - on the exact-length canonical envelope short-circuits false instead of
 //     running the per-column check that confirms it;
@@ -74,8 +75,8 @@ func TestIsNarrowSpanProjection_ProjectionCountGuard(t *testing.T) {
 }
 
 // TestIsNarrowSpanProjection_PerColumnGuard pins the per-column rejection
-// guard `!ok || projection.Alias != "" || column.Name != want[i]`
-// (lower.go:625). This guard was previously NOT_COVERED — nothing exercised
+// guard lower.go:`!ok || projection.Alias != "" || column.Name != want[i]`.
+// This guard was previously NOT_COVERED — nothing exercised
 // isNarrowSpanProjection's loop body at all — so the two length guards above
 // were the only ones gremlins could even attempt to kill. Reaching the loop
 // (as the two tests above now do) makes this three-way OR live too; each arm
@@ -107,9 +108,9 @@ func TestIsNarrowSpanProjection_PerColumnGuard(t *testing.T) {
 	}
 }
 
-// TestLowerInOperation_AbsentAttributeGuard pins the `; absent {` guard at
-// lower.go:1333 (`if pred, absent := absentAttributePredicate(...); absent`).
-// The mutant flips it to `; !absent {`, which:
+// TestLowerInOperation_AbsentAttributeGuard pins the `; absent` guard
+// lower.go:`absentAttributePredicate(attr, s, b.Op == traceql.OpNotIn); absent`.
+// The mutant flips it to `; !absent`, which:
 //   - on a backed attribute (absent == false) wrongly fires the early
 //     return, yielding the (nil, nil) zero value instead of an *InList;
 //   - on an unbacked attribute (absent == true) wrongly SKIPS the early
@@ -150,9 +151,9 @@ func TestLowerInOperation_AbsentAttributeGuard(t *testing.T) {
 	}
 }
 
-// TestAttributeHasNoBacking_InstrumentationScopeGuard pins the
-// `attr.Scope == AttributeScopeInstrumentation && s.ScopeAttributesColumn ==
-// ""` predicate (lower.go:1417). The mutant negates the whole expression,
+// TestAttributeHasNoBacking_InstrumentationScopeGuard pins the predicate
+// lower.go:`attr.Scope == traceql.AttributeScopeInstrumentation && s.ScopeAttributesColumn == ""`.
+// The mutant negates the whole expression,
 // which flips every one of the three cases below.
 func TestAttributeHasNoBacking_InstrumentationScopeGuard(t *testing.T) {
 	t.Parallel()
@@ -178,9 +179,9 @@ func TestAttributeHasNoBacking_InstrumentationScopeGuard(t *testing.T) {
 	}
 }
 
-// TestCoerceBoolFieldAccess_OpGuard pins the `op != chplan.OpEq && op !=
-// chplan.OpNe` guard (lower.go:1670). The mutant flips it to `op == OpEq ||
-// op == OpNe`, which:
+// TestCoerceBoolFieldAccess_OpGuard pins the guard
+// lower.go:`op != chplan.OpEq && op != chplan.OpNe`. The mutant flips it
+// to `op == OpEq || op == OpNe`, which:
 //   - on OpEq wrongly fires the early return, leaving the LitBool operand
 //     un-coerced instead of rewritten to its OTel-CH string encoding;
 //   - on a non-equality op (OpAnd) wrongly SKIPS the early return and

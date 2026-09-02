@@ -446,13 +446,12 @@ var canonicalLevelGroups = []struct {
 
 // TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape kills the two
 // adjacent ARITHMETIC_BASE mutants reported by the gremlins phase-4
-// run at `detected_level.go:143:44` (the `*` in `len(groups)*2+1`)
-// and `:143:46` (the `+` in the same expression). The mutation site
-// is the slice-capacity hint passed to `make([]chplan.Expr, 0,
-// len(groups)*2+1)` — `*` flipping to `/` (or `%`) and `+` flipping
-// to `-` (or `*`) change the pre-allocated capacity but `append`
-// silently grows past it, so a semantic-only test cannot observe the
-// difference. This test pins:
+// run on the slice-capacity hint
+// detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` — the `*`
+// and the trailing `+` of that expression. `*` flipping to `/` (or
+// `%`) and `+` flipping to `-` (or `*`) change the pre-allocated
+// capacity but `append` silently grows past it, so a semantic-only
+// test cannot observe the difference. This test pins:
 //
 //  1. `len(Args) == 2*len(canonicalLevelGroups)+1` (the load-bearing
 //     count: 7 (cond, literal) pairs plus the trailing default
@@ -462,7 +461,7 @@ var canonicalLevelGroups = []struct {
 //     `make([]T, 0, N)` returns a slice with `cap == N` before any
 //     append, and the 15 subsequent appends never exceed that
 //     capacity — so the final `cap` equals the hint). Any
-//     ARITHMETIC_BASE mutation on `*` or `+` at col 44/46 shifts the
+//     ARITHMETIC_BASE mutation on that `*` or `+` shifts the
 //     allocated capacity, triggers an `append`-driven re-allocation
 //     with Go's runtime growth strategy, and produces a final `cap`
 //     that is NOT 15 (the original mutants would yield e.g. 4, 8,
@@ -503,7 +502,7 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	// both produce a final cap different from the exact arg count.
 	// Asserting cap == wantLen pins the arithmetic.
 	if got, want := cap(fn.Args), wantLen; got != want {
-		t.Fatalf("cap(multiIf.Args) = %d; want %d (mutant `*` → `/`/`%%` or `+` → `-`/`*` at detected_level.go:143:44 / :143:46 would shift the capacity hint and re-allocate via append's growth schedule)", got, want)
+		t.Fatalf("cap(multiIf.Args) = %d; want %d (mutant `*` → `/`/`%%` or `+` → `-`/`*` in detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` would shift the capacity hint and re-allocate via append's growth schedule)", got, want)
 	}
 }
 

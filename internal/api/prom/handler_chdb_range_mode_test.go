@@ -1788,7 +1788,7 @@ func TestQueryRange_RangeMode_AtModifier_Collapse_ChDB(t *testing.T) {
 // engine special-cases these two range functions out of the
 // `dropName` default for every other range-vector fn:
 //
-//	prometheus/prometheus@cerberus-parser/promql/engine.go:2114
+//	prometheus/prometheus@cerberus-parser/promql/engine.go
 //	`dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")`
 //
 // They're position-shift reducers (pick a single sample from the

@@ -31,7 +31,8 @@
 //     target = phi * rankBase.
 //  4. idx = the 1-based position the rank walk stops on. Reference
 //     Prometheus walks the buckets in one of TWO directions depending
-//     on phi AND on whether Sum is NaN (quantile.go:243-262), so
+//     on phi AND on whether Sum is NaN (quantile.go's
+//     `if math.IsNaN(h.Sum) || q < 0.5` walk-direction split), so
 //     cerberus does too:
 //     - phi < reverseWalkPhi, OR Sum is NaN: forward, rank =
 //     phi * rankBase, stopping at
@@ -109,11 +110,12 @@
 //     lands just inside the stop bucket or just outside it. Reference's
 //     own forms are also structurally bounded to [0, 1], since the walk
 //     broke at this bucket and not at the one before it.
-//  6. Edge cases (Prometheus quantile.go:114-119), tested in THIS order —
+//  6. Edge cases (`bucketQuantile`'s domain guards in Prometheus
+//     quantile.go), tested in THIS order —
 //     out-of-domain phi is checked before the empty-histogram case, so a
 //     `phi` outside [0, 1] answers ±Inf even for an empty histogram
-//     (cerberus issue #2067; reference quantile.go:222-232 checks
-//     `q < 0` / `q > 1` before `h.Count == 0`):
+//     (cerberus issue #2067; reference quantile.go's `HistogramQuantile`
+//     checks `q < 0` / `q > 1` before `h.Count == 0`):
 //     - phi < 0 → -Inf (out of domain).
 //     - phi > 1 → +Inf (out of domain).
 //     - rankBase (stored Count) = 0 → NaN (empty histogram).
@@ -134,7 +136,8 @@
 //     reaching the rank" case from step 4. Reference answers NaN there
 //     only when Sum is NaN; with a finite Sum it returns the upper bound
 //     of the bucket its iterator was left sitting on
-//     (quantile.go:296-305, prometheus/prometheus#16578), which is the
+//     (quantile.go's exhausted-walk fallback to `bucket.Upper`,
+//     prometheus/prometheus#16578), which is the
 //     LAST position that iterator yielded: the top of the walk order on
 //     the forward arm, the bottom of it on the backward one. Those are
 //     the step-7 upper edges read at an array end rather than at the
@@ -160,7 +163,8 @@
 //     The band is `[-ZeroThreshold, +ZeroThreshold]` only when the
 //     distribution can hold observations on both sides of zero. A
 //     one-sided distribution clamps the side that cannot
-//     (quantile.go:263-273): with no negative buckets the band starts
+//     (quantile.go's one-sided zero-bucket clamp): with no negative
+//     buckets the band starts
 //     at 0, with no positive buckets it ends at 0. Without the clamp a
 //     positive-only histogram answers any phi in the lower half of its
 //     zero bucket with a NEGATIVE value — a number no observation in it
@@ -424,8 +428,8 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 
 	// Exhausted walk: no running count ever reached the rank, which the
 	// index functions report with their "not found" sentinel 0. Reference
-	// answers NaN there only when Sum is NaN (quantile.go:296-305, added for
-	// prometheus/prometheus#16578); with a finite Sum it falls back to the
+	// answers NaN there only when Sum is NaN (quantile.go's exhausted-walk
+	// fallback to `bucket.Upper`, added for prometheus/prometheus#16578); with a finite Sum it falls back to the
 	// upper bound of the bucket its iterator was left sitting on, which is
 	// the LAST position that iterator yielded — the top of the walk order
 	// going forward, the bottom of it going backward. Cerberus answered NaN
@@ -439,7 +443,8 @@ func histogramQuantileNativeValueFrag(h *chplan.HistogramQuantileNative, helpers
 		If(w.emptyWalk(), zeroBandOrigin(),
 			w.armSelectFiniteSum(upperEdgeAt(w.lastIterated), upperEdgeAt(w.firstIterated))))
 
-	// Outer chain (Prometheus quantile.go:222-232, 114-119). Out-of-domain
+	// Outer chain (`HistogramQuantile` and `bucketQuantile`'s domain guards
+	// in Prometheus quantile.go). Out-of-domain
 	// phi is checked OUTERMOST, above the empty-histogram case, matching
 	// reference's own `q < 0` / `q > 1` / `h.Count == 0` order — cerberus
 	// issue #2067. rankBase = 0 ranks against the histogram's STORED
@@ -529,7 +534,7 @@ func zeroBandOrigin() Frag { return verbatim("0.") }
 
 // reverseWalkPhi is the phi at which reference Prometheus's rank walk
 // flips from the forward bucket iterator to the reverse one
-// (promql/quantile.go:243-252, `if math.IsNaN(h.Sum) || q < 0.5`).
+// (promql/quantile.go's `if math.IsNaN(h.Sum) || q < 0.5`).
 // Walking in from the nearer end keeps the accumulated rank small, so
 // the subtraction that rebases it into the stop bucket loses fewer
 // significant digits.
@@ -664,7 +669,7 @@ func attachHQNativeRankWalk(w *hqNativeWriters, h *chplan.HistogramQuantileNativ
 	// one, each accumulated in reference's own order (see w.revCum).
 	//
 	// `least(..., rankBase)` is reference's own clamp
-	// (quantile.go:286-290, "Due to numerical inaccuracies, we could end
+	// (quantile.go, "Due to numerical inaccuracies, we could end
 	// up with a higher count than h.Count"): the accumulated total can
 	// drift a few ULPs above the stored Count once a rate()/increase()
 	// window fold has scaled every bucket, and reference caps it before
@@ -693,7 +698,8 @@ func attachHQNativeRankWalk(w *hqNativeWriters, h *chplan.HistogramQuantileNativ
 			w.rankBase()))
 	}
 	// rebasedRank is reference's `rank` after it has been rebased into
-	// the stop bucket — the fraction's NUMERATOR (quantile.go:310-314):
+	// the stop bucket — the fraction's NUMERATOR (quantile.go's `rank`
+	// rebase):
 	//
 	//	forward:  rank -= count - bucket.Count
 	//	backward: rank  = count - rank
@@ -868,7 +874,7 @@ func newHQNativeWriters(h *chplan.HistogramQuantileNative, helpers hqNativeHelpe
 		return Col(zt)
 	}
 	// The zero bucket's band edges, with reference Prometheus's
-	// one-sided clamp applied (promql/quantile.go:263-273):
+	// one-sided clamp applied (promql/quantile.go):
 	//
 	//	if !h.UsesCustomBuckets() && bucket.Lower < 0 && bucket.Upper > 0 {
 	//	    case len(NegativeBuckets) == 0 && len(PositiveBuckets) > 0:

@@ -540,8 +540,8 @@ func TestMustNewVectorAggregationExpr_UnparseableTopKParameter(t *testing.T) {
 
 // NOT KILLABLE — documented, not defended by a test.
 //
-// ast.go:218:8 (INCREMENT_DECREMENT, validateExtractedLabels' `named++` ->
-// `named--`). `named` is initialised to 0, is written only by this statement,
+// ast.go:`named++` (INCREMENT_DECREMENT, validateExtractedLabels' `named++`
+// -> `named--`). `named` is initialised to 0, is written only by this statement,
 // and is read only by the `if named == 0` post-condition three lines later.
 // The original leaves it at +k and the mutant at -k, where k is the number of
 // non-empty entries in regex.SubexpNames(); both are zero exactly when k is

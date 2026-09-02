@@ -1149,7 +1149,7 @@ func lowerOuterRangeFnOverSubquery(
 // empty literal (the `@`-pinned broadcast arm, see the call site).
 //
 // Why there is no matcher shortcut here: reference Prometheus never
-// derives `__name__` from a selector's matchers. promql/engine.go:2114
+// derives `__name__` from a selector's matchers. promql/engine.go
 // computes `dropName := (fn != "last_over_time" && fn != "first_over_time")`
 // for the OUTER call, ORs it per series with the INPUT series' own drop
 // bit, and then reads the name off `selVS.Series[i].Labels()`. For a

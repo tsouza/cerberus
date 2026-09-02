@@ -7,9 +7,9 @@
 // Two mutants on this file are NOT addressed with a dedicated test here —
 // both are provably EQUIVALENT, not coverage gaps:
 //
-//   - :119:31, INVERT_LOGICAL (`||` -> `&&`) inside
-//     sumOrAvgMixedOrSubqueryOuterFnRecognized's
-//     `s.ExpHistogramTable == "" || ctx.metadataFullRange` guard. Under
+//   - INVERT_LOGICAL (`||` -> `&&`) on
+//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`,
+//     sumOrAvgMixedOrSubqueryOuterFnRecognized's own guard. Under
 //     metadataFullRange=true this function's own later call chain —
 //     sumOrAvgOverMixedExpHistogramSetOp(sub.Expr, s, ctx), which calls
 //     mixedExpHistogramSetOp(agg.Expr, s, ctx) directly — independently
@@ -25,8 +25,9 @@
 //     and running `go test ./internal/promql/...` (this package) stays
 //     green.
 //
-//   - :181:10, CONDITIONALS_BOUNDARY (`<` -> `<=`) inside
-//     lowerSumOrAvgMixedOrSubqueryOuterFn:
+//   - CONDITIONALS_BOUNDARY (`<` -> `<=`) on
+//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if step < 0`,
+//     inside lowerSumOrAvgMixedOrSubqueryOuterFn:
 //
 //     step := sub.Step
 //     if step == 0 {
@@ -58,17 +59,20 @@ import (
 )
 
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_PositiveMatch kills two
-// mutants on this file's line 119/122 at once:
-//   - :119:25, CONDITIONALS_NEGATION (`==` -> `!=`) on
-//     `s.ExpHistogramTable == ""`: with the negation, ANY non-empty
+// mutants on sumOrAvgMixedOrSubqueryOuterFnRecognized's first two guards
+// at once:
+//   - CONDITIONALS_NEGATION (`==` -> `!=`) on the `s.ExpHistogramTable == ""`
+//     operand of
+//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`:
+//     with the negation, ANY non-empty
 //     ExpHistogramTable (the normal, default schema) makes the guard
 //     bail, so this test's ordinary DefaultOTelMetrics() schema alone
 //     differentiates.
-//   - :122:17, CONDITIONALS_NEGATION (`!=` -> `==`) on
-//     `len(c.Args) != 1`: the real call always carries exactly 1
+//   - CONDITIONALS_NEGATION (`!=` -> `==`) on
+//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if len(c.Args) != 1`: the real call always carries exactly 1
 //     argument (the subquery), so the negation would reject it.
 //
-// Unlike the :119:31 INVERT_LOGICAL guard this file's own header documents
+// Unlike the `||` INVERT_LOGICAL mutant this file's own header documents
 // as equivalent, neither of these two mutants is masked by the downstream
 // mixedExpHistogramSetOp call: they fire BEFORE that call ever runs, on a
 // perfectly ordinary, otherwise-recognisable positive-path query — so a
@@ -85,12 +89,15 @@ func TestSumOrAvgMixedOrSubqueryOuterFnRecognized_PositiveMatch(t *testing.T) {
 	}
 	if _, ok := sumOrAvgMixedOrSubqueryOuterFnRecognized(call, s, lowerCtx{}); !ok {
 		t.Fatalf("expected a well-formed 1-arg mixed-or subquery outer call to be recognised; "+
-			"got ok=false (mutants at %s:119:25 and :122:17)", "histogram_native_mixed_or_subquery_aggregate_range_fn.go")
+			"got ok=false (mutants at "+
+			"%s:`if s.ExpHistogramTable == \"\" || ctx.metadataFullRange` and %s:`if len(c.Args) != 1`)",
+			"histogram_native_mixed_or_subquery_aggregate_range_fn.go", "histogram_native_mixed_or_subquery_aggregate_range_fn.go")
 	}
 }
 
 // TestLowerSumOrAvgMixedOrSubqueryOuterFn_RangeModePinnedTakesBroadcastNotFanout
-// kills the INVERT_LOGICAL mutant at :203:22, where
+// kills the INVERT_LOGICAL mutant at
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if ctx.rangeMode() && !subqueryPinned(sub)`, where
 //
 //	if ctx.rangeMode() && !subqueryPinned(sub) {
 //	    return lowerSumOrAvgMixedOrSubqueryFoldFnRange(...)
@@ -131,15 +138,16 @@ func TestLowerSumOrAvgMixedOrSubqueryOuterFn_RangeModePinnedTakesBroadcastNotFan
 	if !found {
 		t.Fatalf("expected a CrossJoin (the pinned single-window broadcast path) for a " +
 			"range-mode query over an @-pinned mixed-or subquery; got none — mutant `&&`->`||` " +
-			"at :203:22 would route to the true fan-out lowering instead")
+			"at histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if ctx.rangeMode() && !subqueryPinned(sub)` " +
+			"would route to the true fan-out lowering instead")
 	}
 }
 
 // TestLowerSumOrAvgMixedOrSubqueryFoldFn_StepAlignedTracksCtxStep kills
-// both mutants at :283:76 (`ctx.step > 0`, CONDITIONALS_BOUNDARY `>`->`>=`
-// and CONDITIONALS_NEGATION `>`->`<=`) inside lowerSumOrAvgMixedOrSubqueryFoldFn:
-//
-//	return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil
+// both mutants (CONDITIONALS_BOUNDARY `>`->`>=` and CONDITIONALS_NEGATION
+// `>`->`<=`) on the `ctx.step > 0` argument of
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`,
+// inside lowerSumOrAvgMixedOrSubqueryFoldFn:
 //
 // stepAligned threads straight into the returned *chplan.VectorSetOp's own
 // StepAligned field (combineMixedAggregateBranches / mixedOrShadowUnless,
@@ -147,7 +155,8 @@ func TestLowerSumOrAvgMixedOrSubqueryOuterFn_RangeModePinnedTakesBroadcastNotFan
 // so the root plan's StepAligned field is a direct, unmasked readout of
 // this expression. An instant query (ctx.step == 0) must publish
 // StepAligned=false; a range-mode `@`-pinned broadcast (ctx.step > 0, this
-// function's OTHER reachable caller state — see :203:22's own guard just
+// function's OTHER reachable caller state — see
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if ctx.rangeMode() && !subqueryPinned(sub)`'s own guard just
 // above) must publish StepAligned=true. Both CONDITIONALS_BOUNDARY
 // (`>=`, true at step==0) and CONDITIONALS_NEGATION (`<=`, also true at
 // step==0) disagree with the original ONLY at the instant-mode case, so a
@@ -169,7 +178,9 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_StepAlignedTracksCtxStep(t *testing.
 		t.Fatalf("instant plan = %T, want *chplan.VectorSetOp", instantPlan)
 	}
 	if vso.StepAligned {
-		t.Fatalf("instant-mode plan StepAligned = true, want false (mutants at :283:76)")
+		t.Fatalf("instant-mode plan StepAligned = true, want false (mutants on the `ctx.step > 0` argument of " +
+			"histogram_native_mixed_or_subquery_aggregate_range_fn.go:" +
+			"`return combineMixedAggregateBranches(histFolded, floatFolded, s, ctx.step > 0), nil`)")
 	}
 
 	end := at.Add(10 * time.Minute)
@@ -187,17 +198,17 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_StepAlignedTracksCtxStep(t *testing.
 }
 
 // TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep
-// kills all six mutants across :351:105, :352:107 and :360:72 (each a
-// CONDITIONALS_BOUNDARY/CONDITIONALS_NEGATION pair on a `ctx.step > 0`
-// expression) inside lowerSumOrAvgMixedOrSubqueryFoldFnRange:
+// kills all six mutants (each a CONDITIONALS_BOUNDARY/CONDITIONALS_NEGATION
+// pair on a `ctx.step > 0` expression) across the three call sites inside
+// lowerSumOrAvgMixedOrSubqueryFoldFnRange:
 //
-//	histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx.step > 0)   // :351
-//	floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx.step > 0) // :352
-//	return combineMixedAggregateBranches(histPure, floatPure, s, ctx.step > 0), nil                               // :360
+//	histogram_native_mixed_or_subquery_aggregate_range_fn.go:`histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx.step > 0)`
+//	histogram_native_mixed_or_subquery_aggregate_range_fn.go:`floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx.step > 0)`
+//	histogram_native_mixed_or_subquery_aggregate_range_fn.go:`return combineMixedAggregateBranches(histPure, floatPure, s, ctx.step > 0), nil`
 //
 // This function is only reached, in production, via
-// lowerSumOrAvgMixedOrSubqueryOuterFn's own `ctx.rangeMode() &&
-// !subqueryPinned(sub)` dispatch (:203:22 above), which guarantees
+// lowerSumOrAvgMixedOrSubqueryOuterFn's own
+// histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if ctx.rangeMode() && !subqueryPinned(sub)` dispatch above, which guarantees
 // ctx.step > 0 whenever this function runs — so BOTH mutant families
 // (`>=` and `<=`) agree with the original `>` on every value this
 // function's callER can ever supply, UNLESS this function is driven
@@ -215,9 +226,9 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFn_StepAlignedTracksCtxStep(t *testing.
 // resulting nodes' StepAligned field is a direct, unmasked readout of its
 // own call site's expression. The three nodes nest structurally:
 // combineMixedAggregateBranches returns
-// &VectorSetOp{Left: histPure, Right: floatPure, StepAligned: <:360>},
-// so :351/:352's own StepAligned values are read straight off that
-// node's two arms.
+// &VectorSetOp{Left: histPure, Right: floatPure, ...} carrying the combine
+// call's own stepAligned, so the histPure / floatPure call sites' own
+// StepAligned values are read straight off that node's two arms.
 func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *testing.T) {
 	t.Parallel()
 
@@ -266,20 +277,25 @@ func TestLowerSumOrAvgMixedOrSubqueryFoldFnRange_StepAlignedFalseAtZeroStep(t *t
 		t.Fatalf("plan = %T, want *chplan.VectorSetOp", plan)
 	}
 	if top.StepAligned {
-		t.Fatalf("combine (mutants at :360:72) StepAligned = true, want false")
+		t.Fatalf("combine (mutants on histogram_native_mixed_or_subquery_aggregate_range_fn.go:" +
+			"`return combineMixedAggregateBranches(histPure, floatPure, s, ctx.step > 0), nil`) StepAligned = true, want false")
 	}
 	histPure, ok := top.Left.(*chplan.VectorSetOp)
 	if !ok {
 		t.Fatalf("top.Left = %T, want *chplan.VectorSetOp", top.Left)
 	}
 	if histPure.StepAligned {
-		t.Fatalf("histPure (mutants at :351:105) StepAligned = true, want false")
+		t.Fatalf("histPure (mutants on histogram_native_mixed_or_subquery_aggregate_range_fn.go:" +
+			"`histPure := mixedOrShadowUnless(histFoldedFanout, floatExists, true, chplan.VectorMatch{}, s, ctx.step > 0)`) " +
+			"StepAligned = true, want false")
 	}
 	floatPure, ok := top.Right.(*chplan.VectorSetOp)
 	if !ok {
 		t.Fatalf("top.Right = %T, want *chplan.VectorSetOp", top.Right)
 	}
 	if floatPure.StepAligned {
-		t.Fatalf("floatPure (mutants at :352:107) StepAligned = true, want false")
+		t.Fatalf("floatPure (mutants on histogram_native_mixed_or_subquery_aggregate_range_fn.go:" +
+			"`floatPure := mixedOrShadowUnless(floatFoldedFanout, histExists, false, chplan.VectorMatch{}, s, ctx.step > 0)`) " +
+			"StepAligned = true, want false")
 	}
 }

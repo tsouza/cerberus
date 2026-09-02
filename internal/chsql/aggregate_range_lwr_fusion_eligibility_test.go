@@ -298,7 +298,7 @@ func TestEmitAggregateRangeLWRFused_DeclinedShapeStillEmits(t *testing.T) {
 }
 
 // TestGroupBySelectFrags_BucketKeyContinuesLoop kills the INVERT_LOOPCTRL
-// mutant at aggregate_range_lwr_fusion.go:259 (`continue` -> `break`) inside
+// mutant at aggregate_range_lwr_fusion.go:`continue` (`continue` -> `break`) inside
 // groupBySelectFrags. rangeLWRFusionTestAggregate puts the anchor/bucket key
 // LAST in GroupBy, which makes a `break` mutant a no-op there (nothing
 // follows it to skip) — this reorders the bucket key to FIRST so a `break`

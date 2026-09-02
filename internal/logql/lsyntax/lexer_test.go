@@ -486,7 +486,7 @@ func TestLexScanIdentToEOF(t *testing.T) {
 // mutated form from the original. Each was re-applied and the whole package
 // suite re-run to confirm it survives rather than merely lacking a test.
 //
-// lexer.go:556:8 (CONDITIONALS_BOUNDARY, `if b >= utf8.RuneSelf` -> `>`). The
+// lexer.go:`b >= utf8.RuneSelf` (CONDITIONALS_BOUNDARY, `>=` -> `>`). The
 // two forms differ on exactly one byte value, b == 0x80, which is not a legal
 // UTF-8 start byte. The original decodes it to (utf8.RuneError, 1) and asks
 // runeOK; the mutant falls through to the ASCII arm and asks
@@ -496,7 +496,7 @@ func TestLexScanIdentToEOF(t *testing.T) {
 // take their break with j unchanged, and the ASCII arm's other two tests
 // (isDigit, `b == '.'`) are false for 0x80 as well.
 //
-// lexer.go:606:8 (CONDITIONALS_BOUNDARY, scanIdent's `for j < len(l.src)` ->
+// lexer.go:scanIdent:`for j < len(l.src)` (CONDITIONALS_BOUNDARY, `<` ->
 // `<=`). The extra iteration the mutant admits runs at j == len(l.src), where
 // `l.src[j:]` is the empty string — a legal slice, not a panic — and
 // utf8.DecodeRuneInString("") returns (utf8.RuneError, 0). isIdentPart
@@ -505,7 +505,7 @@ func TestLexScanIdentToEOF(t *testing.T) {
 // it), so the mutant breaks at the same j the original's loop condition
 // stopped at.
 //
-// lexer.go:706:11 (CONDITIONALS_BOUNDARY `if end < len(l.src)` -> `<=`, and
+// lexer.go:`if end < len(l.src)` (CONDITIONALS_BOUNDARY `<` -> `<=`, and
 // CONDITIONALS_NEGATION -> `>=`). `end` is `i + len(kw)` guarded by a
 // HasPrefix on `l.src[i:]`, so end > len(l.src) is unreachable and both
 // mutants differ from the original only over end <= len(l.src).
@@ -522,8 +522,10 @@ func TestLexScanIdentToEOF(t *testing.T) {
 //     `l.src[end] == '('`. '(' is not an identPart either, so the mutant
 //     returns false as well.
 //
-// lexer.go:709:6 (INVERT_LOOPCTRL, isFunction's whole-word `continue` ->
-// `break`). The `continue` advances to the next keyword in
+// lexer.go:isFunction:`if isIdentPart(r)` (INVERT_LOOPCTRL on the whole-word
+// `continue` this guard wraps, -> `break`). The guard is what the citation
+// names because the mutated statement is a bare `continue`, which no construct
+// can single out. The `continue` advances to the next keyword in
 // []string{"by", "without"}, and reaching it means HasPrefix already matched
 // the current one. "by" and "without" share no prefix, so a source that
 // matched one cannot match the other; and a `continue` out of the last

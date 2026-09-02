@@ -64,7 +64,10 @@ func breakerHeadStates(t *testing.T, reader *sdkmetric.ManualReader) map[string]
 }
 
 // breakerHeadTrips collects the cumulative cerberus_ch_breaker_trips_total per
-// head= label from a manual-reader snapshot.
+// head= label from a manual-reader snapshot, SUMMING every data point that
+// carries the head — the counter is also attributed by `cause` (#2900), so one
+// head owns one stream per trip cause and reading a single data point would
+// report whichever stream the SDK happened to emit last.
 func breakerHeadTrips(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -86,7 +89,7 @@ func breakerHeadTrips(t *testing.T, reader *sdkmetric.ManualReader) map[string]i
 				if !ok {
 					t.Fatalf("breaker_trips_total data point missing head attribute: %v", dp.Attributes.ToSlice())
 				}
-				out[h.AsString()] = dp.Value
+				out[h.AsString()] += dp.Value
 			}
 		}
 	}

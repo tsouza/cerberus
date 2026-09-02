@@ -308,23 +308,17 @@ func (d columnarDecoder) queryCursorColumnar(c *Client, ctx context.Context, sql
 	// error and success paths below keep the span). A shape-mismatch returns
 	// above before this, since it carried no real result.
 	pe.stamp(span)
-	breakerErr := runErr
-	if isBudgetErr(runErr) || isThrowIfGuard(translateCHGoErr(runErr)) {
-		// Both are the caller asking for too much, not an outage. A throwIf
-		// guard (code 395) is cerberus's OWN emitted rejection — a resource
-		// ceiling or a shape assertion this process planted in the SQL — so
-		// ClickHouse raising it is proof the backend is healthy, exactly as
-		// breaker.record's own code-241 / code-159 carve-outs argue. The
-		// error is normalised through translateCHGoErr first because this
-		// dial is ch-go: runErr carries a *proto.Exception, not the
-		// *clickhouse.Exception shape the code check reads. This
-		// became load-bearing once the RangeBucketGridNative density bound was
-		// recalibrated to the measured OOM cliff (#2681): an honest bound
-		// fires on every oversized query, so without this a dashboard refresh
-		// with a few wide panels trips the breaker and 503s unrelated traffic.
-		breakerErr = nil
-	}
-	c.br.record(ctx, breakerErr)
+	// The raw ch-go error goes to the breaker unfiltered. It used to be
+	// pre-filtered here for the sample-budget sentinel and the code-395
+	// throwIf guard, normalising through translateCHGoErr first because this
+	// dial yields a *proto.Exception rather than the *clickhouse.Exception the
+	// old code checks read. Both filters now live in classifyBreakerOutcome,
+	// which accepts BOTH exception shapes — so this dial no longer needs its
+	// own copy of the argument, and the codes it silently failed to neutralise
+	// (241, 159, and every statement-scoped rejection, none of which the row
+	// path's carve-outs could see through a *proto.Exception) are classified
+	// here too. One verdict, one place, both dials.
+	c.br.record(ctx, runErr)
 	if rec != nil {
 		rec.flush()
 	}

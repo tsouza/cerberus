@@ -383,8 +383,9 @@ const negativeCarrierWalks = 64
 
 // TestReadBackPlanSkipsNegativeCarriersWithoutStopping pins that the
 // synthetic negative-sibling requests planCaptureProbes mints — the
-// descending -1, -2, … keys at capture_probe.go:151 — are SKIPPED by the
-// positive-probe walk rather than ending it.
+// descending -1, -2, … keys counted down from
+// capture_probe.go:`nextRequest := -1` — are SKIPPED by the positive-probe
+// walk rather than ending it.
 //
 // probeNames is keyed by carrier and mixes both kinds, so a walk that
 // stopped at the first negative key would drop every positive carrier the
@@ -738,20 +739,24 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // whole package suite re-run to confirm it survives rather than merely
 // lacking a test.
 //
-// capture_probe.go:293:4 (INVERT_LOOPCTRL, `break` after `fork = i` ->
-// `continue`). The loop descends the spine, so `break` leaves `fork` at the
+// capture_probe.go:`fork = i` (INVERT_LOOPCTRL on the `break` immediately
+// after it, -> `continue`). The assignment is what the citation names because
+// the mutated statement is a bare `break`. The loop descends the spine, so `break` leaves `fork` at the
 // DEEPEST syntax.OpAlternate and `continue` leaves it at the SHALLOWEST. With
 // zero or one alternation on the spine the two agree outright. With k >= 2 at
 // depths i1 < … < ik, the original's fork is ik and `shape.spine[:ik]` still
 // contains i1; the mutant's fork is i1 and `shape.spine[i1+1:]` still
 // contains i2. skippable reports true for syntax.OpAlternate
-// (capture_participation.go:126), so whichever way round it lands, one of the
+// (capture_participation.go:`case syntax.OpStar, syntax.OpQuest,
+// syntax.OpAlternate`), so whichever way round it lands, one of the
 // two spine scans below rejects the carrier and the function returns
 // (nil, false). Both loops are side-effect-free and run before anything else.
 //
-// capture_probe.go:310:13 (CONDITIONALS_BOUNDARY, `for parent >= 0 && …` ->
-// `parent > 0`). Index 0 is the virtual whole-pattern group, minted with
-// parent -1 at regex_source_scan.go:57, so the two forms differ only at
+// capture_probe.go:`for parent >= 0 && len(groups[parent].alternations) == 0`
+// (CONDITIONALS_BOUNDARY, `parent >= 0` -> `parent > 0`). Index 0 is the virtual whole-pattern group, minted with
+// parent -1 at
+// regex_source_scan.go:`open: -1, bodyStart: 0, bodyEnd: len(src), parent: -1`,
+// so the two forms differ only at
 // parent == 0 with no alternations on that group: the original steps to -1
 // and returns at the `parent < 0` check, while the mutant leaves the loop
 // holding 0. It then reaches branchContaining(groups[0], …), which returns
@@ -760,8 +765,8 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // pattern into an empty map, `known` is false, and the next guard returns
 // (nil, false) — the answer the original returned one branch earlier.
 //
-// capture_probe.go:319:12 (INVERT_LOGICAL, `if !known ||
-// !branchShape.unconditional` -> `&&`). When `known` is false branchShape is
+// capture_probe.go:`if !known || !branchShape.unconditional` (INVERT_LOGICAL,
+// `||` -> `&&`). When `known` is false branchShape is
 // the zero captureShape, so `!branchShape.unconditional` is true and the
 // conjunction is true as well: the mutant declines exactly where the original
 // does. The only state that separates them is known && !unconditional, and it
@@ -774,8 +779,8 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // differs), so the carrier is never inside the factored prefix, and removing
 // a prefix cannot introduce a skippable ancestor.
 //
-// capture_probe.go:336:33 (CONDITIONALS_BOUNDARY, `return siblings,
-// len(siblings) > 0` -> `>= 0`). Reaching this line requires
+// capture_probe.go:`return siblings, len(siblings) > 0`
+// (CONDITIONALS_BOUNDARY, `> 0` -> `>= 0`). Reaching this line requires
 // groups[parent].alternations to be non-empty, so appending bodyEnd to it
 // yields at least two spans. They are consecutive disjoint ranges over the
 // parent's body, so at most one of them equals `branch` and is skipped, and
@@ -783,20 +788,20 @@ func TestCarriersNeedingProbesIgnoresUnsharedNames(t *testing.T) {
 // parse / matchesEmpty check above. len(siblings) is therefore never 0 here
 // and the two comparisons agree.
 //
-// capture_probe.go:376:28 (CONDITIONALS_BOUNDARY, the sort's
-// `ordered[i].start < ordered[j].start` -> `<=`). The line is guarded by
+// capture_probe.go:`return ordered[i].start < ordered[j].start`
+// (CONDITIONALS_BOUNDARY, the sort's `<` -> `<=`). The line is guarded by
 // `if ordered[i].start != ordered[j].start`, and on unequal operands `<` and
 // `<=` are the same function.
 //
-// capture_probe.go:378:25 (CONDITIONALS_BOUNDARY, `ordered[i].end >
-// ordered[j].end` -> `>=`). Reached only when the two starts are equal.
+// capture_probe.go:`return ordered[i].end > ordered[j].end`
+// (CONDITIONALS_BOUNDARY, `>` -> `>=`). Reached only when the two starts are equal.
 // `ordered` is filled through the `named map[sourceSpan]string` seen-check
 // above, so its elements are pairwise distinct spans; equal starts therefore
 // force unequal ends, where `>` and `>=` agree. sort.SliceStable never calls
 // less(i, i).
 //
-// capture_probe.go:496:13 (CONDITIONALS_BOUNDARY, branchContaining's
-// `if offset < bar` -> `<=`). `offset` is always a group's `open`, the byte
+// capture_probe.go:`if offset < bar` (CONDITIONALS_BOUNDARY,
+// branchContaining's `<` -> `<=`). `offset` is always a group's `open`, the byte
 // index of a '(', and `bar` is the byte index of a '|'. One byte cannot be
 // both, so offset == bar is unreachable and the two comparisons agree on
 // every offset a caller can supply.

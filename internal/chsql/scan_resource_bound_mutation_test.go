@@ -14,20 +14,22 @@ import (
 // coverage that isolates every branch, so each disjunct and boundary is pinned
 // directly. Tests are white-box (package chsql) to reach the unexported guards.
 //
-// Mutant inventory (file:line:col → what the flip does):
-//   - scan_resource_bound.go:97:23/29/38 — the requireScanResourceBound guard
-//     `emitterSpansTable == "" || table != emitterSpansTable`. Negating either
-//     conjunct, or turning `||` into `&&`, would either reject a scoped-out
-//     table or wave through an unbounded scan over the enforced table.
-//   - scan_resource_bound.go:129:22 — the requireInnerSpansScanBound guard
-//     `spansTable == "" || findScanTable(inner) != spansTable`. `||`→`&&` would
-//     reject a non-spans inner (or wave through the windowless spans inner).
-//   - scan_resource_bound.go:211:19/25/34/60 — the requireSpansScanWindow guard
-//     `ctxSpansTable == "" || table != ctxSpansTable || tsCol == ""`.
-//   - scan_resource_bound.go:214:15/20/31 — the windowless-scan check
-//     `startNano == 0 && endNano == 0`. `&&`→`||` would reject a one-sided
-//     (still-pruning) window; negating either half would miss the both-zero
-//     genuinely-windowless case.
+// Mutant inventory (construct → what the flip does):
+//   - the requireScanResourceBound guard
+//     scan_resource_bound.go:`emitterSpansTable == "" || table != emitterSpansTable`.
+//     Negating either conjunct, or turning `||` into `&&`, would either reject
+//     a scoped-out table or wave through an unbounded scan over the enforced
+//     table.
+//   - the requireInnerSpansScanBound guard
+//     scan_resource_bound.go:`spansTable == "" || findScanTable(inner) != spansTable`.
+//     `||`→`&&` would reject a non-spans inner (or wave through the windowless
+//     spans inner).
+//   - the requireSpansScanWindow guard
+//     scan_resource_bound.go:`ctxSpansTable == "" || table != ctxSpansTable || tsCol == ""`.
+//   - the windowless-scan check
+//     scan_resource_bound.go:`startNano == 0 && endNano == 0`. `&&`→`||` would
+//     reject a one-sided (still-pruning) window; negating either half would
+//     miss the both-zero genuinely-windowless case.
 
 const (
 	scanBoundEnforcedTable = "otel_traces"
@@ -35,15 +37,16 @@ const (
 	scanBoundTSColumn      = "Timestamp"
 )
 
-// TestRequireScanResourceBound_GuardBranches pins scan_resource_bound.go:97.
+// TestRequireScanResourceBound_GuardBranches pins
+// scan_resource_bound.go:`emitterSpansTable == "" || table != emitterSpansTable`.
 func TestRequireScanResourceBound_GuardBranches(t *testing.T) {
 	t.Parallel()
 	none := scanResourceBound{}  // zero value → kind spansBoundNone
 	bounded := traceIDSetBound() // kind spansBoundTraceIDSet → a real bound
 
-	// A none witness over a DIFFERENT table is scoped out → nil. `||`→`&&`
-	// (@97:29) or negating `table != emitterSpansTable` (@97:38) would proceed
-	// to the bound check and reject.
+	// A none witness over a DIFFERENT table is scoped out → nil. `||`→`&&`, or
+	// negating `table != emitterSpansTable`, would proceed to the bound check
+	// and reject.
 	if err := requireScanResourceBound(scanBoundEnforcedTable, scanBoundOtherTable, none); err != nil {
 		t.Fatalf("none witness over a scoped-out table must return nil, got %v", err)
 	}
@@ -66,7 +69,7 @@ func TestRequireScanResourceBound_GuardBranches(t *testing.T) {
 	}
 }
 
-// TestRequireInnerSpansScanBound_GuardBranch pins scan_resource_bound.go:129.
+// TestRequireInnerSpansScanBound_GuardBranch pins scan_resource_bound.go:`if spansTable == "" || findScanTable(inner) != spansTable`.
 func TestRequireInnerSpansScanBound_GuardBranch(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -94,22 +97,24 @@ func TestRequireInnerSpansScanBound_GuardBranch(t *testing.T) {
 	}
 }
 
-// TestRequireSpansScanWindow_GuardBranches pins scan_resource_bound.go:211+214.
+// TestRequireSpansScanWindow_GuardBranches pins
+// scan_resource_bound.go:`ctxSpansTable == "" || table != ctxSpansTable || tsCol == ""`
+// and scan_resource_bound.go:`startNano == 0 && endNano == 0`.
 func TestRequireSpansScanWindow_GuardBranches(t *testing.T) {
 	t.Parallel()
 
 	// Disabled enforcement via the FIRST disjunct (ctxSpansTable == "", table
-	// also "" so `table != ctxSpansTable` is false) → nil. `||`→`&&` (@211:25)
-	// or negating `ctxSpansTable == ""` (@211:19) would fall to the window check
-	// and reject the both-zero window.
+	// also "" so `table != ctxSpansTable` is false) → nil. `||`→`&&`, or negating
+	// `ctxSpansTable == ""`, would fall to the window check and reject the
+	// both-zero window.
 	if err := requireSpansScanWindow("", "", scanBoundTSColumn, 0, 0); err != nil {
 		t.Fatalf("disabled enforcement must return nil, got %v", err)
 	}
 	// Enforced table + opted-in tsCol + both bounds zero → windowless scan
 	// rejected. This is the only input reaching the window check with all guard
-	// disjuncts false, so it pins the table/tsCol negations (@211:34/60 — each
-	// would flip the guard true and return nil) and the both-zero negations
-	// (@214:15/31 — each would drop the both-zero case out of the error arm).
+	// disjuncts false, so it pins the table/tsCol negations (each would flip the
+	// guard true and return nil) and the both-zero negations (each would drop the
+	// both-zero case out of the error arm).
 	if err := requireSpansScanWindow(scanBoundEnforcedTable, scanBoundEnforcedTable, scanBoundTSColumn, 0, 0); !errors.Is(err, ErrUnboundedSpansScan) {
 		t.Fatalf("windowless recursive spans scan must be rejected, got %v", err)
 	}
