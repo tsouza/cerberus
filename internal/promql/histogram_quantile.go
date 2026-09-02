@@ -1494,11 +1494,12 @@ type classicBucketShaping struct {
 	// groupArray-fold branch applies. Unused (but still set) when sumMap is
 	// true — see classicBucketMergeShapingSumMap's own doc.
 	fold classicBucketRungFold
-	// sumMap selects classic_bucket_merge_summap.go's linear sumMap +
-	// arrayCumSum reshape instead of the groupArray + per-rung
-	// arrayFilter-rescan fold. Only classicBucketMergeShapingSumMap ever
-	// sets it, and only ever for the SUM fold — see
-	// ClassicBucketMergeLowerer (lower_strategy.go).
+	// sumMap selects classic_bucket_merge_summap.go's linear sumMap ladder
+	// (over per-row cumulative counts) instead of the groupArray + per-rung
+	// arrayFilter-rescan fold. The two ladders share the monotonic repair
+	// layer and answer identically; only their cost differs. Only
+	// classicBucketMergeShapingSumMap ever sets it, and only ever for the
+	// SUM fold — see ClassicBucketMergeLowerer (lower_strategy.go).
 	sumMap bool
 }
 
@@ -1543,29 +1544,21 @@ func (sh classicBucketShaping) reshape(
 		return &chplan.Project{Input: group, Projections: projections}, false
 	}
 
-	if sh.sumMap {
-		// classicBucketSumMapLadderExpr's arrayCumSum construction is
-		// monotonic by construction (a running sum of non-negative
-		// per-bucket deltas never decreases) — unlike the groupArray-fold
-		// branch below, no separate monotonic-repair layer is needed. See
-		// classic_bucket_merge_summap.go's header.
-		projections := make([]chplan.Projection, 0, len(passthrough)+2)
-		projections = append(projections, passthrough...)
-		projections = append(
-			projections,
-			chplan.Projection{Expr: classicBucketSumMapLadderExpr(), Alias: s.BucketCountsColumn},
-			chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
-		)
-		return &chplan.Project{Input: group, Projections: projections}, true
-	}
-
 	// Layer 1: the merged layout (union of every row's bounds) and the
-	// per-`le` ladder folded across the group's rows.
+	// per-`le` ladder folded across the group's rows. Both constructions
+	// answer the same question — the cumulative count at each union bound,
+	// summed over the rows whose OWN layout carries it — and both produce it
+	// one rung at a time rather than by accumulating, so both owe Layer 2's
+	// repair. See classic_bucket_merge_summap.go's header.
+	ladder := classicBucketMergedLadderExpr(sh.fold)
+	if sh.sumMap {
+		ladder = classicBucketSumMapLadderExpr()
+	}
 	merged := make([]chplan.Projection, 0, len(passthrough)+2)
 	merged = append(merged, passthrough...)
 	merged = append(
 		merged,
-		chplan.Projection{Expr: classicBucketMergedLadderExpr(sh.fold), Alias: hqAggLadderAlias},
+		chplan.Projection{Expr: ladder, Alias: hqAggLadderAlias},
 		chplan.Projection{Expr: classicBucketUnionBoundsExpr(), Alias: s.ExplicitBoundsColumn},
 	)
 

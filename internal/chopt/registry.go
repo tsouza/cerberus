@@ -1129,39 +1129,38 @@ const (
 	// posture for a client-side, no-server-setting optimization.
 	//
 	// AutoSelect is false, UNLIKE FeatureLagInFrameAdjacency's "bit-identical
-	// to the fan-out" bar. A chDB differential probe run while implementing
-	// this feature found a REAL, measurable divergence from the existing
-	// merge for a HETEROGENEOUS group (contributing rows reporting different
-	// ExplicitBounds layouts): sumMap + arrayCumSum sums, at each union bound
-	// u, every row's own sub-cumulative count over its OWN buckets <= u,
-	// while reference Prometheus's sum by(le) — and the existing has-filter
-	// fold that reproduces it — only sums rows whose OWN layout contains u
-	// exactly. Worked/chDB-confirmed example: bounds [1,2,3]/counts [10,5,0]
-	// merged with bounds [1,5]/counts [7,0] — the existing merge (plus its
-	// monotonic repair) yields [17,17,17,17] at union bounds [1,2,3,5];
-	// sumMap + arrayCumSum yields [17,22,22,22].
+	// to the fan-out" bar — but no longer because the two constructions
+	// disagree. They agreed only for HOMOGENEOUS groups when this feature
+	// first shipped: a chDB differential probe found that sumMap over
+	// per-BUCKET counts followed by arrayCumSum along the union sums, at each
+	// union bound u, every row's own sub-cumulative count over its OWN
+	// buckets <= u, while reference Prometheus's sum by(le) — and the
+	// has-filter fold that reproduces it — sums only the rows whose OWN
+	// layout contains u. Cerberus issue #2817 closed that at the source: each
+	// ROW now cumulates over its own buckets BEFORE the key-wise sumMap, so
+	// the merged rung is "sum over the rows carrying u of that row's
+	// cumulative count at u" — the fold's own definition, for any mix of
+	// layouts — and both ladders go through the same monotonic repair. The
+	// equivalence is pinned by a row-level chDB differential against the
+	// fold's `b <= u` reading, by end-to-end differentials over heterogeneous
+	// and partially-overlapping layouts, and by a Prometheus-parity-enrolled
+	// spec fixture on a heterogeneous seed.
 	//
-	// For a HOMOGENEOUS group (every row shares one ExplicitBounds — the
-	// overwhelmingly common real shape, and the one this feature's own
-	// ~50x win estimate is calibrated on) the two constructions are provably
-	// identical: every row carries every union bound, so the has-filter is a
-	// no-op and both reduce to the same per-bound sum. The divergence is real
-	// only for genuinely mismatched bucket boundaries across a group's
-	// series — an already-degenerate input Prometheus itself handles poorly.
-	// See https://github.com/tsouza/cerberus/issues/2817, filed to
-	// investigate restricting the sumMap path to provably-homogeneous groups
-	// (which would let AutoSelect move to true). Until that lands this
-	// feature is reachable only by explicit
-	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing,
-	// mirroring FeatureQuantilePromHistogram's and FeatureTSGridChanges'
-	// posture for a feature with a proven, real divergence on a specific
-	// input shape.
+	// What keeps AutoSelect false is now a MEASUREMENT question, tracked by
+	// https://github.com/tsouza/cerberus/issues/2923: this feature's own
+	// ~50x figure is an estimate taken against the superseded construction,
+	// and [maxClassicBucketMergeCostUnits]'s guard — calibrated against the
+	// fold's per-rung rescan — over-rejects a path whose cost is linear in
+	// total bucket volume. Auto-selecting before both are settled would move
+	// the default path onto an unmeasured cost model and a ceiling that does
+	// not describe it. Until then the feature is reachable by explicit
+	// CERBERUS_CH_OPTIMIZATIONS=classic_bucket_merge_summap listing.
 	//
-	// A second, independent risk is DOCUMENTED rather than gating AutoSelect
-	// further: arrayCumSum propagates a NaN forward to every higher union
-	// rung once it appears, while the existing has-filter fold only poisons
-	// the rungs a NaN row's own layout carries — pinned by
-	// TestClassicBucketMergeSumMapDifferential's NaN case, not glossed over.
+	// The NaN asymmetry #2756 documented as a second, accepted risk is gone
+	// with the same change: arrayCumSum now runs over ONE ROW's own buckets,
+	// the same reach the fold's arraySum gives a NaN, and the repair layer
+	// both paths share answers a poisoned rung identically. See
+	// internal/promql/classic_bucket_merge_summap.go's header.
 	FeatureClassicBucketMergeSumMap = "classic_bucket_merge_summap"
 
 	// FeatureTraceIDProjection gates the curated `ADD PROJECTION IF NOT
@@ -2131,7 +2130,7 @@ var registry = []Feature{
 		MinVersion: AlwaysAvailable,
 		Stability:  Experimental,
 		AutoSelect: false,
-		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto sumMap+arrayCumSum, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — heterogeneous bucket layouts diverge, #2817)",
+		Doc:        "opt the classic-histogram-quantile cross-series merge SUM fold onto a sumMap over per-row cumulative counts, retiring the groupArray + per-rung fold (no version floor, opt-in via CERBERUS_CH_OPTIMIZATIONS — auto pending a recalibrated cost model, #2923)",
 	},
 	{
 		ID:         FeatureExpHistogramMergeSumMap,

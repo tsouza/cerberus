@@ -10,8 +10,8 @@
 # per-rung arrayFilter-rescan fold.
 #
 # The seed carries a HOMOGENEOUS bucket layout (every row shares
-# ExplicitBounds [0.1, 0.5, 1.0]) — classic_bucket_merge_summap.go's header
-# proves the two constructions are mathematically identical here, so the
+# ExplicitBounds [0.1, 0.5, 1.0]) — the simplest case for the merge, and the
+# one this feature's own win estimate is calibrated on, so the
 # `expected_rows` cells are expected to match a plain fan-out fixture over
 # the same query/seed exactly; that identity is the point. This is the
 # [promql.ClassicBucketMergeLowerer] entry in the spec lane's native-
@@ -24,12 +24,12 @@
 # all, so an instant-mode fixture's marker section would be silently
 # ignored and always lower through the fan-out default.
 #
-# A HETEROGENEOUS layout (where the two constructions diverge — see
-# https://github.com/tsouza/cerberus/issues/2817) is deliberately NOT
-# covered here: TestClassicBucketMergeSumMapDifferential_Heterogeneous
-# (classic_bucket_merge_summap_chdb_test.go) pins that divergence directly
-# against chDB instead, where it can assert the documented difference rather
-# than a spec fixture asserting a value that would fail Prometheus parity.
+# A HETEROGENEOUS layout — where the merge has to combine layouts that only
+# partly overlap, and where the construction this feature first shipped
+# answered differently from Prometheus (cerberus issue #2817) — is covered by
+# this fixture's sibling, histogram_quantile_sum_by_le_summap_heterogeneous
+# .txtar, which carries the same marker and the same `parity:` enrolment over
+# a mismatched seed.
 
 -- query.promql --
 histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))

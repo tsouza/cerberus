@@ -1,0 +1,41 @@
+# The HETEROGENEOUS counterpart of histogram_quantile_sum_by_le_summap.txtar:
+# byte-identical query, grid and marker section, but the two seeded series
+# report DIFFERENT ExplicitBounds ([0.1, 0.5, 1.0] against [0.1, 5.0]), so
+# the cross-series merge (lowerHistogramQuantileClassicAggRange,
+# histogram_quantile_range.go) has to combine layouts that only partly
+# overlap.
+#
+# That is the shape cerberus issue #2817 was filed against, and the reason
+# this fixture is enrolled against the real Prometheus oracle rather than
+# only against `expected_rows`: `sum by(le)` has ONE right answer for
+# mismatched bucket boundaries — sum each `le` rung over the series that
+# actually report it, then repair monotonicity — and the sumMap merge's
+# first shipped form did not give it. The parity section is what makes this
+# fixture unable to absorb a wrong answer: RunParity has no GOLDEN_UPDATE
+# branch (test/spec/parity.go), so `just update-golden promql` cannot re-pin
+# whatever cerberus currently emits here.
+#
+# Range mode (a `range_step:` section) matches the sibling: the merge stage
+# this exercises is the range-mode one.
+-- query.promql --
+histogram_quantile(0.95, sum by(le) (rate(http_server_request_duration_bucket[5m])))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_classic_bucket_merge_summap --
+-- seed --
+CREATE TABLE otel_metrics_histogram (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    BucketCounts Array(UInt64),
+    ExplicitBounds Array(Float64)
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_histogram VALUES
+    ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0, 0], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0], [0.1, 5.0]),
+    ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
+    ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:30', 9), [3, 4], [0.1, 5.0]);
