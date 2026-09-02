@@ -41,9 +41,10 @@ import (
 // is a different quantity: it sums, at each union bound u, EVERY row's
 // sub-cumulative count over its own buckets <= u, including rows with no u
 // at all. The two agree only when every row carries every union bound.
-// Cerberus issue #2817's worked case is the counterexample: bounds
-// [1,2,3]/counts [10,5,0] merged with bounds [1,5]/counts [7,0] answered
-// 1.78 where Prometheus (and the has-filter fold) answers 5.0.
+// Cerberus issue #2817's worked case is the counterexample: for bounds
+// [1,2,3]/counts [10,5,0] merged with bounds [1,5]/counts [7,0],
+// histogram_quantile(0.95, sum by(le)(...)) answered 1.78 where Prometheus
+// (and the has-filter fold) answers 5.0.
 //
 // The quadratic term the old fold pays is its per-RUNG rescan of every
 // contributing row; a per-row prefix sum is one pass over that row's own
