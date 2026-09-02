@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -20,6 +20,7 @@ function fixture(t, totals, { probeSeconds = 0, goExits = 0, goMissing = false }
   const root = mkdtempSync(join(tmpdir(), 'mutation-run-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const calls = join(root, 'calls.jsonl');
+  const envCalls = join(root, 'env-calls.jsonl');
   const goCalls = join(root, 'go-calls.jsonl');
   const bin = join(root, 'bin');
   const scope = join(root, 'scope');
@@ -31,6 +32,7 @@ function fixture(t, totals, { probeSeconds = 0, goExits = 0, goMissing = false }
   writeFileSync(join(scope, 'b_large.go'), `package scope\n\n// ${'x'.repeat(200)}\n`);
   writeFileSync(join(scope, 'z_test.go'), `package scope\n\n// ${'y'.repeat(4000)}\n`);
   writeFileSync(calls, '');
+  writeFileSync(envCalls, '');
   writeFileSync(goCalls, '');
   writeFileSync(
     join(bin, 'gremlins'),
@@ -38,6 +40,15 @@ function fixture(t, totals, { probeSeconds = 0, goExits = 0, goMissing = false }
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
+// The env gremlins actually receives is half the contract: the memory guard is
+// wired ONLY through it, so an argv-only assertion would pass over a leg whose
+// mutants run unbounded.
+fs.appendFileSync(${JSON.stringify(envCalls)}, JSON.stringify({
+  GOFLAGS: process.env.GOFLAGS,
+  MUTANT_MEMORY_MAX: process.env.MUTANT_MEMORY_MAX,
+  MUTANT_MEMORY_HOLD: process.env.MUTANT_MEMORY_HOLD,
+  MUTANT_MEMORY_LEDGER: process.env.MUTANT_MEMORY_LEDGER,
+}) + '\\n');
 const report = args[args.indexOf('--output') + 1];
 const totals = ${JSON.stringify(totals)};
 const call = fs.readFileSync(${JSON.stringify(calls)}, 'utf8').trim().split('\\n').length - 1;
@@ -64,7 +75,7 @@ process.exit(${goExits});
       { mode: 0o755 },
     );
   }
-  return { root, bin, scope, calls, goCalls };
+  return { root, bin, scope, calls, envCalls, goCalls };
 }
 
 function run(f, env = {}) {
@@ -92,6 +103,11 @@ function invocations(f) {
 
 function budgetOf(args) {
   return args[args.indexOf('--timeout-max') + 1];
+}
+
+function environments(f) {
+  const raw = readFileSync(f.envCalls, 'utf8').trim();
+  return raw === '' ? [] : raw.split('\n').map(JSON.parse);
 }
 
 test('changed-line execution stays incremental when it executes mutants', (t) => {
@@ -256,4 +272,84 @@ test('invalid diff refs and stale reports fail before gremlins runs', (t) => {
   result = run(f, { DIFF_REF: '' });
   assert.equal(result.status, 1);
   assert.match(`${result.stdout}\n${result.stderr}`, /refusing stale gremlins report/);
+});
+
+// The memory bound reaches gremlins ONLY through the environment, and only as a
+// `go test -exec` hook. A leg that ran without it would look exactly like a leg
+// that ran with it — same argv, same report — right up to the run where a
+// runaway mutant takes the runner down with no verdict at all (#2919). So the
+// env contract is pinned as tightly as the argv one.
+test('every gremlins invocation runs its mutants under the memory guard', (t) => {
+  const f = fixture(t, [0, 7]);
+  assert.equal(run(f, { DIFF_REF: 'a'.repeat(40) }).status, 0);
+  const envs = environments(f);
+  assert.equal(envs.length, 2, 'the fallback invocation must be guarded too');
+  for (const env of envs) {
+    assert.match(
+      env.GOFLAGS,
+      /(^| )-exec=\/.*\/\.github\/scripts\/mutant-memory-guard\.mjs$/,
+      `GOFLAGS must put the guard in front of every test binary, got ${env.GOFLAGS}`,
+    );
+    assert.equal(env.MUTANT_MEMORY_MAX, '1GiB');
+    assert.ok(
+      env.MUTANT_MEMORY_LEDGER.endsWith('gremlins.json.memory-breaches.jsonl'),
+      `the ledger must sit beside the report, got ${env.MUTANT_MEMORY_LEDGER}`,
+    );
+  }
+  assert.equal(envs[0].MUTANT_MEMORY_LEDGER, envs[1].MUTANT_MEMORY_LEDGER, 'a leg keeps one ledger');
+});
+
+// The hold has to outlast the deadline it defers to. If it expired FIRST the
+// guard would exit 0 while gremlins was still waiting, and a memory-runaway
+// mutant would be booked LIVED-by-accident instead of TIMED OUT-on-purpose.
+test('the guard holds strictly longer than the per-mutant budget', (t) => {
+  const f = fixture(t, [4], { probeSeconds: 0 });
+  assert.equal(run(f, { DIFF_REF: '' }).status, 0);
+  const budget = Number(budgetOf(invocations(f)[0]).replace('s', ''));
+  const hold = Number(environments(f)[0].MUTANT_MEMORY_HOLD.replace('s', ''));
+  assert.ok(hold > budget, `the hold (${hold}s) must outlast the budget (${budget}s)`);
+});
+
+// An existing GOFLAGS belongs to the toolchain setup, not to us. Replacing it
+// would silently drop whatever the composite setup-go action put there.
+test('an existing GOFLAGS is appended to, not replaced', (t) => {
+  const f = fixture(t, [4]);
+  assert.equal(run(f, { DIFF_REF: '', GOFLAGS: '-mod=mod' }).status, 0);
+  assert.match(environments(f)[0].GOFLAGS, /^-mod=mod -exec=\//);
+});
+
+// A breach is the bound WORKING, so it is reported rather than fatal — but it
+// must be reported, because `go test` discards a passing binary's output and
+// the guard's own annotation dies with it.
+test('memory breaches recorded by the guard are surfaced by the runner', (t) => {
+  const f = fixture(t, [4]);
+  const ledger = join(f.root, 'gremlins.json.memory-breaches.jsonl');
+  writeFileSync(
+    join(f.bin, 'gremlins'),
+    `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(f.calls)}, JSON.stringify(args) + '\\n');
+fs.appendFileSync(process.env.MUTANT_MEMORY_LEDGER,
+  JSON.stringify({ binary: '/tmp/x.test', resident_bytes: 1181116006, limit_bytes: 1073741824 }) + '\\n');
+fs.writeFileSync(args[args.indexOf('--output') + 1], JSON.stringify({ mutants_total: 4 }));
+`,
+    { mode: 0o755 },
+  );
+  const result = run(f, { DIFF_REF: '' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /::notice::1 mutant\(s\) hit the 1GiB per-mutant memory ceiling/);
+  assert.match(result.stdout, /recorded as TIMED OUT/);
+  assert.ok(existsSync(ledger), 'the ledger the runner read must be the one the guard wrote');
+});
+
+// A stale ledger from a previous leg in the same workspace would report
+// breaches this run never had.
+test('a stale breach ledger is discarded before the run', (t) => {
+  const f = fixture(t, [4]);
+  const ledger = join(f.root, 'gremlins.json.memory-breaches.jsonl');
+  writeFileSync(ledger, JSON.stringify({ binary: '/stale', resident_bytes: 1, limit_bytes: 1 }) + '\n');
+  const result = run(f, { DIFF_REF: '' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /hit the 1GiB per-mutant memory ceiling/);
 });
