@@ -108,9 +108,11 @@ func lowerExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowe
 // tested without lowering (and discarding) a plan.
 //
 // Its leading [expHistogramLoweringAvailable] check is the same COST gate
-// [isExpHistogramValuedShape] carries, for the same reason and with the
-// same proof: every arm below recurses on a strict sub-expression or
-// bottoms out in a leaf recognizer that applies the rule itself.
+// [isExpHistogramValuedShape] carries, for the same reason, with the same
+// proof and the same measured order of magnitude (quoted there): every arm
+// below recurses on a strict sub-expression or bottoms out in a leaf
+// recognizer that applies the rule itself, so removing the check changes no
+// answer and only changes what reaching it costs.
 func isExpHistogramDroppingShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
 	if !expHistogramLoweringAvailable(s, ctx) {
 		return false

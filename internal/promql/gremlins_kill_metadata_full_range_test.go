@@ -30,9 +30,12 @@
 // and the schema's suffix. So with `metadataFullRange: true` and a normal
 // schema the mutant runs the whole recognizer to completion and ACCEPTS a
 // shape the original rejects — an observable difference, and what each test
-// below pins. Ten leaves apply the rule; six of them are pinned here and the
-// rest in the sibling files listed by
-// [TestExpHistogramRecognizersRejectWhenLoweringUnavailable].
+// below pins. Ten leaves apply the rule; six are pinned here, and the other
+// four in gremlins_kill_histogram_binop_count_test.go
+// ([countOverExpHistogram]), gremlins_kill_histogram_subquery_select_test.go
+// ([bareExpHistogramMatrixSelector]) and
+// histogram_native_range_family_gremlins_test.go
+// ([countPresentOverExpHistogram] and [rangeFnOverExpHistogram]).
 //
 // At a COMPOSITE recognizer the rule is not applied at all, because it would
 // decide nothing there: a composite re-derives the identical verdict one

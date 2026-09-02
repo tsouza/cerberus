@@ -131,9 +131,10 @@ func TestProjectHistogramCompareSide_ProjectionsCapacityIsTight(t *testing.T) {
 // TestCountOverExpHistogram_MetadataFullRangeShortCircuits kills the
 // INVERT_LOGICAL mutant at histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
-//	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+//	if !expHistogramLoweringAvailable(s, ctx) {
 //
-// must reject on EITHER condition. countOverExpHistogram has no downstream
+// where availability requires BOTH halves of `s.ExpHistogramTable != "" &&
+// !ctx.metadataFullRange`, so the recognizer rejects when EITHER fails. countOverExpHistogram has no downstream
 // call that independently re-checks this same guard (unwrapAggregateExpr,
 // unwrapVectorSelector and IsExpHistogramMetric are all guard-free leaf
 // checks — unlike countOrGroupOverExpHistogramValue just below, which

@@ -28,8 +28,19 @@ import (
 // The negative assertion alone would pass vacuously — a recognizer that
 // rejected every input for an unrelated reason would satisfy it. So each
 // query is first put through the same matrix with lowering AVAILABLE, and
-// the test fails unless the matrix as a whole recognises something there.
-// That positive control is what makes the negative half evidence.
+// EVERY recognizer must accept at least one shape there. That per-recognizer
+// positive control is what makes the negative half evidence: a whole-test
+// control would be satisfied by one accepting recognizer while the other
+// thirty-eight proved nothing.
+//
+// The available pass carries a second assertion of its own, so the name
+// undersells it slightly: the zero-value-tuple contract is not conditional
+// on the availability rule, and a rejection under the ORDINARY
+// configuration — where these recognizers reject far more often — must hand
+// back nothing either. That is the half pinning
+// [labelCallOverExpHistogram] and [histogramValuedProducerCall], which
+// reject a non-histogram-valued argument against a perfectly available
+// schema.
 func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -58,8 +69,18 @@ func TestExpHistogramRecognizersRejectWhenLoweringUnavailable(t *testing.T) {
 		for _, r := range expHistogramRecognizers() {
 			// The verdict is the tuple's last entry, so a trailing "set" is
 			// this recognizer accepting q with lowering available.
-			if strings.HasSuffix(r.call(expr, available, baseLowerCtx()), "set") {
+			av := r.call(expr, available, baseLowerCtx())
+			if strings.HasSuffix(av, "set") {
 				accepts[r.name]++
+			} else if av != zeroTuple(av) {
+				// The zero-value-tuple contract is not conditional on the
+				// availability rule: ANY rejection, for any reason, must hand
+				// back nothing. Asserting it only under the unavailable
+				// configurations would leave the ordinary path — where these
+				// recognizers reject far more often — unpinned.
+				t.Errorf("%s(%q) with lowering available = %s; it rejected, so every other "+
+					"return must be at its zero value — a rejection never hands back a "+
+					"partially-populated tuple", r.name, q, av)
 			}
 			for _, u := range unavailable {
 				if got := r.call(expr, u.s, u.c); got != zeroTuple(got) {
@@ -381,6 +402,14 @@ func expHistogramRecognizers() []expHistogramRecognizer {
 		{"histogramValuedProducerCall", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
 			v0, ok := histogramValuedProducerCall(e, s, c)
 			return tup(v0, ok)
+		}},
+		{"expHistogramHistogramCompareBoolBinop", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
+			b, isBin := unwrapBinaryExpr(e)
+			if !isBin {
+				return "zero,zero,zero,zero,zero"
+			}
+			v0, v1, v2, v3, ok := expHistogramHistogramCompareBoolBinop(b, s, c)
+			return tup(v0, v1, v2, v3, ok)
 		}},
 		{"mixedOrSubqueryOuterFn", func(e parser.Expr, s schema.Metrics, c lowerCtx) string {
 			call, isCall := peelWrappers(e).(*parser.Call)

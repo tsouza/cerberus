@@ -152,11 +152,18 @@ func unwrapBinaryExpr(e parser.Expr) (*parser.BinaryExpr, bool) {
 // correctness one: every arm below either recurses on a strict
 // sub-expression or calls a leaf recognizer that applies the same rule
 // itself, so this function already answered false for every input whenever
-// the rule says no. Without the check it reached that answer by walking the
-// whole AST, and the walk branches once per arm per binary node — measured
-// at ~17µs against ~98ns on a depth-4 binary tree, growing with depth. That
-// walk is what every deployment WITHOUT an exp-histogram table, and every
-// metadata full-range lowering, would otherwise pay on each recognition.
+// the rule says no. Removing the check changes no answer — it fails no
+// test — it only changes how much work reaching that answer costs, because
+// without it the predicate walks the AST and the walk branches once per arm
+// per binary node.
+//
+// Two independent measurements on a depth-4 binary tree put the gate
+// between 65x and 170x cheaper than the walk (98ns vs 16.8us on one host,
+// 197ns vs ~13us on another). Absolute figures are host-dependent and the
+// ratio grows with expression depth; what matters is the order of
+// magnitude, and that this walk is what every deployment WITHOUT an
+// exp-histogram table, and every metadata full-range lowering, would
+// otherwise pay on each recognition.
 func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
 	if !expHistogramLoweringAvailable(s, ctx) {
 		return false

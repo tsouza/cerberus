@@ -47,9 +47,12 @@ import "github.com/tsouza/cerberus/internal/schema"
 //
 // The two remaining callers are [isExpHistogramValuedShape] and
 // [isExpHistogramDroppingShape] themselves, where the check is a COST
-// gate rather than a correctness one: it is what makes the induction above
-// terminate in O(1) instead of by walking the whole AST. Each predicate's
-// own doc comment carries the measurement.
+// gate rather than a correctness one. It does not make the induction above
+// terminate — every arm recurses on a strict sub-expression, so it
+// terminates either way. What it bounds is the WORK done reaching the
+// answer: O(1) instead of a walk that branches once per arm per binary
+// node. [isExpHistogramValuedShape]'s doc comment carries the measurement
+// for both, since the two predicates share the shape.
 //
 // That asymmetry is also why the old inline form pinned two mutation legs
 // below their floor. The `||` hosted two mutators, and they behaved
@@ -62,11 +65,11 @@ import "github.com/tsouza/cerberus/internal/schema"
 // well as unkillable ones.
 //
 // What survives is this body's own two mutation points, and both are
-// killable: `&&` -> `||` fails 12 tests, `!=` -> `==` fails 209. Neutering
-// the function outright fails the same two sets, and
-// [TestExpHistogramRecognizersRejectWhenLoweringUnavailable] alone catches
-// all four. See gremlins_kill_metadata_full_range_test.go for the
-// per-leaf pins.
+// killable: `&&` -> `||` fails 13 tests, `!=` -> `==` fails 210. Neutering
+// the function outright — `return true`, `return false` — fails those same
+// two sets, and [TestExpHistogramRecognizersRejectWhenLoweringUnavailable]
+// is among the failures in all four cases, so it alone catches every one.
+// See gremlins_kill_metadata_full_range_test.go for the per-leaf pins.
 func expHistogramLoweringAvailable(s schema.Metrics, ctx lowerCtx) bool {
 	return s.ExpHistogramTable != "" && !ctx.metadataFullRange
 }
