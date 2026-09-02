@@ -67,7 +67,18 @@ const (
 //     the exit-status collapse above then booked each one KILLED. `Not viable:
 //     0` on every leg was the tell: the status had never once been reported,
 //     and three legs measured 52, 57 and 88 lost kills apiece once it was.
-const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-unary-operators-consume"
+//   - the `viable-mutants` family (#2933): type-checks a candidate mutant's
+//     whole package before emitting it, closing the 156 remaining mutants no
+//     compiler accepts — string concatenation mutated to subtraction, a
+//     constant mutated to zero and then divided by, a loop-control statement
+//     moved somewhere it is not legal. It also runs the mutated tests with
+//     `-vet=off`, which is the only entry in this list that MOVES a leg's
+//     number rather than correcting its meaning: 78 INVERT_LOGICAL mutants
+//     that `go vet` used to reject as "suspect and" — legal Go, and a real
+//     change of behaviour — now reach a test binary and are adjudicated.
+//     Reverting to an earlier tag puts them back outside the denominator,
+//     which reads as a leg getting easier when it has only stopped asking.
+const gremlinsForkTag = "github.com/tsouza/gremlins/cmd/gremlins@v0.6.0-cerberus-viable-mutants-consume"
 
 // TestMutationLaneCapsPerMutantTimeout (#1294) pins the one bound that keeps the
 // mutation lane from killing its own runner.
@@ -134,9 +145,12 @@ func TestMutationLaneCapsPerMutantTimeout(t *testing.T) {
 		t.Errorf("%s does not install %s. Fork tags older than the flag reject %s outright, so the lane "+
 			"fails on every leg — loud, but still broken. Every tag after it is worse than loud: the "+
 			"`timeout-max` family spends the bound on the compiler, so a mutant times out having never "+
-			"run a line of test code (#2910), and everything before `unary-operators` mutates a prefix "+
+			"run a line of test code (#2910); everything before `unary-operators` mutates a prefix "+
 			"`&` as if it were bitwise AND, so mutants that cannot parse are booked as detections and "+
-			"the leg is paid efficacy for the compiler's work (#2930).",
+			"the leg is paid efficacy for the compiler's work (#2930); and everything before "+
+			"`viable-mutants` emits 156 more mutants no compiler accepts and lets `go vet` withhold a "+
+			"verdict from 78 that are legal Go, shrinking the denominator a leg is measured against "+
+			"(#2933).",
 			mutationWorkflowPath, gremlinsForkTag, timeoutMaxFlag)
 	}
 }
