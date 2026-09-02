@@ -108,9 +108,17 @@ func foldArrayComparison(op *BinaryOperation) (FieldExpression, bool) {
 			continue
 		}
 		attrR, valR, ok := attrLiteralOperands(op.RHS, rule.scalar, rule.array)
+		// Reaching here means op.LHS carries one of THIS rule's two
+		// operators, and no later rule sharing this rule's outer operator
+		// shares either of them, so a `break` in place of the `continue`
+		// below would end the loop at the same `return nil, false`.
 		if !ok || attrL != attrR {
 			continue
 		}
+		// `restrict` is exactly the string family, which is also the only
+		// family staticMerge merges a string with, so the two operands are
+		// either both allowed or unmergeable. An `&&` on the inner condition
+		// reaches the same `continue` by way of staticMerge's rejection.
 		if len(rule.restrict) > 0 {
 			if !staticTypeAllowed(valL.Type, rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict) {
 				continue

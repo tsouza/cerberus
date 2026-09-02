@@ -161,3 +161,26 @@ func TestStaticTypeAllowedMatchesExactly(t *testing.T) {
 		})
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// rewrite.go:115:4 (INVERT_LOOPCTRL, the `continue` under `if !ok || attrL !=
+// attrR`). Reaching that branch means attrLiteralOperands accepted op.LHS
+// against the CURRENT rule, so op.LHS's operator is that rule's `scalar` or
+// `array`. arrayFoldRules pairs the only two rules that share an outer
+// operator as {OpEqual, OpIn} with {OpRegex, OpRegexMatchAny} under `||`, and
+// {OpNotEqual, OpNotIn} with {OpNotRegex, OpRegexMatchNone} under `&&` — two
+// disjoint operand sets each time. Every later rule therefore fails at the
+// EARLIER `continue` (the op.LHS extraction) or at the outer-operator match,
+// so a `break` here reaches the same `return nil, false`.
+//
+// rewrite.go:123:52 (INVERT_LOGICAL, `if !staticTypeAllowed(valL.Type,
+// rule.restrict) || !staticTypeAllowed(valR.Type, rule.restrict)` -> `&&`).
+// Both rules that carry a `restrict` list carry the same one — the string
+// family, {TypeString, TypeStringArray} — and that family is exactly the set
+// staticMerge will merge a string with. So the two operands are either both
+// allowed (the mutant and the original both fall through to staticMerge and
+// fold) or at least one is outside the string family, in which case
+// staticMerge's own family check rejects the pair and the mutant reaches the
+// `continue` two branches later. There is no static type that is disallowed
+// by `restrict` yet mergeable with an allowed one.

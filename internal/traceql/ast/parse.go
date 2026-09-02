@@ -188,6 +188,12 @@ func ParseIdentifier(s string) (Attribute, error) {
 	if err != nil {
 		return Attribute{}, fmt.Errorf("failed to parse identifier %s: %w", s, err)
 	}
+	// A post-condition check on an internal contract, not a branch: parseTree
+	// either fails or returns a non-nil RootExpr whose Pipeline holds at
+	// least one element, because parseRoot builds through newRootExpr* and
+	// asPipeline wraps a bare element in a one-element Pipeline. Both
+	// operands are therefore always false together, which makes an `&&` here
+	// indistinguishable. See parse_lenient_test.go's NOT KILLABLE footer.
 	if expr == nil || len(expr.Pipeline.Elements) == 0 {
 		return Attribute{}, fmt.Errorf("failed to parse identifier %s: no pipeline elements found", s)
 	}

@@ -514,6 +514,12 @@ func (l *lexer) tryScopeAttribute() (tokenKind, bool) {
 		if !isAttributeRune(r) {
 			break
 		}
+		// `>=` here would be indistinguishable from `>`: the '.' arm above
+		// fires first, so sb holds at most len(prefix)-1 bytes while a
+		// dot-terminated prefix is being scanned, and the only two prefixes
+		// this function acts on are 5 and 9 bytes long. Both forms build
+		// them, and every longer run ends on a string no keyword matches.
+		// See lexer_mutation_test.go's NOT KILLABLE footer.
 		if sb.Len() > longestScopePrefix {
 			break
 		}
@@ -540,6 +546,11 @@ func (l *lexer) tryScanDuration(number string) (time.Duration, bool) {
 	consumed := 0
 	for {
 		r := probe.Peek()
+		// The EOF/space arm is a readability shortcut, not a distinct exit:
+		// the character test below rejects every rune this arm catches, since
+		// no rune is at once a space and a digit, a duration rune or '.'. An
+		// `&&` here leaves the loop on the same input, one line later. See
+		// lexer_mutation_test.go's NOT KILLABLE footer.
 		if r == scanner.EOF || unicode.IsSpace(r) {
 			break
 		}

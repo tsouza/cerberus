@@ -135,3 +135,27 @@ func TestParentScopedAttribute(t *testing.T) {
 		t.Errorf("Name = %q; want service.name", attr.Name)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// lexer.go:523:15 (CONDITIONALS_BOUNDARY, `if sb.Len() > longestScopePrefix`
+// -> `>=`). tryScopeAttribute only ever ACTS on the two keywords that map to
+// tokSpanDot / tokResourceDot — "span." (5 bytes) and "resource." (9) — and
+// the '.' arm two branches above fires before this length check, so sb holds
+// at most 4 and 8 bytes respectively when the check runs. Both forms build
+// both prefixes. For every other input the two forms differ only in whether
+// the probe stops at 9 or 10 bytes, and neither 9- nor 10-byte truncation of
+// a non-scope identifier is a key of keywordTokens, so both return
+// `0, false` having advanced nothing (the scanner is a value copy). An
+// exhaustive check of keywordTokens confirms no key mapping to tokSpanDot or
+// tokResourceDot exceeds longestScopePrefix.
+//
+// lexer.go:554:23 (INVERT_LOGICAL, `if r == scanner.EOF ||
+// unicode.IsSpace(r)` -> `&&`). This arm is subsumed by the character test on
+// the next branch: `!unicode.IsNumber(r) && !isDurationRune(r) && r != '.'`
+// breaks for every rune the EOF/space arm catches, because no rune is at once
+// a space and a digit, one of isDurationRune's nine letters, or '.'. Under
+// `&&` the loop leaves one branch later having consumed nothing extra, so
+// `consumed`, `sb` and the scanner are identical. Enumerating every rune in
+// [-1, 0x10FFFF] and comparing the composite break decision of the two forms
+// yields zero distinguishing inputs.

@@ -211,3 +211,16 @@ func TestStaticEncodeToString(t *testing.T) {
 		t.Errorf("unquoted string = %q; want hi", got)
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// static.go:221:23 (INVERT_LOGICAL, `if s.Type == TypeNil || o.Type ==
+// TypeNil` -> `&&`). The guard is a fast path for a result the rest of the
+// function already produces. With both operands nil the `&&` is true and both
+// forms return false. With exactly one nil operand the mutant falls through:
+// isNumeric is false for TypeNil, so the numeric arm is skipped; TypeNil is
+// neither TypeInt nor TypeStatus/TypeKind, so the cross-type switch is
+// skipped; and `s.Type != o.Type` is true for every mixed-nil pair, so the
+// mutant returns the same false one branch later. Comparing the two forms
+// over all 21 x 21 pairs of a corpus covering every StaticType yields zero
+// distinguishing pairs.

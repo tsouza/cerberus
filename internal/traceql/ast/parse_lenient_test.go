@@ -143,3 +143,17 @@ func TestReplaceIncompleteMatchersScansPastAnUnrepairableComparison(t *testing.T
 		}
 	}
 }
+
+// NOT KILLABLE — documented, not defended by a test.
+//
+// parse.go:197:17 (INVERT_LOGICAL, `if expr == nil ||
+// len(expr.Pipeline.Elements) == 0` -> `&&`). Both operands are always false
+// together, so neither form ever enters the branch. parseTokens returns a nil
+// expr only alongside a non-nil error, which ParseIdentifier has already
+// returned on; on the success path parseRoot returns the result of
+// newRootExpr, newRootExprWithMetrics or newRootExprWithMetricsTwoStage,
+// each of which is non-nil and sets Pipeline through asPipeline. asPipeline
+// either wraps a bare element in a one-element Pipeline or passes through a
+// Pipeline built from a slice seeded with a parsed first stage — non-empty in
+// both cases, and inductively so for nested parenthesised pipelines. The
+// guard is a post-condition check on that internal contract.
