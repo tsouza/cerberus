@@ -17,24 +17,43 @@ name: update-golden-guard
 # concludes.
 #
 # See .github/scripts/update-golden-guard.mjs for the polling mechanism, why
-# it does not read the dispatch's own conclusion, and why there are two
+# it does not read the dispatch's own conclusion, and why there are three
 # triggers below (the workflow_run one closes issue #2350's race for a
 # dispatch made AFTER the PR's required check already went green, which the
-# pull_request trigger alone cannot re-poll on its own).
+# pull_request trigger alone cannot re-poll on its own; the merge_group one
+# re-runs the poll where a merge queue actually performs the merge).
+#
+# merge_group is not a formality. A required context that never posts on the
+# queue's projected trunk never resolves and the entry waits forever, so the
+# check has to report there — but reporting a free pass would REGRESS #2350
+# rather than being conservative about it: a queued pull request sits between
+# "last green on its own head" and "merged" for the whole duration of
+# merge-group CI, which is the widest instance of exactly the window this
+# guard closes. The merge-group run therefore repeats the poll against the
+# head branch of the pull request the group would merge, resolved from the
+# group's own `gh-readonly-queue/<base>/pr-<n>-<sha>` ref (GitHub builds one
+# such branch per queued pull request, so that resolution is complete, not a
+# sample of a batch). An unparseable ref fails the check rather than passing
+# it. The mjs header carries the full argument and names the one residual
+# window — a dispatch created between the last clear poll and the merge —
+# which no in-band mechanism can close.
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   workflow_run:
     workflows: [update-golden]
     types: [requested, completed]
 
 permissions:
   actions: read
-  # workflow_run path only: list the open PR(s) an update-golden.yml dispatch
+  # workflow_run path: list the open PR(s) an update-golden.yml dispatch
   # targets, and push a commit status onto their head SHA (see the mjs file
-  # header). The pull_request path relies solely on its own check-run result
-  # and needs neither.
+  # header). merge_group path: read the queued pull request to learn its head
+  # branch name, which the queue's own ref carries only as a number. The
+  # pull_request path relies solely on its own check-run result and needs
+  # neither.
   pull-requests: read
   statuses: write
 
@@ -44,9 +63,16 @@ concurrency:
   # outright rather than share the runner with a stale poll. workflow_run
   # events group by the triggering run's own id instead: requested/completed
   # are two events for the SAME run, and only the later one's status snapshot
-  # is worth keeping — an in-between cancellation is fine to drop.
-  group: update-golden-guard-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.workflow_run.id }}
-  cancel-in-progress: true
+  # is worth keeping — an in-between cancellation is fine to drop. merge_group
+  # events group by the projected trunk's own head SHA, so two queue entries
+  # never share a group and never serialise behind one another.
+  group: update-golden-guard-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event.workflow_run.id || github.event.merge_group.head_sha }}
+  # GitHub reads a CANCELLED check-run as a failed one, so a merge-group run
+  # cancelled by this group would dequeue the pull request it was validating.
+  # The queue's own batching must never be a source of spurious dequeues, so
+  # cancellation is switched off there and only there — the pull_request and
+  # workflow_run paths keep the newest-wins behaviour described above.
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   update-golden-guard:
@@ -81,6 +107,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.head_ref }}
+        run: node .github/scripts/update-golden-guard.mjs
+
+      # The merge queue's copy of the poll above. `github.head_ref` is empty on
+      # a merge_group event — the projected trunk has no pull request of its
+      # own — so the script resolves the queued pull request from the group's
+      # refs and polls against ITS head branch instead. Same poll, same bound,
+      # same loud failure; see this workflow's `on:` comment and the mjs
+      # header for why a free pass here would re-open #2350.
+      - name: Wait for any in-flight update-golden.yml dispatch against the queued PR's branch
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: node .github/scripts/update-golden-guard.mjs
 
       - name: Reflect an update-golden.yml dispatch onto its target PR's own check

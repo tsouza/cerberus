@@ -38,6 +38,49 @@
 //     `completed` re-checks and flips it to `success` once no run remains
 //     in flight against that branch (handling a second, serialised dispatch
 //     via the same in-flight query the poll path uses).
+//   - `merge_group`: the merge queue's own copy of the poll. See the section
+//     below.
+//
+// # Why the merge queue needs its own poll rather than a free pass
+//
+// A merge queue moves the MERGE out of the pull request and onto a projected
+// trunk: GitHub builds a `gh-readonly-queue/<base>/pr-<n>-<sha>` branch,
+// dispatches `merge_group` against it, and merges (deleting the pull
+// request's head branch, exactly as before) once every required context is
+// green on that projected commit. Two consequences decide this file's
+// behaviour there.
+//
+// First, a required context that never posts on `merge_group` never resolves,
+// and the queue entry waits forever — so this check MUST report on the queue,
+// whatever it reports.
+//
+// Second, reporting a free pass would not be conservative, it would be a
+// REGRESSION of #2350. The queue widens the very window the guard exists to
+// close: a pull request now sits between "last green on its own head" and
+// "merged" for the whole duration of merge-group CI, and a dispatch started
+// anywhere in that window strands its regenerated diff the same way #2350's
+// did. The `workflow_run` path cannot cover it either — that path pushes a
+// commit status onto the PULL REQUEST'S head SHA, which is no longer what
+// branch protection is evaluating once the entry is in the queue. So the
+// merge-group run re-runs the SAME poll, against the branch the queued pull
+// request would delete.
+//
+// Resolving that branch is exact rather than heuristic: GitHub creates one
+// `gh-readonly-queue` branch PER QUEUED PULL REQUEST, not one per batch, so a
+// merge group's head ref names exactly the pull request that group would
+// merge — and every pull request the queue merges gets a group of its own.
+// parseQueuedPRNumber() reads the number back out of that ref (anchored on
+// the group's own `base_ref`, so a base branch containing slashes cannot be
+// mis-split), and the Pulls API turns it into the head branch name that
+// `update-golden[<branch>]` run names are matched against. A head ref this
+// script cannot parse FAILS the check rather than passing it: an unresolved
+// merge group is precisely the state in which the guard has verified nothing.
+//
+// The residual window is the irreducible one the `pull_request` path already
+// has: a dispatch created in the seconds between this poll's last clear read
+// and the queue's merge. Nothing in-band can close that — the merge is
+// GitHub's to make and there is no transactional handle on it — and it is the
+// same exposure every branch-protection check carries.
 //
 // # How it finds "targets this branch" at all
 //
@@ -75,6 +118,13 @@
 //                       Default 60 minutes — update-golden.yml's own
 //                       regenerate legs are capped at 45, plus plan/publish
 //                       overhead.
+//   merge_group:
+//     GH_TOKEN              (required) a token with `actions: read` and
+//                            `pull-requests: read` on this repo.
+//     REPO                  (required) `owner/repo`.
+//     MERGE_GROUP_HEAD_REF  (required) github.event.merge_group.head_ref.
+//     MERGE_GROUP_BASE_REF  (required) github.event.merge_group.base_ref.
+//     API_URL / POLL_INTERVAL_MS / MAX_WAIT_MS as for pull_request.
 //   workflow_run:
 //     GH_TOKEN                   (required) a token with `actions: read`,
 //                                 `pull-requests: read` and `statuses: write`.
@@ -85,11 +135,12 @@
 //     API_URL                     (optional) GitHub REST API base.
 //
 // Exit codes:
-//   0  no update-golden.yml run is queued or in_progress against BRANCH
-//      (pull_request), or the workflow_run event was handled (whatever
-//      state it resulted in — the Statuses API call failing is the only
-//      workflow_run failure mode).
-//   1  one still is after MAX_WAIT_MS, or the API calls themselves failed.
+//   0  no update-golden.yml run is queued or in_progress against the guarded
+//      branch (pull_request, merge_group), or the workflow_run event was
+//      handled (whatever state it resulted in — the Statuses API call failing
+//      is the only workflow_run failure mode).
+//   1  one still is after MAX_WAIT_MS, the merge group's head ref could not be
+//      resolved to a pull request, or the API calls themselves failed.
 
 import process from 'node:process';
 
@@ -116,6 +167,111 @@ const IN_FLIGHT_STATUSES = ['requested', 'in_progress', 'queued'];
 // check-run so branch protection's single required-check entry is satisfied
 // by either source.
 const STATUS_CONTEXT = 'update-golden-guard';
+
+// The two non-default `GITHUB_EVENT_NAME` values main() branches on. The
+// default — anything else — is the original pull_request poll path.
+const WORKFLOW_RUN_EVENT = 'workflow_run';
+const MERGE_GROUP_EVENT = 'merge_group';
+
+// The merge-queue branch shape GitHub stamps on a merge group's head ref:
+//   refs/heads/gh-readonly-queue/<base branch>/pr-<number>-<base sha>
+// Split into a prefix and a trailing segment pattern rather than one regex
+// over the whole ref, because the <base branch> in the middle may itself
+// contain slashes: the caller anchors on the group's own base_ref instead of
+// guessing where the base name ends.
+const QUEUE_REF_PREFIX = 'gh-readonly-queue/';
+const REFS_HEADS_PREFIX = 'refs/heads/';
+const QUEUE_PR_SEGMENT_RE = /^pr-(\d+)-[0-9a-fA-F]+$/;
+
+/** A ref with the `refs/heads/` prefix removed, if it carried one. */
+function branchName(ref) {
+  return ref.startsWith(REFS_HEADS_PREFIX) ? ref.slice(REFS_HEADS_PREFIX.length) : ref;
+}
+
+/**
+ * The pull-request number a merge group is validating, read back out of the
+ * `gh-readonly-queue/<base>/pr-<number>-<sha>` branch GitHub builds for it, or
+ * null if the head ref does not have that shape under this group's own base
+ * ref. GitHub creates one such branch per QUEUED PULL REQUEST rather than one
+ * per batch, so this resolves the whole of what the group would merge — see
+ * the file header.
+ *
+ * Both refs are accepted with or without a `refs/heads/` prefix: the webhook
+ * payload carries `base_ref` fully qualified and `head_ref` has been observed
+ * both ways.
+ */
+export function parseQueuedPRNumber(headRef, baseRef) {
+  if (typeof headRef !== 'string' || typeof baseRef !== 'string') return null;
+  const base = branchName(baseRef);
+  if (base === '') return null;
+  const head = branchName(headRef);
+  const prefix = `${QUEUE_REF_PREFIX}${base}/`;
+  if (!head.startsWith(prefix)) return null;
+  const match = QUEUE_PR_SEGMENT_RE.exec(head.slice(prefix.length));
+  return match === null ? null : Number(match[1]);
+}
+
+/**
+ * Raised when a `merge_group` run cannot tell which pull request its projected
+ * trunk would merge. It is a hard failure rather than a pass: an unresolved
+ * merge group is exactly the state in which this check has verified nothing,
+ * and certifying it would re-open #2350 on the queue path.
+ */
+export class UnresolvableMergeGroupError extends Error {
+  constructor(headRef, baseRef) {
+    super(
+      `update-golden-guard: merge_group head ref ${JSON.stringify(headRef)} does not have the ` +
+        `${QUEUE_REF_PREFIX}<base>/pr-<number>-<sha> shape GitHub stamps on a queue branch under ` +
+        `base ref ${JSON.stringify(baseRef)}, so the pull request this group would merge — and ` +
+        'therefore the branch an update-golden.yml dispatch might still be regenerating — cannot ' +
+        'be resolved. Failing rather than certifying a merge this check did not verify.',
+    );
+    this.name = 'UnresolvableMergeGroupError';
+  }
+}
+
+/**
+ * The head BRANCH of one pull request by number. The merge-group path needs
+ * it because `update-golden[<branch>]` run names carry a branch name, while a
+ * queue branch carries only the pull request's number.
+ */
+export async function findPRHeadBranch({ api, repo, token, number, fetchJSON = ghJSON }) {
+  const pr = await fetchJSON(`${api}/repos/${repo}/pulls/${number}`, token);
+  const ref = pr?.head?.ref;
+  if (typeof ref !== 'string' || ref.trim() === '') {
+    throw new Error(`unexpected response reading PR #${number}: no head.ref in ${JSON.stringify(pr)}`);
+  }
+  return ref;
+}
+
+/**
+ * The branch whose in-flight update-golden.yml dispatches this run must gate
+ * on. On `pull_request` that is the PR's own head branch, handed over by the
+ * runner. On `merge_group` it is the head branch of the pull request the queue
+ * would merge, resolved from the group's own refs.
+ */
+export async function resolveGuardedBranch({
+  eventName,
+  env,
+  token,
+  repo,
+  api,
+  findHeadBranch = findPRHeadBranch,
+}) {
+  if (eventName !== MERGE_GROUP_EVENT) return required(env, 'BRANCH');
+
+  const headRef = required(env, 'MERGE_GROUP_HEAD_REF');
+  const baseRef = required(env, 'MERGE_GROUP_BASE_REF');
+  const number = parseQueuedPRNumber(headRef, baseRef);
+  if (number === null) throw new UnresolvableMergeGroupError(headRef, baseRef);
+
+  const branch = await findHeadBranch({ api, repo, token, number });
+  notice(
+    `update-golden-guard: merge group ${headRef} would merge PR #${number} (head branch ` +
+      `${branch}); guarding that branch, not the queue's own projected ref.`,
+  );
+  return branch;
+}
 
 function apiHeaders(token) {
   return {
@@ -322,12 +478,23 @@ export async function main(env = process.env) {
   const api = env.API_URL || DEFAULT_API_URL;
   const eventName = env.GITHUB_EVENT_NAME || 'pull_request';
 
-  if (eventName === 'workflow_run') {
+  if (eventName === WORKFLOW_RUN_EVENT) {
     await runForWorkflowRunEvent({ env, token, repo, api });
     return;
   }
 
-  const branch = required(env, 'BRANCH');
+  let branch;
+  try {
+    branch = await resolveGuardedBranch({ eventName, env, token, repo, api });
+  } catch (e) {
+    if (e instanceof UnresolvableMergeGroupError) {
+      error(e.message, { title: 'update-golden-guard' });
+      process.exitCode = 1;
+      return;
+    }
+    throw e;
+  }
+
   const pollIntervalMs = numberEnv(env, 'POLL_INTERVAL_MS', DEFAULT_POLL_INTERVAL_MS);
   const maxWaitMs = numberEnv(env, 'MAX_WAIT_MS', DEFAULT_MAX_WAIT_MS);
 
