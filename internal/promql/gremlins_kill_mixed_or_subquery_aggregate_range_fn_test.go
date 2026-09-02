@@ -4,26 +4,16 @@
 // gremlins_kill_test.go for the shared file-header convention this file
 // follows.
 //
-// Two mutants on this file are NOT addressed with a dedicated test here —
-// both are provably EQUIVALENT, not coverage gaps:
-//
-//   - INVERT_LOGICAL (`||` -> `&&`) on
-//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`,
-//     sumOrAvgMixedOrSubqueryOuterFnRecognized's own guard. Under
-//     metadataFullRange=true this function's own later call chain —
-//     sumOrAvgOverMixedExpHistogramSetOp(sub.Expr, s, ctx), which calls
-//     mixedExpHistogramSetOp(agg.Expr, s, ctx) directly — independently
-//     rejects regardless of the mutation: mixedExpHistogramSetOp's own
-//     lhsHist/rhsHist are each `isExpHistogramValuedShape(...) ||
-//     isExpHistogramForwardedThroughSetOp(...)`, and every leaf
-//     isExpHistogramValuedShape dispatches to (bareExpHistogramSelector
-//     and friends) carries the identical metadataFullRange guard, so both
-//     collapse to `false` whenever metadataFullRange is true — making
-//     `lhsHist == rhsHist` (false == false) unconditionally true and
-//     mixedExpHistogramSetOp reject regardless of what this function's own
-//     early guard did. Verified directly: manually applying the mutation
-//     and running `go test ./internal/promql/...` (this package) stays
-//     green.
+// This file used to open by adjudicating two mutants as equivalent. The
+// first of them — the INVERT_LOGICAL rewrite of
+// sumOrAvgMixedOrSubqueryOuterFnRecognized's own copy of the exp-histogram
+// availability rule — no longer exists: cerberus issue #2963 deleted that
+// copy, because the function's own later call chain
+// (sumOrAvgOverMixedExpHistogramSetOp, then mixedExpHistogramSetOp)
+// independently re-derives the identical verdict, so the copy decided
+// nothing. The rule is now stated once, in
+// [expHistogramLoweringAvailable], where both its mutants are killable.
+// The remaining adjudication stands:
 //
 //   - CONDITIONALS_BOUNDARY (`<` -> `<=`) on
 //     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if step < 0`,
@@ -61,13 +51,14 @@ import (
 // TestSumOrAvgMixedOrSubqueryOuterFnRecognized_PositiveMatch kills two
 // mutants on sumOrAvgMixedOrSubqueryOuterFnRecognized's first two guards
 // at once:
-//   - CONDITIONALS_NEGATION (`==` -> `!=`) on the `s.ExpHistogramTable == ""`
-//     operand of
-//     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`:
-//     with the negation, ANY non-empty
-//     ExpHistogramTable (the normal, default schema) makes the guard
-//     bail, so this test's ordinary DefaultOTelMetrics() schema alone
-//     differentiates.
+//   - CONDITIONALS_NEGATION (`!=` -> `==`) on
+//     histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`:
+//     with the negation, ANY non-empty ExpHistogramTable (the normal,
+//     default schema) makes the rule deny availability, so this test's
+//     ordinary DefaultOTelMetrics() schema alone differentiates. Until
+//     cerberus issue #2963 the same mutant sat on this function's own copy
+//     of the rule; the copy decided nothing and was deleted, and the
+//     citation now names the one place the rule is stated.
 //   - CONDITIONALS_NEGATION (`!=` -> `==`) on
 //     histogram_native_mixed_or_subquery_aggregate_range_fn.go:`if len(c.Args) != 1`: the real call always carries exactly 1
 //     argument (the subquery), so the negation would reject it.

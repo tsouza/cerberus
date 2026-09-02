@@ -154,7 +154,7 @@ const (
 // leaves the shape on the explicit rejection path instead of emitting a
 // division by zero.
 func rangeFnOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return histogramAggShape{}, false
 	}
 	call, ok := peelWrappers(expr).(*parser.Call)
@@ -207,9 +207,6 @@ type histogramSubqueryRangeShape struct {
 // [lowerExpHistogramRangeFnOverSubquery] below already being able to answer
 // it correctly once matched.
 func rangeFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubqueryRangeShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return histogramSubqueryRangeShape{}, false
-	}
 	call, ok := peelWrappers(expr).(*parser.Call)
 	if !ok || len(call.Args) != 1 {
 		return histogramSubqueryRangeShape{}, false

@@ -5292,9 +5292,6 @@ func lowerLimitKInput(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (chplan.
 // recognizer correctly reports false and leaves that shape to the
 // generic dispatcher, unchanged.
 func limitKOrRatioOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	agg, ok := unwrapAggregateExpr(expr)
 	if !ok || (agg.Op != parser.LIMITK && agg.Op != parser.LIMIT_RATIO) {
 		return nil, false

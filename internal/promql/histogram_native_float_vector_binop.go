@@ -47,9 +47,6 @@ import (
 // [lowerRoot]'s existing chain the identical way and is reachable
 // regardless of instant vs. range mode.
 func expHistogramDroppingVectorBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide, floatSide parser.Expr, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin {
 		return nil, nil, false

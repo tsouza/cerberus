@@ -99,9 +99,6 @@ type histogramSubquerySelectShape struct {
 //     family, entirely histogram-preserving) is threaded there rather than
 //     into [lowerCall].
 func selectFnOverExpHistogramSubquery(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramSubquerySelectShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return histogramSubquerySelectShape{}, false
-	}
 	call, ok := peelWrappers(expr).(*parser.Call)
 	if !ok || len(call.Args) != 1 {
 		return histogramSubquerySelectShape{}, false

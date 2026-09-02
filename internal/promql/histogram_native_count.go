@@ -70,7 +70,7 @@ import (
 // distinct ItemType, so the nil-Param check states the assumption rather
 // than relying on the parser never producing one.
 func countOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, *parser.VectorSelector, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return nil, nil, false
 	}
 	agg, ok := unwrapAggregateExpr(expr)
@@ -95,14 +95,18 @@ func countOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*p
 // thirteen-column HistogramProjection boundary, so this consumer counts or
 // groups those published rows without reaching into the producer.
 func countOrGroupOverExpHistogramValue(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.AggregateExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	agg, ok := unwrapAggregateExpr(expr)
 	if !ok || agg.Param != nil || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) {
 		return nil, false
 	}
-	return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)
+	// A rejection answers the zero-value tuple, never a
+	// partially-populated one — the contract every sibling exp-histogram
+	// recognizer keeps, and the one the guard this function used to open
+	// with used to keep for it (cerberus issue #2963).
+	if !isExpHistogramValuedShape(agg.Expr, s, ctx) {
+		return nil, false
+	}
+	return agg, true
 }
 
 // lowerExpHistogramCountOrGroupOverPlan applies count() or group() to an

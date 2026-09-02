@@ -82,9 +82,6 @@ import (
 // so a scalable shape keeps its value rather than being dropped by a
 // broader, later-checked recognizer.
 func expHistogramFloatVectorScalingBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide, floatSide parser.Expr, op chplan.BinaryOp, match chplan.VectorMatch, card chplan.VectorCard, include []string, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.MUL && b.Op != parser.DIV) {
 		return nil, nil, "", chplan.VectorMatch{}, chplan.CardOneToOne, nil, false

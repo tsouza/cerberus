@@ -5,29 +5,16 @@
 // crashed on a network flake before any mutant ran). See gremlins_kill_test.go
 // for the shared file-header convention this file follows.
 //
-// Two INVERT_LOGICAL mutants are NOT addressed with a dedicated test here —
-// both are provably equivalent, not coverage gaps:
-//
-//   - histogram_native_binop_eq.go:expHistogramHistogramCompareBinop:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//     (`||` -> `&&`).
-//   - histogram_native_binop_eq.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool` (the FIRST `||` of the three-way
-//     `s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`
-//     inside expHistogramHistogramCompareBoolBinop).
-//
-// Both functions re-validate the identical table/metadataFullRange
-// condition one level down, via isExpHistogramValuedShape(b.LHS/b.RHS, s,
-// ctx) a few lines later — and EVERY leaf recognizer
-// isExpHistogramValuedShape dispatches to (bareExpHistogramSelector,
-// sumOrAvgOverExpHistogram, rangeFnOverExpHistogram, and so on) carries the
-// exact same `s.ExpHistogramTable == "" || ctx.metadataFullRange` guard.
-// So whenever that condition holds, isExpHistogramValuedShape is
-// UNCONDITIONALLY false regardless of which branch of the outer OR/AND
-// mutation let control reach it — and both functions' every rejection path
-// returns the SAME literal zero-value tuple (`nil, nil, false, nil, false`),
-// never a partially-populated one. There is no way for the AND mutant to
-// produce a tuple the OR original could not also produce, on ANY input:
-// verified by manually applying each mutation and confirming
-// `go test ./internal/promql/...` (this package) stays green.
+// This file used to open with an equivalence adjudication for two
+// INVERT_LOGICAL mutants on histogram_native_binop_eq.go's copies of the
+// exp-histogram availability rule, inside expHistogramHistogramCompareBinop
+// and expHistogramHistogramCompareBoolBinop. Both copies decided nothing —
+// each function re-derives the identical verdict a few lines later through
+// isExpHistogramValuedShape — so neither mutant could ever be killed.
+// Cerberus issue #2963 deleted those copies along with the other nineteen
+// composite ones, leaving the rule stated once in
+// [expHistogramLoweringAvailable]; the mutants no longer exist, so the
+// adjudication has been retired rather than restated.
 package promql
 
 import (
@@ -39,30 +26,25 @@ import (
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
-// TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool kills the
-// CONDITIONALS_BOUNDARY... no — INVERT_LOGICAL mutant at
-// histogram_native_binop_eq.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`,
-// the SECOND `||` of
+// TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool pins
 //
-//	if s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool {
+//	histogram_native_binop_eq.go:expHistogramHistogramCompareBoolBinop:`if !b.ReturnBool {`
 //
-// (parsed left-associatively as `(A || B) || C`, so this is the outer
-// `||` joining `(A || B)` with `C = !b.ReturnBool`). With a normal schema
-// and ctx (A = B = false), the guard's truth rests entirely on C: a
-// non-bool comparison (`b.ReturnBool == false`, so C == true) must be
-// rejected — this recognizer is exclusively the `bool`-modifier variant;
-// `expHistogramHistogramCompareBinop` (this file's own non-bool sibling)
-// answers the shape without `bool`. Flipping the outer `||` to `&&` makes
-// the guard depend on BOTH `(A||B)` and `C` — with A and B both false,
-// `(A||B) && C` is false regardless of C, so the guard never fires and a
-// non-bool `==`/`!=` between two histograms is wrongly recognised here too.
+// the recognizer's exclusivity to the `bool`-modifier variant: a non-bool
+// comparison (`b.ReturnBool == false`) must be rejected, because
+// [expHistogramHistogramCompareBinop] — this file's own non-bool sibling —
+// answers that shape instead.
 //
-// Unlike the two EQUIVALENT `||`s this file's header documents, this
-// mutation is NOT masked by the later isExpHistogramValuedShape re-check:
-// A and B are both false in this test (a normal schema, no
-// metadataFullRange), so that later check genuinely passes on real
-// histogram-valued operands — nothing downstream catches the wrongly
-// bypassed ReturnBool guard.
+// Until cerberus issue #2963 this guard read
+// `s.ExpHistogramTable == "" || ctx.metadataFullRange || !b.ReturnBool`,
+// and the test existed to kill the INVERT_LOGICAL mutant on its SECOND
+// `||`: with a normal schema and ctx the first two disjuncts are false, so
+// `(A||B) && C` never fires and a non-bool comparison was wrongly accepted.
+// The first two disjuncts were the composite copy of the availability rule
+// and are gone; `!b.ReturnBool` is what actually decided this case and is
+// all that remains. The condition now carries no logical operator and so no
+// mutant, but the contract it states is real and this test keeps pinning
+// it.
 func TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool(t *testing.T) {
 	t.Parallel()
 
@@ -73,9 +55,8 @@ func TestExpHistogramHistogramCompareBoolBinop_RequiresReturnBool(t *testing.T) 
 	}
 	if _, _, _, _, ok := expHistogramHistogramCompareBoolBinop(b, s, lowerCtx{}); ok {
 		t.Fatalf("expected a non-bool histogram/histogram comparison to be rejected by the " +
-			"bool-modifier-only recognizer; got ok=true (mutant `||`->`&&` at " +
-			"histogram_native_binop_eq.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange || !b.ReturnBool` " +
-			"would accept it despite ReturnBool=false)")
+			"bool-modifier-only recognizer; got ok=true despite ReturnBool=false " +
+			"(histogram_native_binop_eq.go:expHistogramHistogramCompareBoolBinop:`if !b.ReturnBool {`)")
 	}
 }
 
@@ -148,7 +129,7 @@ func TestProjectHistogramCompareSide_ProjectionsCapacityIsTight(t *testing.T) {
 }
 
 // TestCountOverExpHistogram_MetadataFullRangeShortCircuits kills the
-// INVERT_LOGICAL mutant at histogram_native_count.go:countOverExpHistogram:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
+// INVERT_LOGICAL mutant at histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -173,27 +154,27 @@ func TestCountOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
 }
 
 // TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
-// kills the INVERT_LOGICAL mutant at
-// histogram_native_count.go:countOrGroupOverExpHistogramValue:`s.ExpHistogramTable == "" || ctx.metadataFullRange`.
+// pins the zero-value-tuple contract at
 //
-// Unlike countOverExpHistogram above, countOrGroupOverExpHistogramValue
-// DOES re-validate the identical guard one level down: its own tail
-// `return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)` calls a
-// function whose every leaf recognizer (bareExpHistogramSelector and
-// friends) carries the same `s.ExpHistogramTable == "" ||
-// ctx.metadataFullRange` guard, so with metadataFullRange=true the
-// returned `ok` is false either way — the `bool` return alone cannot
-// differentiate the mutant (this is the SAME masking
-// TestExpHistogramHistogramCompareBoolBinop's file-header documents as
-// equivalent for histogram_native_binop_eq.go's guards).
+//	histogram_native_count.go:countOrGroupOverExpHistogramValue:`if !isExpHistogramValuedShape(agg.Expr, s, ctx) {`
 //
-// The difference IS observable through the OTHER return value, though:
-// the original guard returns literal `nil, false` — agg is never parsed.
-// The `&&` mutant, with the guard bypassed, proceeds to
-// `unwrapAggregateExpr` and returns a REAL, non-nil `*parser.AggregateExpr`
-// alongside the (still-false, via the masked recursive check) `ok`. This
-// test pins `agg == nil` on the rejection path, which the mutant cannot
-// produce once it has fallen through to parse a real aggregate.
+// A rejection must answer `nil, false`, never a real `*parser.AggregateExpr`
+// alongside a false `ok`. Every sibling exp-histogram recognizer keeps that
+// contract, and all three of this function's callers scope the aggregate to
+// the `ok` branch — but a caller that stopped doing so would read a
+// populated value out of a rejection, which is the failure this pins.
+//
+// Until cerberus issue #2963 the function opened with a copy of the
+// exp-histogram availability rule and closed with
+// `return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)`. That copy
+// decided nothing about `ok` — the tail re-derives the identical verdict —
+// so its INVERT_LOGICAL mutant was killable only through this second return
+// value, which the copy alone kept at nil. Deleting the copy along with the
+// other twenty composite ones would have started answering
+// `(non-nil agg, false)`, so the tail was normalised to an explicit
+// rejection instead, and the contract survives the deletion. The condition
+// now carries no logical operator and so no mutant; the contract is real
+// and this test keeps pinning it.
 func TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing(t *testing.T) {
 	t.Parallel()
 
@@ -204,23 +185,23 @@ func TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true")
 	}
 	if agg != nil {
-		t.Fatalf("expected countOrGroupOverExpHistogramValue to short-circuit BEFORE parsing the "+
-			"aggregate under metadataFullRange (agg == nil); got %#v — the mutant `||`->`&&` at "+
-			"histogram_native_count.go:countOrGroupOverExpHistogramValue:"+
-			"`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` would fall through to "+
-			"unwrapAggregateExpr and return a "+
-			"non-nil agg even though ok stays false via the recursive isExpHistogramValuedShape guard",
-			agg)
+		t.Fatalf("expected countOrGroupOverExpHistogramValue to answer the zero-value tuple when "+
+			"it rejects under metadataFullRange (agg == nil); got %#v — a rejection must never "+
+			"hand back a populated aggregate alongside ok=false "+
+			"(histogram_native_count.go:countOrGroupOverExpHistogramValue:"+
+			"`if !isExpHistogramValuedShape(agg.Expr, s, ctx) {`)", agg)
 	}
 }
 
 // TestCountValuesOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
-// kills the INVERT_LOGICAL mutant at
-// histogram_native_count_values.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-// — the SAME "agg persists past the masked guard" shape
+// pins the same zero-value-tuple contract at
+//
+//	histogram_native_count_values.go:`if !isExpHistogramValuedShape(agg.Expr, s, ctx) {`
+//
+// for [countValuesOverExpHistogramValue], whose tail cerberus issue #2963
+// normalised the same way and for the same reason —
 // TestCountOrGroupOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing
-// kills above, for countValuesOverExpHistogramValue's identical
-// `return agg, isExpHistogramValuedShape(agg.Expr, s, ctx)` tail.
+// above carries the full account.
 func TestCountValuesOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing(t *testing.T) {
 	t.Parallel()
 
@@ -231,11 +212,10 @@ func TestCountValuesOverExpHistogramValue_MetadataFullRangeRejectsBeforeParsing(
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true")
 	}
 	if agg != nil {
-		t.Fatalf("expected countValuesOverExpHistogramValue to short-circuit BEFORE parsing the "+
-			"aggregate under metadataFullRange (agg == nil); got %#v — the mutant `||`->`&&` at "+
-			"histogram_native_count_values.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` "+
-			"would fall through and return a non-nil agg "+
-			"even though ok stays false via the recursive isExpHistogramValuedShape guard", agg)
+		t.Fatalf("expected countValuesOverExpHistogramValue to answer the zero-value tuple when "+
+			"it rejects under metadataFullRange (agg == nil); got %#v — a rejection must never "+
+			"hand back a populated aggregate alongside ok=false "+
+			"(histogram_native_count_values.go:`if !isExpHistogramValuedShape(agg.Expr, s, ctx) {`)", agg)
 	}
 }
 

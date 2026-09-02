@@ -141,7 +141,7 @@ func TestExpHistogramResetMaskStage_ProjectionCapacityIsTight(t *testing.T) {
 
 // TestCountPresentOverExpHistogram_MetadataFullRangeShortCircuits kills
 // the INVERT_LOGICAL mutant at
-// histogram_native_count_present_over_time.go:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
+// histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -159,7 +159,7 @@ func TestCountPresentOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.
 	expr := mustParse(t, `count_over_time(latency_exp_hist[5m])`)
 	if _, _, _, ok := countPresentOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at " +
-			"histogram_native_count_present_over_time.go:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
+			"histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange`)")
 	}
 }
 
@@ -185,7 +185,7 @@ func TestCountPresentOverExpHistogram_ZeroRangeRejected(t *testing.T) {
 
 // TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits kills the
 // INVERT_LOGICAL mutant at
-// histogram_native_range_fn.go:rangeFnOverExpHistogram:`s.ExpHistogramTable == "" || ctx.metadataFullRange`.
+// histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`.
 // Like countPresentOverExpHistogram above, rangeFnOverExpHistogram has no
 // downstream call re-checking the same guard, so this is a clean,
 // unmasked differentiator.
@@ -196,7 +196,7 @@ func TestRangeFnOverExpHistogram_MetadataFullRangeShortCircuits(t *testing.T) {
 	expr := mustParse(t, `rate(latency_exp_hist[5m])`)
 	if _, ok := rangeFnOverExpHistogram(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true (mutant `||`->`&&` at " +
-			"histogram_native_range_fn.go:rangeFnOverExpHistogram:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
+			"histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange`)")
 	}
 }
 
@@ -313,11 +313,15 @@ func TestExpHistogramRangeFnWindowed_PinnedAtNotOverwrittenByQueryEnd(t *testing
 // two mutants at once, both inside
 // histogram_native_dropping_shape.go's labelCallOverExpHistogramDroppingShape:
 //   - CONDITIONALS_NEGATION on
-//     histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == "" || ctx.metadataFullRange`
-//     (`s.ExpHistogramTable == ""` -> `!= ""`): with the negation, ANY
-//     non-empty ExpHistogramTable — the normal, default schema — makes the
-//     guard bail, so this test's ordinary DefaultOTelMetrics() schema alone
-//     differentiates.
+//     histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`
+//     (`!=` -> `==`): with the negation, ANY non-empty ExpHistogramTable —
+//     the normal, default schema — makes the rule deny availability, which
+//     [isExpHistogramDroppingShape] then reports one level down, so this
+//     test's ordinary DefaultOTelMetrics() schema alone differentiates.
+//     Until cerberus issue #2963 the same mutant sat on
+//     labelCallOverExpHistogramDroppingShape's own copy of the rule; that
+//     copy decided nothing about the answer and was deleted, and the
+//     citation now names the one place the rule is stated.
 //   - CONDITIONALS_NEGATION on
 //     histogram_native_dropping_shape.go:`len(call.Args) != 5` (-> `== 5`):
 //     with the negation, exactly-5-args (the only valid label_replace
@@ -333,7 +337,7 @@ func TestLabelCallOverExpHistogramDroppingShape_LabelReplaceExactArity(t *testin
 	call, ok := labelCallOverExpHistogramDroppingShape(expr, s, lowerCtx{})
 	if !ok {
 		t.Fatalf("expected 5-arg label_replace wrapping a drop-family binop to be recognised under the default schema; got ok=false (mutants at " +
-			"histogram_native_dropping_shape.go:labelCallOverExpHistogramDroppingShape:`s.ExpHistogramTable == \"\" || ctx.metadataFullRange` and " +
+			"histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange` and " +
 			"histogram_native_dropping_shape.go:`len(call.Args) != 5`)")
 	}
 	if call.Func.Name != fnLabelReplace {

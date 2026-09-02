@@ -51,7 +51,7 @@ const (
 // [countPresentOverExpHistogram]'s own recognizer shape rung for rung,
 // differing only in which two function names it admits.
 func lastFirstOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (fn string, ms *parser.MatrixSelector, vs *parser.VectorSelector, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return "", nil, nil, false
 	}
 	call, ok := peelWrappers(expr).(*parser.Call)

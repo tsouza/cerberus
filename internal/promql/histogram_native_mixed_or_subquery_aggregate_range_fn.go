@@ -117,9 +117,6 @@ import (
 // [mixedOrShadowUnless] StepAligned idiom — no new chplan or chsql surface,
 // exactly like this package's other mixed-or composers.
 func sumOrAvgMixedOrSubqueryOuterFnRecognized(c *parser.Call, s schema.Metrics, ctx lowerCtx) (sumOrAvgMixedOrSubqueryShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return sumOrAvgMixedOrSubqueryShape{}, false
-	}
 	if len(c.Args) != 1 {
 		return sumOrAvgMixedOrSubqueryShape{}, false
 	}

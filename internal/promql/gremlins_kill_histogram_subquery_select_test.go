@@ -5,25 +5,16 @@
 // ran). See gremlins_kill_test.go for the shared file-header convention
 // this file follows.
 //
-// Three mutants are NOT addressed with a dedicated test here — all three
-// are provably equivalent, not coverage gaps:
+// This file used to open by adjudicating three mutants as equivalent. The
+// first of them — the INVERT_LOGICAL rewrite of
+// selectFnOverExpHistogramSubquery's own copy of the exp-histogram
+// availability rule — no longer exists: cerberus issue #2963 deleted that
+// copy, because the function re-derives the identical verdict one level
+// down through isExpHistogramValuedShape and the copy therefore decided
+// nothing. The rule is now stated once, in
+// [expHistogramLoweringAvailable], where both its mutants are killable.
+// The remaining two adjudications stand:
 //
-//   - histogram_native_subquery_select.go:`s.ExpHistogramTable == "" || ctx.metadataFullRange` (INVERT_LOGICAL,
-//     `s.ExpHistogramTable == "" || ctx.metadataFullRange` -> `&&` inside
-//     selectFnOverExpHistogramSubquery). This function re-validates the
-//     identical condition one level down, in the
-//     `!isExpHistogramValuedShape(sub.Expr, s, ctx)` disjunct of
-//     histogram_native_subquery_select.go:`sub.Range <= 0` — and EVERY leaf
-//     recognizer isExpHistogramValuedShape dispatches to carries the same
-//     guard, so whenever the top guard's condition holds,
-//     isExpHistogramValuedShape is unconditionally false regardless of
-//     which branch of the mutation let control reach it. Unlike
-//     countOrGroupOverExpHistogramValue (gremlins_kill_histogram_binop_
-//     count_test.go), no "did it even try to parse" tuple survives here:
-//     EVERY rejection path in this function returns the literal zero-value
-//     `histogramSubquerySelectShape{}, false` — never a partially built
-//     one — so the two branches converge on the exact same return value on
-//     every input.
 //   - histogram_native_subquery_select.go:`step < 0` (CONDITIONALS_BOUNDARY,
 //     `step < 0` -> `<= 0`). Two lines above, `if step == 0 { step =
 //     defaultSubqueryStep }` (defaultSubqueryStep = time.Minute, a positive
@@ -143,7 +134,7 @@ func TestLowerSelectFnOverExpHistogramSubquery_InstantPinDoesNotBroadcast(t *tes
 }
 
 // TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits kills
-// the INVERT_LOGICAL mutant at histogram_native_bare.go:bareExpHistogramMatrixSelector:`if s.ExpHistogramTable == "" || ctx.metadataFullRange`, where
+// the INVERT_LOGICAL mutant at histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != "" && !ctx.metadataFullRange`, where
 //
 //	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
 //
@@ -160,7 +151,7 @@ func TestBareExpHistogramMatrixSelector_MetadataFullRangeShortCircuits(t *testin
 	expr := mustParse(t, `latency_exp_hist[5m]`)
 	if _, _, ok := bareExpHistogramMatrixSelector(expr, s, lowerCtx{metadataFullRange: true}); ok {
 		t.Fatalf("expected metadataFullRange to reject recognition; got ok=true " +
-			"(mutant `||`->`&&` at histogram_native_bare.go:bareExpHistogramMatrixSelector:`if s.ExpHistogramTable == \"\" || ctx.metadataFullRange`)")
+			"(mutant `||`->`&&` at histogram_native_availability.go:expHistogramLoweringAvailable:`s.ExpHistogramTable != \"\" && !ctx.metadataFullRange`)")
 	}
 }
 

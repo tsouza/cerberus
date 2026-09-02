@@ -120,9 +120,6 @@ import (
 // two-pure-shapes case this function itself builds. See
 // [chplan.VectorSetOp.Mixed]'s doc comment for the full picture.
 func mixedExpHistogramSetOp(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.BinaryExpr, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || b.Op != parser.LOR {
 		return nil, false

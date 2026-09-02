@@ -70,9 +70,6 @@ import (
 // the histogram, and a histogram can only be the numerator here) — so
 // only the `<exp-hist shape> / <scalar>` order is recognised for it.
 func expHistogramScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide parser.Expr, op chplan.BinaryOp, scale chplan.Expr, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, "", nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.MUL && b.Op != parser.DIV) {
 		return nil, "", nil, false
@@ -98,9 +95,6 @@ func expHistogramScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (
 // side; division is included only when the scalar is on the left because
 // histogram/scalar division is the supported scaling shape above.
 func expHistogramDroppingScalarBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histSide parser.Expr, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin {
 		return nil, false
@@ -153,7 +147,20 @@ func unwrapBinaryExpr(e parser.Expr) (*parser.BinaryExpr, bool) {
 // that answer histogram-valued: a bare exp-histogram selector,
 // sum()/avg() over one, or a supported histogram-valued range function over
 // one.
+//
+// The leading [expHistogramLoweringAvailable] check is a COST gate, not a
+// correctness one: every arm below either recurses on a strict
+// sub-expression or calls a leaf recognizer that applies the same rule
+// itself, so this function already answered false for every input whenever
+// the rule says no. Without the check it reached that answer by walking the
+// whole AST, and the walk branches once per arm per binary node — measured
+// at ~17µs against ~98ns on a depth-4 binary tree, growing with depth. That
+// walk is what every deployment WITHOUT an exp-histogram table, and every
+// metadata full-range lowering, would otherwise pay on each recognition.
 func isExpHistogramValuedShape(expr parser.Expr, s schema.Metrics, ctx lowerCtx) bool {
+	if !expHistogramLoweringAvailable(s, ctx) {
+		return false
+	}
 	if call, ok := labelCallOverExpHistogram(expr, s, ctx); ok {
 		return isExpHistogramValuedShape(call.Args[0], s, ctx)
 	}

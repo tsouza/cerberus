@@ -112,9 +112,6 @@ import (
 // broadcast) routes to a different shape entirely — see
 // [mergeTwoHistogramProjectionsCard] (histogram_native_binop_card.go).
 func expHistogramHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, sub bool, vm *parser.VectorMatching, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false, nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || (b.Op != parser.ADD && b.Op != parser.SUB) {
 		return nil, nil, false, nil, false
@@ -215,9 +212,6 @@ func lowerExpHistogramValuedOperand(expr parser.Expr, s schema.Metrics, ctx lowe
 // structural-equality filter), not a drop — different mechanics, tracked
 // separately by #2273.
 func expHistogramDroppingHistogramBinop(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (lhs, rhs parser.Expr, ok bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
-		return nil, nil, false
-	}
 	b, isBin := unwrapBinaryExpr(expr)
 	if !isBin || !expHistogramHistogramBinopDrops(b.Op) {
 		return nil, nil, false

@@ -118,7 +118,7 @@ const (
 // [rangeFnOverExpHistogram]: falling through leaves the shape on the explicit
 // rejection path instead of reducing an empty window.
 func resetsOrChangesOverExpHistogram(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (histogramAggShape, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return histogramAggShape{}, false
 	}
 	call, ok := unwrapCall(expr)

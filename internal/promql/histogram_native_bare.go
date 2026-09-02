@@ -65,7 +65,7 @@ const histogramSampleValuePlaceholder = 0.0
 // MetricName + Attributes and has its own full-range lowering, which
 // expHistogramSelectorRouting already exempts from rejection.
 func bareExpHistogramSelector(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.VectorSelector, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return nil, false
 	}
 	vs, ok := unwrapVectorSelector(expr)
@@ -222,7 +222,7 @@ func nativeExpHistValuedLatestAggs(s schema.Metrics) []chplan.AggFunc {
 // shape, and it needs no recursive reach into
 // [lowerExpHistogramValuedShape].
 func bareExpHistogramMatrixSelector(expr parser.Expr, s schema.Metrics, ctx lowerCtx) (*parser.MatrixSelector, *parser.VectorSelector, bool) {
-	if s.ExpHistogramTable == "" || ctx.metadataFullRange {
+	if !expHistogramLoweringAvailable(s, ctx) {
 		return nil, nil, false
 	}
 	ms, ok := expr.(*parser.MatrixSelector)
