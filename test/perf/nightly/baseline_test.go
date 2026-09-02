@@ -82,12 +82,12 @@ func TestNightlyBaseline_ProngBIsNeverLooserThanProngA(t *testing.T) {
 func TestNightlyBaseline_CalibrationMeasurementPassesBothProngs(t *testing.T) {
 	baseline := mustReadBaseline(t)
 	for _, bound := range baseline.Sentinels {
-		if bound.MaxOfNBytes > nightlyCapCeilingBytes {
+		if exceedsCapCeiling(bound.MaxOfNBytes) {
 			t.Errorf("%s: calibration measurement %d already exceeds the absolute ceiling %d — "+
 				"the committed baseline records a PRONG (a) failure",
 				bound.Name, bound.MaxOfNBytes, nightlyCapCeilingBytes)
 		}
-		if bound.MaxOfNBytes > bound.CeilingBytes {
+		if exceedsCommittedCeiling(bound.MaxOfNBytes, bound) {
 			t.Errorf("%s: calibration measurement %d already exceeds its own committed ceiling %d — "+
 				"the gate is red on the very run that produced it",
 				bound.Name, bound.MaxOfNBytes, bound.CeilingBytes)

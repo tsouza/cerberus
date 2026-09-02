@@ -321,7 +321,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			result.MaxOfNBytes = maxBytes
 			result.CapCeilingBytes = capCeiling
 			result.CapFractionPct = 100 * float64(maxBytes) / float64(perfNightlyMemoryCapBytes)
-			result.CapOK = maxBytes <= capCeiling
+			result.CapOK = !exceedsCapCeiling(maxBytes)
 
 			if update {
 				// committedCeilingBytes clamps to capCeiling — see its own
@@ -335,7 +335,7 @@ func TestPerfNightlyRealCH(t *testing.T) {
 			}
 
 			// PRONG (a): absolute, cap-relative ceiling.
-			if maxBytes > capCeiling {
+			if exceedsCapCeiling(maxBytes) {
 				t.Errorf("%s: peak memory %d bytes exceeds the absolute cap-relative ceiling %d bytes "+
 					"(%.0f%% of the %d-byte cap) — %s may have regressed",
 					sentinel.Name, maxBytes, capCeiling, 100*nightlyMemoryCapFraction, perfNightlyMemoryCapBytes, sentinel.Family)
@@ -353,8 +353,8 @@ func TestPerfNightlyRealCH(t *testing.T) {
 					sentinel.Name, bound.ExpectedStatus, sentinel.ExpectedStatus)
 			}
 			result.BaselineCeilingBytes = bound.CeilingBytes
-			result.BaselineOK = maxBytes <= bound.CeilingBytes
-			if maxBytes > bound.CeilingBytes {
+			result.BaselineOK = !exceedsCommittedCeiling(maxBytes, bound)
+			if exceedsCommittedCeiling(maxBytes, bound) {
 				// The committed ceiling's ACTUAL ratio to the calibration
 				// measurement, not sentinel.BaselineHeadroom: a sentinel whose
 				// ceiling committedCeilingBytes clamped to the absolute one

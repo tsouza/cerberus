@@ -92,6 +92,24 @@ func committedCeilingBytes(maxBytes uint64) uint64 {
 	return min(uint64(float64(maxBytes)*sentinelBaselineHeadroom), sentinelCapCeilingBytes)
 }
 
+// exceedsCapCeiling reports whether a measured peak trips PRONG (a), the
+// absolute cap-relative ceiling.
+//
+// The harness's PRONG (a) IS this call, so the unit lane drives the real
+// decision rather than a restatement of it: a prong that started comparing the
+// wrong quantity, or flipped its boundary, fails in baseline_test.go instead of
+// waiting for a real regression to go unreported.
+func exceedsCapCeiling(maxBytes uint64) bool {
+	return maxBytes > sentinelCapCeilingBytes
+}
+
+// exceedsCommittedCeiling reports whether a measured peak trips PRONG (b), the
+// committed per-sentinel ceiling. The harness's PRONG (b) IS this call — see
+// exceedsCapCeiling for why that matters.
+func exceedsCommittedCeiling(maxBytes uint64, bound sentinelBound) bool {
+	return maxBytes > bound.CeilingBytes
+}
+
 // --- baseline load/write (invariant 9: never hand-edited) -----------------
 
 // perfSmokeBaselinePath is the committed bound file, a sibling of

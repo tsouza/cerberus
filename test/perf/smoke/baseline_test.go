@@ -105,12 +105,12 @@ func TestPerfSmokeBaseline_ProngBIsNeverLooserThanProngA(t *testing.T) {
 func TestPerfSmokeBaseline_CalibrationMeasurementPassesBothProngs(t *testing.T) {
 	baseline := mustReadBaseline(t)
 	for _, bound := range baseline.Sentinels {
-		if bound.MaxOfNBytes > sentinelCapCeilingBytes {
+		if exceedsCapCeiling(bound.MaxOfNBytes) {
 			t.Errorf("%s: calibration measurement %d already exceeds the absolute ceiling %d — "+
 				"the committed baseline records a PRONG (a) failure",
 				bound.Name, bound.MaxOfNBytes, sentinelCapCeilingBytes)
 		}
-		if bound.MaxOfNBytes > bound.CeilingBytes {
+		if exceedsCommittedCeiling(bound.MaxOfNBytes, bound) {
 			t.Errorf("%s: calibration measurement %d already exceeds its own committed ceiling %d — "+
 				"the gate is red on the very run that produced it",
 				bound.Name, bound.MaxOfNBytes, bound.CeilingBytes)
@@ -144,11 +144,29 @@ func TestPerfSmokeBaseline_ProngBFiresWhereItPreviouslyCouldNot(t *testing.T) {
 		if probe >= preClamp {
 			t.Fatalf("%s: probe %d is not strictly below the pre-clamp ceiling %d", name, probe, preClamp)
 		}
-		if probe <= bound.CeilingBytes {
-			t.Errorf("%s: a peak memory of %d bytes is still within the committed ceiling %d — "+
+
+		// The probe is a peak the PRE-CLAMP ceiling accepted. Stated against
+		// the real prong predicate, not a restatement of it: this is the exact
+		// call the integration harness makes.
+		if exceedsCommittedCeiling(probe, sentinelBound{Name: name, CeilingBytes: preClamp}) {
+			t.Fatalf("%s: probe %d already tripped the pre-clamp ceiling %d — it is not in the "+
+				"interval the clamp is supposed to have reclaimed", name, probe, preClamp)
+		}
+		if !exceedsCommittedCeiling(probe, bound) {
+			t.Errorf("%s: PRONG (b) accepts a peak memory of %d bytes against the committed ceiling %d — "+
 				"the pre-clamp ceiling %d accepted it too, so PRONG (b) has not actually been "+
 				"restored for this sentinel (#2906)",
 				name, probe, bound.CeilingBytes, preClamp)
+		}
+
+		// The other direction, on the same predicate: the calibration
+		// measurement this ceiling was derived from must still pass both
+		// prongs. A clamp that fired hard enough to reject a legitimate
+		// measurement would be a different bug, not a fix.
+		if exceedsCommittedCeiling(bound.MaxOfNBytes, bound) || exceedsCapCeiling(bound.MaxOfNBytes) {
+			t.Errorf("%s: the calibration measurement %d no longer passes both prongs against "+
+				"committed ceiling %d / absolute ceiling %d",
+				name, bound.MaxOfNBytes, bound.CeilingBytes, sentinelCapCeilingBytes)
 		}
 	}
 }
