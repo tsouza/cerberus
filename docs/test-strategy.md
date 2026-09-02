@@ -1325,6 +1325,50 @@ Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
 
+### How a note cites the mutant it adjudicates
+
+A `NOT KILLABLE` footer, a `// TestX kills …` header and a
+`CONDITIONALS_BOUNDARY at …` failure message all point at the mutant
+they are about, and that pointer is the only way a reviewer — or a
+later agent — re-checks the claim. It names the **construct**, never a
+line number:
+
+```go
+// NOT KILLABLE — the arms are semantically identical.
+//   range_window.go:`numAnchors-1`
+//   range_window.go:emitRangeWindow:`ns%stepNS != 0`
+```
+
+The second form scopes the search to one top-level func, and is what to
+reach for when the construct repeats in the file. `.github/scripts/
+verify-code-citations.mjs`, a step of the required `forbid-skip` job,
+resolves every such citation: the path must name a file in this
+repository (relative to the citing file's directory, else to the
+repository root) and the construct must appear on exactly one **code**
+line of that file, or of the named func. Blank lines and whole-line
+comments are never searched, so a citation cannot resolve to one.
+
+A `file.go:613` citation is rejected outright, and so are its
+`file.go:613:22`, `file.go:108-109` and `file.go:97:23/29/38`
+variants. The reason is measurable rather than stylistic: replaying the
+200 first-parent commits before the gate landed against the citations
+they would have carried, a line-number citation was invalidated **575
+times, and in 573 of those the construct it named was never touched** —
+the number rotted because unrelated lines moved above it. Two commits
+in that window changed a cited line, which is exactly when a human must
+re-read the adjudication. A third of the citations on `main` had
+already drifted onto a comment or a blank line by the time this was
+measured (cerberus issue #2953). Naming the construct removes that
+class instead of detecting it.
+
+An **upstream** file cannot be cited this way at all: a line number in
+Prometheus, Loki, Tempo or Grafana is unverifiable from here and rots
+the same way, so upstream references name the file and describe the
+construct in prose, without a line number. `.go:` followed by anything
+other than a digit or a construct carries no address and is left alone,
+which is what keeps `test/rejection-parity`'s `path.go:func#hash` site
+identifiers — a data format, not a citation — out of the gate's way.
+
 ### Non-terminating mutants and a leg's irreducible ceiling
 
 A hand-written scanner — a lexer, a regex source walk, a replacement

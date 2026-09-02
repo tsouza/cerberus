@@ -124,13 +124,14 @@ export function funcRanges(lines) {
   return out;
 }
 
-// parseCitations — every citation opener in `text`, with what follows it
-// classified. `text` is one logical unit (see units()); `line` is the 1-based
-// source line the unit starts at, used only for reporting.
-export function parseCitations(text, line) {
+// parseCitations — every citation opener in a unit, with what follows it
+// classified. Each result carries the source line the citation itself sits on.
+export function parseCitations(unit) {
+  const { text } = unit;
   const found = [];
   for (const m of text.matchAll(OPENER)) {
     const at = m.index;
+    const line = lineAt(unit, at);
     // Walk back over the path: the run of path characters before `.go`.
     const before = text.slice(0, at);
     const pathMatch = /([A-Za-z0-9_./-]+)$/.exec(before);
@@ -172,26 +173,40 @@ function readConstruct(after) {
 
 // units — the logical units of a Go file. A run of consecutive whole-line `//`
 // comments is one unit, so a citation may wrap across the comment's line breaks;
-// every other line is its own unit. Each unit carries the 1-based line it began
-// at.
+// every other line is its own unit. Each unit carries a `lines` array parallel
+// to `text`, giving the 1-based SOURCE line every character came from — a
+// citation inside a twenty-line note has to be reported at its own line, not at
+// the line the note happens to start on.
 export function units(lines) {
   const out = [];
   let block = null;
+  const flush = () => {
+    if (block) out.push(block);
+    block = null;
+  };
   lines.forEach((line, i) => {
+    const n = i + 1;
     if (line.trim().startsWith('//')) {
       const body = line.trim().replace(/^\/\/\s?/, '');
-      if (block) block.text += ` ${body}`;
-      else block = { line: i + 1, text: body };
+      if (!block) block = { text: '', lines: [] };
+      else {
+        block.text += ' ';
+        block.lines.push(n);
+      }
+      block.text += body;
+      for (let k = 0; k < body.length; k += 1) block.lines.push(n);
       return;
     }
-    if (block) {
-      out.push(block);
-      block = null;
-    }
-    out.push({ line: i + 1, text: line });
+    flush();
+    out.push({ text: line, lines: new Array(line.length).fill(n) });
   });
-  if (block) out.push(block);
+  flush();
   return out;
+}
+
+// lineAt — the source line a character index inside a unit came from.
+function lineAt(unit, index) {
+  return unit.lines[Math.min(index, unit.lines.length - 1)];
 }
 
 // resolveCited — the repo-relative path a citation names, or null. Tried
@@ -235,7 +250,7 @@ export function checkFile({ root, file }) {
   };
 
   for (const unit of units(text.split('\n'))) {
-    for (const c of parseCitations(unit.text, unit.line)) {
+    for (const c of parseCitations(unit)) {
       const where = `${file}:${c.line}`;
       if (c.kind === 'line-number') {
         violations.push(

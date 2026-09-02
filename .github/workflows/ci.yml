@@ -1124,6 +1124,22 @@ jobs:
       - name: Reject parity-enrolled fixtures seeding differing-value duplicate timestamps
         run: node .github/scripts/forbid-parity-duplicate-samples.mjs
 
+      # #2953: a mutation-adjudication note cites the mutant it is about, and
+      # that citation is the only way a reviewer re-checks an equivalence
+      # claim. Cited by LINE NUMBER it rots on every insertion above it —
+      # measured over the 200 commits before this gate, a line-number citation
+      # was invalidated 575 times and in 573 of those the construct it named
+      # was never touched, and a third of the citations on main had already
+      # rotted onto a comment or a blank line. The convention therefore names
+      # the CONSTRUCT, which this gate resolves against the cited file. The
+      # suite runs first: it is what proves the gate can go red, one modelled
+      # citation shape at a time.
+      - name: Assert the citation gate fires on every drifted citation shape
+        run: node --test .github/scripts/verify-code-citations.test.mjs
+
+      - name: Reject source citations that name a line instead of a construct
+        run: node .github/scripts/verify-code-citations.mjs
+
       # #1568: GitHub's server-side merge does NOT honour the `-merge`
       # .gitattributes driver (verified empirically — see the script's own
       # doc comment for the experiment). Most `-merge`-marked generated
