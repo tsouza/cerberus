@@ -39,6 +39,9 @@ INSERT INTO otel_metrics_histogram VALUES
     ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:00', 9), [0, 0], [0.1, 5.0]),
     ('http_server_request_duration', map('host', 'a'), toDateTime64('2026-01-01 00:00:30', 9), [1, 2, 3], [0.1, 0.5, 1.0]),
     ('http_server_request_duration', map('host', 'b'), toDateTime64('2026-01-01 00:00:30', 9), [3, 4], [0.1, 5.0]);
+
+-- expected_rows --
+[]
 -- args --
 [0] string = ""
 [1] int64 = 1
