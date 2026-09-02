@@ -1321,6 +1321,56 @@ suite carry the discipline:
    distinguishable.** This is pattern #11 (DEFEAT-MUTANT) — the
    codebase loses clarity to satisfy the mutation tool. Don't do it.
 
+Remedies 1 and 2 are opposite verdicts on one mutant, so recording both
+means one of them is false — and it is almost always the kill, because a
+`// TestX kills …` header costs nothing to write. Two mutants on `main`
+carried both, in one file, and the lane recorded each of them LIVED
+while a header claimed the kill: `exemplars.go`'s Attributes-map
+capacity hint, whose "kill" conceded in its own prose that it gave the
+tool "a path to call it dead anyway", and `exemplars.go`'s
+`maxPerSeries` guard, whose "kill" asserted the mutated form would emit
+`LIMIT 0 BY ...` when `Limit(0)` in fact leaves the statement
+byte-identical. The second is why grepping for hedged prose is not the
+answer: it was confidently worded and simply wrong. The required
+`forbid-skip` job therefore runs
+`.github/scripts/forbid-contradicted-mutants.mjs`, which resolves the
+construct each verdict cites and fails when one construct carries both
+(cerberus issue #2958). A false kill is worth retiring on its own
+terms: it never earned the leg an efficacy point, because the mutant it
+named was already counted as LIVED.
+
+One construct is not one mutant, so two verdicts on one construct are
+not automatically a contradiction. `prewhere.go`'s
+`best < 0 || r < best` hosts one CONDITIONALS_BOUNDARY per operand, one
+killed and one proven equivalent; and `builder.go`'s
+`err != nil && srcErr == nil` carries CONDITIONALS_NEGATION mutants a
+test kills alongside an INVERT_LOGICAL mutant a footer proves
+equivalent. Both pairings are legitimate.
+
+Keeping them legible costs two habits. **Cite the operand, not the
+expression** — a citation spanning both halves of a `||` adjudicates
+neither, and narrowing it is what lets the two notes stand side by side.
+**Name the mutator** when a construct carries more than one: two notes
+naming disjoint mutators are describing different mutants, and a note
+that names none cannot claim that defence. Both habits make the note
+more useful to the next reader, which is why the gate asks for them
+rather than for an exemption.
+
+Naming the mutator once per note is enough. A footer that states the
+rewrite in its opening paragraph and then enumerates the sites it
+applies to — as `internal/promql`'s `||` -> `&&` INVERT_LOGICAL ledger
+does across ten citations — is the clearer way to write it, and the gate
+reads the preamble's mutator for the citations it introduces. That
+inheritance needs the note to be unambiguous: a preamble discussing two
+mutators lends neither, because it cannot say which one the list is
+about.
+
+A mutator can also strike one construct twice — `*2` and `+6` in
+`len(groupAliases)*2+6` — and there the gate reports the pair even
+though both verdicts are true. Narrowing both citations to the operand
+each is about is the remedy; it is the same habit as the first, and the
+note ends up saying something definite instead of something ambiguous.
+
 Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
@@ -1368,6 +1418,105 @@ construct in prose, without a line number. `.go:` followed by anything
 other than a digit or a construct carries no address and is left alone,
 which is what keeps `test/rejection-parity`'s `path.go:func#hash` site
 identifiers — a data format, not a citation — out of the gate's way.
+
+#### When the citation locates the mutant instead of hosting it
+
+A construct citation has to resolve to exactly one code line, and the
+mutated token frequently cannot. `INVERT_LOOPCTRL` rewrites a bare
+`continue` or `break`, which no substring singles out; a guard such as
+`if shape == chplan.HistogramRowShape` is often spelled identically in
+every arm of the switch it dispatches. In both cases the citation names
+the nearest construct that IS unique, and the note **says which
+relation it is naming**:
+
+```go
+// TestAbsentSynthLabels_DroppedNameSkipsNotStops kills the INVERT_LOOPCTRL
+// mutant on the `continue` taken for a dropped name, guarded by
+// range_aggregation.go:`if dropped[name] {`.
+//
+// The citation names that neighbouring `if` rather than the mutated statement
+// itself: the mutant is a bare `continue`, which no substring singles out.
+```
+
+Four anchors recur, and each is legitimate: the guard whose body is the
+mutated statement, the statement immediately above it, the assignment
+that opens the closure the mutant sits in, and the `case` label of the
+arm that holds it. What makes any of them honest is that the **mutated
+token is named in prose** — the mutator plus the expression it
+rewrites — while the citation supplies the address. A header that names
+only the anchor asserts a kill on a construct no mutator can touch, and
+is unfalsifiable by reading: the mutation lane reports per mutant and
+never per claim, so nothing contradicts it.
+
+The same sentence is what a reviewer checks. A `// TestX kills …`
+header is the only record that a mutant was adjudicated, so read it
+against the construct it points at: if that construct carries no
+comparison, no arithmetic operator and no loop-control token, the note
+must say what it is anchoring and where the real mutant sits, or it is
+claiming something no run can confirm.
+
+No gate enforces this either, and the mechanical version was built and
+measured before being rejected. Resolving every kill-claim citation
+through the resolver above and testing the resolved line against the
+mutant inventory a completed `mutation` run reports flags **16 of the
+235 citations** that land in a file the lane measures, across every
+phase of the lane — and all 16 are
+correct locator citations of the four kinds above, including every
+example in this section. Precision is zero, and the rule cannot be
+tightened into one a note could satisfy: the two ways to clear it are to
+drop the citation out of the sentence that claims the kill, which is the
+citation requirement this section exists to impose, or to invent a
+unique construct where the source deliberately repeats one. A gate whose
+only compliant forms are worse than the violation is a false-positive
+machine, and the residue it would catch — a kill claim naming an anchor
+without naming its mutant — is one sentence of reviewer attention
+(cerberus issue #2966).
+
+### How a note states a number
+
+A citation that resolves is only half of a re-checkable note. The other
+half is the sentence wrapped around it, and a note can carry a perfectly
+resolving citation while the prose asserts something the code stopped
+doing — the citation still reads as evidence (cerberus issue #2957).
+
+Prose is not machine-checkable in general, so the rule is not to check
+the sentence but to keep it from carrying load:
+
+- **A count the source can compute is never written down.** Derive it in
+  the test and name the derivation. `wantLen :=
+  multiIfArgCount(len(canonicalLevelGroups))` is re-checkable; "the 15
+  subsequent appends" is a second, unverified statement of the same fact,
+  free to disagree with the first. This is the technique
+  `.github/scripts/doc-counts.mjs` applies to documentation prose, applied
+  by hand where a gate cannot reach.
+- **A property the note claims is asserted, not narrated.** "Any
+  arithmetic mutation produces a different capacity" is the whole
+  equivalence argument; enumerate the mutations and assert it. A `NOT
+  KILLABLE` footer that ends in a testable claim usually means the claim
+  was testable all along.
+- **A fact the code already fixes is read, not restated.** Where the
+  production value is derivable in-repo — a rendered DDL, a registry, a
+  schema default — read it. `test/perf/orderby_chdb_test.go` takes the
+  metrics sort key it benchmarks out of the DDL `internal/schema/ddl`
+  renders, so the harness cannot come to disagree with the schema it
+  claims to measure.
+- **A measurement stays prose, with its context.** "8-17x fewer granules
+  on this grid", "95% efficacy floor" — these describe a run, not a
+  structure, and no derivation replaces them. Say what was measured and
+  on what, so a reader can re-measure rather than trust.
+
+No gate enforces this, and one was weighed and rejected on measurement
+rather than taste. Across the 340 adjudication blocks on `main`, the
+integers that restate a source-countable fact are outnumbered roughly
+three to one by digits that are simply operands of a quoted expression
+(`i == 1`, `Step=0`), and the same class of claim is written as a
+spelled-out numeral ("four conjuncts", "three join keys") more often
+than as a digit at all. A checker keyed on digits is therefore blind to
+most of what it would need to model, which is the one thing a gate here
+may not be: a set that silently shrinks is worse than no set. Reviewer
+attention plus the four rules above is the control, and the first rule
+is what makes the other three cheap — a number that lives in an
+assertion cannot rot without a test going red.
 
 ### Non-terminating mutants and a leg's irreducible ceiling
 

@@ -148,7 +148,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // NOT KILLABLE — documented, not defended by a test.
 //
 // The remaining survivors on cerberus issue #2949's phase4-promql-* legs fall
-// into six equivalence classes. Each mutant is named by the construct it
+// into five equivalence classes. Each mutant is named by the construct it
 // rewrites — a line number cannot be machine-verified and rots on every
 // insertion above it (#2953) — scoped to its enclosing function wherever the
 // construct repeats within the file.
@@ -207,24 +207,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // a negative zero is caught by that `lhs == 0` too, since IEEE equality holds
 // for it.
 //
-// 3. A GUARD WHOSE CONDITION IS INVARIANTLY TRUE.
-//
-//	histogram_quantile.go:lowerHistogramQuantileAgg:`shape.windowRange > 0`
-//	histogram_quantile.go:lowerHistogramQuantileNativeAgg:`shape.windowRange > 0`
-//
-// `> 0` -> `>= 0` widens a test that already always holds. histogramAggShape's
-// windowRange is set at exactly two places in the shape's construction,
-// histogram_quantile.go:`windowRange: instantLookback` — which is
-// qlcommon.InstantLookback = 5m — and
-// histogram_quantile.go:`windowRange: ms.Range`, which the PromQL grammar
-// refuses to parse as anything but strictly positive ("duration must be
-// greater than 0"). Instrumenting both guards across the package suite
-// observed no zero. The comment beside each one, describing a
-// `shape.windowRange == 0` bare-selector case, predates that construction and
-// no longer describes a reachable state; cerberus issue #2961 tracks the stale
-// comment and the guard it describes.
-//
-// 4. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
+// 3. A LOOP OVER A REGISTRY THAT HOLDS ONE ENTRY.
 //
 //	schema_lookup.go:promqlTopLevelKeys:`if col == "" {`
 //	resource_attributes.go:excludedResourceKeys:`if d.column(s) == "" {`
@@ -240,7 +223,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // second dedicated key is added — at which point both mutants become killable
 // and should be killed rather than re-adjudicated.
 //
-// 5. A REWRITE THE LANGUAGE MAKES A NO-OP.
+// 4. A REWRITE THE LANGUAGE MAKES A NO-OP.
 //
 //	histogram_native_mixed_or_vector_plain_comparison.go:`len(b.VectorMatching.Include) > 0`
 //	histogram_native_mixed_or_vector_comparison.go:`len(b.VectorMatching.Include) > 0`
@@ -252,7 +235,7 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // `append([]string(nil), src...) == nil` for both a nil and an empty-non-nil
 // src.
 //
-// 6. AN INTERNAL-INVARIANT ERROR PATH.
+// 5. AN INTERNAL-INVARIANT ERROR PATH.
 //
 //	histogram_native_range_fn.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
 //	histogram_native_subquery_select.go:`!matched || chplan.RowShapeOf(input) != chplan.HistogramRowShape`
@@ -265,3 +248,39 @@ func TestHistogramValuedProducerCall_InfoTakesAtMostTwoArguments(t *testing.T) {
 // both readings error. The complementary case — matched with a non-histogram
 // shape — is the invariant the line exists to report, and producing it would
 // require lowerExpHistogramValuedShape to break its own contract.
+//
+// 7. A `continue` WHOSE `break` BINDS TO A SWITCH, NOT TO THE LOOP.
+//
+//	duplicate_labelset_guard.go:`if mixed && mixedPayload[name] {`
+//	duplicate_labelset_guard.go:`if keyOnStep`
+//
+// Each citation names the guard whose body holds the mutated statement,
+// because that statement is a bare `continue` and no substring of it singles
+// one out. Both sit in guardLabelRewriteCollision's per-projection walk,
+// whose loop body is a single `switch` with nothing after it:
+//
+//	for _, proj := range rewritten.Projections {
+//		switch name := chplan.ProjectionOutputName(proj); name {
+//		...
+//		}
+//	}
+//
+// INVERT_LOOPCTRL rewrites each `continue` to `break`, and inside a `switch`
+// a bare `break` leaves the switch rather than the loop. Because the switch
+// IS the whole loop body, leaving it and continuing the loop reach the same
+// place: the next iteration, with the remainder of the arm skipped either
+// way. Both readings therefore visit every projection and build the identical
+// groupBy / aliases / aggs triple.
+//
+// Confirmed by applying each rewrite by hand and running the package's two
+// walk-order tests (TestGuardLabelRewriteCollision_MixedPayloadSkipContinuesLoop
+// and TestGuardLabelRewriteCollision_KeyOnStepSkipContinuesLoop, above in
+// gremlins_kill_test.go): both pass under both mutants, matching the
+// phase4-promql-e leg, which reports both as LIVED. Those two tests pin the
+// walk's OUTPUT, which is real behaviour worth holding; they do not pin the
+// keyword, and no test can.
+//
+// The equivalence is a property of the switch being the last statement in
+// the loop body. It dissolves the moment a statement is added after the
+// switch, at which point both mutants become killable and should be killed
+// rather than re-adjudicated.

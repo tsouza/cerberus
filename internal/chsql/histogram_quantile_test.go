@@ -25,10 +25,16 @@ func TestHistogramQuantileValueFrag_DividesRankBeforeWidth(t *testing.T) {
 }
 
 // TestHistogramQuantileValueFrag_PhiExprGating kills the two
-// CONDITIONALS_NEGATION mutants on `h.PhiExpr != nil` inside the
-// arrayFirstIndex predicate (histogram_quantile.go:`w.idx = func() Frag`) and
-// on histogram_quantile.go:`h.PhiExpr == nil`, the early return before the
+// CONDITIONALS_NEGATION mutants that gate the computed-phi path: the
+// `h.PhiExpr != nil` inside the arrayFirstIndex predicate built at
+// histogram_quantile.go:`w.idx = func() Frag`, and
+// histogram_quantile.go:`h.PhiExpr == nil`, the early return before the
 // isNaN wrapper.
+//
+// The first citation names the assignment that opens the closure rather
+// than the guard itself: `h.PhiExpr != nil` is spelled identically at two
+// code lines in this file, so no substring of the guard singles one out,
+// while the closure it lives in is unique.
 //
 // The literal-Phi path (h.PhiExpr == nil) must render the BARE `c >=
 // <target>` comparison as the arrayFirstIndex predicate and must NOT
@@ -40,11 +46,11 @@ func TestHistogramQuantileValueFrag_DividesRankBeforeWidth(t *testing.T) {
 // runtime phi CAN be NaN, so the isNaN guard must wrap the whole
 // expression.
 //
-// Negating 217 alone would apply the wrapped `if(...)  = 1)` predicate
-// to the literal-Phi path (and the bare predicate to the PhiExpr path);
-// negating 318 alone would apply (or skip) the isNaN wrapper on the
-// wrong path. Asserting both markers on both cases pins each
-// independently.
+// Negating the predicate guard alone would apply the wrapped
+// `if(...)  = 1)` predicate to the literal-Phi path (and the bare
+// predicate to the PhiExpr path); negating the early return alone would
+// apply (or skip) the isNaN wrapper on the wrong path. Asserting both
+// markers on both cases pins each independently.
 func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 	t.Parallel()
 
@@ -58,13 +64,13 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 		}, hqClassicHelperColumns{})(b)
 		sql := b.String()
 		if !strings.Contains(sql, "arrayFirstIndex(c -> c >=") {
-			t.Errorf("literal phi must use the bare `c >= target` predicate (line 457 flipped?):\n%s", sql)
+			t.Errorf("literal phi must use the bare `c >= target` predicate (histogram_quantile.go:`w.idx = func() Frag`'s guard flipped?):\n%s", sql)
 		}
 		if strings.Contains(sql, "arrayFirstIndex(c -> (if(") {
-			t.Errorf("literal phi must NOT wrap the predicate in if(...)=1 (line 457 flipped?):\n%s", sql)
+			t.Errorf("literal phi must NOT wrap the predicate in if(...)=1 (histogram_quantile.go:`w.idx = func() Frag`'s guard flipped?):\n%s", sql)
 		}
 		if strings.Contains(sql, "isNaN(") {
-			t.Errorf("literal phi must NOT carry the isNaN guard (line 266 flipped?):\n%s", sql)
+			t.Errorf("literal phi must NOT carry the isNaN guard (histogram_quantile.go:`h.PhiExpr == nil` flipped?):\n%s", sql)
 		}
 	})
 
@@ -78,7 +84,7 @@ func TestHistogramQuantileValueFrag_PhiExprGating(t *testing.T) {
 		}, hqClassicHelperColumns{})(b)
 		sql := b.String()
 		if !strings.Contains(sql, "arrayFirstIndex(c -> (if(c >=") {
-			t.Errorf("computed phi must wrap the predicate as (if(c >= ..., 1, 0) = 1) (line 457 flipped?):\n%s", sql)
+			t.Errorf("computed phi must wrap the predicate as (if(c >= ..., 1, 0) = 1) (histogram_quantile.go:`w.idx = func() Frag`'s guard flipped?):\n%s", sql)
 		}
 		if !strings.Contains(sql, "= 1),") {
 			t.Errorf("computed phi predicate must close with `= 1)` "+

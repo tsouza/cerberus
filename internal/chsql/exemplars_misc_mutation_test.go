@@ -61,6 +61,36 @@ func TestExemplarsMaxPerSeriesZeroNoLimit(t *testing.T) {
 	if !strings.Contains(sqlCapped, "LIMIT 3 BY") {
 		t.Errorf("maxPerSeries==3 must emit `LIMIT 3 BY`:\n%s", sqlCapped)
 	}
+
+	// The UNGROUPED shape takes the same branch with an empty alias list, so
+	// the LIMIT BY key list collapses to the anchor alone. The emitter appends
+	// it unconditionally —
+	// exemplars.go:`limitByFrags = append(limitByFrags, Col("anchor_ts"))` —
+	// which is what keeps `LIMIT n BY` from rendering an empty key list, which
+	// ClickHouse rejects. The grouped case above cannot show that, because its
+	// aliases would carry the clause on their own.
+	mUngrouped := &chplan.MetricsAggregate{
+		Op:         chplan.MetricsOpRate,
+		ValueAlias: "Value",
+		Inner:      &chplan.Scan{Table: "otel_traces"},
+	}
+	rwUngrouped := &chplan.RangeWindow{
+		Input:           mUngrouped,
+		Step:            time.Minute,
+		Range:           time.Minute,
+		Start:           start,
+		End:             end,
+		TimestampColumn: "Timestamp",
+	}
+	sqlUngrouped, _, err := chsql.EmitMetricsExemplars(
+		context.Background(), rwUngrouped, mUngrouped, "TraceId", "SpanId", 2, "",
+	)
+	if err != nil {
+		t.Fatalf("EmitMetricsExemplars ungrouped: %v", err)
+	}
+	if !strings.Contains(sqlUngrouped, "LIMIT 2 BY `anchor_ts`") {
+		t.Errorf("an ungrouped cap must emit `LIMIT 2 BY `anchor_ts``:\n%s", sqlUngrouped)
+	}
 }
 
 // TestRangeBucketFanoutEmptyGroupBy kills the ARITHMETIC_BASE mutant at
@@ -244,6 +274,68 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 	})
 }
 
+// TestExemplarsAttributesMapKeyShape pins the key layout of the
+// exemplar Attributes map that attachExemplars depends on: one
+// `toString(<alias>)` value per group key, keyed by the Tempo-canonical
+// display name, plus the `trace:id` / `span:id` pair. Those four keys
+// are what internal/api/tempo/metrics_query_range.go reads back off
+// chclient.Sample.Attributes, so the emitter is the only place the
+// contract can be pinned against real emitted SQL and real bound args.
+//
+// It does NOT kill the ARITHMETIC_BASE mutant on
+// exemplars.go:`len(groupAliases)*2+6`, and does not try to: that
+// operand is a capacity hint, and the map this test inspects is
+// byte-identical under every capacity. See the NOT KILLABLE note at the
+// foot of this file. The contract is worth pinning on its own merits —
+// a dropped display-name key silently unmatches every exemplar from its
+// parent series.
+func TestExemplarsAttributesMapKeyShape(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 13, 12, 1, 0, 0, time.UTC)
+	m := &chplan.MetricsAggregate{
+		Op: chplan.MetricsOpRate,
+		GroupBy: []chplan.Expr{
+			&chplan.ColumnRef{Name: "ServiceName"},
+			&chplan.ColumnRef{Name: "SpanName"},
+		},
+		GroupByAliases:      []string{"svc", "span"},
+		GroupByDisplayNames: []string{"service", "span"},
+		ValueAlias:          "Value",
+		Inner:               &chplan.Scan{Table: "otel_traces"},
+	}
+	rw := &chplan.RangeWindow{
+		Input: m, Step: time.Minute, Range: time.Minute,
+		Start: start, End: end, TimestampColumn: "Timestamp",
+	}
+	sql, args, err := chsql.EmitMetricsExemplars(context.Background(), rw, m, "TraceId", "SpanId", 1, "")
+	if err != nil {
+		t.Fatalf("EmitMetricsExemplars: %v", err)
+	}
+	// Every map KEY rides as a bound arg (the keys render as `?`
+	// placeholders), so both display names and both id keys must appear.
+	for _, want := range []string{"service", "span", "trace:id", "span:id"} {
+		found := false
+		for _, a := range args {
+			if s, ok := a.(string); ok && s == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected map key %q in bound args; got %v", want, args)
+		}
+	}
+	// And the VALUE side renders toString(<alias>) for each group key.
+	if !strings.Contains(sql, "toString(`svc`)") {
+		t.Errorf("expected toString(svc) as the `service` map value:\n%s", sql)
+	}
+	if !strings.Contains(sql, "toString(`span`)") {
+		t.Errorf("expected toString(span) as the `span` map value:\n%s", sql)
+	}
+}
+
 // NOT KILLABLE — documented, not defended by a test.
 //
 // exemplars.go:`if maxPerSeries > 0` (CONDITIONALS_BOUNDARY, `>` -> `>=`).
@@ -262,3 +354,29 @@ func TestExemplarsRateAndCountIgnoreAttr(t *testing.T) {
 // demand; `len/2 + 6` is non-negative for every input, so it cannot even
 // panic the way the sibling `+6` -> `-6` mutant does. Capacity is
 // unobservable from the emitted SQL, the args, or any exported surface.
+//
+// Two independent confirmations, because a bare "capacity is
+// unobservable" reads like an assumption (cerberus issue #2958):
+//
+//   - EMPIRICAL. With `*2` flipped to `/2` by hand, the whole
+//     internal/chsql package passes. With the sibling `+6` flipped to
+//     `-6`, TestEmitMetricsExemplars_PlainWindowedInnerAccepted panics
+//     with "makeslice: cap out of range". The two mutants on one
+//     expression land on opposite verdicts, which is exactly what the
+//     capacity/length distinction predicts.
+//
+//   - STRUCTURAL, and the stronger of the two. `cap` IS readable from
+//     inside this package, so "equivalent" would not follow from
+//     "invisible in the SQL" alone if the slice escaped. It does not:
+//     attrMapFrags leaves emitMetricsExemplars only through the
+//     `Call("map", attrMapFrags...)` at the end of the Attributes
+//     projection — named in prose, not cited, because a footer that
+//     cites a construct it is NOT adjudicating registers a verdict on
+//     it. Call closes over its variadic slice in a returned
+//     `func(*Builder)`. Go exposes
+//     no way to read a captured variable out of a func value, so no
+//     test in any package — internal or external — can observe this
+//     capacity. The mutant is unkillable, not merely unkilled.
+//
+// TestExemplarsAttributesMapKeyShape above pins the map's key layout and
+// is deliberately NOT presented as a kill for this mutant.
