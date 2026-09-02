@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import {
   CANONICAL_HEAD_ORACLE_FLOORS,
+  CANONICAL_HEAD_QUERY_PATH_ROOTS,
   ContractError,
   MERGE_P95_SLO_MINUTES,
   RELEASE_QUALIFICATION_SLO_MINUTES,
@@ -133,6 +134,16 @@ const canonicalSourceFiles = [
   ["compatibility", "prometheus", "oracle.test"],
   ["compatibility", "loki", "oracle.test"],
   ["compatibility", "tempo", "oracle.test"],
+  // The head query-path packages a reference lane must seed on, so the
+  // affected-path set derived from its globs reaches the shared pipeline
+  // (#2902). These are real files because the coverage check asks whether any
+  // file under the root matches a glob, not whether the directory exists.
+  ["internal", "promql", "lower.go"],
+  ["internal", "logql", "lower.go"],
+  ["internal", "traceql", "lower.go"],
+  ["internal", "api", "prom", "handler.go"],
+  ["internal", "api", "loki", "handler.go"],
+  ["internal", "api", "tempo", "handler.go"],
 ];
 for (const parts of canonicalSourceFiles) {
   mkdirSync(join(root, ...parts.slice(0, -1)), { recursive: true });
@@ -265,6 +276,12 @@ function registryFixture() {
           "compatibility/loki/**",
           "compatibility/prometheus/**",
           "compatibility/tempo/**",
+          "internal/api/loki/**",
+          "internal/api/prom/**",
+          "internal/api/tempo/**",
+          "internal/logql/**",
+          "internal/promql/**",
+          "internal/traceql/**",
         ],
         riskDomains: ["logql", "promql", "traceql"],
       }),
@@ -433,6 +450,52 @@ test("canonical providers fail when their workflow command is removed", () => {
       writeFileSync(workflow, original);
     }
   }
+});
+
+test("a reference lane that stops naming its own head query path is rejected", () => {
+  // #2902's seed rule. The derived affected-path set is the dependency closure
+  // of the packages a lane's globs name, so dropping the head's API package or
+  // its query language narrows the lane back to seeing only its own harness —
+  // which is exactly how PR #2824 moved the shared pipeline with no reference
+  // lane considering itself touched. The roots are driven from the exported
+  // constant, and controlled one at a time: covering one must not excuse the
+  // other.
+  assert.ok(
+    CANONICAL_HEAD_QUERY_PATH_ROOTS.logql.length > 1,
+    "a single-root head would let this loop pass without testing independence",
+  );
+  for (const queryPathRoot of CANONICAL_HEAD_QUERY_PATH_ROOTS.logql) {
+    const narrowed = registryFixture();
+    const provider = narrowed.lanes.find(
+      (candidate) => candidate.id === "oracle-reference",
+    );
+    provider.package_globs = provider.package_globs.filter(
+      (glob) => glob !== `${queryPathRoot}/**`,
+    );
+    // Matched as an exact substring rather than through a RegExp built by
+    // hand-escaping a path: the escaping is unnecessary here and reads as a
+    // real sanitizer, which is what CodeQL's js/incomplete-sanitization saw.
+    const caught = expectContractError(() =>
+      validateRegistry(narrowed, { root }),
+    );
+    const expected =
+      `canonical head logql reference provider oracle-reference does not cover ` +
+      `${queryPathRoot} in package_globs`;
+    assert.ok(
+      caught.message.includes(expected),
+      `expected the contract to name ${queryPathRoot}; got:\n${caught.message}`,
+    );
+  }
+});
+
+test("the head query-path rule does not apply to an execution provider", () => {
+  // An execution lane lowers and executes SQL without entering the HTTP head,
+  // so requiring the API package of one would assert a dependency it has not
+  // got. The `always` lane declares only `test/spec/<head>/**` and stays valid.
+  const document = registryFixture();
+  const execution = document.lanes.find((candidate) => candidate.id === "always");
+  assert.ok(!execution.package_globs.some((glob) => glob.startsWith("internal/api/")));
+  assert.equal(validateRegistry(document, { root }), document);
 });
 
 test("canonical providers fail when their real oracle source is removed", () => {

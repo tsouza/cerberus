@@ -134,13 +134,29 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       # #2899's merge-risk gate: what this PR's green does NOT cover. It rides
       # this job for the same reason the obligation gate above does — it needs
-      # the full history a `fetch-depth: 0` checkout gives and nothing else,
-      # and it is a required context on every PR without adding a new one to
-      # branch protection. `origin/main` is fetched explicitly first: a
-      # `pull_request` checkout populates the PR refs, not the target branch's
-      # remote-tracking ref, and the stale-base half compares against it.
+      # the full history a `fetch-depth: 0` checkout gives, and it is a required
+      # context on every PR without adding a new one to branch protection.
+      # `origin/main` is fetched explicitly first: a `pull_request` checkout
+      # populates the PR refs, not the target branch's remote-tracking ref, and
+      # the stale-base half compares against it.
+      #
+      # WHY THIS JOB NOW SETS GO UP. Since #2902 the gate attributes a change to
+      # a lane through the Go import graph rather than through the lane's
+      # declared `package_globs`, because those globs name only each head's own
+      # directories and so missed PR #2824 — the change that caused #2895 —
+      # entirely. Reading the graph needs `go list`. Measured against this
+      # repository: the wrapper costs ~16s on a warm module cache, and the
+      # derivation ~20s (one `go list -json ./...` per distinct build-tag set,
+      # not one per lane, which would be ~80s). That is the price of the
+      # attribution being right; a Go-less job could only have kept the wrong
+      # one. The wrapper — never `actions/setup-go` directly — is what
+      # `assert-go-setup-hardened.mjs` requires, and it also keeps this job from
+      # archiving an empty module cache.
+      - uses: ./.github/actions/setup-go
       - name: Fetch the merge target for the stale-base comparison
         run: git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+      - name: Assert the lane affected-path derivation matches, and does not over-match
+        run: node --test .github/scripts/lib/lane-closure.test.mjs
       - name: Assert the merge-risk scanner matches, and does not over-match
         run: node --test .github/scripts/merge-risk.test.mjs
       - name: Reject a golden shard regenerated against a base main has moved past

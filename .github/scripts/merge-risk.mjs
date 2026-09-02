@@ -55,9 +55,21 @@
 // What this gate does instead is make the skip legible: the lanes that gate
 // `main` and will not run before this merges are named on the PR, with the
 // local command that runs each one, so "green" is never silently read as
-// "validated". Attribution is by the lane's own declared `package_globs`; that
-// declaration is known to under-cover shared plumbing (see issue #2902), and
-// the summary says so rather than implying the list is exhaustive.
+// "validated".
+//
+// # Attribution (#2902)
+//
+// Which lanes a change touches is DERIVED from the Go import graph, not read
+// off each lane's declared `package_globs`. Those globs name a lane's own
+// directories, and #2824 — the change that caused #2895, the very outage above
+// — moved `internal/chclient`, `internal/chopt`, `internal/engine`,
+// `internal/config` and `cmd/cerberus`, matching none of `compatibility.loki`'s
+// three globs. The lane that would have caught the regression did not consider
+// itself touched by the change that caused it. `lib/lane-closure.mjs` treats
+// the declared globs as SEEDS and unions them with the dependency closure `go
+// list` reports for those seeds, so the shared pipeline every head runs through
+// is attributed to every head's lane, and a sibling head's change still is not.
+// That module's header carries the full reasoning and the measured cost.
 //
 // # Env
 //
@@ -71,8 +83,12 @@
 //   CI_LANE_REGISTRY    lane registry path. Default `.github/ci-lanes.json`.
 //   GITHUB_STEP_SUMMARY optional summary destination (written via lib/gh.mjs).
 //
-// Node builtins only. `process.exit(1)` on a stale-base collision or an
-// unreadable registry; the lane inventory never exits non-zero on its own.
+// Node builtins only, plus the Go toolchain the attribution derivation reads
+// the import graph with. `process.exit(1)` on a stale-base collision, an
+// unreadable registry, or an import graph that cannot be loaded — a derivation
+// that silently degrades to the declared globs would report the pre-#2902
+// answer while claiming the post-#2902 one. The lane inventory itself never
+// exits non-zero.
 //
 // The pure halves are exported and pinned by merge-risk.test.mjs.
 
@@ -83,6 +99,7 @@ import { pathToFileURL } from 'node:url';
 import { matchesGlob } from './ci-lane-contract.mjs';
 import { appendStepSummary, assertSafeArg, error, git, log, notice, warning } from './lib/gh.mjs';
 import { SHARDS } from './lib/golden-shards.mjs';
+import { laneAffectedGlobs } from './lib/lane-closure.mjs';
 
 export const DEFAULT_REGISTRY_PATH = '.github/ci-lanes.json';
 export const DEFAULT_MERGE_TARGET_REF = 'origin/main';
@@ -174,14 +191,22 @@ export function gatingLanesThatSkipPRs(registry) {
 }
 
 /**
- * unvalidatedLanes — of those, the ones whose declared `package_globs` this
- * change actually touches. Attribution is only as good as the declaration:
- * see this file's header and issue #2902.
+ * unvalidatedLanes — of those, the ones whose AFFECTED paths this change
+ * actually touches.
+ *
+ * `affectedGlobs` is `Map<laneID, string[]>`, normally the derived set from
+ * `lib/lane-closure.mjs`'s `laneAffectedGlobs`. It is a required argument
+ * rather than a fallback to `lane.package_globs`: attributing by the raw
+ * declaration is exactly the #2902 blind spot, and a default that quietly
+ * restored it would be indistinguishable from the fix at every call site. A
+ * lane the map does not cover throws for the same reason.
  */
-export function unvalidatedLanes(registry, files) {
+export function unvalidatedLanes(registry, files, affectedGlobs) {
   const out = [];
   for (const lane of gatingLanesThatSkipPRs(registry)) {
-    const matched = (files ?? []).filter((f) => (lane.package_globs ?? []).some((g) => matchesGlob(f, g)));
+    const globs = affectedGlobs?.get(lane.id);
+    if (!globs) throw new Error(`merge-risk: no affected-path set was derived for lane ${lane.id}`);
+    const matched = (files ?? []).filter((f) => globs.some((g) => matchesGlob(f, g)));
     if (matched.length > 0) out.push({ lane, matched });
   }
   return out.sort((a, b) => a.lane.id.localeCompare(b.lane.id));
@@ -248,16 +273,28 @@ async function main() {
   }
 
   const skipping = gatingLanesThatSkipPRs(registry);
-  const unvalidated = unvalidatedLanes(registry, ours);
+  let affected;
+  try {
+    affected = laneAffectedGlobs(skipping, { repoRoot: process.cwd() });
+  } catch (e) {
+    error(
+      `merge-risk: the Go import graph could not be loaded (${String(e?.message ?? e)}), so which lanes `
+        + 'this change leaves unvalidated cannot be derived. Attributing by the declared `package_globs` '
+        + 'instead would silently report the pre-#2902 answer, so this fails rather than degrades.',
+      { title: 'merge-risk' },
+    );
+    process.exit(1);
+  }
+  const unvalidated = unvalidatedLanes(registry, ours, affected);
   summary.push(
     `### Lanes that gate \`main\` but do not run on this PR (${unvalidated.length} of ${skipping.length} touched)`,
     '',
   );
   if (unvalidated.length === 0) {
     summary.push(
-      'None of the declared path globs for those lanes match this change. That is an argument, not a',
-      'proof: attribution uses each lane\'s own `package_globs`, which under-cover shared plumbing',
-      '(issue #2902).',
+      'No lane\'s affected paths match this change. Attribution is the dependency closure `go list`',
+      'reports for each lane\'s own packages, so a change to the shared query pipeline counts against',
+      'every head\'s lane, not only against the head it was filed under.',
       '',
     );
   } else {
@@ -268,8 +305,8 @@ async function main() {
     summary.push(
       '',
       'These run on push-to-main, a schedule, or a release PR — never on this one. A green PR is not',
-      'evidence they pass. Attribution is by each lane\'s declared `package_globs`, which under-cover',
-      'shared plumbing (issue #2902), so this table is a floor rather than the whole risk.',
+      'evidence they pass. Attribution is the dependency closure `go list` reports for each lane\'s own',
+      'packages, unioned with the non-Go paths it declares.',
       '',
     );
   }

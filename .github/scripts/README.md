@@ -194,10 +194,31 @@ above 20 minutes, a release-required SLO above 120 minutes, and observational
 lanes marked release-required. It also enforces each query head's oracle
 floor: PromQL Layer 6a, LogQL Layer 6b, and TraceQL Layer 6c must each retain
 source-applicable `execution`, `property`, and `reference` oracle providers
-that run on `main` and are required before a release.
+that run on `main` and are required before a release. Every `reference`
+provider must additionally name its own head's query-path packages
+(`internal/<ql>` and `internal/api/<head>`) in `package_globs`, because those
+are the seeds the affected-path derivation below starts from.
 `GITHUB_STEP_SUMMARY`, when set, receives a short registry summary. Direct
 execution emits a GitHub `::error::` and exits non-zero on any contract
 failure.
+
+`lib/lane-closure.mjs` derives what a lane actually validates, rather than
+reading it off `package_globs` (#2902). Those globs name a lane's own
+directories, which cannot express the fact that every head's SQL flows through
+one shared pipeline: PR #2824 moved `internal/chclient`, `internal/chopt`,
+`internal/engine`, `internal/config` and `cmd/cerberus`, matched none of
+`compatibility.loki`'s three globs, and produced #2895's 144-case LogQL parity
+regression on the lane that had just declared itself unaffected. The module
+treats the declared globs as SEEDS and unions them with the first-party
+dependency closure `go list` reports for those seeds — the same derivation
+`lib/golden-shards.mjs` applies to the golden shards, at the scale a 27-lane
+sweep needs: one `go list -json ./...` per distinct build-tag set (~20s)
+rather than one `go list -deps -test` per lane (~82s). Non-Go inputs — a
+compose file, a workflow, a reference-stack config — stay in `package_globs`,
+which is why the derived set is a union rather than a replacement.
+`merge-risk.mjs` is the live consumer; it exits non-zero rather than falling
+back to the raw declaration if the graph cannot be loaded, because a silent
+fallback would report the pre-#2902 answer under the post-#2902 name.
 
 `test/regression/ci_lane_registry_test.go`'s `TestCILaneRegistry` binds the
 registry to the workflow graph itself — total job ownership, the exact check

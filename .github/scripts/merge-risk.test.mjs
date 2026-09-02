@@ -8,6 +8,13 @@
 // are asserted below, and so is the ONE case the blocking half deliberately
 // stays quiet on — two PRs adding independent fixtures with no generator-code
 // change between them, where the merged tree really is the union.
+//
+// The reporting half's ATTRIBUTION carries its own acceptance case (#2902),
+// read against this repository's real import graph rather than a fixture: PR
+// #2824's real changed-file set — the change that caused the #2895 outage — is
+// replayed through the derivation and must name `compatibility.loki`, and the
+// same file set replayed through the raw `package_globs` must NOT, because that
+// contrast is the whole evidence that the derivation is what closed the hole.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -27,8 +34,57 @@ import {
   underGoldenRoot,
   unvalidatedLanes,
 } from './merge-risk.mjs';
+import { declaredGlobs, laneAffectedGlobs } from './lib/lane-closure.mjs';
 
 const REGISTRY = JSON.parse(readFileSync(resolve(DEFAULT_REGISTRY_PATH), 'utf8'));
+
+// The three reference harnesses plus their variants: the lanes #2895 was red on
+// for 31 runs, and the only lanes whose attribution these tests interrogate.
+// Restricting the registry keeps the real `go list` load to the ONE untagged
+// import graph they share — the production gate loads one per build-tag set.
+const COMPAT_REGISTRY = { lanes: REGISTRY.lanes.filter((l) => l.id.startsWith('compatibility.')) };
+const COMPAT_LANES = gatingLanesThatSkipPRs(COMPAT_REGISTRY);
+
+/** Derived attribution: the declared globs plus their real dependency closure. */
+const DERIVED = laneAffectedGlobs(COMPAT_LANES, { repoRoot: process.cwd() });
+/** The pre-#2902 attribution, kept only so the contrast below can be asserted. */
+const DECLARED = declaredGlobs(COMPAT_LANES);
+
+const laneIDs = (registry, files, globs) => unvalidatedLanes(registry, files, globs).map((u) => u.lane.id);
+
+// PR #2824 `0d32cc96d` ("gate the ClickHouse query result cache on closed
+// windows"), verbatim from `gh pr view 2824 --json files`. It stamped
+// `use_query_cache=1` without `query_cache_nondeterministic_function_handling`,
+// whose ClickHouse default fails any query containing `arrayJoin` — which is
+// how every non-native range lowering fans samples across the step grid. 144
+// LogQL and 871 PromQL cases diverged and `compatibility` was red on `main` for
+// 31 consecutive runs (#2895).
+const PR_2824_FILES = [
+  'cmd/cerberus/bootstrap_config_test.go',
+  'cmd/cerberus/chopt_reprobe.go',
+  'cmd/cerberus/main.go',
+  'docs/clickhouse-optimizations.md',
+  'docs/configuration.md',
+  'internal/api/info/info.go',
+  'internal/api/info/info_test.go',
+  'internal/chclient/client.go',
+  'internal/chclient/result_cache.go',
+  'internal/chclient/result_cache_hit_integration_test.go',
+  'internal/chclient/result_cache_metrics.go',
+  'internal/chclient/result_cache_probe.go',
+  'internal/chclient/result_cache_probe_integration_test.go',
+  'internal/chclient/result_cache_probe_test.go',
+  'internal/chclient/ts_grid_probe.go',
+  'internal/chopt/capability.go',
+  'internal/chopt/registry.go',
+  'internal/chopt/resolve.go',
+  'internal/chopt/resolve_test.go',
+  'internal/config/config.go',
+  'internal/config/envdocs.go',
+  'internal/engine/query_settings_rules.go',
+  'internal/engine/result_cache_test.go',
+  'test/perf/solver_decision_ratchet_test.go',
+];
 
 // The two sides of the real #2895 / post-merge-drift races, as file sets.
 const CARDINALITY_A = ['internal/chsql/emit.go', 'test/perf/cardinality-baseline/promql/rate_5m.json'];
@@ -167,17 +223,88 @@ test('the real compatibility lanes ARE in the skipping set — that is the #2895
 });
 
 test('unvalidatedLanes names the LogQL reference lane for a LogQL change', () => {
-  const found = unvalidatedLanes(REGISTRY, ['internal/logql/lsyntax/parser.go']).map((u) => u.lane.id);
-  assert.ok(found.includes('compatibility.loki'));
+  assert.ok(laneIDs(COMPAT_REGISTRY, ['internal/logql/lsyntax/parser.go'], DERIVED).includes('compatibility.loki'));
 });
 
-test('unvalidatedLanes is silent on a change no gating-but-skipping lane declares', () => {
-  assert.deepEqual(unvalidatedLanes(REGISTRY, ['.github/scripts/merge-risk.mjs']), []);
+test('unvalidatedLanes is silent on a change that reaches no lane at all', () => {
+  assert.deepEqual(laneIDs(COMPAT_REGISTRY, ['.github/scripts/merge-risk.mjs'], DERIVED), []);
+  assert.deepEqual(laneIDs(COMPAT_REGISTRY, ['docs/engine.md'], DERIVED), []);
 });
 
 test('unvalidatedLanes is silent on an empty or missing file set', () => {
-  assert.deepEqual(unvalidatedLanes(REGISTRY, []), []);
-  assert.deepEqual(unvalidatedLanes(REGISTRY, undefined), []);
+  assert.deepEqual(unvalidatedLanes(COMPAT_REGISTRY, [], DERIVED), []);
+  assert.deepEqual(unvalidatedLanes(COMPAT_REGISTRY, undefined, DERIVED), []);
+});
+
+test('unvalidatedLanes refuses to attribute a lane it was given no derived set for', () => {
+  // A default back to `lane.package_globs` would be the pre-#2902 answer wearing
+  // the post-#2902 name, so the missing case throws instead of degrading.
+  assert.throws(
+    () => unvalidatedLanes(COMPAT_REGISTRY, ['internal/chclient/client.go'], new Map()),
+    /no affected-path set was derived for lane/,
+  );
+});
+
+// --- #2902: attribution across the shared query pipeline -------------------------
+
+test('ACCEPTANCE: PR #2824 — the change that caused #2895 — now attributes compatibility.loki', () => {
+  assert.ok(
+    laneIDs(COMPAT_REGISTRY, PR_2824_FILES, DERIVED).includes('compatibility.loki'),
+    'the LogQL reference lane must consider itself touched by the change it would have caught',
+  );
+});
+
+test('CONTRAST: the same file set attributes NOTHING to compatibility.loki by declared globs', () => {
+  // If this ever passes for compatibility.loki, the contrast has stopped
+  // proving anything and the acceptance test above has become a tautology.
+  assert.ok(
+    !laneIDs(COMPAT_REGISTRY, PR_2824_FILES, DECLARED).includes('compatibility.loki'),
+    'compatibility.loki declares no glob that PR #2824 matches — that is the hole #2902 names',
+  );
+});
+
+test('compatibility.loki inherits the shared pipeline, and not the sibling heads', () => {
+  const globs = DERIVED.get('compatibility.loki');
+  for (const want of [
+    'internal/chclient/**',
+    'internal/chopt/**',
+    'internal/engine/**',
+    'internal/chplan/**',
+    'internal/chsql/**',
+    'internal/optimizer/**',
+  ]) {
+    assert.ok(globs.includes(want), `${want} is on the LogQL query path and must be attributed`);
+  }
+  for (const notWant of ['internal/promql/**', 'internal/traceql/**', 'internal/api/prom/**', 'internal/api/tempo/**']) {
+    assert.ok(!globs.includes(notWant), `${notWant} cannot move a LogQL parity verdict; attributing it is noise`);
+  }
+});
+
+test('NOT everything depends on everything: a single-head change stays on its own head', () => {
+  const promql = laneIDs(COMPAT_REGISTRY, ['internal/promql/lower.go'], DERIVED);
+  assert.ok(promql.includes('compatibility.prometheus'));
+  assert.ok(!promql.includes('compatibility.loki'));
+  assert.ok(!promql.includes('compatibility.tempo'));
+
+  const traceql = laneIDs(COMPAT_REGISTRY, ['internal/traceql/ast/parser.go'], DERIVED);
+  assert.ok(traceql.includes('compatibility.tempo'));
+  assert.ok(!traceql.includes('compatibility.loki'));
+  assert.ok(!traceql.includes('compatibility.prometheus'));
+});
+
+test('every lane the gate reports on has a derived affected-path set', () => {
+  // The production run derives over EVERY gating-but-skipping lane, tag sets
+  // included; a lane the derivation cannot answer for would throw at run time.
+  const all = laneAffectedGlobs(gatingLanesThatSkipPRs(REGISTRY), {
+    repoRoot: process.cwd(),
+    // Structural check only: an empty graph leaves each lane with its declared
+    // globs, which is enough to prove every lane gets an entry without paying
+    // for one `go list` per build-tag set here.
+    runGoList: () => '',
+  });
+  for (const lane of gatingLanesThatSkipPRs(REGISTRY)) {
+    assert.ok(all.has(lane.id), `${lane.id} would throw at run time with no derived set`);
+  }
 });
 
 // --- git plumbing ---------------------------------------------------------------
@@ -204,4 +331,10 @@ const forbidDeferralWorkflow = readFileSync(resolve('.github/workflows/forbid-de
 test('the merge-risk gate rides forbid-deferral.yml and invokes the script', () => {
   assert.match(forbidDeferralWorkflow, /run: node \.github\/scripts\/merge-risk\.mjs/);
   assert.match(forbidDeferralWorkflow, /run: node --test \.github\/scripts\/merge-risk\.test\.mjs/);
+});
+
+test('the job sets Go up through the hardened wrapper, which the attribution needs', () => {
+  // Without a toolchain in this job the derivation cannot read the import graph
+  // and merge-risk.mjs exits 1 rather than falling back to the declared globs.
+  assert.match(forbidDeferralWorkflow, /uses: \.\/\.github\/actions\/setup-go/);
 });

@@ -800,7 +800,12 @@
       "recipes": ["compat-promql"],
       "command": "Prometheus compatibility with CERBERUS_EVAL_ROUTE=sharded and FAIL_ON_DIFF=1",
       "build_tags": [],
-      "package_globs": ["compatibility/prometheus/**", "internal/solver/**"],
+      "package_globs": [
+        "compatibility/prometheus/**",
+        "internal/api/prom/**",
+        "internal/promql/**",
+        "internal/solver/**"
+      ],
       "substrate": "reference-stack",
       "risk_domains": ["promql", "solver", "sql"],
       "merge_posture": "never",

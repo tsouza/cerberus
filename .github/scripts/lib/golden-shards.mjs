@@ -52,8 +52,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-/** The Go module path every first-party package import starts with. */
-const MODULE_PATH = 'github.com/tsouza/cerberus';
+/**
+ * The Go module path every first-party package import starts with. Exported
+ * because `lib/lane-closure.mjs` reads the same import graph for the CI lane
+ * registry and must draw the first-party boundary at exactly the same place.
+ */
+export const MODULE_PATH = 'github.com/tsouza/cerberus';
 
 function gitLines(repoRoot, args) {
   const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
