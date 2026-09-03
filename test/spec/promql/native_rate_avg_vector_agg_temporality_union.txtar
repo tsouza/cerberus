@@ -1,17 +1,29 @@
-# Negative/scope-boundary counterpart of
-# native_rate_vector_agg_temporality_union.txtar (cerberus issue #2852):
-# avg() is EXCLUDED from [nativeGridVectorAggUnionFns] — re-applying `avg`
-# at the combining Aggregate would average the native arm's single
-# already-averaged row as one bare observation among the raw DELTA arm's
-# rows, silently under-weighting the CUMULATIVE side whenever it summarizes
-# more than one series (see that var's own doc, and the avg/count follow-up,
-# cerberus issue #2884). This fixture pins that
-# [rateIncreaseTemporalityUnionArms] still recognizes the union shape but
-# [buildTemporalityUnionVectorAgg] is never invoked for avg: the `-- chplan
-# --` golden below shows the ORDINARY exploded-then-grouped Aggregate over
-# the full Project(UnionAll{...}) input, byte-identical to what this query
-# would lower to with ts_grid_vector_agg disabled entirely — proving the new
-# branch is inert for avg rather than emitting something subtly wrong.
+# Positive activation pin, sibling of native_rate_vector_agg_temporality_union.txtar
+# (cerberus issue #2852's sum case) — this is avg()'s own case, cerberus issue
+# #2884. avg() cannot compose by re-applying `avg` a second time at the
+# combining Aggregate (that would average the native arm's single
+# already-averaged row as one bare observation among the raw DELTA arm's raw
+# ones, silently under-weighting the CUMULATIVE side whenever it summarizes
+# more than one series) — so [buildTemporalityUnionAvgVectorAgg] instead reads
+# the native arm's own PARTIAL (sum, count) pair
+# (chplan.RangeWindowGridNativeVectorAgg.PartialCountAlias), gives the raw
+# DELTA arm a matching literal-1 partial count per row, SUMs both partials
+# independently across the union, and divides once in a wrapping Project.
+#
+# The seed reuses #2852's own mixed-arm shape deliberately: host=a carries
+# TWO series that collapse into the SAME output group under `by(host)` —
+# worker=x is CUMULATIVE-temporality (feeds the native arm, contributing a
+# partial count of 1 alongside its own partial sum — this fixture does not
+# exercise a native group with MORE than one contributing series, but the
+# partial-count machinery is the same either way) and worker=y is
+# DELTA-temporality (feeds the raw fan-out arm, contributing its own raw
+# value plus a literal-1 partial count). The correct average at every anchor
+# is therefore the SUM of both series' rates divided by 2, not an average of
+# the two arms' own per-arm averages — this fixture's `-- chplan --` golden
+# pins the partial-sum/partial-count/divide shape that gets that right; the
+# `parity` section cross-checks the resulting numbers against a real
+# Prometheus engine over the same seed, and `expected_rows` pins the same
+# answer via chDB execution.
 
 -- query.promql --
 avg by(host) (rate(cerberus_requests_total[5m]))

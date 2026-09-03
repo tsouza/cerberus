@@ -1,0 +1,69 @@
+# Positive activation pin, sibling of native_rate_vector_agg_temporality_union.txtar
+# (cerberus issue #2852's sum case) — this is count()'s own case, cerberus
+# issue #2884. count() cannot compose by re-applying `count` a second time at
+# the combining Aggregate (that would count the native arm's ONE pre-reduced
+# row as a single unit instead of the N series it actually summarizes,
+# silently under-counting the CUMULATIVE side whenever it summarizes more
+# than one series) — so [buildTemporalityUnionCountVectorAgg] instead reads
+# the native arm's own already-pre-counted Value (the SAME per-group count
+# the bare, non-union count fold already relies on, cerberus issue #2763),
+# re-shapes the raw DELTA arm's Value to the constant 1 per row (each raw row
+# IS exactly one real observation), and SUMs the union — |A| + Σ_i 1 — rather
+# than re-applying `count`.
+#
+# The seed reuses #2852's own mixed-arm shape deliberately: host=a carries
+# TWO series that collapse into the SAME output group under `by(host)` —
+# worker=x is CUMULATIVE-temporality (feeds the native arm, contributing a
+# pre-counted 1) and worker=y is DELTA-temporality (feeds the raw fan-out
+# arm, contributing a literal-1 row per anchor) — so the correct answer is
+# count(host=a) == 2 at every anchor. host=b carries a single
+# CUMULATIVE-only series, so count(host=b) == 1 at every anchor: the native
+# arm alone, with no delta-side contribution to sum in. A naive re-count
+# would instead answer 1 for host=a (counting the native arm's ONE pre-
+# reduced row as a unit) plus whatever the delta side counted, silently
+# under-counting the CUMULATIVE side's real 1-series contribution only by
+# coincidence of it having exactly one series here — this fixture's
+# `-- chplan --` golden pins the sum-of-partial-counts shape that stays
+# correct for any split; the `parity` section cross-checks the resulting
+# numbers against a real Prometheus engine over the same seed, and
+# `expected_rows` pins the same answer via chDB execution.
+
+-- query.promql --
+count by(host) (rate(cerberus_requests_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64,
+    AggregationTemporality Int32
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 60.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 120.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 180.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 240.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 300.0, 0),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'a', 'worker', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 10.0, 1),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:00:00', 9), 0.0, 0),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:01:00', 9), 30.0, 0),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:02:00', 9), 60.0, 0),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:03:00', 9), 90.0, 0),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:04:00', 9), 120.0, 0),
+    ('cerberus_requests_total', map('host', 'b', 'worker', 'z'), toDateTime64('2026-01-01 00:05:00', 9), 150.0, 0);
+-- expected_rows --
+[]
