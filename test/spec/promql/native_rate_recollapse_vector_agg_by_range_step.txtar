@@ -1,0 +1,73 @@
+# Activation pin for cerberus issue #2888 (closed), the OTHER reachable
+# path the fix's own doc names: a BARE RangeWindowGridNative (no
+# rate()/increase() temporality-union split) that ALSO carries a
+# Recollapse, composed with ts_grid_vector_agg. This is
+# [tryNativeGridVectorAgg]'s first (bare-RangeWindowGridNative) branch,
+# distinct from native_rate_recollapse_vector_agg_temporality_union.txtar's
+# union branch.
+#
+# `load_state` resolves ambiguously across both the gauge and sum tables
+# (no metric-name mapping pins it to one), so
+# resolveUnambiguousScanTable's route.tables has length != 1 and
+# rangeVectorCounterTemporalityColumn answers "" — rate() never threads
+# RangeWindow.TemporalityColumn for this selector, so
+# NativeRateLowerer.LowerRate takes its SECOND branch
+# (`nativeTSGridRateNode(rw, s, n.Recollapse)` with no union split) rather
+# than the temporality-bearing first branch the sibling fixture exercises.
+# Recollapse is still eligible on that branch (hoistShaping doesn't care
+# which branch it's reached from), so this is the one query shape that
+# reaches [tryNativeGridVectorAgg]'s bare-node clause with a non-empty
+# Input.Recollapse.
+#
+# Same grid and seed as native_changes_vector_agg_by_range_step.txtar
+# (swapping changes() for rate() so TemporalityColumn resolution differs,
+# and enabling `experimental_ts_grid_recollapse`).
+
+-- query.promql --
+sum by(dc) (rate(load_state[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 0.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 1.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 5.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 7.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 7.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 9.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 2.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 0.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 0.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 4.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 4.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 4.0);
+-- expected_rows --
+[]
+-- args --
+-- chplan --
+-- sql --

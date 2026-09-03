@@ -4629,9 +4629,6 @@ func tryNativeGridVectorAgg(
 		if _, eligible := nativeGridVectorAggFns[aggFunc.Fn]; !eligible {
 			return nil, false
 		}
-		if len(nativeGrid.Recollapse) != 0 {
-			return nil, false
-		}
 		return &chplan.RangeWindowGridNativeVectorAgg{
 			Input:          nativeGrid,
 			Fn:             aggFunc.Fn,
@@ -4656,20 +4653,13 @@ func tryNativeGridVectorAgg(
 	if _, eligible := nativeGridVectorAggUnionFns[aggFunc.Fn]; !eligible {
 		return nil, false
 	}
-	// RangeWindowGridNativeVectorAgg's emitter (chsql) reads the native arm's
-	// per-series row via nativeGridArrayLevel, which stops one level short of
-	// emitRangeWindowGridNative's own outer explode — the level that restores
-	// a Recollapse-hoisted shaped key back to its original column name (e.g.
-	// "Attributes"). Without that restore, an outer GroupBy expression built
-	// against the ORIGINAL column (as groupBy here always is) resolves against
-	// a row that no longer carries it, producing an invalid query — confirmed
-	// against a real ClickHouse server (cerberus issue #2888, found by this
-	// exact branch in CI). rate() is the only function ts_grid_recollapse
-	// applies to, so this guard is exactly as narrow as the gap: it never
-	// affects increase(), and a rate() input without Recollapse is unaffected.
-	if len(native.Recollapse) != 0 {
-		return nil, false
-	}
+	// A Recollapse on native composes cleanly here too (cerberus issue
+	// #2888, closed): RangeWindowGridNativeVectorAgg's emitter (chsql)
+	// interposes an extra level that restores every Recollapse-hoisted
+	// shaped key back to its original column name (e.g. "Attributes")
+	// before evaluating groupBy against it, mirroring the restoration
+	// [emitRangeWindowGridNative] itself already relies on. No guard is
+	// needed on either branch of this function.
 	return buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s), true
 }
 

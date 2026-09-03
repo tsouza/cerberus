@@ -112,9 +112,36 @@ func (e *emitter) emitRangeWindowGridNativeVectorAgg(r *chplan.RangeWindowGridNa
 		return fmt.Errorf("%w: RangeWindowGridNativeVectorAgg requires AnchorAlias", ErrUnsupported)
 	}
 
-	arrayLevel, _, _, gridTS, err := e.nativeGridArrayLevel(nativeGrid)
+	arrayLevel, levelKeyFrags, _, gridTS, err := e.nativeGridArrayLevel(nativeGrid)
 	if err != nil {
 		return err
+	}
+
+	// When nativeGrid carries a Recollapse (cerberus issue #2888),
+	// arrayLevel is the three-level merge query, whose own SELECT list no
+	// longer carries a column under the shaping tower's ORIGINAL name (e.g.
+	// "Attributes") — it was hoisted and renamed to
+	// nativeShapedKeyAlias(i) so the merge GROUP BY runs at the pre-hoist
+	// cost. r.GroupBy is the OUTER PromQL by/without key expression set
+	// this node itself evaluates (e.g. Attributes['job']), written against
+	// that ORIGINAL name, so rendering it directly over arrayLevel would
+	// resolve against a row that no longer carries the column —
+	// ClickHouse rejects it as UNKNOWN_IDENTIFIER. levelKeyFrags is
+	// exactly the restoration [emitRangeWindowGridNative] itself already
+	// relies on: every Recollapse-hoisted key renamed back to its original
+	// alias, every non-shaped key passed through verbatim. Interposing one
+	// extra level that projects levelKeyFrags alongside the still-array-
+	// shaped grid column reconstructs a row r.GroupBy can be evaluated
+	// against. In the non-Recollapse case levelKeyFrags IS the same
+	// groupFrags arrayLevel's own inner SELECT already rendered, so the
+	// extra level is skipped and the emitted SQL is byte-for-byte
+	// unchanged from before this fix.
+	groupBySource := arrayLevel
+	if len(nativeGrid.Recollapse) != 0 {
+		renamed := NewQuery().From(arrayLevel.Frag())
+		renamed.Select(levelKeyFrags...)
+		renamed.Select(Col(nativeGridArrayAlias))
+		groupBySource = renamed
 	}
 
 	groupFrags, err := e.collectGroupByFrags(r.GroupBy)
@@ -142,7 +169,7 @@ func (e *emitter) emitRangeWindowGridNativeVectorAgg(r *chplan.RangeWindowGridNa
 		outerKeyFrags[i] = As(Col(alias), alias)
 	}
 
-	vecAgg := NewQuery().From(arrayLevel.Frag())
+	vecAgg := NewQuery().From(groupBySource.Frag())
 	for i, gf := range groupFrags {
 		vecAgg.SelectAs(gf, r.GroupByAliases[i])
 	}

@@ -1,0 +1,60 @@
+# Activation pin for cerberus issue #2888 (closed): composing
+# ts_grid_recollapse with ts_grid_vector_agg on the rate()/increase()
+# temporality-union arm now folds all the way through to
+# RangeWindowGridNativeVectorAgg — see its `-- chplan --` golden below,
+# which must contain that node.
+#
+# Before the fix, this exact combination emitted an invalid query against a
+# real ClickHouse server (`Unknown expression or function identifier` — the
+# Recollapse-hoisted shaped key never got restored to the "Attributes"
+# column name the outer GroupBy expression still referenced), so
+# [tryNativeGridVectorAgg] in internal/promql/lower.go refused to fold
+# whenever the native arm carried a non-empty Recollapse, falling back to
+# the ordinary exploded-then-grouped Aggregate instead — this fixture used
+# to pin THAT fallback as a negative/scope-boundary regression test. The
+# fix taught [emitRangeWindowGridNativeVectorAgg] (internal/chsql) to
+# restore the Recollapse-hoisted key back to its original column name
+# itself, the same way [emitRangeWindowGridNative] already did, so the
+# guard was removed rather than widened.
+#
+# Same query, same seed, same grid as native_rate_recollapse_range_step.txtar
+# — the ONLY difference is the additional `experimental_ts_grid_vector_agg`
+# section.
+
+-- query.promql --
+sum by(cerberus_ql) (rate(cerberus_queries_total[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_sum (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_sum VALUES
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:01:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:02:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:03:00', 9), 36.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:04:00', 9), 48.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'promql'), toDateTime64('2026-01-01 00:05:00', 9), 60.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:01:00', 9), 6.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:02:00', 9), 12.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:03:00', 9), 18.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:04:00', 9), 24.0),
+    ('cerberus_queries_total', map('cerberus_ql', 'logql'), toDateTime64('2026-01-01 00:05:00', 9), 30.0);
+
+-- expected_rows --
+[]
+-- args --
+-- chplan --
+-- sql --
