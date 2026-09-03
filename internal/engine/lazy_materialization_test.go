@@ -9,7 +9,7 @@ import (
 
 // tempoSearchRecentPlan builds the exact shape internal/api/tempo
 // handler.go's /search/recent constructs: Limit(OrderBy(Filter(Scan))) —
-// see eligibleForLazyMaterialization's doc for why the bare Limit(OrderBy(...))
+// see EligibleForLazyMaterialization's doc for why the bare Limit(OrderBy(...))
 // shape, not the full Project wrap, is what the eligibility check matches.
 func tempoSearchRecentPlan(limit int64) chplan.Node {
 	return &chplan.Limit{
@@ -138,7 +138,7 @@ func TestEligibleForLazyMaterialization(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			limit, ok := eligibleForLazyMaterialization(tc.plan)
+			limit, ok := EligibleForLazyMaterialization(tc.plan)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v; want %v", ok, tc.wantOK)
 			}

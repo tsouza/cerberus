@@ -1570,7 +1570,7 @@ const (
 	// FeatureLazyMaterialization stamps query_plan_optimize_lazy_materialization=1
 	// + query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT> on
 	// any plan carrying an `ORDER BY Timestamp DESC LIMIT N` (or ASC) shape — see
-	// internal/engine.eligibleForLazyMaterialization, which is head-agnostic (it
+	// internal/engine.EligibleForLazyMaterialization, which is head-agnostic (it
 	// matches the chplan shape, not the query language). Tempo's handler.go
 	// builds it directly for /search/recent, boundNewestTraces, and
 	// structural_two_phase.go's phase-A ranking; since cerberus issue #2829,
