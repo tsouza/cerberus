@@ -452,15 +452,24 @@ export const PHASES = [
   // (10 killed: absent-window Interval+Offset arithmetic, the absent synth-label
   // conjunction, the post-filter error-mark return gate, the topk/quantile outer-by
   // threading + ungrouped-partition guards — each verified by hand-applying the
-  // mutation). The remaining survivors are GENUINELY EQUIVALENT and can't be killed:
+  // mutation). Of the remaining survivors:
   //   - `make([]Expr, 0, len(Groups)*2 (+1))` slice-CAPACITY hints
-  //     (range_aggregation.go, vector_aggregation.go, duration.go) — a cap literal
-  //     changes only allocator behaviour, not output (CLAUDE.md: capacity hints
-  //     out of scope).
+  //     (range_aggregation.go, vector_aggregation.go, duration.go) are NOT
+  //     equivalent, though this block long claimed they were. A cap literal does
+  //     change only allocator behaviour and not output, but observability is not
+  //     confined to output: all three build a slice that becomes a returned
+  //     `chplan.FuncCall`'s exported `Args` and fill the hint exactly, so `cap`
+  //     reads the arithmetic back. All three are killed that way now, in
+  //     capacity_hint_mutation_test.go alongside detected_level.go's two, and
+  //     cerberus issue #2984 swept the same check across the whole matrix: of
+  //     the 21 surviving capacity hints it found, 17 escaped to a readable
+  //     surface and are killed, and the 4 that do not are adjudicated where
+  //     they live (internal/chsql/exemplars_misc_mutation_test.go,
+  //     detected_level_test.go, internal/promql/gremlins_kill_window_bounds_test.go).
   //   - empty-group CONDITIONALS_BOUNDARY guards (`len(...) > 0` vs `>= 0`) whose
   //     only distinguishing input (`by ()`) threads a len-0 label slice the
   //     lowering collapses to nil — a byte-identical no-op.
-  // With the killable set covered the bar is back at 95; the equivalents sit
+  // With the killable set covered the bar is back at 95; the survivors sit
   // comfortably under it (~97.7%).
   //
   // Round 13 (2026-07-25): all four ./internal/logql legs started dying with the

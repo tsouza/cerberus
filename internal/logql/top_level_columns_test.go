@@ -119,3 +119,46 @@ func TestTopLevelColumnsReferencedBy(t *testing.T) {
 		t.Errorf("topLevelColumnsReferencedBy(no-top-level) = %v; want empty", got)
 	}
 }
+
+// TestMaterializedColumnFor pins [materializedColumnFor]'s whole decision:
+// the two map lookups, and the fall-through every other input reaches.
+//
+// The empty-label and empty-table rows are the reason no up-front emptiness
+// guard is needed — they take the lookups and miss, which is the same
+// ("", false) a guard would have short-circuited to. Neuter either lookup
+// (drop the dotted retry, or the direct one) and a row below fails.
+func TestMaterializedColumnFor(t *testing.T) {
+	def := schema.DefaultOTelLogs()
+	const nsColumn = "__otel_materialized_k8s.namespace.name"
+
+	cases := []struct {
+		name  string
+		label string
+		s     schema.Logs
+		want  string
+		match bool
+	}{
+		{"dotted OTel key", "k8s.namespace.name", def, nsColumn, true},
+		{"underscored Grafana form", "k8s_namespace_name", def, nsColumn, true},
+		{"non-k8s resource attribute", "job", def, "", false},
+		{"top-level scalar column", "ServiceName", def, "", false},
+		// No lookup can hit: the table holds eight fixed OTel keys and none
+		// of them is empty, and normalising "" leaves "" so the dotted retry
+		// is skipped as a no-op.
+		{"empty label against the default table", "", def, "", false},
+		// A custom schema with no materialized columns leaves the table nil;
+		// a nil-map lookup is a miss, not a panic.
+		{"materialized key against a nil table", "k8s.namespace.name", schema.Logs{}, "", false},
+		{"underscored key against a nil table", "k8s_namespace_name", schema.Logs{}, "", false},
+		{"empty label against a nil table", "", schema.Logs{}, "", false},
+		{"empty label against an empty table", "", schema.Logs{MaterializedResourceColumns: map[string]string{}}, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := materializedColumnFor(c.label, c.s)
+			if ok != c.match || got != c.want {
+				t.Fatalf("materializedColumnFor(%q) = (%q, %v); want (%q, %v)", c.label, got, ok, c.want, c.match)
+			}
+		})
+	}
+}

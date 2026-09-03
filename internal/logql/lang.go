@@ -285,7 +285,16 @@ func (l *Lang) ProjectSamples(plan chplan.Node, meta engine.Meta) chplan.Node {
 	expr, _ := meta.Extra["expr"].(syntax.Expr)
 	attrsExpr := chplan.Expr(&chplan.ColumnRef{Name: s.ResourceAttributesColumn})
 	if HasLabelMutatingStage(expr) {
-		if parsed, err := PipelineLabelsExpr(expr, s); err == nil && parsed != nil {
+		// A nil-error result is always a usable expression here: both of
+		// [HasLabelMutatingStage]'s true-returning paths require expr to be a
+		// *syntax.PipelineExpr, and on one of those [PipelineLabelsExpr]
+		// returns either an error or a labels expression that starts non-nil
+		// and is only ever replaced by a non-nil merge. The error arm is the
+		// live one — the projection walk re-derives stages the lowering was
+		// allowed to skip (see [lowerPipelineWithLabels]'s dynamicLabels
+		// gate), so it can reject a pipeline that lowered fine, and the bare
+		// ResourceAttributes column is the right fallback when it does.
+		if parsed, err := PipelineLabelsExpr(expr, s); err == nil {
 			attrsExpr = parsed
 		}
 	}

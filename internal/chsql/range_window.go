@@ -5096,7 +5096,7 @@ func sampledIntervalFrag() Frag {
 
 // durationToStartFrag renders the per-window distance from the left
 // window edge to the first sample, applying Prom's extrapolation
-// threshold (functions.go lines 273-276):
+// threshold, which `functions.go`'s `extrapolatedRate` computes as:
 //
 //	durationToStart := float64(firstT-rangeStart) / 1000
 //	averageDurationBetweenSamples := sampledInterval / float64(numSamplesMinusOne)
@@ -5105,7 +5105,8 @@ func sampledIntervalFrag() Frag {
 //	    durationToStart = averageDurationBetweenSamples / 2
 //	}
 //
-// The counter clamp-to-zero shortcut (Prom lines 277-298) is applied
+// The counter clamp-to-zero shortcut that follows it in the same Prom
+// function is applied
 // downstream inside [extrapolatedValueFrag] because it has to share the
 // counter_delta / first_val handles with the result accumulator —
 // keeping the two halves co-located keeps the dependent-arithmetic
@@ -5171,7 +5172,7 @@ func durationToStartRawFrag(rangeStart Frag) Frag {
 // threshold (no counter branch — Prom only clamps the LEFT edge to the
 // counter's zero point).
 //
-// Mirrors functions.go lines 300-302:
+// Mirrors the right-edge half of the same `extrapolatedRate` block:
 //
 //	durationToEnd := float64(rangeEnd-lastT) / 1000
 //	if durationToEnd >= extrapolationThreshold {

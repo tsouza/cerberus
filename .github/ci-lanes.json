@@ -1741,8 +1741,8 @@
       "description": "Ordinary-PR structural enrollment of every production package in a positive floor.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage-plan", "coverage"],
-        "producer_jobs": ["coverage-plan"],
+        "jobs": ["coverage-enrollment", "coverage"],
+        "producer_jobs": ["coverage-enrollment"],
         "context_job": "coverage"
       },
       "executions": ["default"],
@@ -1770,7 +1770,7 @@
       "description": "Merged default-tag and chDB profiles held to per-package floors; absent on ordinary PRs.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
-        "jobs": ["coverage-default", "coverage-chdb", "coverage-chdb-ratchet", "coverage"],
+        "jobs": ["coverage-plan", "coverage-default", "coverage-chdb", "coverage-chdb-ratchet", "coverage"],
         "producer_jobs": ["coverage-default", "coverage-chdb", "coverage-chdb-ratchet"],
         "context_job": "coverage"
       },

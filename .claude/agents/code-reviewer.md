@@ -43,7 +43,9 @@ Check, in this order:
 3. **Repository invariants.** Walk the numbered list in `CLAUDE.md`. The ones a diff most often
    breaks: raw SQL outside the typed Frag layer (invariant 10), magic constants (13), hand-edited
    generated artefacts (9), `t.Skip` / soft-assert / silent-recover (6), allow-lists and tolerance
-   sets (7), a new `internal/**` package missing from `.go-arch-lint.yml` (16).
+   sets (7), a new `internal/**` package missing from `.go-arch-lint.yml` — or, when it carries
+   statements, from the `test/coverage-floor/` ledger, which is the second registration the same
+   change owes (16).
 4. **Regression risk.** What else calls the changed function? Use `Grep` to find every caller and ask
    whether the new behaviour is right for each. Pay attention to shared code paths across the three
    heads — a fix for PromQL that changes `internal/chplan` or `internal/chsql` reaches LogQL and

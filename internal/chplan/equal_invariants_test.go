@@ -1818,10 +1818,10 @@ func TestStructuralJoin_Equal_Negative_SpanIDColumn(t *testing.T) {
 	}
 }
 
-// TestStructuralJoin_Equal_Negative_RightOnly exercises the `Left.Equal
-// && Right.Equal` tail at line 157. Left children match, Right
-// children differ — a mutant flipping `&&` to `||` would falsely
-// report Equal here.
+// TestStructuralJoin_Equal_Negative_RightOnly exercises the
+// structural_join.go:`return j.Left.Equal(o.Left) && j.Right.Equal(o.Right)`
+// tail. Left children match, Right children differ — a mutant flipping `&&`
+// to `||` would falsely report Equal here.
 func TestStructuralJoin_Equal_Negative_RightOnly(t *testing.T) {
 	t.Parallel()
 	a := &chplan.StructuralJoin{
@@ -1912,16 +1912,16 @@ func TestTopK_Equal_SortExprNilBoth(t *testing.T) {
 	}
 }
 
-// TestTopK_Equal_KExprNilAsymmetric pins the
-// `t.KExpr == nil || o.KExpr == nil` branch + the per-operand `==`
-// checks. Together these three positions on line 92 are exercised:
+// TestTopK_Equal_KExprNilAsymmetric pins
+// topk.go:`if t.KExpr == nil || o.KExpr == nil {` and the per-operand `==`
+// checks. All three positions on that guard are exercised:
 //
-//   - `||` flipped to `&&` (line 92:20): one side nil, other non-nil →
+//   - `||` flipped to `&&`: one side nil, other non-nil →
 //     mutant falls into `t.KExpr.Equal(o.KExpr)` and dereferences nil.
-//   - `t.KExpr == nil` negated (line 92:13): a-side nil, b-side nil →
+//   - `t.KExpr == nil` negated: a-side nil, b-side nil →
 //     original takes the `return false` (via inner pointer compare) /
 //     fall-through; mutant flips the branch direction.
-//   - `o.KExpr == nil` negated (line 92:31): mirror image.
+//   - `o.KExpr == nil` negated: mirror image.
 func TestTopK_Equal_KExprNilAsymmetric(t *testing.T) {
 	t.Parallel()
 	a := &chplan.TopK{
@@ -1984,7 +1984,8 @@ func TestTopK_Equal_KExprBothNonNil(t *testing.T) {
 }
 
 // TestTopK_Equal_KExprStructurallyEqualDifferentInstances pins the
-// `o.KExpr == nil` operand at line 92:31. Original sees both non-nil,
+// `o.KExpr == nil` operand of
+// topk.go:`if t.KExpr == nil || o.KExpr == nil {`. Original sees both non-nil,
 // skips the outer block, and calls `t.KExpr.Equal(o.KExpr)` which
 // performs a structural comparison and returns true. A
 // CONDITIONALS_NEGATION mutant flipping `o.KExpr == nil` to
@@ -2037,8 +2038,8 @@ func TestHistogramQuantileNative_Equal_InputNilBoth(t *testing.T) {
 	}
 }
 
-// TestMetricsHistogramOverTime_Equal_InnerNilBoth pins line 117's
-// `if m.Inner == nil { return true }` early-return. A
+// TestMetricsHistogramOverTime_Equal_InnerNilBoth pins the `return true`
+// under metrics_histogram_over_time.go:`if m.Inner == nil {`. A
 // CONDITIONALS_NEGATION mutant flips `==` to `!=`; with both Inner
 // nil, the mutant skips the `return true` and falls through to
 // `m.Inner.Equal(o.Inner)` which dereferences a nil receiver.

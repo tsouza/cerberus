@@ -512,10 +512,22 @@ func TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape(t *testing.T) {
 	}
 }
 
-// capHintOps are the binary arithmetic operators gremlins' ARITHMETIC_BASE
-// operator substitutes into an expression. Applying each of them to each
-// operator position of the capacity hint enumerates that hint's whole mutant
-// set.
+// capHintOps are the binary arithmetic operators the two enumerations below
+// substitute into each operator position of a capacity hint.
+//
+// This is deliberately a SUPERSET of the mutant set a run reports, and saying
+// so is the point: gremlins' ARITHMETIC_BASE rewrites each arithmetic token to
+// exactly ONE other token (`+`->`-`, `-`->`+`, `*`->`/`, `/`->`*`, `%`->`*`),
+// so a hint spelling P operators carries P mutants and not 4P. The
+// authoritative table is `Substitution` in test/capmutant, which mirrors the
+// pinned tsouza/gremlins fork's own mapping; requiring the four other operators to be
+// distinguished as well is strictly stronger than the lane needs and costs
+// nothing here, because both of this file's hints distinguish all of them.
+//
+// A hint that did NOT would have to be adjudicated against the real table
+// rather than this one — internal/promql/schema_lookup.go's `len(pairs)*2` is
+// exactly that case, and over-approximating there would have claimed a kill
+// the lane cannot collect.
 var capHintOps = []string{"+", "-", "*", "/", "%"}
 
 // applyCapHintOp evaluates `a op b` for the operators ARITHMETIC_BASE can
@@ -562,28 +574,40 @@ func capHint(t *testing.T, n int, innerOp, mulOp, tailOp string) int {
 // integer down, so the two cannot state it differently.
 func multiIfArgCount(groups int) int { return 2*(groups+1) + 1 }
 
-// capAfterBuild replays [normaliseLevelExpr]'s exact append sequence against a
-// slice pre-allocated with `hint`, and reports the length and the capacity the
-// finished slice carries.
+// capAfterPairedAppends replays the append sequence BOTH multiIf builders in
+// detected_level.go share — `pairs` (condition, value) pairs appended two at a
+// time, then one trailing default branch — against a slice pre-allocated with
+// `hint`, and reports the length and the capacity the finished slice carries.
+//
+// The growth schedule depends on the exact order and grouping of the appends,
+// not just on the final count, so the replay has to mirror the builder rather
+// than append the total in one call.
 //
 // The element type has to be the real one. Go rounds a growing slice's
 // capacity up to an allocator size class measured in BYTES, so a slice whose
 // elements are a different width grows to different capacities and the
 // simulation would answer a question nobody asked.
-func capAfterBuild(hint, groups int) (length, capacity int) {
+func capAfterPairedAppends(hint, pairs int) (length, capacity int) {
 	args := make([]chplan.Expr, 0, hint)
-	args = append(args, nil, nil) // leading (empty, unknown) pair
-	for i := 0; i < groups; i++ {
-		args = append(args, nil, nil) // (cond, canonical literal)
+	for i := 0; i < pairs; i++ {
+		args = append(args, nil, nil) // (condition, value)
 	}
 	args = append(args, nil) // trailing default branch
 	return len(args), cap(args)
 }
 
+// capAfterBuild replays [normaliseLevelExpr]'s exact append sequence: the
+// leading (empty, unknown) pair, one (cond, canonical literal) pair per group,
+// and the lowercased default — i.e. `groups+1` pairs and a trailing branch.
+func capAfterBuild(hint, groups int) (length, capacity int) {
+	return capAfterPairedAppends(hint, groups+1)
+}
+
 // TestNormaliseLevelExpr_CapHintMutantsAreKilled proves that the `cap`
 // assertion in [TestNormaliseLevelExpr_MultiIfArgsCapacityAndShape] actually
-// discriminates. For every ARITHMETIC_BASE operator substitution gremlins can
-// make in detected_level.go:`(len(levelNormalizationGroups)+1)*2+1`, the
+// discriminates. For every operator substitution [capHintOps] enumerates in
+// detected_level.go:`(len(levelNormalizationGroups)+1)*2+1` — a superset of
+// the one-per-token set ARITHMETIC_BASE actually emits, see [capHintOps] — the
 // capacity the finished slice ends up with must differ from the capacity the
 // unmutated hint produces — otherwise that assertion passes on the mutant and
 // the equivalence note above is claiming a kill it does not deliver.
@@ -852,6 +876,23 @@ func TestDetectedLevelSource_PrecedenceCascade(t *testing.T) {
 		t.Fatalf("cascade has %d args; want %d (%d keys × 2 + fallback)", got, wantArgs, len(wantKeys))
 	}
 
+	// Kill for the ARITHMETIC_BASE mutants on the slice-capacity hint
+	// detected_level.go:`args := make([]chplan.Expr, 0, len(keys)*2+1)`. The
+	// appends below fill that pre-allocation EXACTLY, so the finished slice
+	// still reports the hint and `cap` reads the arithmetic straight back;
+	// [TestDetectedLevelSource_CapHintMutantsAreKilled] proves no operator
+	// substitution lands back on it. This works here — where the identical
+	// argument fails for the sibling `keys := make([]string, 0,
+	// len(allowedLevelFields)+1)` — because `args` ESCAPES: it becomes the
+	// returned FuncCall's exported Args field, so its capacity is reachable
+	// from a test, while `keys` never leaves the function.
+	if got := cap(cascade.Args); got != wantArgs {
+		t.Errorf("cap(cascade.Args) = %d; want %d — the capacity hint no longer "+
+			"matches the args the cascade builds (mutant `*` → `+`/`-`/`/`/`%%` or "+
+			"`+` → `-`/`*`/`/`/`%%` in detected_level.go:`len(keys)*2+1` shifts the "+
+			"pre-allocation and append re-grows off the exact count)", got, wantArgs)
+	}
+
 	for i, key := range wantKeys {
 		valIdx := 2*i + 1
 		ma, ok := cascade.Args[valIdx].(*chplan.MapAccess)
@@ -872,6 +913,137 @@ func TestDetectedLevelSource_PrecedenceCascade(t *testing.T) {
 	if !ok || fallback.Name != s.SeverityColumn {
 		t.Errorf("fallback branch = %#v; want ColumnRef(%q)", cascade.Args[len(cascade.Args)-1], s.SeverityColumn)
 	}
+}
+
+// sourceCapHint evaluates the SHAPE of detected_level.go's cascade capacity
+// hint `len(keys)*2+1` with each of its two operator positions supplied
+// explicitly: `n mulOp 2 tailOp 1`. Passing the operators in is what lets the
+// caller enumerate the hint's mutants without writing any of their values
+// down.
+func sourceCapHint(t *testing.T, n int, mulOp, tailOp string) int {
+	t.Helper()
+
+	return applyCapHintOp(t, applyCapHintOp(t, n, mulOp, 2), tailOp, 1)
+}
+
+// TestDetectedLevelSource_CapHintMutantsAreKilled proves that the `cap`
+// assertion in [TestDetectedLevelSource_PrecedenceCascade] actually
+// discriminates. For every operator substitution [capHintOps] enumerates in
+// detected_level.go:`args := make([]chplan.Expr, 0, len(keys)*2+1)` — a
+// superset of the one-per-token set ARITHMETIC_BASE actually emits, see
+// [capHintOps] — the capacity the finished slice ends up with must differ from
+// the capacity the unmutated hint produces — otherwise that assertion passes
+// on the mutant and claims a kill it does not deliver.
+//
+// NOT KILLABLE — the third ARITHMETIC_BASE mutant this function carries, on
+// the sibling hint detected_level.go:`keys := make([]string, 0,
+// len(allowedLevelFields)+1)`, has no test that can observe it, and the reason
+// is worth writing down because it is exactly what does NOT hold for the hint
+// enumerated below. A capacity mutation is observable through `cap`, and `cap`
+// is only reachable where the slice ESCAPES the builder. `args` escapes: it
+// becomes the returned `*chplan.FuncCall`'s exported `Args` field, and the
+// assertion above reads its capacity back. `keys` does not: it is ranged over
+// and measured with `len` inside [detectedLevelSourceExpr] and never stored,
+// returned or captured, so no caller — test or otherwise — holds the header
+// whose capacity the mutation changes. Nor does that mutant die on a panic:
+// `allowedLevelFields` carries four fixed entries, so the `+` -> `-` rewrite
+// ARITHMETIC_BASE emits there computes 3 — non-negative, and `make` accepts
+// it. (The three other operators land on 4, 4 and 0, all equally accepted;
+// gremlins writes none of them, and the escape argument above does not depend
+// on which one it writes.) It is an equivalent mutant, and the only honest
+// thing to do with it is leave it counted as a survivor.
+//
+// So "an ARITHMETIC_BASE mutant on a `make` capacity argument is equivalent"
+// is FALSE as a general claim: it holds for one of this function's two hints
+// and fails for the other, on a property (escape) that is not visible in the
+// mutated expression at all.
+func TestDetectedLevelSource_CapHintMutantsAreKilled(t *testing.T) {
+	t.Parallel()
+
+	// The operators the unmutated hint uses, in the two positions `n * 2 + 1`.
+	const (
+		origMulOp  = "*"
+		origTailOp = "+"
+	)
+	positions := []struct{ name, orig string }{
+		{"the `*2`", origMulOp},
+		{"the trailing `+1`", origTailOp},
+	}
+
+	// The cascade contributes one (condition, value) pair per source key and
+	// one trailing severity-column fallback, so the pair count IS the key
+	// count — the same `n` the hint measures with `len(keys)`.
+	n := len(append([]string{detectedLevelLabel}, allowedLevelFields...))
+	trueHint := sourceCapHint(t, n, origMulOp, origTailOp)
+	trueLen, trueCap := capAfterPairedAppends(trueHint, n)
+
+	// The premise of the whole argument: the appends FILL the pre-allocation
+	// exactly — neither growing past it nor leaving slack. Only then does the
+	// finished cap read back the hint, and only then does asserting cap pin the
+	// hint's arithmetic.
+	if trueLen != trueHint || trueCap != trueHint {
+		t.Fatalf("the unmutated hint %d does not exactly fit the append sequence "+
+			"(finished len %d, cap %d): the appends no longer fill the "+
+			"pre-allocation exactly, so cap() has stopped reading back the hint "+
+			"and asserting it has stopped being a capacity kill",
+			trueHint, trueLen, trueCap)
+	}
+
+	// …and the sequence replayed here has to be the one the sibling test pins
+	// on the real cascade, or this whole test measures a slice nobody builds.
+	s := schema.DefaultOTelLogs()
+	cascade, ok := detectedLevelSourceExpr(s).(*chplan.FuncCall)
+	if !ok {
+		t.Fatalf("source = %#v; want the multiIf cascade", detectedLevelSourceExpr(s))
+	}
+	if got := len(cascade.Args); got != trueLen {
+		t.Fatalf("the replayed append sequence produces %d args, but the cascade "+
+			"under test carries %d — the simulation has drifted from the builder "+
+			"it stands in for", trueLen, got)
+	}
+
+	mutants, checked, negative := 0, 0, 0
+	for i, pos := range positions {
+		for _, op := range capHintOps {
+			if op == pos.orig {
+				continue
+			}
+			mutants++
+
+			ops := []string{origMulOp, origTailOp}
+			ops[i] = op
+			hint := sourceCapHint(t, n, ops[0], ops[1])
+
+			if hint < 0 {
+				// `make` panics on a negative capacity, so this mutant dies in
+				// any test that reaches detectedLevelSourceExpr at all.
+				negative++
+				continue
+			}
+			checked++
+
+			if _, got := capAfterPairedAppends(hint, n); got == trueCap {
+				t.Errorf("mutating %s to %q gives capacity hint %d, and the finished "+
+					"slice still ends at cap %d — identical to the unmutated build, so "+
+					"the `cap(cascade.Args) == wantArgs` assertion does NOT kill this mutant",
+					pos.name, op, hint, got)
+			}
+		}
+	}
+
+	// Anti-vacuity: a loop that enumerated nothing would report a clean run
+	// while proving nothing at all.
+	if want := len(positions) * (len(capHintOps) - 1); mutants != want {
+		t.Fatalf("enumerated %d hint mutants, want %d (one per operator substitution "+
+			"in each of the %d positions) — the enumeration is not covering the "+
+			"mutant set it claims to", mutants, want, len(positions))
+	}
+	if checked == 0 {
+		t.Fatalf("every one of the %d hint mutants was skipped as a negative capacity, "+
+			"so the discriminating comparison never ran", mutants)
+	}
+	t.Logf("hint mutants: %d enumerated, %d distinguished by capacity, %d killed by a "+
+		"negative make() capacity", mutants, checked, negative)
 }
 
 // TestDetectedLevelSource_NoAttributesColumnCollapses verifies that a

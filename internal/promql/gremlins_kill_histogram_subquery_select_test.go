@@ -58,8 +58,9 @@ import (
 )
 
 // TestSelectFnOverExpHistogramSubquery_ZeroRangeRejected kills the
-// CONDITIONALS_BOUNDARY mutant at histogram_native_subquery_select.go:
-// 118:22 (`sub.Range <= 0` -> `< 0`). A zero-duration subquery with an
+// CONDITIONALS_BOUNDARY mutant at
+// histogram_native_subquery_select.go:`sub.Range <= 0` (-> `< 0`). A
+// zero-duration subquery with an
 // otherwise valid histogram-native inner and a resolvable eval anchor
 // isolates the Range check alone: subqueryGridCtx tolerates a zero Range
 // via its own sub-step-window clamp, so subqueryHasEvalAnchor genuinely
@@ -89,8 +90,9 @@ func TestSelectFnOverExpHistogramSubquery_ZeroRangeRejected(t *testing.T) {
 }
 
 // TestLowerSelectFnOverExpHistogramSubquery_ZeroStepDefaults kills the
-// CONDITIONALS_NEGATION mutant at histogram_native_subquery_select.go:
-// 167:10 (`step == 0` -> `step != 0`). A subquery with no explicit step
+// CONDITIONALS_NEGATION mutant at
+// histogram_native_subquery_select.go:`step == 0` (-> `step != 0`). A
+// subquery with no explicit step
 // (`[5m:]`) must fall back to defaultSubqueryStep. With the negation, step
 // stays 0 and flows into subqueryGridCtx -> epochFloor, which divides by
 // the step duration — a genuine divide-by-zero panic, not merely a wrong

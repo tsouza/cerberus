@@ -618,8 +618,9 @@ func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_ValueExprOpEquality kills the four
-// CONDITIONAL_NEGATION mutants on lines 207:10 / 207:42 in
-// exemplars.go where the value expression branch picks between
+// CONDITIONAL_NEGATION mutants on
+// exemplars.go:`readsOperand := !metricsOpCountsRowsRatherThanOperand(m.Op) && m.Attr != nil`,
+// the flag whose value expression branch picks between
 // `argMax(1, ts)` (Rate/CountOverTime) and `argMax(metric_arg, ts)`
 // (everything else with an Attr operand).
 func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
@@ -2845,9 +2846,10 @@ func TestEmitRangeWindowCompare_RangeFallback(t *testing.T) {
 
 // TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic kills three
 // mutants on the Start/End anchor-count path:
-//   - CONDITIONALS_BOUNDARY at 223:11 (`if span < 0`) — Start==End is a
-//     valid single-anchor window, not an error.
-//   - ARITHMETIC_BASE at 226:20 (`span/stepNS`) and 226:28 (`+ 1`) — the
+//   - CONDITIONALS_BOUNDARY on metrics_compare.go:`if span < 0` —
+//     Start==End is a valid single-anchor window, not an error.
+//   - ARITHMETIC_BASE on both halves of
+//     metrics_compare.go:`numAnchors = span/stepNS + 1` — the
 //     `least(<numAnchors>, …)` literal in the sample-side fanout pins the
 //     exact anchor count, so `/`→`*`/`%`/`±` and `+`→`-`/`*` all diverge.
 //
@@ -2908,11 +2910,14 @@ func TestEmitRangeWindowCompare_SpanBoundaryAndArithmetic(t *testing.T) {
 
 // TestEmitRangeWindowCompare_OuterRangePath covers + kills the
 // NOT_COVERED mutants on the OuterRange anchor branch:
-//   - CONDITIONALS_BOUNDARY / CONDITIONALS_NEGATION at 219:20
-//     (`case r.OuterRange > 0`).
-//   - ARITHMETIC_BASE at 220:42/50 (`OuterRange.Nanoseconds()/stepNS + 1`).
-//   - INVERT_LOGICAL at 221:25 (the `&&` joining the Start/End fallback
-//     case — covered by exercising both branches: OuterRange>0 takes the
+//   - CONDITIONALS_BOUNDARY / CONDITIONALS_NEGATION on
+//     metrics_compare.go:`case r.OuterRange > 0`.
+//   - ARITHMETIC_BASE on
+//     metrics_compare.go:`numAnchors = r.OuterRange.Nanoseconds()/stepNS + 1`.
+//   - INVERT_LOGICAL on the `&&` of
+//     metrics_compare.go:`case !r.Start.IsZero() && !r.End.IsZero()`, the
+//     Start/End fallback case — covered by exercising both branches:
+//     OuterRange>0 takes the
 //     first case, so the second-case guard never fires here, but the
 //     anchor-count assertion distinguishes the OuterRange formula from the
 //     Start/End one).
@@ -3665,12 +3670,12 @@ func TestEmitStructuralSiblingJoin_Succeeds(t *testing.T) {
 // produces observably-different output.
 // =====================================================================
 
-// --- range_lwr.go column-validation disjunct (65:26/46/71) ---
+// --- range_lwr.go column-validation disjunct ---
 
 // TestEmitRangeLWR_EachColumnEmptyErrors kills the INVERT_LOGICAL
-// mutants on the `TimestampCol == "" || ValueCol == "" || MetricNameCol
-// == "" || AttributesCol == ""` validation chain. Each case blanks
-// exactly ONE column; `||` → `&&` would require every column blank
+// mutants on range_lwr.go:`r.TimestampCol == "" || r.ValueCol == ""`,
+// the four-way column validation chain. Each case blanks exactly ONE
+// column; `||` → `&&` would require every column blank
 // before erroring, so a single missing name must still be rejected.
 func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
 	t.Parallel()
@@ -3705,16 +3710,17 @@ func TestEmitRangeLWR_EachColumnEmptyErrors(t *testing.T) {
 	}
 }
 
-// --- range_lwr.go Start/End guard + span boundary (76:23, 78:11) ---
+// --- range_lwr.go Start/End guard + span boundary ---
 
 // TestEmitRangeLWR_AnchorCountBounds kills two mutants in the anchor-
 // count computation:
-//   - 76:23 INVERT_LOGICAL on `!Start.IsZero() && !End.IsZero()`: with a
-//     pinned [Start,End] grid the anchor count is computed from the span
+//   - INVERT_LOGICAL on range_lwr.go:`!r.Start.IsZero() && !r.End.IsZero()`:
+//     with a pinned [Start,End] grid the anchor count is computed from
+//     the span
 //     (least(11, …)); the `&&` → `||` flip would still take the computed
 //     branch when only one bound is set, but more importantly the
 //     pinned-grid case below proves the computed branch runs (least(11)).
-//   - 78:11 CONDITIONALS_BOUNDARY on `span < 0` → `span <= 0`: a
+//   - CONDITIONALS_BOUNDARY on range_lwr.go:`if span < 0` (→ `span <= 0`): a
 //     ZERO-span grid (Start == End) is legal — one anchor — and must NOT
 //     error; the `<=` mutant would reject it.
 func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
@@ -3757,7 +3763,7 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 		t.Errorf("zero-span grid must yield exactly one anchor (least(1, …)); got:\n%s", zsSQL)
 	}
 
-	// 76:23 INVERT_LOGICAL on `!Start.IsZero() && !End.IsZero()`: only
+	// INVERT_LOGICAL on range_lwr.go:`!r.Start.IsZero() && !r.End.IsZero()`: only
 	// when BOTH bounds are pinned is the span computed. With Start set
 	// but End zero the guard is false → single anchor, no span math, must
 	// emit cleanly. The `&&` → `||` mutant would enter the span branch on
@@ -3780,11 +3786,12 @@ func TestEmitRangeLWR_AnchorCountBounds(t *testing.T) {
 	}
 }
 
-// --- range_lwr.go lookback sign in the floor-index numerator (189:72) ---
+// --- range_lwr.go lookback sign in the floor-index numerator ---
 
 // TestEmitRangeLWR_LookbackSign kills the INVERT_NEGATIVES /
-// ARITHMETIC_BASE on `-lookbackNS` in the floor-index numerator. The
-// window floor walks BACK by the lookback, so the emitted numerator is
+// ARITHMETIC_BASE on range_lwr.go:`-lookbackNS`, the floor-index
+// numerator's addend. The window floor walks BACK by the lookback, so
+// the emitted numerator is
 // `dist - <lookbackNS>`; flipping the sign to `+ <lookbackNS>` (or
 // changing the op) would walk the window the wrong way and is caught by
 // the exact subtraction substring.
@@ -3814,11 +3821,13 @@ func TestEmitRangeLWR_LookbackSign(t *testing.T) {
 	}
 }
 
-// --- histogram_quantile_native.go computed-phi guard (196:15) ---
+// --- histogram_quantile_native.go computed-phi guard ---
 
 // TestEmitHistogramQuantileNative_ComputedPhiNaNGuard kills the
-// CONDITIONALS_NEGATION on `if h.PhiExpr == nil`. With a computed phi
-// (PhiExpr set) the emitter wraps the core in an `isNaN(phi)` guard
+// CONDITIONALS_NEGATION on
+// histogram_quantile_native.go:histogramQuantileNativeValueFrag:`h.PhiExpr == nil`.
+// With a computed phi (PhiExpr set) the emitter wraps the core in an
+// `isNaN(phi)` guard
 // (Prometheus's NaN-phi contract); the literal-phi path omits it. The
 // `== nil` → `!= nil` flip would swap which path gets the wrapper, so
 // the isNaN(phi) token must be PRESENT for computed phi and ABSENT for
@@ -3865,11 +3874,12 @@ func TestEmitHistogramQuantileNative_ComputedPhiNaNGuard(t *testing.T) {
 	}
 }
 
-// --- nested_set_annotate.go optQualColFrag qualifier branch (410:10) ---
+// --- nested_set_annotate.go optQualColFrag qualifier branch ---
 
 // TestOptQualColFrag_QualifierBranch kills the CONDITIONALS_NEGATION on
-// `if qual == ""` in optQualColFrag: an empty qualifier renders the bare
-// `col`, a non-empty one renders `qual`.`col`. The `== ""` → `!= ""`
+// nested_set_annotate.go:optQualColFrag:`qual == ""`: an empty qualifier
+// renders the bare `col`, a non-empty one renders `qual`.`col`. The
+// `== ""` → `!= ""`
 // flip would swap the two branches.
 func TestOptQualColFrag_QualifierBranch(t *testing.T) {
 	t.Parallel()
@@ -3949,10 +3959,10 @@ func TestEmitRangeWindowOverTime_OuterRangeBoundary(t *testing.T) {
 	}
 }
 
-// --- builder.go Window PARTITION-BY boundary (1575:23) ---
+// --- builder.go Window PARTITION-BY boundary ---
 
 // TestWindowFrag_PartitionByBoundary kills the CONDITIONALS_BOUNDARY on
-// `if len(partitionBy) > 0` inside the Window OVER frag. An empty
+// builder.go:`len(partitionBy) > 0` inside the Window OVER frag. An empty
 // partition list must omit `PARTITION BY` entirely; the `> 0` → `>= 0`
 // mutant would emit a dangling `PARTITION BY ` with no columns.
 func TestWindowFrag_PartitionByBoundary(t *testing.T) {
@@ -3975,7 +3985,7 @@ func TestWindowFrag_PartitionByBoundary(t *testing.T) {
 	}
 }
 
-// --- range_window.go predict_linear slope-column dispatch (411:5) ---
+// --- range_window.go predict_linear slope-column dispatch ---
 
 // TestPredictLinear_SlopeColumnDispatch kills the CONDITIONALS_NEGATION
 // mutant at range_window.go:`r.PredictLinearSlopeColumn == ""`.
@@ -4033,7 +4043,7 @@ func TestPredictLinear_SlopeColumnDispatch(t *testing.T) {
 	})
 }
 
-// --- range_window.go anchorGridCeilIdxFrag arithmetic (1812:41) ---
+// --- range_window.go anchorGridCeilIdxFrag arithmetic ---
 
 // TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne kills the ARITHMETIC_BASE
 // mutant at range_window.go:`addNS-1` (→ `addNS+1`) inside
@@ -4063,11 +4073,11 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 	// Negative control: the `addNS+1` mutant would instead match this.
 	wrong := render(anchorGridFloorIdxFrag(dist, addNS+1, stepNS))
 	if got == wrong {
-		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (line 1812 flipped?): %s", addNS, got)
+		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (range_window.go:`return anchorGridFloorIdxFrag(dist, addNS-1, stepNS)` flipped?): %s", addNS, got)
 	}
 }
 
-// --- range_window.go prefixAnchorIndexFrag arithmetic (1733:37) ---
+// --- range_window.go prefixAnchorIndexFrag arithmetic ---
 
 // TestPrefixAnchorIndexFrag_NegatesRangeNS kills both the INVERT_NEGATIVES
 // and ARITHMETIC_BASE mutants at
@@ -4107,7 +4117,7 @@ func TestPrefixAnchorIndexFrag_NegatesRangeNS(t *testing.T) {
 	}
 }
 
-// --- range_window.go instantDeltaPrefixSource guard + join dispatch (3562:11, 3574:23) ---
+// --- range_window.go instantDeltaPrefixSource guard + join dispatch ---
 
 // instantDeltaPrefixSourceStubWindow builds a syntactically valid (but
 // otherwise semantically opaque) *QueryBuilder standing in for the
@@ -4220,7 +4230,7 @@ func TestInstantDeltaPrefixSource_JoinDispatch(t *testing.T) {
 	})
 }
 
-// --- range_window.go plainGroupColumnNames validation (5104:10, 5104:33) ---
+// --- range_window.go plainGroupColumnNames validation ---
 
 // TestPlainGroupColumnNames_EmptyNameRejected kills the INVERT_LOGICAL
 // mutant on the outer `||` of

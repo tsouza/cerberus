@@ -42,10 +42,15 @@ name: coverage
 # lane jobs:
 #
 #   coverage-plan     computes RUN_HEAVY once (coverage-run-heavy.mjs) ahead
-#                      of both lane jobs, and runs the always-on structural
-#                      checks (package-floor enrollment, the gate scripts'
-#                      own `node --test` suites) that ran unconditionally in
-#                      the old single job.
+#                      of both lane jobs, and runs the gate scripts' own
+#                      `node --test` suites — the always-on checks that ran
+#                      unconditionally in the old single job, minus the
+#                      package-floor enrollment scan (its own job now, see
+#                      the next entry and the note below it).
+#   coverage-enrollment  the always-on structural package-floor scan
+#                      (coverage-package-floor.mjs), on EVERY PR. Depends on
+#                      nothing and is depended on by nothing except the
+#                      `coverage` aggregator, which reports its verdict.
 #   coverage-default   the default-tag `go test -coverpkg` lane
 #                      (`just coverage-default`), uploads cover.out.
 #   coverage-chdb       the chdb-tagged lane (`just coverage-chdb`), uploads
@@ -71,6 +76,32 @@ name: coverage
 #                      shard boundary must never let a package's coverage go
 #                      unmeasured, so the floor check always runs against the
 #                      merge of every lane, never a partial profile.
+#
+# # Why enrollment is judged in its own job (tsouza/cerberus#2987)
+#
+# The package-floor scan used to be a step inside `coverage-plan`, and that
+# closed a loop. A statement-carrying package with no committed floor failed
+# `coverage-plan`; all three lane jobs are `needs: coverage-plan` with a plain
+# `if:` (implicit `success()`), so all three skipped; no lane profile was
+# produced; and `just update-coverage-floor` derives the ledger from
+# cover-merged.out, which only the lanes can produce. No floor, no lanes, no
+# profile, no floor — on `pull_request`, `push`, `schedule` and
+# `workflow_dispatch` alike, because `run_heavy` is never consulted once the
+# `needs` dependency has failed. The only way to enroll a new package was a
+# complete local `just coverage`.
+#
+# Measuring and judging are separate jobs, so the judgement no longer
+# suppresses the evidence its own remedy needs. `coverage-enrollment` judges;
+# `coverage-plan` and the three lane jobs measure. The gate is not weakened:
+# an unfloored package still fails `coverage-enrollment`, and the required
+# `coverage` context still goes red on it — the aggregator's LAST step reads
+# `needs.coverage-enrollment.result` and fails on anything but success. What
+# changes is that a heavy run (push / nightly / `workflow_dispatch` on the
+# branch) now still merges and uploads cover-merged.out alongside that red
+# verdict, because `just coverage-merge` writes cover-merged.out BEFORE
+# handing it to the floor gate and the upload step is `always()`. That
+# artifact is the bootstrap: download it, run `just update-coverage-floor`
+# against it, commit the ledger. docs/toolchain.md carries the procedure.
 #
 # Informational on push/nightly, but ALSO a parity lane on the
 # publish-on-merge release flow: it runs on EVERY pull_request so it can be a
@@ -121,12 +152,32 @@ concurrency:
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
 
 jobs:
+  # coverage-enrollment — the cheap structural package-floor scan, which must
+  # catch an unfloored new package on EVERY PR, not only on a heavy run. It
+  # needs Go (coverage-package-floor.mjs shells out to `go list` and `go tool
+  # cover`) but no chDB, no containers and no tests, so it is a sub-minute
+  # job.
+  #
+  # It is deliberately a LEAF: no `needs:`, and nothing `needs:` it except the
+  # `coverage` aggregator, which reports its verdict on the required context.
+  # Putting it back inside coverage-plan would restore tsouza/cerberus#2987 —
+  # see this file's header note for the loop that creates.
+  coverage-enrollment:
+    name: coverage-enrollment
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go
+
+      - name: Verify package floor enrollment
+        run: node .github/scripts/coverage-package-floor.mjs
+
   # coverage-plan — computes the RUN_HEAVY decision ONCE, ahead of both lane
   # jobs (whose job-level `if:` needs it before either can even start), and
-  # runs the checks that used to run unconditionally at the top of the old
-  # single job: the gate scripts' own `node --test` suites and the cheap
-  # structural package-floor enrollment check (which must catch an unfloored
-  # new package on EVERY PR, not only on a heavy run).
+  # runs the gate scripts' own `node --test` suites, which must pass before a
+  # lane spends 45 minutes measuring a profile those scripts will judge.
   coverage-plan:
     name: coverage-plan
     runs-on: ubuntu-latest
@@ -146,9 +197,6 @@ jobs:
           node --test .github/scripts/coverage-run-heavy.test.mjs
           node --test .github/scripts/coverage-aggregate.test.mjs
           node --test .github/scripts/perf-coverage-fanout.test.mjs
-
-      - name: Verify package floor enrollment
-        run: node .github/scripts/coverage-package-floor.mjs
 
       # Computed as a step output rather than a static job-level `env:` GHA
       # expression: a `push` event needs a network call (resolve the source PR
@@ -351,7 +399,7 @@ jobs:
   # indistinguishable from one that is still running.
   coverage:
     name: coverage
-    needs: [coverage-plan, coverage-default, coverage-chdb, coverage-chdb-ratchet]
+    needs: [coverage-enrollment, coverage-plan, coverage-default, coverage-chdb, coverage-chdb-ratchet]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -431,3 +479,23 @@ jobs:
             cover-chdb.out
             cover-merged.out
           retention-days: 30
+
+      # The structural enrollment verdict lands HERE, and last. `coverage` is
+      # the required context and `coverage-enrollment` is not, so an unfloored
+      # package has to fail this job or it does not block a merge at all. Last
+      # and `always()` so the merge and the upload above still happen first:
+      # that uploaded cover-merged.out is exactly what the author of the
+      # unfloored package needs to run `just update-coverage-floor` against,
+      # and failing ahead of it would recreate tsouza/cerberus#2987's loop one
+      # job further along. `always()` also means a genuinely cancelled or
+      # errored coverage-enrollment fails here rather than passing silently.
+      - name: Report the package floor enrollment verdict
+        if: always()
+        env:
+          ENROLLMENT_RESULT: ${{ needs.coverage-enrollment.result }}
+        run: |
+          if [ "$ENROLLMENT_RESULT" != 'success' ]; then
+            echo "::error title=coverage package floor::coverage-enrollment reported \"$ENROLLMENT_RESULT\" instead of \"success\" — open that job for the package list and the remedy."
+            exit 1
+          fi
+          echo "coverage-enrollment passed: every statement-carrying full-lane package has a positive committed floor."
