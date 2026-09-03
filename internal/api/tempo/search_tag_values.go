@@ -2,6 +2,7 @@ package tempo
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -336,6 +337,12 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 		selFrag   chsql.Frag
 		whereFrag chsql.Frag
 	)
+	// Exhaustive over every attrMapScope value by construction (cerberus
+	// issue #3019) — TestBuildAttributeValuesSQL_HandlesEveryScope pins
+	// this switch's case set against allAttrMapScopes, so a future
+	// attrMapScope value that reaches here without a decision fails loudly
+	// via the panic default below rather than silently rendering the
+	// attrMapScopeAny SQL shape (what an unlabelled `default:` used to do).
 	switch scope {
 	case attrMapScopeResource:
 		selFrag = chsql.As(mapAtFrag(s.ResourceAttributesColumn, name), "v")
@@ -350,9 +357,24 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 		// before calling this function at all.
 		selFrag = chsql.As(mapAtFrag(s.ScopeAttributesColumn, name), "v")
 		whereFrag = mapContainsFrag(s.ScopeAttributesColumn, name)
-	default: // attrMapScopeAny
+	case attrMapScopeAny:
 		selFrag = attrValueArrayJoinFrag(s.AttributesColumn, s.ResourceAttributesColumn, name)
 		whereFrag = mapContainsAnyFrag(s.AttributesColumn, s.ResourceAttributesColumn, name)
+	case attrMapScopeEvent, attrMapScopeLink:
+		// Unreachable in practice: the switch at the top of this function
+		// returns before falling through to here for both scopes. Named
+		// explicitly (rather than left to the panic default below) so a
+		// regression that removes or bypasses that early return fails
+		// loudly, naming the scope, instead of silently building this
+		// scope's SQL as attrMapScopeAny's — the exact "two switches
+		// compose correctly only by call-order coincidence" shape cerberus
+		// issue #3019 found in catalogScopeForMapScope, guarded against
+		// here too.
+		panic(fmt.Sprintf("cerberus: buildAttributeValuesSQL: attrMapScope %v reached the "+
+			"flat-Map switch — the Event/Link early return above should have intercepted it", scope))
+	default:
+		panic(fmt.Sprintf("cerberus: buildAttributeValuesSQL: unhandled attrMapScope %d — extend "+
+			"this switch in search_tag_values.go", int(scope)))
 	}
 	inner := chsql.NewQuery().
 		Select(selFrag).
@@ -634,8 +656,35 @@ const (
 	attrMapScopeInstrumentation
 )
 
+// allAttrMapScopes is the canonical enumeration of every attrMapScope value
+// that exists today — cerberus issue #3019's single source of truth. Every
+// switch in this package that dispatches on attrMapScope is checked against
+// it: TestAttrMapScope_StringCoversEveryScope,
+// TestResolveTagName_CoversEveryAttributeScope,
+// TestBuildAttributeValuesSQL_HandlesEveryScope (search_tag_values_test.go)
+// and TestCatalogScopeForMapScope_CoversEveryScope (tag_catalog_test.go).
+// wantAttrMapScopeCount pins its length the same way join_test.go's
+// wantJoinCarrierCount pins joinCarrierCases: a row silently dropped from
+// this slice would make every completeness test above vacuously pass over a
+// smaller set, so a deliberate edit to both is required to add or remove a
+// scope.
+var allAttrMapScopes = []attrMapScope{
+	attrMapScopeAny,
+	attrMapScopeResource,
+	attrMapScopeSpan,
+	attrMapScopeEvent,
+	attrMapScopeLink,
+	attrMapScopeInstrumentation,
+}
+
+// wantAttrMapScopeCount is allAttrMapScopes' expected length — see that
+// var's doc.
+const wantAttrMapScopeCount = 6
+
 func (s attrMapScope) String() string {
 	switch s {
+	case attrMapScopeAny:
+		return "any"
 	case attrMapScopeResource:
 		return "resource"
 	case attrMapScopeSpan:
@@ -647,7 +696,14 @@ func (s attrMapScope) String() string {
 	case attrMapScopeInstrumentation:
 		return "instrumentation"
 	default:
-		return "any"
+		// Unreachable for any of the six values allAttrMapScopes lists —
+		// TestAttrMapScope_StringCoversEveryScope pins that every one of
+		// them hits an explicit case above. A future attrMapScope value
+		// added without a case here must not silently borrow "any"'s
+		// string (itself a real, meaningful answer, not a safe filler);
+		// naming the numeric value instead makes the gap visible instead
+		// of plausible (cerberus issue #3019).
+		return fmt.Sprintf("attrMapScope(%d)", int(s))
 	}
 }
 

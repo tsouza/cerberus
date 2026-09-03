@@ -142,7 +142,10 @@ func TestBuildTagCatalogValuesSQL_SQLShape(t *testing.T) {
 
 	t.Run("single scope adds Scope predicate", func(t *testing.T) {
 		t.Parallel()
-		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("http.method", tempo.AttrMapScopeSpanForTest)
+		sqlStr, args, ok := tempo.BuildTagCatalogValuesSQLForTest("http.method", tempo.AttrMapScopeSpanForTest)
+		if !ok {
+			t.Fatalf("expected ok=true for attrMapScopeSpan")
+		}
 		if !strings.Contains(sqlStr, "topKMerge(50)(`TopValuesState`)") {
 			t.Errorf("expected topKMerge(50)(...), got: %s", sqlStr)
 		}
@@ -161,7 +164,10 @@ func TestBuildTagCatalogValuesSQL_SQLShape(t *testing.T) {
 		// omit the Scope predicate — an unfiltered read would silently
 		// widen the merge to include event/link states too, which
 		// auto-scope has never meant (see resolveTagName).
-		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("service.name", tempo.AttrMapScopeAnyForTest)
+		sqlStr, args, ok := tempo.BuildTagCatalogValuesSQLForTest("service.name", tempo.AttrMapScopeAnyForTest)
+		if !ok {
+			t.Fatalf("expected ok=true for attrMapScopeAny")
+		}
 		if strings.Contains(sqlStr, "`Scope` = ?") {
 			t.Errorf("auto-scope lookup must use an IN-list, not an equality predicate, got: %s", sqlStr)
 		}
@@ -175,7 +181,10 @@ func TestBuildTagCatalogValuesSQL_SQLShape(t *testing.T) {
 
 	t.Run("event scope adds Scope predicate", func(t *testing.T) {
 		t.Parallel()
-		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("exception.type", tempo.AttrMapScopeEventForTest)
+		sqlStr, args, ok := tempo.BuildTagCatalogValuesSQLForTest("exception.type", tempo.AttrMapScopeEventForTest)
+		if !ok {
+			t.Fatalf("expected ok=true for attrMapScopeEvent")
+		}
 		if !strings.Contains(sqlStr, "`Scope` = ?") {
 			t.Errorf("expected a Scope predicate for a single-scope lookup, got: %s", sqlStr)
 		}
@@ -186,12 +195,28 @@ func TestBuildTagCatalogValuesSQL_SQLShape(t *testing.T) {
 
 	t.Run("link scope adds Scope predicate", func(t *testing.T) {
 		t.Parallel()
-		sqlStr, args := tempo.BuildTagCatalogValuesSQLForTest("opentracing.ref_type", tempo.AttrMapScopeLinkForTest)
+		sqlStr, args, ok := tempo.BuildTagCatalogValuesSQLForTest("opentracing.ref_type", tempo.AttrMapScopeLinkForTest)
+		if !ok {
+			t.Fatalf("expected ok=true for attrMapScopeLink")
+		}
 		if !strings.Contains(sqlStr, "`Scope` = ?") {
 			t.Errorf("expected a Scope predicate for a single-scope lookup, got: %s", sqlStr)
 		}
 		if len(args) != 2 || args[0] != "opentracing.ref_type" || args[1] != "link" {
 			t.Errorf("expected args=[key, scope], got %v", args)
+		}
+	})
+
+	t.Run("instrumentation scope refuses to build SQL at all", func(t *testing.T) {
+		t.Parallel()
+		// cerberus issue #3019: the catalog carries no instrumentation-scope
+		// arm, so buildTagCatalogValuesSQL now refuses this scope itself
+		// (catalogScopeForMapScope's catalogScopeUncovered) instead of
+		// depending on tagValuesCatalogEligible having already excluded it
+		// upstream — see catalogScopeForMapScope's doc for the full history.
+		sqlStr, args, ok := tempo.BuildTagCatalogValuesSQLForTest("service.name", tempo.AttrMapScopeInstrumentationForTest)
+		if ok {
+			t.Fatalf("expected ok=false for attrMapScopeInstrumentation, got sql=%q args=%v", sqlStr, args)
 		}
 	})
 }

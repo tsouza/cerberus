@@ -2,6 +2,7 @@ package tempo
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
@@ -101,9 +102,14 @@ func tagsCatalogEligible(scope string, filter chsql.Frag, windowless, scopeAttrs
 // merely narrowed when the schema configures ScopeAttributesColumn, an
 // explicit instrumentation-scope tag-VALUES request has no partial-
 // coverage case to preserve; the catalog has nothing for it whether or
-// not the schema carries a column, so it must always fall through to
-// the live path catalogScopeForMapScope's default arm would otherwise
-// silently mis-serve as auto-scope resource+span).
+// not the schema carries a column). This exclusion is a cheap fast-fail
+// that skips the catalog attempt (and its SQL round trip) entirely; it is
+// no longer the SOLE guard against a wrong catalog read for this scope —
+// catalogScopeForMapScope (cerberus issue #3019) independently refuses to
+// build SQL for attrMapScopeInstrumentation too, so removing this
+// exclusion would cost a wasted round trip, not a wrong answer. Belt AND
+// suspenders, not a mask over a gap: see catalogScopeForMapScope's doc for
+// the full history.
 func tagValuesCatalogEligible(resolved resolvedTagName, filter chsql.Frag, windowless bool) bool {
 	if filter != nil || !windowless {
 		return false
@@ -114,11 +120,33 @@ func tagValuesCatalogEligible(resolved resolvedTagName, filter chsql.Frag, windo
 	return !resolved.IsIntrinsic
 }
 
+// allCatalogCoveredTagScopes is the canonical enumeration of every `?scope=`
+// query-param value (see the tagScope* constants in search_tags.go) the tag
+// catalog actually carries an arm for — cerberus issue #3019's counterpart
+// to allAttrMapScopes for this package's OTHER scope vocabulary (the
+// request-facing scope string, not the internal attrMapScope enum
+// buildAttributeValuesSQL dispatches on). "none" is deliberately not a
+// member: it is the umbrella that catalogScopesFor expands to every entry
+// here, not a catalog arm of its own. tagsCatalogEligible and
+// catalogScopesFor are both checked against it —
+// TestCatalogScopesFor_CoversEveryCatalogScope and
+// TestTagsCatalogEligible_CoversEveryCatalogScope in tag_catalog_test.go.
+var allCatalogCoveredTagScopes = []string{
+	tagScopeResource,
+	tagScopeSpan,
+	tagScopeEvent,
+	tagScopeLink,
+}
+
 // catalogScopesFor maps the `?scope=` query parameter to the catalog
 // Scope value(s) a /search/tags catalog read should fetch: every covered
 // bucket for "none" (the default / unscoped request), one bucket for an
 // explicit "resource", "span", "event", or "link". Only called after
-// tagsCatalogEligible has already rejected every other scope value.
+// tagsCatalogEligible has already rejected every other scope value, so the
+// panic default below is a real invariant, not a defensive nicety: it fires
+// only if that upstream guarantee is ever broken, naming the unexpected
+// scope instead of this function silently guessing "none" the way an
+// unlabelled `default:` used to (cerberus issue #3019).
 func catalogScopesFor(scope string) []string {
 	switch scope {
 	case tagScopeResource:
@@ -129,33 +157,80 @@ func catalogScopesFor(scope string) []string {
 		return []string{schema.TagCatalogScopeEvent}
 	case tagScopeLink:
 		return []string{schema.TagCatalogScopeLink}
-	default: // tagScopeNone
+	case tagScopeNone:
 		return []string{
 			schema.TagCatalogScopeResource, schema.TagCatalogScopeSpan,
 			schema.TagCatalogScopeEvent, schema.TagCatalogScopeLink,
 		}
+	default:
+		panic(fmt.Sprintf("cerberus: catalogScopesFor: unhandled scope %q — tagsCatalogEligible "+
+			"should have rejected it before this function was ever called; extend this switch in "+
+			"tag_catalog.go if a new catalog-covered scope was added", scope))
 	}
 }
 
+// catalogScopeMode is catalogScopeForMapScope's classification of how (or
+// whether) buildTagCatalogValuesSQL should filter the catalog's Scope
+// column for one attrMapScope value.
+type catalogScopeMode int
+
+const (
+	// catalogScopeSingle: filter to exactly the Scope value
+	// catalogScopeForMapScope also returns.
+	catalogScopeSingle catalogScopeMode = iota
+	// catalogScopeUnion: attrMapScopeAny — filter to
+	// `Scope IN ('resource', 'span')`. Auto-scope has only ever meant
+	// "resource or span" (see resolveTagName: event./link. require an
+	// explicit prefix), so an explicit IN-list is required rather than
+	// omitting the Scope filter — cerberus issue #2850 widened the catalog
+	// to also carry event/link rows, which an unfiltered read would then
+	// wrongly merge in.
+	catalogScopeUnion
+	// catalogScopeUncovered: the catalog carries NO arm for this
+	// attrMapScope at all (attrMapScopeInstrumentation —
+	// internal/schema/ddl's SCOPE COVERAGE doc). buildTagCatalogValuesSQL
+	// refuses to build SQL at all for this mode.
+	catalogScopeUncovered
+)
+
 // catalogScopeForMapScope maps a resolved tag-VALUES lookup's attrMapScope
-// to the single catalog Scope value to filter by, or ok=false for
-// attrMapScopeAny — the auto-scope form, which unions the resource AND
-// span buckets ONLY (never event/link — those require an explicit
-// event./link. prefix, see resolveTagName) via the explicit
-// TagCatalogScopeResource/Span IN-list buildTagCatalogValuesSQL applies
-// when ok is false.
-func catalogScopeForMapScope(ms attrMapScope) (string, bool) {
+// to how buildTagCatalogValuesSQL should filter the catalog's Scope column.
+// Exhaustive over allAttrMapScopes by construction (cerberus issue #3019;
+// TestCatalogScopeForMapScope_CoversEveryScope pins the case set against
+// that canonical list) — the panic default fires for an attrMapScope this
+// function does not recognise, rather than an unlabelled `default:` that
+// used to mean "treat as attrMapScopeAny" for BOTH the real Any case and
+// any value nobody had made a decision for yet.
+//
+// attrMapScopeInstrumentation reports catalogScopeUncovered: this function
+// is now the SOLE authority for that decision. buildTagCatalogValuesSQL
+// asks it and refuses the catalog read itself on catalogScopeUncovered,
+// rather than depending on tagValuesCatalogEligible having already excluded
+// the scope upstream. Before this change, two independently-incomplete
+// switches (this one's unlabelled default, and tagValuesCatalogEligible's
+// instrumentation check) composed correctly only because of THAT call
+// order — nothing enforced it, and catalogScopeForMapScope on its own would
+// have silently mis-served an instrumentation-scope request as
+// attrMapScopeAny's resource+span union had the caller ever changed. See
+// tagValuesCatalogEligible's own doc: it keeps its exclusion too, now as a
+// cheap fast-fail that skips the round trip, not as the only safeguard.
+func catalogScopeForMapScope(ms attrMapScope) (scope string, mode catalogScopeMode) {
 	switch ms {
 	case attrMapScopeResource:
-		return schema.TagCatalogScopeResource, true
+		return schema.TagCatalogScopeResource, catalogScopeSingle
 	case attrMapScopeSpan:
-		return schema.TagCatalogScopeSpan, true
+		return schema.TagCatalogScopeSpan, catalogScopeSingle
 	case attrMapScopeEvent:
-		return schema.TagCatalogScopeEvent, true
+		return schema.TagCatalogScopeEvent, catalogScopeSingle
 	case attrMapScopeLink:
-		return schema.TagCatalogScopeLink, true
+		return schema.TagCatalogScopeLink, catalogScopeSingle
+	case attrMapScopeAny:
+		return "", catalogScopeUnion
+	case attrMapScopeInstrumentation:
+		return "", catalogScopeUncovered
 	default:
-		return "", false
+		panic(fmt.Sprintf("cerberus: catalogScopeForMapScope: unhandled attrMapScope %d — extend "+
+			"the switch in tag_catalog.go", int(ms)))
 	}
 }
 
@@ -189,9 +264,14 @@ func (h *Handler) tagsFromCatalog(ctx context.Context, scope string) ([]TagScope
 // tagValuesFromCatalog attempts the catalog read for a resolved dynamic
 // attribute tag name (never called for an intrinsic — see
 // tagValuesCatalogEligible). ok=true only on a genuine hit — at least one
-// value came back.
+// value came back. Also false, before any query even runs, when
+// buildTagCatalogValuesSQL itself refuses the scope (catalogScopeUncovered
+// — see catalogScopeForMapScope's doc).
 func (h *Handler) tagValuesFromCatalog(ctx context.Context, resolved resolvedTagName) ([]string, bool) {
-	sqlStr, args := buildTagCatalogValuesSQL(resolved.Key, resolved.MapScope)
+	sqlStr, args, ok := buildTagCatalogValuesSQL(resolved.Key, resolved.MapScope)
+	if !ok {
+		return nil, false
+	}
 	values, err := h.Client.QueryStrings(ctx, sqlStr, args...)
 	if err != nil {
 		h.Logger.Debug("cerberus tempo tag-value catalog lookup failed; falling back to live scan",
@@ -233,31 +313,43 @@ func buildTagCatalogKeysSQL(scope string) (string, []any) {
 // the shape chclient.QueryStrings (a single-string-column scan) expects.
 //
 // A single-scope mapScope (resource./span./event./link. forms) adds an
-// exact Scope predicate; the auto-scope "any" form (catalogScopeForMapScope's
-// ok=false) adds an explicit `Scope IN ('resource', 'span')` predicate
-// instead of omitting the Scope filter — auto-scope has only ever meant
-// "resource or span" (see resolveTagName: event./link. require an
-// explicit prefix, so attr.Scope only resolves to attrMapScopeAny for a
+// exact Scope predicate (catalogScopeSingle); the auto-scope "any" form
+// (catalogScopeUnion) adds an explicit `Scope IN ('resource', 'span')`
+// predicate instead of omitting the Scope filter — auto-scope has only
+// ever meant "resource or span" (see resolveTagName: event./link. require
+// an explicit prefix, so attr.Scope only resolves to attrMapScopeAny for a
 // bare or dotted identifier), and since cerberus issue #2850 the catalog
 // ALSO carries event/link rows, so an unfiltered read here would widen
-// auto-scope's merge to include them too — a genuine behaviour change
-// the explicit IN prevents. The result is the catalog's analogue of
+// auto-scope's merge to include them too — a genuine behaviour change the
+// explicit IN prevents. The result is the catalog's analogue of
 // attrValueArrayJoinFrag's live-path union of SpanAttributes and
 // ResourceAttributes ONLY, pre-aggregated instead of per-row.
-func buildTagCatalogValuesSQL(key string, mapScope attrMapScope) (string, []any) {
+//
+// ok is false only for catalogScopeUncovered (attrMapScopeInstrumentation,
+// cerberus issue #3019) — the catalog has no arm to filter by, so no SQL
+// this function could build would be meaningful. The returned string/args
+// are the zero value in that case; the caller (tagValuesFromCatalog) must
+// not run them, and doesn't.
+func buildTagCatalogValuesSQL(key string, mapScope attrMapScope) (string, []any, bool) {
+	catScope, mode := catalogScopeForMapScope(mapScope)
+	if mode == catalogScopeUncovered {
+		return "", nil, false
+	}
 	sb := chsql.NewQuery().
 		Select(chsql.As(chsql.Call("arrayJoin", tagCatalogTopValuesMergeFrag(chsql.Col(schema.TagCatalogTopValuesStateColumn))), "value")).
 		From(chsql.Col(schema.TagCatalogTable)).
 		Where(chsql.Eq(chsql.Col(schema.TagCatalogKeyColumn), chsql.Lit(key)))
-	if catScope, ok := catalogScopeForMapScope(mapScope); ok {
+	switch mode {
+	case catalogScopeSingle:
 		sb.Where(chsql.Eq(chsql.Col(schema.TagCatalogScopeColumn), chsql.Lit(catScope)))
-	} else {
+	case catalogScopeUnion:
 		sb.Where(chsql.In(
 			chsql.Col(schema.TagCatalogScopeColumn),
 			chsql.Lit(schema.TagCatalogScopeResource), chsql.Lit(schema.TagCatalogScopeSpan),
 		))
 	}
-	return sb.Build()
+	sqlStr, args := sb.Build()
+	return sqlStr, args, true
 }
 
 // tagCatalogTopValuesMergeFrag renders `topKMerge(N)(<col>)` — CH's
