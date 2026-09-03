@@ -207,10 +207,11 @@ func IsSliceInvariant(n Node) bool {
 //     internal/chplan/reanchor.go's *HistogramQuantile arm (a pass-through,
 //     mirroring *Project) and internal/solver/avb_chdb_lane_test.go's
 //     classic-histogram fixtures for the differential (route A vs
-//     K-sharded route B) proof this registry entry rests on — that lane
-//     covers the default (fan-out) emission only; the opt-in native
-//     emission's own route-A/route-B differential is tracked separately,
-//     see https://github.com/tsouza/cerberus/issues/2791.
+//     K-sharded route B) proof this registry entry rests on —
+//     TestSolver_AvsB_ChDB_Differential covers the default (fan-out)
+//     emission and TestSolver_AvsB_ChDB_Differential_NativeQuantileHistogram
+//     covers the opt-in native emission (cerberus issue #2791), so the
+//     locality argument above is empirically proven end-to-end under BOTH.
 //     HistogramQuantileNative / HistogramProjection (the
 //     native/exponential-histogram siblings) remain DELIBERATELY ABSENT —
 //     same shape family, but no production traffic exists yet to validate
