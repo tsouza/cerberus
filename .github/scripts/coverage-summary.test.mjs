@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -17,17 +17,23 @@ import { test } from 'node:test';
 
 import {
   compare,
+  DEFAULT_PROFILE,
   floorFor,
+  laneRecordPath,
   nextFloors,
   packageKeySegments,
   packageOf,
   parseProfile,
+  profileDigest,
   resolveLanes,
+  resolveUpdateLanes,
   rows,
 } from './coverage-summary.mjs';
 import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./coverage-summary.mjs', import.meta.url));
+const WORKFLOW = fileURLToPath(new URL('../workflows/coverage.yml', import.meta.url));
+const UPLOAD_STEP = 'Upload merged coverage profile';
 
 // profile renders a cover profile from `[file, stmts, count]` triples.
 function profile(blocks) {
@@ -40,14 +46,32 @@ function profile(blocks) {
   return `${lines.join('\n')}\n`;
 }
 
+// laneRecord writes the provenance stamp `just coverage-merge` leaves beside a
+// profile: the lane set that produced it, bound to that profile's own bytes.
+// `lanes` of null writes no record at all — the "provenance unknown" case.
+function laneRecord(profilePath, lanes) {
+  if (lanes === null) return;
+  const text = readFileSync(profilePath, 'utf8');
+  writeFileSync(
+    laneRecordPath(profilePath),
+    `${JSON.stringify({ lanes, profileSha256: profileDigest(text) }, null, 2)}\n`,
+  );
+}
+
 // fixture lays down a profile and a sharded floor ledger in a scratch
 // directory — one shard file per package, matching the on-disk shape
 // coverage-summary.mjs now reads/writes (see lib/sharded-json.mjs).
-function fixture(blocks, floors) {
+//
+// It also stamps the both-lane record, because a fixture stands in for a
+// COMPLETE profile: a test that wants the narrow or missing-provenance case
+// says so with `lanes`, so those cases are visible at the call site rather than
+// being whatever the helper happened to omit.
+function fixture(blocks, floors, lanes = 'default+chdb') {
   const dir = mkdtempSync(path.join(tmpdir(), 'coverage-floor-'));
   const profilePath = path.join(dir, 'cover-merged.out');
   const floorsDir = path.join(dir, 'coverage-floor');
   writeFileSync(profilePath, profile(blocks));
+  laneRecord(profilePath, lanes);
   if (floors !== undefined) writeShardedMap(floorsDir, floors, packageKeySegments);
   return { dir, profilePath, floorsDir };
 }
@@ -286,6 +310,204 @@ test('end to end: a package with no floor fails rather than being waved through'
     assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
     assert.match(out, /no floor/);
     assert.match(out, /internal\/new/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the update path refuses a profile whose lane provenance is unknown', () => {
+  // The guard this replaces asked whether libchdb.so was on the machine, which
+  // is a fact about the machine. With no record beside it, a profile could have
+  // come from anywhere — including a CI run whose chdb lane never produced one.
+  const err = resolveUpdateLanes(null, 'mode: set\n', 'cover-merged.out.lanes.json');
+  assert.match(err.err, /does not exist/);
+  assert.match(err.err, /cannot be established/);
+});
+
+test('the update path refuses a default-only profile and accepts a both-lane one', () => {
+  const text = profile([['internal/a/one.go', 4, 1]]);
+  const narrow = JSON.stringify({ lanes: 'default', profileSha256: profileDigest(text) });
+  const full = JSON.stringify({ lanes: 'default+chdb', profileSha256: profileDigest(text) });
+  assert.match(resolveUpdateLanes(narrow, text, 'r.json').err, /'default' lane set, not 'default\+chdb'/);
+  assert.equal(resolveUpdateLanes(full, text, 'r.json').lanes, 'default+chdb');
+});
+
+test('a lane record that describes some other profile is not evidence about this one', () => {
+  // The reason the record carries a digest at all: a stale record sitting in
+  // the directory from an earlier local run would otherwise vouch for a profile
+  // downloaded on top of it, which is the same "fact about the directory, not
+  // about the profile" mistake as testing for libchdb.so.
+  const text = profile([['internal/a/one.go', 4, 1]]);
+  const other = JSON.stringify({ lanes: 'default+chdb', profileSha256: profileDigest('mode: set\n') });
+  assert.match(resolveUpdateLanes(other, text, 'r.json').err, /describes a different profile/);
+});
+
+test('a lane record that is not JSON, or not shaped like a record, proves nothing', () => {
+  const text = profile([['internal/a/one.go', 4, 1]]);
+  assert.match(resolveUpdateLanes('not json', text, 'r.json').err, /not readable as JSON/);
+  assert.match(resolveUpdateLanes('{"lanes":"default+chdb"}', text, 'r.json').err, /is not a lane record/);
+  assert.match(resolveUpdateLanes('[]', text, 'r.json').err, /is not a lane record/);
+});
+
+test('end to end: the update refuses a default-only profile and writes no floor', () => {
+  // The defect in full: a NEW package enrolled from a default-tag-only profile
+  // gets a positive-but-too-low floor that passes enrollment, passes the gate,
+  // and is never corrected — the ratchet only raises, and nothing raises it.
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {}, 'default');
+  try {
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /'default' lane set, not 'default\+chdb'/);
+    assert.deepEqual(loadShardedMap(floorsDir), {}, 'the ledger gained no entry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: the update refuses a profile with no lane record at all', () => {
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {}, null);
+  try {
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /does not exist/);
+    assert.deepEqual(loadShardedMap(floorsDir), {}, 'the ledger gained no entry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: the update accepts the both-lane profile and enrolls the package', () => {
+  // The positive control for the two refusals above: same package, same
+  // measurement, provenance the only difference.
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {});
+  try {
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 0, `expected acceptance; output was:\n${out}`);
+    assert.equal(loadShardedMap(floorsDir)['internal/new'], 99);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: the compare path stamps the record the update path reads', () => {
+  // The handoff `just coverage-merge` -> `just update-coverage-floor` depends
+  // on. It is stamped even when the comparison itself fails, because a red
+  // floor gate is exactly when a package needs enrolling from that profile.
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {}, null);
+  try {
+    assert.equal(existsSync(laneRecordPath(profilePath)), false);
+    const { status } = run(profilePath, floorsDir, { COVERAGE_LANES: 'default+chdb' });
+    assert.equal(status, 1, 'the unfloored package still fails the comparison');
+    const record = JSON.parse(readFileSync(laneRecordPath(profilePath), 'utf8'));
+    assert.equal(record.lanes, 'default+chdb');
+    assert.equal(record.profileSha256, profileDigest(readFileSync(profilePath, 'utf8')));
+    // ...and the update path now accepts what the compare path stamped.
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' }).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: a narrow compare path stamps a narrow record, which the update refuses', () => {
+  // The full local shape of the defect: no libchdb.so, so `just coverage-merge`
+  // produces a default-only profile, reports (rather than enforces) — and the
+  // record it leaves behind is what stops those floors being written.
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {}, null);
+  try {
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_LANES: 'default' }).status, 0, 'a narrow run only reports');
+    assert.equal(JSON.parse(readFileSync(laneRecordPath(profilePath), 'utf8')).lanes, 'default');
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.deepEqual(loadShardedMap(floorsDir), {}, 'the ledger gained no entry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: the lane guard runs BEFORE the ratchet, and neither writes on a regression', () => {
+  // The pre-existing fail-closed property, re-pinned now that a second guard
+  // sits in front of it: a package below its committed floor still aborts the
+  // update with the ledger untouched, on a profile whose provenance is fine.
+  const { dir, profilePath, floorsDir } = fixture([['internal/thin/a.go', 10, 0]], { 'internal/thin': 80 });
+  try {
+    const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /reviewable line/, 'the ratchet, not the lane guard, is what refused');
+    assert.equal(loadShardedMap(floorsDir)['internal/thin'], 80);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('end to end: COVERAGE_LANES in the environment cannot talk the update path round', () => {
+  // The obvious bypass, and the reason the update path reads a record rather
+  // than an environment variable: whoever runs the update supplies the
+  // environment, so an env var is a claim by the caller, not evidence about the
+  // profile. (`run` already sets COVERAGE_LANES=default+chdb for every case
+  // here — this names the property so it cannot be lost by changing a default.)
+  const { dir, profilePath, floorsDir } = fixture([['internal/new/a.go', 10, 1]], {}, 'default');
+  try {
+    const { status } = run(profilePath, floorsDir, {
+      COVERAGE_UPDATE_FLOORS: '1',
+      COVERAGE_LANES: 'default+chdb',
+      COVERAGE_REQUIRE_LANES: 'default+chdb',
+    });
+    assert.equal(status, 1, 'the environment claimed both lanes; the record on the profile did not');
+    assert.deepEqual(loadShardedMap(floorsDir), {});
+    // Nor does the update path rewrite the record it just refused.
+    assert.equal(JSON.parse(readFileSync(laneRecordPath(profilePath), 'utf8')).lanes, 'default');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the compare path leaves a good record alone when it is told no lane set', () => {
+  // The guard against a FALSE refusal. Overwriting a valid record with an empty
+  // lane set on any bare invocation would turn the next legitimate
+  // `just update-coverage-floor` into a refusal, which is the failure mode this
+  // change exists to avoid inflicting on people.
+  const { dir, profilePath, floorsDir } = fixture([['internal/a/one.go', 10, 1]], { 'internal/a': 50 });
+  try {
+    const before = readFileSync(laneRecordPath(profilePath), 'utf8');
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_LANES: '' }).status, 0);
+    assert.equal(readFileSync(laneRecordPath(profilePath), 'utf8'), before, 'the record was rewritten');
+    assert.equal(run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' }).status, 0, 'and it still enrolls');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the coverage-profile artifact uploads the record the update path demands", () => {
+  // The record is only useful to the documented CI-artifact enrollment route if
+  // it TRAVELS with the profile. Nothing else ties this script's file-naming to
+  // that upload step's `path:` list, so renaming the record here would silently
+  // dead-end the route: the reader downloads the whole artifact and is told the
+  // record does not exist. Pinned the way perf-coverage-fanout.test.mjs pins
+  // RATCHET_FANOUT against the matrix that has to agree with it.
+  const workflow = readFileSync(WORKFLOW, 'utf8');
+  const at = workflow.indexOf(UPLOAD_STEP);
+  assert.notEqual(at, -1, `${WORKFLOW} has no step named ${JSON.stringify(UPLOAD_STEP)}`);
+  // The step's own body: up to the next step, or the end of the file.
+  const rest = workflow.slice(at);
+  const end = rest.indexOf('\n      - ');
+  const step = end === -1 ? rest : rest.slice(0, end);
+  for (const wanted of [DEFAULT_PROFILE, laneRecordPath(DEFAULT_PROFILE)]) {
+    assert.ok(step.includes(wanted), `the ${JSON.stringify(UPLOAD_STEP)} step does not upload ${wanted}:\n${step}`);
+  }
+});
+
+test('a lane record that cannot be written fails the gate with an explanation, not a stack trace', () => {
+  // writeLaneRecord runs inside the required `coverage` context. A read-only or
+  // otherwise unwritable location has to arrive as this gate's own annotated
+  // failure; a raw stack trace reads in the check output exactly like a
+  // coverage regression, which is the wrong thing to go looking for.
+  const { dir, profilePath, floorsDir } = fixture([['internal/a/one.go', 10, 1]], { 'internal/a': 50 }, null);
+  try {
+    mkdirSync(laneRecordPath(profilePath)); // a directory where the record belongs
+    const { status, out } = run(profilePath, floorsDir);
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /::error title=coverage floor::could not write/);
+    assert.doesNotMatch(out, /at file:\/\//, 'the failure escaped as a stack trace');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

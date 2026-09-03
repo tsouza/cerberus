@@ -46,13 +46,22 @@ of two ways, both ending in the same command:
   `just update-coverage-floor`.
 - **From CI**, when the local sweep is not practical on the machine at hand.
   `gh workflow run coverage.yml --ref <branch>` runs the measuring lanes on that branch; download the
-  run's `coverage-profile` artifact into the repository root and run `just update-coverage-floor`
-  against the `cover-merged.out` it contains. Take the artifact from a run whose `coverage-default`,
-  `coverage-chdb` and `coverage-chdb-ratchet` jobs all succeeded — that is what makes the merged
-  profile the both-lane profile the floors are measured with. The upload happens even when the floor
-  gate itself is red, which is what makes an unenrolled package recoverable at all
-  (tsouza/cerberus#2987: the enrollment check used to run inside `coverage-plan`, whose failure
+  run's `coverage-profile` artifact into the repository root — all of it, not just the profile — and
+  run `just update-coverage-floor` against the `cover-merged.out` it contains. The upload happens
+  even when the floor gate itself is red, which is what makes an unenrolled package recoverable at
+  all (tsouza/cerberus#2987: the enrollment check used to run inside `coverage-plan`, whose failure
   skipped every lane that could have measured the remedy).
+
+Either way, the floors come from a profile carrying BOTH lanes or they are not recorded at all. A
+floor measured without the chdb-tagged lane under-records every package that lane reaches, and
+because the ratchet only ever raises a floor, nothing corrects one written too low — it passes
+enrollment and passes the gate indefinitely. `just coverage-merge` therefore stamps the lane set it
+merged onto the profile as `cover-merged.out.lanes.json`, bound to that profile's own SHA-256, and
+`just update-coverage-floor` refuses a profile whose record is missing, narrower than
+`default+chdb`, or bound to different bytes. That record is part of the `coverage-profile` artifact,
+which is why the whole artifact is what gets downloaded; a run whose lane jobs did not all succeed
+produces no record naming both lanes, so the recipe declines it rather than relying on the reader to
+have checked.
 
 `just update-coverage-floor` only ratchets up. It refuses to lower a floor to match a coverage drop
 and never records a `0`, so both of those stay hand-edited, reviewable lines in a diff.

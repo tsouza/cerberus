@@ -6,6 +6,8 @@ import {
   COALESCED_WORKFLOWS,
   GROUP_EXPRESSION,
   MAIN_REF,
+  QUEUE_CANCEL_LITERAL,
+  QUEUE_COALESCED_WORKFLOWS,
   QUICKSTART_CANCEL_EXPRESSION,
   QUICKSTART_GROUP_EXPRESSION,
   auditMainCoalescing,
@@ -201,6 +203,67 @@ jobs: {}
     validateEnrolledWorkflow('fixture.yml', nestedShared).join('\n'),
     /job-level concurrency group is not bound to github.run_id/,
   );
+});
+
+test('a queue-coalesced workflow keeps the group and refuses the cancellation expression', () => {
+  // tsouza/cerberus#2991: the two halves of "coalesced" are separable. The
+  // shared GROUP still replaces a superseded run while it is pending, which
+  // costs nothing; CANCELLATION kills work already in progress, which starves
+  // any lane whose run outlasts the median push gap.
+  const queued = `name: fixture
+concurrency:
+  group: ${GROUP_EXPRESSION}
+  cancel-in-progress: ${QUEUE_CANCEL_LITERAL}
+jobs: {}
+`;
+  assert.deepEqual(validateEnrolledWorkflow('fixture.yml', queued, { queueOnly: true }), []);
+
+  // The SAME text is a failure for an ordinarily-enrolled workflow: opting out
+  // of cancellation has to be a declared enrollment, never something a
+  // workflow can do to itself by editing one line.
+  assert.match(
+    validateEnrolledWorkflow('fixture.yml', queued, { queueOnly: false }).join('\n'),
+    /cancel-in-progress/,
+  );
+
+  // And the converse: a queue-coalesced member that regains the cancellation
+  // expression is a failure, which is what stops #2991 silently returning.
+  const cancelling = queued.replace(QUEUE_CANCEL_LITERAL, CANCEL_EXPRESSION);
+  assert.match(
+    validateEnrolledWorkflow('fixture.yml', cancelling, { queueOnly: true }).join('\n'),
+    /queue-coalesced/,
+  );
+
+  // A shared group is still required — queue-coalescing relaxes cancellation
+  // only, never the grouping that makes a burst collapse to one run.
+  assert.match(
+    validateEnrolledWorkflow('fixture.yml', queued.replace(GROUP_EXPRESSION, 'deep-${{ github.ref }}'), {
+      queueOnly: true,
+    }).join('\n'),
+    /concurrency group/,
+  );
+
+  // Every queue-coalesced workflow must still be enrolled: the narrower set is
+  // a refinement of the enrollment, not an escape from it.
+  for (const workflow of QUEUE_COALESCED_WORKFLOWS) {
+    assert.ok(COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
+});
+
+test('the executable model cancels nothing for a queue-coalesced workflow', () => {
+  const queued = coalescingDecision({
+    eventName: 'push',
+    ref: MAIN_REF,
+    workflow: 'deep',
+    runId: '17',
+    queueOnly: true,
+  });
+  assert.equal(queued.cancelInProgress, false);
+  // The GROUP is unchanged — that is the whole point of the distinction.
+  assert.equal(queued.group, decision('push', MAIN_REF).group);
+  assert.equal(queued.reason, 'latest_main_push');
+  // The ordinary model still cancels, so this assertion is not vacuous.
+  assert.equal(decision('push', MAIN_REF).cancelInProgress, true);
 });
 
 test('quickstart is an explicit negative control with unique non-PR groups', () => {

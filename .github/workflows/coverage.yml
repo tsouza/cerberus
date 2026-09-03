@@ -75,7 +75,30 @@ name: coverage
 #                      merged profile to coverage-summary.mjs's floor gate. A
 #                      shard boundary must never let a package's coverage go
 #                      unmeasured, so the floor check always runs against the
-#                      merge of every lane, never a partial profile.
+#                      merge of every lane, never a partial profile. Its last
+#                      two steps report the two verdicts this context carries:
+#                      coverage-verdict.mjs says WHETHER anything was measured
+#                      (below), and the enrollment verdict says whether every
+#                      package carries a floor.
+#
+# # Why the context says whether it measured (tsouza/cerberus#2991)
+#
+# On an ordinary pull request every job above that produces a profile is
+# skipped, the aggregator runs anyway so the required context cannot go
+# missing, and it used to report plain SUCCESS. A green `coverage` tick was
+# therefore indistinguishable from a measured pass, and for four days that was
+# the difference: dozens of pull requests merged green while main's own heavy
+# run was red and seven packages sat below their floors.
+#
+# Skipping the lanes is a legitimate latency choice — coverage-chdb alone runs
+# 35-50 minutes and coverage-run-heavy.mjs exists to make exactly that call.
+# Reporting a measurement that did not happen is not. So the aggregator's
+# "Report the coverage measurement verdict" step states MEASURED / NOT MEASURED
+# / a red BROKEN in its own step summary and as an annotation on the check,
+# derived from the merged profile and its digest-bound lane record rather than
+# from the RUN_HEAVY claim — a heavy run that cannot produce a provable
+# full-lane profile fails rather than reporting green, and so does a non-heavy
+# run that somehow holds one.
 #
 # # Why enrollment is judged in its own job (tsouza/cerberus#2987)
 #
@@ -144,12 +167,49 @@ permissions:
   # a pushed commit via GET /commits/{sha}/pulls (lib/resolve-source-pr.mjs)
   # — read-only, and only exercised on a `push` event.
   pull-requests: read
+  # coverage-verdict.mjs reads this workflow's own run history on the trunk to
+  # report when `main` was last MEASURED and how many commits have landed since
+  # (tsouza/cerberus#2991). Read-only, and best-effort: a denied or failing read
+  # degrades to "unavailable", never to a red required context.
+  actions: read
 
 concurrency:
-  # Main pushes and matching cron schedules replace only their own modes. PR,
-  # queue, dispatch, and maintenance evidence stays unique and uncancelled.
+  # Main pushes and matching cron schedules share a group, so a burst of pushes
+  # coalesces into one QUEUED run rather than N parallel 50-minute measurements.
+  # PR, queue, dispatch, and maintenance evidence stays unique.
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
+  # NEVER cancel a measurement that is already running (tsouza/cerberus#2991).
+  #
+  # This used to be `true` for the main-push and main-schedule groups, and that
+  # is what silently stopped `main` being measured at all. `coverage-chdb` alone
+  # runs 35-50 minutes and the whole run ~52; main's push cadence over this
+  # milestone has a median gap of 38 minutes, shorter than the run 68% of the
+  # time. Every new push therefore killed the in-flight measurement before it
+  # could finish: of the last 120 pushes to main, 71 runs were CANCELLED and 6
+  # succeeded, and the cancellations were late — a median 27 minutes in, with
+  # `coverage-chdb` the victim in 23 of the 25 most recent. The lane was not
+  # slow, it was never allowed to finish.
+  #
+  # With cancellation off, the in-flight run always completes and measures the
+  # commit it started on, while the group still coalesces: GitHub keeps at most
+  # ONE pending run per group, so a burst is superseded at QUEUE time (zero
+  # runner minutes) instead of 27 minutes into a measurement that then produces
+  # nothing.
+  #
+  # READ THAT DIRECTION CAREFULLY BEFORE "OPTIMISING" THIS LINE BACK. `false`
+  # looks like the setting that wastes runners, and the measurement says the
+  # opposite: a superseded run is dropped while still PENDING, and a pending run
+  # holds no runner at all, so it costs nothing. What the old `true` bought was
+  # not a saving — it SPENT a median 27 minutes of four parallel jobs per
+  # cancelled run and threw the result away, 53% of this lane's total runner
+  # minutes. Turning cancellation back on does not reduce CI cost; it restores
+  # the largest single source of wasted CI cost this lane had.
+  #
+  # Coalescing still means some commits are measured only by their successor.
+  # That gap is now REPORTED rather than silent: coverage-verdict.mjs states how
+  # many commits have landed on the trunk since it was last measured, and warns
+  # past its MAX_UNMEASURED_TRUNK_COMMITS.
+  cancel-in-progress: false
 
 jobs:
   # coverage-enrollment — the cheap structural package-floor scan, which must
@@ -196,6 +256,7 @@ jobs:
           node --test .github/scripts/coverage-package-floor.test.mjs
           node --test .github/scripts/coverage-run-heavy.test.mjs
           node --test .github/scripts/coverage-aggregate.test.mjs
+          node --test .github/scripts/coverage-verdict.test.mjs
           node --test .github/scripts/perf-coverage-fanout.test.mjs
 
       # Computed as a step output rather than a static job-level `env:` GHA
@@ -460,14 +521,11 @@ jobs:
       # would leave this comparing a narrower profile — so it skips the
       # comparison, and the lane reports green having gated nothing.
       - name: Merge lane profiles and run coverage floor gate
+        id: floor-gate
         if: env.RUN_HEAVY == 'true'
         env:
           COVERAGE_REQUIRE_LANES: default+chdb
         run: just coverage-merge
-
-      - name: Full coverage deferred (ordinary PR / redundant push)
-        if: env.RUN_HEAVY != 'true'
-        run: echo "package enrollment passed; measured coverage runs on push/nightly/dispatch and release/* PRs (skipped here — see coverage-plan's 'decide run_heavy' step log for why)."
 
       - name: Upload merged coverage profile
         if: always() && env.RUN_HEAVY == 'true'
@@ -478,14 +536,48 @@ jobs:
             cover.out
             cover-chdb.out
             cover-merged.out
+            cover-merged.out.lanes.json
           retention-days: 30
+
+      # tsouza/cerberus#2991: state — in the required context's OWN output —
+      # whether this run measured anything. `coverage` used to report SUCCESS on
+      # an ordinary PR with every measuring lane skipped, so a green tick was
+      # indistinguishable from a measured pass, and for four days it WAS the
+      # difference: dozens of PRs merged green while main's own heavy run was
+      # red. Skipping the lanes is a legitimate latency choice; reporting a
+      # measurement that did not happen is not.
+      #
+      # The verdict is derived from the EVIDENCE — the merged profile and the
+      # digest-bound `.lanes.json` record beside it — and only cross-checked
+      # against RUN_HEAVY, so it cannot print "MEASURED" for a run that merely
+      # claimed to measure (the shape tsouza/cerberus#2992 removed from the
+      # floor-UPDATE path). A disagreement between claim and evidence is a hard
+      # failure, in both directions.
+      #
+      # `always()` and placed AFTER the upload for the same reason as the
+      # enrollment verdict below: a red verdict must never cost the author of
+      # the change the artifact they need to act on it.
+      - name: Report the coverage measurement verdict
+        if: always()
+        # RUN_HEAVY is NOT repeated here: the job-level `env:` above already
+        # exports it to every `run:` step's process environment, and repeating
+        # the `needs.coverage-plan…` expression per step is exactly what that
+        # block exists to avoid.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_OUTCOME: ${{ steps.floor-gate.outcome }}
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: node .github/scripts/coverage-verdict.mjs
 
       # The structural enrollment verdict lands HERE, and last. `coverage` is
       # the required context and `coverage-enrollment` is not, so an unfloored
       # package has to fail this job or it does not block a merge at all. Last
       # and `always()` so the merge and the upload above still happen first:
-      # that uploaded cover-merged.out is exactly what the author of the
-      # unfloored package needs to run `just update-coverage-floor` against,
+      # that uploaded cover-merged.out — with the cover-merged.out.lanes.json
+      # record that proves it carries both lanes, without which
+      # `update-coverage-floor` refuses it (tsouza/cerberus#2988) — is exactly
+      # what the author of the unfloored package needs to run against,
       # and failing ahead of it would recreate tsouza/cerberus#2987's loop one
       # job further along. `always()` also means a genuinely cancelled or
       # errored coverage-enrollment fails here rather than passing silently.

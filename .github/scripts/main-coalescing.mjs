@@ -29,6 +29,12 @@ export const LATEST_MAIN_SUFFIX = 'latest-main';
 
 export const GROUP_EXPRESSION =
   "${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}";
+// The literal a QUEUE_COALESCED_WORKFLOWS member carries in place of
+// CANCEL_EXPRESSION. A literal, not an expression: "never cancel" has no
+// event/ref condition to evaluate, and spelling it as an always-false
+// expression would leave a shape a later edit could quietly make true again.
+export const QUEUE_CANCEL_LITERAL = 'false';
+
 export const CANCEL_EXPRESSION =
   "${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}";
 
@@ -49,6 +55,33 @@ export const COALESCED_WORKFLOWS = Object.freeze([
   '.github/workflows/property.yml',
   '.github/workflows/schema-integration.yml',
   '.github/workflows/strict-scan.yml',
+]);
+
+// QUEUE-COALESCED enrollment: a shared latest-main group, but NO cancellation
+// of a run already in progress (tsouza/cerberus#2991).
+//
+// The two halves of "coalesced" are separable, and conflating them is what
+// broke coverage.yml. The GROUP is what makes deep-main work replaceable: a
+// burst of pushes collapses to one PENDING run, and a third push replaces that
+// pending one — the saving is real and it costs nothing, because a pending run
+// holds no runner. CANCELLATION is a different act: it kills work that is
+// already executing, and it only pays when the run is short enough that the
+// killed work was nearly worthless.
+//
+// For a lane whose run is LONGER than the median push gap, cancellation does
+// not coalesce anything — it starves the lane outright. coverage.yml runs ~52
+// minutes against a median 38-minute gap on main, and cancellation left 71 of
+// its last 120 push runs killed (median 27 minutes in, past the point where the
+// expensive lane had done most of its work) against 6 successes. The lane was
+// not slow; it was never allowed to finish, so `main` went unmeasured for days
+// while every pull request saw a green `coverage`.
+//
+// A workflow listed here therefore keeps the canonical GROUP expression and
+// carries a literal `cancel-in-progress: false`. Its registry `main_posture`
+// stays `coalesced`, which remains the truth: a superseded run is still
+// replaced, just at queue time rather than mid-flight.
+export const QUEUE_COALESCED_WORKFLOWS = Object.freeze([
+  '.github/workflows/coverage.yml',
 ]);
 
 // perf-benchmark has no push-to-main trigger. Its weekly schedule is still
@@ -96,6 +129,12 @@ export function coalescingDecision({
   schedule,
   workflow = 'workflow',
   runId = 'run',
+  // A queue-coalesced workflow (QUEUE_COALESCED_WORKFLOWS) shares the same
+  // groups but cancels nothing: a superseded run is replaced only while it is
+  // still pending. The group half of the model is therefore unchanged and only
+  // the cancellation half is suppressed, which is exactly the difference the
+  // enrolled expressions carry.
+  queueOnly = false,
 } = {}) {
   const event = String(eventName ?? '');
   const boundRef = String(ref ?? '');
@@ -109,7 +148,7 @@ export function coalescingDecision({
       ? `${LATEST_MAIN_SUFFIX}-schedule-${cron}`
       : runId;
   return Object.freeze({
-    cancelInProgress: mainPush || equivalentSchedule,
+    cancelInProgress: !queueOnly && (mainPush || equivalentSchedule),
     group: `${workflow}-${groupKey}`,
     reason: mainPush
       ? 'latest_main_push'
@@ -193,7 +232,8 @@ export function parseTopLevelConcurrency(workflowText) {
   });
 }
 
-export function validateEnrolledWorkflow(workflow, workflowText) {
+export function validateEnrolledWorkflow(workflow, workflowText, options = {}) {
+  const queueOnly = options.queueOnly ?? QUEUE_COALESCED_WORKFLOWS.includes(workflow);
   const problems = [];
   let concurrency;
   try {
@@ -206,9 +246,12 @@ export function validateEnrolledWorkflow(workflow, workflowText) {
       `${workflow}: concurrency group is ${JSON.stringify(concurrency.group)}, want the canonical main-push/equivalent-schedule/unique-run expression`,
     );
   }
-  if (concurrency.cancelInProgress !== CANCEL_EXPRESSION) {
+  const wantCancel = queueOnly ? QUEUE_CANCEL_LITERAL : CANCEL_EXPRESSION;
+  if (concurrency.cancelInProgress !== wantCancel) {
     problems.push(
-      `${workflow}: cancel-in-progress is ${JSON.stringify(concurrency.cancelInProgress)}, want the canonical main-push/equivalent-schedule-only expression`,
+      queueOnly
+        ? `${workflow}: cancel-in-progress is ${JSON.stringify(concurrency.cancelInProgress)}, want the literal ${JSON.stringify(QUEUE_CANCEL_LITERAL)} — this workflow is queue-coalesced, so it shares the latest-main group but must never kill a run already in progress`
+        : `${workflow}: cancel-in-progress is ${JSON.stringify(concurrency.cancelInProgress)}, want the canonical main-push/equivalent-schedule-only expression`,
     );
   }
 

@@ -41,7 +41,11 @@
 //                           Justfile recipe observed them: `default+chdb` or
 //                           `default`. Floors are measured with both lanes, so
 //                           enforcement is skipped (with a notice) on a
-//                           `default`-only profile.
+//                           `default`-only profile. Set on the COMPARE path,
+//                           where it is also written into the lane record
+//                           described below; the UPDATE path reads that record
+//                           instead of trusting an environment variable it
+//                           cannot check.
 //   COVERAGE_REQUIRE_LANES  the lane set the caller guarantees. Set by CI to
 //                           `default+chdb`; a mismatch fails rather than
 //                           downgrading to the skip above, so a chdb install
@@ -49,22 +53,49 @@
 //   COVERAGE_UPDATE_FLOORS  `1` rewrites the ledger instead of comparing.
 //   GITHUB_STEP_SUMMARY     appended to when present (set by Actions).
 //
+// The lane record (`<profile>.lanes.json`):
+//
+// Floors are only meaningful when they come from a profile carrying BOTH lanes,
+// and the update path cannot establish that from the filesystem: an installed
+// libchdb.so proves the chdb lane COULD have run, never that the profile in
+// hand contains it, and a CI `coverage-profile` artifact is routinely enrolled
+// from a machine that has no libchdb.so at all (docs/toolchain.md).
+//
+// So the compare path records the lane set beside the profile, bound to the
+// SHA-256 of the profile's own bytes, and the update path reads that record and
+// refuses anything it cannot prove is `default+chdb`. The digest is what makes
+// the record a statement about THIS profile rather than about the directory it
+// sits in: a record left behind by an earlier run, or shipped alongside a
+// different profile, no longer matches and is refused.
+//
+// The property this buys is that every WIRED producer derives the lane set from
+// the files it merged (`coverage-merge` sets COVERAGE_LANES from whether a
+// non-empty cover-chdb.out was there to merge) and binds it to their bytes, so
+// no ordinary run of the recipes can enroll a package from a narrow profile.
+// It is not proof against a hand-written record or a hand-set COVERAGE_LANES —
+// nothing short of re-deriving coverage would be — and it does not need to be:
+// a forged floor still lands as a reviewable line in test/coverage-floor/,
+// which is where a deliberate act belongs. The failure this closes is the
+// accidental one, which left no line to review at all.
+//
 // Exit codes:
 //   0  every package clears its floor (or the ledger was rewritten).
-//   1  unreadable input, a lane mismatch, or a floor violation.
+//   1  unreadable input, a COVERAGE_REQUIRE_LANES mismatch, a lane set the
+//      update path cannot prove is `default+chdb`, or a floor violation.
 
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
 import { loadShardedMap, writeShardedMap } from './lib/sharded-json.mjs';
 
-const DEFAULT_PROFILE = 'cover-merged.out';
+export const DEFAULT_PROFILE = 'cover-merged.out';
 const DEFAULT_FLOORS = 'test/coverage-floor';
 
 // The lane set the floors are measured with. A chdb-tagged run reaches code the
 // default-tag run cannot compile, so the two profiles are not comparable.
-const FULL_LANES = 'default+chdb';
+export const FULL_LANES = 'default+chdb';
 
 // Coverage is not bit-reproducible run to run — map iteration order and
 // time-dependent branches move a package by a fraction of a point — so a floor
@@ -77,6 +108,11 @@ const FLOOR_SLACK_PCT = 1.0;
 const FLOOR_DECIMALS = 1;
 
 const MODULE_PREFIX = 'github.com/tsouza/cerberus/';
+
+// The lane record sits beside the profile it describes, named after it, so a
+// profile and its provenance travel together — through a CI artifact upload, a
+// download into somebody else's checkout, or a plain `cp`.
+const LANE_RECORD_SUFFIX = '.lanes.json';
 
 class GateFailure extends Error {}
 
@@ -300,6 +336,103 @@ function writeSummary(packages) {
   log(`total: ${pct(covered, total).toFixed(1)}% (${covered} / ${total} statements)`);
 }
 
+export function laneRecordPath(profilePath) {
+  return `${profilePath}${LANE_RECORD_SUFFIX}`;
+}
+
+// profileDigest binds a lane record to the exact bytes it describes.
+export function profileDigest(profileText) {
+  return createHash('sha256').update(profileText).digest('hex');
+}
+
+// writeLaneRecord stamps the lane set the caller observed onto the profile it
+// observed it from. Written on the COMPARE path only: the update path is the
+// consumer, and a path that wrote its own evidence would be asserting nothing.
+function writeLaneRecord(profilePath, profileText, lanes) {
+  const record = { lanes, profileSha256: profileDigest(profileText) };
+  const recordPath = laneRecordPath(profilePath);
+  try {
+    writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+  } catch (e) {
+    // This runs inside the required `coverage` context, so an unwritable
+    // directory must arrive as the gate's own annotated failure rather than as
+    // a bare stack trace indistinguishable from a coverage regression.
+    fail(
+      `could not write ${recordPath}: ${e.message}. Without it the profile carries no lane ` +
+        `provenance, so \`just update-coverage-floor\` would refuse to derive floors from it.`,
+    );
+  }
+}
+
+// resolveUpdateLanes decides whether a profile may be turned into floors.
+//
+// Every answer but "this record describes this profile and names both lanes" is
+// a refusal, because the alternative to refusing is recording a floor measured
+// without the chdb lane. That floor is not merely low: it passes the enrollment
+// scan and passes the compare gate, and the ratchet — which refuses to LOWER a
+// floor — has no mechanism that ever corrects it upward. Refusing to write
+// costs a re-run; writing costs a package its gate, silently and indefinitely.
+//
+// `recordText` is null when the record could not be read at all.
+export function resolveUpdateLanes(recordText, profileText, recordPath) {
+  const remedy =
+    `Produce the profile with a full \`just coverage\` (after \`just chdb-install\`), or ` +
+    `download the \`coverage-profile\` artifact of a heavy CI run whose lane jobs all ` +
+    `succeeded — it carries this record alongside the profile. See docs/toolchain.md.`;
+
+  if (recordText === null) {
+    return {
+      err:
+        `${recordPath} does not exist, so the lane set of the profile the floors would be ` +
+        `recorded from cannot be established. Floors are measured with both lanes, and one ` +
+        `recorded from a default-tag-only profile under-records every package the chdb lane ` +
+        `reaches — it still passes enrollment and still passes the gate, so nothing ever ` +
+        `corrects it. ${remedy}`,
+    };
+  }
+
+  let record;
+  try {
+    record = JSON.parse(recordText);
+  } catch (e) {
+    return { err: `${recordPath} is not readable as JSON (${e.message}), so it proves nothing. ${remedy}` };
+  }
+  const shaped =
+    record !== null &&
+    typeof record === 'object' &&
+    typeof record.lanes === 'string' &&
+    typeof record.profileSha256 === 'string';
+  if (!shaped) {
+    return {
+      err:
+        `${recordPath} is not a lane record: it must be a JSON object carrying a string ` +
+        `\`lanes\` and a string \`profileSha256\`. ${remedy}`,
+    };
+  }
+
+  const digest = profileDigest(profileText);
+  if (record.profileSha256 !== digest) {
+    return {
+      err:
+        `${recordPath} describes a different profile (it records sha256 ` +
+        `${record.profileSha256}, the profile on disk hashes to ${digest}), so its lane set is ` +
+        `not evidence about the profile the floors would come from. A record left over from an ` +
+        `earlier run, or shipped next to a profile it did not come from, is exactly the case ` +
+        `this digest exists to catch. ${remedy}`,
+    };
+  }
+  if (record.lanes !== FULL_LANES) {
+    return {
+      err:
+        `the profile was produced by the '${record.lanes}' lane set, not '${FULL_LANES}'. Floors ` +
+        `recorded from it would under-record every package the chdb lane reaches, and the ` +
+        `ratchet never lowers a floor, so nothing would ever correct one written too low. ` +
+        `${remedy}`,
+    };
+  }
+  return { lanes: record.lanes };
+}
+
 // resolveLanes decides whether the profile can be held to the ledger.
 export function resolveLanes(lanes, required) {
   if (required && lanes !== required) {
@@ -330,9 +463,27 @@ function main() {
 
   writeSummary(packages);
 
+  const updating = process.env.COVERAGE_UPDATE_FLOORS === '1';
+  const lanesEnv = process.env.COVERAGE_LANES || '';
+
+  // Stamp the provenance BEFORE the comparison below can fail: a red floor gate
+  // is precisely when somebody needs to enroll a package from this profile, and
+  // the CI artifact that carries it is uploaded whatever the gate said.
+  if (!updating && lanesEnv) writeLaneRecord(profilePath, text, lanesEnv);
+
   const floors = readFloors(floorsDir);
 
-  if (process.env.COVERAGE_UPDATE_FLOORS === '1') {
+  if (updating) {
+    const recordPath = laneRecordPath(profilePath);
+    let recordText = null;
+    try {
+      recordText = readFileSync(recordPath, 'utf8');
+    } catch {
+      recordText = null;
+    }
+    const update = resolveUpdateLanes(recordText, text, recordPath);
+    if (update.err) fail(update.err);
+
     const { next, regressions, unfloorable } = nextFloors(packages, floors);
     if (regressions.length) {
       fail(
@@ -358,7 +509,7 @@ function main() {
     return;
   }
 
-  const lanes = resolveLanes(process.env.COVERAGE_LANES || '', process.env.COVERAGE_REQUIRE_LANES || '');
+  const lanes = resolveLanes(lanesEnv, process.env.COVERAGE_REQUIRE_LANES || '');
   if (lanes.err) fail(lanes.err);
   if (!lanes.enforce) {
     notice(

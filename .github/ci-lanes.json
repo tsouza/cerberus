@@ -1767,7 +1767,7 @@
     },
     {
       "id": "quality.coverage-measured",
-      "description": "Merged default-tag and chDB profiles held to per-package floors; absent on ordinary PRs.",
+      "description": "Merged default-tag and chDB profiles held to per-package floors; ordinary PRs report a green NOT MEASURED verdict.",
       "owner": {
         "workflow": ".github/workflows/coverage.yml",
         "jobs": ["coverage-plan", "coverage-default", "coverage-chdb", "coverage-chdb-ratchet", "coverage"],
