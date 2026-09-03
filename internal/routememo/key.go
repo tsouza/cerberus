@@ -243,7 +243,40 @@ func (w *keyWalker) walk(n chplan.Node) {
 			// cannot route a plan the solver rejects or slip a query past the
 			// bound. The blast radius of a wrong hit is a wasted route-B attempt
 			// that falls back to route A, never a wrong answer.
+		// VectorJoin, HistogramVectorJoin, HistogramFloatVectorJoin,
+		// MixedVectorJoin and CrossJoin are the step-aligned combinators
+		// PromQL lowers binary vector expressions and absent() into
+		// (internal/promql). Only VectorJoin is registered slice-invariant
+		// (internal/chplan/sliceinvariant.go), so only it can itself route
+		// B; the other four are permanently ineligible under
+		// Planner.classify's "(1) Slice-invariance: any unmarked node
+		// anywhere -> route A" gate and so are never memo-hit-routed. Their
+		// Key is still computed and Observed on every route-A resource
+		// failure regardless (deriveRouteMemoDispatch computes Key before
+		// checking Eligible, and retryOnRouteAResourceFailure's
+		// !d.eligible branch still Observes under it) — an unmarked
+		// HasJoin here would let a failure on one of these plans collide
+		// into, and pollute, an unrelated joinless plan's memo entry that
+		// happens to share every other Key field. StructuralJoin is
+		// TraceQL-only (internal/traceql/lower.go) and cannot reach this
+		// walker at all today: solver.Classify/Eligible gate on
+		// RequestMeta.Lang == LangPromQL (internal/solver/solver.go), so a
+		// TraceQL plan never produces the non-nil seedDecision every
+		// routememo.KeyFor call site in internal/engine requires. Marked
+		// here anyway — it costs nothing, and solver.go's own doc frames
+		// the PromQL-only gate as a foundation choice the other two heads
+		// deferred, not a permanent one.
 		case *chplan.VectorJoin:
+			w.hasJoin = true
+		case *chplan.HistogramVectorJoin:
+			w.hasJoin = true
+		case *chplan.HistogramFloatVectorJoin:
+			w.hasJoin = true
+		case *chplan.MixedVectorJoin:
+			w.hasJoin = true
+		case *chplan.CrossJoin:
+			w.hasJoin = true
+		case *chplan.StructuralJoin:
 			w.hasJoin = true
 		case *chplan.UnionAll:
 			w.hasUnion = true

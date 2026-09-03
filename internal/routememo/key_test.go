@@ -102,9 +102,10 @@ func TestKeyForGridGeometryBucketsDiffer(t *testing.T) {
 // kind keyWalker.walk switches on beyond the RangeWindow-based fixtures
 // above — one per range-window sibling (RangeBucketFanout,
 // RangeBucketGridNative, RangeLWR, RangeWindowGridNative,
-// RangeWindowStaleResample) and one per combinator (VectorJoin, UnionAll,
-// SetOperation, NaryVectorSetOp, Limit) — so a new case arm added to walk is
-// never silently unexercised again.
+// RangeWindowStaleResample) and one per combinator (VectorJoin,
+// HistogramVectorJoin, HistogramFloatVectorJoin, MixedVectorJoin, CrossJoin,
+// StructuralJoin, UnionAll, SetOperation, NaryVectorSetOp, Limit) — so a new
+// case arm added to walk is never silently unexercised again.
 func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 	const (
 		nAnchors = 241
@@ -157,6 +158,26 @@ func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 		kJoin := KeyFor(&chplan.VectorJoin{Left: scan, Right: scan, Op: chplan.OpAdd}, nAnchors, fanout, step)
 		if !kJoin.HasJoin {
 			t.Fatalf("VectorJoin must set HasJoin")
+		}
+		kHistogramJoin := KeyFor(&chplan.HistogramVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
+		if !kHistogramJoin.HasJoin {
+			t.Fatalf("HistogramVectorJoin must set HasJoin")
+		}
+		kHistogramFloatJoin := KeyFor(&chplan.HistogramFloatVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
+		if !kHistogramFloatJoin.HasJoin {
+			t.Fatalf("HistogramFloatVectorJoin must set HasJoin")
+		}
+		kMixedJoin := KeyFor(&chplan.MixedVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
+		if !kMixedJoin.HasJoin {
+			t.Fatalf("MixedVectorJoin must set HasJoin")
+		}
+		kCrossJoin := KeyFor(&chplan.CrossJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
+		if !kCrossJoin.HasJoin {
+			t.Fatalf("CrossJoin must set HasJoin")
+		}
+		kStructuralJoin := KeyFor(&chplan.StructuralJoin{Left: scan, Right: scan, Op: chplan.StructuralChild}, nAnchors, fanout, step)
+		if !kStructuralJoin.HasJoin {
+			t.Fatalf("StructuralJoin must set HasJoin")
 		}
 		kUnion := KeyFor(&chplan.UnionAll{Inputs: []chplan.Node{scan, scan}}, nAnchors, fanout, step)
 		if !kUnion.HasUnion {
