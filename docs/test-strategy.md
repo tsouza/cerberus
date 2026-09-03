@@ -1273,9 +1273,11 @@ verdicts (killed or lived) only.
 
 A surviving mutant is either (a) a legitimately weak assertion that
 needs strengthening, (b) a functionally-equivalent mutation (`<` vs
-`<=` on a boundary that's never hit, slice-cap arithmetic that
-`append` regrows past), or (c) a missing test. The gremlins JSON
-artifact on each run names the file + line + mutation kind.
+`<=` on a boundary that's never hit, slice-cap arithmetic on a hint
+whose slice never leaves its builder), or (c) a missing test. The
+gremlins JSON artifact on each run names the file + line + mutation
+kind. Slice-cap arithmetic belongs to (b) far less often than it
+looks — see "When a capacity mutant is equivalent" below.
 
 ### Surviving-mutant policy
 
@@ -1374,6 +1376,59 @@ note ends up saying something definite instead of something ambiguous.
 Prior PRs #504 and #664 carry pattern-#3 refactors. They are not
 reverted (their diffs are now load-bearing for the published
 thresholds), but new violations should follow remedy #1 or #2.
+
+#### When a capacity mutant is equivalent
+
+"An `ARITHMETIC_BASE` mutant on a `make` capacity argument is
+equivalent" is the single most attractive wrong claim in this file's
+adjudication history, and it is wrong on a property that is not visible
+anywhere in the mutated expression. It survives only where BOTH of these
+hold, and each has to be checked at the site:
+
+- **The slice never escapes its builder.** `cap` is the observation, and
+  a test can only take it on a header it can reach. A slice that is
+  ranged over and measured with `len` inside one function and then
+  dropped is genuinely unobservable; one that becomes a field of a
+  returned value is not. `internal/logql/detected_level.go`'s
+  `detectedLevelSourceExpr` hosts one of each — `keys := make([]string,
+  0, len(allowedLevelFields)+1)` stays local, while `args :=
+  make([]chplan.Expr, 0, len(keys)*2+1)` becomes the returned
+  `FuncCall`'s exported `Args` — so the same mutator on two hints in the
+  same function earns opposite verdicts. Reaching the header through an
+  unexported field is enough; the closure in `exemplars.go` that settled
+  cerberus issue #2958 is the one shape Go offers no way to read at all.
+- **The appends do not fill the hint exactly.** Where they DO — the
+  builder appends exactly as many elements as it pre-allocated for — the
+  finished slice still reports the hint, `cap` reads the arithmetic
+  straight back, and every substitution is observable. Under-filling
+  leaves the mutated hint on the slice, over-filling re-grows through the
+  runtime's size classes; neither lands back on the true capacity by
+  accident, but "does not land back" is a claim to assert rather than
+  narrate, per "How a note states a number" below.
+
+Both cap-hint pairings in `detected_level_test.go` are written that way:
+one test asserts `cap` against a derived count, and a second enumerates
+every operator substitution and asserts the resulting capacity differs.
+That second test is what makes the first re-checkable, and it is what a
+prose equivalence note cannot do for itself.
+
+Cerberus issue #2974 asked whether `tsouza/gremlins` should stop
+EMITTING these instead — a generator-side narrowing in the family of
+cerberus issue #2932's type-check gate, which stopped crediting mutants
+that never compiled. It should not, and the reason is the measurement
+above rather than a principle about denominators. That gate's predicate
+is sound and local: whether a candidate compiles is decided by the candidate, and a
+mutant that cannot compile tested nothing on either side of the ratio.
+Equivalence is neither. The predicate that would have to be implemented
+here — "the capacity argument of a slice that neither escapes nor is
+exactly filled" — needs whole-program escape analysis that an AST-level
+mutation operator does not have, and its available syntactic proxy
+("do not mutate a `make` capacity argument") is refuted by the two
+mutants a `cap` assertion kills in the same function as one it cannot. A gate
+that suppresses killable mutants because a cheaper predicate could not
+tell them apart is an allow-list wearing an operator's clothes,
+whatever it does to the denominator. The distinction that matters is
+whether the predicate is sound, not whether the count goes down.
 
 ### How a note cites the mutant it adjudicates
 
