@@ -1800,10 +1800,24 @@ func renderLokiLabelCatalogView(cfg Config) string {
 // for the large majority of rows, so the extra arms decode far fewer
 // bytes (66MB + 36MB) than the flat-Map arms do (799MB) even though CH's
 // read_rows accounting counts a full base-table scan for each arm. A
-// stress-test rerun with an unrealistically dense corpus (every span
-// carries 1-3 events AND 1-2 links) still stayed at 2.01x baseline
-// (1.78s), a small fraction of the 5-minute refresh period
-// (tempoTagCatalogRefreshMinutes) either way. That clears the same bar
+// stress-corpus sibling test
+// (TestTempoTagCatalog_EventsLinks_StressCorpusMeasuredCost, added for
+// cerberus issue #3018 so this claim is CI-pinned rather than prose) reruns
+// the SAME comparison against an unrealistically dense corpus (every span
+// carries 1-3 events AND 1-2 links, vs the 10%/3% realistic population
+// above) on the same 2,000,000-row corpus: 7,825,000 rows / 1.5GB / 3.03s
+// widened vs 3,912,500 rows / 782MB / 1.63s baseline (~1.9x). That test
+// deliberately does NOT pin the exact ratio or absolute figure — repeat
+// local runs of the identical query against the identical corpus size
+// measured anywhere from ~1.8s to ~3.3s widened, confirming wall-clock is
+// CI-runner-noisy rather than reproducible (the same reasoning
+// TestTempoTagCatalog_MeasuredCost's doc comment gives for logging instead
+// of asserting a ratio) — it instead asserts a generous absolute ceiling
+// (tempoTagCatalogStressWallClockCeilingFraction of the refresh period,
+// currently 30s), a regression backstop rather than a tight
+// reproducibility claim. Either way it stays a small fraction of the
+// 5-minute refresh period (tempoTagCatalogRefreshMinutes). That clears the
+// same bar
 // #2771's own doc comments use ("the refresh's own scan cost stays a
 // small fraction of the period even against a busy traces table" — see
 // tempoTagCatalogRefreshMinutes below) by a wide margin, so the "not
