@@ -77,6 +77,18 @@ type lowerCtx struct {
 	// chplan.LineContent.TextIndexPrefilter's doc comment for the full
 	// rewrite and its eligibility shape.
 	TextIndexLineFilter bool
+
+	// LogLineLimit and LogLineBackward carry Loki's request `limit` /
+	// `direction` down to [lowerWithCtx]'s top-level SQL-LIMIT-pushdown
+	// decision (cerberus issue #2829). LogLineLimit <= 0 means "do not
+	// push a SQL Limit" — the zero value every non-Opts entry point
+	// leaves unset, and every caller of [Lower] / [LowerAt] /
+	// [LowerAtRange] besides [LowerAtRangeOpts] renders byte-identical
+	// to today. See [maybePushLogLineLimit]'s doc comment for the full
+	// eligibility rule and why it can only ever fire once per query,
+	// at the top level.
+	LogLineLimit    int64
+	LogLineBackward bool
 }
 
 // withOuterByLabels returns a copy of c with OuterByLabels set to
@@ -170,6 +182,11 @@ type LowerOpts struct {
 	// doc comment for what it does and its default-off, byte-identical
 	// posture.
 	TextIndexLineFilter bool
+
+	// LogLineLimit and LogLineBackward carry Loki's request `limit` /
+	// `direction` — see lowerCtx.LogLineLimit's doc comment.
+	LogLineLimit    int64
+	LogLineBackward bool
 }
 
 // LowerAtRangeOpts is the options-carrying variant of [LowerAtRange]. The
@@ -178,7 +195,14 @@ type LowerOpts struct {
 // uses [Lower] / [LowerAt] / [LowerAtRange] and gets the zero-options
 // (default, byte-identical) behaviour.
 func LowerAtRangeOpts(ctx context.Context, expr syntax.Expr, s schema.Logs, start, end time.Time, step time.Duration, opts LowerOpts) (chplan.Node, error) {
-	return lowerWithCtx(ctx, expr, s, lowerCtx{Start: start, End: end, Step: step, TextIndexLineFilter: opts.TextIndexLineFilter})
+	return lowerWithCtx(ctx, expr, s, lowerCtx{
+		Start:               start,
+		End:                 end,
+		Step:                step,
+		TextIndexLineFilter: opts.TextIndexLineFilter,
+		LogLineLimit:        opts.LogLineLimit,
+		LogLineBackward:     opts.LogLineBackward,
+	})
 }
 
 func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
@@ -189,8 +213,100 @@ func lowerWithCtx(ctx context.Context, expr syntax.Expr, s schema.Logs, lc lower
 		span.RecordError(err)
 		return nil, err
 	}
+	plan = maybePushLogLineLimit(expr, plan, s, lc)
 	span.SetAttributes(cerbtrace.AttrPlanNodeCount.Int(cerbtrace.CountNodes(plan)))
 	return plan, nil
+}
+
+// maybePushLogLineLimit wraps plan in `Limit(OrderBy(plan))` — a real SQL
+// `ORDER BY Timestamp {DESC|ASC} LIMIT N` — when expr is a Loki log-LINE
+// query (a bare stream selector or a pipeline) whose pipeline stages are
+// proven incapable of dropping a row in Go after the SQL executes (see
+// [pipelineCanDropRowsInGo]), letting ClickHouse itself truncate the
+// result set instead of cerberus decoding and discarding every row in the
+// window. This is what makes the shape eligible for
+// query_plan_optimize_lazy_materialization (internal/engine's
+// eligibleForLazyMaterialization walks for exactly this Limit(OrderBy(...))
+// shape) — cerberus issue #2829.
+//
+// It is called exactly once per top-level [lowerWithCtx] call — never from
+// inside [lower]'s recursive dispatch — so a metric query's inner selector
+// (RangeAggregationExpr.Left, reached via lowerRangeAggregation calling
+// lowerMatchers/lowerPipelineWithLabels directly, never through this
+// function) can never be wrapped: [syntax.LogSelectorExpr] is only ever the
+// TOP-level expr for a genuine log-line query (see logql.IsMetricQuery's
+// type list — every metric-query expr type is a SampleExpr, not a
+// LogSelectorExpr), and lc.LogLineLimit is threaded only by
+// internal/api/loki's Lang.Parse for the request it is actually building a
+// response for.
+//
+// This is a strictly ADDITIVE fast path: internal/api/loki/handler.go's
+// clampLogRows keeps sorting + truncating every decoded row exactly as it
+// always has, on whatever rows come back (the whole window for an unsafe
+// or LogLineLimit<=0 shape, or the SQL-truncated top-N for an eligible
+// one) — so an unproven or unsafe pipeline shape simply renders
+// byte-identical to before this change, never wrong.
+func maybePushLogLineLimit(expr syntax.Expr, plan chplan.Node, s schema.Logs, lc lowerCtx) chplan.Node {
+	if lc.LogLineLimit <= 0 {
+		return plan
+	}
+	sel, ok := expr.(syntax.LogSelectorExpr)
+	if !ok {
+		return plan
+	}
+	if pe, ok := sel.(*syntax.PipelineExpr); ok && pipelineCanDropRowsInGo(pe.MultiStages) {
+		return plan
+	}
+	ordered := &chplan.OrderBy{
+		Input: plan,
+		Keys: []chplan.OrderKey{
+			{Expr: &chplan.ColumnRef{Name: s.TimestampColumn}, Desc: lc.LogLineBackward},
+		},
+	}
+	return &chplan.Limit{Input: ordered, Count: lc.LogLineLimit}
+}
+
+// pipelineCanDropRowsInGo reports whether stages contains the ONE shape
+// internal/api/loki/post_process.go's postProcessExtract can still drop a
+// row for, Go-side, after the SQL executes: a `| pattern` stage (which
+// extracts labels from the line in Go — the emitted SQL cannot see its
+// keys) followed later in the same pipeline by a `__error__` /
+// `__error_details__` label filter (postProcessExtract's newLabelFilterStep
+// — the ONLY lineTransform step in that file that ever returns keep ==
+// false).
+//
+// This mirrors [lowerPipelineWithLabels]'s own dynamicLabels gate
+// stage-for-stage, built off the SAME two exported primitives both that
+// gate and postProcessExtract's own dynamicLabels gate use —
+// [isDynamicLabelStage] and [FiltersErrorLabel] — so all three call sites
+// derive from one shared answer to "does this pipeline shape need a
+// Go-side re-filter" rather than three that could drift apart. See
+// unpackParseDetailStep's doc comment in post_process.go for why a second
+// answer to the same question is exactly how cerberus's SQL side and Go
+// side have drifted before.
+//
+// Every other stage kind (line filters, ordinary label filters, every
+// parser — `| json`, `| logfmt`, `| regexp`, `| unpack`, and `| pattern`
+// itself absent a downstream error-family filter — `| line_format`,
+// `| decolorize`, `| label_format`, `| drop`, `| keep`) either lowers to a
+// real SQL predicate or is a post-fetch transform that
+// internal/api/loki/post_process.go never lets drop a row (only rename,
+// reformat, or narrow the label MAP — never the row set). A pipeline with
+// none of them, or any number of them, is SQL-complete: the emitted
+// Filter already computes exactly the surviving row set, so truncating it
+// with a SQL LIMIT on top is identical to decoding every row and
+// truncating in Go.
+func pipelineCanDropRowsInGo(stages syntax.MultiStageExpr) bool {
+	dynamicLabels := false
+	for _, stage := range stages {
+		if lf, ok := stage.(*syntax.LabelFilterExpr); ok && dynamicLabels && FiltersErrorLabel(lf.LabelFilterer) {
+			return true
+		}
+		if isDynamicLabelStage(stage) {
+			dynamicLabels = true
+		}
+	}
+	return false
 }
 
 func lower(expr syntax.Expr, s schema.Logs, lc lowerCtx) (chplan.Node, error) {
