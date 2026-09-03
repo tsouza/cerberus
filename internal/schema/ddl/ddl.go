@@ -2048,27 +2048,55 @@ func tempoTagCatalogNestedScopeArm(cfg Config, scope, nestedCol string, windowSt
 		Where(chsql.Neq(chsql.Col("v"), chsql.InlineLit("")))
 }
 
+// tempoTagCatalogScopeArmFor dispatches one schema.TagCatalogCoveredScopes
+// entry to the arm-builder and source column renderTempoTagCatalogView's
+// UNION ALL uses for it: tempoTagCatalogScopeArm against the flat-Map
+// resource/span attribute columns, tempoTagCatalogNestedScopeArm against
+// the Nested event/link attribute families. Exhaustive over
+// schema.TagCatalogCoveredScopes by construction —
+// TestTempoTagCatalogScopeArmFor_CoversEveryCatalogScope pins it — so a
+// scope added there without a case here panics naming the value instead of
+// silently missing an arm from the rendered view (cerberus issue #3021,
+// following the panic-default pattern internal/api/tempo's own
+// catalogScopesFor established for cerberus issue #3019).
+func tempoTagCatalogScopeArmFor(cfg Config, scope string, windowStart chsql.Frag) *chsql.QueryBuilder {
+	switch scope {
+	case schema.TagCatalogScopeResource:
+		return tempoTagCatalogScopeArm(cfg, scope, metricResourceAttributesColumn, windowStart)
+	case schema.TagCatalogScopeSpan:
+		return tempoTagCatalogScopeArm(cfg, scope, tracesSpanAttributesColumn, windowStart)
+	case schema.TagCatalogScopeEvent:
+		return tempoTagCatalogNestedScopeArm(cfg, scope, tracesEventsColumn, windowStart)
+	case schema.TagCatalogScopeLink:
+		return tempoTagCatalogNestedScopeArm(cfg, scope, tracesLinksColumn, windowStart)
+	default:
+		panic(fmt.Sprintf("ddl: tempoTagCatalogScopeArmFor: unhandled tag-catalog scope %q", scope))
+	}
+}
+
 // renderTempoTagCatalogView renders the REFRESH-scheduled CREATE
 // MATERIALIZED VIEW feeding renderTempoTagCatalogTable from the traces
-// table: a UNION ALL of the resource-scope, span-scope (tempoTagCatalogScopeArm)
-// and event-scope, link-scope (tempoTagCatalogNestedScopeArm) arms,
-// re-aggregated into one topKState per (Scope, TagKey). Like
-// renderLokiLabelCatalogView this uses RefreshEveryMinutes rather than an
-// on-insert trigger, because the window bound must be re-evaluated at
-// EACH refresh to stay "the trailing N hours".
+// table: a UNION ALL of one arm per schema.TagCatalogCoveredScopes entry
+// (tempoTagCatalogScopeArmFor dispatches each to the resource-scope,
+// span-scope (tempoTagCatalogScopeArm) or event-scope, link-scope
+// (tempoTagCatalogNestedScopeArm) shape), re-aggregated into one
+// topKState per (Scope, TagKey). Like renderLokiLabelCatalogView this uses
+// RefreshEveryMinutes rather than an on-insert trigger, because the window
+// bound must be re-evaluated at EACH refresh to stay "the trailing N
+// hours".
 func renderTempoTagCatalogView(cfg Config) string {
 	windowStart := chsql.Sub(chsql.Call("now"), chsql.Call("toIntervalHour", chsql.InlineLit(int64(tempoTagCatalogWindowHours))))
-	resourceArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeResource, metricResourceAttributesColumn, windowStart)
-	spanArm := tempoTagCatalogScopeArm(cfg, schema.TagCatalogScopeSpan, tracesSpanAttributesColumn, windowStart)
-	eventArm := tempoTagCatalogNestedScopeArm(cfg, schema.TagCatalogScopeEvent, tracesEventsColumn, windowStart)
-	linkArm := tempoTagCatalogNestedScopeArm(cfg, schema.TagCatalogScopeLink, tracesLinksColumn, windowStart)
+	arms := make([]chsql.Frag, len(schema.TagCatalogCoveredScopes))
+	for i, scope := range schema.TagCatalogCoveredScopes {
+		arms[i] = tempoTagCatalogScopeArmFor(cfg, scope, windowStart).Frag()
+	}
 	body := chsql.NewQuery().
 		Select(
 			chsql.Col(schema.TagCatalogScopeColumn),
 			chsql.Col(schema.TagCatalogKeyColumn),
 			chsql.As(tempoTagCatalogTopValuesStateFrag(chsql.Col(tempoTagValueColumn)), schema.TagCatalogTopValuesStateColumn),
 		).
-		From(chsql.Paren(chsql.UnionAll(resourceArm.Frag(), spanArm.Frag(), eventArm.Frag(), linkArm.Frag()))).
+		From(chsql.Paren(chsql.UnionAll(arms...))).
 		GroupBy(chsql.Col(schema.TagCatalogScopeColumn), chsql.Col(schema.TagCatalogKeyColumn))
 	stmt := chsql.CreateMaterializedView(schema.TagCatalogTable+schema.TagCatalogViewSuffix).
 		Database(cfg.Database).
