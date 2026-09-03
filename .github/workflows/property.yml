@@ -96,7 +96,25 @@ concurrency:
   # Main pushes and matching cron schedules replace only their own modes. PR,
   # queue, dispatch, and maintenance evidence stays unique and uncancelled.
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
+  # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
+  #
+  # The GROUP above still coalesces: GitHub holds at most ONE pending run per
+  # group, so a burst of pushes is superseded at QUEUE time, where a pending run
+  # holds no runner and costs nothing. Killing a run already EXECUTING is a
+  # separate act, and it only pays when the killed work was near-worthless.
+  # Before "optimising" this line back into an expression, read the decision
+  # rule and this lane's recorded answer in QUEUE_COALESCED_WORKFLOWS in
+  # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
+  # two halves ever disagree. The figures below are run-minutes (wall clock per
+  # run, not billed runner minutes, which a fan-out multiplies).
+  #
+  # Measured here: 19% of its main-push runs CANCELLED and 9% of this lane's
+  # run-minutes (93 min in 74.5 h) discarded — a smaller loss than some lanes,
+  # and it is enrolled on WHAT is lost. property-fanout.mjs runs rapid with no
+  # pinned seed, so every run explores a different region of the input space; a
+  # cancelled run's draws are never re-drawn by its successor, which makes this
+  # loss irreplaceable rather than merely repeated.
+  cancel-in-progress: false
 
 jobs:
   property:

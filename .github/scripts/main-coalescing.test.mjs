@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
+  CANCEL_COALESCED_WORKFLOWS,
   CANCEL_EXPRESSION,
   COALESCED_WORKFLOWS,
   GROUP_EXPRESSION,
+  LATEST_MAIN_SUFFIX,
   MAIN_REF,
+  NEVER_COALESCED_WORKFLOWS,
   QUEUE_CANCEL_LITERAL,
   QUEUE_COALESCED_WORKFLOWS,
   QUICKSTART_CANCEL_EXPRESSION,
@@ -14,6 +19,7 @@ import {
   coalescingDecision,
   concurrencyGroupValues,
   parseTopLevelConcurrency,
+  tierPartitionProblems,
   validateE2EWorkflow,
   validateEnrolledWorkflow,
   validateQuickstartWorkflow,
@@ -312,4 +318,170 @@ jobs: {}
 
 test('the checked-in registry and every enrolled workflow match the policy', () => {
   assert.deepEqual(auditMainCoalescing(process.cwd()), []);
+});
+
+// ---------------------------------------------------------------------------
+// Non-vacuity of the tier policy (tsouza/cerberus#2994).
+//
+// The audit above passes on the checked-in tree. A green that a policy change
+// cannot turn red is not evidence, so these drive the REAL workflow text
+// through the validator with the one line under policy flipped, in BOTH
+// directions, and pin the tier partition itself.
+
+test('every queue-coalesced workflow reds if cancellation is restored to it', () => {
+  assert.ok(QUEUE_COALESCED_WORKFLOWS.length > 0);
+  for (const workflow of QUEUE_COALESCED_WORKFLOWS) {
+    const body = readFileSync(path.join(process.cwd(), workflow), 'utf8');
+    // The checked-in text is accepted, so the flip below is the only variable.
+    assert.deepEqual(validateEnrolledWorkflow(workflow, body), [], workflow);
+    assert.equal(
+      parseTopLevelConcurrency(body).cancelInProgress,
+      QUEUE_CANCEL_LITERAL,
+      workflow,
+    );
+
+    // Anchored to a line carrying EXACTLY the two-space top-level indent:
+    // migration-e2e.yml also holds a six-space JOB-level `cancel-in-progress:
+    // false`, and a bare substring replace would be only accidentally safe
+    // (it happens to sit later in the file). Rewriting the wrong line would
+    // exercise the nested-concurrency check instead of the tier check.
+    assert.equal(
+      (body.match(/^ {2}cancel-in-progress: false$/gm) ?? []).length,
+      1,
+      `${workflow} must carry exactly one top-level cancel-in-progress line`,
+    );
+    const flip = (value) => {
+      const rewritten = body.replace(
+        /^ {2}cancel-in-progress: false$/m,
+        `  cancel-in-progress: ${value}`,
+      );
+      assert.notEqual(rewritten, body, workflow);
+      assert.equal(
+        parseTopLevelConcurrency(rewritten).cancelInProgress,
+        value,
+        workflow,
+      );
+      return rewritten;
+    };
+
+    // Someone "optimises" the literal back into the cancel expression, or
+    // reaches for the cruder bare `true`. Both are refused by the tier check.
+    for (const value of [CANCEL_EXPRESSION, 'true']) {
+      assert.match(
+        validateEnrolledWorkflow(workflow, flip(value)).join('\n'),
+        /queue-coalesced/,
+        `${workflow} <- ${value}`,
+      );
+    }
+  }
+});
+
+test('every still-cancelling workflow reds if it is quietly opted out', () => {
+  assert.ok(CANCEL_COALESCED_WORKFLOWS.length > 0);
+  for (const workflow of CANCEL_COALESCED_WORKFLOWS) {
+    const body = readFileSync(path.join(process.cwd(), workflow), 'utf8');
+    assert.deepEqual(validateEnrolledWorkflow(workflow, body), [], workflow);
+    assert.equal(
+      parseTopLevelConcurrency(body).cancelInProgress,
+      CANCEL_EXPRESSION,
+      workflow,
+    );
+
+    // The pin is two-sided: a workflow the policy deliberately leaves
+    // cancelling cannot opt itself out by editing one line either. Moving it
+    // has to be a declared tier change with its reason, the same as moving one
+    // the other way.
+    const optedOut = body.replace(
+      /^ {2}cancel-in-progress: \$\{\{.*\}\}$/m,
+      `  cancel-in-progress: ${QUEUE_CANCEL_LITERAL}`,
+    );
+    assert.notEqual(optedOut, body, workflow);
+    assert.equal(
+      parseTopLevelConcurrency(optedOut).cancelInProgress,
+      QUEUE_CANCEL_LITERAL,
+      workflow,
+    );
+    assert.match(
+      validateEnrolledWorkflow(workflow, optedOut).join('\n'),
+      /want the canonical main-push\/equivalent-schedule-only expression/,
+      workflow,
+    );
+  }
+});
+
+test('the two cancellation tiers partition the enrollment exactly', () => {
+  assert.deepEqual(tierPartitionProblems(), []);
+  assert.equal(
+    QUEUE_COALESCED_WORKFLOWS.length + CANCEL_COALESCED_WORKFLOWS.length,
+    COALESCED_WORKFLOWS.length,
+  );
+  // The tiers are disjoint and neither is a superset of the enrollment.
+  for (const workflow of QUEUE_COALESCED_WORKFLOWS) {
+    assert.ok(!CANCEL_COALESCED_WORKFLOWS.includes(workflow), workflow);
+    assert.ok(COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
+  for (const workflow of CANCEL_COALESCED_WORKFLOWS) {
+    assert.ok(COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
+  // The starved pair the issue named is queue-coalesced, and the lanes the
+  // measurement found cancellation still pays for stay cancelling. Both halves
+  // are pinned: a sweep that moved everything would red here just as a
+  // reversion would.
+  assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/mutation.yml'));
+  assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/chdb.yml'));
+  for (const workflow of [
+    '.github/workflows/agpl-oracle.yml',
+    '.github/workflows/codeql.yml',
+    '.github/workflows/perf-benchmark.yml',
+    '.github/workflows/perf-nightly.yml',
+  ]) {
+    assert.ok(CANCEL_COALESCED_WORKFLOWS.includes(workflow), workflow);
+    assert.ok(!QUEUE_COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
+});
+
+test('a workflow in neither tier, or in both, is a policy failure', () => {
+  // The SAME function the audit calls, driven over injected rosters so the
+  // reachability of each branch is shown rather than restated.
+  const enrolled = ['a.yml', 'b.yml'];
+  assert.deepEqual(
+    tierPartitionProblems({ enrolled, queued: ['a.yml'], cancelling: ['b.yml'] }),
+    [],
+  );
+  assert.match(
+    tierPartitionProblems({ enrolled, queued: ['a.yml'], cancelling: [] }).join('\n'),
+    /b\.yml: latest-main enrolled but in neither cancellation tier/,
+  );
+  assert.match(
+    tierPartitionProblems({
+      enrolled,
+      queued: ['a.yml', 'b.yml'],
+      cancelling: ['b.yml'],
+    }).join('\n'),
+    /b\.yml: enrolled in both cancellation tiers/,
+  );
+  assert.match(
+    tierPartitionProblems({
+      enrolled,
+      queued: ['a.yml', 'stray.yml'],
+      cancelling: ['b.yml'],
+    }).join('\n'),
+    /stray\.yml: carries a cancellation tier but is absent/,
+  );
+});
+
+test('the never-coalesced workflows are untouched by the tier policy', () => {
+  // A negative control for the whole change: ci.yml must not acquire either
+  // tier, and its concurrency must stay outside the latest-main groups.
+  for (const workflow of NEVER_COALESCED_WORKFLOWS) {
+    assert.ok(!QUEUE_COALESCED_WORKFLOWS.includes(workflow), workflow);
+    assert.ok(!CANCEL_COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
+  const ci = readFileSync(
+    path.join(process.cwd(), '.github/workflows/ci.yml'),
+    'utf8',
+  );
+  assert.ok(
+    !concurrencyGroupValues(ci).some((group) => group.includes(LATEST_MAIN_SUFFIX)),
+  );
 });

@@ -209,6 +209,15 @@ concurrency:
   # That gap is now REPORTED rather than silent: coverage-verdict.mjs states how
   # many commits have landed on the trunk since it was last measured, and warns
   # past its MAX_UNMEASURED_TRUNK_COMMITS.
+  #
+  # This lane is the founding member of QUEUE_COALESCED_WORKFLOWS in
+  # .github/scripts/main-coalescing.mjs (tsouza/cerberus#2991), which
+  # tsouza/cerberus#2994 turned into a general policy with a recorded answer per
+  # workflow. Its answer is the account above: 66% of its main-push runs
+  # CANCELLED against a single success, kills a median 26.5 min in with 31 of 65
+  # past the 90% mark, and 50% of this lane's run-minutes (1790 min in 74.5 h)
+  # discarded. The audit fails this workflow if the enrollment and this line
+  # ever disagree.
   cancel-in-progress: false
 
 jobs:
