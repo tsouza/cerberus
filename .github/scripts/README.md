@@ -969,7 +969,11 @@ what actually runs.
   `coverage-plan` (the leading job computing RUN_HEAVY) not succeeding as its
   own hard failure regardless of the other facts — otherwise an unset
   RUN_HEAVY output would read identically to an ordinary PR's legitimate
-  no-op. `coverage-aggregate.test.mjs` is the `node --test` guard.
+  no-op. It is deliberately blind to `coverage-enrollment`: that verdict is a
+  one-line step at the END of the same aggregator job, so it cannot stop the
+  merge and upload an unfloored package's author needs
+  (tsouza/cerberus#2987). `coverage-aggregate.test.mjs` is the `node --test`
+  guard.
   - Env: `PLAN_RESULT` (`needs.coverage-plan.result`), `RUN_HEAVY`
     (`needs.coverage-plan.outputs.run_heavy`), `DEFAULT_RESULT`
     (`needs.coverage-default.result`), `CHDB_RESULT`
@@ -1017,14 +1021,20 @@ what actually runs.
   - Exit: `0` when every package clears its floor (or the ledger was
     rewritten), `1` on unreadable input, a lane mismatch, or a violation.
 - **`coverage-package-floor.mjs`** — `coverage.yml`'s cheap structural gate on
-  every PR. Enumerates the default and `chdb,agpl_oracle,chdb_agpl_oracle`
+  every PR, in its own `coverage-enrollment` job. Enumerates the default and `chdb,agpl_oracle,chdb_agpl_oracle`
   builds with `go list`, asks `go tool cover` whether each active source file
   carries statements, and requires every statement-carrying package to have a
   positive entry in `test/coverage-floor/`; it also rejects a floor whose
   statement-carrying package vanished. Declaration-only packages need no entry.
   This catches structural drift before merge without running tests or installing
   chDB; the full push/nightly/release lane remains responsible for measured
-  coverage. `coverage-package-floor.test.mjs`
+  coverage. The job it runs in is a LEAF that gates nothing
+  (tsouza/cerberus#2987): as a step inside `coverage-plan` its failure skipped
+  the measuring lanes, and the ledger it demands is derived from those lanes'
+  merged profile, so the gate suppressed its own remedy. The required
+  `coverage` context still carries the verdict — the aggregator's last step
+  reads `needs.coverage-enrollment.result` — but it lands after the profile is
+  uploaded. `coverage-package-floor.test.mjs`
   exercises a hermetic temporary Go module with statement and declaration-only
   packages.
   - Env: `COVERAGE_FLOORS` (default `test/coverage-floor`),

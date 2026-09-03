@@ -36,6 +36,27 @@ instead.
 CI-only, so a new package that is missing from that file builds and tests clean locally and fails on
 the PR. Declare the package in the same change that creates it.
 
+A new package that carries statements needs a **second** registration in that same change: a positive
+entry in the `test/coverage-floor/` ledger, which `coverage.yml`'s `coverage-enrollment` job checks on
+every PR. A declaration-only package carries no statements and needs no entry. The ledger is
+generated, so never hand-write a floor (invariant 9) — derive it from a merged coverage profile, one
+of two ways, both ending in the same command:
+
+- **Locally.** `just chdb-install` once, then `just coverage` (which writes `cover-merged.out`), then
+  `just update-coverage-floor`.
+- **From CI**, when the local sweep is not practical on the machine at hand.
+  `gh workflow run coverage.yml --ref <branch>` runs the measuring lanes on that branch; download the
+  run's `coverage-profile` artifact into the repository root and run `just update-coverage-floor`
+  against the `cover-merged.out` it contains. Take the artifact from a run whose `coverage-default`,
+  `coverage-chdb` and `coverage-chdb-ratchet` jobs all succeeded — that is what makes the merged
+  profile the both-lane profile the floors are measured with. The upload happens even when the floor
+  gate itself is red, which is what makes an unenrolled package recoverable at all
+  (tsouza/cerberus#2987: the enrollment check used to run inside `coverage-plan`, whose failure
+  skipped every lane that could have measured the remedy).
+
+`just update-coverage-floor` only ratchets up. It refuses to lower a floor to match a coverage drop
+and never records a `0`, so both of those stay hand-edited, reviewable lines in a diff.
+
 `actionlint` (`just lint-actions`) validates the workflow files. GitHub rejects an invalid workflow
 file server-side as a zero-job failure run, which prevents required `pull_request` checks from ever
 being scheduled — a PR then sits blocked on contexts that can never report.
