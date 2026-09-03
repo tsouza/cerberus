@@ -110,6 +110,13 @@ the required `quickstart`, post-merge generated-artifact drift, core gates,
 publication, stateful mirroring, and monitors are explicit negative controls.
 `.github/scripts/main-coalescing.mjs` binds the enrolled workflow expressions
 to the lane registry, and its tests exercise the cancellation decision table.
+Its `QUEUE_COALESCED_WORKFLOWS` tier separates the two halves of "coalesced":
+a member keeps the shared latest-main group, so a superseded run is still
+replaced while it is pending, but carries a literal `cancel-in-progress: false`
+so a run already executing is never killed. That is what a lane whose run
+outlasts the median push gap needs — `coverage.yml` takes ~52 minutes against a
+38-minute median cadence, and cancelling it left 71 of 120 pushes measured by
+nothing at all.
 
 One subtlety on the three `compatibility/<head>` checks: each gates in two
 layers. The harness is *scored* — it accumulates per-case results into

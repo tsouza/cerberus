@@ -274,6 +274,17 @@ what actually runs.
   exhaustive E2E and published quickstart workflows are explicit negative
   controls; quickstart additionally requires unique non-PR groups so every main
   push completes. Nested job groups must be run-bound and non-cancelling.
+  `QUEUE_COALESCED_WORKFLOWS` is a narrower tier inside the enrollment
+  (tsouza/cerberus#2991): a member keeps the canonical GROUP — a burst of
+  pushes still collapses to one PENDING run, which costs nothing because a
+  pending run holds no runner — but carries a literal `cancel-in-progress:
+  false`, because killing a run already in progress only pays when the run is
+  short enough for the killed work to be worthless. `coverage.yml` runs ~52
+  minutes against a median 38-minute push cadence on main, and cancellation
+  left 71 of its last 120 push runs killed a median 27 minutes in, against 6
+  successes; that is not coalescing, it is starvation. Opting out is a
+  declared enrollment here, never something a workflow can do to itself by
+  editing one line.
   - Env: `CI_LANE_REGISTRY` (optional; default `.github/ci-lanes.json`).
   - Exit: `0` only when enrollment, registry posture, exclusions, and workflow
     expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the
