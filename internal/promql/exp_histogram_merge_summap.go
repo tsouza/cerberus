@@ -25,9 +25,8 @@ import (
 // mode still stays on the existing fold unconditionally; see
 // NativeExpHistogramMergeLowerer for why — the identical per-anchor
 // mergedScale problem multi-group solves for by()/without() applies to
-// range mode too, and cerberus issue #2865's own follow-up
-// (filed at that issue's completion) tracks wiring it onto this SAME
-// mechanism.
+// range mode too, and cerberus issue #3027 tracks wiring it onto this
+// SAME mechanism.
 //
 // # The two-pass restructure (issue #2757's own "known hard part",
 // # verified here)
@@ -230,10 +229,10 @@ func expHistogramMergeScaleScalarSubquery(perSeries chplan.Node, s schema.Metric
 // given grouping: the group-key expressions [histogramAggGroupBy] resolves
 // for by()/without(), optionally prefixed by a range-mode step anchor.
 // anchor is nil at every call site wired today (instant mode only — see
-// this file's header); range mode (cerberus issue #2865's tracked
-// follow-up) reuses this SAME function with its own anchor column, so the
-// partition-key shape is derived exactly once regardless of how many call
-// sites eventually need it.
+// this file's header); range mode (cerberus issue #3027) reuses this SAME
+// function with its own anchor column, so the partition-key shape is
+// derived exactly once regardless of how many call sites eventually need
+// it.
 func expHistogramMergeScaleWindowPartitionBy(anchor *chplan.ColumnRef, groupBy []chplan.Expr) []chplan.Expr {
 	if anchor == nil {
 		return groupBy
@@ -566,7 +565,7 @@ type ExpHistogramMergeLowerer interface {
 	// LowerExpHistogramMerge returns the merged chplan.Node. anchor is nil
 	// in instant mode (eligible for the sumMap path) and non-nil in range
 	// mode (never eligible yet — see this file's header, cerberus issue
-	// #2865's tracked follow-up).
+	// #3027).
 	LowerExpHistogramMerge(perSeries chplan.Node, anchor *chplan.ColumnRef, agg *parser.AggregateExpr, s schema.Metrics, maxCostUnits int64) chplan.Node
 }
 
@@ -588,8 +587,8 @@ func (FanoutExpHistogramMergeLowerer) LowerExpHistogramMerge(
 // cerberus issue #2866) onto expHistogramGroupMergeSumMap. cmd/cerberus
 // wires it ONLY when chopt resolved exp_histogram_merge_summap at boot.
 // Range mode (anchor != nil) delegates to the embedded Fallback
-// unconditionally — see this file's header for why, and issue #2865's
-// tracked follow-up for wiring it onto the same mechanism.
+// unconditionally — see this file's header for why, and issue #3027 for
+// wiring it onto the same mechanism.
 type NativeExpHistogramMergeLowerer struct {
 	// Fallback is the concrete lowerer for every ineligible shape. Boot
 	// wires it to FanoutExpHistogramMergeLowerer{}.
