@@ -51,7 +51,11 @@
 //
 // So every verdict — on a PR as much as on main — also reports when `main` was
 // last MEASURED and how many commits have landed since, and warns past
-// MAX_UNMEASURED_TRUNK_COMMITS. That number is the signal nobody had: it is
+// MAX_UNMEASURED_TRUNK_COMMITS. "Last measured" is itself evidence-derived: a
+// successful trunk run is only credited once it is seen to carry the
+// `coverage-profile` artifact, because a `release/*`-headed PR's merge commit
+// produces a push run that succeeds having measured nothing, and crediting one
+// would reset the counter on a non-measurement. That number is the signal nobody had: it is
 // what turns "coverage has not been measured on trunk for four days" from
 // something you must go looking for into something every pull request says out
 // loud. The lookup is best-effort — no token, no network, or an API error
@@ -61,7 +65,9 @@
 // Env:
 //   RUN_HEAVY           `needs.coverage-plan.outputs.run_heavy` — 'true' | 'false'.
 //   GATE_OUTCOME        the `outcome` of the aggregator's floor-gate step
-//                       ('success' | 'failure' | 'skipped').
+//                       ('success' | 'failure' | 'skipped'). Empty or unset is
+//                       read as 'skipped' — a step that reported no outcome did
+//                       not run.
 //   COVERAGE_PROFILE    merged profile to read as evidence (default: cover-merged.out).
 //   EVENT_NAME          github.event_name, for the "why not measured" line.
 //   TRUNK_BRANCH        branch whose measurement staleness is reported (default: main).
@@ -76,10 +82,11 @@
 //
 // node: builtins only — no npm dependencies or setup-node step.
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
-import { DEFAULT_PROFILE, FULL_LANES, laneRecordPath, profileDigest } from './coverage-summary.mjs';
+import { DEFAULT_PROFILE, laneRecordPath, resolveUpdateLanes } from './coverage-summary.mjs';
 import { appendStepSummary, error, log, notice, warning } from './lib/gh.mjs';
 
 // The workflow file whose runs answer "when was the trunk last measured".
@@ -95,6 +102,24 @@ export const TRUNK_RUN_SCAN_PAGE_SIZE = 100;
 // leaves a couple of commits measured only by their successor; a backlog deeper
 // than this is the lane failing to keep up, or failing outright.
 export const MAX_UNMEASURED_TRUNK_COMMITS = 5;
+
+// How many successful trunk runs to probe for a profile artifact before giving
+// up. Each probe is one API call, and the newest successful run is nearly
+// always the answer; the bound exists so a long stretch of non-measuring
+// successes cannot turn one verdict into an unbounded API walk.
+export const MAX_TRUNK_CANDIDATE_PROBES = 10;
+
+// The artifact a heavy run uploads and a non-heavy run does not. Its presence
+// is the EVIDENCE that a trunk run measured; the run's event and conclusion are
+// only the claim (a `release/*`-headed PR's merge commit produces a push run
+// that succeeds having measured nothing — coverage-run-heavy.mjs's redundant
+// case). Uploaded on `always()` for a heavy run, so a run that measured and
+// then MISSED a floor still carries it — which is why the conclusion filter
+// below stays as well.
+const MEASURED_RUN_ARTIFACT = 'coverage-profile';
+
+// Commit shas are rendered at this width, matching `git log --abbrev=9`.
+const SHORT_SHA_LENGTH = 9;
 
 // Events whose coverage.yml run actually measures. A `pull_request` /
 // `merge_group` run is skipped by design and its success says nothing about the
@@ -114,6 +139,13 @@ export const VERDICT_BROKEN = 'BROKEN';
  * The split matters: a present-but-unprovable profile is a wiring failure to
  * report, not an absence to shrug at.
  *
+ * The lane-record validation itself is NOT reimplemented here: it delegates to
+ * coverage-summary.mjs's `resolveUpdateLanes`, the same five checks (readable
+ * JSON, the `{lanes, profileSha256}` shape, the digest binding, the full lane
+ * set) that decide whether a profile may become floors. A second copy of the
+ * digest check would be the exact drift the digest exists to prevent — two
+ * validators disagreeing about which bytes count as proven.
+ *
  * `readFile` is injectable so the unit suite can drive every branch without
  * staging files.
  */
@@ -129,45 +161,23 @@ export function inspectEvidence(profilePath, readFile = (p) => readFileSync(p, '
   }
 
   const recordPath = laneRecordPath(profilePath);
-  let recordText;
+  let recordText = null;
   try {
     recordText = readFile(recordPath);
-  } catch (e) {
-    return {
-      present: true,
-      provable: false,
-      reason: `${recordPath} is not present (${e.code ?? e.message}), so nothing binds the profile to a lane set`,
-    };
+  } catch {
+    recordText = null;
   }
 
-  let record;
-  try {
-    record = JSON.parse(recordText);
-  } catch (e) {
-    return { present: true, provable: false, reason: `${recordPath} is not readable as JSON (${e.message})` };
-  }
-  if (record === null || typeof record !== 'object' || typeof record.lanes !== 'string' || typeof record.profileSha256 !== 'string') {
-    return { present: true, provable: false, reason: `${recordPath} is not a lane record (needs string \`lanes\` and \`profileSha256\`)` };
-  }
+  const resolved = resolveUpdateLanes(recordText, profileText, recordPath);
+  if (resolved.err) return { present: true, provable: false, reason: resolved.err };
+  return { present: true, provable: true, lanes: resolved.lanes, digest: profileDigestOf(profileText), reason: null };
+}
 
-  const digest = profileDigest(profileText);
-  if (record.profileSha256 !== digest) {
-    return {
-      present: true,
-      provable: false,
-      reason:
-        `${recordPath} records sha256 ${record.profileSha256} but ${profilePath} hashes to ${digest} — ` +
-        'the record describes a different profile',
-    };
-  }
-  if (record.lanes !== FULL_LANES) {
-    return {
-      present: true,
-      provable: false,
-      reason: `${profilePath} was produced by the '${record.lanes}' lane set, not '${FULL_LANES}'`,
-    };
-  }
-  return { present: true, provable: true, lanes: record.lanes, digest, reason: null };
+// The digest is reported in the MEASURED banner so a reader can tie the verdict
+// to the exact bytes it judged. resolveUpdateLanes has already proven the record
+// carries this same value; recomputing it here is a render step, not a check.
+function profileDigestOf(profileText) {
+  return createHash('sha256').update(profileText).digest('hex');
 }
 
 /**
@@ -252,22 +262,31 @@ export function classifyMeasurement({ runHeavy, gateOutcome, evidence, eventName
 }
 
 /**
- * selectLastMeasuredRun — the newest coverage.yml run that actually MEASURED
- * the trunk, from the API's newest-first run list.
+ * selectMeasuredRunCandidates — trunk runs that COULD have measured, newest
+ * first, from the API's newest-first run list.
  *
- * A successful run of a non-measuring event proves nothing about coverage, and
- * the run for THIS commit is excluded so a push never reports itself as the
- * previous measurement.
+ * This is a pre-filter, not the answer. A successful run of a non-measuring
+ * event proves nothing about coverage, and the run for THIS commit is excluded
+ * so a push never reports itself as the previous measurement — but a successful
+ * `push` run on the trunk still need not have measured anything: a
+ * `release/*`-headed PR's merge commit produces exactly that (RUN_HEAVY=false,
+ * because the identical tree was already measured on the PR — see
+ * coverage-run-heavy.mjs's redundant case). Crediting one would reset the
+ * staleness counter on a run that measured nothing, which is the same
+ * claim-for-evidence substitution the verdict above exists to remove. The
+ * caller settles it by probing each candidate for the profile artifact only a
+ * measuring run uploads.
  */
-export function selectLastMeasuredRun(runs, { currentSha, trunkBranch }) {
+export function selectMeasuredRunCandidates(runs, { currentSha, trunkBranch }) {
+  const candidates = [];
   for (const run of runs ?? []) {
     if (!run || run.conclusion !== 'success') continue;
     if (!MEASURING_EVENTS.has(run.event)) continue;
     if (trunkBranch && run.head_branch !== trunkBranch) continue;
     if (currentSha && run.head_sha === currentSha) continue;
-    return { sha: run.head_sha, at: run.updated_at ?? run.created_at, url: run.html_url };
+    candidates.push({ id: run.id, sha: run.head_sha, at: run.updated_at ?? run.created_at, url: run.html_url });
   }
-  return null;
+  return candidates;
 }
 
 /**
@@ -282,23 +301,31 @@ export function describeTrunk(trunk, { trunkBranch, scanned = TRUNK_RUN_SCAN_PAG
   if (trunk.error) {
     return { line: `unavailable — ${trunk.error}`, stale: false, degraded: true };
   }
+  const window = trunk.scanned ?? scanned;
   if (!trunk.run) {
     return {
       line:
-        `**no successful measured run in the last ${scanned} \`${COVERAGE_WORKFLOW_FILE}\` runs on ` +
-        `\`${trunkBranch}\`** — the trunk's coverage is currently unknown`,
+        `**no run in the last ${window} \`${COVERAGE_WORKFLOW_FILE}\` run(s) on \`${trunkBranch}\` both ` +
+        `succeeded and uploaded a \`${MEASURED_RUN_ARTIFACT}\` artifact** — the trunk's coverage is ` +
+        `currently unknown`,
       stale: true,
     };
   }
   const { sha, at, url } = trunk.run;
-  const behind =
-    trunk.aheadBy === null || trunk.aheadBy === undefined
-      ? 'an unknown number of commits behind'
-      : `**${trunk.aheadBy} commit(s) behind** \`${trunkBranch}\``;
-  const link = url ? `[\`${String(sha).slice(0, 9)}\`](${url})` : `\`${String(sha).slice(0, 9)}\``;
+  const link = url ? `[\`${String(sha).slice(0, SHORT_SHA_LENGTH)}\`](${url})` : `\`${String(sha).slice(0, SHORT_SHA_LENGTH)}\``;
+  if (typeof trunk.aheadBy !== 'number') {
+    // An unknown distance must not read as a fresh one. The staleness warning
+    // is the whole point of this line, and silently disarming it on a failed
+    // /compare call would be the same hollow green in miniature.
+    return {
+      line: `last measured at ${link} (${at}), an **unknown number of commits behind** \`${trunkBranch}\``,
+      stale: false,
+      degraded: true,
+    };
+  }
   return {
-    line: `last measured at ${link} (${at}), ${behind}`,
-    stale: typeof trunk.aheadBy === 'number' && trunk.aheadBy > MAX_UNMEASURED_TRUNK_COMMITS,
+    line: `last measured at ${link} (${at}), **${trunk.aheadBy} commit(s) behind** \`${trunkBranch}\``,
+    stale: trunk.aheadBy > MAX_UNMEASURED_TRUNK_COMMITS,
   };
 }
 
@@ -333,8 +360,23 @@ export async function fetchTrunkMeasurement({
       `${apiBase}/repos/${repo}/actions/workflows/${COVERAGE_WORKFLOW_FILE}/runs` +
       `?branch=${encodeURIComponent(trunkBranch)}&per_page=${TRUNK_RUN_SCAN_PAGE_SIZE}`;
     const data = await getJSON(listURL, token, fetchImpl);
-    const run = selectLastMeasuredRun(data.workflow_runs, { currentSha, trunkBranch });
-    if (!run) return { run: null, aheadBy: null };
+    const runs = data.workflow_runs ?? [];
+    const scanned = runs.length;
+    const candidates = selectMeasuredRunCandidates(runs, { currentSha, trunkBranch });
+
+    let run = null;
+    for (const candidate of candidates.slice(0, MAX_TRUNK_CANDIDATE_PROBES)) {
+      const artifacts = await getJSON(
+        `${apiBase}/repos/${repo}/actions/runs/${candidate.id}/artifacts?per_page=${TRUNK_RUN_SCAN_PAGE_SIZE}`,
+        token,
+        fetchImpl,
+      );
+      if ((artifacts.artifacts ?? []).some((artifact) => artifact?.name === MEASURED_RUN_ARTIFACT)) {
+        run = candidate;
+        break;
+      }
+    }
+    if (!run) return { run: null, aheadBy: null, scanned };
 
     let aheadBy = null;
     try {
@@ -345,10 +387,11 @@ export async function fetchTrunkMeasurement({
       );
       aheadBy = typeof cmp.ahead_by === 'number' ? cmp.ahead_by : null;
     } catch {
-      // The run is the answer that matters; the distance is a nicety.
+      // The run is the answer that matters; describeTrunk reports an unknown
+      // distance as degraded rather than as fresh.
       aheadBy = null;
     }
-    return { run, aheadBy };
+    return { run, aheadBy, scanned };
   } catch (e) {
     return { error: e.message };
   }
@@ -370,7 +413,12 @@ export function renderBanner({ verdict, headline, detail, trunkLine, trunkBranch
 
 async function main() {
   const runHeavy = process.env.RUN_HEAVY ?? '';
-  const gateOutcome = process.env.GATE_OUTCOME ?? '';
+  // A step that reported no outcome did not run. GitHub sets `outcome` to
+  // `skipped` for a step its `if:` excluded, but an unset or empty value must
+  // reach the same conclusion rather than the BROKEN branch below — otherwise
+  // one runner-side surprise turns the required `coverage` context red on every
+  // pull request in the repository, the exact inverse of this script's purpose.
+  const gateOutcome = process.env.GATE_OUTCOME || 'skipped';
   const profilePath = process.env.COVERAGE_PROFILE || DEFAULT_PROFILE;
   const trunkBranch = process.env.TRUNK_BRANCH || 'main';
 
@@ -394,7 +442,7 @@ async function main() {
           trunkBranch,
         })
       : null;
-  const trunkStatus = describeTrunk(trunk, { trunkBranch });
+  const trunkStatus = describeTrunk(trunk, { trunkBranch, scanned: trunk?.scanned });
 
   appendStepSummary(renderBanner({ verdict, headline, detail, trunkLine: trunkStatus.line, trunkBranch }));
 

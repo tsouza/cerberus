@@ -1018,13 +1018,26 @@ what actually runs.
   "unavailable", never to a red required context.
   `coverage-verdict.test.mjs` is the `node --test` guard, and it drives all
   four failing branches as well as the two passing ones.
-  - Env: `RUN_HEAVY` (`needs.coverage-plan.outputs.run_heavy`), `GATE_OUTCOME`
-    (`steps.floor-gate.outcome`), `COVERAGE_PROFILE` (default
-    `cover-merged.out`), `EVENT_NAME`, `TRUNK_BRANCH` (default `main`),
-    `CURRENT_SHA`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN` (`actions: read`),
-    `GITHUB_API_URL`, `GITHUB_STEP_SUMMARY`.
+  The trunk lookup is evidence-derived too: a successful trunk run counts as a
+  measurement only once it is seen to carry the `coverage-profile` artifact,
+  because a `release/*`-headed PR's merge commit produces a push run that
+  succeeds having measured nothing (`coverage-run-heavy.mjs`'s redundant case),
+  and crediting one would reset the staleness counter on a non-measurement. The
+  probe is bounded by `MAX_TRUNK_CANDIDATE_PROBES`. Its evidence check is not a
+  second copy of `coverage-summary.mjs`'s: `inspectEvidence` delegates to that
+  module's `resolveUpdateLanes`, so the function deciding whether a profile may
+  become floors and the one deciding whether it counts as a measurement cannot
+  drift apart.
+  - Env: `RUN_HEAVY` (`needs.coverage-plan.outputs.run_heavy`, delivered by the
+    aggregator's job-level `env:`), `GATE_OUTCOME` (`steps.floor-gate.outcome`;
+    empty or unset reads as `skipped`, since a step that reported no outcome did
+    not run), `COVERAGE_PROFILE` (default `cover-merged.out`), `EVENT_NAME`,
+    `TRUNK_BRANCH` (default `main`), `CURRENT_SHA`, `GITHUB_REPOSITORY`,
+    `GITHUB_TOKEN` (`actions: read`), `GITHUB_API_URL`, `GITHUB_STEP_SUMMARY`.
   - Exit: `0` for `MEASURED`-and-clear and for `NOT MEASURED`; `1` for a missed
-    floor and for any claim/evidence disagreement.
+    floor and for any claim/evidence disagreement. `NOT MEASURED` is a GREEN
+    outcome on purpose — the verdict makes the skip legible, it does not turn
+    every ordinary pull request into a blocked merge.
 - **`perf-coverage-fanout.mjs`** — `just coverage-chdb`'s
   `TestCardinalityRatchet` fan-out (shards 2..`RATCHET_FANOUT` of the corpus
   walk; shard 1 is the Justfile's own main sweep). Two modes: local (no

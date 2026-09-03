@@ -202,10 +202,15 @@ const (
 	coverageMeasurementVerdictTest = "node --test .github/scripts/coverage-verdict.test.mjs"
 	coverageFloorGateOutcomeExpr   = "steps.floor-gate.outcome"
 	coverageRunHeavyOutputExpr     = "needs.coverage-plan.outputs.run_heavy"
+	// The job-level `env:` entry, at its own indentation. `coverage.yml` also
+	// names the same expression inside an earlier STEP's `env:`, so anything
+	// looser than this would pass with the job-level binding removed.
+	coverageJobLevelRunHeavyBinding = "\n      RUN_HEAVY: ${{ needs.coverage-plan.outputs.run_heavy }}\n"
 	// The concurrency setting whose `true` left 71 of the last 120 pushes to
 	// main cancelled — a median 27 minutes into a ~52-minute measurement —
 	// against 6 successes.
-	coverageCancelInProgressOff = "cancel-in-progress: false"
+	coverageCancelInProgress   = "false"
+	coverageLatestMainGroupKey = "latest-main-push"
 )
 
 // TestCoverageContextStatesWhetherItMeasured pins tsouza/cerberus#2991.
@@ -266,10 +271,14 @@ func TestCoverageContextStatesWhetherItMeasured(t *testing.T) {
 	}
 	// RUN_HEAVY reaches the step from the job-level `env:` block rather than
 	// being restated per step, so the claim it is cross-checked against is
-	// pinned on the job.
-	if !strings.Contains(body, coverageRunHeavyOutputExpr) {
-		t.Errorf("%s job %q never binds RUN_HEAVY to %s, so the verdict has no claim to cross-check its "+
-			"evidence against", coverageWorkflowPath, coverageAggregatorJobName, coverageRunHeavyOutputExpr)
+	// pinned to THAT binding — at its own indentation, not merely somewhere in
+	// the job. The expression also appears in the aggregate step's own `env:`
+	// further up, so a substring scan over the whole job body would still pass
+	// with the job-level binding deleted and the verdict step reading nothing.
+	if !strings.Contains(body, coverageJobLevelRunHeavyBinding) {
+		t.Errorf("%s job %q does not bind RUN_HEAVY at the job level (%q), which is the only thing that "+
+			"delivers the claim to the verdict step's process environment",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageJobLevelRunHeavyBinding)
 	}
 
 	// The verdict's own unit suite runs on EVERY trigger, before any lane spends
@@ -289,15 +298,62 @@ func TestCoverageContextStatesWhetherItMeasured(t *testing.T) {
 // and main's push cadence is shorter than the run 68% of the time — 71 of the
 // last 120 pushes were cancelled, a median 27 minutes in, against 6 successes.
 //
-// The group is kept (a burst still coalesces to one QUEUED run, superseded at
-// queue time for zero runner minutes); the cancellation is not.
+// BOTH halves are pinned, because they are separable and only one of them was
+// wrong. The shared GROUP is kept: a burst still collapses to one pending run,
+// which costs nothing because a pending run holds no runner. The CANCELLATION
+// is not. Asserting only the cancellation would leave a green test over a
+// workflow that had lost its group and now runs N parallel 52-minute
+// measurements per burst.
 func TestCoverageMainMeasurementIsNotCancelledMidRun(t *testing.T) {
 	t.Parallel()
 
-	workflow := readFileString(t, coverageWorkflowPath)
-	if !strings.Contains(workflow, coverageCancelInProgressOff) {
-		t.Errorf("%s does not set %q; a push to main that cancels the in-flight run leaves the commit it "+
-			"killed — and every commit before it — unmeasured, which is how the lane reached 0 successes "+
-			"in 90 runs", coverageWorkflowPath, coverageCancelInProgressOff)
+	concurrency := workflowTopLevelConcurrency(t, readFileString(t, coverageWorkflowPath))
+
+	if got := concurrency["cancel-in-progress"]; got != coverageCancelInProgress {
+		t.Errorf("%s concurrency cancel-in-progress is %q, want %q; a push to main that cancels the "+
+			"in-flight run leaves the commit it killed — and every commit before it — unmeasured, which "+
+			"is how the lane reached 0 successes in 90 runs",
+			coverageWorkflowPath, got, coverageCancelInProgress)
 	}
+	if got := concurrency["group"]; !strings.Contains(got, coverageLatestMainGroupKey) {
+		t.Errorf("%s concurrency group is %q, which does not coalesce main pushes into the %q group; "+
+			"without it a burst of pushes runs N parallel ~52-minute measurements instead of one",
+			coverageWorkflowPath, got, coverageLatestMainGroupKey)
+	}
+}
+
+// workflowTopLevelConcurrency returns the top-level `concurrency:` mapping as
+// key -> value. Comment and blank lines are dropped, so a commented-out setting
+// reads as absent — which is what GitHub Actions does with it, and what a raw
+// substring scan over the file would get wrong.
+func workflowTopLevelConcurrency(t *testing.T, workflow string) map[string]string {
+	t.Helper()
+
+	values := map[string]string{}
+	inBlock := false
+	for _, line := range strings.Split(workflow, "\n") {
+		if line == "concurrency:" {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "  ") {
+			break
+		}
+		key, value, found := strings.Cut(trimmed, ":")
+		if !found {
+			continue
+		}
+		values[key] = strings.TrimSpace(value)
+	}
+	if len(values) == 0 {
+		t.Fatalf("%s has no top-level concurrency mapping to inspect", coverageWorkflowPath)
+	}
+	return values
 }
