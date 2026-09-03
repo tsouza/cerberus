@@ -1569,9 +1569,15 @@ const (
 
 	// FeatureLazyMaterialization stamps query_plan_optimize_lazy_materialization=1
 	// + query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT> on
-	// a Tempo `ORDER BY Timestamp DESC LIMIT N` search shape (internal/api/tempo
-	// handler.go's /search/recent and boundNewestTraces, structural_two_phase.go's
-	// phase-A ranking) — see internal/engine.eligibleForLazyMaterialization.
+	// any plan carrying an `ORDER BY Timestamp DESC LIMIT N` (or ASC) shape — see
+	// internal/engine.eligibleForLazyMaterialization, which is head-agnostic (it
+	// matches the chplan shape, not the query language). Tempo's handler.go
+	// builds it directly for /search/recent, boundNewestTraces, and
+	// structural_two_phase.go's phase-A ranking; since cerberus issue #2829,
+	// Loki's LogQL lowering (internal/logql/lower.go's maybePushLogLineLimit)
+	// also emits it for the request `limit`, for every log-line pipeline shape
+	// proven incapable of dropping a row in Go after SQL executes
+	// (pipelineCanDropRowsInGo).
 	// ClickHouse defers fetching every non-sort-key column (SpanAttributes,
 	// ResourceAttributes, Events, Links — the wide OTel span payload) until
 	// AFTER the ORDER BY + LIMIT has picked the surviving rows, instead of
@@ -2213,7 +2219,8 @@ var registry = []Feature{
 		MinVersion: Version{Major: 25, Minor: 11},
 		Stability:  Experimental,
 		AutoSelect: true,
-		Doc:        "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on Tempo's ORDER BY Timestamp DESC LIMIT N search shapes (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
+		Doc: "stamp query_plan_optimize_lazy_materialization=1 + query_plan_max_limit_for_lazy_materialization=<request LIMIT> on any Limit(OrderBy(...)) plan shape — Tempo's search " +
+			"paths and Loki's log-line limit pushdown (server >= 25.11, auto-enabled — result-equivalent, chDB-verified)",
 	},
 	{
 		ID:         FeatureExplainEstimate,

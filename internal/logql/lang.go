@@ -60,6 +60,18 @@ type Lang struct {
 	// see [LowerOpts.TextIndexLineFilter]. false (the zero value) renders
 	// byte-identical to today.
 	TextIndexLineFilter bool
+
+	// LogLineLimit and LogLineBackward carry Loki's request `limit` /
+	// `direction` for a log-line query, threaded into [LowerAtRangeOpts] —
+	// see [LowerOpts.LogLineLimit]. LogLineLimit <= 0 (the zero value)
+	// renders byte-identical to today: no SQL Limit pushdown, the
+	// Go-side clamp in internal/api/loki/handler.go stays authoritative.
+	// Metric queries thread these fields too (the handler doesn't know
+	// in advance whether a query is metric or log form), but
+	// [maybePushLogLineLimit] only ever wraps a genuine log-line plan —
+	// see its doc comment.
+	LogLineLimit    int64
+	LogLineBackward bool
 }
 
 // errorTypes mirrors the Loki errorType vocabulary the handler emits.
@@ -93,7 +105,11 @@ func (l *Lang) Parse(ctx context.Context, query string) (chplan.Node, engine.Met
 	}
 
 	lowerT := telemetry.ObserveStage(telemetry.StageLower, l.Name())
-	plan, err := LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step, LowerOpts{TextIndexLineFilter: l.TextIndexLineFilter})
+	plan, err := LowerAtRangeOpts(ctx, expr, l.Schema, l.Start, l.End, l.Step, LowerOpts{
+		TextIndexLineFilter: l.TextIndexLineFilter,
+		LogLineLimit:        l.LogLineLimit,
+		LogLineBackward:     l.LogLineBackward,
+	})
 	lowerT.Done(ctx)
 	if err != nil {
 		return nil, engine.Meta{}, &httperr.Error{

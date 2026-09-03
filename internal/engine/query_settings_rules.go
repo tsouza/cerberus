@@ -223,15 +223,21 @@ type SettingsRules struct {
 	// query_plan_optimize_lazy_materialization=1 +
 	// query_plan_max_limit_for_lazy_materialization=<the query's own LIMIT>
 	// on a plan carrying exactly one Limit(OrderBy(...)) shape (see
-	// eligibleForLazyMaterialization) — the Tempo `ORDER BY Timestamp DESC
-	// LIMIT N` search shapes (/search/recent, boundNewestTraces, structural
-	// two-phase's phase-A ranking). Driven by the lazy_materialization
-	// registry feature, which only resolves in on server >= 25.11; below
-	// that the feature is absent from the resolved set, so this flag is
-	// false and nothing is stamped (a no-op on every older server). The
-	// setting is result-equivalent (IO order only), so the eligibility
-	// check exists purely to size the max-limit knob to the request's own
-	// LIMIT rather than to guard correctness — see chopt.FeatureLazyMaterialization.
+	// eligibleForLazyMaterialization) — the head-agnostic check applies to
+	// whichever head's plan happens to carry the shape: the Tempo
+	// `ORDER BY Timestamp DESC LIMIT N` search shapes (/search/recent,
+	// boundNewestTraces, structural two-phase's phase-A ranking), and,
+	// since cerberus issue #2829, Loki log-line queries whose pipeline
+	// stages [internal/logql.pipelineCanDropRowsInGo] proves cannot still
+	// drop a row in Go after SQL executes — see
+	// internal/logql/lower.go's maybePushLogLineLimit. Driven by the
+	// lazy_materialization registry feature, which only resolves in on
+	// server >= 25.11; below that the feature is absent from the resolved
+	// set, so this flag is false and nothing is stamped (a no-op on every
+	// older server). The setting is result-equivalent (IO order only), so
+	// the eligibility check exists purely to size the max-limit knob to
+	// the request's own LIMIT rather than to guard correctness — see
+	// chopt.FeatureLazyMaterialization.
 	LazyMaterialization bool
 
 	// Metrics / Traces / Logs are the schema instances whose SortingKeyPrefix

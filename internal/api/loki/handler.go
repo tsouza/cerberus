@@ -402,7 +402,7 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 	// uses). Threading [ts - InstantLookback, ts] keeps the Scan
 	// filtered to that envelope so the SQL doesn't return every
 	// matching log in the table.
-	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts), q)
+	res, err := h.Engine.Query(ctx, h.langForRequest(ts.Add(-qlcommon.InstantLookback), ts, limit, dir), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -488,7 +488,7 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	res, err := h.Engine.Query(ctx, h.langForRangeRequest(start, end, step), q)
+	res, err := h.Engine.Query(ctx, h.langForRangeRequest(start, end, step, limit, dir), q)
 	if err != nil {
 		h.respondError(w, classifyEngineErr(err))
 		return
@@ -516,28 +516,48 @@ func (h *Handler) handleQueryRange(w http.ResponseWriter, r *http.Request) {
 }
 
 // langForRequest builds a per-request *logql.Lang carrying the request's
-// [start, end] window. The engine threads Start / End down through
+// [start, end] window plus the parsed `limit` / `direction` (see
+// [logql.Lang.LogLineLimit]). The engine threads Start / End down through
 // logql.LowerAt so every Scan(LogsTable) gains a
 // `Timestamp BETWEEN start AND end` predicate at the SQL layer. Without
 // it, /query and /query_range would return every matching log row
 // regardless of the requested window, violating the wire-format
-// contract.
-func (h *Handler) langForRequest(start, end time.Time) *logql.Lang {
-	return &logql.Lang{Schema: h.Schema, Start: start, End: end, TextIndexLineFilter: h.TextIndexLineFilter}
+// contract. limit/dir are threaded unconditionally — including for a
+// metric query, which the handler doesn't know it's building until the
+// lowering classifies the parsed expression — since
+// maybePushLogLineLimit only ever engages for a genuine log-line plan.
+func (h *Handler) langForRequest(start, end time.Time, limit int, dir logDirection) *logql.Lang {
+	return &logql.Lang{
+		Schema:              h.Schema,
+		Start:               start,
+		End:                 end,
+		TextIndexLineFilter: h.TextIndexLineFilter,
+		LogLineLimit:        int64(limit),
+		LogLineBackward:     dir == directionBackward,
+	}
 }
 
 // langForRangeRequest builds a per-request *logql.Lang carrying the
-// request's [start, end, step] for metric queries. The engine threads
-// Step alongside Start / End so range-aggregation lowerings switch to
-// the matrix RangeWindow shape (one row per anchor across [start, end]
-// spaced by step). Without this, metric queries whose seeded data
-// lies outside the last 5 minutes of wall-clock return an empty matrix
-// because the windowed-array filter anchors at `now64(9)`. Log queries
-// also use this entry point — Step is harmless on the non-metric path
-// since lowerCtx.rangeMode() only fires inside the range-aggregation
-// lowering.
-func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration) *logql.Lang {
-	return &logql.Lang{Schema: h.Schema, Start: start, End: end, Step: step, TextIndexLineFilter: h.TextIndexLineFilter}
+// request's [start, end, step] for metric queries, plus the parsed
+// `limit` / `direction` for the log-line case — see [langForRequest].
+// The engine threads Step alongside Start / End so range-aggregation
+// lowerings switch to the matrix RangeWindow shape (one row per anchor
+// across [start, end] spaced by step). Without this, metric queries
+// whose seeded data lies outside the last 5 minutes of wall-clock
+// return an empty matrix because the windowed-array filter anchors at
+// `now64(9)`. Log queries also use this entry point — Step is harmless
+// on the non-metric path since lowerCtx.rangeMode() only fires inside
+// the range-aggregation lowering.
+func (h *Handler) langForRangeRequest(start, end time.Time, step time.Duration, limit int, dir logDirection) *logql.Lang {
+	return &logql.Lang{
+		Schema:              h.Schema,
+		Start:               start,
+		End:                 end,
+		Step:                step,
+		TextIndexLineFilter: h.TextIndexLineFilter,
+		LogLineLimit:        int64(limit),
+		LogLineBackward:     dir == directionBackward,
+	}
 }
 
 // classifyEngineErr maps the error chains engine.Engine returns onto
