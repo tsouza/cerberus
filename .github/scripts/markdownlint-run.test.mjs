@@ -88,7 +88,13 @@ test('chooseEngine refuses every version that is not the pin', () => {
   for (const skewed of ['0.18.1', '0.20.0', '0.22.1', '0.24.0', 'not-a-version']) {
     const engine = chooseEngine(skewed);
     assert.equal(engine.kind, 'pinned', `${skewed} must not be allowed to run`);
-    assert.match(engine.reason, new RegExp(PINNED_CLI2_VERSION.replace(/\./g, '\\.')));
+    // Substring, not a constructed RegExp: hand-escaping `.` while leaving `\`
+    // unescaped is CodeQL's js/incomplete-sanitization, and the assertion never
+    // needed pattern semantics — it only needs the pin's version to be named.
+    assert.ok(
+      engine.reason.includes(PINNED_CLI2_VERSION),
+      `reason must name the pinned version ${PINNED_CLI2_VERSION}, got: ${engine.reason}`,
+    );
   }
 });
 
