@@ -194,8 +194,12 @@ per-layer "catches X / misses Y" guidance.
     Dependency-light Node ESM, `node:` builtins only, env-driven inputs documented at the top of the
     file, `::error::` / `::notice::` workflow commands, and `process.exit(1)` on failure. Trivial
     one-liners and official Actions usage stay inline. See `.github/scripts/README.md`.
-16. **A new `internal/**` package must be declared in `.go-arch-lint.yml`.** The gate is CI-only, so
-    an undeclared package passes locally and fails on the PR.
+16. **A new `internal/**` package must be declared in `.go-arch-lint.yml`, and — when it carries
+    statements — enrolled in the `test/coverage-floor/` ledger.** Two registrations, one change.
+    Both gates are CI-only, so a package missing either one passes locally and fails on the PR. The
+    ledger is generated (invariant 9 applies): derive the floor with `just coverage` +
+    `just update-coverage-floor`, or from a CI run's `coverage-profile` artifact — `docs/toolchain.md`
+    has the procedure.
 17. **Subagent worktree isolation.** Every git and filesystem operation happens inside the assigned
     worktree path, passed absolutely on every call. Never operate on another checkout of this
     repository — the object store is shared but the branch is not, so a stray `git commit` lands on

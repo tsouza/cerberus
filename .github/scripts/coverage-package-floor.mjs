@@ -13,6 +13,13 @@
 // must already have a positive floor. Declaration-only packages need no floor,
 // and there is no exclusion list to drift.
 //
+// It runs in coverage.yml's own `coverage-enrollment` job, which gates nothing
+// (tsouza/cerberus#2987). As a step inside `coverage-plan` it used to skip the
+// measuring lanes it failed ahead of, and the ledger is derived from those
+// lanes' merged profile — so the gate suppressed the one artifact its own
+// remedy needs. The required `coverage` context still reports this verdict;
+// see that workflow's header note.
+//
 // Usage:
 //   node .github/scripts/coverage-package-floor.mjs
 //
@@ -201,8 +208,12 @@ function main() {
   }
   if (failures.length > 0) {
     failure(
-      `${failures.join('\n\n')}\n\nRun the full 'just coverage' lane, restore any coverage regressions, then ` +
-        "run 'just update-coverage-floor'. A zero floor or an exclusion is not enrollment.",
+      `${failures.join('\n\n')}\n\nA floor is derived from a merged coverage profile, so obtain one ` +
+        "of those and run 'just update-coverage-floor' against it: either 'just coverage' locally, or " +
+        "'gh workflow run coverage.yml --ref <branch>' and download that run's coverage-profile " +
+        'artifact — its cover-merged.out is uploaded even when the floor gate is red. Restore any ' +
+        'coverage regression rather than lowering a floor. See docs/toolchain.md. A zero floor or an ' +
+        'exclusion is not enrollment.',
     );
   }
 
