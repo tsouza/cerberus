@@ -284,7 +284,13 @@ what actually runs.
   left 71 of its last 120 push runs killed a median 27 minutes in, against 6
   successes; that is not coalescing, it is starvation. Opting out is a
   declared enrollment here, never something a workflow can do to itself by
-  editing one line.
+  editing one line. `CANCEL_COALESCED_WORKFLOWS` is its reasoned complement
+  (tsouza/cerberus#2994) — the enrolled workflows for which mid-flight
+  cancellation is still correct, each carrying the measurement behind that
+  answer. The two tiers must partition the enrollment exactly, so a newly
+  enrolled workflow cannot inherit cancellation as an unexamined default, and
+  the pin is two-sided: a member of either tier that carries the other tier's
+  `cancel-in-progress` value fails the audit.
   - Env: `CI_LANE_REGISTRY` (optional; default `.github/ci-lanes.json`).
   - Exit: `0` only when enrollment, registry posture, exclusions, and workflow
     expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the

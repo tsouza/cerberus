@@ -118,6 +118,17 @@ outlasts the median push gap needs — `coverage.yml` takes ~52 minutes against 
 38-minute median cadence, and cancelling it left 71 of 120 pushes measured by
 nothing at all.
 
+Enrollment in that tier is a per-workflow decision, not a default. Each enrolled
+workflow answers one ordered question, and the recorded answer is what puts it
+in `QUEUE_COALESCED_WORKFLOWS` or in `CANCEL_COALESCED_WORKFLOWS` beside it:
+does a superseded run still carry information its successor will not reproduce,
+and if so, is the measured loss material? A lane whose output is a deterministic
+function of the tree answers no — the newer tree's verdict strictly replaces the
+older one — and keeps cancelling. A lane that emits a per-commit measurement,
+publishes a score, or explores randomly-seeded input answers yes. The audit
+requires the two tiers to partition the enrollment exactly, so a new enrolled
+workflow cannot inherit mid-flight cancellation as an unexamined default.
+
 One subtlety on the three `compatibility/<head>` checks: each gates in two
 layers. The harness is *scored* — it accumulates per-case results into
 `compat-score.json` plus a per-case roster in `compat-cases.json`, and exits

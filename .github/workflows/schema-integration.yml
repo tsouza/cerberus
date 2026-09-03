@@ -50,7 +50,29 @@ concurrency:
   # Main pushes and matching cron schedules replace only their own modes. PR
   # and manual qualification remain unique and cannot be cancelled.
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
+  # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
+  #
+  # The GROUP above is what makes deep-main work replaceable, and it keeps
+  # working: GitHub holds at most ONE pending run per group, so a burst of
+  # pushes is still superseded at QUEUE time, where a pending run holds no
+  # runner and costs nothing. Killing a run that is already EXECUTING is a
+  # separate act, and it only pays when the killed work was nearly worthless.
+  #
+  # READ THAT DIRECTION BEFORE "OPTIMISING" THIS LINE BACK TO AN EXPRESSION.
+  # `false` looks like the setting that wastes runners and the measurement says
+  # the opposite: cancellation SPENT the minutes below and threw the result
+  # away, then re-ran the same work on the next commit. The tier and the
+  # decision rule behind it live in QUEUE_COALESCED_WORKFLOWS in
+  # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
+  # two halves ever disagree.
+  #
+  # Measured on this lane: only 21% of its main-push runs CANCELLED, but the
+  # median kill lands at 86% of a completed run — the LATEST kill point of any
+  # enrolled workflow — with 8 of 21 past the 90% mark, so 17% of the lane's
+  # runner minutes (135 min in 74.5 h) buy nothing. Cancelling here almost
+  # never saves work: it discards an all-but-finished real-ClickHouse DDL
+  # differential a few seconds before it would have reported.
+  cancel-in-progress: false
 
 jobs:
   # Docs-only PRs short-circuit the Docker work. See ci.yml / chdb.yml for the

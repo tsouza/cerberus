@@ -88,7 +88,28 @@ concurrency:
   # Artifact calls, dispatches, and maintenance qualification use a unique
   # run-id group and can neither queue behind nor cancel source work.
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
-  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') }}
+  # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
+  #
+  # The GROUP above is what makes deep-main work replaceable, and it keeps
+  # working: GitHub holds at most ONE pending run per group, so a burst of
+  # pushes is still superseded at QUEUE time, where a pending run holds no
+  # runner and costs nothing. Killing a run that is already EXECUTING is a
+  # separate act, and it only pays when the killed work was nearly worthless.
+  #
+  # READ THAT DIRECTION BEFORE "OPTIMISING" THIS LINE BACK TO AN EXPRESSION.
+  # `false` looks like the setting that wastes runners and the measurement says
+  # the opposite: cancellation SPENT the minutes below and threw the result
+  # away, then re-ran the same work on the next commit. The tier and the
+  # decision rule behind it live in QUEUE_COALESCED_WORKFLOWS in
+  # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
+  # two halves ever disagree.
+  #
+  # Measured on this lane: 36% of its main-push runs CANCELLED, kills a median
+  # 11.3 min into a 22.8-min run (49%) with 8 of 36 past the 90% mark, and 25%
+  # of the lane's runner minutes (517 min in 74.5 h) discarded. The tier jobs
+  # upload the per-tier run reports that are the EVIDENCE half of this lane's
+  # coverage ratchet, so a killed run leaves that evidence unwritten.
+  cancel-in-progress: false
 
 jobs:
   # Enumerate the Gherkin features, hold them to the 26-story anchor, and
