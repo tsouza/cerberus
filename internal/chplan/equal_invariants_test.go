@@ -2530,3 +2530,230 @@ func TestHistogramProjection_Equal_InputNilBoth(t *testing.T) {
 		t.Errorf("both Input nil with equal sibling fields should be Equal")
 	}
 }
+
+// -----------------------------------------------------------------------
+// Lambda / BareIdent / Subscript / LabelJoin — the higher-order-function
+// Expr kinds. This file's header claims exhaustive Equal coverage of the
+// IR; these four kinds were added after it was written and were never
+// enrolled, so their Equal methods reached cerberus issue #2991 with the
+// nil-handling branches below entirely unexercised.
+//
+// Equal is what the optimizer's fixpoint driver uses to decide a rewrite
+// changed nothing and it may stop. An Equal that reports two structurally
+// different trees as equal therefore does not fail — it silently drops the
+// rewrite, and the query is emitted from the pre-rewrite plan.
+// -----------------------------------------------------------------------
+
+func TestLambda_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	a := &chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.BareIdent{Name: "v"}}
+	b := &chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.BareIdent{Name: "v"}}
+	if !a.Equal(b) {
+		t.Fatalf("identical Lambda trees should be Equal")
+	}
+	if !b.Equal(a) {
+		t.Fatalf("Equal must be symmetric")
+	}
+}
+
+func TestLambda_Equal_Negative(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.Lambda {
+		return &chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.BareIdent{Name: "v"}}
+	}
+	cases := []struct {
+		name  string
+		other chplan.Expr
+	}{
+		{"different param count", &chplan.Lambda{Params: []string{"k"}, Body: &chplan.BareIdent{Name: "v"}}},
+		{"different param name", &chplan.Lambda{Params: []string{"k", "w"}, Body: &chplan.BareIdent{Name: "v"}}},
+		// Param ORDER is load-bearing: `(k, v) -> v` and `(v, k) -> v`
+		// bind the lambda's argument to different columns.
+		{"swapped param order", &chplan.Lambda{Params: []string{"v", "k"}, Body: &chplan.BareIdent{Name: "v"}}},
+		{"different body", &chplan.Lambda{Params: []string{"k", "v"}, Body: &chplan.BareIdent{Name: "k"}}},
+		{"other kind entirely", &chplan.BareIdent{Name: "v"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if base().Equal(tc.other) {
+				t.Errorf("%s should not be Equal", tc.name)
+			}
+			if tc.other.Equal(base()) {
+				t.Errorf("%s should not be Equal (reverse)", tc.name)
+			}
+		})
+	}
+}
+
+// TestLambda_Equal_BodyNil pins the `l.Body == nil || o.Body == nil`
+// branch. Mutating `||` to `&&` makes the one-sided case fall through to
+// `l.Body.Equal(o.Body)` and dereference a nil Expr.
+func TestLambda_Equal_BodyNil(t *testing.T) {
+	t.Parallel()
+	nilBody := &chplan.Lambda{Params: []string{"v"}}
+	withBody := &chplan.Lambda{Params: []string{"v"}, Body: &chplan.BareIdent{Name: "v"}}
+	if nilBody.Equal(withBody) {
+		t.Errorf("nil vs non-nil Body should not be Equal")
+	}
+	if withBody.Equal(nilBody) {
+		t.Errorf("nil vs non-nil Body should not be Equal (reverse)")
+	}
+	if !nilBody.Equal(&chplan.Lambda{Params: []string{"v"}}) {
+		t.Errorf("both Body nil with equal Params should be Equal")
+	}
+}
+
+func TestBareIdent_Equal(t *testing.T) {
+	t.Parallel()
+	a := &chplan.BareIdent{Name: "v"}
+	if !a.Equal(&chplan.BareIdent{Name: "v"}) {
+		t.Errorf("identical BareIdent should be Equal")
+	}
+	if a.Equal(&chplan.BareIdent{Name: "k"}) {
+		t.Errorf("different Name should not be Equal")
+	}
+	// A BareIdent renders unquoted while a ColumnRef renders backticked, so
+	// the two are different SQL even for the same spelling — that
+	// distinction is the whole reason BareIdent exists (see its doc
+	// comment), and Equal must not conflate them.
+	if a.Equal(&chplan.ColumnRef{Name: "v"}) {
+		t.Errorf("BareIdent should not Equal a ColumnRef with the same Name")
+	}
+}
+
+func TestSubscript_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	a := &chplan.Subscript{Container: &chplan.BareIdent{Name: "arr"}, Key: &chplan.BareIdent{Name: "i"}}
+	b := &chplan.Subscript{Container: &chplan.BareIdent{Name: "arr"}, Key: &chplan.BareIdent{Name: "i"}}
+	if !a.Equal(b) {
+		t.Fatalf("identical Subscript trees should be Equal")
+	}
+	if !b.Equal(a) {
+		t.Fatalf("Equal must be symmetric")
+	}
+}
+
+func TestSubscript_Equal_Negative(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.Subscript {
+		return &chplan.Subscript{Container: &chplan.BareIdent{Name: "arr"}, Key: &chplan.BareIdent{Name: "i"}}
+	}
+	cases := []struct {
+		name  string
+		other chplan.Expr
+	}{
+		{"different Container", &chplan.Subscript{Container: &chplan.BareIdent{Name: "other"}, Key: &chplan.BareIdent{Name: "i"}}},
+		{"different Key", &chplan.Subscript{Container: &chplan.BareIdent{Name: "arr"}, Key: &chplan.BareIdent{Name: "j"}}},
+		// Container and Key are both arbitrary Exprs, so a comparison that
+		// checked the pair as an unordered set would call these equal —
+		// `arr[i]` and `i[arr]` are not the same read.
+		{"Container and Key swapped", &chplan.Subscript{Container: &chplan.BareIdent{Name: "i"}, Key: &chplan.BareIdent{Name: "arr"}}},
+		{"other kind entirely", &chplan.BareIdent{Name: "arr"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if base().Equal(tc.other) {
+				t.Errorf("%s should not be Equal", tc.name)
+			}
+			if tc.other.Equal(base()) {
+				t.Errorf("%s should not be Equal (reverse)", tc.name)
+			}
+		})
+	}
+}
+
+// TestSubscript_Equal_NilBranches pins both nil guards independently.
+// Subscript carries TWO optional child Exprs, so each guard has its own
+// one-sided-nil and both-nil case, and the Key guard is only reachable
+// once the Container comparison has passed.
+func TestSubscript_Equal_NilBranches(t *testing.T) {
+	t.Parallel()
+	container := &chplan.BareIdent{Name: "arr"}
+	key := &chplan.BareIdent{Name: "i"}
+
+	t.Run("one-sided nil Container", func(t *testing.T) {
+		t.Parallel()
+		a := &chplan.Subscript{Key: key}
+		b := &chplan.Subscript{Container: container, Key: key}
+		if a.Equal(b) || b.Equal(a) {
+			t.Errorf("nil vs non-nil Container should not be Equal")
+		}
+	})
+	t.Run("both Containers nil compares the Keys", func(t *testing.T) {
+		t.Parallel()
+		if !(&chplan.Subscript{Key: key}).Equal(&chplan.Subscript{Key: &chplan.BareIdent{Name: "i"}}) {
+			t.Errorf("both Container nil with equal Keys should be Equal")
+		}
+		if (&chplan.Subscript{Key: key}).Equal(&chplan.Subscript{Key: &chplan.BareIdent{Name: "j"}}) {
+			t.Errorf("both Container nil with DIFFERENT Keys should not be Equal — the nil guard must not short-circuit past the Key check")
+		}
+	})
+	t.Run("one-sided nil Key", func(t *testing.T) {
+		t.Parallel()
+		a := &chplan.Subscript{Container: container}
+		b := &chplan.Subscript{Container: container, Key: key}
+		if a.Equal(b) || b.Equal(a) {
+			t.Errorf("nil vs non-nil Key should not be Equal")
+		}
+	})
+	t.Run("both Keys nil", func(t *testing.T) {
+		t.Parallel()
+		if !(&chplan.Subscript{Container: container}).Equal(&chplan.Subscript{Container: &chplan.BareIdent{Name: "arr"}}) {
+			t.Errorf("both Key nil with equal Containers should be Equal")
+		}
+	})
+}
+
+func TestLabelJoin_Equal_Positive(t *testing.T) {
+	t.Parallel()
+	mk := func() *chplan.LabelJoin {
+		return &chplan.LabelJoin{
+			Map:       &chplan.ColumnRef{Name: "Attributes"},
+			Dst:       "dst",
+			Separator: "-",
+			Srcs:      []string{"a", "b"},
+		}
+	}
+	if !mk().Equal(mk()) {
+		t.Fatalf("identical LabelJoin trees should be Equal")
+	}
+}
+
+func TestLabelJoin_Equal_Negative(t *testing.T) {
+	t.Parallel()
+	base := func() *chplan.LabelJoin {
+		return &chplan.LabelJoin{
+			Map:       &chplan.ColumnRef{Name: "Attributes"},
+			Dst:       "dst",
+			Separator: "-",
+			Srcs:      []string{"a", "b"},
+		}
+	}
+	cases := []struct {
+		name  string
+		other chplan.Expr
+	}{
+		{"different Dst", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "Attributes"}, Dst: "other", Separator: "-", Srcs: []string{"a", "b"}}},
+		{"different Separator", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "Attributes"}, Dst: "dst", Separator: "_", Srcs: []string{"a", "b"}}},
+		{"different Srcs length", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "Attributes"}, Dst: "dst", Separator: "-", Srcs: []string{"a"}}},
+		{"different Srcs content", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "Attributes"}, Dst: "dst", Separator: "-", Srcs: []string{"a", "c"}}},
+		// label_join concatenates src values IN ORDER, so reordering Srcs
+		// produces a different joined value for the same input series.
+		{"reordered Srcs", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "Attributes"}, Dst: "dst", Separator: "-", Srcs: []string{"b", "a"}}},
+		{"different Map", &chplan.LabelJoin{Map: &chplan.ColumnRef{Name: "ResourceAttributes"}, Dst: "dst", Separator: "-", Srcs: []string{"a", "b"}}},
+		{"other kind entirely", &chplan.ColumnRef{Name: "Attributes"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if base().Equal(tc.other) {
+				t.Errorf("%s should not be Equal", tc.name)
+			}
+			if tc.other.Equal(base()) {
+				t.Errorf("%s should not be Equal (reverse)", tc.name)
+			}
+		})
+	}
+}
