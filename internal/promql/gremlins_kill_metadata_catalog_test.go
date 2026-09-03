@@ -216,7 +216,8 @@ func TestFloatOnlyAggOverMixedExpHistogramSetOp_ParamlessOpsAccepted(t *testing.
 	if !ok {
 		t.Fatalf("floatOnlyAggOverMixedExpHistogramSetOp(%q) = ok false; want true — `min` carries "+
 			"no parameter, so the QUANTILE/Param guard must not fire (mutants "+
-			"`!=`->`==` at :91:44 and `&&`->`||` at :91:31 both make it fire)", q)
+			"`!=`->`==` on histogram_native_mixed_or_aggregate_float_only.go:`agg.Param != nil` "+
+			"and `&&`->`||` on the `&&` joining it to the Op test both make it fire)", q)
 	}
 	if agg == nil || agg.Op != parser.MIN {
 		t.Fatalf("floatOnlyAggOverMixedExpHistogramSetOp(%q) returned agg %#v; want the MIN "+
@@ -252,8 +253,9 @@ func TestFloatOnlyAggOverMixedExpHistogramSetOp_QuantileKeepsItsParam(t *testing
 	agg, _, ok := floatOnlyAggOverMixedExpHistogramSetOp(expr, s, lowerCtx{})
 	if !ok {
 		t.Fatalf("floatOnlyAggOverMixedExpHistogramSetOp(%q) = ok false; want true — QUANTILE is "+
-			"the op the Param exception exists for (mutant `!=`->`==` at :91:12 rejects every "+
-			"quantile instead)", q)
+			"the op the Param exception exists for (mutant `!=`->`==` on "+
+			"histogram_native_mixed_or_aggregate_float_only.go:`agg.Op != parser.QUANTILE` "+
+			"rejects every quantile instead)", q)
 	}
 	if agg == nil || agg.Op != parser.QUANTILE {
 		t.Fatalf("floatOnlyAggOverMixedExpHistogramSetOp(%q) returned agg %#v; want the QUANTILE "+

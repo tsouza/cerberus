@@ -528,11 +528,14 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 }
 
 // TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn pins the
-// `&&` boundary of the materialise gate [lowerRangeAggregation] reaches
-// AND the `!=` invariant in [hasParserMergedLabels]:
+// `!=` invariant in [hasParserMergedLabels], reached through the
+// second of [materialiseParserMergedLabels]'s two guards:
 //
-//	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
-//	    // materialise into `_logql_merged_labels` intermediate column
+//	if !hasUnwrap && !outerByNeedsParsedLabels {
+//		return inner, nil
+//	}
+//	if !hasParserMergedLabels(labelsExpr, s) {
+//		return inner, nil
 //	}
 //
 //	func hasParserMergedLabels(...) bool {
@@ -542,28 +545,33 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 //
 // A bare-unwrap query (no `| logfmt` / `| json` / `| regexp` parser
 // stage) reads its labels map directly from ResourceAttributes — so
-// [hasParserMergedLabels] must return false, the materialise gate's
-// condition short-circuits to the else-if branch, and the SQL never
-// references the `_logql_merged_labels` intermediate alias.
+// [hasParserMergedLabels] must return false, the SECOND guard returns
+// early, and the SQL never references the `_logql_merged_labels`
+// intermediate alias.
 //
-// Two LIVED mutants both surface as the SAME observable regression on
-// this fixture, so the single assertion kills both at once:
-//
-//   - INVERT_LOGICAL on the materialise gate's `&&`: `&&` → `||`. With
-//     Unwrap non-nil the condition is now always true regardless of
-//     hasParserMergedLabels; the materialised-column branch fires even
-//     on bare unwrap.
+// The mutant this fixture kills:
 //
 //   - CONDITIONALS_NEGATION on
 //     range_aggregation.go:`col.Name != s.ResourceAttributesColumn`:
 //     `!=` → `==`. With labelsExpr = `ColumnRef(ResourceAttributes)`,
-//     hasParserMergedLabels returns true instead of false; the
-//     materialise gate's condition becomes true; the
-//     materialised-column branch fires.
+//     hasParserMergedLabels returns true instead of false, so the
+//     second guard stops returning early and the materialised-column
+//     branch fires, carrying the `_logql_merged_labels` alias into the
+//     bare-unwrap SQL. Applying that rewrite by hand fails this test;
+//     reverting it passes.
 //
-// Both mutations cause the bare-unwrap SQL to carry the
-// `_logql_merged_labels` alias the materialised Project introduces.
-// Assert its absence — the original code path keeps the SQL lean.
+// The INVERT_LOGICAL mutant on the FIRST guard's `&&` is NOT killed
+// here, and no bare-unwrap fixture can kill it: with
+// [hasParserMergedLabels] false, the original reads `!true && !false`
+// → false and falls through to the second guard, which returns `inner`,
+// while the `||` mutant reads `!true || !false` → true and returns
+// `inner` immediately. Both leave the alias ABSENT and the assertion
+// below passes either way. That mutant dies in
+// [TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn]
+// instead, whose `| logfmt` fixture makes [hasParserMergedLabels] true.
+//
+// Assert the alias's absence — the original code path keeps the SQL
+// lean.
 func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	t.Parallel()
 
@@ -602,40 +610,43 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 
 	// The materialised-column alias `_logql_merged_labels` is the
 	// fingerprint of the two-stage Project path. If it appears in the
-	// emitted SQL for a bare-unwrap query, EITHER:
-	//   - the materialise gate's `&&` flipped to `||` (mutant entered
-	//     the branch despite hasParserMergedLabels == false), OR
-	//   - the `col.Name != s.ResourceAttributesColumn` invariant
-	//     flipped to `==` (hasParserMergedLabels reported true for a
-	//     bare ResourceAttributes ColumnRef).
+	// emitted SQL for a bare-unwrap query, the
+	// `col.Name != s.ResourceAttributesColumn` invariant flipped to
+	// `==` and hasParserMergedLabels reported true for a bare
+	// ResourceAttributes ColumnRef.
 	if strings.Contains(sqlStr, "_logql_merged_labels") {
 		t.Errorf("bare-unwrap SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
-			"  → INVERT_LOGICAL on the materialise gate (`&&` → `||`) OR\n"+
 			"  → CONDITIONALS_NEGATION on range_aggregation.go:`col.Name != s.ResourceAttributesColumn` (`!=` → `==`) lived\nsql=%s", sqlStr)
 	}
 
 	// Companion positive assertion: the bare-unwrap path MUST surface
 	// the `MapWithoutKeys` strip via the `mapFilter((k, v) -> NOT (k IN
-	// (?)), ...)` shape compiled from the else-if branch. Without it
-	// the test only checks one direction of the toggle.
+	// (?)), ...)` shape compiled from the non-materialised path. Without
+	// it the test only checks one direction of the toggle.
 	if !strings.Contains(sqlStr, "mapFilter((k, v) -> NOT (k IN") {
-		t.Errorf("bare-unwrap SQL missing the else-if branch's mapFilter strip shape\nsql=%s", sqlStr)
+		t.Errorf("bare-unwrap SQL missing the non-materialised path's mapFilter strip shape\nsql=%s", sqlStr)
 	}
 }
 
 // TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn
 // is the dual of [TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn]:
 // when the unwrap query DOES carry a parser stage, the SQL MUST surface
-// the `_logql_merged_labels` materialised-column alias. Together with
-// the bare-unwrap test, this pins both legs of the materialise gate's
-// `&&` condition and the `col.Name != s.ResourceAttributesColumn`
-// return so a flipped operator can't pass both halves silently.
+// the `_logql_merged_labels` materialised-column alias. Between them the
+// two fixtures pin both guards of [materialiseParserMergedLabels] — this
+// one the first guard's `&&`, the bare-unwrap one the
+// `col.Name != s.ResourceAttributesColumn` return — so a flipped
+// operator cannot pass both.
 //
-// The materialise gate's INVERT_LOGICAL mutant flips `&&` to `||`. With Unwrap
-// non-nil AND hasParserMergedLabels true, both legs of the original
-// `&&` are true so the mutant's `||` also evaluates true — the test
-// covers this case to confirm the happy path stays intact (no false
-// positive from the dual assertion).
+// This test is where the INVERT_LOGICAL mutant on
+// range_aggregation.go:`if !hasUnwrap && !outerByNeedsParsedLabels`
+// dies. On this fixture `hasUnwrap` is true and
+// `outerByNeedsParsedLabels` false, so the original guard reads
+// `!true && !false` → false and falls through to materialise, while the
+// `||` mutant reads `!true || !false` → true and returns `inner`
+// unmodified — dropping the very alias the assertion below requires.
+// Applying that rewrite by hand fails this test; reverting it passes.
+// The bare-unwrap dual cannot kill it: there [hasParserMergedLabels] is
+// false, so original and mutant both return `inner`.
 //
 // The CONDITIONALS_NEGATION mutant on
 // range_aggregation.go:`col.Name != s.ResourceAttributesColumn` flips

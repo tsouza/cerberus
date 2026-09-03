@@ -199,13 +199,16 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 		// backtick MUST end the string and a subsequent `b.c=...`
 		// matcher MUST still be rewritten.
 		//
-		// Pins the FIRST `&&` in
-		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)` at
-		// lokiAdvanceInString. An INVERT_LOGICAL mutant `&&` → `||`
-		// makes the escape branch fire even inside backtick strings,
-		// which would consume the closing backtick as the "escaped
-		// char" and leave the walker permanently inside the string —
-		// the trailing `b.c` would then NOT be rewritten.
+		// Pins the per-state split at the head of lokiAdvanceInString,
+		// dotted_labels.go:`if state == lokiInBacktick`, on the
+		// backslash route. A CONDITIONALS_NEGATION mutant flipping it
+		// to `!=` drops a backtick body through to the escape branch,
+		// which consumes the closing backtick as the "escaped char"
+		// and leaves the walker permanently inside the string — the
+		// trailing `b.c` would then NOT be rewritten. Applying that
+		// rewrite by hand fails this case; reverting it passes. The
+		// no-backslash case below reaches the same mutant by the other
+		// route.
 		{
 			name: "backtick_with_backslash_then_dotted_key",
 			in:   "{a=`x\\`, b.c=\"y\"}",
@@ -216,16 +219,14 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 		// the closing `"` at the next position ends the string and a
 		// subsequent `c.d=...` matcher MUST be rewritten.
 		//
-		// Pins the SECOND `&&` in
-		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)`. An
-		// INVERT_LOGICAL mutant turning the second `&&` into `||`
-		// expands the predicate to
-		// `(state != lokiInBacktick && ch == '\\') || i+1 < len(q)` —
-		// which fires the escape path on EVERY non-final byte
-		// regardless of backslash presence. With a single-byte body
-		// the mutant swallows the closing `"` as the "escaped byte",
-		// leaving the walker permanently inside the string and
-		// skipping the trailing `c.d` rewrite.
+		// Pins the `&&` of the escape-branch guard, whose right operand
+		// is dotted_labels.go:`i+1 < len(q)`. An INVERT_LOGICAL mutant
+		// turning that `&&` into `||` fires the escape path on EVERY
+		// non-final byte regardless of backslash presence. With a
+		// single-byte body the mutant swallows the closing `"` as the
+		// "escaped byte", leaving the walker permanently inside the
+		// string and skipping the trailing `c.d` rewrite. Applying
+		// that rewrite by hand fails this case; reverting it passes.
 		{
 			name: "double_string_one_byte_body_then_dotted_key",
 			in:   `{a="b",c.d="y"}`,

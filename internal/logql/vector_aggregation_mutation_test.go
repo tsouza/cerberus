@@ -122,15 +122,16 @@ func lowerTopKIdentityExpr(t *testing.T, query string, s schema.Logs) chplan.Exp
 // surfaced as a synthesised `ServiceName` key.
 //
 // Mutants this pins:
-//   - 390:16 CONDITIONALS_NEGATION (`!= nil` → `== nil`): Grouping is
-//     non-nil here, so the mutant's first operand becomes false ⇒ guard
-//     skipped ⇒ ServiceName NOT surfaced. Assertion (present) fails.
-//   - 390:72 CONDITIONALS_NEGATION (`> 0` → `<= 0`): len(Groups)==1, so
-//     `<= 0` is false ⇒ guard skipped ⇒ ServiceName NOT surfaced.
-//     Assertion (present) fails.
+//   - CONDITIONALS_NEGATION on `e.Grouping != nil` (`!= nil` → `== nil`):
+//     Grouping is non-nil here, so the mutant's first operand becomes false ⇒
+//     guard skipped ⇒ ServiceName NOT surfaced. Assertion (present) fails.
+//   - CONDITIONALS_NEGATION on `len(e.Grouping.Groups) > 0` (`> 0` → `<= 0`):
+//     len(Groups)==1, so `<= 0` is false ⇒ guard skipped ⇒ ServiceName NOT
+//     surfaced. Assertion (present) fails.
 //
-// (The two INVERT_LOGICAL mutants at 390:23 / 390:46 still surface the
-// key for this `by`-input — they're killed by the `without` test below.)
+// (The two INVERT_LOGICAL mutants on the guard's two `&&` operators still
+// surface the key for this `by`-input — they're killed by the `without` test
+// below.)
 func TestSortableShapedInnerThreadsOuterByColumn(t *testing.T) {
 	t.Parallel()
 
