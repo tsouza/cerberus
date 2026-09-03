@@ -147,17 +147,30 @@ func (h *Handler) respondTagValues(w http.ResponseWriter, r *http.Request, route
 
 	resolved, _ := resolveTagName(name, h.Schema)
 
+	// An instrumentation-scope request against a schema that carries no
+	// instrumentation-scope attribute column (schema.Traces.
+	// ScopeAttributesColumn == "", the default) has nothing to search —
+	// mirror attributeTagScopes()'s treatment of the same unconfigured
+	// bucket for /search/tags (the bucket is simply absent, a 200 with
+	// no values) rather than build SQL against an empty column name
+	// (cerberus issue #3010).
+	instrumentationUnconfigured := resolved.MapScope == attrMapScopeInstrumentation && h.Schema.ScopeAttributesColumn == ""
+
 	// Catalog-eligible fast path (cerberus issue #2771): see
 	// tagValuesCatalogEligible's doc comment for the exact rule. A miss
 	// falls straight through to the SAME live per-key lookup every other
-	// request already takes — that path is untouched below.
+	// request already takes — that path is untouched below. (The
+	// catalog never covers instrumentation scope regardless of
+	// configuration — tagValuesCatalogEligible excludes it — so
+	// instrumentationUnconfigured's guard below is what actually skips
+	// the live query for the unconfigured case.)
 	var values []string
 	valueTyp := "string"
 	fromCatalog := false
 	if h.TagCatalogEnabled && tagValuesCatalogEligible(resolved, filter, windowless) {
 		values, fromCatalog = h.tagValuesFromCatalog(ctx, resolved)
 	}
-	if !fromCatalog {
+	if !fromCatalog && !instrumentationUnconfigured {
 		var (
 			sqlStr string
 			args   []any
@@ -281,6 +294,16 @@ func buildIntrinsicValuesSQL(s schema.Traces, col string, filter chsql.Frag, sta
 // column short-circuit (#2776/#2870 only ever provision materialized
 // columns for SpanAttributes/ResourceAttributes keys) nor the scalar
 // mapAtFrag/mapContainsFrag shape below applies to them.
+//
+// attrMapScopeInstrumentation (cerberus issue #3010) is the opposite
+// case: the instrumentation-scope attribute map IS a flat Map(String,
+// String), so it takes the SAME mapAtFrag/mapContainsFrag shape as
+// attrMapScopeResource/Span, just against s.ScopeAttributesColumn. The
+// caller (respondTagValues) never invokes this function for that scope
+// when s.ScopeAttributesColumn == "" (the default, unconfigured case) —
+// it short-circuits to an empty result instead, the same treatment
+// attributeTagScopes() already gives an unconfigured instrumentation
+// bucket for /search/tags.
 func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, filter chsql.Frag, start, end time.Time) (string, []any) {
 	switch scope {
 	case attrMapScopeEvent:
@@ -320,6 +343,13 @@ func buildAttributeValuesSQL(s schema.Traces, name string, scope attrMapScope, f
 	case attrMapScopeSpan:
 		selFrag = chsql.As(mapAtFrag(s.AttributesColumn, name), "v")
 		whereFrag = mapContainsFrag(s.AttributesColumn, name)
+	case attrMapScopeInstrumentation:
+		// cerberus issue #3010: the flat-Map shape, same as
+		// Resource/Span above — never reached with an empty
+		// s.ScopeAttributesColumn; respondTagValues guards that case
+		// before calling this function at all.
+		selFrag = chsql.As(mapAtFrag(s.ScopeAttributesColumn, name), "v")
+		whereFrag = mapContainsFrag(s.ScopeAttributesColumn, name)
 	default: // attrMapScopeAny
 		selFrag = attrValueArrayJoinFrag(s.AttributesColumn, s.ResourceAttributesColumn, name)
 		whereFrag = mapContainsAnyFrag(s.AttributesColumn, s.ResourceAttributesColumn, name)
@@ -591,6 +621,17 @@ const (
 	// attrMapScopeLink is attrMapScopeEvent's sibling for the Nested
 	// Links.Attributes family (Tempo's `link.x` scoped form).
 	attrMapScopeLink
+	// attrMapScopeInstrumentation consults only the instrumentation-scope
+	// attribute map (Tempo's `instrumentation.x` scoped form) — cerberus
+	// issue #3010, mirroring #2850's event/link fix. Unlike event/link,
+	// the instrumentation-scope column is a flat Map(String, String), not
+	// Nested, so this routes through the SAME mapAtFrag/mapContainsFrag
+	// shape attrMapScopeResource/Span use, not buildNestedAttributeValuesSQL.
+	// The underlying column (schema.Traces.ScopeAttributesColumn) is empty
+	// by default — see resolveTagName and buildAttributeValuesSQL for the
+	// empty-column guard that keeps this scope from ever building SQL
+	// against a nonexistent column.
+	attrMapScopeInstrumentation
 )
 
 func (s attrMapScope) String() string {
@@ -603,6 +644,8 @@ func (s attrMapScope) String() string {
 		return "event"
 	case attrMapScopeLink:
 		return "link"
+	case attrMapScopeInstrumentation:
+		return "instrumentation"
 	default:
 		return "any"
 	}
@@ -682,6 +725,15 @@ func resolveTagName(name string, s schema.Traces) (resolvedTagName, error) {
 		ms = attrMapScopeEvent
 	case traceql.AttributeScopeLink:
 		ms = attrMapScopeLink // same fix, for Links.Attributes.
+	case traceql.AttributeScopeInstrumentation:
+		// cerberus issue #3010: same fix as #2850 above, for an explicit
+		// `instrumentation.x` tag-values request against the
+		// instrumentation-scope attribute map — see
+		// buildAttributeValuesSQL's attrMapScopeInstrumentation case for
+		// the flat-Map SQL shape and respondTagValues for the guard that
+		// keeps an unconfigured schema.Traces.ScopeAttributesColumn from
+		// ever building SQL against a nonexistent column.
+		ms = attrMapScopeInstrumentation
 	default:
 		ms = attrMapScopeAny
 	}

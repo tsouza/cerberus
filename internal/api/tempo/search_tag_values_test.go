@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/schema"
 )
 
 // TestSearchTagValues_Intrinsic_Name — the path `/api/search/tag/name/values`
@@ -436,6 +437,131 @@ func TestSearchTagValuesV2_LinkScope(t *testing.T) {
 	}
 	if hits < 1 {
 		t.Errorf("expected key %q bound, got args %v", "opentracing.ref_type", q.lastArgs)
+	}
+}
+
+// TestSearchTagValuesV2_InstrumentationScope_Configured — cerberus issue
+// #3010's live-path fix: `instrumentation.x` on a schema that DOES
+// configure ScopeAttributesColumn must route to a flat-Map lookup
+// against that column, the SAME mapAtFrag/mapContainsFrag shape
+// resource./span. use — never the auto-scope arrayJoin union over
+// SpanAttributes/ResourceAttributes that resolveTagName's `default:`
+// arm silently fell to before this fix. Asserting the SQL contains the
+// ScopeAttributes column and omits Span/ResourceAttributes AND arrayJoin
+// is the discriminating proof that routing changed, not just that a new
+// code path exists unreached: before this fix, the SQL for this exact
+// request would contain arrayJoin(...) over the flat maps instead.
+func TestSearchTagValuesV2_InstrumentationScope_Configured(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+	s.ScopeAttributesColumn = "ScopeAttributes"
+	q := &stubQuerier{strings: []string{"otel-collector-contrib"}}
+	srv := newServerWithSchema(q, s, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/v2/search/tag/instrumentation.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if !strings.Contains(q.lastSQL, "`ScopeAttributes`[") {
+		t.Errorf("expected a ScopeAttributes lookup, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "`SpanAttributes`[") || strings.Contains(q.lastSQL, "`ResourceAttributes`[") {
+		t.Errorf("instrumentation scope should NOT touch Span/ResourceAttributes, got: %s", q.lastSQL)
+	}
+	if strings.Contains(q.lastSQL, "arrayJoin(") {
+		t.Errorf("single-scope path should NOT emit an arrayJoin union, got: %s", q.lastSQL)
+	}
+	var body tempo.SearchTagValuesResponseV2
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.TagValues) != 1 || body.TagValues[0].Value != "otel-collector-contrib" {
+		t.Errorf("expected the ScopeAttributes-sourced value in response: %+v", body.TagValues)
+	}
+	hits := 0
+	for _, a := range q.lastArgs {
+		if s, ok := a.(string); ok && s == "name" {
+			hits++
+		}
+	}
+	if hits < 2 {
+		t.Errorf("expected key %q bound >=2 times, got %d in %v", "name", hits, q.lastArgs)
+	}
+}
+
+// TestSearchTagValues_InstrumentationScope_DefaultSchema_ReturnsEmpty —
+// cerberus issue #3010's empty-column guard: on the default schema
+// (ScopeAttributesColumn == "", the only shape the upstream OTel-CH
+// traces DDL populates), an `instrumentation.x` values request must
+// return an empty 200 — mirroring attributeTagScopes()'s treatment of
+// the same unconfigured bucket for /search/tags (the bucket is simply
+// absent) — rather than build SQL against an empty column name (a CH
+// error / malformed SQL) or silently answer from the wrong scope. The
+// lastSQL assertion proves NO query was even attempted, not just that
+// the response happened to come back empty.
+func TestSearchTagValues_InstrumentationScope_DefaultSchema_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	q := &stubQuerier{strings: []string{"should-never-surface"}}
+	srv := newServer(q, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tag/instrumentation.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if q.lastSQL != "" {
+		t.Errorf("expected no CH query to run against an unconfigured ScopeAttributesColumn, got SQL: %s", q.lastSQL)
+	}
+	var body tempo.SearchTagValuesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.TagValues) != 0 {
+		t.Errorf("expected an empty result, got: %v", body.TagValues)
+	}
+}
+
+// TestSearchTagValues_InstrumentationScope_NeverUsesCatalog — the tag
+// catalog MV never carries an instrumentation-scope arm (internal/schema
+// /ddl's SCOPE COVERAGE doc), so an instrumentation-scope tag-values
+// request must stay off the catalog fast path even when every other
+// eligibility condition (catalog enabled, no `q=` filter, windowless)
+// holds — cerberus issue #3010's tagValuesCatalogEligible exclusion.
+// Without it, catalogScopeForMapScope's unmatched default arm would
+// silently mis-serve the request as an auto-scope resource+span catalog
+// read instead of falling through to the live per-key scan.
+func TestSearchTagValues_InstrumentationScope_NeverUsesCatalog(t *testing.T) {
+	t.Parallel()
+	s := schema.DefaultOTelTraces()
+	s.ScopeAttributesColumn = "ScopeAttributes"
+	q := &stubQuerier{stringsBySQL: map[string][]string{
+		"tempo_tag_catalog": {"should-never-surface"},
+	}, strings: []string{"otel-collector-contrib"}}
+	srv := newCatalogServerWithSchema(q, s, "v1.0.0-test")
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/search/tag/instrumentation.name/values")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, readBody(t, resp))
+	}
+	if strings.Contains(q.lastSQL, "tempo_tag_catalog") {
+		t.Errorf("instrumentation scope must never query the tag catalog, last SQL was: %s", q.lastSQL)
+	}
+	if !strings.Contains(q.lastSQL, "`ScopeAttributes`[") {
+		t.Errorf("expected the live ScopeAttributes lookup, got: %s", q.lastSQL)
 	}
 }
 

@@ -49,16 +49,17 @@ func ResolvedTagNameForTest(isIntrinsic bool, key string, mapScope AttrMapScopeF
 	return resolvedTagName{IsIntrinsic: isIntrinsic, Key: key, MapScope: attrMapScope(mapScope)}
 }
 
-// AttrMapScopeForTest re-exports the attrMapScope type + its three
+// AttrMapScopeForTest re-exports the attrMapScope type + its six
 // values for ResolvedTagNameForTest callers in the external package.
 type AttrMapScopeForTest = attrMapScope
 
 const (
-	AttrMapScopeAnyForTest      = attrMapScopeAny
-	AttrMapScopeResourceForTest = attrMapScopeResource
-	AttrMapScopeSpanForTest     = attrMapScopeSpan
-	AttrMapScopeEventForTest    = attrMapScopeEvent
-	AttrMapScopeLinkForTest     = attrMapScopeLink
+	AttrMapScopeAnyForTest             = attrMapScopeAny
+	AttrMapScopeResourceForTest        = attrMapScopeResource
+	AttrMapScopeSpanForTest            = attrMapScopeSpan
+	AttrMapScopeEventForTest           = attrMapScopeEvent
+	AttrMapScopeLinkForTest            = attrMapScopeLink
+	AttrMapScopeInstrumentationForTest = attrMapScopeInstrumentation
 )
 
 // BuildAttributeValuesSQLForTest re-exports buildAttributeValuesSQL

@@ -15,7 +15,15 @@ import (
 // newCatalogServer is newServer with TagCatalogEnabled=true — the
 // cerberus issue #2771 fast path this file exercises.
 func newCatalogServer(q tempo.Querier, version string) *testServer {
-	h := tempo.New(q, schema.DefaultOTelTraces(), version, nil)
+	return newCatalogServerWithSchema(q, schema.DefaultOTelTraces(), version)
+}
+
+// newCatalogServerWithSchema is newCatalogServer for the tests that need
+// a traces schema other than the OTel default — e.g. one that points
+// ScopeAttributesColumn at a real column (cerberus issue #3010), mirroring
+// handler_test.go's newServerWithSchema.
+func newCatalogServerWithSchema(q tempo.Querier, s schema.Traces, version string) *testServer {
+	h := tempo.New(q, s, version, nil)
 	h.TagCatalogEnabled = true
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -76,7 +84,11 @@ func TestTagsCatalogEligible(t *testing.T) {
 // only for a non-intrinsic resolved name, a nil filter, and a windowless
 // request — MapScope (resource/span/event/link/any) never restricts
 // eligibility, all five are catalog-servable (cerberus issue #2850 added
-// event/link).
+// event/link). attrMapScopeInstrumentation is the one exception (cerberus
+// issue #3010): the catalog MV never carries an instrumentation-scope
+// arm at all, so that scope stays off the fast path regardless of filter
+// or window — the case below pins it alongside a nil-filter/windowless
+// combination that would otherwise be eligible for every other scope.
 func TestTagValuesCatalogEligible(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -92,6 +104,7 @@ func TestTagValuesCatalogEligible(t *testing.T) {
 		{"dynamic attribute, span scope, no filter, windowless", false, tempo.AttrMapScopeSpanForTest, nil, true, true},
 		{"dynamic attribute, event scope, no filter, windowless", false, tempo.AttrMapScopeEventForTest, nil, true, true},
 		{"dynamic attribute, link scope, no filter, windowless", false, tempo.AttrMapScopeLinkForTest, nil, true, true},
+		{"dynamic attribute, instrumentation scope stays live even when otherwise eligible", false, tempo.AttrMapScopeInstrumentationForTest, nil, true, false},
 		{"intrinsic stays live", true, tempo.AttrMapScopeAnyForTest, nil, true, false},
 		{"filtered request stays live", false, tempo.AttrMapScopeAnyForTest, nonNilFrag(), true, false},
 		{"explicit window stays live", false, tempo.AttrMapScopeAnyForTest, nil, false, false},
