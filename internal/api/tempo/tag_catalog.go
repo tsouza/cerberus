@@ -131,12 +131,17 @@ func tagValuesCatalogEligible(resolved resolvedTagName, filter chsql.Frag, windo
 // catalogScopesFor are both checked against it —
 // TestCatalogScopesFor_CoversEveryCatalogScope and
 // TestTagsCatalogEligible_CoversEveryCatalogScope in tag_catalog_test.go.
-var allCatalogCoveredTagScopes = []string{
-	tagScopeResource,
-	tagScopeSpan,
-	tagScopeEvent,
-	tagScopeLink,
-}
+//
+// Aliases schema.TagCatalogCoveredScopes rather than re-listing
+// tagScopeResource/Span/Event/Link locally (cerberus issue #3021): before
+// this change, the same "resource/span/event/link, not instrumentation"
+// fact was independently re-encoded here AND as the fixed four-call
+// sequence internal/schema/ddl's renderTempoTagCatalogView used to build
+// its UNION ALL arms, with nothing tying an update to one back to the
+// other. tagScopeResource etc. already alias the underlying
+// schema.TagCatalogScope* constants (see search_tags.go), so this is the
+// same values, one fewer independent list.
+var allCatalogCoveredTagScopes = schema.TagCatalogCoveredScopes
 
 // catalogScopesFor maps the `?scope=` query parameter to the catalog
 // Scope value(s) a /search/tags catalog read should fetch: every covered

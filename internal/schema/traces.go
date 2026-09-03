@@ -54,6 +54,32 @@ const (
 	TagCatalogViewSuffix = "_mv"
 )
 
+// TagCatalogCoveredScopes is the canonical enumeration of every scope the
+// tag catalog carries an arm for, in the order internal/schema/ddl's
+// renderTempoTagCatalogView UNIONs them — resource and span first (the
+// flat-Map scopes), then event and link (the Nested scopes). It is the
+// single source both internal/api/tempo (allCatalogCoveredTagScopes, the
+// `?scope=` vocabulary the catalog fast path accepts) and
+// internal/schema/ddl (renderTempoTagCatalogView, the write side that
+// builds the UNION ALL arms) derive from — cerberus issue #3021 closing
+// the DRY gap #3019 left open on the write side: before this, the fact
+// "the catalog covers resource/span/event/link, not instrumentation" was
+// independently re-encoded in both packages, with no test tying an update
+// to one back to the other. schema is the natural home because both
+// packages already import it and both already reference the individual
+// TagCatalogScope* constants this slices together — see those constants'
+// doc comment for why they live here rather than in internal/api/tempo.
+// A var, not a const, because Go has no const slice — like
+// internal/api/tempo's own allAttrMapScopes / allCatalogCoveredTagScopes
+// before this change, package-level mutation is a self-inflicted footgun
+// no code here indulges in.
+var TagCatalogCoveredScopes = []string{
+	TagCatalogScopeResource,
+	TagCatalogScopeSpan,
+	TagCatalogScopeEvent,
+	TagCatalogScopeLink,
+}
+
 // Traces describes how cerberus reads spans from ClickHouse. The default
 // (returned by DefaultOTelTraces) matches the OpenTelemetry ClickHouse
 // Exporter v0.x traces schema; users with custom layouts override

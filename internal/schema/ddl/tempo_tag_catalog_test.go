@@ -3,7 +3,61 @@ package ddl
 import (
 	"strings"
 	"testing"
+
+	"github.com/tsouza/cerberus/internal/chsql"
+	"github.com/tsouza/cerberus/internal/schema"
 )
+
+// TestTempoTagCatalogScopeArmFor_CoversEveryCatalogScope proves
+// tempoTagCatalogScopeArmFor's switch is exhaustive over
+// schema.TagCatalogCoveredScopes — the canonical list
+// renderTempoTagCatalogView now ranges over to build its UNION ALL arms
+// (cerberus issue #3021, closing the DRY gap #3019 left open on the write
+// side). A scope reaching the switch without a case panics (see that
+// function's doc); this test converts that panic into a named test
+// failure for every entry the canonical list carries today, so removing a
+// case here without also removing the scope from
+// schema.TagCatalogCoveredScopes fails loudly in CI instead of only
+// panicking against a live cluster.
+func TestTempoTagCatalogScopeArmFor_CoversEveryCatalogScope(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	windowStart := chsql.InlineLit(int64(0))
+	for _, scope := range schema.TagCatalogCoveredScopes {
+		t.Run(scope, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("tempoTagCatalogScopeArmFor(%q) panicked: %v", scope, r)
+				}
+			}()
+			if arm := tempoTagCatalogScopeArmFor(cfg, scope, windowStart); arm == nil {
+				t.Fatalf("tempoTagCatalogScopeArmFor(%q) returned a nil arm", scope)
+			}
+		})
+	}
+}
+
+// TestTempoTagCatalogScopeArmFor_UnhandledScopePanics is this file's
+// non-vacuity proof for the completeness test above: an unhandled scope
+// value (one schema.TagCatalogCoveredScopes does not carry) panics naming
+// that value. That panic is exactly the mechanism that would turn a
+// future scope added to schema.TagCatalogCoveredScopes without a matching
+// case in tempoTagCatalogScopeArmFor into a loud CoversEveryCatalogScope
+// failure instead of a silently missing UNION ALL arm.
+func TestTempoTagCatalogScopeArmFor_UnhandledScopePanics(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	windowStart := chsql.InlineLit(int64(0))
+	const unhandledScope = "instrumentation"
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("tempoTagCatalogScopeArmFor(%q) did not panic", unhandledScope)
+		}
+		if msg, ok := r.(string); !ok || !strings.Contains(msg, unhandledScope) {
+			t.Fatalf("panic = %v; want it to name the unhandled scope %q", r, unhandledScope)
+		}
+	}()
+	tempoTagCatalogScopeArmFor(cfg, unhandledScope, windowStart)
+}
 
 // TestRenderTempoTagCatalogTable_ExactSQL pins the catalog table's shape
 // (cerberus issue #2771): String Scope + TagKey ORDER BY (Scope, TagKey)
