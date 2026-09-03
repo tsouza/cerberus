@@ -536,9 +536,11 @@ func TestSearchTagValues_InstrumentationScope_DefaultSchema_ReturnsEmpty(t *test
 // request must stay off the catalog fast path even when every other
 // eligibility condition (catalog enabled, no `q=` filter, windowless)
 // holds — cerberus issue #3010's tagValuesCatalogEligible exclusion.
-// Without it, catalogScopeForMapScope's unmatched default arm would
-// silently mis-serve the request as an auto-scope resource+span catalog
-// read instead of falling through to the live per-key scan.
+// Belt AND suspenders since cerberus issue #3019: even without that
+// upstream exclusion, catalogScopeForMapScope now independently refuses
+// (catalogScopeUncovered) to let buildTagCatalogValuesSQL build SQL for
+// this scope at all, rather than the two of them composing correctly only
+// because of THIS test's caller order — see catalogScopeForMapScope's doc.
 func TestSearchTagValues_InstrumentationScope_NeverUsesCatalog(t *testing.T) {
 	t.Parallel()
 	s := schema.DefaultOTelTraces()
