@@ -95,7 +95,7 @@ const DEFAULT_FLOORS = 'test/coverage-floor';
 
 // The lane set the floors are measured with. A chdb-tagged run reaches code the
 // default-tag run cannot compile, so the two profiles are not comparable.
-const FULL_LANES = 'default+chdb';
+export const FULL_LANES = 'default+chdb';
 
 // Coverage is not bit-reproducible run to run — map iteration order and
 // time-dependent branches move a package by a fraction of a point — so a floor

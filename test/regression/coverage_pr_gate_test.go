@@ -192,3 +192,168 @@ func workflowStepContaining(t *testing.T, job, needle string) string {
 	}
 	return strings.Join(lines[start:end], "\n")
 }
+
+// The aggregator step that states, in the required `coverage` context's own
+// output, whether this run measured anything (tsouza/cerberus#2991), and the
+// expressions that make its verdict observation rather than assertion.
+const (
+	coverageMeasurementVerdictStep = "Report the coverage measurement verdict"
+	coverageMeasurementVerdictRun  = "node .github/scripts/coverage-verdict.mjs"
+	coverageMeasurementVerdictTest = "node --test .github/scripts/coverage-verdict.test.mjs"
+	coverageFloorGateOutcomeExpr   = "steps.floor-gate.outcome"
+	coverageRunHeavyOutputExpr     = "needs.coverage-plan.outputs.run_heavy"
+	// The job-level `env:` entry, at its own indentation. `coverage.yml` also
+	// names the same expression inside an earlier STEP's `env:`, so anything
+	// looser than this would pass with the job-level binding removed.
+	coverageJobLevelRunHeavyBinding = "\n      RUN_HEAVY: ${{ needs.coverage-plan.outputs.run_heavy }}\n"
+	// The concurrency setting whose `true` left 71 of the last 120 pushes to
+	// main cancelled — a median 27 minutes into a ~52-minute measurement —
+	// against 6 successes.
+	coverageCancelInProgress   = "false"
+	coverageLatestMainGroupKey = "latest-main-push"
+)
+
+// TestCoverageContextStatesWhetherItMeasured pins tsouza/cerberus#2991.
+//
+// `coverage` is required, and on an ordinary pull request every job that
+// produces a profile is skipped. The aggregator still ran — deliberately, so
+// the required context could not go missing — and reported plain success, so a
+// green tick could not be told apart from a measured pass. For four days it was
+// the difference: dozens of pull requests merged green while main's own heavy
+// run was red.
+//
+// The remedy is a verdict step that says which of the two this is, derived from
+// the merged profile and its digest-bound lane record rather than from the
+// RUN_HEAVY claim. This test pins the wiring that makes it load-bearing: it
+// runs whatever else failed, it observes the floor gate's real outcome, it
+// cannot pass by continuing on error, and — like the enrollment verdict beside
+// it — it lands after the upload so a red verdict never costs an author the
+// artifact they need.
+func TestCoverageContextStatesWhetherItMeasured(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCILaneWorkflows(t)[".github/workflows/coverage.yml"]
+	aggregator, ok := workflow.Jobs[coverageAggregatorJobName]
+	if !ok {
+		t.Fatalf("%s has no %q job", coverageWorkflowPath, coverageAggregatorJobName)
+	}
+
+	verdictAt := coverageStepIndex(t, aggregator.Steps, coverageMeasurementVerdictStep)
+	uploadAt := coverageStepIndex(t, aggregator.Steps, coverageProfileUploadStep)
+	if verdictAt < uploadAt {
+		t.Errorf("%s job %q runs %q (step %d) before %q (step %d); a red measurement verdict must not "+
+			"cost the author the merged profile they need to act on it",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep, verdictAt+1,
+			coverageProfileUploadStep, uploadAt+1)
+	}
+	if condition := ciLaneScalarValue(aggregator.Steps[verdictAt].If); !strings.Contains(condition, "always()") {
+		t.Errorf("%s job %q step %q has condition %q; a verdict that skips when the floor gate fails reports "+
+			"nothing on exactly the run that needed it",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep, condition)
+	}
+	if run := aggregator.Steps[verdictAt].Run; !strings.Contains(run, coverageMeasurementVerdictRun) {
+		t.Errorf("%s job %q step %q does not run %q. Run:\n%s",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageMeasurementVerdictStep,
+			coverageMeasurementVerdictRun, run)
+	}
+
+	body := workflowJobBody(t, readFileString(t, coverageWorkflowPath), coverageAggregatorJobName)
+	step := workflowStepContaining(t, body, coverageMeasurementVerdictRun)
+	if strings.Contains(step, continueOnError) {
+		t.Errorf("%s job %q lets %q continue on error, so a missed floor would report green on the required "+
+			"context. Step:\n%s", coverageWorkflowPath, coverageAggregatorJobName,
+			coverageMeasurementVerdictStep, step)
+	}
+	if !strings.Contains(step, coverageFloorGateOutcomeExpr) {
+		t.Errorf("%s job %q step %q never reads %s, so its verdict cannot be observing whether the floor "+
+			"comparison actually happened. Step:\n%s", coverageWorkflowPath, coverageAggregatorJobName,
+			coverageMeasurementVerdictStep, coverageFloorGateOutcomeExpr, step)
+	}
+	// RUN_HEAVY reaches the step from the job-level `env:` block rather than
+	// being restated per step, so the claim it is cross-checked against is
+	// pinned to THAT binding — at its own indentation, not merely somewhere in
+	// the job. The expression also appears in the aggregate step's own `env:`
+	// further up, so a substring scan over the whole job body would still pass
+	// with the job-level binding deleted and the verdict step reading nothing.
+	if !strings.Contains(body, coverageJobLevelRunHeavyBinding) {
+		t.Errorf("%s job %q does not bind RUN_HEAVY at the job level (%q), which is the only thing that "+
+			"delivers the claim to the verdict step's process environment",
+			coverageWorkflowPath, coverageAggregatorJobName, coverageJobLevelRunHeavyBinding)
+	}
+
+	// The verdict's own unit suite runs on EVERY trigger, before any lane spends
+	// a runner: a gate whose first green is its first execution is vacuous.
+	planStep := workflowStepContaining(t, workflowJobBody(t, readFileString(t, coverageWorkflowPath), coveragePlanJobName),
+		coverageMeasurementVerdictTest)
+	if strings.Contains(planStep, coverageHeavyGuard) {
+		t.Errorf("%s job %q guards %q with RUN_HEAVY, so the verdict gate is never proven able to fail on an "+
+			"ordinary PR. Step:\n%s", coverageWorkflowPath, coveragePlanJobName, coverageMeasurementVerdictTest, planStep)
+	}
+}
+
+// TestCoverageMainMeasurementIsNotCancelledMidRun pins the other half of
+// tsouza/cerberus#2991: `main` went unmeasured not because the lane was slow but
+// because it was never allowed to finish. The concurrency group cancelled the
+// in-progress run on every new push, `coverage-chdb` alone runs 35-50 minutes,
+// and main's push cadence is shorter than the run 68% of the time — 71 of the
+// last 120 pushes were cancelled, a median 27 minutes in, against 6 successes.
+//
+// BOTH halves are pinned, because they are separable and only one of them was
+// wrong. The shared GROUP is kept: a burst still collapses to one pending run,
+// which costs nothing because a pending run holds no runner. The CANCELLATION
+// is not. Asserting only the cancellation would leave a green test over a
+// workflow that had lost its group and now runs N parallel 52-minute
+// measurements per burst.
+func TestCoverageMainMeasurementIsNotCancelledMidRun(t *testing.T) {
+	t.Parallel()
+
+	concurrency := workflowTopLevelConcurrency(t, readFileString(t, coverageWorkflowPath))
+
+	if got := concurrency["cancel-in-progress"]; got != coverageCancelInProgress {
+		t.Errorf("%s concurrency cancel-in-progress is %q, want %q; a push to main that cancels the "+
+			"in-flight run leaves the commit it killed — and every commit before it — unmeasured, which "+
+			"is how the lane reached 0 successes in 90 runs",
+			coverageWorkflowPath, got, coverageCancelInProgress)
+	}
+	if got := concurrency["group"]; !strings.Contains(got, coverageLatestMainGroupKey) {
+		t.Errorf("%s concurrency group is %q, which does not coalesce main pushes into the %q group; "+
+			"without it a burst of pushes runs N parallel ~52-minute measurements instead of one",
+			coverageWorkflowPath, got, coverageLatestMainGroupKey)
+	}
+}
+
+// workflowTopLevelConcurrency returns the top-level `concurrency:` mapping as
+// key -> value. Comment and blank lines are dropped, so a commented-out setting
+// reads as absent — which is what GitHub Actions does with it, and what a raw
+// substring scan over the file would get wrong.
+func workflowTopLevelConcurrency(t *testing.T, workflow string) map[string]string {
+	t.Helper()
+
+	values := map[string]string{}
+	inBlock := false
+	for _, line := range strings.Split(workflow, "\n") {
+		if line == "concurrency:" {
+			inBlock = true
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "  ") {
+			break
+		}
+		key, value, found := strings.Cut(trimmed, ":")
+		if !found {
+			continue
+		}
+		values[key] = strings.TrimSpace(value)
+	}
+	if len(values) == 0 {
+		t.Fatalf("%s has no top-level concurrency mapping to inspect", coverageWorkflowPath)
+	}
+	return values
+}

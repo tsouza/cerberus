@@ -274,6 +274,17 @@ what actually runs.
   exhaustive E2E and published quickstart workflows are explicit negative
   controls; quickstart additionally requires unique non-PR groups so every main
   push completes. Nested job groups must be run-bound and non-cancelling.
+  `QUEUE_COALESCED_WORKFLOWS` is a narrower tier inside the enrollment
+  (tsouza/cerberus#2991): a member keeps the canonical GROUP — a burst of
+  pushes still collapses to one PENDING run, which costs nothing because a
+  pending run holds no runner — but carries a literal `cancel-in-progress:
+  false`, because killing a run already in progress only pays when the run is
+  short enough for the killed work to be worthless. `coverage.yml` runs ~52
+  minutes against a median 38-minute push cadence on main, and cancellation
+  left 71 of its last 120 push runs killed a median 27 minutes in, against 6
+  successes; that is not coalescing, it is starvation. Opting out is a
+  declared enrollment here, never something a workflow can do to itself by
+  editing one line.
   - Env: `CI_LANE_REGISTRY` (optional; default `.github/ci-lanes.json`).
   - Exit: `0` only when enrollment, registry posture, exclusions, and workflow
     expressions agree; `1` on any drift. `main-coalescing.test.mjs` carries the
@@ -981,6 +992,52 @@ what actually runs.
     (`needs.coverage-chdb-ratchet.result`).
   - Exit: `0` when it is safe to proceed (merge on a heavy run, or report the
     no-op on a non-heavy one), `1` otherwise.
+- **`coverage-verdict.mjs`** — `coverage.yml`, the `coverage` aggregator job's
+  measurement verdict (tsouza/cerberus#2991). `coverage` is a required context,
+  and on an ordinary pull request every job that produces a profile is skipped;
+  the aggregator ran anyway — deliberately, so the required context could not go
+  missing — and reported plain SUCCESS. A reader of that green tick could not
+  tell "the floors were compared and every package cleared them" from "nothing
+  was measured", and for four days the second was the truth on every PR while
+  main's own heavy run was red. Skipping the lanes is a legitimate latency
+  choice; reporting a measurement that did not happen is not. So the aggregator
+  now states its verdict — `MEASURED`, `NOT MEASURED`, or a red `BROKEN` — as
+  the first block of its step summary and as a `::notice::` / `::warning::` /
+  `::error::` annotation on the check itself. The verdict is derived from the
+  EVIDENCE, not from the claim: it reads the merged profile and the
+  digest-bound `<profile>.lanes.json` record `coverage-summary.mjs` writes
+  beside it, and reports `MEASURED` only when that record proves THOSE bytes
+  carry the full `default+chdb` lane set — the same "derive it, do not assert
+  it" shape tsouza/cerberus#2992 gave the floor-UPDATE path. RUN_HEAVY is then
+  cross-checked against that evidence and any disagreement, in either
+  direction, is a hard failure rather than a downgrade. Every verdict also
+  reports when the trunk was last MEASURED and how many commits have landed
+  since, warning past `MAX_UNMEASURED_TRUNK_COMMITS` — the signal that was
+  missing while `main` went 90 runs without a successful measurement. That
+  lookup is best-effort: no token, no network, or an API error degrades to
+  "unavailable", never to a red required context.
+  `coverage-verdict.test.mjs` is the `node --test` guard, and it drives all
+  four failing branches as well as the two passing ones.
+  The trunk lookup is evidence-derived too: a successful trunk run counts as a
+  measurement only once it is seen to carry the `coverage-profile` artifact,
+  because a `release/*`-headed PR's merge commit produces a push run that
+  succeeds having measured nothing (`coverage-run-heavy.mjs`'s redundant case),
+  and crediting one would reset the staleness counter on a non-measurement. The
+  probe is bounded by `MAX_TRUNK_CANDIDATE_PROBES`. Its evidence check is not a
+  second copy of `coverage-summary.mjs`'s: `inspectEvidence` delegates to that
+  module's `resolveUpdateLanes`, so the function deciding whether a profile may
+  become floors and the one deciding whether it counts as a measurement cannot
+  drift apart.
+  - Env: `RUN_HEAVY` (`needs.coverage-plan.outputs.run_heavy`, delivered by the
+    aggregator's job-level `env:`), `GATE_OUTCOME` (`steps.floor-gate.outcome`;
+    empty or unset reads as `skipped`, since a step that reported no outcome did
+    not run), `COVERAGE_PROFILE` (default `cover-merged.out`), `EVENT_NAME`,
+    `TRUNK_BRANCH` (default `main`), `CURRENT_SHA`, `GITHUB_REPOSITORY`,
+    `GITHUB_TOKEN` (`actions: read`), `GITHUB_API_URL`, `GITHUB_STEP_SUMMARY`.
+  - Exit: `0` for `MEASURED`-and-clear and for `NOT MEASURED`; `1` for a missed
+    floor and for any claim/evidence disagreement. `NOT MEASURED` is a GREEN
+    outcome on purpose — the verdict makes the skip legible, it does not turn
+    every ordinary pull request into a blocked merge.
 - **`perf-coverage-fanout.mjs`** — `just coverage-chdb`'s
   `TestCardinalityRatchet` fan-out (shards 2..`RATCHET_FANOUT` of the corpus
   walk; shard 1 is the Justfile's own main sweep). Two modes: local (no
