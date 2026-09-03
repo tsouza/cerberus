@@ -102,10 +102,12 @@ func TestKeyForGridGeometryBucketsDiffer(t *testing.T) {
 // kind keyWalker.walk switches on beyond the RangeWindow-based fixtures
 // above — one per range-window sibling (RangeBucketFanout,
 // RangeBucketGridNative, RangeLWR, RangeWindowGridNative,
-// RangeWindowStaleResample) and one per combinator (VectorJoin,
-// HistogramVectorJoin, HistogramFloatVectorJoin, MixedVectorJoin, CrossJoin,
-// StructuralJoin, UnionAll, SetOperation, NaryVectorSetOp, Limit) — so a new
-// case arm added to walk is never silently unexercised again.
+// RangeWindowStaleResample) and one per non-join combinator (UnionAll,
+// SetOperation, NaryVectorSetOp, Limit) — so a new case arm added to walk is
+// never silently unexercised again. HasJoin is NOT covered here: it is a
+// separate chplan.HasJoin sweep, not a walk case arm (see keyWalker.walk's
+// own doc), and TestKeyForHasJoin below asserts it against the CANONICAL
+// join-carrier set rather than whatever this walker happens to switch on.
 func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 	const (
 		nAnchors = 241
@@ -155,30 +157,6 @@ func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 	})
 
 	t.Run("combinator node kinds set their own presence bit", func(t *testing.T) {
-		kJoin := KeyFor(&chplan.VectorJoin{Left: scan, Right: scan, Op: chplan.OpAdd}, nAnchors, fanout, step)
-		if !kJoin.HasJoin {
-			t.Fatalf("VectorJoin must set HasJoin")
-		}
-		kHistogramJoin := KeyFor(&chplan.HistogramVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
-		if !kHistogramJoin.HasJoin {
-			t.Fatalf("HistogramVectorJoin must set HasJoin")
-		}
-		kHistogramFloatJoin := KeyFor(&chplan.HistogramFloatVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
-		if !kHistogramFloatJoin.HasJoin {
-			t.Fatalf("HistogramFloatVectorJoin must set HasJoin")
-		}
-		kMixedJoin := KeyFor(&chplan.MixedVectorJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
-		if !kMixedJoin.HasJoin {
-			t.Fatalf("MixedVectorJoin must set HasJoin")
-		}
-		kCrossJoin := KeyFor(&chplan.CrossJoin{Left: scan, Right: scan}, nAnchors, fanout, step)
-		if !kCrossJoin.HasJoin {
-			t.Fatalf("CrossJoin must set HasJoin")
-		}
-		kStructuralJoin := KeyFor(&chplan.StructuralJoin{Left: scan, Right: scan, Op: chplan.StructuralChild}, nAnchors, fanout, step)
-		if !kStructuralJoin.HasJoin {
-			t.Fatalf("StructuralJoin must set HasJoin")
-		}
 		kUnion := KeyFor(&chplan.UnionAll{Inputs: []chplan.Node{scan, scan}}, nAnchors, fanout, step)
 		if !kUnion.HasUnion {
 			t.Fatalf("UnionAll must set HasUnion")
@@ -194,6 +172,94 @@ func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 		kLimit := KeyFor(&chplan.Limit{Input: scan, Count: 10}, nAnchors, fanout, step)
 		if !kLimit.HasLimit {
 			t.Fatalf("Limit must set HasLimit")
+		}
+	})
+}
+
+// wantRouteMemoJoinCarrierCount pins the row count of
+// TestKeyForHasJoin_CoversEveryJoinCarrier's table. It exists so a table row
+// silently dropped fails loudly here rather than the test quietly shrinking
+// back to "whichever arms keyWalker.walk happens to have" — the exact defect
+// this test replaces (cerberus issue #2886/#3008: the walker's switch grew
+// case arms, but the test that was supposed to guard it only ever checked
+// the arms already present, so it could not have caught InfoJoin or the
+// delta-prefix RangeWindow carrier being missing either).
+//
+// chplan.HasJoin's OWN completeness — that this table names every
+// join-emitting Node kind and no more — is chplan's own job, pinned by
+// TestHasJoin_CoversEveryJoinEmittingNode in internal/chplan/join_test.go.
+// This test's job is narrower and KeyFor-specific: prove Key.HasJoin
+// actually forwards chplan.HasJoin's verdict, for the full known set,
+// including a join chplan.HasJoin can only see via WalkDeep.
+const wantRouteMemoJoinCarrierCount = 10
+
+// TestKeyForHasJoin_CoversEveryJoinCarrier asserts Key.HasJoin against the
+// CANONICAL join-carrier set (internal/chplan/join.go's HasJoin), not
+// against whatever case arms keyWalker.walk's OWN switch happens to have —
+// keyWalker.walk has no join arms at all any more; HasJoin is a dedicated
+// chplan.HasJoin(n) sweep (see its doc). A carrier this table does not name
+// is a gap this test cannot catch, but chplan's own
+// TestHasJoin_CoversEveryJoinEmittingNode is what keeps THAT table from
+// falling behind the IR — the two tests are deliberately not the same test.
+func TestKeyForHasJoin_CoversEveryJoinCarrier(t *testing.T) {
+	const (
+		nAnchors = 241
+		fanout   = int64(20)
+		step     = 15 * time.Second
+	)
+	scan := scanFixture()
+
+	cases := []struct {
+		name string
+		plan chplan.Node
+	}{
+		{"VectorJoin", &chplan.VectorJoin{Left: scan, Right: scan, Op: chplan.OpAdd}},
+		{"HistogramVectorJoin", &chplan.HistogramVectorJoin{Left: scan, Right: scan}},
+		{"HistogramFloatVectorJoin", &chplan.HistogramFloatVectorJoin{Left: scan, Right: scan}},
+		{"MixedVectorJoin", &chplan.MixedVectorJoin{Left: scan, Right: scan}},
+		{"InfoJoin", &chplan.InfoJoin{Input: scan, Info: scan}},
+		{"StructuralJoin", &chplan.StructuralJoin{Left: scan, Right: scan, Op: chplan.StructuralChild}},
+		{"CrossJoin", &chplan.CrossJoin{Left: scan, Right: scan}},
+		{"NestedSetAnnotate", &chplan.NestedSetAnnotate{Input: scan}},
+		{"MetricsCompare with RootLookup", &chplan.MetricsCompare{Inner: scan, RootLookup: scan}},
+		{
+			"RangeWindow with DeltaPrefixAggregateInput",
+			&chplan.RangeWindow{Input: scan, DeltaPrefixAggregateInput: scan, Func: "rate"},
+		},
+	}
+	if len(cases) != wantRouteMemoJoinCarrierCount {
+		t.Fatalf("join carrier table has %d rows, want %d", len(cases), wantRouteMemoJoinCarrierCount)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			k := KeyFor(tc.plan, nAnchors, fanout, step)
+			if !k.HasJoin {
+				t.Errorf("KeyFor(%s).HasJoin = false; want true", tc.name)
+			}
+		})
+	}
+
+	t.Run("non-join plan", func(t *testing.T) {
+		k := KeyFor(scan, nAnchors, fanout, step)
+		if k.HasJoin {
+			t.Errorf("KeyFor(bare Scan).HasJoin = true; want false")
+		}
+	})
+
+	// The WalkDeep-matters case: a join buried inside a Filter predicate's
+	// ScalarSubquery is invisible to keyWalker's own shallow chplan.Walk
+	// pass and must still be found. This is #2886/#3008's actual shipped
+	// gap — before this consolidation, keyWalker.walk's join arms lived
+	// INSIDE the chplan.Walk switch, so no number of added case arms could
+	// ever have found a join here.
+	t.Run("join nested inside a ScalarSubquery", func(t *testing.T) {
+		plan := &chplan.Filter{
+			Input:     scan,
+			Predicate: &chplan.ScalarSubquery{Input: &chplan.VectorJoin{Left: scan, Right: scan, Op: chplan.OpAdd}},
+		}
+		k := KeyFor(plan, nAnchors, fanout, step)
+		if !k.HasJoin {
+			t.Error("KeyFor: join nested inside a ScalarSubquery predicate not found; want HasJoin true")
 		}
 	})
 }

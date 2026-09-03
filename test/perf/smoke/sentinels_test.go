@@ -80,7 +80,7 @@ func TestSentinels_JoinSpillStampIsAsserted(t *testing.T) {
 	query := s.Params(time.Unix(0, 0), time.Unix(0, 0).Add(sentinelWindow)).Get("query")
 	if !strings.Contains(query, " / on (session_id) ") {
 		t.Errorf("join_spill sentinel query %q is not a vector-vector match — it would not lower to "+
-			"chplan.VectorJoin, so planHasJoin would never match it and the stamp could not fire", query)
+			"chplan.VectorJoin, so chplan.HasJoin would never match it and the stamp could not fire", query)
 	}
 
 	const cap1GiB int64 = 1 << 30

@@ -50,7 +50,6 @@ func shapeModifiers(plan chplan.Node) []string {
 		hasRange    bool
 		hasLWR      bool
 		hasLimit    bool
-		hasJoin     bool
 		hasUnion    bool
 		hasNative   bool
 		hasResample bool
@@ -88,11 +87,17 @@ func shapeModifiers(plan chplan.Node) []string {
 			if len(v.UnionTables) > 0 {
 				hasUnion = true
 			}
-		case *chplan.CrossJoin, *chplan.StructuralJoin, *chplan.VectorJoin, *chplan.InfoJoin:
-			hasJoin = true
 		}
 		return true
 	})
+	// hasJoin is a SEPARATE chplan.HasJoin sweep, not another arm of the Walk
+	// switch above: HasJoin's own contract is WalkDeep (it must see a join
+	// nested inside a ScalarSubquery/InSubquery Expr slot — see its doc), and
+	// widening THIS function's other modifiers (rw/rwn/union/limit/...) to
+	// WalkDeep too would change what every one of them clusters on, which is
+	// its own decision this modifier list doesn't need to make just to fix
+	// join visibility.
+	hasJoin := chplan.HasJoin(plan)
 	if aggKeys >= 0 {
 		mods = append(mods, "agg="+strconv.Itoa(aggKeys))
 	}

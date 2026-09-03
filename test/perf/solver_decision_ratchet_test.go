@@ -254,8 +254,9 @@ func nativeLowerers(t *testing.T) promql.RangeLowerers {
 			// strategy — no effect on which lowering table a query takes.
 			// FeatureJoinSpill mirrors the other two exactly: it stamps
 			// max_bytes_before_external_join via internal/engine/spill.go's
-			// applyJoinSpillSettings, gated on plan shape (planHasJoin), not on
-			// which RangeLowerers strategy a query_range matrix lowering picks.
+			// applyJoinSpillSettings, gated on plan shape (chplan.HasJoin), not
+			// on which RangeLowerers strategy a query_range matrix lowering
+			// picks.
 			// FeatureResultCache (cerberus issue #2781) is the same shape again:
 			// internal/engine/query_settings_rules.go's apply stamps
 			// use_query_cache=1 + query_cache_ttl based on

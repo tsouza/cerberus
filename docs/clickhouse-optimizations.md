@@ -534,11 +534,14 @@ Notes:
   guards (`VectorJoin`'s own `ManyToManyMatchMessage`) and structural shape
   restrictions, neither of which bounds memory, so a big hash build could hit
   a destructive `MEMORY_LIMIT_EXCEEDED` (code 241) abort. The plan-shape gate
-  (`internal/engine.planHasJoin`) covers every join `chplan.WalkDeep` can
-  observe pre-emission — `VectorJoin`, `HistogramVectorJoin`,
-  `HistogramFloatVectorJoin`, `MixedVectorJoin`, `InfoJoin`, `StructuralJoin`,
-  `CrossJoin`, and a `RangeWindow` with a non-nil `DeltaPrefixAggregateInput`
-  (the delta-prefix LEFT JOIN). **Version floor is 26.4**: `max_bytes_before_external_join` carries an EXPERIMENTAL marker at
+  (`chplan.HasJoin`, the one join-carrier registry `internal/engine.spill.go`,
+  `internal/engine.plan_shape_id.go` and `internal/routememo.key.go` all
+  consume) covers every join `chplan.WalkDeep` can observe pre-emission —
+  `VectorJoin`, `HistogramVectorJoin`, `HistogramFloatVectorJoin`,
+  `MixedVectorJoin`, `InfoJoin`, `StructuralJoin`, `CrossJoin`,
+  `NestedSetAnnotate`, a `MetricsCompare` with a non-nil `RootLookup`, and a
+  `RangeWindow` with a non-nil `DeltaPrefixAggregateInput` (the delta-prefix
+  LEFT JOIN). **Version floor is 26.4**: `max_bytes_before_external_join` carries an EXPERIMENTAL marker at
   introduction and is treated as production-grade from 26.5, where its ratio-
   default sibling (`max_bytes_ratio_before_external_join=0.5`) ships — this
   registry entry pins the floor to 26.4, where the setting first exists to
