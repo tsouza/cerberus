@@ -1,6 +1,9 @@
 package qlcommon
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestScanSourceGroupsLocatesGroups pins the offsets the rewrite inserts
 // at. Every case is a source whose group boundaries a naive
@@ -186,20 +189,164 @@ func TestPlanCaptureProbesDeclines(t *testing.T) {
 	}
 }
 
-// NOT KILLABLE — documented, not defended by a test.
+// TestArmsThatComputeNoOffsetStillConsumeAByte is the demonstration the
+// single-advance reshape rests on, and it runs against the production
+// scanners rather than a replica of them.
 //
-// Two surviving mutants in regex_source_scan.go, one per progress invariant.
-// Each was re-applied and the whole package suite re-run to confirm it
-// survives rather than merely lacking a test.
+// Three of [scanSourceGroups]' arms — `|`, `)`, and every byte matching no
+// case at all — write nothing to `next`. Under the shape they replaced,
+// each carried its own `i++`, and an arm that omitted one spun on its byte
+// forever; a progress guard existed to turn that spin into a decline. Here
+// the omission is not a mistake that can be made: those arms ARE, in the
+// old shape's terms, the arm that forgot to advance, and they consume a
+// byte because the walker advances, not because they remembered to.
 //
-// regex_source_scan.go:scanSourceGroups:`if i <= start` and
-// regex_source_scan.go:skipCharClass:`if j <= start`, both
-// CONDITIONALS_BOUNDARY (`<=` -> `<`). Each invariant declines when an arm
-// hands the cursor back unmoved; the mutant declines only when an arm hands
-// it back SMALLER. Neither happens: every arm of both switches computes an
-// end offset strictly past the byte it dispatched on, so the two forms differ
-// only over a state no pattern produces. Measured from the other side as
-// well — an exhaustive sweep of every string of up to five bytes over the
-// fifteen bytes either scanner branches on, 813,615 patterns, found no input
-// on which either invariant fires, and every one of them scanned to a result
-// identical to the pre-invariant form's.
+// The assertions are OFFSETS rather than a bare "it returned". A stalled
+// cursor cannot produce them; neither can one that advanced by the wrong
+// amount, which a guard on `i <= start` would have waved through.
+func TestArmsThatComputeNoOffsetStillConsumeAByte(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the_alternation_arm", func(t *testing.T) {
+		t.Parallel()
+		// `a`, `b` and `c` match no case; the three `|` take the arm that
+		// records an offset and writes no cursor.
+		groups, ok := scanSourceGroups(`a|b|c`)
+		if !ok {
+			t.Fatal("scanSourceGroups declined a pattern of ordinary bytes and bars")
+		}
+		want := []int{1, 3}
+		got := groups[wholePatternGroup].alternations
+		if len(got) != len(want) {
+			t.Fatalf("alternations = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("alternations = %v, want %v — a cursor that moved by anything "+
+					"other than one byte per arm cannot land on these", got, want)
+			}
+		}
+	})
+
+	t.Run("the_group_close_arm", func(t *testing.T) {
+		t.Parallel()
+		// The two `)` take the arm that closes a group and writes no cursor.
+		groups, ok := scanSourceGroups(`(a)(b)`)
+		if !ok {
+			t.Fatal("scanSourceGroups declined two adjacent capture groups")
+		}
+		if len(groups) != 3 {
+			t.Fatalf("scanned %d groups, want 3 (the whole pattern and two captures)",
+				len(groups))
+		}
+		if groups[1].bodyEnd != 2 || groups[2].bodyEnd != 5 {
+			t.Fatalf("group bodies end at %d and %d, want 2 and 5",
+				groups[1].bodyEnd, groups[2].bodyEnd)
+		}
+	})
+
+	t.Run("a_long_run_of_offset_free_arms", func(t *testing.T) {
+		t.Parallel()
+		// One byte per iteration has to hold across a long input, not just
+		// on a short one: a cursor that advanced by two would record half
+		// these offsets, and one that stalled would record none of them
+		// because the scan would never return.
+		const bars = 4096
+		src := strings.Repeat(`|`, bars)
+		groups, ok := scanSourceGroups(src)
+		if !ok {
+			t.Fatalf("scanSourceGroups declined %d bars", bars)
+		}
+		got := groups[wholePatternGroup].alternations
+		if len(got) != bars {
+			t.Fatalf("recorded %d alternations over %d bars", len(got), bars)
+		}
+		for i, at := range got {
+			if at != i {
+				t.Fatalf("alternation %d recorded at offset %d; the cursor did not move "+
+					"exactly one byte per iteration", i, at)
+			}
+		}
+	})
+
+	t.Run("the_class_member_arm", func(t *testing.T) {
+		t.Parallel()
+		// Inside skipCharClass every ordinary member matches no case, so
+		// the whole class body is scanned by the default advance alone.
+		const members = 4096
+		src := `[` + strings.Repeat(`a`, members) + `]`
+		end, ok := skipCharClass(src, 0)
+		if !ok {
+			t.Fatalf("skipCharClass declined a class of %d ordinary members", members)
+		}
+		if end != len(src) {
+			t.Fatalf("skipCharClass ended at %d, want %d", end, len(src))
+		}
+	})
+}
+
+// TestScannerHelpersAlwaysConsumeAByte pins the one thing the single-advance
+// shape does NOT decide on its own.
+//
+// The walker guarantees that an arm writing no offset still consumes a
+// byte. It cannot guarantee anything about the arms that DO write one:
+// those take their offset from a helper, and a helper returning the offset
+// it was handed would stall the walker exactly as the old shape's forgotten
+// `i++` did. That is the helpers' own contract rather than the loop's, so
+// it is asserted here directly, over the scanner corpus and over a sweep of
+// every single byte, at every position each helper can legally be called
+// at.
+func TestScannerHelpersAlwaysConsumeAByte(t *testing.T) {
+	t.Parallel()
+
+	sources := append([]string{}, scannerSyntaxCorpus...)
+	for _, src := range scannerSyntaxCorpus {
+		sources = append(sources, anchorRegex(src))
+	}
+	for b := 0; b < 256; b++ {
+		sources = append(
+			sources,
+			string([]byte{byte(b)}),
+			`\`+string([]byte{byte(b)}),
+			`[`+string([]byte{byte(b)})+`]`,
+			`(`+string([]byte{byte(b)})+`)`,
+			`[[:`+string([]byte{byte(b)})+`:]]`,
+		)
+	}
+
+	calls := 0
+	for _, src := range sources {
+		for i := range len(src) {
+			switch src[i] {
+			case '\\':
+				if i+1 < len(src) && src[i+1] == 'Q' {
+					calls++
+					if end := endOfQuotedRun(src, i); end <= i {
+						t.Fatalf("endOfQuotedRun(%q, %d) = %d, which does not move the "+
+							"cursor past the byte it was handed", src, i, end)
+					}
+				}
+			case '[':
+				if end, ok := skipCharClass(src, i); ok {
+					calls++
+					if end <= i {
+						t.Fatalf("skipCharClass(%q, %d) = %d, which does not move the "+
+							"cursor past the byte it was handed", src, i, end)
+					}
+				}
+			case '(':
+				if bodyStart, _, ok := classifyGroupOpen(src, i); ok {
+					calls++
+					if bodyStart <= i {
+						t.Fatalf("classifyGroupOpen(%q, %d) = %d, which does not move the "+
+							"cursor past the byte it was handed", src, i, bodyStart)
+					}
+				}
+			}
+		}
+	}
+	if calls == 0 {
+		t.Fatal("no helper was called — this test would pass vacuously")
+	}
+	t.Logf("every one of %d helper calls returned an offset past its input", calls)
+}
