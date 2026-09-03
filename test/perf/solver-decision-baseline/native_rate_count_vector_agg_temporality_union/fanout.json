@@ -1,5 +1,5 @@
 {
-  "query": "native_rate_avg_vector_agg_temporality_union_excluded/fanout",
+  "query": "native_rate_count_vector_agg_temporality_union/fanout",
   "lowering": "fanout",
   "routed": true,
   "k": 8,

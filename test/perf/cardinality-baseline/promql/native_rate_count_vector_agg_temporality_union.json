@@ -1,7 +1,7 @@
 {
-  "fixture": "promql/native_rate_avg_vector_agg_temporality_union_excluded",
-  "fan_factor": 3,
-  "scan_rows": 12,
+  "fixture": "promql/native_rate_count_vector_agg_temporality_union",
+  "fan_factor": 2,
+  "scan_rows": 18,
   "peak_intermediate": 36,
   "has_cross_join": false,
   "has_array_join": true,
