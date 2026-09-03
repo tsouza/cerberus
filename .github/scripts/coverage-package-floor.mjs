@@ -211,7 +211,9 @@ function main() {
       `${failures.join('\n\n')}\n\nA floor is derived from a merged coverage profile, so obtain one ` +
         "of those and run 'just update-coverage-floor' against it: either 'just coverage' locally, or " +
         "'gh workflow run coverage.yml --ref <branch>' and download that run's coverage-profile " +
-        'artifact — its cover-merged.out is uploaded even when the floor gate is red. Restore any ' +
+        'artifact WHOLE — it carries cover-merged.out plus the lane record that proves the profile ' +
+        'holds both lanes, without which the update refuses to derive a floor from it, and it is ' +
+        'uploaded even when the floor gate is red. Restore any ' +
         'coverage regression rather than lowering a floor. See docs/toolchain.md. A zero floor or an ' +
         'exclusion is not enrollment.',
     );

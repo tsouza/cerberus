@@ -478,14 +478,17 @@ jobs:
             cover.out
             cover-chdb.out
             cover-merged.out
+            cover-merged.out.lanes.json
           retention-days: 30
 
       # The structural enrollment verdict lands HERE, and last. `coverage` is
       # the required context and `coverage-enrollment` is not, so an unfloored
       # package has to fail this job or it does not block a merge at all. Last
       # and `always()` so the merge and the upload above still happen first:
-      # that uploaded cover-merged.out is exactly what the author of the
-      # unfloored package needs to run `just update-coverage-floor` against,
+      # that uploaded cover-merged.out — with the cover-merged.out.lanes.json
+      # record that proves it carries both lanes, without which
+      # `update-coverage-floor` refuses it (tsouza/cerberus#2988) — is exactly
+      # what the author of the unfloored package needs to run against,
       # and failing ahead of it would recreate tsouza/cerberus#2987's loop one
       # job further along. `always()` also means a genuinely cancelled or
       # errored coverage-enrollment fails here rather than passing silently.
