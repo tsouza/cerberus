@@ -93,8 +93,22 @@ func tagsCatalogEligible(scope string, filter chsql.Frag, windowless, scopeAttrs
 // tagValuesCatalogEligible reports whether a
 // /search/tag/{name}/values (or V2) request may be served from the
 // catalog.
+//
+// attrMapScopeInstrumentation stays off the fast path unconditionally
+// (cerberus issue #3010): the catalog MV never carries an
+// instrumentation-scope arm at all (internal/schema/ddl's SCOPE
+// COVERAGE doc — unlike tagsCatalogEligible's `scope=none`, which is
+// merely narrowed when the schema configures ScopeAttributesColumn, an
+// explicit instrumentation-scope tag-VALUES request has no partial-
+// coverage case to preserve; the catalog has nothing for it whether or
+// not the schema carries a column, so it must always fall through to
+// the live path catalogScopeForMapScope's default arm would otherwise
+// silently mis-serve as auto-scope resource+span).
 func tagValuesCatalogEligible(resolved resolvedTagName, filter chsql.Frag, windowless bool) bool {
 	if filter != nil || !windowless {
+		return false
+	}
+	if resolved.MapScope == attrMapScopeInstrumentation {
 		return false
 	}
 	return !resolved.IsIntrinsic
