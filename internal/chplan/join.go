@@ -61,11 +61,21 @@ package chplan
 //   - RangeWindow with a non-nil DeltaPrefixAggregateInput — the
 //     delta-prefix LEFT JOIN (internal/chsql/range_window.go's
 //     deltaPrefixAggregateSource) that side-feeds the day-bucket aggregate
-//     input into the raw window. cerberus issue #3014 tracks a SEPARATE,
-//     narrower join this predicate does not yet cover: the instant-shape
-//     (OuterRange == 0) default fallback (instantDeltaPrefixSource) also
-//     emits a JOIN, on temporality-aware counters, with no
-//     DeltaPrefixAggregateInput involved at all.
+//     input into the raw window.
+//   - RangeWindow with OuterRange == 0 (instant shape), a populated
+//     TemporalityColumn, and a counter Func (rate / increase, per
+//     IsCounterRangeWindowFunc — not delta, which is a gauge delta) — the
+//     SEPARATE, narrower join cerberus issue #3014 found the predicate
+//     above did not cover: instant emitWindowedArrayExtrapolated's default
+//     fallback (instantDeltaPrefixSource, used whenever the
+//     DeltaPrefixAggregateInput-backed mechanism above is not ALSO opted
+//     into) LEFT/CROSS JOINs a per-series prefix-sum subquery back onto the
+//     window unconditionally on every such query — no DeltaPrefixAggregateInput
+//     needed to trigger it. Any RangeWindow already caught by the arm above
+//     (a non-nil DeltaPrefixAggregateInput) is also caught by this one when
+//     it is instant-shaped, but is reported redundantly-true either way, so
+//     the two arms are combined with OR rather than requiring
+//     DeltaPrefixAggregateInput == nil here.
 //
 // ClickHouse's ARRAY JOIN (RangeWindowStaleResample, RangeBucketGridNative,
 // RangeWindowGridNative, RangeWindowGridNativeVectorAgg, …) is deliberately
@@ -97,7 +107,8 @@ func HasJoin(node Node) bool {
 				found = true
 			}
 		case *RangeWindow:
-			if v.DeltaPrefixAggregateInput != nil {
+			if v.DeltaPrefixAggregateInput != nil ||
+				(v.OuterRange == 0 && v.TemporalityColumn != "" && IsCounterRangeWindowFunc(v.Func)) {
 				found = true
 			}
 		}

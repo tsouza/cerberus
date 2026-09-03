@@ -191,7 +191,7 @@ func TestKeyForWalksEveryRangeAndCombinatorNodeKind(t *testing.T) {
 // This test's job is narrower and KeyFor-specific: prove Key.HasJoin
 // actually forwards chplan.HasJoin's verdict, for the full known set,
 // including a join chplan.HasJoin can only see via WalkDeep.
-const wantRouteMemoJoinCarrierCount = 10
+const wantRouteMemoJoinCarrierCount = 11
 
 // TestKeyForHasJoin_CoversEveryJoinCarrier asserts Key.HasJoin against the
 // CANONICAL join-carrier set (internal/chplan/join.go's HasJoin), not
@@ -225,6 +225,14 @@ func TestKeyForHasJoin_CoversEveryJoinCarrier(t *testing.T) {
 		{
 			"RangeWindow with DeltaPrefixAggregateInput",
 			&chplan.RangeWindow{Input: scan, DeltaPrefixAggregateInput: scan, Func: "rate"},
+		},
+		{
+			// cerberus issue #3014: instant rate() over a temporality-projected
+			// counter with no DeltaPrefixAggregateInput — see
+			// internal/chplan/join_test.go's identical row for the emission
+			// evidence.
+			"RangeWindow instant rate() over temporality-projected counter (#3014)",
+			&chplan.RangeWindow{Input: scan, Func: "rate", TemporalityColumn: "AggregationTemporality"},
 		},
 	}
 	if len(cases) != wantRouteMemoJoinCarrierCount {

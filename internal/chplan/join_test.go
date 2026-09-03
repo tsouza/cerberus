@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"testing"
+	"time"
 )
 
 // synthetic fixtures. Every value here is invented for the test — no
@@ -44,6 +45,21 @@ func joinCarrierCases() []struct {
 				DeltaPrefixAggregateInput: &Scan{Table: "fixture_metrics_delta_prefix"},
 			},
 		},
+		{
+			// cerberus issue #3014: instant rate()/increase() over a
+			// temporality-projected counter, with NO DeltaPrefixAggregateInput
+			// at all — the default, no-backfill shape. Reaches
+			// instantDeltaPrefixSource's unconditional LEFT/CROSS JOIN
+			// (internal/chsql/range_window.go's emitWindowedArrayExtrapolated),
+			// which the row above's condition alone never sees.
+			"RangeWindow instant rate() over temporality-projected counter (instant delta-prefix JOIN, #3014)",
+			&RangeWindow{
+				Input:             joinScanFixture(),
+				Func:              "rate",
+				OuterRange:        0,
+				TemporalityColumn: "AggregationTemporality",
+			},
+		},
 	}
 }
 
@@ -52,7 +68,7 @@ func joinCarrierCases() []struct {
 // TestHasJoin_CoversEveryJoinEmittingNode catches independently by deriving
 // straight from join.go's source) still fails loudly rather than the table
 // quietly shrinking to whatever HasJoin currently does.
-const wantJoinCarrierCount = 10
+const wantJoinCarrierCount = 11
 
 // TestHasJoin_DetectsEveryJoinCarrier covers every join-bearing chplan node
 // HasJoin claims to find: each one alone is enough to trip the detector.
@@ -87,6 +103,40 @@ func TestHasJoin_NonJoinPlansUnaffected(t *testing.T) {
 		{"RangeWindow with no delta-prefix side feed", &RangeWindow{Input: joinScanFixture()}},
 		{"MetricsCompare with no RootLookup", &MetricsCompare{Inner: joinScanFixture()}},
 		{"VectorSetOp (semi/anti-join lowers to WHERE IN, never a SQL JOIN)", &VectorSetOp{Left: joinScanFixture(), Right: joinScanFixture()}},
+		{
+			// delta() is a gauge delta, not a counter — extrapolationKind's
+			// isCounter() (and IsCounterRangeWindowFunc) is false for it, so
+			// needsDeltaFirstLevel never goes true and instantDeltaPrefixSource
+			// never runs, regardless of TemporalityColumn.
+			"RangeWindow instant delta() over temporality-projected column (not a counter func)",
+			&RangeWindow{
+				Input:             joinScanFixture(),
+				Func:              "delta",
+				OuterRange:        0,
+				TemporalityColumn: "AggregationTemporality",
+			},
+		},
+		{
+			// No TemporalityColumn: windowTemporalityProjected(r) is false, so
+			// needsDeltaFirstLevel is false and instantDeltaPrefixSource never
+			// runs even for a counter Func.
+			"RangeWindow instant rate() with no TemporalityColumn",
+			&RangeWindow{Input: joinScanFixture(), Func: "rate", OuterRange: 0},
+		},
+		{
+			// Matrix shape (OuterRange > 0) with no DeltaPrefixAggregateInput:
+			// the matrix emitter's default fallback is deltaMatrixLevelSource, a
+			// window function over the fanned-out rows — genuinely join-free,
+			// unlike the instant shape's default fallback.
+			"RangeWindow matrix rate() over temporality-projected counter, no DeltaPrefixAggregateInput",
+			&RangeWindow{
+				Input:             joinScanFixture(),
+				Func:              "rate",
+				OuterRange:        10 * time.Minute,
+				Step:              time.Minute,
+				TemporalityColumn: "AggregationTemporality",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
