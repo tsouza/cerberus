@@ -618,8 +618,9 @@ func TestEmitMetricsExemplars_MetricArgEmission_Op154(t *testing.T) {
 }
 
 // TestEmitMetricsExemplars_ValueExprOpEquality kills the four
-// CONDITIONAL_NEGATION mutants on lines 207:10 / 207:42 in
-// exemplars.go where the value expression branch picks between
+// CONDITIONAL_NEGATION mutants on
+// exemplars.go:`readsOperand := !metricsOpCountsRowsRatherThanOperand(m.Op) && m.Attr != nil`,
+// the flag whose value expression branch picks between
 // `argMax(1, ts)` (Rate/CountOverTime) and `argMax(metric_arg, ts)`
 // (everything else with an Attr operand).
 func TestEmitMetricsExemplars_ValueExprOpEquality(t *testing.T) {
@@ -4063,7 +4064,7 @@ func TestAnchorGridCeilIdxFrag_ShiftsAddNSDownByOne(t *testing.T) {
 	// Negative control: the `addNS+1` mutant would instead match this.
 	wrong := render(anchorGridFloorIdxFrag(dist, addNS+1, stepNS))
 	if got == wrong {
-		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (line 1812 flipped?): %s", addNS, got)
+		t.Errorf("anchorGridCeilIdxFrag(dist, %d, step) unexpectedly matches the +1 shift (range_window.go:`return anchorGridFloorIdxFrag(dist, addNS-1, stepNS)` flipped?): %s", addNS, got)
 	}
 }
 

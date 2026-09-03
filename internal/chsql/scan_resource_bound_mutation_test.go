@@ -51,19 +51,19 @@ func TestRequireScanResourceBound_GuardBranches(t *testing.T) {
 		t.Fatalf("none witness over a scoped-out table must return nil, got %v", err)
 	}
 	// A none witness over the ENFORCED table must be rejected. Negating
-	// `emitterSpansTable == ""` (@97:23) or `table != emitterSpansTable`
-	// (@97:38) would flip the guard true and wave it through as nil.
+	// `emitterSpansTable == ""`, or negating `table != emitterSpansTable`,
+	// would flip the guard true and wave it through as nil.
 	if err := requireScanResourceBound(scanBoundEnforcedTable, scanBoundEnforcedTable, none); !errors.Is(err, ErrUnboundedSpansScan) {
 		t.Fatalf("none witness over the enforced table must be rejected, got %v", err)
 	}
 	// Enforcement disabled (emitterSpansTable == "") with a none witness over an
-	// empty table → nil. Negating `emitterSpansTable == ""` (@97:23) would send
+	// empty table → nil. Negating `emitterSpansTable == ""` would send
 	// this to the bound check and reject.
 	if err := requireScanResourceBound("", "", none); err != nil {
 		t.Fatalf("disabled enforcement must return nil, got %v", err)
 	}
 	// A real (trace-id set) bound over the enforced table passes (positive
-	// control for the bound-check arm at line 100).
+	// control for scan_resource_bound.go:`if b.kind == spansBoundNone {`).
 	if err := requireScanResourceBound(scanBoundEnforcedTable, scanBoundEnforcedTable, bounded); err != nil {
 		t.Fatalf("bounded witness over the enforced table must pass, got %v", err)
 	}
@@ -79,7 +79,7 @@ func TestRequireInnerSpansScanBound_GuardBranch(t *testing.T) {
 	otherInner := &chplan.Scan{Table: scanBoundOtherTable}
 
 	// Inner scans a DIFFERENT table → scoped out → nil even with a zero window.
-	// `||`→`&&` (@129:22) would proceed to the window check and reject.
+	// `||`→`&&` would proceed to the window check and reject.
 	if err := requireInnerSpansScanBound(zeroWin, otherInner, scanBoundEnforcedTable); err != nil {
 		t.Fatalf("non-spans inner must return nil, got %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRequireSpansScanWindow_GuardBranches(t *testing.T) {
 	if err := requireSpansScanWindow(scanBoundEnforcedTable, scanBoundEnforcedTable, scanBoundTSColumn, 0, 0); !errors.Is(err, ErrUnboundedSpansScan) {
 		t.Fatalf("windowless recursive spans scan must be rejected, got %v", err)
 	}
-	// One-sided windows still prune partitions → nil. `&&`→`||` (@214:20) would
+	// One-sided windows still prune partitions → nil. `&&`→`||` would
 	// reject either one-sided window.
 	if err := requireSpansScanWindow(scanBoundEnforcedTable, scanBoundEnforcedTable, scanBoundTSColumn, 1, 0); err != nil {
 		t.Fatalf("start-only window must pass, got %v", err)

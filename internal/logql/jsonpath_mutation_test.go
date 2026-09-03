@@ -24,47 +24,49 @@ import (
 //
 // Each case below depends on the exact value or branch a cited mutation
 // alters, so the mutation breaks the assertion. Mutants pinned:
-//   - isJSONStartIdentifier: boundary 'a'/'z'/'A'/'Z', the '_'
-//     equality, and the two `||` joins — distinguished by single-char
-//     fields "a","z","A","Z","_".
-//   - isJSONIdentifier: continuation-digit boundary '0'/'9' and
-//     the `||` join — distinguished by "a0","a9","ab".
-//   - next() digit detection: boundaries '0'/'9' — "[0]","[9]".
-//   - isJSONWhitespace: the `||` joins — space/tab/newline must
-//     be skipped inside brackets.
-//   - jpDot error gate: a scan error after '.' must surface the
-//     scan error, not the generic "expected field" message.
-//   - unread() guard: `pos > 0` must stay a no-op at pos 0.
+//   - jsonpath.go:isJSONStartIdentifier:`r >= 'a' && r <= 'z'`: boundary
+//     'a'/'z'/'A'/'Z', the '_' equality, and the two `||` joins —
+//     distinguished by single-char fields "a","z","A","Z","_".
+//   - jsonpath.go:isJSONIdentifier:`r >= '0' && r <= '9'`: continuation-digit
+//     boundary '0'/'9' and the `||` join — distinguished by "a0","a9","ab".
+//   - jsonpath.go:next:`r >= '0' && r <= '9'`: the digit-start detection
+//     boundaries '0'/'9' — "[0]","[9]".
+//   - jsonpath.go:`r == ' ' || r == '\t'`: isJSONWhitespace's `||` joins —
+//     space/tab/newline must be skipped inside brackets.
+//   - the `if err != nil` gate in the jsonpath.go:jsonPathParse:`case jpDot:`
+//     arm: a scan error after '.' must surface the scan error, not the
+//     generic "expected field" message.
+//   - jsonpath.go:unread:`sc.pos > 0`: must stay a no-op at pos 0.
 func TestJSONPathParse_Mutation(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want []any
 	}{
-		// isJSONStartIdentifier boundary + negation + logical joins:
-		// each boundary char must be accepted as a field start.
+		// isJSONStartIdentifier boundary + negation + logical joins: each
+		// boundary char must be accepted as a field start.
 		{"start_lower_a", "a", []any{"a"}},
 		{"start_lower_z", "z", []any{"z"}},
 		{"start_upper_A", "A", []any{"A"}},
 		{"start_upper_Z", "Z", []any{"Z"}},
 		{"start_underscore", "_", []any{"_"}},
 
-		// isJSONIdentifier boundary + logical join: a digit must
-		// be accepted as a field *continuation* char (else the field splits
+		// isJSONIdentifier boundary + logical join: a digit must be
+		// accepted as a field *continuation* char (else the field splits
 		// and the bare index trips the "unexpected token" path).
 		{"cont_digit_zero", "a0", []any{"a0"}},
 		{"cont_digit_nine", "a9", []any{"a9"}},
 		{"cont_multichar", "ab", []any{"ab"}},
 		{"cont_digit_mid", "k8s", []any{"k8s"}},
 
-		// next() digit-start detection boundaries: '0' and '9'
-		// must both be recognised as the start of an integer index.
+		// next() digit-start detection boundaries: '0' and '9' must both
+		// be recognised as the start of an integer index.
 		{"index_zero", "[0]", []any{0}},
 		{"index_nine", "[9]", []any{9}},
 		{"index_multidigit", "[10]", []any{10}},
 
-		// isJSONWhitespace logical joins: space, tab, and newline
-		// must each be skipped — both before the index (next() skip path)
+		// isJSONWhitespace logical joins: space, tab, and newline must
+		// each be skipped — both before the index (next() skip path)
 		// and after it (scanInt terminator path).
 		{"ws_space_before_index", "[ 0]", []any{0}},
 		{"ws_space_after_index", "[0 ]", []any{0}},
@@ -89,7 +91,8 @@ func TestJSONPathParse_Mutation(t *testing.T) {
 }
 
 // TestJSONPathParse_DotFollowedByScanErrorSurfacesScanError pins the
-// `if err != nil` gate in the jpDot branch. After a '.', the
+// `if err != nil` gate in the jsonpath.go:jsonPathParse:`case jpDot:`
+// arm, the one guarding `f, err := sc.next()`. After a '.', the
 // next token is scanned; a float array index makes scanInt error. The
 // original surfaces THAT error ("cannot use float array index"). Negating
 // the gate (`err == nil`) instead falls through to the generic
@@ -102,6 +105,36 @@ func TestJSONPathParse_DotFollowedByScanErrorSurfacesScanError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "float array index") {
 		t.Fatalf("jsonPathParse(%q): expected the scan error to surface, got: %v", "a.5.0", err)
+	}
+}
+
+// TestJSONPathParse_NonDigitInsideIndexRejected pins the digit guard
+// jsonpath.go:scanInt:`r < '0' || r > '9'`. A non-digit, non-terminator
+// char inside an index must be rejected with the "non-integer value" error.
+// Inverting the `||` to `&&` (no char is ever both `< '0'` and `> '9'`)
+// lets the stray char fall through to strconv.Atoi, which fails with a
+// different ("invalid syntax") message — so asserting the specific
+// "non-integer value" error kills the mutant.
+func TestJSONPathParse_NonDigitInsideIndexRejected(t *testing.T) {
+	_, err := jsonPathParse("[1a]")
+	if err == nil {
+		t.Fatalf("jsonPathParse(%q): expected an error", "[1a]")
+	}
+	if !strings.Contains(err.Error(), "non-integer value") {
+		t.Fatalf("jsonPathParse(%q): want a non-integer-value scan error, got: %v", "[1a]", err)
+	}
+}
+
+// TestJSONPathScanner_UnreadAtStartIsNoOp pins the guard
+// jsonpath.go:unread:`sc.pos > 0`. At pos 0 it must keep unread a no-op;
+// loosening the boundary to `>= 0` drives pos negative, and the next
+// read mis-indexes (panics), failing this test.
+func TestJSONPathScanner_UnreadAtStartIsNoOp(t *testing.T) {
+	sc := &jsonPathScanner{src: []rune("xy")}
+	sc.unread() // pos is already 0; must remain 0.
+	r, ok := sc.read()
+	if !ok || r != 'x' {
+		t.Fatalf("read() after no-op unread = (%q, %v), want ('x', true)", r, ok)
 	}
 }
 
@@ -120,35 +153,5 @@ func TestJSONPathParse_FloatIndexRejected(t *testing.T) {
 		if !strings.Contains(err.Error(), "float array index") {
 			t.Fatalf("jsonPathParse(%q): want a float-array-index error, got: %v", in, err)
 		}
-	}
-}
-
-// TestJSONPathParse_NonDigitInsideIndexRejected pins the `r < '0' || r > '9'`
-// digit guard in scanInt. A non-digit, non-terminator char
-// inside an index must be rejected with the "non-integer value" error.
-// Inverting the `||` to `&&` (no char is ever both `< '0'` and `> '9'`)
-// lets the stray char fall through to strconv.Atoi, which fails with a
-// different ("invalid syntax") message — so asserting the specific
-// "non-integer value" error kills the mutant.
-func TestJSONPathParse_NonDigitInsideIndexRejected(t *testing.T) {
-	_, err := jsonPathParse("[1a]")
-	if err == nil {
-		t.Fatalf("jsonPathParse(%q): expected an error", "[1a]")
-	}
-	if !strings.Contains(err.Error(), "non-integer value") {
-		t.Fatalf("jsonPathParse(%q): want a non-integer-value scan error, got: %v", "[1a]", err)
-	}
-}
-
-// TestJSONPathScanner_UnreadAtStartIsNoOp pins the `sc.pos > 0` guard in
-// unread(). At pos 0 the guard must keep unread a no-op;
-// loosening the boundary to `>= 0` drives pos negative, and the next
-// read mis-indexes (panics), failing this test.
-func TestJSONPathScanner_UnreadAtStartIsNoOp(t *testing.T) {
-	sc := &jsonPathScanner{src: []rune("xy")}
-	sc.unread() // pos is already 0; must remain 0.
-	r, ok := sc.read()
-	if !ok || r != 'x' {
-		t.Fatalf("read() after no-op unread = (%q, %v), want ('x', true)", r, ok)
 	}
 }

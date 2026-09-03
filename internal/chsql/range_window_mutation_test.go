@@ -177,7 +177,7 @@ func TestOverTimeDirectRejectsZeroStepSubquery(t *testing.T) {
 	}
 	_, _, err := Emit(context.Background(), plan)
 	if err == nil {
-		t.Fatalf("Emit(OuterRange>0, Step=0) returned nil error — line 2346 `<= 0` flipped to `< 0`")
+		t.Fatalf("Emit(OuterRange>0, Step=0) returned nil error — range_window.go:`if r.OuterRange > 0 && r.Step <= 0 {` flipped to `< 0`")
 	}
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
@@ -416,7 +416,7 @@ func TestOverTimeDirectMatrixNoGroupBy(t *testing.T) {
 		End:             start.Add(5 * time.Minute),
 		TimestampColumn: "TimeUnix",
 		ValueColumn:     "Value",
-		// GroupBy intentionally empty → make-cap boundary at line 2465.
+		// GroupBy intentionally empty → the `len(groupFrags)+1` make-cap boundary.
 	}
 	sql, _, err := Emit(context.Background(), plan)
 	if err != nil {
@@ -486,9 +486,9 @@ func TestFusedMatrixOuterAnchorCount(t *testing.T) {
 	}
 	// OuterRange 6m / Step 2m + 1 = 4 outer anchors.
 	if !strings.Contains(sql, "range(4)") {
-		t.Errorf("outer anchor grid must be range(4) (OuterRange/Step + 1) — line 408 arithmetic flipped\nSQL: %s", sql)
+		t.Errorf("outer anchor grid must be range(4) (OuterRange/Step + 1) — range_window_fused.go:`numAnchors := inner.OuterRange.Nanoseconds()/stepNS + 1` arithmetic flipped\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "range(2)") {
-		t.Errorf("found range(2) — `+ 1` mutated to `- 1` (line 408)\nSQL: %s", sql)
+		t.Errorf("found range(2) — `+ 1` mutated to `- 1` in range_window_fused.go:`numAnchors := inner.OuterRange.Nanoseconds()/stepNS + 1`\nSQL: %s", sql)
 	}
 }

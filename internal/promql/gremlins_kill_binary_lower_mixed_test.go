@@ -73,7 +73,7 @@ func clampFamilyNewValue(t *testing.T, q string) chplan.Expr {
 // on the same line,
 // binary.go:`return ok && call.Func != nil && call.Func.Name == "vector"`:
 //
-// INVERT_LOGICAL at col 14 flips the first `&&` to `||`. Go's `&&`/`||`
+// INVERT_LOGICAL flips the first `&&` to `||`. Go's `&&`/`||`
 // precedence is equal-left-to-right for this expression's grouping
 // ((ok && x) && y vs ok || (x && y)), so the mutant becomes
 // `ok || (call.Func != nil && call.Func.Name == "vector")`. When e is
@@ -83,7 +83,7 @@ func clampFamilyNewValue(t *testing.T, q string) chplan.Expr {
 // does) panics on the nil pointer dereference. The original code never
 // evaluates call.Func in that case and safely returns false.
 //
-// CONDITIONALS_NEGATION at col 27 flips `call.Func != nil` to
+// CONDITIONALS_NEGATION flips `call.Func != nil` to
 // `call.Func == nil`, which makes the whole expression always false for
 // any real *parser.Call (since Func is always set on a parsed call) —
 // killed by asserting `vector(1)` reports true.
@@ -106,8 +106,8 @@ func TestIsVectorTypedSyntheticOperand_ConjunctsAndGuard(t *testing.T) {
 	}
 
 	// The genuine positive case: vector(1) must report true. A
-	// CONDITIONALS_NEGATION mutant flipping `!=` to `==` at col 27 would
-	// make this false unconditionally.
+	// CONDITIONALS_NEGATION mutant flipping `call.Func != nil` to `==`
+	// would make this false unconditionally.
 	vectorCall := mustParse(t, `vector(1)`)
 	if !isVectorTypedSyntheticOperand(vectorCall) {
 		t.Fatalf("isVectorTypedSyntheticOperand(vector(1)) = false, want true (mutant `!=`→`==` at " +
@@ -502,16 +502,16 @@ func TestCountValuesOverMixedExpHistogramSetOp_RecognizesOnlyCountValues(t *test
 // histogram_native_mixed_or_aggregate_presence.go:`if !ok || (agg.Op != parser.COUNT && agg.Op != parser.GROUP) || agg.Param != nil`,
 // whose body returns the zero-value rejection tuple.
 //
-// col 20 (`agg.Op != parser.COUNT` → `==`): with Op=COUNT, the mutated
+// `agg.Op != parser.COUNT` → `==`: with Op=COUNT, the mutated
 // first conjunct becomes true, and (true && (COUNT != GROUP = true)) =
 // true — the whole OR chain trips and count(...) is wrongly rejected.
 // Killed by the count(...) assertion.
 //
-// col 46 (`agg.Op != parser.GROUP` → `==`): symmetric — with Op=GROUP,
+// `agg.Op != parser.GROUP` → `==`: symmetric — with Op=GROUP,
 // ((GROUP != COUNT = true) && true) = true trips the OR chain and
 // group(...) is wrongly rejected. Killed by the group(...) assertion.
 //
-// col 76 (`agg.Param != nil` → `==`): with Param genuinely nil (both
+// `agg.Param != nil` → `==`: with Param genuinely nil (both
 // count(...) and group(...) never carry a Param), the mutated third
 // disjunct becomes true unconditionally, tripping the OR chain and
 // rejecting BOTH normal calls. Killed by either assertion.
@@ -556,20 +556,21 @@ func TestCountOrGroupOverMixedExpHistogramSetOp_RecognizesCountAndGroup(t *testi
 //	    return nil, false
 //	}
 //
-// col 17 (`!=`→`==`): with exactly 1 arg (the normal, only-valid shape
-// for these date fns), the mutated first disjunct becomes true and
+// `len(c.Args) != 1` → `==`: with exactly 1 arg (the normal, only-valid
+// shape for these date fns), the mutated first disjunct becomes true and
 // wrongly rejects. Killed by the year(...) assertion.
 //
-// col 37 (`==`→`!=`): with Func.Name="year" (not "timestamp"), the
-// mutated second disjunct ("year" != "timestamp") becomes true and
-// wrongly rejects EVERY normal date-fn call. Also killed by the
-// year(...) assertion.
+// `c.Func.Name == "timestamp"` → `!=`: with Func.Name="year" (not
+// "timestamp"), the mutated second disjunct ("year" != "timestamp")
+// becomes true and wrongly rejects EVERY normal date-fn call. Also
+// killed by the year(...) assertion.
 //
-// col 22 (`||`→`&&`): with Func.Name="timestamp" and exactly 1 arg, the
-// original OR trips on the second disjunct alone and correctly rejects
-// (timestamp is explicitly excluded by name). The mutated AND requires
-// BOTH disjuncts, and the first (len!=1) is false here, so the mutant
-// wrongly accepts "timestamp". Killed by the timestamp(...) assertion.
+// the `||` joining the two disjuncts → `&&`: with Func.Name="timestamp"
+// and exactly 1 arg, the original OR trips on the second disjunct alone
+// and correctly rejects (timestamp is explicitly excluded by name).
+// The mutated AND requires BOTH disjuncts, and the first (len!=1) is
+// false here, so the mutant wrongly accepts "timestamp". Killed by the
+// timestamp(...) assertion.
 //
 // timestamp() isn't reachable through this recognizer via the normal
 // lowerCall dispatch (which excludes it by name before ever calling

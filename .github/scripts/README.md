@@ -374,22 +374,41 @@ what actually runs.
     drives the real script and pairs every clean case with the dirty one it
     must catch, using the real defect rows the committed inventories carried.
 - **`verify-code-citations.mjs`** — `ci.yml`, the `forbid-skip` job step "Reject
-  source citations that name a line instead of a construct". Every `file.go:…`
-  citation in a Go comment or string must name the CONSTRUCT it is about
-  (``range_window.go:`numAnchors-1` ``, or
-  ``range_window.go:emitRangeWindow:`numAnchors-1` `` when the construct repeats
-  in the file), and the gate resolves it: the path must be a file in this
-  repository, and the construct must appear on exactly one CODE line of that
-  file, or of the named top-level func. Blank lines and whole-line `//` comments
-  are never searched, so a citation cannot resolve to one. A line number is
-  rejected outright — it is unverifiable, and measured over the 200 commits
-  before this gate it would have been invalidated 575 times with the construct
-  it named untouched in 573 of them (#2953). `.go:` followed by anything else
-  carries no address and is left alone: ordinary prose, a bare function
-  reference, and `test/rejection-parity`'s `path.go:func#hash` site ids.
+  a note that names code by number instead of by construct". A comment names
+  code in THREE places and the gate checks all three, so an address cannot
+  survive by moving one word to the left.
+  - **The backticked citation** (#2953). Every `file.go:…` citation in a Go
+    comment or string must name the CONSTRUCT it is about
+    (``range_window.go:`numAnchors-1` ``, or
+    ``range_window.go:emitRangeWindow:`numAnchors-1` `` when the construct
+    repeats in the file), and the gate resolves it: the path must be a file in
+    this repository, and the construct must appear on exactly one CODE line of
+    that file, or of the named top-level func. Blank lines and whole-line `//`
+    comments are never searched, so a citation cannot resolve to one. A line
+    number is rejected outright — it is unverifiable, and measured over the 200
+    commits before this gate it would have been invalidated 575 times with the
+    construct it named untouched in 573 of them. `.go:` followed by anything
+    else carries no address and is left alone: ordinary prose, a bare function
+    reference, and `test/rejection-parity`'s `path.go:func#hash` site ids.
+  - **The prose around it** (#2964). The same address written as words —
+    `line 613`, `line 92:20`, `lines 273-276`, `col 27`, `(@97:23)` — is
+    rejected over the note's own prose and over a `t.Errorf` / `t.Fatalf`
+    message, the two places this repository writes notes. A tab-indented block
+    is quoted material rather than prose and belongs to the next shape; an
+    expected-error string a test asserts on is not a note. `column N` spelled
+    out and an unmarked `N:M` pair are deliberately unmodelled — see
+    `docs/test-strategy.md` § "The same address, written as prose" for the
+    measurement behind each.
+  - **The block quoted under it** (#2969). A tab-indented block whose text
+    lives in this repository in a file OTHER than the one its citation names is
+    rejected as a mis-attribution. A block that resolves NOWHERE is not — it is
+    indistinguishable from the mutant's rewritten form, which is the point of an
+    adjudication note. A line that is itself a citation (an indented citation
+    list) and a line with no identifier character (a bare `...`) name nothing to
+    attribute and are skipped.
   - Env: `REPO_ROOT` (default `process.cwd()`), `PATHSPECS` (default `*.go`).
-  - Exit: `0` when every citation resolves; `1` on any violation or on a
-    pathspec that matches no Go file at all.
+  - Exit: `0` when every citation, prose address and quoted block resolves; `1`
+    on any violation or on a pathspec that matches no Go file at all.
   - Pins: `verify-code-citations.test.mjs` (`node --test`), which drives the
     real CLI over a throwaway git repository and pairs every rejection with the
     nearest-miss acceptance, so neither widening the gate into uselessness nor

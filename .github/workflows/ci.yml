@@ -1131,13 +1131,24 @@ jobs:
       # was invalidated 575 times and in 573 of those the construct it named
       # was never touched, and a third of the citations on main had already
       # rotted onto a comment or a blank line. The convention therefore names
-      # the CONSTRUCT, which this gate resolves against the cited file. The
-      # suite runs first: it is what proves the gate can go red, one modelled
-      # citation shape at a time.
-      - name: Assert the citation gate fires on every drifted citation shape
+      # the CONSTRUCT, which this gate resolves against the cited file.
+      #
+      # A comment names code in three places and the gate checks all three, so
+      # an address cannot survive by moving one word to the left. #2964: the
+      # same address spelled as prose (`line 613`, `col 27`, `@97:23`), which
+      # the `file.go:613` ban never saw — 72 of them on the tree when this
+      # landed, and in internal/spansscan all ten already named a closing brace
+      # rather than their construct. #2969: the tab-indented block quoted UNDER
+      # a citation, where only provable MIS-ATTRIBUTION is gateable — a block
+      # that resolves nowhere is the mutant's rewritten form, not drift, and
+      # docs/test-strategy.md records why the wider rule was refused.
+      #
+      # The suite runs first: it is what proves the gate can go red, one
+      # modelled shape at a time.
+      - name: Assert the citation gate fires on every drifted note shape
         run: node --test .github/scripts/verify-code-citations.test.mjs
 
-      - name: Reject source citations that name a line instead of a construct
+      - name: Reject a note that names code by number instead of by construct
         run: node .github/scripts/verify-code-citations.mjs
 
       # #2958: a mutant gets ONE verdict. `docs/test-strategy.md` §
