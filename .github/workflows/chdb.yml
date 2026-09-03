@@ -104,26 +104,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
   # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
   #
-  # The GROUP above is what makes deep-main work replaceable, and it keeps
-  # working: GitHub holds at most ONE pending run per group, so a burst of
-  # pushes is still superseded at QUEUE time, where a pending run holds no
-  # runner and costs nothing. Killing a run that is already EXECUTING is a
-  # separate act, and it only pays when the killed work was nearly worthless.
-  #
-  # READ THAT DIRECTION BEFORE "OPTIMISING" THIS LINE BACK TO AN EXPRESSION.
-  # `false` looks like the setting that wastes runners and the measurement says
-  # the opposite: cancellation SPENT the minutes below and threw the result
-  # away, then re-ran the same work on the next commit. The tier and the
-  # decision rule behind it live in QUEUE_COALESCED_WORKFLOWS in
+  # The GROUP above still coalesces: GitHub holds at most ONE pending run per
+  # group, so a burst of pushes is superseded at QUEUE time, where a pending run
+  # holds no runner and costs nothing. Killing a run already EXECUTING is a
+  # separate act, and it only pays when the killed work was near-worthless.
+  # Before "optimising" this line back into an expression, read the decision
+  # rule and this lane's recorded answer in QUEUE_COALESCED_WORKFLOWS in
   # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
-  # two halves ever disagree.
+  # two halves ever disagree. The figures below are run-minutes (wall clock per
+  # run, not billed runner minutes, which a fan-out multiplies).
   #
-  # Measured on this lane: 48% of its main-push runs CANCELLED, a 34.5-min
-  # median successful run against the 38.5-min median push gap — only 57% of
-  # gaps clear it — kills a median 18.0 min in, 12 of 48 past 90% of a run, and
-  # 35% of the lane's runner minutes (991 min in 74.5 h) discarded. The window
-  # also held 30 genuine failures, so cancelling this lane suppresses red on
-  # the trunk as well as wasting the runner that found it.
+  # Measured here: 48% of its main-push runs CANCELLED, a 34.5-min median
+  # successful run against the 38.5-min median push gap — only 57% of gaps
+  # clear it — kills a median 18.0 min in (52%) with 12 of 48 past the 90%
+  # mark, and 35% of this lane's run-minutes (991 min in 74.5 h) discarded. The
+  # window also held 30 genuine failures, so cancelling suppresses red on the
+  # trunk as well as wasting the runner that found it.
   cancel-in-progress: false
 
 jobs:

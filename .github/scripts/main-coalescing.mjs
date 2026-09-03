@@ -84,65 +84,75 @@ export const COALESCED_WORKFLOWS = Object.freeze([
 // # The decision rule (tsouza/cerberus#2994)
 //
 // Cancellation is not uniformly wrong, so enrollment is not uniform. Every
-// enrolled workflow is classified by ONE ordered question, and the answer is
-// recorded next to the name:
+// enrolled workflow answers ONE ordered pair of questions, and its answer is
+// recorded beside its name.
 //
-//   1. Does a superseded run still carry information its successor will not
-//      reproduce? A lane whose output is a deterministic function of the tree
-//      answers NO — the newer tree's verdict is a strict replacement, and the
-//      older run's result is genuinely redundant. A lane that emits a
-//      per-commit measurement, publishes a score, or explores randomly-seeded
-//      input answers YES.
+//   1. Does the trunk permanently lose a record the successor will not
+//      restore? A main-push run measures a commit that is now permanently on
+//      `main`, and the successor measures its OWN commit, never the killed
+//      one — so an unfinished run is a gap in the trunk's record, and the
+//      default answer for a push-triggered lane is YES. A lane answers NO only
+//      when it keeps no durable per-commit record to lose. Determinism alone
+//      is NOT that reason: a deterministic verdict still posts a per-commit
+//      check-run that a release preflight and a bisect both read.
 //   2. If YES, is the measured loss material? Cancellation that lands in the
-//      first quarter of a run and throws away single-digit runner minutes per
-//      day is not worth trading latency-to-HEAD for.
+//      first quarter of a run and discards single-digit minutes per day is not
+//      worth trading latency-to-HEAD for.
 //
 // Only a workflow answering YES to both is queue-coalesced. The rest stay in
 // CANCEL_COALESCED_WORKFLOWS below, and the audit requires the two tiers to
 // partition COALESCED_WORKFLOWS exactly, so a fourteenth enrollment cannot
 // land without an explicit tier and a reason.
 //
-// Figures below are the last ~99 push-on-main runs per workflow over
-// 2026-08-31T06:35Z - 2026-09-03T09:05Z (74.5 h), against a median main-push
-// gap of 38.5 min. A run duration is the median of that workflow's SUCCESSFUL
-// runs, so a lane's fast failures cannot flatter it; a kill point is the
-// median cancelled-run lifetime, expressed against that same duration.
+// The trade this buys is latency, and nothing else. `false` costs no runner
+// minutes: a superseded run is still dropped while PENDING, and a pending run
+// holds no runner. What it can cost is time-to-verdict on HEAD, bounded by one
+// run duration, since GitHub keeps at most one in-progress plus one pending
+// run per group. Suppressing the schedule branch of the expression is part of
+// the same trade: a nightly now queues behind a slow predecessor rather than
+// replacing it, which is immaterial for every enrolled lane here (all are
+// daily crons against runs well under a day).
+//
+// Each member's measured figures live in its own workflow's concurrency
+// comment, at the point where someone would be tempted to flip the line back;
+// the one decisive figure is repeated here so this roster justifies itself.
+// Window: the last ~99 push-on-main runs per workflow over
+// 2026-08-31T06:35Z - 2026-09-03T09:05Z (74.5 h), median main-push gap
+// 38.5 min. A run duration is the median of that workflow's SUCCESSFUL runs,
+// so fast failures cannot flatter a lane.
 export const QUEUE_COALESCED_WORKFLOWS = Object.freeze([
-  // 48% cancelled, 35% of runner minutes (991 min) discarded, 12 of 48 kills
-  // past 90% of a full run. A 34.5-min run against a 38.5-min gap is on the
-  // knife edge. It also carried 30 real failures: cancelling this lane hides
-  // red on the trunk as well as wasting the runner that found it.
+  // Q2 decisive: a 34.5-min run against the 38.5-min gap clears only 57% of
+  // gaps, and 48% of its main-push runs were cancelled.
   '.github/workflows/chdb.yml',
-  // 29% cancelled, 18% of minutes (297 min). Publishes a per-head parity SCORE
-  // to the badges branch and runs the parity ratchet, so a killed run is a
-  // missing datum in the public compatibility record, not a redundant verdict.
+  // Q1 decisive: a main-push run is the only one that publishes the per-head
+  // parity SCORE and runs the parity ratchet, so a kill is a missing datum in
+  // the published record. 29% cancelled.
   '.github/workflows/compatibility.yml',
+  // The founding member (tsouza/cerberus#2991): 66% cancelled against a single
+  // success, 50% of its run-minutes discarded.
   '.github/workflows/coverage.yml',
-  // 36% cancelled, 25% of minutes (517 min), 8 of 36 kills past 90%. Uploads
-  // per-tier run reports that are the evidence half of its coverage ratchet.
+  // Q1 decisive: the tier jobs upload the per-tier reports that are the
+  // evidence half of its coverage ratchet. 36% cancelled.
   '.github/workflows/migration-e2e.yml',
-  // The worst of the set and the closest sibling of the coverage failure: 60%
-  // cancelled, 45% of minutes (1413 min) discarded, 19 of 59 kills past 90% of
-  // a full run, and only 10 successes in 74.5 h. Its 38.6-min run is level with
-  // the 38.5-min median push gap — only 50% of gaps are long enough for a run
-  // to finish — so cancellation coalesced nothing; it starved the lane. Its
-  // output is a per-commit mutation score held to an efficacy threshold, which
-  // its successor does not reproduce for the killed commit.
+  // The worst of the set and the closest sibling of the coverage failure: its
+  // 38.6-min run is level with the 38.5-min median push gap, so only 50% of
+  // gaps are long enough to finish, and it managed 10 successes in 74.5 h
+  // against 60% cancelled.
   '.github/workflows/mutation.yml',
-  // 40% cancelled, 31% of minutes (677 min), 13 of 40 kills past 90%. Merges
-  // shard profiles into one per-commit profile artifact — a measurement.
+  // Q1 decisive: `profile` merges the shard profiles into ONE per-commit
+  // profile artifact. 40% cancelled, 13 of 40 kills past 90% of a full run.
   '.github/workflows/perf-profile.yml',
-  // Enrolled on question 1, not on volume: 19% cancelled and 9% of minutes
-  // (93 min), but `property` runs rapid with an unpinned seed, so every run
-  // explores a DIFFERENT region of the input space. A cancelled run's draws
-  // are never re-drawn by its successor, which makes the loss irreplaceable
-  // rather than merely repeated.
+  // Q1 decisive and unusual: rapid runs with an unpinned seed, so each run
+  // explores a DIFFERENT region of the input space and a cancelled run's draws
+  // are never re-drawn. Enrolled on that, not on its 19% cancellation rate.
   '.github/workflows/property.yml',
-  // Enrolled on kill efficiency: only 21% cancelled, but the median kill lands
-  // at 86% of a completed run — the latest in the whole set — and 8 of 21 kills
-  // land past 90%. Cancelling this lane almost never saves work; it discards
-  // an all-but-finished real-ClickHouse DDL differential.
+  // Q2 decisive: the median kill lands at 85% of a completed run, the latest
+  // point of any enrolled workflow, so cancelling it saves almost nothing.
   '.github/workflows/schema-integration.yml',
+  // Q1 is YES for the same reason as its real-ClickHouse siblings — its
+  // per-commit check-run is read by name by release.yml's preflight — and Q2
+  // follows at 22% cancelled, kills a median 50% into a 13.6-min run.
+  '.github/workflows/strict-scan.yml',
 ]);
 
 // The reasoned complement of QUEUE_COALESCED_WORKFLOWS: enrolled workflows for
@@ -152,33 +162,29 @@ export const QUEUE_COALESCED_WORKFLOWS = Object.freeze([
 // workflow here that carries `cancel-in-progress: false` is as much a failure
 // as a queue-coalesced one that regains the cancel expression.
 export const CANCEL_COALESCED_WORKFLOWS = Object.freeze([
-  // Question 1 is NO: a deterministic licence-boundary differential over the
-  // tree, so the newer tree's verdict strictly replaces the older one.
-  // Question 2 is NO as well: 12% cancelled, 8% of minutes (47 min over
-  // 74.5 h), and the median kill lands 23% into a 4.7-min run.
+  // Q2 is NO: 12% cancelled, 8% of its run-minutes (47 min in 74.5 h), and the
+  // median kill lands 23% into a 4.7-min run — cancellation here is nearly
+  // free, which is the only condition under which it pays.
   '.github/workflows/agpl-oracle.yml',
-  // Question 1 is NO, and decisively so: code scanning surfaces only the
-  // LATEST analysis for a ref, so an older commit's SARIF is superseded by
-  // construction rather than merely by convention. The median kill does land
-  // late (64% of a 6.3-min run), but late kills of a redundant result are
-  // still redundant — 105 min over 74.5 h, and 83 of 99 pushes analysed.
+  // The one genuine Q1 NO in the enrollment. Code scanning surfaces only the
+  // LATEST analysis for a ref, so this lane keeps no durable per-commit record
+  // for a kill to lose — the successor's analysis does not merely supersede
+  // the older result, it is the only one the ref ever retains. Its kills DO
+  // land late (64% of a 6.4-min run, 7 of 16 past 90%), which is why Q1 has to
+  // carry this entry: on Q2 alone it would enroll.
   '.github/workflows/codeql.yml',
-  // No `push:` trigger at all, so the latest-main-push branch of the cancel
-  // expression is unreachable and no push-on-main run exists to cancel. See
-  // MAIN_COALESCED_OWNER_WORKFLOWS below for the registry half of this.
+  // No `push:` trigger, so the latest-main-push branch is unreachable and no
+  // push-on-main run exists to cancel; its registry main posture stays `never`
+  // (see MAIN_COALESCED_OWNER_WORKFLOWS below). The reachable branch is its
+  // weekly schedule, where a superseded run is a repeat of the same benchmark
+  // on a week-old tree and the cron cannot overlap its own short run.
   '.github/workflows/perf-benchmark.yml',
-  // Question 2 is NO: 11% cancelled, 5% of minutes (23 min over 74.5 h), one
-  // kill past 90% in eleven, and the median kill lands 22% into a 5.3-min run.
-  // Question 1 is weak too — it re-measures the same sentinel corpus against
-  // the same committed baseline every run, so a killed run's datum is
-  // substantially re-derived by its successor on a near-identical tree.
+  // Q2 is NO: 11% cancelled, 5% of its run-minutes (23 min in 74.5 h), one
+  // kill past 90% in eleven, median kill 22% into a 5.3-min run. Q1 is weak
+  // too — it re-measures the same sentinel corpus against the same committed
+  // baseline every run, so a killed run's datum is substantially re-derived by
+  // its successor on a near-identical tree.
   '.github/workflows/perf-nightly.yml',
-  // Question 1 is NO: 24 deterministic real-ClickHouse differentials over the
-  // tree, each a verdict the newer tree's run re-derives in full. 22%
-  // cancelled and 13% of minutes (144 min) is a larger loss than `property`'s,
-  // and it is still the right trade — the loss is repeated work, not lost
-  // evidence, which is exactly the distinction question 1 draws.
-  '.github/workflows/strict-scan.yml',
 ]);
 
 // perf-benchmark has no push-to-main trigger. Its weekly schedule is still

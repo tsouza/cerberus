@@ -103,26 +103,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'latest-main-push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.event.schedule != '') && format('latest-main-schedule-{0}', github.event.schedule) || github.run_id }}
   # NEVER cancel a run that is already in progress (tsouza/cerberus#2994).
   #
-  # The GROUP above is what makes deep-main work replaceable, and it keeps
-  # working: GitHub holds at most ONE pending run per group, so a burst of
-  # pushes is still superseded at QUEUE time, where a pending run holds no
-  # runner and costs nothing. Killing a run that is already EXECUTING is a
-  # separate act, and it only pays when the killed work was nearly worthless.
-  #
-  # READ THAT DIRECTION BEFORE "OPTIMISING" THIS LINE BACK TO AN EXPRESSION.
-  # `false` looks like the setting that wastes runners and the measurement says
-  # the opposite: cancellation SPENT the minutes below and threw the result
-  # away, then re-ran the same work on the next commit. The tier and the
-  # decision rule behind it live in QUEUE_COALESCED_WORKFLOWS in
+  # The GROUP above still coalesces: GitHub holds at most ONE pending run per
+  # group, so a burst of pushes is superseded at QUEUE time, where a pending run
+  # holds no runner and costs nothing. Killing a run already EXECUTING is a
+  # separate act, and it only pays when the killed work was near-worthless.
+  # Before "optimising" this line back into an expression, read the decision
+  # rule and this lane's recorded answer in QUEUE_COALESCED_WORKFLOWS in
   # .github/scripts/main-coalescing.mjs, whose audit fails this workflow if the
-  # two halves ever disagree.
+  # two halves ever disagree. The figures below are run-minutes (wall clock per
+  # run, not billed runner minutes, which a fan-out multiplies).
   #
-  # Measured on this lane: 40% of its main-push runs CANCELLED, kills a median
-  # 13.0 min into a 23.6-min run (55%) with 13 of 40 past the 90% mark, and 31%
-  # of the lane's runner minutes (677 min in 74.5 h) discarded. The `profile`
-  # job merges the shard profiles into ONE per-commit profile artifact, so a
-  # killed run is a hole in the performance record rather than a repeat of work
-  # the next commit redoes.
+  # Measured here: 40% of its main-push runs CANCELLED, kills a median 13.0 min
+  # into a 23.6-min run (55%) with 13 of 40 past the 90% mark, and 31% of this
+  # lane's run-minutes (677 min in 74.5 h) discarded. The `profile` job merges
+  # the shard profiles into ONE per-commit artifact, so a killed run leaves a
+  # hole in the performance record rather than repeating work.
   cancel-in-progress: false
 
 jobs:

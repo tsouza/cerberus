@@ -287,7 +287,10 @@ what actually runs.
   editing one line. `CANCEL_COALESCED_WORKFLOWS` is its reasoned complement
   (tsouza/cerberus#2994) — the enrolled workflows for which mid-flight
   cancellation is still correct, each carrying the measurement behind that
-  answer. The two tiers must partition the enrollment exactly, so a newly
+  answer. A lane is queue-coalesced when the trunk would permanently lose a
+  record the successor will not restore AND the measured loss is material;
+  determinism alone does not excuse a kill, since a deterministic verdict still
+  posts a per-commit check-run. The two tiers must partition the enrollment exactly, so a newly
   enrolled workflow cannot inherit cancellation as an unexamined default, and
   the pin is two-sided: a member of either tier that carries the other tier's
   `cancel-in-progress` value fails the audit.

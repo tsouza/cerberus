@@ -345,6 +345,11 @@ test('every queue-coalesced workflow reds if cancellation is restored to it', ()
     // false`, and a bare substring replace would be only accidentally safe
     // (it happens to sit later in the file). Rewriting the wrong line would
     // exercise the nested-concurrency check instead of the tier check.
+    assert.equal(
+      (body.match(/^ {2}cancel-in-progress: false$/gm) ?? []).length,
+      1,
+      `${workflow} must carry exactly one top-level cancel-in-progress line`,
+    );
     const flip = (value) => {
       const rewritten = body.replace(
         /^ {2}cancel-in-progress: false$/m,
@@ -398,7 +403,7 @@ test('every still-cancelling workflow reds if it is quietly opted out', () => {
     );
     assert.match(
       validateEnrolledWorkflow(workflow, optedOut).join('\n'),
-      /cancel-in-progress/,
+      /want the canonical main-push\/equivalent-schedule-only expression/,
       workflow,
     );
   }
@@ -418,14 +423,21 @@ test('the two cancellation tiers partition the enrollment exactly', () => {
   for (const workflow of CANCEL_COALESCED_WORKFLOWS) {
     assert.ok(COALESCED_WORKFLOWS.includes(workflow), workflow);
   }
-  // The two workflows the measurement explicitly ruled out stay cancelling,
-  // and the starved pair the issue named stays queue-coalesced.
-  assert.ok(
-    CANCEL_COALESCED_WORKFLOWS.includes('.github/workflows/perf-benchmark.yml'),
-  );
-  assert.ok(!COALESCED_WORKFLOWS.includes('.github/workflows/forbid-deferral.yml'));
+  // The starved pair the issue named is queue-coalesced, and the lanes the
+  // measurement found cancellation still pays for stay cancelling. Both halves
+  // are pinned: a sweep that moved everything would red here just as a
+  // reversion would.
   assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/mutation.yml'));
   assert.ok(QUEUE_COALESCED_WORKFLOWS.includes('.github/workflows/chdb.yml'));
+  for (const workflow of [
+    '.github/workflows/agpl-oracle.yml',
+    '.github/workflows/codeql.yml',
+    '.github/workflows/perf-benchmark.yml',
+    '.github/workflows/perf-nightly.yml',
+  ]) {
+    assert.ok(CANCEL_COALESCED_WORKFLOWS.includes(workflow), workflow);
+    assert.ok(!QUEUE_COALESCED_WORKFLOWS.includes(workflow), workflow);
+  }
 });
 
 test('a workflow in neither tier, or in both, is a policy failure', () => {
