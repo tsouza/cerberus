@@ -356,17 +356,25 @@ func scaleHistogramProjection(hp chplan.Node, op chplan.BinaryOp, scale chplan.E
 		histSchema.NegativeOffsetColumn,
 	}
 
-	projs := make([]chplan.Projection, 0, len(passthroughCols)+1+5)
+	// The count-bearing scalars and the two signed bucket ladders are named
+	// here rather than inline in their loops so the capacity hint below counts
+	// them instead of restating their sizes as literals — a hint that says a
+	// different number than the loops append is a hint nobody can read the
+	// arithmetic back out of.
+	scalarCols := []string{histSchema.CountColumn, histSchema.SumColumn, histSchema.ZeroCountColumn}
+	ladderCols := []string{histSchema.PositiveBucketCountsColumn, histSchema.NegativeBucketCountsColumn}
+
+	projs := make([]chplan.Projection, 0, len(passthroughCols)+len(scalarCols)+len(ladderCols))
 	for _, col := range passthroughCols {
 		projs = append(projs, chplan.Projection{Expr: &chplan.ColumnRef{Name: col}, Alias: col})
 	}
-	for _, col := range []string{histSchema.CountColumn, histSchema.SumColumn, histSchema.ZeroCountColumn} {
+	for _, col := range scalarCols {
 		projs = append(projs, chplan.Projection{
 			Expr:  scaleHistogramScalarExpr(op, &chplan.ColumnRef{Name: col}, scale),
 			Alias: col,
 		})
 	}
-	for _, col := range []string{histSchema.PositiveBucketCountsColumn, histSchema.NegativeBucketCountsColumn} {
+	for _, col := range ladderCols {
 		projs = append(projs, chplan.Projection{
 			Expr:  scaleHistogramLadderExpr(op, &chplan.ColumnRef{Name: col}, scale),
 			Alias: col,

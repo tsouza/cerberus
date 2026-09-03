@@ -75,15 +75,18 @@ func TestDropMatchersScanPastOtherLabels(t *testing.T) {
 	requireConditionalRetention(t, got, query)
 }
 
-// NOT KILLABLE — documented, not defended by a test. These are the LIVED
-// mutants phase4-logql-other-b reports outside the logpattern subpackage
-// (whose own survivors are adjudicated in
-// logpattern/gremlins_kill_2949_test.go) that the kill above does not
-// reach.
+// The two ARITHMETIC_BASE mutants on wrapLabelsWithMarks's mark-cascade
+// capacity hint in duration.go were adjudicated EQUIVALENT here, and that
+// was wrong (cerberus issue #2984). The argument ran: the slice is built
+// with append from length 0, so contents and ordering do not depend on the
+// cap, and the cap is not reachable from the returned expression. The first
+// half is true and the second is false — the slice becomes the cascade's
+// exported Args, two levels down from the mapMerge FuncCall that function
+// returns. Its verdict now lives with the kill, in
+// [TestWrapLabelsWithMarks_CapHintMutantsKilled], which is where the
+// citation went too: a mutant carries one verdict, so leaving the citation
+// under a footer here would leave it carrying two.
 //
-// duration.go:`len(marks)*2+1` — ARITHMETIC_BASE on a make() CAPACITY
-// hint, carrying two mutants (one per operator). The slice is built with
-// append from length 0, so contents and ordering do not depend on the cap,
-// and the cap is not reachable from the returned expression. Neither
-// mutated form can go negative and panic: the function returns early for
-// an empty mark list, so len(marks) >= 1 at the make().
+// Outside the logpattern subpackage (whose own survivors are adjudicated in
+// logpattern/gremlins_kill_2949_test.go), phase4-logql-other-b has no LIVED
+// mutant this file leaves undefended.

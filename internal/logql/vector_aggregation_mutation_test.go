@@ -15,13 +15,18 @@ import (
 // is written so the mutated line produces a DIFFERENT lowered plan than
 // the original, making the assertion fail under mutation.
 //
-// NOT KILLABLE — vector_aggregation.go:wrapVectorAggregateForSample:`len(e.Grouping.Groups)*2`
-// carries an ARITHMETIC_BASE mutant (`*2` -> `/2` and friends) that no
-// test can kill: it is a make() CAPACITY hint. The slice is built with
+// The ARITHMETIC_BASE mutant on wrapVectorAggregateForSample's
+// grouping-map capacity hint was adjudicated EQUIVALENT here, and that was
+// wrong (cerberus issue #2984). The argument ran: the slice is built with
 // append from length 0, so its final contents and ordering are identical
-// whatever the pre-sized cap, and a cap is not reachable from the
-// returned plan. `len(...)` is never negative and the mutated forms stay
-// non-negative, so make() cannot panic either.
+// whatever the pre-sized cap, and a cap is not reachable from the returned
+// plan. The first half is true and the second is false — the slice becomes
+// the map FuncCall the returned [chplan.Project] projects as its Attributes
+// column, an exported Args under an exported Projections. Its verdict now
+// lives with the kill, in
+// [TestWrapVectorAggregateForSample_CapHintMutantKilled], which is where the
+// citation went too: a mutant carries one verdict, so leaving the citation
+// under a header here would leave it carrying two.
 //
 // The empty-`Grouping.Groups` CONDITIONALS_BOUNDARY mutants on the
 // outer-by threading guard were ADJUDICATED EQUIVALENT HERE AND THAT WAS

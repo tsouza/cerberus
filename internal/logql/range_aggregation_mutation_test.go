@@ -32,13 +32,17 @@ import (
 //     The emitted plan is structurally identical, so no assertion can
 //     observe the flip. Genuinely equivalent.
 //
-//   - range_aggregation.go:`len(e.Grouping.Groups)*2` ARITHMETIC_BASE
-//     `make([]chplan.Expr, 0, len(e.Grouping.Groups)*2)` → `/2`. The `*2`
-//     is a slice CAPACITY pre-allocation hint; the loop appends exactly
-//     two entries per group regardless, so the resulting slice's contents,
-//     length, and order are unchanged. Capacity is not observable in the
-//     emitted SQL or plan. Genuinely equivalent (matches the project's
-//     "slice-capacity hints are out of scope" rule).
+// A second entry stood here, on rangeAggregationGroupBy's grouping-map
+// capacity hint, and it was wrong (cerberus issue #2984). It reasoned that
+// the loop appends exactly two entries per group regardless, so the slice's
+// contents, length and order are unchanged, and that capacity is not
+// observable in the emitted SQL or plan. Every clause of that is true and
+// the conclusion does not follow: cap is readable on any slice a test can
+// reach, and this one IS the map FuncCall the function returns. Its verdict
+// now lives with the kill, in
+// [TestRangeAggregationGroupBy_CapHintMutantKilled], which is where the
+// citation went too — a mutant carries one verdict, and leaving the
+// citation in this ledger would leave it carrying two.
 
 // TestAbsentOverTimeExtendsMatcherWindowByIntervalPlusOffset pins the
 // ARITHMETIC_BASE mutant on
