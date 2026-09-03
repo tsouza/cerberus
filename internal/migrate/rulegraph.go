@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	promparser "github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/promrules"
 )
 
@@ -118,11 +119,11 @@ type RuleGraph struct {
 // is testable without a full engine.
 type MetricNameExtractor func(expr string) ([]string, error)
 
-// ruleGraphParser is the PromQL parser used for name extraction. It matches the
-// options the explain/handler paths use (EnableExperimentalFunctions) so a rule
-// or corpus expr that parses for the engine also parses here — the graph never
-// skips an expr the rest of the tool accepts.
-var ruleGraphParser = promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true})
+// ruleGraphParser is the PromQL parser used for name extraction. It is the same
+// [promparse.New] the explain and handler paths parse with, not a look-alike, so
+// a rule or corpus expr that parses for the engine also parses here — the graph
+// never skips an expr the rest of the tool accepts.
+var ruleGraphParser = promparse.New()
 
 // PromQLMetricNames is the production MetricNameExtractor: it parses the
 // expression with the upstream Prometheus PromQL parser and walks every vector

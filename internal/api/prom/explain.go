@@ -3,9 +3,8 @@ package prom
 import (
 	"time"
 
-	promparser "github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/engine"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -21,7 +20,7 @@ import (
 // handler where the native timeSeries*ToGrid table is not threaded.
 func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
 	return &lang{
-		Parser: promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
+		Parser: promparse.New(),
 		Schema: s,
 		Start:  evalTime,
 		End:    evalTime, // Step stays 0 => instant evaluation
@@ -48,7 +47,7 @@ func NewExplainLang(s schema.Metrics, evalTime time.Time) engine.Lang {
 // range preview trades that fidelity for offline determinism.
 func NewExplainLangRange(s schema.Metrics, start, end time.Time, step time.Duration) engine.Lang {
 	return &lang{
-		Parser: promparser.NewParser(promparser.Options{EnableExperimentalFunctions: true}),
+		Parser: promparse.New(),
 		Schema: s,
 		Start:  start,
 		End:    end,

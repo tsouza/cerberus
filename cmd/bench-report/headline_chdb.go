@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prometheus/prometheus/promql/parser"
-
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/promql"
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/schema"
 )
 
@@ -193,7 +192,7 @@ FROM numbers(180000);`
 // gauge table name; the bench seed uses a private name to avoid colliding
 // with other measurements in the same session).
 func emitRangeOverTable(start, end time.Time, step time.Duration, table string) (string, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(rangeLWRMetric)
 	if err != nil {
 		return "", err
@@ -362,7 +361,7 @@ func emitSetOpChain(op string, k int, evalTime time.Time) (string, error) {
 		parts[i] = fmt.Sprintf("setop_chain_metric_%d", i)
 	}
 	q := strings.Join(parts, " "+op+" ")
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	expr, err := p.ParseExpr(q)
 	if err != nil {
 		return "", err

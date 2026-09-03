@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 	"github.com/tsouza/cerberus/internal/testsql"
 	oracle "github.com/tsouza/cerberus/test/spec/parityoracle/promql"
 )
@@ -318,11 +319,10 @@ func comparesTimestamps(oracleName string, step time.Duration) bool {
 // caller keeps its normal failure path in that case, exactly as it did
 // before this function existed.
 func exprReadsSeries(expr string) (bool, error) {
-	// EnableExperimentalFunctions matches internal/promql/lower_test.go's
-	// own parser construction, so a fixture exercising an experimental
-	// PromQL function parses the same way here as it does through the
-	// real lowering pipeline.
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	// promparse.New is the parser the real lowering pipeline uses, so a
+	// fixture exercising an experimental PromQL function parses the same
+	// way here as it does in production.
+	p := promparse.New()
 	e, err := p.ParseExpr(expr)
 	if err != nil {
 		return false, err
@@ -627,7 +627,7 @@ func addHistogramBuckets(leftOffset int32, left []float64, rightOffset int32, ri
 // histogram value only on that direct path; regex-only selectors expose its
 // documented float companions instead.
 func exactMetricNameSelectors(expr string) map[string]bool {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	e, err := p.ParseExpr(expr)
 	if err != nil {
 		return nil
@@ -663,7 +663,7 @@ func exactMetricNameSelectors(expr string) map[string]bool {
 // cerberus's own lowering, which projects `toFloat64(Count) AS Value` for
 // this selector shape either way.
 func infoSecondArgHistogramMatchers(expr string) ([]*labels.Matcher, error) {
-	p := parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	p := promparse.New()
 	e, err := p.ParseExpr(expr)
 	if err != nil {
 		return nil, err

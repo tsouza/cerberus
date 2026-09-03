@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/promql/parser"
+
+	"github.com/tsouza/cerberus/internal/promql/promparse"
 )
 
 // Row is one coverable feature of a query language.
@@ -81,12 +83,12 @@ type Exclusions struct {
 const promQLSource = "github.com/prometheus/prometheus/promql/parser " +
 	"(parser.Functions + parser-pinned existence checks; tsouza fork pin in go.mod)"
 
-// newPromQLParser builds the same parser configuration cerberus's
-// Prometheus head uses (EnableExperimentalFunctions=true — see
-// internal/api/prom/lang.go), so the inventory enumerates exactly the
-// surface cerberus exposes on the wire.
+// newPromQLParser returns the parser cerberus's Prometheus head parses
+// with — [promparse.New], the single construction site the head and this
+// inventory share — so the inventory enumerates exactly the surface
+// cerberus exposes on the wire.
 func newPromQLParser() parser.Parser {
-	return parser.NewParser(parser.Options{EnableExperimentalFunctions: true})
+	return promparse.New()
 }
 
 // GeneratePromQL builds the PromQL feature inventory from the pinned
