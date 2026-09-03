@@ -37,9 +37,13 @@ just ci                                               # lint + test + build
 ```
 
 Hooks are lightweight: `pre-commit` runs `gofumpt -w` / `goimports -w` /
-`markdownlint-cli2 --fix` on staged files (auto-fixes; restages), and
-`commit-msg` runs `commitlint` so a malformed subject is caught locally
-instead of in CI. Heavy validation (`go test`, `golangci-lint run`,
+`scripts/align-md-tables.py` / `markdownlint-cli2 --fix` on staged files
+(auto-fixes; restages), and `commit-msg` runs `commitlint` so a malformed
+subject is caught locally instead of in CI. The table-padding pass is separate
+because `MD060` has no auto-fixer; `markdownlint --fix` cannot realign a table.
+The markdownlint engine is pinned once, in
+`.github/scripts/markdownlint-run.mjs`, and CI runs that same module — so
+`just lint-md` reproduces a red `lint` job rather than disagreeing with it. Heavy validation (`go test`, `golangci-lint run`,
 `go build`) deliberately is **not** in the hook — CI owns that. Don't
 pre-flight manually.
 
