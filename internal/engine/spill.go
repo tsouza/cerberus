@@ -125,7 +125,7 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 //     to stamp unconditionally: the setting itself does not exist before
 //     26.4, and an unknown setting name errors the whole query rather than
 //     no-op'ing.
-//   - plan contains a join-bearing node (planHasJoin) — join memory is
+//   - plan contains a join-bearing node (chplan.HasJoin) — join memory is
 //     otherwise protected only by throwIf cardinality guards and structural
 //     shape restrictions, never a memory backstop, so any plan that lowers
 //     to a real ClickHouse JOIN can build an unbounded hash table.
@@ -136,60 +136,8 @@ func applySpillSettings(ctx context.Context, maxMemory int64) context.Context {
 // a join approaching the cap spills-and-completes instead of aborting with
 // MEMORY_LIMIT_EXCEEDED (code 241).
 func applyJoinSpillSettings(ctx context.Context, plan chplan.Node, maxMemory int64, joinSpillEnabled bool) context.Context {
-	if !joinSpillEnabled || !planHasJoin(plan) {
+	if !joinSpillEnabled || !chplan.HasJoin(plan) {
 		return ctx
 	}
 	return chclient.WithQuerySetting(ctx, settingMaxBytesBeforeExternalJoin, spillThreshold(maxMemory))
-}
-
-// planHasJoin reports whether plan contains any join-bearing chplan node —
-// a node whose ClickHouse emission renders a real SQL JOIN with a hash-table
-// build side, as opposed to a plan-IR node whose NAME merely contains "Join"
-// (chplan.LabelJoin lowers PromQL's label_join() string function and never
-// emits a SQL JOIN; it is deliberately excluded).
-//
-// The sweep is chplan.WalkDeep, not chplan.Walk, so a join nested inside a
-// scalar subquery's Expr slot is still found — the same total-traversal
-// reasoning applyCompareMemoryBound's planHasMetricsCompare relies on.
-//
-// Covers every join chplan.WalkDeep can observe on the plan pre-emission:
-//
-//   - VectorJoin / HistogramVectorJoin / HistogramFloatVectorJoin /
-//     MixedVectorJoin — PromQL vector matching: one-to-one, the
-//     group_left()/group_right() many-to-one shape, and the mixed-family
-//     join. VectorJoin's own ManyToManyMatchMessage throwIf guard exists
-//     precisely because a many-to-many match here can build an unbounded
-//     hash table.
-//   - InfoJoin — PromQL's info() label-enrichment join.
-//   - StructuralJoin — TraceQL's structural (descendant/child/sibling) joins.
-//   - CrossJoin — the unconditional Cartesian product.
-//   - RangeWindow with a non-nil DeltaPrefixAggregateInput — the
-//     delta-prefix LEFT JOIN (internal/chsql/range_window.go) that
-//     side-feeds the day-bucket aggregate input into the raw window.
-func planHasJoin(plan chplan.Node) bool {
-	found := false
-	chplan.WalkDeep(plan, func(n chplan.Node) bool {
-		switch v := n.(type) {
-		case *chplan.VectorJoin:
-			found = true
-		case *chplan.HistogramVectorJoin:
-			found = true
-		case *chplan.HistogramFloatVectorJoin:
-			found = true
-		case *chplan.MixedVectorJoin:
-			found = true
-		case *chplan.InfoJoin:
-			found = true
-		case *chplan.StructuralJoin:
-			found = true
-		case *chplan.CrossJoin:
-			found = true
-		case *chplan.RangeWindow:
-			if v.DeltaPrefixAggregateInput != nil {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
 }

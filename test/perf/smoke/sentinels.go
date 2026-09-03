@@ -179,13 +179,13 @@ var Sentinels = []Sentinel{
 	{
 		// Join spill, chopt-gated: applyJoinSpillSettings (spill.go) stamps
 		// max_bytes_before_external_join = cap/joinSpillCapDenominator on a
-		// plan planHasJoin matches, but ONLY once SettingsRules.JoinSpill is
+		// plan chplan.HasJoin matches, but ONLY once SettingsRules.JoinSpill is
 		// true — the boot-resolved chopt.FeatureJoinSpill verdict, false on
 		// every server below 26.4. Hence Floor: FloorJoinSpill.
 		//
 		// The query is a vector-vector binary op, which lowers to
 		// chplan.VectorJoin (test/spec/promql/binop_rate_div_rate_on.txtar
-		// pins that shape) — the first arm of planHasJoin's switch, and the
+		// pins that shape) — the first arm of chplan.HasJoin's switch, and the
 		// one carrying VectorJoin's own ManyToManyMatchMessage throwIf guard,
 		// which exists precisely because this shape can build an unbounded
 		// hash table. The two sides use DIFFERENT aggregation operators over
