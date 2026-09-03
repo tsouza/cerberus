@@ -30,7 +30,6 @@ const (
 
 	// punctuation
 	tkComma
-	tkDot
 	tkOpenBrace
 	tkCloseBrace
 	tkOpenParen
@@ -308,9 +307,6 @@ func (l *lexer) run() {
 				for l.pos < len(l.src) && l.src[l.pos] != '\n' {
 					l.pos++
 				}
-			case c == '.' && !isDigit(l.peekByteAt(1)):
-				l.toks = append(l.toks, token{kind: tkDot, pos: l.pos})
-				l.pos++
 			case c == '[':
 				l.scanRange()
 			case c == '"' || c == '`':

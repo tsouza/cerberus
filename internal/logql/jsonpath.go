@@ -213,11 +213,12 @@ func (sc *jsonPathScanner) scanField() string {
 // scanStr reads a quoted key. Upstream consumes the opening quote then
 // reads until the closing '"' OR a ']' OR end-of-input, and does not
 // unread the terminator.
+//
+// [jsonPathScanner.next]'s `r == '"'` arm is the only caller and it unreads
+// that quote immediately before calling, so the first read below always
+// returns it: the opening quote needs consuming, never checking.
 func (sc *jsonPathScanner) scanStr() string {
-	r, ok := sc.read()
-	if !ok || r != '"' {
-		return ""
-	}
+	sc.read()
 	var out []rune
 	for {
 		r, ok := sc.read()
@@ -232,9 +233,15 @@ func (sc *jsonPathScanner) scanStr() string {
 	return string(out)
 }
 
-// scanInt reads a decimal array index. A '.' after digits is a
-// float-index error; a non-digit (other than the terminators ' ', '.',
-// ']') is an error.
+// scanInt reads a decimal array index. A '.' is a float-index error; a
+// non-digit (other than the terminators ' ', ']') is an error.
+//
+// [jsonPathScanner.next]'s digit arm is the only caller and it unreads that
+// digit immediately before calling, so iteration 1 always reads a digit and
+// appends it. `digits` is therefore non-empty from iteration 2 onwards and
+// at the return: a '.' can only ever arrive after at least one digit, which
+// is what makes it unconditionally a float index rather than a terminator,
+// and what leaves strconv.Atoi with something to parse.
 func (sc *jsonPathScanner) scanInt() (int, error) {
 	var digits []rune
 	for {
@@ -242,10 +249,10 @@ func (sc *jsonPathScanner) scanInt() (int, error) {
 		if !ok {
 			break
 		}
-		if r == '.' && len(digits) > 0 {
+		if r == '.' {
 			return 0, fmt.Errorf("cannot use float array index")
 		}
-		if isJSONWhitespace(r) || r == '.' || r == ']' {
+		if isJSONWhitespace(r) || r == ']' {
 			sc.unread()
 			break
 		}
@@ -253,9 +260,6 @@ func (sc *jsonPathScanner) scanInt() (int, error) {
 			return 0, fmt.Errorf("non-integer value: %c", r)
 		}
 		digits = append(digits, r)
-	}
-	if len(digits) == 0 {
-		return 0, fmt.Errorf("empty index")
 	}
 	return strconv.Atoi(string(digits))
 }

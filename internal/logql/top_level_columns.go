@@ -24,10 +24,14 @@ import (
 // alias. A custom-schema user whose otel_logs has no materialized columns
 // leaves schema.Logs.MaterializedResourceColumns nil and opts out: the
 // table is empty so this never fires and the lowering stays map-only.
+//
+// The two lookups below are the whole decision: a nil or empty table misses
+// both and falls through to ("", false), and so does an empty label — the
+// table is never user-supplied (it is either
+// defaultMaterializedResourceColumns()'s eight fixed OTel keys or nil) and
+// none of those keys is "". An up-front emptiness guard would decide
+// nothing.
 func materializedColumnFor(label string, s schema.Logs) (string, bool) {
-	if label == "" || len(s.MaterializedResourceColumns) == 0 {
-		return "", false
-	}
 	if col, ok := s.MaterializedResourceColumns[label]; ok {
 		return col, true
 	}

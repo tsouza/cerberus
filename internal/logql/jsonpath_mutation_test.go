@@ -125,25 +125,6 @@ func TestJSONPathParse_NonDigitInsideIndexRejected(t *testing.T) {
 	}
 }
 
-// Two scanInt/scanStr mutants are GENUINELY EQUIVALENT w.r.t. the parser's
-// reachable input domain and are documented (not pinned) here:
-//
-//   - jsonpath.go:`len(digits) > 0` CONDITIONALS_BOUNDARY `> 0` → `>= 0`
-//     in scanInt's float-index guard. scanInt is only ever entered from
-//     next() AFTER a digit is detected and unread, so the first rune it
-//     reads is always a digit and len(digits) >= 1 by the time a '.' can
-//     appear. The `> 0` qualifier therefore never evaluates at len == 0 in
-//     any reachable path; `>= 0` yields identical behaviour. (A leading '.'
-//     is tokenised as jpDot by next(), never routed to scanInt.)
-//   - jsonpath.go:`!ok || r != '"'` INVERT_LOGICAL `||` → `&&` in scanStr's
-//     opening-quote guard. scanStr is only ever entered from next() after a
-//     '"' is detected and unread, so its first read is always a successful
-//     '"' (ok == true, r == '"'); both operands are false and the `||`/`&&`
-//     collapse to the same false, taking the same branch.
-//
-// Both are defensive guards on inputs the tokeniser cannot deliver to these
-// helpers; no black-box test can distinguish original from mutant.
-
 // TestJSONPathScanner_UnreadAtStartIsNoOp pins the guard
 // jsonpath.go:unread:`sc.pos > 0`. At pos 0 it must keep unread a no-op;
 // loosening the boundary to `>= 0` drives pos negative, and the next
@@ -154,5 +135,23 @@ func TestJSONPathScanner_UnreadAtStartIsNoOp(t *testing.T) {
 	r, ok := sc.read()
 	if !ok || r != 'x' {
 		t.Fatalf("read() after no-op unread = (%q, %v), want ('x', true)", r, ok)
+	}
+}
+
+// TestJSONPathParse_FloatIndexRejected pins scanInt's `r == '.'` arm: a '.'
+// inside a bracketed index is a float index, never a terminator. scanInt is
+// entered only after next() unreads a digit, so the first rune it reads is
+// always a digit and a '.' can only ever arrive with digits already
+// collected — which is what lets the arm reject unconditionally. Neuter it
+// and "[1.5]" scans as the index 1 followed by a stray ".5".
+func TestJSONPathParse_FloatIndexRejected(t *testing.T) {
+	for _, in := range []string{"[1.5]", "a[0.5]", "[10.0]"} {
+		_, err := jsonPathParse(in)
+		if err == nil {
+			t.Fatalf("jsonPathParse(%q): expected a float-index error", in)
+		}
+		if !strings.Contains(err.Error(), "float array index") {
+			t.Fatalf("jsonPathParse(%q): want a float-array-index error, got: %v", in, err)
+		}
 	}
 }
