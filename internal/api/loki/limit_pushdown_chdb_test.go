@@ -217,7 +217,7 @@ func TestLimitPushdown_SafeShapes_IdenticalToGoOnlyClamp_ChDB(t *testing.T) {
 // would silently return the wrong log lines.
 //
 // `| pattern` never changes labelsExpr in the lowering (it extracts
-// purely in Go — see internal/logql/lower.go's isDynamicLabelStage /
+// purely in Go — see internal/logql/lower.go's IsDynamicLabelStage /
 // lowerStage's OpParserTypePattern case), so for
 // `{app="x"} | pattern "<lvl> <_>" | __error__=""` the SQL Filter this
 // PR would wrap a naive Limit(OrderBy(...)) around carries ONLY
