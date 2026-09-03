@@ -1,5 +1,5 @@
 {
-  "query": "native_rate_avg_vector_agg_temporality_union_excluded/native",
+  "query": "native_rate_avg_vector_agg_temporality_union/native",
   "lowering": "native",
   "routed": true,
   "k": 6,

@@ -4476,28 +4476,72 @@ var nativeGridVectorAggFns = map[chplan.Fn]struct{}{
 
 // nativeGridVectorAggUnionFns narrows nativeGridVectorAggFns further for the
 // rate()/increase() temporality-union shape [rateIncreaseTemporalityUnionArms]
-// recognizes (cerberus issue #2852). Sum/min/max compose correctly by
-// re-applying the SAME associative Fn a second time, at the combining
-// Aggregate [buildTemporalityUnionVectorAgg] builds, over the UNION of the
-// native arm's own already-pre-reduced (one row per output series per
-// anchor) row and the raw per-series DELTA-temporality arm's not-yet-reduced
-// rows: sum(sum(A), b1, b2, ...) == sum(A ∪ B), and likewise min(min(A), B)
-// == min(A ∪ B) / max(max(A), B) == max(A ∪ B), because sum/min/max are
-// associative over their own already-combined partial result.
+// recognizes (cerberus issue #2852, extended to avg/count by #2884). Every
+// entry has its own composition proof, because "re-apply the same Fn a
+// second time" only holds for three of the five:
 //
-// avg and count do NOT compose this way and are deliberately absent: the
-// combining Aggregate would average the native arm's single already-averaged
-// row as one bare observation among |B| raw ones (wrong unless the native
-// arm's own group had exactly one contributing series), and likewise count
-// the native arm's one pre-counted row as a single unit instead of the
-// |A| series it actually summarizes (wrong unless |A| == 1). Correctly
-// combining avg/count needs the native arm to expose its own (sum, count)
-// pair rather than the single finished scalar RangeWindowGridNativeVectorAgg
-// emits today — out of scope for this narrowing (cerberus issue #2884).
+//   - sum/min/max compose correctly by re-applying the SAME associative Fn a
+//     second time, at the combining Aggregate [buildTemporalityUnionVectorAgg]
+//     builds, over the UNION of the native arm's own already-pre-reduced (one
+//     row per output series per anchor) row and the raw per-series
+//     DELTA-temporality arm's not-yet-reduced rows: sum(sum(A), b1, b2, ...)
+//     == sum(A ∪ B), and likewise min(min(A), B) == min(A ∪ B) / max(max(A),
+//     B) == max(A ∪ B), because sum/min/max are associative over their own
+//     already-combined partial result.
+//   - avg does NOT compose that way: naively re-averaging would average the
+//     native arm's single already-averaged row as one bare observation among
+//     |B| raw ones, wrong unless the native arm's own group had exactly one
+//     contributing series. [buildTemporalityUnionAvgVectorAgg] instead reads
+//     the native arm's own PARTIAL (sum, count) pair
+//     (chplan.RangeWindowGridNativeVectorAgg.PartialCountAlias), re-shapes
+//     the raw delta rows to carry a matching literal-1 partial count, SUMs
+//     both partials independently across the union (sum(A) + sum(b_i) and
+//     count(A) + count(b_i), each a sound associative combine on its own),
+//     and divides once at a final wrapping Project: (sum_A + Σb_i) /
+//     (count_A + |B|) is the exact weighted average PromQL's avg() defines,
+//     for any split between the two arms.
+//   - count does NOT compose by re-applying `count` either: it would count
+//     the native arm's one pre-reduced row as a single unit instead of the
+//     |A| series it actually summarizes, wrong unless |A| == 1.
+//     [buildTemporalityUnionCountVectorAgg] instead reads the native arm's
+//     own already-pre-counted Value (RangeWindowGridNativeVectorAgg with
+//     Fn: FnCount — the exact same per-group count the BARE, non-union fold
+//     already relies on, cerberus issue #2763) as a plain addend, re-shapes
+//     the raw delta rows' Value to the constant 1 (each raw row IS exactly
+//     one real observation), and SUMs the union: |A| + Σ_i 1 == |A| + |B| ==
+//     the total count. This is why the combining Aggregate's own Fn is
+//     FnSum for count, not the user's FnCount — count's own associativity
+//     proof needs sum's, not its own, once the native side is pre-reduced.
+//
+// countForEachAbsentSentinel (range_window_grid_native_vector_agg.go — the
+// count-specific literal-0-vs-NULL trap the milestone this issue closes
+// calls out by name) is not reachable from either union composition below,
+// for two DIFFERENT reasons:
+//
+//   - count's own union composition ([buildTemporalityUnionCountVectorAgg])
+//     reuses RangeWindowGridNativeVectorAgg's existing Fn: FnCount branch
+//     UNCHANGED — the exact same emitter code path #2763's bare (non-union)
+//     count fold already ships. That branch's own `grid_val != 0` filter is
+//     already scoped correctly (a real, present count cell can never
+//     legitimately be 0 — see the emitter's own doc), so nothing new is
+//     added here for count to get wrong.
+//   - avg's own union composition ([buildTemporalityUnionAvgVectorAgg],
+//     PartialCountAlias) never reaches that `!= 0` filter at all: it filters
+//     on the SUM side's `IS NOT NULL` instead — the correct filter for a
+//     column (a rate) where 0 IS a legitimate reading — and reads the
+//     partial count UNFILTERED. That is sound, not merely convenient: a
+//     position that survives the sum-side filter has, by construction, at
+//     least one non-NULL contributor at that position, so countForEach's
+//     reading there is provably >= 1 and can never BE the absent
+//     sentinel — there is no `!= 0` check to misapply to a column where 0
+//     could otherwise be a legitimate count in the first place, because
+//     none of the surviving rows can ever hit it.
 var nativeGridVectorAggUnionFns = map[chplan.Fn]struct{}{
-	chplan.FnSum: {},
-	chplan.FnMin: {},
-	chplan.FnMax: {},
+	chplan.FnSum:   {},
+	chplan.FnMin:   {},
+	chplan.FnMax:   {},
+	chplan.FnAvg:   {},
+	chplan.FnCount: {},
 }
 
 // rateIncreaseTemporalityUnionArms recognizes the
@@ -4534,6 +4578,28 @@ func rateIncreaseTemporalityUnionArms(input chplan.Node) (native *chplan.RangeWi
 	return native, delta, true
 }
 
+// temporalityUnionCombineGroupBy builds the combining Aggregate's own GROUP
+// BY — the outer by/without key aliases plus the per-step anchor — shared by
+// every buildTemporalityUnion*VectorAgg builder below (sum/min/max, avg,
+// count) so the three don't restate the same key-widening independently. The
+// anchor reads chplan.RangeWindowAnchorColumn (the name every arm's own
+// Project re-keys its anchor column to — see each builder's own deltaArm
+// construction) and re-aliases it to rangeBucketAlias, matching the ordinary
+// (non-native) range-bucketed Aggregate's own group-key alias so
+// wrapAggregateForSample's downstream reference resolves identically
+// whichever path built the Aggregate.
+func temporalityUnionCombineGroupBy(aliases []string) (groupBy []chplan.Expr, combineAliases []string) {
+	groupBy = make([]chplan.Expr, 0, len(aliases)+1)
+	combineAliases = make([]string, 0, len(aliases)+1)
+	for _, alias := range aliases {
+		groupBy = append(groupBy, &chplan.ColumnRef{Name: alias})
+		combineAliases = append(combineAliases, alias)
+	}
+	groupBy = append(groupBy, &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
+	combineAliases = append(combineAliases, rangeBucketAlias)
+	return groupBy, combineAliases
+}
+
 // buildTemporalityUnionVectorAgg folds an outer sum/min/max vector
 // aggregation into the CUMULATIVE-native arm of a rate()/increase()
 // temporality union (cerberus issue #2852) — the [nativeGridVectorAggFns]
@@ -4543,8 +4609,9 @@ func rateIncreaseTemporalityUnionArms(input chplan.Node) (native *chplan.RangeWi
 // UnionAll{RangeWindowGridNativeVectorAgg, <re-keyed raw DELTA arm>} under a
 // combining Aggregate that re-applies the SAME associative aggFunc once
 // more — see [nativeGridVectorAggUnionFns]'s own doc for why sum/min/max
-// compose this way and avg/count do not (aggFunc.Fn is guaranteed to be one
-// of the three by the caller).
+// compose this way (aggFunc.Fn is guaranteed to be one of the three by the
+// caller — avg and count route to [buildTemporalityUnionAvgVectorAgg] /
+// [buildTemporalityUnionCountVectorAgg] instead, see their own docs).
 //
 // The native arm folds the outer by/without key directly into its own
 // pre-explode grid exactly like the bare-RangeWindowGridNative branch above,
@@ -4594,20 +4661,172 @@ func buildTemporalityUnionVectorAgg(
 	)
 	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
 
-	combineGroupBy := make([]chplan.Expr, 0, len(aliases)+1)
-	combineAliases := make([]string, 0, len(aliases)+1)
-	for _, alias := range aliases {
-		combineGroupBy = append(combineGroupBy, &chplan.ColumnRef{Name: alias})
-		combineAliases = append(combineAliases, alias)
-	}
-	combineGroupBy = append(combineGroupBy, &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn})
-	combineAliases = append(combineAliases, rangeBucketAlias)
+	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
 
 	return &chplan.Aggregate{
 		Input:              &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
 		GroupBy:            combineGroupBy,
 		GroupByAliases:     combineAliases,
 		AggFuncs:           []chplan.AggFunc{aggFunc},
+		DropEmptyOnNoGroup: true,
+	}
+}
+
+// temporalityUnionPartialSumAlias / temporalityUnionPartialCountAlias name
+// the two intermediate columns [buildTemporalityUnionAvgVectorAgg]'s
+// combining Aggregate produces before its wrapping Project divides them —
+// package-scoped consts (rather than locals) purely so both the Aggregate
+// construction and the dividing Project reference the identical literal, the
+// same self-consistency reason rangeBucketAlias is a const.
+const (
+	temporalityUnionPartialSumAlias   = "temporality_union_partial_sum"
+	temporalityUnionPartialCountAlias = "temporality_union_partial_count"
+)
+
+// buildTemporalityUnionAvgVectorAgg folds an outer avg() into the
+// rate()/increase() temporality union (cerberus issue #2884): unlike
+// sum/min/max, avg cannot re-apply itself at the combining Aggregate (see
+// [nativeGridVectorAggUnionFns]'s own doc for why), so this builds a
+// partial-sum/partial-count combine instead.
+//
+// The native arm requests RangeWindowGridNativeVectorAgg's PARTIAL-emission
+// mode (PartialCountAlias set) instead of the finished average: it publishes
+// its own per-group SUM under the ordinary Value contract (byte-identical to
+// what Fn: FnSum would project there — see PartialCountAlias's own doc) and
+// its own per-group COUNT under temporalityUnionPartialCountAlias. The delta
+// arm mirrors that shape: its raw Value column carries the actual observed
+// rate (the arm's contribution to the partial SUM) and a literal 1 under the
+// SAME count alias (each raw row IS exactly one real observation — the
+// identical reasoning [buildTemporalityUnionCountVectorAgg] applies to its
+// own delta arm). Both columns then SUM independently across the union —
+// sum(A) + Σb_i for the numerator, count(A) + |B| for the denominator, each
+// on its own a sound associative combine — and a final wrapping Project
+// divides once: (sum_A + Σb_i) / (count_A + |B|) is the correctly-weighted
+// average PromQL's avg() defines for any split of series between the two
+// arms, not merely an average of the two arms' own per-arm averages.
+func buildTemporalityUnionAvgVectorAgg(
+	native *chplan.RangeWindowGridNative,
+	delta *chplan.RangeWindow,
+	groupBy []chplan.Expr,
+	aliases []string,
+	s schema.Metrics,
+) *chplan.Project {
+	nativeArm := &chplan.RangeWindowGridNativeVectorAgg{
+		Input:             native,
+		Fn:                chplan.FnAvg,
+		GroupBy:           groupBy,
+		GroupByAliases:    aliases,
+		AnchorAlias:       chplan.RangeWindowAnchorColumn,
+		PartialCountAlias: temporalityUnionPartialCountAlias,
+	}
+
+	deltaProjections := make([]chplan.Projection, 0, len(groupBy)+3)
+	for i, ge := range groupBy {
+		deltaProjections = append(deltaProjections, chplan.Projection{Expr: ge, Alias: aliases[i]})
+	}
+	deltaProjections = append(
+		deltaProjections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: s.ValueColumn}, Alias: s.ValueColumn},
+		// Each raw DELTA-temporality row is exactly one real observation,
+		// so it contributes a partial count of 1 — see the type doc above.
+		chplan.Projection{Expr: &chplan.LitFloat{V: 1}, Alias: temporalityUnionPartialCountAlias},
+	)
+	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+
+	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
+
+	agg := &chplan.Aggregate{
+		Input:          &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
+		GroupBy:        combineGroupBy,
+		GroupByAliases: combineAliases,
+		AggFuncs: []chplan.AggFunc{
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}}, Alias: temporalityUnionPartialSumAlias},
+			{Fn: chplan.FnSum, Args: []chplan.Expr{&chplan.ColumnRef{Name: temporalityUnionPartialCountAlias}}, Alias: temporalityUnionPartialCountAlias},
+		},
+		DropEmptyOnNoGroup: true,
+	}
+
+	// This division cannot see a zero denominator: GROUP BY itself never
+	// produces a group for a (key, anchor) pair with zero contributing rows
+	// from EITHER arm, so temporalityUnionPartialCountAlias — the sum of at
+	// least one arm's own real per-row/per-group contribution — is always
+	// >= 1 on any row that reaches this Project. (DropEmptyOnNoGroup on the
+	// Aggregate above has no bearing on this: per chplan.Aggregate's own
+	// doc it only guards the DIFFERENT empty-GroupBy case, and combineGroupBy
+	// here is never empty — it always carries at least the per-step
+	// anchor.) This mirrors the same zero-row-group-never-happens guarantee
+	// the ordinary (non-native) avg(Value) Aggregate already relies on for
+	// its own division-free `avg` combinator.
+	projections := make([]chplan.Projection, 0, len(combineAliases)+1)
+	for _, alias := range combineAliases {
+		projections = append(projections, chplan.Projection{Expr: &chplan.ColumnRef{Name: alias}, Alias: alias})
+	}
+	projections = append(projections, chplan.Projection{
+		Expr: &chplan.Binary{
+			Op:    chplan.OpDiv,
+			Left:  &chplan.ColumnRef{Name: temporalityUnionPartialSumAlias},
+			Right: &chplan.ColumnRef{Name: temporalityUnionPartialCountAlias},
+		},
+		Alias: s.ValueColumn,
+	})
+	return &chplan.Project{Input: agg, Projections: projections}
+}
+
+// buildTemporalityUnionCountVectorAgg folds an outer count() into the
+// rate()/increase() temporality union (cerberus issue #2884): unlike
+// sum/min/max, count cannot re-apply itself at the combining Aggregate (see
+// [nativeGridVectorAggUnionFns]'s own doc for why), so the combining
+// Aggregate's own Fn here is FnSum, not FnCount.
+//
+// The native arm is the ORDINARY (non-partial) RangeWindowGridNativeVectorAgg
+// with Fn: FnCount — byte-identical to the bare (non-union) count fold
+// cerberus issue #2763 already ships, publishing its own per-group count as
+// a plain Value. The delta arm re-projects its Value to the constant literal
+// 1: each raw DELTA-temporality row IS exactly one real observation, so its
+// contribution to a count combine is the constant 1, not its own (irrelevant
+// here) rate value. Summing the union — |A| (the native arm's own
+// pre-counted Value) plus Σ_i 1 over the |B| raw delta rows — equals the
+// exact total count |A| + |B|, for any split of series between the two arms.
+func buildTemporalityUnionCountVectorAgg(
+	native *chplan.RangeWindowGridNative,
+	delta *chplan.RangeWindow,
+	groupBy []chplan.Expr,
+	aliases []string,
+	s schema.Metrics,
+) *chplan.Aggregate {
+	nativeArm := &chplan.RangeWindowGridNativeVectorAgg{
+		Input:          native,
+		Fn:             chplan.FnCount,
+		GroupBy:        groupBy,
+		GroupByAliases: aliases,
+		AnchorAlias:    chplan.RangeWindowAnchorColumn,
+	}
+
+	deltaProjections := make([]chplan.Projection, 0, len(groupBy)+2)
+	for i, ge := range groupBy {
+		deltaProjections = append(deltaProjections, chplan.Projection{Expr: ge, Alias: aliases[i]})
+	}
+	deltaProjections = append(
+		deltaProjections,
+		chplan.Projection{Expr: &chplan.ColumnRef{Name: chplan.RangeWindowAnchorColumn}, Alias: chplan.RangeWindowAnchorColumn},
+		// Each raw DELTA-temporality row is exactly one real observation —
+		// see the type doc above.
+		chplan.Projection{Expr: &chplan.LitFloat{V: 1}, Alias: s.ValueColumn},
+	)
+	deltaArm := &chplan.Project{Input: delta, Projections: deltaProjections}
+
+	combineGroupBy, combineAliases := temporalityUnionCombineGroupBy(aliases)
+
+	return &chplan.Aggregate{
+		Input:          &chplan.UnionAll{Inputs: []chplan.Node{nativeArm, deltaArm}},
+		GroupBy:        combineGroupBy,
+		GroupByAliases: combineAliases,
+		AggFuncs: []chplan.AggFunc{{
+			Fn:    chplan.FnSum,
+			Args:  []chplan.Expr{&chplan.ColumnRef{Name: s.ValueColumn}},
+			Alias: s.ValueColumn,
+		}},
 		DropEmptyOnNoGroup: true,
 	}
 }
@@ -4638,14 +4857,16 @@ func tryNativeGridVectorAgg(
 		}, true
 	}
 	// ts_grid_vector_agg composed with the rate()/increase() temporality-split
-	// UnionAll (cerberus issue #2852): input isn't a bare RangeWindowGridNative
-	// — rate()/increase() against a schema with a per-row AggregationTemporality
-	// column always splits into derivedRateArm(UnionAll{RangeWindowGridNative,
-	// RangeWindow}) (issue #2843) — but its CUMULATIVE arm still is one, so fold
-	// the outer aggregation into just that arm when the shape matches and the
-	// outer Fn is one of the three proven to compose correctly across the union
-	// (see nativeGridVectorAggUnionFns' own doc for sum/min/max vs the avg/count
-	// exclusion).
+	// UnionAll (cerberus issue #2852, extended to avg/count by #2884): input
+	// isn't a bare RangeWindowGridNative — rate()/increase() against a schema
+	// with a per-row AggregationTemporality column always splits into
+	// derivedRateArm(UnionAll{RangeWindowGridNative, RangeWindow})
+	// (issue #2843) — but its CUMULATIVE arm still is one, so fold the outer
+	// aggregation into just that arm when the shape matches and the outer Fn
+	// is one of the five proven to compose correctly across the union (see
+	// nativeGridVectorAggUnionFns' own doc for each Fn's own composition
+	// proof — sum/min/max share one, avg and count each need their own
+	// dedicated builder below since neither composes by re-applying itself).
 	native, delta, ok := rateIncreaseTemporalityUnionArms(input)
 	if !ok {
 		return nil, false
@@ -4659,8 +4880,15 @@ func tryNativeGridVectorAgg(
 	// shaped key back to its original column name (e.g. "Attributes")
 	// before evaluating groupBy against it, mirroring the restoration
 	// [emitRangeWindowGridNative] itself already relies on. No guard is
-	// needed on either branch of this function.
-	return buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s), true
+	// needed on any branch of this function.
+	switch aggFunc.Fn {
+	case chplan.FnAvg:
+		return buildTemporalityUnionAvgVectorAgg(native, delta, groupBy, aliases, s), true
+	case chplan.FnCount:
+		return buildTemporalityUnionCountVectorAgg(native, delta, groupBy, aliases, s), true
+	default:
+		return buildTemporalityUnionVectorAgg(native, delta, groupBy, aliases, aggFunc, s), true
+	}
 }
 
 // lowerAggregate handles `sum by (job) (...)`, `sum without (instance) (...)`,

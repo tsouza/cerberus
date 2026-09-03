@@ -151,6 +151,37 @@ type RangeWindowGridNativeVectorAgg struct {
 	// (wrapAggregateForSample) can reference this node's output the same
 	// way it references the ordinary Aggregate's.
 	AnchorAlias string
+
+	// PartialCountAlias, when non-empty, switches this node from emitting
+	// the FINISHED reduction to emitting a PARTIAL (sum, count) pair —
+	// used only by the rate()/increase() temporality-union avg() fold
+	// (internal/promql's buildTemporalityUnionAvgVectorAgg, cerberus issue
+	// #2884). Fn MUST be FnAvg when this is set: re-applying `avg` a
+	// second time at the union's combining Aggregate would average the
+	// native arm's single already-averaged row as one bare observation
+	// among the raw DELTA arm's rows, silently under-weighting whichever
+	// arm summarizes more series. Correctly combining an average across
+	// two partially-reduced arms needs each arm's own (sum, count) pair
+	// SUMMED independently, then divided once at the very end — so this
+	// node, instead of finishing the average, emits the per-group SUM
+	// under its normal Value contract (nativeGrid.ValueColumn — the exact
+	// same expression FnSum already projects there, since sum(x)*c ==
+	// sum(x*c) for increase()'s range-seconds multiply just as it does for
+	// the ordinary FnSum fold) and the per-group COUNT under this alias,
+	// both computed from the SAME still-array-shaped grid in one pass
+	// (sumForEach and countForEach over the identical `grid` array) and
+	// exploded together via one ARRAY JOIN of both arrays — so partial-sum
+	// and partial-count stay 1:1 aligned per (group, anchor) without a
+	// second join. See the emitter's own doc (internal/chsql) for the
+	// query shape and countForEachAbsentSentinel's doc for why filtering
+	// on the SUM side's NULL alone is sufficient (a position with zero
+	// contributing series answers NULL on the sum side and the literal
+	// countForEachAbsentSentinel on the count side — the same underlying
+	// condition, so one filter covers both). Empty for every other
+	// caller — the finished-avg bare fold (cerberus issue #2763) and the
+	// sum/min/max/count union folds (cerberus issue #2852) all need only
+	// the single Value column this node emits by default.
+	PartialCountAlias string
 }
 
 func (*RangeWindowGridNativeVectorAgg) planNode() {}
@@ -162,7 +193,7 @@ func (r *RangeWindowGridNativeVectorAgg) Equal(other Node) bool {
 	if !ok {
 		return false
 	}
-	if r.Fn != o.Fn || r.AnchorAlias != o.AnchorAlias {
+	if r.Fn != o.Fn || r.AnchorAlias != o.AnchorAlias || r.PartialCountAlias != o.PartialCountAlias {
 		return false
 	}
 	if len(r.GroupBy) != len(o.GroupBy) {
