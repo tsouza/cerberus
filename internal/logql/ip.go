@@ -128,10 +128,14 @@ func MatchesIPPattern(subject, pattern string) (bool, error) {
 		re = ipv6CandidateRe
 	}
 	for _, cand := range re.FindAllString(subject, -1) {
-		addr, err := netip.ParseAddr(cand)
-		if err != nil || addr.Is6() != r.V6 {
-			continue
-		}
+		// The interval test IS the family check, and the
+		// unparseable-candidate check too: netip.Addr.Compare orders by
+		// BitLen() first, so a candidate netip.ParseAddr rejected (the zero
+		// Addr, BitLen 0) and one of the other family (32 against 128, or
+		// 128 against 32) both fall strictly outside r's well-formed
+		// [Lo, Hi]. TestMatchesIPPattern_IntervalTestIsTheFamilyCheck pins
+		// both legs.
+		addr, _ := netip.ParseAddr(cand)
 		if addr.Compare(r.Lo) >= 0 && addr.Compare(r.Hi) <= 0 {
 			return true, nil
 		}

@@ -583,3 +583,58 @@ func TestLexComments(t *testing.T) {
 // element ends the loop outright. The `continue` is therefore equivalent to
 // `break` for every input, both falling through to the function's trailing
 // `return false`.
+
+// TestLexDotOutsideANumberIsALexerRejection pins the LogQL grammar's whole
+// use of '.': it is a number's decimal point and nothing else.
+//
+// Dotted OTel label keys reach the lexer only from PIPELINE position —
+// [NormalizeDottedLabels] rewrites them to the underscored form inside the
+// stream selector and deliberately stops at the closing '}' — and reference
+// Loki rejects a dotted key there too. So no LogQL the grammar accepts puts a
+// '.' anywhere but inside a numeric literal, and a stray one is a lexical
+// error carrying the offending byte's offset, not a token for the parser to
+// puzzle over.
+func TestLexDotOutsideANumberIsALexerRejection(t *testing.T) {
+	rejected := []struct {
+		src     string
+		wantCol string
+	}{
+		{".", "col 1"},
+		{".a", "col 1"},
+		{"a.b", "col 2"},
+		{"a.", "col 2"},
+		{`{a="b"} | x.y = "z"`, "col 12"},
+	}
+	for _, tc := range rejected {
+		_, err := lex(tc.src)
+		if err == nil {
+			t.Errorf("lex(%q): expected a lexical error for a '.' outside a number", tc.src)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unexpected character .") {
+			t.Errorf("lex(%q): expected an unexpected-character diagnostic, got: %v", tc.src, err)
+		}
+		if !strings.Contains(err.Error(), tc.wantCol) {
+			t.Errorf("lex(%q): expected the diagnostic to point at %s, got: %v", tc.src, tc.wantCol, err)
+		}
+	}
+
+	accepted := []struct {
+		src  string
+		want string
+	}{
+		{".5", ".5"},
+		{"1.5", "1.5"},
+		{"0.0", "0.0"},
+	}
+	for _, tc := range accepted {
+		toks, err := lex(tc.src)
+		if err != nil {
+			t.Errorf("lex(%q): unexpected error: %v", tc.src, err)
+			continue
+		}
+		if len(toks) != 2 || toks[0].kind != tkNumber || toks[0].str != tc.want {
+			t.Errorf("lex(%q) = %+v, want a single tkNumber %q + EOF", tc.src, toks, tc.want)
+		}
+	}
+}
