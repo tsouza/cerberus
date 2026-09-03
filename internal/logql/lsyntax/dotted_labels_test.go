@@ -199,7 +199,7 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 		// backtick MUST end the string and a subsequent `b.c=...`
 		// matcher MUST still be rewritten.
 		//
-		// Pins the FIRST `&&` (col 29) in
+		// Pins the FIRST `&&` in
 		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)` at
 		// lokiAdvanceInString. An INVERT_LOGICAL mutant `&&` → `||`
 		// makes the escape branch fire even inside backtick strings,
@@ -216,7 +216,7 @@ func TestNormalizeLokiDottedLabels(t *testing.T) {
 		// the closing `"` at the next position ends the string and a
 		// subsequent `c.d=...` matcher MUST be rewritten.
 		//
-		// Pins the SECOND `&&` (col 43) in
+		// Pins the SECOND `&&` in
 		// `state != lokiInBacktick && ch == '\\' && i+1 < len(q)`. An
 		// INVERT_LOGICAL mutant turning the second `&&` into `||`
 		// expands the predicate to

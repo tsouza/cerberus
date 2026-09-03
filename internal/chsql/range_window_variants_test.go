@@ -280,7 +280,7 @@ func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if !strings.Contains(sql, "anchor_ts AS `Timestamp`") {
-			t.Errorf("expected the schema-timestamp re-projection `anchor_ts AS `Timestamp`` (line 351 flipped?)\nSQL: %s", sql)
+			t.Errorf("expected the schema-timestamp re-projection `anchor_ts AS `Timestamp`` (range_window_variants.go:`if r.TimestampColumn != \"anchor_ts\" {` flipped?)\nSQL: %s", sql)
 		}
 	})
 
@@ -293,7 +293,7 @@ func TestEmitFusedVariantsMatrix_TimestampColumnAnchorTsAlias(t *testing.T) {
 			t.Fatalf("Emit: %v", err)
 		}
 		if strings.Contains(sql, "anchor_ts AS") {
-			t.Errorf("expected no duplicate anchor_ts re-projection when TimestampColumn==\"anchor_ts\" (line 351 flipped?)\nSQL: %s", sql)
+			t.Errorf("expected no duplicate anchor_ts re-projection when TimestampColumn==\"anchor_ts\" (range_window_variants.go:`if r.TimestampColumn != \"anchor_ts\" {` flipped?)\nSQL: %s", sql)
 		}
 	})
 }
@@ -322,7 +322,7 @@ func TestVariantValsFrag_TupleSlotArithmetic(t *testing.T) {
 	for _, c := range cases {
 		got := render(variantValsFrag(BareIdent("window_pairs"), c.valueSlot))
 		if !strings.Contains(got, c.wantIndex) {
-			t.Errorf("variantValsFrag(valueSlot=%d) missing %q (line 151 arithmetic flipped?)\ngot: %s",
+			t.Errorf("variantValsFrag(valueSlot=%d) missing %q (range_window_variants.go:`slot := int64(valueSlot + firstValueSlot)` flipped?)\ngot: %s",
 				c.valueSlot, c.wantIndex, got)
 		}
 	}
@@ -341,10 +341,10 @@ func TestEmitFusedVariantsMatrix_AnchorCountArithmetic(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	if !strings.Contains(sql, "least(3, ") {
-		t.Errorf("expected least(3, ...) anchor-count clamp (OuterRange/Step + 1 = 3) — line 293 arithmetic flipped?\nSQL: %s", sql)
+		t.Errorf("expected least(3, ...) anchor-count clamp (OuterRange/Step + 1 = 3) — `+ 1` arithmetic flipped?\nSQL: %s", sql)
 	}
 	if strings.Contains(sql, "least(1, ") {
-		t.Errorf("found least(1, ...) — `+ 1` mutated to `- 1` (line 293)\nSQL: %s", sql)
+		t.Errorf("found least(1, ...) — `+ 1` mutated to `- 1`\nSQL: %s", sql)
 	}
 }
 

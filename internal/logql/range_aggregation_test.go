@@ -448,7 +448,8 @@ func TestLowerVectorAggregationNestedMatrixBucketsOnTimeUnix(t *testing.T) {
 }
 
 // TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset pins
-// the arithmetic on line 52 of [lowerRangeAggregation]:
+// the arithmetic in
+// range_aggregation.go:lowerRangeAggregation:`e.Left.Interval + e.Left.Offset`:
 //
 //	innerLc := lc.withMatcherWindowExtension(e.Left.Interval + e.Left.Offset)
 //
@@ -527,8 +528,8 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 }
 
 // TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn pins the
-// `&&` boundary on line 116 of [lowerRangeAggregation] AND the `!=`
-// invariant on line 469 of [hasParserMergedLabels]:
+// `&&` boundary of the materialise gate [lowerRangeAggregation] reaches
+// AND the `!=` invariant in [hasParserMergedLabels]:
 //
 //	if e.Left.Unwrap != nil && hasParserMergedLabels(labelsExpr, s) {
 //	    // materialise into `_logql_merged_labels` intermediate column
@@ -541,20 +542,23 @@ func TestLowerRangeAggregationExtendsMatcherWindowByIntervalPlusOffset(t *testin
 //
 // A bare-unwrap query (no `| logfmt` / `| json` / `| regexp` parser
 // stage) reads its labels map directly from ResourceAttributes — so
-// [hasParserMergedLabels] must return false, the line-116 condition
-// short-circuits to the else-if branch, and the SQL never references
-// the `_logql_merged_labels` intermediate alias.
+// [hasParserMergedLabels] must return false, the materialise gate's
+// condition short-circuits to the else-if branch, and the SQL never
+// references the `_logql_merged_labels` intermediate alias.
 //
 // Two LIVED mutants both surface as the SAME observable regression on
 // this fixture, so the single assertion kills both at once:
 //
-//   - Line 116 INVERT_LOGICAL: `&&` → `||`. With Unwrap non-nil the
-//     condition is now always true regardless of hasParserMergedLabels;
-//     the materialised-column branch fires even on bare unwrap.
+//   - INVERT_LOGICAL on the materialise gate's `&&`: `&&` → `||`. With
+//     Unwrap non-nil the condition is now always true regardless of
+//     hasParserMergedLabels; the materialised-column branch fires even
+//     on bare unwrap.
 //
-//   - Line 469 CONDITIONALS_NEGATION: `!=` → `==`. With labelsExpr =
-//     `ColumnRef(ResourceAttributes)`, hasParserMergedLabels returns
-//     true instead of false; line 116's condition becomes true; the
+//   - CONDITIONALS_NEGATION on
+//     range_aggregation.go:`col.Name != s.ResourceAttributesColumn`:
+//     `!=` → `==`. With labelsExpr = `ColumnRef(ResourceAttributes)`,
+//     hasParserMergedLabels returns true instead of false; the
+//     materialise gate's condition becomes true; the
 //     materialised-column branch fires.
 //
 // Both mutations cause the bare-unwrap SQL to carry the
@@ -599,14 +603,15 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 	// The materialised-column alias `_logql_merged_labels` is the
 	// fingerprint of the two-stage Project path. If it appears in the
 	// emitted SQL for a bare-unwrap query, EITHER:
-	//   - line 116's `&&` flipped to `||` (mutant entered the branch
-	//     despite hasParserMergedLabels == false), OR
-	//   - line 469's `!=` flipped to `==` (hasParserMergedLabels
-	//     reported true for a bare ResourceAttributes ColumnRef).
+	//   - the materialise gate's `&&` flipped to `||` (mutant entered
+	//     the branch despite hasParserMergedLabels == false), OR
+	//   - the `col.Name != s.ResourceAttributesColumn` invariant
+	//     flipped to `==` (hasParserMergedLabels reported true for a
+	//     bare ResourceAttributes ColumnRef).
 	if strings.Contains(sqlStr, "_logql_merged_labels") {
 		t.Errorf("bare-unwrap SQL unexpectedly carries the `_logql_merged_labels` alias\n"+
-			"  → INVERT_LOGICAL on line 116 (`&&` → `||`) OR\n"+
-			"  → CONDITIONALS_NEGATION on line 469 (`!=` → `==`) lived\nsql=%s", sqlStr)
+			"  → INVERT_LOGICAL on the materialise gate (`&&` → `||`) OR\n"+
+			"  → CONDITIONALS_NEGATION on range_aggregation.go:`col.Name != s.ResourceAttributesColumn` (`!=` → `==`) lived\nsql=%s", sqlStr)
 	}
 
 	// Companion positive assertion: the bare-unwrap path MUST surface
@@ -622,17 +627,19 @@ func TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn(t *testing.T) {
 // is the dual of [TestLowerRangeAggregationBareUnwrapSkipsMaterialisedColumn]:
 // when the unwrap query DOES carry a parser stage, the SQL MUST surface
 // the `_logql_merged_labels` materialised-column alias. Together with
-// the bare-unwrap test, this pins both legs of the line-116 `&&`
-// condition and the line-469 `!=` return so a flipped operator can't
-// pass both halves silently.
+// the bare-unwrap test, this pins both legs of the materialise gate's
+// `&&` condition and the `col.Name != s.ResourceAttributesColumn`
+// return so a flipped operator can't pass both halves silently.
 //
-// The line-116 INVERT_LOGICAL mutant flips `&&` to `||`. With Unwrap
+// The materialise gate's INVERT_LOGICAL mutant flips `&&` to `||`. With Unwrap
 // non-nil AND hasParserMergedLabels true, both legs of the original
 // `&&` are true so the mutant's `||` also evaluates true — the test
 // covers this case to confirm the happy path stays intact (no false
 // positive from the dual assertion).
 //
-// The line-469 CONDITIONALS_NEGATION mutant flips `!=` to `==`. With a
+// The CONDITIONALS_NEGATION mutant on
+// range_aggregation.go:`col.Name != s.ResourceAttributesColumn` flips
+// `!=` to `==`. With a
 // parser stage labelsExpr is a `mapConcat(...)` (not a ColumnRef), so
 // the ok-cast `col, ok := labelsExpr.(*chplan.ColumnRef)` is false and
 // hasParserMergedLabels returns true via the first return statement —
@@ -648,8 +655,8 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 	step := time.Minute
 
 	// Parser stage `| logfmt` wraps labelsExpr in a mapConcat — the
-	// non-ColumnRef path of hasParserMergedLabels — so line 116 fires
-	// and the materialised intermediate column appears.
+	// non-ColumnRef path of hasParserMergedLabels — so the materialise
+	// gate fires and the materialised intermediate column appears.
 	query := `sum_over_time({app="api"} | logfmt | unwrap latency [5m])`
 	expr, err := syntax.ParseExpr(query)
 	if err != nil {
@@ -673,8 +680,9 @@ func TestLowerRangeAggregationParserUnwrapMaterialisesIntermediateColumn(t *test
 }
 
 // TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector pins
-// the `pred == nil` accumulator branch on line 256 of
-// [applyUnwrapPostFilters]:
+// the `pred == nil` accumulator branch in [applyUnwrapPostFilters] —
+// the one whose then-arm is range_aggregation.go:`pred = extra`, not
+// the post-loop return guard that shares its condition:
 //
 //	if pred == nil {
 //	    pred = extra
@@ -745,14 +753,14 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	}
 
 	// LOAD-BEARING: stream selector survives the post-filter AND-fold.
-	// A `==` → `!=` mutant on line 256 would replace `pred` with the
-	// post-filter on its first iteration, dropping the stream
-	// selector. Both "app" (the matcher's label key) and "api" (its
-	// value) MUST surface as bound args.
+	// A `==` → `!=` mutant on the accumulator branch would replace
+	// `pred` with the post-filter on its first iteration, dropping the
+	// stream selector. Both "app" (the matcher's label key) and "api"
+	// (its value) MUST surface as bound args.
 	for _, want := range []string{"app", "api"} {
 		if !argsContain(args, want) {
 			t.Errorf("emitted SQL args missing stream-selector token %q "+
-				"— line 256 `pred == nil` may have flipped to `!=`, "+
+				"— the accumulator branch's `pred == nil` may have flipped to `!=`, "+
 				"replacing the stream predicate with just the post-filter\nargs=%v",
 				want, args)
 		}
@@ -762,13 +770,13 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 	// filter AND-fold. The pre-scan clamp uses the EXTENDED
 	// `innerLc.Start = start - (Interval + Offset) = start - 5m`
 	// (rendered by [timeLiteralExpr]). The formatted timestamp MUST
-	// appear in the args; a line-256 mutation that drops the clamp
-	// would erase it.
+	// appear in the args; an accumulator-branch mutation that drops the
+	// clamp would erase it.
 	extendedStart := start.Add(-(ra.Left.Interval + ra.Left.Offset))
 	wantExtendedStart := extendedStart.Format("2006-01-02 15:04:05.000000000")
 	if !argsContain(args, wantExtendedStart) {
 		t.Errorf("emitted SQL args missing pre-scan clamp lower-bound %q "+
-			"— line 256 mutation may have dropped the time-window predicate\nargs=%v",
+			"— an accumulator-branch mutation may have dropped the time-window predicate\nargs=%v",
 			wantExtendedStart, args)
 	}
 }
@@ -789,8 +797,9 @@ func TestLowerRangeAggregationUnwrapPostFilterPreservesStreamSelector(t *testing
 // by the value expression. For N labels the resulting `map(...)`
 // FuncCall has 2*N args.
 //
-// An ARITHMETIC_BASE mutant on line 513 flips the initial capacity hint
-// `*2` to `/2`. The behaviour is OBSERVATIONALLY EQUIVALENT at the SQL
+// An ARITHMETIC_BASE mutant flips the `*2` of the initial capacity hint
+// `len(e.Grouping.Groups)*2` to `/2`. The behaviour is OBSERVATIONALLY
+// EQUIVALENT at the SQL
 // surface — `append` grows the slice on demand, so the final FuncCall
 // carries the same args regardless of initial capacity — but the test
 // still pins the 2-per-label shape so any future refactor that

@@ -57,9 +57,10 @@ func TestIsIdentByte(t *testing.T) {
 	}
 }
 
-// TestWithinAnySpan pins the inclusive `i >= s[0] && i <= s[1]` membership at
-// both edges and just outside, killing the two CONDITIONALS_BOUNDARY mutants
-// (`>=`→`>`, `<=`→`<`) and the INVERT_LOGICAL (`&&`→`||`) mutant on line 297.
+// TestWithinAnySpan pins the inclusive membership test
+// spansscan.go:`i >= s[0] && i <= s[1]` at both edges and just outside, killing
+// the two CONDITIONALS_BOUNDARY mutants (`>=`→`>`, `<=`→`<`) and the
+// INVERT_LOGICAL (`&&`→`||`) mutant on it.
 func TestWithinAnySpan(t *testing.T) {
 	t.Parallel()
 	const lo, hi = 10, 20
@@ -87,9 +88,11 @@ func TestWithinAnySpan(t *testing.T) {
 }
 
 // TestWordAt pins the standalone-keyword recogniser's three guards:
-//   - the length precondition `j+len(kw) > len(sql)` (line 271),
-//   - the preceding-identifier check guarded by `j > 0` (line 277),
-//   - the following-identifier check guarded by `end < len(sql)` (line 280).
+//   - the length precondition spansscan.go:`j+len(kw) > len(sql)`,
+//   - the preceding-identifier check
+//     spansscan.go:`j > 0 && isIdentByte(sql[j-1])`,
+//   - the following-identifier check
+//     spansscan.go:`end < len(sql) && isIdentByte(sql[end])`.
 //
 // Each case is chosen so a single boundary flip or negation on those guards
 // changes the verdict (or dereferences out of range, which fails the test the
@@ -106,14 +109,15 @@ func TestWordAt(t *testing.T) {
 		// Keyword fills the string to its exact end: j+len(kw) == len(sql).
 		// `>`→`>=` would reject this as out of range; the leading space keeps
 		// the preceding-byte check happy so the only distinguishing guard is
-		// line 271.
+		// the length precondition spansscan.go:`j+len(kw) > len(sql)`.
 		{"exact_end_standalone", " UNION", 1, "UNION", true},
 		// Keyword genuinely past the end: j+len(kw) > len(sql) → false.
 		{"past_end", "UNIO", 0, "UNION", false},
 		// Keyword at offset 0: the `j > 0` guard is false, so the preceding
 		// byte (sql[-1]) is never read. A `>`→`>=` boundary or a negation makes
 		// the guard true at j==0 and dereferences sql[-1] (out of range) —
-		// which fails this test, killing both line-277 mutants. A trailing
+		// which fails this test, killing both mutants on
+		// spansscan.go:`j > 0 && isIdentByte(sql[j-1])`. A trailing
 		// space keeps the following-byte check from rejecting it.
 		{"start_standalone", "UNION x", 0, "UNION", true},
 		// Preceded by an identifier byte → not standalone. Confirms the
@@ -125,8 +129,9 @@ func TestWordAt(t *testing.T) {
 		// Standalone, so want true.
 		{"ends_at_string_end", "x UNION", 2, "UNION", true},
 		// Followed by an identifier byte → not standalone. Kills the
-		// CONDITIONALS_NEGATION on line 280 (`end < len` → `end >= len` would
-		// skip the check and wrongly accept).
+		// CONDITIONALS_NEGATION on the following-identifier guard
+		// spansscan.go:`end < len(sql) && isIdentByte(sql[end])` (`end < len` →
+		// `end >= len` would skip the check and wrongly accept).
 		{"followed_by_ident", "UNIONX", 0, "UNION", false},
 		// Followed by a non-identifier byte → standalone.
 		{"followed_by_space", "UNION ", 0, "UNION", true},
@@ -142,15 +147,16 @@ func TestWordAt(t *testing.T) {
 
 // TestRecursiveBodySpans pins the parenthesis-carving helper that defines a
 // recursive arm's byte range. It kills:
-//   - INVERT_NEGATIVES / ARITHMETIC_BASE on the `-1` FindAll limit (line 196):
-//     a two-CTE input must yield two spans, not one;
-//   - CONDITIONALS_BOUNDARY on `open < 0` (line 198): a `(` immediately after
+//   - INVERT_NEGATIVES / ARITHMETIC_BASE on the `-1` FindAll limit
+//     spansscan.go:`reRecursive.FindAllStringIndex(sql, -1)`: a two-CTE input
+//     must yield two spans, not one;
+//   - CONDITIONALS_BOUNDARY on spansscan.go:`open < 0`: a `(` immediately after
 //     `WITH RECURSIVE` (relative index 0) is a real open paren, not "absent";
-//   - REMOVE_SELF_ASSIGNMENTS on `open += loc[1]` (line 201): the recorded span
-//     must use absolute offsets, so sql[span[0]] is the `(`;
-//   - CONDITIONALS_BOUNDARY on the depth-walk loop guard `j < len(sql)`
-//     (line 203): an unclosed `(` must terminate cleanly (no span, no panic),
-//     not run the index one past the end.
+//   - REMOVE_SELF_ASSIGNMENTS on spansscan.go:`open += loc[1]`: the recorded
+//     span must use absolute offsets, so sql[span[0]] is the `(`;
+//   - CONDITIONALS_BOUNDARY on the depth-walk loop guard
+//     spansscan.go:`for j := open; j < len(sql); j++`: an unclosed `(` must
+//     terminate cleanly (no span, no panic), not run the index one past the end.
 func TestRecursiveBodySpans(t *testing.T) {
 	t.Parallel()
 

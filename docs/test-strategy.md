@@ -1472,6 +1472,107 @@ machine, and the residue it would catch — a kill claim naming an anchor
 without naming its mutant — is one sentence of reviewer attention
 (cerberus issue #2966).
 
+#### The same address, written as prose
+
+The `file.go:613` spelling is rejected, so the identical address
+survives one word to its left: `line 613`, `line 92:20`, `lines
+273-276`, `col 27`, `(@97:23)` — and, in the worst instance found, a
+`line 92` carrying no filename at all, which is strictly less
+verifiable than the form the gate already refuses. The same script
+rejects these too, reading the note's own prose and the message text of
+a `t.Errorf` / `t.Fatalf` — the two places this repository writes notes.
+An expected-error string a test asserts on is not a note: the "parse
+error at line 5, col 0" that `internal/logql/lsyntax` compares against
+describes the USER'S input, and no rewrite of it is available or wanted.
+
+Tree-wide when the check landed it rejected 72 addresses and no false
+positives, and the rot was not hypothetical. In
+`internal/spansscan/internal_test.go` **all ten** numbers already named
+something other than the construct their note describes, landing 8 to
+160 lines away on closing braces and unrelated statements. In
+`internal/logql/jsonpath_mutation_test.go` and
+`internal/promql/gremlins_kill_binary_lower_mixed_test.go` every number
+was still accurate — both files had been re-verified a few commits
+earlier — which is the same finding from the other side: correct today,
+unverifiable always, and one insertion above them from being wrong with
+nothing to say so.
+
+Two remedies, and the first is the common one:
+
+- **Drop the number** where the prose already names the token. A note
+  reading ``col 20 (`agg.Op != parser.COUNT` → `==`)`` under a citation
+  that resolves names the mutant twice; the number is decoration, and
+  deleting it leaves the note strictly better.
+- **Name the construct** where the number is the only address the note
+  carries. Read the note first — the number has usually rotted, so what
+  it names today is not what to cite.
+
+An **upstream** line number is the same violation written about
+somebody else's tree, and takes the same remedy the section above gives:
+`functions.go`'s `extrapolatedRate`, never `functions.go lines 273-276`.
+
+Three spellings sit outside the model, by measurement rather than
+oversight, and none is an escape hatch:
+
+- **`column N` spelled out** was a ClickHouse result column or a text
+  column in 10 of 10 occurrences and never a source address, while the
+  abbreviated `col N` was a source address in 11 of 11. Rejecting the
+  spelled-out form would force a rewrite of correct prose, which is the
+  false-positive machine the section below refuses.
+- **The hyphenated attributive form** (`the line-116 condition`, `both
+  line-277 mutants`) is the same address with the space removed, and it
+  stays out for the same reason: of the four in note scope, three are
+  `line-3` / `line-4` / `line-5`, the NAMES of log lines in an
+  `internal/api/loki` fixture, which no rewrite improves. Requiring a
+  space after the keyword costs the single real instance — repointed by
+  hand when this landed, leaving none — and buys immunity to the three.
+- **An unmarked `N:M` pair** (`at 223:11`, `- 76:23`) is the same
+  unverifiable address, and it is unmodelled because nothing lexical
+  separates it from data. Of the 108 unmarked pairs in note scope only
+  about a third are addresses; the rest are `1:1` correspondences, chDB
+  fixture clock times, slice bounds such as `src[0:0]`, and a
+  `host:9000`. `76:23` the address and `23:59` the timestamp are the
+  same token. Reviewer attention is the control here, exactly as it is
+  for the kill-claim residue above.
+
+#### The code block quoted under the citation
+
+A note usually follows its citation with a tab-indented block quoting
+the construct in situ. The backticked span resolves, so the gate passes,
+while the block underneath is free to show code the cited file does not
+contain — the drift class the citation rule closed, arriving through the
+door it did not check.
+
+Only the provable half of that is checkable, and the split is the whole
+design. **"The block does not resolve in the cited file" is refused.** A
+block that resolves nowhere is indistinguishable from the mutant's
+rewritten form — which is the entire point of an adjudication note — and
+from an elision or a caret-pointer rule. Measured against the tree that
+carried the three real instances, that rule flags 10 of which 3 are
+genuine; on the tree after they were fixed it flags 6 of which 0 are.
+30% precision falling to zero is the #2966 shape, and it is refused for
+the #2966 reason.
+
+**Mis-attribution is checkable**, and is what the gate rejects: the block
+quotes a line that exists in this repository, in a file OTHER than the
+one its citation names. A reader checking the block against the cited
+file will not find it. Nothing legitimate is caught by accident, because
+a mutant form, an elision and a pointer diagram all resolve nowhere and
+are therefore never asked about — that separation is what makes the
+check shippable where the wider one is not. It flags 3 of 3 on the
+pre-fix tree and 0 on the tree today: a ratchet with no backlog, which
+is what it is for. When a block genuinely quotes another file, say so —
+give the block its own citation rather than letting the one above it
+speak for code it does not contain.
+
+Two block shapes name nothing to attribute and are skipped. A line that
+is **itself a citation**, because an indented citation *list* is the
+shape several files use to enumerate mutants, and reading those as
+quoted code is wrong 23 times out of 23. And a line with **no identifier
+character** — a bare `...`, a lone brace — which would otherwise match
+the variadic parameter of an unrelated function and report an artefact
+of substring search.
+
 ### How a note states a number
 
 A citation that resolves is only half of a re-checkable note. The other
