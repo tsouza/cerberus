@@ -347,3 +347,128 @@ func TestInfo_OptimizationsAreLive(t *testing.T) {
 		t.Errorf("enabled after upgrade = %v; want [aggregation_in_order ts_grid_range]", got.Optimizations.Enabled)
 	}
 }
+
+// TestInfo_CatalogViewRefreshConfigured (cerberus issue #2991) confirms a
+// wired loki label-catalog resolver and a wired Tempo tag-catalog resolver
+// each surface verbatim under their OWN nested object, field for field.
+//
+// Both resolvers return the same Go type (ViewRefreshState) and each is
+// rendered into a per-head JSON type whose field set is identical bar the
+// tags. Two mistakes in that arrangement compile silently: crossing the two
+// heads' resolvers in snapshotResponse, and — should either conversion ever
+// be spelled out as a field-by-field literal — mis-pairing two of the four
+// consecutive string fields ViewRefreshState carries. Every string field
+// therefore gets a value distinct across BOTH heads, so either mistake
+// lands a recognisably wrong value rather than a coincidentally equal one.
+func TestInfo_CatalogViewRefreshConfigured(t *testing.T) {
+	lokiState := ViewRefreshState{
+		Configured:      true,
+		Status:          "loki-status",
+		Exception:       "loki-exception",
+		LastSuccessTime: "loki-success",
+		LastRefreshTime: "loki-refresh",
+		Retry:           7,
+	}
+	tempoState := ViewRefreshState{
+		Configured:      true,
+		Status:          "tempo-status",
+		Exception:       "tempo-exception",
+		LastSuccessTime: "tempo-success",
+		LastRefreshTime: "tempo-refresh",
+		Retry:           9,
+	}
+	h := New(Options{
+		Snapshot:                   baseSnapshot(),
+		Optimizations:              staticOpts(baseOptState()),
+		LokiCatalogViewRefresh:     func(context.Context) ViewRefreshState { return lokiState },
+		TempoTagCatalogViewRefresh: func(context.Context) ViewRefreshState { return tempoState },
+	})
+	got, _ := decodeInfo(t, h)
+
+	wantLoki := lokiCatalogViewRefreshInfo{
+		Configured:      true,
+		Status:          "loki-status",
+		Exception:       "loki-exception",
+		LastSuccessTime: "loki-success",
+		LastRefreshTime: "loki-refresh",
+		Retry:           7,
+	}
+	if got.LokiCatalogViewRefresh != wantLoki {
+		t.Errorf("lokiCatalogViewRefresh = %+v; want %+v", got.LokiCatalogViewRefresh, wantLoki)
+	}
+
+	wantTempo := tempoTagCatalogViewRefreshInfo{
+		Configured:      true,
+		Status:          "tempo-status",
+		Exception:       "tempo-exception",
+		LastSuccessTime: "tempo-success",
+		LastRefreshTime: "tempo-refresh",
+		Retry:           9,
+	}
+	if got.TempoTagCatalogViewRefresh != wantTempo {
+		t.Errorf("tempoTagCatalogViewRefresh = %+v; want %+v", got.TempoTagCatalogViewRefresh, wantTempo)
+	}
+}
+
+// TestInfo_CatalogViewRefreshFailingRefreshReadsVerbatim pins the failure
+// posture both catalog objects exist to make visible: cerberus layers no
+// "healthy"/"unhealthy" verdict over system.view_refreshes, so a view that
+// is serving a stale-but-real previous snapshot reports a non-empty
+// exception WITH a LastSuccessTime still populated and a LastRefreshTime
+// that has advanced past it. A resolver result rewritten into a verdict, or
+// one that blanked LastSuccessTime on a failed attempt, would lose exactly
+// the signal an operator reads to tell "stale but serving" from "never
+// worked", and this test fails on either.
+func TestInfo_CatalogViewRefreshFailingRefreshReadsVerbatim(t *testing.T) {
+	failing := ViewRefreshState{
+		Configured:      true,
+		Status:          "Scheduled",
+		Exception:       "Code: 60. DB::Exception: Table otel.logs does not exist",
+		LastSuccessTime: "2026-09-02 10:00:00",
+		LastRefreshTime: "2026-09-02 10:05:00",
+		Retry:           3,
+	}
+	h := New(Options{
+		Snapshot:               baseSnapshot(),
+		Optimizations:          staticOpts(baseOptState()),
+		LokiCatalogViewRefresh: func(context.Context) ViewRefreshState { return failing },
+	})
+	got, _ := decodeInfo(t, h)
+
+	if got.LokiCatalogViewRefresh.Status != "Scheduled" {
+		t.Errorf("lokiCatalogViewRefresh.status = %q; want %q (verbatim, not an Error verdict)",
+			got.LokiCatalogViewRefresh.Status, "Scheduled")
+	}
+	if got.LokiCatalogViewRefresh.Exception != failing.Exception {
+		t.Errorf("lokiCatalogViewRefresh.exception = %q; want %q", got.LokiCatalogViewRefresh.Exception, failing.Exception)
+	}
+	if got.LokiCatalogViewRefresh.LastSuccessTime != failing.LastSuccessTime {
+		t.Errorf("lokiCatalogViewRefresh.lastSuccessTime = %q; want %q — a failed attempt must not erase the snapshot still being served",
+			got.LokiCatalogViewRefresh.LastSuccessTime, failing.LastSuccessTime)
+	}
+	if got.LokiCatalogViewRefresh.LastRefreshTime <= got.LokiCatalogViewRefresh.LastSuccessTime {
+		t.Errorf("lokiCatalogViewRefresh.lastRefreshTime = %q, lastSuccessTime = %q; want the attempt to read as later than the last success",
+			got.LokiCatalogViewRefresh.LastRefreshTime, got.LokiCatalogViewRefresh.LastSuccessTime)
+	}
+	if got.LokiCatalogViewRefresh.Retry != 3 {
+		t.Errorf("lokiCatalogViewRefresh.retry = %d; want 3", got.LokiCatalogViewRefresh.Retry)
+	}
+}
+
+// TestInfo_CatalogViewRefreshNilFuncDefaultsToZero confirms a handler wired
+// without either catalog resolver reports both objects at their zero value
+// (configured=false) rather than omitting them — the honest answer for a
+// handler wired without chclient.QueryViewRefreshState, and the same
+// posture TestInfo_FilesystemCacheNilFuncDefaultsToZero pins for its
+// sibling object.
+func TestInfo_CatalogViewRefreshNilFuncDefaultsToZero(t *testing.T) {
+	h := New(Options{Snapshot: baseSnapshot()})
+	got, _ := decodeInfo(t, h)
+
+	if got.LokiCatalogViewRefresh != (lokiCatalogViewRefreshInfo{}) {
+		t.Errorf("lokiCatalogViewRefresh with no resolver = %+v; want zero", got.LokiCatalogViewRefresh)
+	}
+	if got.TempoTagCatalogViewRefresh != (tempoTagCatalogViewRefreshInfo{}) {
+		t.Errorf("tempoTagCatalogViewRefresh with no resolver = %+v; want zero", got.TempoTagCatalogViewRefresh)
+	}
+}

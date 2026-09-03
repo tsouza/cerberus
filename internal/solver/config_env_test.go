@@ -253,3 +253,123 @@ func TestConfigFromEnv_RouteMemoReValidationFractionExplicitSet(t *testing.T) {
 		t.Fatalf("explicit route-memo-revalidation-fraction config failed Validate: %v", err)
 	}
 }
+
+// TestConfigFromEnv_EveryKnobReachesItsOwnField (cerberus issue #2991) pins
+// the whole env-to-field ladder at once. ConfigFromEnv threads thirteen
+// knobs through a repetitive `if cfg.X, err = envT(EnvX, cfg.X); err != nil`
+// chain, and every line of it is one copy-paste away from being silently
+// wrong in a way the compiler cannot see: the knobs share only four
+// underlying types (int, int64, bool, time.Duration), so pairing EnvMaxK
+// with cfg.MaxKWithEstimate — or reading one knob into two fields and
+// leaving a third at its default — builds and runs.
+//
+// Every var is therefore set to a value distinct from every other AND from
+// its own default, and every field is checked. A crossed pair lands another
+// knob's distinct value; a dropped knob leaves the default. Both read as a
+// named mismatch rather than as a coincidence.
+func TestConfigFromEnv_EveryKnobReachesItsOwnField(t *testing.T) {
+	t.Setenv(EnvRoute, ModeSharded)
+	t.Setenv(EnvMinFanout, "11")
+	t.Setenv(EnvMinAnchorPairs, "12")
+	t.Setenv(EnvMaxK, "13")
+	t.Setenv(EnvMinAnchorsPerSlice, "14")
+	t.Setenv(EnvParallel, "15")
+	t.Setenv(EnvTimeout, "16s")
+	t.Setenv(EnvMaxOutputRows, "17")
+	t.Setenv(EnvAdaptiveEnabled, "false")
+	t.Setenv(EnvRouteMemoEntryTTL, "18m")
+	t.Setenv(EnvRouteMemoRevalFrac, "19")
+	t.Setenv(EnvEstimateNearEmptyRowFloor, "20")
+	t.Setenv(EnvMaxKWithEstimate, "21")
+	t.Setenv(EnvEstimateMinRowsPerAdditionalShard, "22")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+
+	def := DefaultConfig()
+	checks := []struct {
+		env  string
+		got  any
+		want any
+		def  any
+	}{
+		{EnvRoute, cfg.Mode, ModeSharded, def.Mode},
+		{EnvMinFanout, cfg.MinFanout, 11, def.MinFanout},
+		{EnvMinAnchorPairs, cfg.MinAnchorPairs, 12, def.MinAnchorPairs},
+		{EnvMaxK, cfg.MaxK, 13, def.MaxK},
+		{EnvMinAnchorsPerSlice, cfg.MinAnchorsPerSlice, 14, def.MinAnchorsPerSlice},
+		{EnvParallel, cfg.Parallel, 15, def.Parallel},
+		{EnvTimeout, cfg.Timeout, 16 * time.Second, def.Timeout},
+		{EnvMaxOutputRows, cfg.MaxOutputRows, int64(17), def.MaxOutputRows},
+		{EnvAdaptiveEnabled, cfg.AdaptiveEnabled, false, def.AdaptiveEnabled},
+		{EnvRouteMemoEntryTTL, cfg.RouteMemoEntryTTL, 18 * time.Minute, def.RouteMemoEntryTTL},
+		{EnvRouteMemoRevalFrac, cfg.RouteMemoReValidationFraction, 19, def.RouteMemoReValidationFraction},
+		{EnvEstimateNearEmptyRowFloor, cfg.EstimateNearEmptyRowFloor, int64(20), def.EstimateNearEmptyRowFloor},
+		{EnvMaxKWithEstimate, cfg.MaxKWithEstimate, 21, def.MaxKWithEstimate},
+		{EnvEstimateMinRowsPerAdditionalShard, cfg.EstimateMinRowsPerAdditionalShard, int64(22), def.EstimateMinRowsPerAdditionalShard},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s: field = %v; want %v", c.env, c.got, c.want)
+		}
+		// The whole design of this test is that "still at the default" is
+		// distinguishable from "took the env value". Assert that premise
+		// rather than trusting it: a knob whose chosen value happens to
+		// equal its own default proves nothing about the wiring.
+		if c.want == c.def {
+			t.Errorf("%s: chosen value %v equals the default; pick a different one so this test can discriminate", c.env, c.want)
+		}
+	}
+}
+
+// TestConfigFromEnv_MalformedKnobFailsFast pins the parse-vs-silent-default
+// contract ConfigFromEnv's doc states: "A parse failure on any knob is
+// returned so a typo never silently routes (or never silently disables
+// routing)." A knob that swallowed its parse error would boot the gateway on
+// a threshold the operator never chose — a wrong routing decision on every
+// subsequent query, with nothing in the logs. Each knob is checked
+// separately, because the ladder returns on the FIRST error and a knob whose
+// error arm was dropped would otherwise be masked by an earlier one.
+//
+// The returned error must name the offending variable: startup failure text
+// is the only thing the operator has to go on.
+func TestConfigFromEnv_MalformedKnobFailsFast(t *testing.T) {
+	// Values are malformed for the knob's own type, not merely out of range
+	// — range is Validate's job, which ConfigFromEnv deliberately does not run.
+	cases := []struct{ env, bad string }{
+		{EnvMinFanout, "three"},
+		{EnvMinAnchorPairs, "3.5"},
+		{EnvMaxK, "0x10"},
+		{EnvMinAnchorsPerSlice, "1,2"},
+		{EnvParallel, "many"},
+		{EnvTimeout, "16 seconds"},
+		{EnvMaxOutputRows, "1e6"},
+		{EnvAdaptiveEnabled, "yes-please"},
+		{EnvLegacyRouteMemoEnabled, "sometimes"},
+		{EnvRouteMemoEntryTTL, "18 minutes"},
+		{EnvRouteMemoRevalFrac, "half"},
+		{EnvEstimateNearEmptyRowFloor, "lots"},
+		{EnvMaxKWithEstimate, "some"},
+		{EnvEstimateMinRowsPerAdditionalShard, "9_000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv(tc.env, tc.bad)
+			cfg, err := ConfigFromEnv()
+			if err == nil {
+				t.Fatalf("ConfigFromEnv() with %s=%q: error = nil, want a parse failure (got cfg %+v)", tc.env, tc.bad, cfg)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Errorf("ConfigFromEnv() error = %q; want it to name %s so the operator can find the typo", err, tc.env)
+			}
+			if !strings.Contains(err.Error(), tc.bad) {
+				t.Errorf("ConfigFromEnv() error = %q; want it to quote the rejected value %q", err, tc.bad)
+			}
+			if cfg != (Config{}) {
+				t.Errorf("ConfigFromEnv() returned %+v alongside an error; want the zero Config so a caller that ignores err cannot boot on a half-parsed one", cfg)
+			}
+		})
+	}
+}

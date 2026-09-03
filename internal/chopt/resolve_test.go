@@ -1125,3 +1125,97 @@ func TestModeString(t *testing.T) {
 		t.Errorf("Permissive.String() = %q; want %q", got, "permissive")
 	}
 }
+
+// TestExplicitlyRequested pins the offline selection read `migrate schema`
+// depends on (cerberus issue #2991). cmd/cerberus's preview has no live
+// ClickHouse to Resolve against, so it decides seven DDL-shaping opt-ins
+// straight off the raw CERBERUS_CH_OPTIMIZATIONS string. A false positive
+// emits DDL for a feature nobody asked for; a false negative silently drops
+// one the operator did ask for. Neither is recoverable by re-running the
+// preview, so the discrimination is asserted rather than assumed:
+//
+//   - one listed id among several must not make its unlisted siblings read
+//     as requested;
+//   - "auto" must NOT stand in for "everything", because every feature this
+//     function is consulted for carries AutoSelect=false and so is reachable
+//     only by being named;
+//   - matching is per whole comma token, never a substring. No two
+//     registered ids contain one another today, so the case that makes this
+//     bite is an UNREGISTERED token that extends or embeds a real id — a
+//     typo, or a future versioned spelling. ExplicitlyRequested deliberately
+//     does not validate tokens against the registry (Resolve does that), so
+//     such a token does reach it, and a substring test would read it as a
+//     request for the id it happens to contain.
+func TestExplicitlyRequested(t *testing.T) {
+	cases := []struct {
+		name      string
+		selection string
+		id        string
+		want      bool
+	}{
+		{"listed id", "map_bucketed_serialization", FeatureMapBucketedSerialization, true},
+		{"listed among siblings", "column_statistics,map_bucketed_serialization,trace_id_projection", FeatureMapBucketedSerialization, true},
+		{"sibling not listed", "column_statistics,trace_id_projection", FeatureMapBucketedSerialization, false},
+		{"auto is not everything", "auto", FeatureMapBucketedSerialization, false},
+		{"off is not everything", "off", FeatureMapBucketedSerialization, false},
+		{"empty selection", "", FeatureMapBucketedSerialization, false},
+		{"whitespace only", "   ", FeatureMapBucketedSerialization, false},
+		{"upper-case selection", "MAP_BUCKETED_SERIALIZATION", FeatureMapBucketedSerialization, true},
+		{"upper-case id", "map_bucketed_serialization", "MAP_BUCKETED_SERIALIZATION", true},
+		{"padded tokens", " column_statistics , map_bucketed_serialization ", FeatureMapBucketedSerialization, true},
+		{"padded id", "map_bucketed_serialization", "  map_bucketed_serialization  ", true},
+		{"empty tokens tolerated", "column_statistics,,,map_bucketed_serialization", FeatureMapBucketedSerialization, true},
+		{"token that extends a real id does not match", "map_bucketed_serialization_v2", FeatureMapBucketedSerialization, false},
+		{"token that prefixes a real id does not match", "map_bucketed", FeatureMapBucketedSerialization, false},
+		{"id embedded mid-token does not match", "no_map_bucketed_serialization", FeatureMapBucketedSerialization, false},
+		{"auto listed alongside an id still finds the id", "auto,downsample_tier", FeatureDownsampleTier, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExplicitlyRequested(tc.selection, tc.id); got != tc.want {
+				t.Errorf("ExplicitlyRequested(%q, %q) = %v; want %v", tc.selection, tc.id, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExplicitlyRequested_IgnoresServerVersionAndAutoSelect pins the
+// documented difference from Resolve: ExplicitlyRequested consults neither
+// the server version floor nor Feature.AutoSelect, so its answer is a pure
+// reading of what the operator typed. That is the whole reason the offline
+// preview can use it, and it is why its doc comment warns callers with a
+// live connection off it. The two halves are checked against each other:
+// an id whose feature auto-selects still reads false when unlisted (so the
+// function is not quietly consulting the registry), and a listed id reads
+// true even against a server far below its floor (so the function is not
+// quietly consulting a version).
+func TestExplicitlyRequested_IgnoresServerVersionAndAutoSelect(t *testing.T) {
+	var autoSelected string
+	for _, f := range registry {
+		if f.AutoSelect {
+			autoSelected = f.ID
+			break
+		}
+	}
+	if autoSelected == "" {
+		t.Fatal("registry has no AutoSelect feature; this test's premise no longer holds")
+	}
+	if ExplicitlyRequested("auto", autoSelected) {
+		t.Errorf("ExplicitlyRequested(%q, %q) = true; want false — an auto-selected feature is still not an explicitly requested one",
+			"auto", autoSelected)
+	}
+
+	// Resolve on a server below every floor enables nothing; the same
+	// selection still reads as requested here.
+	enabled, _, err := Resolve(Config{Optimizations: FeatureMapBucketedSerialization, Mode: Permissive}, v(1, 1))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if enabled.Has(FeatureMapBucketedSerialization) {
+		t.Fatalf("Resolve enabled %q on server 1.1; this test's premise no longer holds", FeatureMapBucketedSerialization)
+	}
+	if !ExplicitlyRequested(FeatureMapBucketedSerialization, FeatureMapBucketedSerialization) {
+		t.Errorf("ExplicitlyRequested(%q, %q) = false; want true — the version floor must not reach this function",
+			FeatureMapBucketedSerialization, FeatureMapBucketedSerialization)
+	}
+}
