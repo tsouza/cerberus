@@ -1,6 +1,7 @@
 package tempo_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tsouza/cerberus/internal/api/tempo"
+	"github.com/tsouza/cerberus/internal/chclient"
 	"github.com/tsouza/cerberus/internal/chsql"
 	"github.com/tsouza/cerberus/internal/schema"
 )
@@ -378,5 +380,201 @@ func TestSearchTagValues_WithQFilter_StaysOnLivePath(t *testing.T) {
 	}
 	if strings.Contains(q.lastSQL, "tempo_tag_catalog") {
 		t.Errorf("a q= filtered lookup must stay on the live path, last SQL was: %s", q.lastSQL)
+	}
+}
+
+// --- scope=none catalog-hit: event/link buckets, set-equal to live (cerberus milestone M2) ---
+//
+// TestSearchTags_CatalogHit above only ever drives `scope=resource` —
+// the catalog was widened to cover event/link too (cerberus issue
+// #2850), but nothing yet pinned that a `scope=none` catalog-HIT answer
+// actually surfaces those two buckets, or that it agrees with what the
+// live per-scope scan would say for the identical seeded tags. This
+// closes that gap.
+
+// tagCatalogNoneSeed seeds the SAME tag keys for all four catalog-covered
+// scope buckets, reused by both drivers below: the catalog-hit driver
+// (scopeArgCatalogQuerier, keyed by the bound `Scope` arg) and the
+// live-scan comparison driver (stubQuerier.stringsBySQL, keyed by the
+// live per-scope SQL substring, mirroring TestSearchTagsV2_ScopeFilter's
+// own stub). Reusing one seed for both is what makes the eventual
+// set-equal assertion meaningful — two independently made-up tag lists
+// could "match" only by accident.
+var tagCatalogNoneSeed = map[string][]string{
+	schema.TagCatalogScopeResource: {"service.name", "service.version"},
+	schema.TagCatalogScopeSpan:     {"http.method", "http.route"},
+	schema.TagCatalogScopeEvent:    {"exception.type", "exception.message"},
+	schema.TagCatalogScopeLink:     {"link.trace_id", "link.kind"},
+}
+
+// scopeArgCatalogQuerier answers a tempo_tag_catalog keys lookup
+// (buildTagCatalogKeysSQL) per the BOUND `Scope` arg rather than the SQL
+// text: every scope bucket's query renders byte-identical SQL text for a
+// given scope=none request (only the arg differs — see
+// buildTagCatalogKeysSQL's doc comment), so the substring-keyed
+// stubQuerier used everywhere else in this file cannot tell the four
+// buckets apart. queriedScopes records every scope arg queried, in
+// arrival order, so the test can assert the catalog path visited all
+// four buckets rather than answering from a subset; nonCatalogSQL
+// records anything queried that was NOT the catalog table, so the test
+// can assert the request never fell through to the live scan.
+type scopeArgCatalogQuerier struct {
+	seed          map[string][]string
+	queriedScopes []string
+	nonCatalogSQL []string
+}
+
+func (q *scopeArgCatalogQuerier) Query(context.Context, string, ...any) ([]chclient.Sample, error) {
+	return nil, nil
+}
+
+func (q *scopeArgCatalogQuerier) QueryStrings(_ context.Context, sql string, args ...any) ([]string, error) {
+	if !strings.Contains(sql, "tempo_tag_catalog") {
+		q.nonCatalogSQL = append(q.nonCatalogSQL, sql)
+		return nil, nil
+	}
+	scope, _ := args[len(args)-1].(string)
+	q.queriedScopes = append(q.queriedScopes, scope)
+	return q.seed[scope], nil
+}
+
+// tagPair is one (scope, tag) member of a /api/v2/search/tags answer,
+// flattened for set comparison — order (of scopes within the response,
+// and of tags within a scope) carries no meaning here: a catalog read
+// via topKMerge and a live groupUniqArray-style scan have no reason to
+// agree on it.
+type tagPair struct{ scope, tag string }
+
+func tagPairSet(scopes []tempo.TagScope) map[tagPair]bool {
+	out := make(map[tagPair]bool)
+	for _, s := range scopes {
+		for _, tag := range s.Tags {
+			out[tagPair{s.Name, tag}] = true
+		}
+	}
+	return out
+}
+
+// assertTagPairSetsEqual fails with the specific missing/unexpected
+// (scope, tag) members on either side — set-equal, not order-equal.
+func assertTagPairSetsEqual(t *testing.T, got, want map[tagPair]bool) {
+	t.Helper()
+	for p := range want {
+		if !got[p] {
+			t.Errorf("catalog-hit answer missing (scope=%q, tag=%q) that the live answer has", p.scope, p.tag)
+		}
+	}
+	for p := range got {
+		if !want[p] {
+			t.Errorf("catalog-hit answer has (scope=%q, tag=%q) the live answer does not", p.scope, p.tag)
+		}
+	}
+}
+
+// TestSearchTags_CatalogHit_ScopeNone_SetEqualToLive is the M2 milestone
+// exit criterion for #2850's Part A: a `scope=none` /api/v2/search/tags
+// request must return event AND link buckets on the catalog-HIT path,
+// and that catalog-hit answer must be SET-EQUAL to what the live
+// per-scope scan would say for the identical seeded tags.
+// TestSearchTagsV2_ScopeFilter's none_default/none_explicit cases
+// already pin event/link showing up on the LIVE path (see newServer,
+// no catalog involved); this is the catalog-path sibling that was
+// missing — TestSearchTags_CatalogHit above never varies scope past
+// "resource" and never compares against the live answer at all.
+//
+// Both the default (no `?scope=`) and the explicit `?scope=none` forms
+// are covered — parseTagScope collapses them to the identical
+// tagScopeNone internally, and TestSearchTagsV2_ScopeFilter draws the
+// same none_default/none_explicit distinction on the live path, so the
+// catalog path gets the same two-form coverage here.
+func TestSearchTags_CatalogHit_ScopeNone_SetEqualToLive(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"none_default", ""},
+		{"none_explicit", "?scope=none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Catalog-hit driver.
+			catQ := &scopeArgCatalogQuerier{seed: tagCatalogNoneSeed}
+			catSrv := newCatalogServer(catQ, "v1.0.0-test")
+			t.Cleanup(catSrv.Close)
+
+			catResp, err := http.Get(catSrv.URL + "/api/v2/search/tags" + tc.query)
+			if err != nil {
+				t.Fatalf("GET (catalog): %v", err)
+			}
+			defer catResp.Body.Close()
+			if catResp.StatusCode != http.StatusOK {
+				t.Fatalf("catalog status=%d body=%s", catResp.StatusCode, readBody(t, catResp))
+			}
+			var catBody tempo.SearchTagsResponseV2
+			if err := json.NewDecoder(catResp.Body).Decode(&catBody); err != nil {
+				t.Fatalf("decode (catalog): %v", err)
+			}
+
+			// Proves the CATALOG path actually ran, for all four
+			// covered buckets, and never fell through to the live
+			// scan — otherwise a pass below would prove nothing about
+			// the catalog path at all.
+			for _, wantScope := range []string{
+				schema.TagCatalogScopeResource, schema.TagCatalogScopeSpan,
+				schema.TagCatalogScopeEvent, schema.TagCatalogScopeLink,
+			} {
+				if !contains(catQ.queriedScopes, wantScope) {
+					t.Errorf("expected the catalog to be queried for scope %q, queried scopes: %v", wantScope, catQ.queriedScopes)
+				}
+			}
+			if len(catQ.nonCatalogSQL) != 0 {
+				t.Errorf("expected every query to hit tempo_tag_catalog, live-scan SQL also ran: %v", catQ.nonCatalogSQL)
+			}
+
+			// Live-scan comparison driver: the SAME seeded tags,
+			// through the live per-scope columns
+			// (TestSearchTagsV2_ScopeFilter's own stub pattern).
+			liveQ := &stubQuerier{stringsBySQL: map[string][]string{
+				"`ResourceAttributes`":  tagCatalogNoneSeed[schema.TagCatalogScopeResource],
+				"`SpanAttributes`":      tagCatalogNoneSeed[schema.TagCatalogScopeSpan],
+				"`Events`.`Attributes`": tagCatalogNoneSeed[schema.TagCatalogScopeEvent],
+				"`Links`.`Attributes`":  tagCatalogNoneSeed[schema.TagCatalogScopeLink],
+			}}
+			liveSrv := newServer(liveQ, "v1.0.0-test") // TagCatalogEnabled=false: always live.
+			t.Cleanup(liveSrv.Close)
+
+			liveResp, err := http.Get(liveSrv.URL + "/api/v2/search/tags" + tc.query)
+			if err != nil {
+				t.Fatalf("GET (live): %v", err)
+			}
+			defer liveResp.Body.Close()
+			if liveResp.StatusCode != http.StatusOK {
+				t.Fatalf("live status=%d body=%s", liveResp.StatusCode, readBody(t, liveResp))
+			}
+			var liveBody tempo.SearchTagsResponseV2
+			if err := json.NewDecoder(liveResp.Body).Decode(&liveBody); err != nil {
+				t.Fatalf("decode (live): %v", err)
+			}
+
+			// Sanity: the live comparison answer itself must carry
+			// event/link (and intrinsic), or it is not a faithful
+			// oracle to compare the catalog answer against.
+			for _, wantScope := range []string{"resource", "span", "event", "link", "intrinsic"} {
+				found := false
+				for _, s := range liveBody.Scopes {
+					if s.Name == wantScope {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("live comparison answer missing scope %q entirely: %+v", wantScope, liveBody.Scopes)
+				}
+			}
+
+			assertTagPairSetsEqual(t, tagPairSet(catBody.Scopes), tagPairSet(liveBody.Scopes))
+		})
 	}
 }
