@@ -29,6 +29,10 @@
 // The floors are a ratchet: `just update-coverage-floor` raises them to what
 // the tree actually achieves and REFUSES to lower one. Lowering a floor is a
 // hand-edited, reviewable line in a pull request, never a tool's silent output.
+// DELETING a floor is a lowering too — it is the deepest one available, since
+// the ratchet only moves up and so has no mechanism that ever restores a
+// vanished entry — so the update path refuses that as well, unless the package's
+// own directory is gone from the tree (tsouza/cerberus#3001).
 //
 // Usage:
 //   node .github/scripts/coverage-summary.mjs
@@ -51,6 +55,12 @@
 //                           downgrading to the skip above, so a chdb install
 //                           that silently no-ops cannot turn the gate off.
 //   COVERAGE_UPDATE_FLOORS  `1` rewrites the ledger instead of comparing.
+//   COVERAGE_TREE_ROOT      module root the update path resolves a floored
+//                           package's directory against, to tell a package
+//                           DELETED from the tree apart from one the profile
+//                           merely failed to measure (default: the working
+//                           directory, which is the module root every recipe
+//                           invokes this from).
 //   GITHUB_STEP_SUMMARY     appended to when present (set by Actions).
 //
 // The lane record (`<profile>.lanes.json`):
@@ -81,10 +91,13 @@
 // Exit codes:
 //   0  every package clears its floor (or the ledger was rewritten).
 //   1  unreadable input, a COVERAGE_REQUIRE_LANES mismatch, a lane set the
-//      update path cannot prove is `default+chdb`, or a floor violation.
+//      update path cannot prove is `default+chdb`, a floored package the
+//      profile did not measure while the tree still carries it, or a floor
+//      violation.
 
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { appendStepSummary, error, log, notice } from './lib/gh.mjs';
@@ -102,6 +115,24 @@ export const FULL_LANES = 'default+chdb';
 // sits this far below the measurement that produced it. Wide enough to absorb
 // the jitter, narrow enough that a deleted test still trips it.
 const FLOOR_SLACK_PCT = 1.0;
+
+// ...but a percentage point is not a unit of jitter. The jitter above moves
+// whole STATEMENTS, and what a point is worth in statements is decided entirely
+// by the package's size, which a point-only slack never consults: 1.0 point of
+// a 70-statement package is 0.70 statements, so its floor tolerates no jitter at
+// all, while 1.0 point of a 4600-statement package is 46 of them.
+//
+// One statement is the quantum of the measurement itself — a package cannot
+// lose less — so a margin narrower than one statement is not a margin, it is a
+// floor pinned to the exact draw that produced it. This is the lower bound in
+// the unit the jitter actually moves in. It binds only below 100 statements,
+// which is precisely where a point is worth less than one statement; above that
+// FLOOR_SLACK_PCT is the wider of the two and nothing changes.
+//
+// Widening the slack can only ever LOWER the floor a fresh measurement
+// justifies, and nextFloors keeps the greater of that and the committed value,
+// so this cannot lower an entry already in the ledger.
+const FLOOR_SLACK_STATEMENTS = 1;
 
 // Floors are recorded to this many decimals; the profile itself is integer
 // statement counts, so more precision would be noise.
@@ -188,12 +219,22 @@ export function pct(covered, total) {
   return total > 0 ? (100 * covered) / total : 0;
 }
 
-// floorFor rounds a measurement down to the floor it justifies. A measurement
-// too thin to clear the slack justifies no floor at all, and says so with 0 —
-// callers must treat that as "this package needs a test", never as a floor.
-export function floorFor(measured) {
+// floorSlackPct is the margin a package of this size gets, in percentage
+// points: the wider of the flat point slack and FLOOR_SLACK_STATEMENTS
+// statements expressed as a percentage of the package. A package with no
+// statements gets the flat value, which is moot — nothing floors it.
+export function floorSlackPct(total) {
+  if (!(total > 0)) return FLOOR_SLACK_PCT;
+  return Math.max(FLOOR_SLACK_PCT, (100 * FLOOR_SLACK_STATEMENTS) / total);
+}
+
+// floorFor rounds a measurement down to the floor it justifies, given the size
+// of the package it measured. A measurement too thin to clear the slack
+// justifies no floor at all, and says so with 0 — callers must treat that as
+// "this package needs a test", never as a floor.
+export function floorFor(measured, total) {
   const scale = 10 ** FLOOR_DECIMALS;
-  return Math.max(0, Math.floor((measured - FLOOR_SLACK_PCT) * scale) / scale);
+  return Math.max(0, Math.floor((measured - floorSlackPct(total)) * scale) / scale);
 }
 
 // rows renders the per-package table, widest coverage first — the same shape,
@@ -246,6 +287,29 @@ export function compare(packages, floors) {
   };
 }
 
+// packageStillInTree answers the one question that separates a floored package
+// the profile DELIBERATELY no longer measures from one it silently failed to.
+//
+// A package that was removed from the module has no directory carrying
+// non-test Go files any more, and that is a fact about the tree the updater can
+// read for itself — no marker file, no exemption list, nothing a human has to
+// remember to keep in step. A package whose directory is still sitting there is
+// a package the profile SHOULD have measured, and its absence is evidence about
+// the profile, not about the tree.
+//
+// `_test.go` files are excluded deliberately: they carry no instrumented
+// statements, so a directory holding only tests can never contribute to a
+// profile and is, for the ledger's purposes, exactly as gone as an empty one.
+export function packageStillInTree(pkg, root = process.env.COVERAGE_TREE_ROOT || '.') {
+  let entries;
+  try {
+    entries = readdirSync(path.join(root, ...packageKeySegments(pkg)), { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some((e) => e.isFile() && e.name.endsWith('.go') && !e.name.endsWith('_test.go'));
+}
+
 // nextFloors ratchets the ledger up to what the tree achieves. It never lowers
 // one: a package that no longer clears its floor is returned as a regression so
 // the caller can refuse, because a tool that rewrites the floor to match a drop
@@ -254,10 +318,21 @@ export function compare(packages, floors) {
 // Nor does it record a zero. A package whose measurement cannot justify a floor
 // above 0 is returned as unfloorable rather than written out, so the ledger
 // never gains an entry that no future run can fail.
-export function nextFloors(packages, floors) {
+//
+// Nor does it drop one. The returned map is the ENTIRE next ledger, so a
+// floored package that never appears in the profile silently loses its entry —
+// a third way out of the ledger, and the worst of the three, because the
+// ratchet only moves up and so has nothing that ever puts a vanished floor
+// back. Such packages come back as `unmeasured` (the directory is still in the
+// tree, so the profile is incomplete and the caller must refuse) or `removed`
+// (the directory is gone, so the drop is what the tree says should happen and
+// the caller reports it). Nothing is written on the strength of an absence.
+export function nextFloors(packages, floors, inTree = packageStillInTree) {
   const next = {};
   const regressions = [];
   const unfloorable = [];
+  const removed = [];
+  const unmeasured = [];
 
   for (const [pkg, { total, covered }] of [...packages.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     if (total === 0) continue;
@@ -266,17 +341,31 @@ export function nextFloors(packages, floors) {
     if (existing !== undefined && value < existing) {
       regressions.push({ pkg, value, floor: existing });
     }
-    const floor = Math.max(existing ?? 0, floorFor(value));
+    const floor = Math.max(existing ?? 0, floorFor(value, total));
     if (!(floor > 0)) {
       unfloorable.push({ pkg, value, total });
       continue;
     }
     next[pkg] = floor;
   }
+
+  // `next` is the WHOLE ledger the caller is about to write, so every floored
+  // package the loop above did not reach loses its entry. Sort them into the
+  // two cases that look identical from inside the profile and demand opposite
+  // answers.
+  for (const pkg of Object.keys(floors).sort()) {
+    const measured = packages.get(pkg);
+    if (measured && measured.total > 0) continue;
+    if (inTree(pkg)) unmeasured.push(pkg);
+    else removed.push(pkg);
+  }
+
   return {
     next,
     regressions: regressions.sort((a, b) => a.pkg.localeCompare(b.pkg)),
     unfloorable: unfloorable.sort((a, b) => a.pkg.localeCompare(b.pkg)),
+    removed,
+    unmeasured,
   };
 }
 
@@ -484,7 +573,19 @@ function main() {
     const update = resolveUpdateLanes(recordText, text, recordPath);
     if (update.err) fail(update.err);
 
-    const { next, regressions, unfloorable } = nextFloors(packages, floors);
+    const { next, regressions, unfloorable, removed, unmeasured } = nextFloors(packages, floors);
+    if (unmeasured.length) {
+      fail(
+        `${unmeasured.length} package(s) carry a committed floor that this profile did not measure, ` +
+          `and their directories are still in the tree. Rewriting the ledger from this profile would ` +
+          `DELETE those floors — the one weakening the ratchet cannot undo, since it only ever moves ` +
+          `up and nothing restores an entry that is gone. Either the profile is older than the ` +
+          `package (enrolling from a downloaded artifact measured at some earlier commit) or a lane ` +
+          `failed to build it; from inside the profile those look identical, so neither is guessed ` +
+          `at. Re-measure the tree in hand and enroll from THAT profile:\n` +
+          unmeasured.map((p) => `  - ${p}`).join('\n'),
+      );
+    }
     if (regressions.length) {
       fail(
         `${regressions.length} package(s) sit below a committed floor, and raising the ledger ` +
@@ -502,6 +603,19 @@ function main() {
           `\`-coverpkg\` over the whole module, so a test in ANY package counts: give each one a ` +
           `test that reaches it, or delete the code that nothing reaches:\n` +
           unfloorable.map((r) => `  - ${r.pkg}: ${r.value.toFixed(2)}% of ${r.total} statements`).join('\n'),
+      );
+    }
+    if (removed.length) {
+      // Reported, not refused: the package's directory is gone from the tree,
+      // so dropping its floor is the ledger following the module rather than a
+      // measurement gap being laundered. It is still a floor leaving the
+      // ledger, so it says so out loud and lands as a deletion in the diff.
+      notice(
+        `${removed.length} floor(s) dropped: the package no longer exists in the tree, so nothing ` +
+          `can measure it. The deletion is in the ledger diff — check each one is a package you ` +
+          `meant to remove:\n` +
+          removed.map((p) => `  - ${p}`).join('\n'),
+        { title: 'coverage floor' },
       );
     }
     writeFloors(floorsDir, next);

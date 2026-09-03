@@ -19,10 +19,12 @@ import {
   compare,
   DEFAULT_PROFILE,
   floorFor,
+  floorSlackPct,
   laneRecordPath,
   nextFloors,
   packageKeySegments,
   packageOf,
+  packageStillInTree,
   parseProfile,
   profileDigest,
   resolveLanes,
@@ -152,10 +154,32 @@ test('the table is widest coverage first, in the column shape the summary has al
   ]);
 });
 
-test('a floor sits a fixed slack below the measurement and never goes negative', () => {
-  assert.equal(floorFor(82.55), 81.5);
-  assert.equal(floorFor(100), 99);
-  assert.equal(floorFor(0.4), 0);
+test('a floor sits a slack below the measurement and never goes negative', () => {
+  // A package big enough that a point is worth more than a statement gets the
+  // flat point slack, unchanged.
+  assert.equal(floorFor(82.55, 1000), 81.5);
+  assert.equal(floorFor(100, 1000), 99);
+  assert.equal(floorFor(0.4, 1000), 0);
+});
+
+test('the slack is at least one statement wide, whatever a point is worth in this package', () => {
+  // The defect: a point-only slack means whatever the package's size makes it
+  // mean. On a 70-statement package 1.0 point is 0.70 statements, so the floor
+  // it justifies tolerates NO jitter — one statement flipping reds the gate.
+  assert.equal(floorSlackPct(1000), 1.0, 'a point is worth 10 statements here — the point wins');
+  assert.equal(floorSlackPct(100), 1.0, 'exactly the crossover: a point IS one statement');
+  assert.ok(floorSlackPct(70) > 1.0, 'below the crossover the statement wins');
+  assert.equal(floorSlackPct(70).toFixed(4), (100 / 70).toFixed(4));
+
+  // 59/70 statements. The old flat slack put the floor at 83.2, which 58/70
+  // (82.86%) fails — a one-statement swing on a package nothing has changed.
+  const measured = (100 * 59) / 70;
+  assert.ok(floorFor(measured, 70) < (100 * 58) / 70, 'one statement of margin is now inside the floor');
+  assert.ok(floorFor(measured, 70) > (100 * 57) / 70, 'and no more than that — two statements still red');
+
+  // A package with no statements is never floored, so the value is moot; it
+  // must still be a number rather than an Infinity that poisons floorFor.
+  assert.equal(floorSlackPct(0), 1.0);
 });
 
 test('comparison reports drops, unfloored packages and vanished floors', () => {
@@ -195,8 +219,12 @@ test('the update ratchets floors up and refuses to lower one', () => {
       ['internal/down/a.go', 10, 0],
     ]),
   );
-  const { next, regressions } = nextFloors(packages, { 'internal/up': 40, 'internal/down': 70 });
-  assert.equal(next['internal/up'], 99, 'a package that improved raises its floor');
+  const { next, regressions } = nextFloors(packages, { 'internal/up': 40, 'internal/down': 70 }, () => false);
+  assert.equal(
+    next['internal/up'],
+    90,
+    'a package that improved raises its floor — to 100% less one statement, this package being 10 wide',
+  );
   assert.equal(next['internal/down'], 70, 'a package that dropped keeps the floor it failed');
   assert.deepEqual(
     regressions.map((r) => r.pkg),
@@ -213,7 +241,7 @@ test('the update returns an unfloorable package instead of writing a 0 into the 
       ['internal/real/a.go', 10, 1],
     ]),
   );
-  const { next, unfloorable } = nextFloors(packages, {});
+  const { next, unfloorable } = nextFloors(packages, {}, () => false);
   assert.deepEqual(
     unfloorable.map((r) => r.pkg),
     // 0% justifies nothing; 0.5% is inside the slack, so it justifies nothing
@@ -383,7 +411,9 @@ test('end to end: the update accepts the both-lane profile and enrolls the packa
   try {
     const { status, out } = run(profilePath, floorsDir, { COVERAGE_UPDATE_FLOORS: '1' });
     assert.equal(status, 0, `expected acceptance; output was:\n${out}`);
-    assert.equal(loadShardedMap(floorsDir)['internal/new'], 99);
+    // 10 statements, all covered: 100% less the one-statement slack this
+    // package's size makes worth 10 points.
+    assert.equal(loadShardedMap(floorsDir)['internal/new'], 90);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -510,5 +540,158 @@ test('a lane record that cannot be written fails the gate with an explanation, n
     assert.doesNotMatch(out, /at file:\/\//, 'the failure escaped as a stack trace');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// treeRoot lays out a fake module root holding one directory per package, each
+// carrying the kind of file named: 'go' for an instrumented source file,
+// 'test' for a file that carries no instrumented statements at all.
+function treeRoot(packages) {
+  const root = mkdtempSync(path.join(tmpdir(), 'coverage-tree-'));
+  for (const [pkg, kind] of Object.entries(packages)) {
+    const dir = path.join(root, ...pkg.split('/'));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, kind === 'test' ? 'a_test.go' : 'a.go'), 'package a\n');
+  }
+  return root;
+}
+
+test('a package is still in the tree only while a directory of non-test Go files says so', () => {
+  const root = treeRoot({ 'internal/live': 'go', 'internal/testsonly': 'test' });
+  try {
+    assert.equal(packageStillInTree('internal/live', root), true);
+    assert.equal(
+      packageStillInTree('internal/testsonly', root),
+      false,
+      'test files carry no instrumented statements, so such a directory can never be measured',
+    );
+    assert.equal(packageStillInTree('internal/gone', root), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a floored package the profile never measured is classified, never silently dropped', () => {
+  const { packages } = parseProfile(profile([['internal/measured/a.go', 200, 1]]));
+  const floors = { 'internal/measured': 90, 'internal/absent': 80, 'internal/deleted': 70 };
+  const { next, unmeasured, removed } = nextFloors(packages, floors, (pkg) => pkg === 'internal/absent');
+
+  assert.deepEqual(unmeasured, ['internal/absent'], 'still in the tree: the PROFILE is incomplete');
+  assert.deepEqual(removed, ['internal/deleted'], 'gone from the tree: the ledger follows the module');
+  assert.deepEqual(
+    Object.keys(next),
+    ['internal/measured'],
+    'the returned map is the whole next ledger, which is exactly why an absence cannot be written blind',
+  );
+});
+
+test('end to end: an update that would delete a floor whose package is still there exits 1', () => {
+  // tsouza/cerberus#3001, reproduced: the profile is complete, both lanes,
+  // digest-stamped — it simply predates the package. Rewriting the ledger from
+  // it deletes the floor, and the ratchet has nothing that puts one back.
+  const { dir, profilePath, floorsDir } = fixture([['internal/measured/a.go', 200, 1]], {
+    'internal/measured': 40,
+    'internal/promql/promparse': 99,
+  });
+  const root = treeRoot({ 'internal/measured': 'go', 'internal/promql/promparse': 'go' });
+  const before = loadShardedMap(floorsDir);
+  try {
+    const { status, out } = run(profilePath, floorsDir, {
+      COVERAGE_UPDATE_FLOORS: '1',
+      COVERAGE_TREE_ROOT: root,
+    });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.match(out, /internal\/promql\/promparse/);
+    assert.match(out, /did not measure/);
+    assert.deepEqual(loadShardedMap(floorsDir), before, 'the ledger is untouched — nothing was written');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('end to end: the same profile against a tree without the package drops the floor and says so', () => {
+  // The positive control for the refusal above, and the answer to "a deliberate
+  // package removal stays expressible without hand-editing the ledger": delete
+  // the package, re-run, and the entry goes with it — reported, and visible in
+  // the ledger diff.
+  const { dir, profilePath, floorsDir } = fixture([['internal/measured/a.go', 200, 1]], {
+    'internal/measured': 40,
+    'internal/promql/promparse': 99,
+  });
+  const root = treeRoot({ 'internal/measured': 'go' });
+  try {
+    const { status, out } = run(profilePath, floorsDir, {
+      COVERAGE_UPDATE_FLOORS: '1',
+      COVERAGE_TREE_ROOT: root,
+    });
+    assert.equal(status, 0, `expected acceptance; output was:\n${out}`);
+    assert.match(out, /no longer exists in the tree/);
+    assert.match(out, /internal\/promql\/promparse/);
+    assert.deepEqual(Object.keys(loadShardedMap(floorsDir)), ['internal/measured']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('end to end: a profile that measures every floored package still enrolls normally', () => {
+  // The second positive control: nothing about the guard fires on a complete
+  // profile, so a green run is a statement about the profile rather than about
+  // the guard being asleep.
+  const { dir, profilePath, floorsDir } = fixture(
+    [
+      ['internal/measured/a.go', 200, 1],
+      ['internal/promql/promparse/a.go', 200, 1],
+    ],
+    { 'internal/measured': 40, 'internal/promql/promparse': 40 },
+  );
+  const root = treeRoot({ 'internal/measured': 'go', 'internal/promql/promparse': 'go' });
+  try {
+    const { status, out } = run(profilePath, floorsDir, {
+      COVERAGE_UPDATE_FLOORS: '1',
+      COVERAGE_TREE_ROOT: root,
+    });
+    assert.equal(status, 0, `expected acceptance; output was:\n${out}`);
+    assert.doesNotMatch(out, /no longer exists in the tree/);
+    assert.deepEqual(loadShardedMap(floorsDir), {
+      'internal/measured': 99,
+      'internal/promql/promparse': 99,
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('end to end: every refusal is decided before the ledger is written, and none of them writes', () => {
+  // The fail-closed property this change must PRESERVE, stated over a profile
+  // that carries a raise (internal/measured, floored at 40 and measuring 100%),
+  // a regression and a measurement gap at once: whichever refusal fires, the
+  // raise must not land. writeFloors rewrites the whole ledger, so a refusal
+  // that ran after it would have already replaced every entry.
+  const { dir, profilePath, floorsDir } = fixture(
+    [
+      ['internal/dropped/a.go', 200, 0],
+      ['internal/measured/a.go', 200, 1],
+    ],
+    { 'internal/dropped': 90, 'internal/measured': 40, 'internal/promql/promparse': 99 },
+  );
+  const root = treeRoot({
+    'internal/dropped': 'go',
+    'internal/measured': 'go',
+    'internal/promql/promparse': 'go',
+  });
+  const before = loadShardedMap(floorsDir);
+  try {
+    const { status, out } = run(profilePath, floorsDir, {
+      COVERAGE_UPDATE_FLOORS: '1',
+      COVERAGE_TREE_ROOT: root,
+    });
+    assert.equal(status, 1, `expected a refusal; output was:\n${out}`);
+    assert.deepEqual(loadShardedMap(floorsDir), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
