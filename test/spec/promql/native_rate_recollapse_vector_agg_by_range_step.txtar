@@ -1,0 +1,111 @@
+# Activation pin for cerberus issue #2888 (closed), the OTHER reachable
+# path the fix's own doc names: a BARE RangeWindowGridNative (no
+# rate()/increase() temporality-union split) that ALSO carries a
+# Recollapse, composed with ts_grid_vector_agg. This is
+# [tryNativeGridVectorAgg]'s first (bare-RangeWindowGridNative) branch,
+# distinct from native_rate_recollapse_vector_agg_temporality_union.txtar's
+# union branch.
+#
+# `load_state` resolves ambiguously across both the gauge and sum tables
+# (no metric-name mapping pins it to one), so
+# resolveUnambiguousScanTable's route.tables has length != 1 and
+# rangeVectorCounterTemporalityColumn answers "" — rate() never threads
+# RangeWindow.TemporalityColumn for this selector, so
+# NativeRateLowerer.LowerRate takes its SECOND branch
+# (`nativeTSGridRateNode(rw, s, n.Recollapse)` with no union split) rather
+# than the temporality-bearing first branch the sibling fixture exercises.
+# Recollapse is still eligible on that branch (hoistShaping doesn't care
+# which branch it's reached from), so this is the one query shape that
+# reaches [tryNativeGridVectorAgg]'s bare-node clause with a non-empty
+# Input.Recollapse.
+#
+# Same grid and seed as native_changes_vector_agg_by_range_step.txtar
+# (swapping changes() for rate() so TemporalityColumn resolution differs,
+# and enabling `experimental_ts_grid_recollapse`).
+
+-- query.promql --
+sum by(dc) (rate(load_state[5m]))
+-- parity --
+oracle: prometheus
+endpoint: /api/v1/query_range
+scope: full
+-- range_step --
+30s
+-- experimental_ts_grid_range --
+-- experimental_ts_grid_recollapse --
+-- experimental_ts_grid_vector_agg --
+-- seed --
+CREATE TABLE otel_metrics_gauge (
+    MetricName String,
+    Attributes Map(String, String),
+    TimeUnix DateTime64(9),
+    Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, Attributes, TimeUnix);
+INSERT INTO otel_metrics_gauge VALUES
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 0.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('load_state', map('host', 'a', 'dc', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 1.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 5.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 5.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 7.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 7.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 9.0),
+    ('load_state', map('host', 'b', 'dc', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 2.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:00:00', 9), 0.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:01:00', 9), 0.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:02:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:03:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:04:00', 9), 1.0),
+    ('load_state', map('host', 'c', 'dc', 'x'), toDateTime64('2026-01-01 00:05:00', 9), 0.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:00:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:01:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:02:00', 9), 3.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:03:00', 9), 4.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:04:00', 9), 4.0),
+    ('load_state', map('host', 'd', 'dc', 'y'), toDateTime64('2026-01-01 00:05:00', 9), 4.0);
+-- expected_rows --
+[
+  ["", {"dc": "x"}, "2026-01-01T00:01:00Z", 0.0033333333333333335],
+  ["", {"dc": "x"}, "2026-01-01T00:01:30Z", 0.005],
+  ["", {"dc": "x"}, "2026-01-01T00:02:00Z", 0.006666666666666667],
+  ["", {"dc": "x"}, "2026-01-01T00:02:30Z", 0.008333333333333333],
+  ["", {"dc": "x"}, "2026-01-01T00:03:00Z", 0.006666666666666667],
+  ["", {"dc": "x"}, "2026-01-01T00:03:30Z", 0.007777777777777778],
+  ["", {"dc": "x"}, "2026-01-01T00:04:00Z", 0.01],
+  ["", {"dc": "x"}, "2026-01-01T00:04:30Z", 0.01125],
+  ["", {"dc": "x"}, "2026-01-01T00:05:00Z", 0.0075],
+  ["", {"dc": "y"}, "2026-01-01T00:01:00Z", 0],
+  ["", {"dc": "y"}, "2026-01-01T00:01:30Z", 0],
+  ["", {"dc": "y"}, "2026-01-01T00:02:00Z", 0.008333333333333333],
+  ["", {"dc": "y"}, "2026-01-01T00:02:30Z", 0.01],
+  ["", {"dc": "y"}, "2026-01-01T00:03:00Z", 0.011666666666666667],
+  ["", {"dc": "y"}, "2026-01-01T00:03:30Z", 0.013333333333333332],
+  ["", {"dc": "y"}, "2026-01-01T00:04:00Z", 0.020833333333333332],
+  ["", {"dc": "y"}, "2026-01-01T00:04:30Z", 0.020833333333333332],
+  ["", {"dc": "y"}, "2026-01-01T00:05:00Z", 0.029166666666666667]
+]
+-- args --
+[0] string = ""
+[1] string = "dc"
+[2] string = "dc"
+[3] string = "service_name"
+[4] string = "service.name"
+[5] string = "service_name"
+[6] string = "service.name"
+[7] string = "service_name"
+[8] string = ""
+[9] string = "service_name"
+[10] string = "load_state"
+[11] string = "load.state"
+[12] string = "load/state"
+-- chplan --
+Project ["" AS MetricName, mapWithoutEmpty(FnMap("dc", gkey_0)) AS Attributes, bucket_ts AS TimeUnix, Value AS Value]
+  RangeWindowGridNativeVectorAgg fn=sum groupBy=[Attributes["dc"] AS gkey_0] anchorAlias=bucket_ts
+    RangeWindowGridNative func=rate range=5m0s step=30s ts=TimeUnix value=Value groupBy=[ResourceAttributes, Attributes, ServiceName] recollapse=[FnMapSort(FnMapMerge(FnMapFilter((k, v) -> (k NOT IN ("service_name")), FnMapUpdate(FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapValues(FnMapFilter((k, v) -> (k NOT IN ("service.name", "service_name")), ResourceAttributes))), FnMapFromArrays(FnArrayMap(k -> FnRegexReplaceAll(k, "[^a-zA-Z0-9_]", "_"), FnMapKeys(Attributes)), FnMapValues(Attributes)))), FnMapFilter((k, v) -> (v != ""), FnMap("service_name", FnToString(ServiceName))))) AS Attributes] start=2026-01-01T00:00:00Z end=2026-01-01T00:05:00Z
+      Filter predicate=(MetricName IN ("load_state", "load.state", "load/state"))
+        Scan(merge(otel_metrics_gauge|otel_metrics_sum))
+-- sql --
+SELECT ? AS `MetricName`, mapFilter((k, v) -> v != '', map(?, `gkey_0`)) AS `Attributes`, `bucket_ts` AS `TimeUnix`, `Value` AS `Value` FROM (SELECT `gkey_0` AS `gkey_0`, toDateTime64(`anchor_ts`, 9) AS `anchor_ts`, toDateTime64(`anchor_ts`, 9) AS `bucket_ts`, toFloat64(assumeNotNull(`grid_val`)) AS `Value` FROM (SELECT `Attributes`[?] AS `gkey_0`, sumForEach(`grid`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `shaped_key_0` AS `Attributes`, `grid` FROM (SELECT mapSort(mapConcat(mapFilter((k, v) -> (k NOT IN (?)), mapUpdate(mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapValues(mapFilter((k, v) -> (k NOT IN (?, ?)), `ResourceAttributes`))), mapFromArrays(arrayMap(k -> replaceRegexpAll(k, '[^a-zA-Z0-9_]', '_'), mapKeys(`Attributes`)), mapValues(`Attributes`)))), mapFilter((k, v) -> (v != ?), map(?, toString(`ServiceName`))))) AS `shaped_key_0`, timeSeriesRateToGridMerge(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`grid_state`) AS `grid`, timeSeriesRange(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30) AS `grid_ts` FROM (SELECT `ResourceAttributes`, `Attributes`, `ServiceName`, timeSeriesRateToGridState(toDateTime(1767225600, 'UTC'), toDateTime(1767225900, 'UTC'), 30, 300)(`TimeUnix`, `Value`) AS `grid_state` FROM (SELECT * FROM merge(currentDatabase(), '^(otel_metrics_gauge|otel_metrics_sum)$') WHERE (`MetricName` IN (?, ?, ?))) WHERE `TimeUnix` > toDateTime64('2026-01-01 00:00:00.000000000', 9) - toIntervalNanosecond(300000000000) AND `TimeUnix` <= toDateTime64('2026-01-01 00:05:00.000000000', 9) GROUP BY `ResourceAttributes`, `Attributes`, `ServiceName`) GROUP BY `shaped_key_0`)) GROUP BY `gkey_0`) ARRAY JOIN `grid` AS `grid_val`, `grid_ts` AS `anchor_ts` WHERE `grid_val` IS NOT NULL)
